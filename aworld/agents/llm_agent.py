@@ -15,8 +15,21 @@ from typing import Dict, Any, List, Callable, Optional, Union
 import aworld.trace as trace
 from aworld.config.conf import AgentConfig, TaskConfig, TaskRunMode
 from aworld.core.agent.agent_desc import get_agent_desc
-from aworld.core.agent.base import BaseAgent, AgentResult, is_agent_by_name, is_agent, AgentFactory
-from aworld.core.common import ActionResult, Observation, ActionModel, Config, TaskItem, TaskStatusValue
+from aworld.core.agent.base import (
+    BaseAgent,
+    AgentResult,
+    is_agent_by_name,
+    is_agent,
+    AgentFactory,
+)
+from aworld.core.common import (
+    ActionResult,
+    Observation,
+    ActionModel,
+    Config,
+    TaskItem,
+    TaskStatusValue,
+)
 from aworld.core.context.amni.prompt.assembly import DefaultPromptAssemblyProvider
 from aworld.core.context.base import Context
 from aworld.core.context.compiler.parity import (
@@ -26,8 +39,17 @@ from aworld.core.context.compiler.parity import (
     _issue_context_entrypoint_claim,
 )
 from aworld.core.context.prompts import StringPromptTemplate
-from aworld.core.event.base import Message, ToolMessage, Constants, AgentMessage, GroupMessage, TopicType, \
-    MemoryEventType as MemoryType, MemoryEventMessage, ChunkMessage
+from aworld.core.event.base import (
+    Message,
+    ToolMessage,
+    Constants,
+    AgentMessage,
+    GroupMessage,
+    TopicType,
+    MemoryEventType as MemoryType,
+    MemoryEventMessage,
+    ChunkMessage,
+)
 from aworld.core.exceptions import AWorldRuntimeException
 from aworld.core.model_output_parser import ModelOutputParser
 from aworld.core.tool.tool_desc import get_tool_desc
@@ -35,10 +57,20 @@ from aworld.events import eventbus
 from aworld.events.util import send_message, send_message_with_future
 from aworld.logs.prompt_log import PromptLogger
 from aworld.logs.util import logger, Color, digest_logger
-from aworld.mcp_client.utils import mcp_tool_desc_transform, process_mcp_tools, skill_translate_tools, filter_mcp_tools_by_servers
+from aworld.mcp_client.utils import (
+    mcp_tool_desc_transform,
+    process_mcp_tools,
+    skill_translate_tools,
+    filter_mcp_tools_by_servers,
+)
 from aworld.memory.main import MemoryFactory
 from aworld.memory.tool_call_compaction import collect_replay_message_metrics
-from aworld.memory.models import MemoryItem, MemoryAIMessage, MemoryMessage, MemoryToolMessage
+from aworld.memory.models import (
+    MemoryItem,
+    MemoryAIMessage,
+    MemoryMessage,
+    MemoryToolMessage,
+)
 from aworld.models.llm import (
     ModelResponseParser,
     acall_llm_model,
@@ -54,7 +86,12 @@ from aworld.models.prompt_cache import (
     should_request_provider_native_cache,
 )
 from aworld.models.usage import normalize_usage
-from aworld.models.utils import tool_desc_transform, agent_desc_transform, usage_process, ModelUtils
+from aworld.models.utils import (
+    tool_desc_transform,
+    agent_desc_transform,
+    usage_process,
+    ModelUtils,
+)
 from aworld.output import Outputs
 from aworld.output.base import MessageOutput, Output
 from aworld.runners.hook.hooks import HookPoint
@@ -67,7 +104,11 @@ from aworld.runners.post_tool_progress import (
 from aworld.sandbox import Sandbox
 from aworld.utils.common import sync_exec, nest_dict_counter
 from aworld.utils.serialized_util import to_serializable
-from aworld.utils.task_grounding import anchor_matches_text, extract_required_anchors, extract_path_candidates
+from aworld.utils.task_grounding import (
+    anchor_matches_text,
+    extract_required_anchors,
+    extract_path_candidates,
+)
 from aworld.memory.tool_result_compaction import compact_tool_result_for_memory
 import aworld.runners.hook.agent_hooks
 
@@ -87,126 +128,169 @@ class LlmOutputParser(ModelOutputParser[ModelResponse, AgentResult]):
 
         results = []
         is_call_tool = False
-        content = '' if resp.content is None else resp.content
+        content = "" if resp.content is None else resp.content
 
         # Log parsing start
         logger.debug(
-            f"🔍 [Agent:{agent_id}] Starting to parse model response, has_tool_calls={bool(resp.tool_calls)}, content_length={len(content)}")
+            f"🔍 [Agent:{agent_id}] Starting to parse model response, has_tool_calls={bool(resp.tool_calls)}, content_length={len(content)}"
+        )
 
         if resp.tool_calls:
-            logger.info(f"🛠️ [Agent:{agent_id}] Processing {len(resp.tool_calls)} tool call(s)")
+            logger.info(
+                f"🛠️ [Agent:{agent_id}] Processing {len(resp.tool_calls)} tool call(s)"
+            )
             for idx, tool_call in enumerate(resp.tool_calls):
                 full_name: str = tool_call.function.name
                 if not full_name:
-                    logger.warning(f"⚠️ [Agent:{agent_id}] Tool call #{idx + 1} has no tool name, skipping.")
+                    logger.warning(
+                        f"⚠️ [Agent:{agent_id}] Tool call #{idx + 1} has no tool name, skipping."
+                    )
                     continue
 
                 logger.info(
-                    f"🔧 [Agent:{agent_id}] Processing tool call #{idx + 1}: {full_name}, call_id={tool_call.id}")
+                    f"🔧 [Agent:{agent_id}] Processing tool call #{idx + 1}: {full_name}, call_id={tool_call.id}"
+                )
 
                 try:
                     raw_arguments = tool_call.function.arguments
                     if not isinstance(raw_arguments, str) or not raw_arguments.strip():
                         logger.warning(
-                            f"⚠️ [Agent:{agent_id}] Tool call #{idx + 1} for {full_name} has invalid arguments: {raw_arguments!r}, skipping.")
+                            f"⚠️ [Agent:{agent_id}] Tool call #{idx + 1} for {full_name} has invalid arguments: {raw_arguments!r}, skipping."
+                        )
                         continue
 
                     params = json.loads(raw_arguments)
                     logger.debug(
-                        f"✅ [Agent:{agent_id}] Successfully parsed tool arguments for {full_name}: {len(params)} param(s)")
+                        f"✅ [Agent:{agent_id}] Successfully parsed tool arguments for {full_name}: {len(params)} param(s)"
+                    )
                 except Exception as e:
                     logger.warning(
-                        f"⚠️ [Agent:{agent_id}] Failed to parse tool arguments for {full_name}: {tool_call.function.arguments}, error={str(e)}")
+                        f"⚠️ [Agent:{agent_id}] Failed to parse tool arguments for {full_name}: {tool_call.function.arguments}, error={str(e)}"
+                    )
                     continue
 
                 # format in framework
                 # agent_info = AgentFactory.agent_instance(agent_id)
                 agent_info = kwargs.get("agent")
                 original_name = full_name
-                if (not full_name.startswith("mcp__") and agent_info and agent_info.sandbox and
-                        agent_info.sandbox.mcpservers and agent_info.sandbox.mcpservers.mcp_servers):
+                if (
+                    not full_name.startswith("mcp__")
+                    and agent_info
+                    and agent_info.sandbox
+                    and agent_info.sandbox.mcpservers
+                    and agent_info.sandbox.mcpservers.mcp_servers
+                ):
                     if agent_info.sandbox.mcpservers.map_tool_list:
-                        _original_tool = agent_info.sandbox.mcpservers.map_tool_list.get(full_name)
+                        _original_tool = (
+                            agent_info.sandbox.mcpservers.map_tool_list.get(full_name)
+                        )
                         if _original_tool:
                             # map_tool_list maps friendly name to original "server__tool" format
                             # e.g., "bash" → "terminal__mcp_execute_command"
                             full_name = f"mcp__{_original_tool}"
                             logger.info(
-                                f"🔄 [Agent:{agent_id}] Mapped tool name: {original_name} -> {full_name} (via map_tool_list)")
+                                f"🔄 [Agent:{agent_id}] Mapped tool name: {original_name} -> {full_name} (via map_tool_list)"
+                            )
                     else:
                         tmp_names = full_name.split("__")
                         tmp_tool_name = tmp_names[0]
                         if tmp_tool_name in agent_info.sandbox.mcpservers.mcp_servers:
                             full_name = f"mcp__{full_name}"
                             logger.info(
-                                f"🔄 [Agent:{agent_id}] Mapped tool name: {original_name} -> {full_name} (via mcp_servers)")
+                                f"🔄 [Agent:{agent_id}] Mapped tool name: {original_name} -> {full_name} (via mcp_servers)"
+                            )
 
                 names = full_name.split("__")
                 tool_name = names[0]
                 if is_agent_by_name(full_name):
-                    param_info = params.get('content', "") + ' ' + params.get('info', '')
-                    results.append(ActionModel(tool_name=full_name,
-                                               tool_call_id=tool_call.id,
-                                               agent_name=agent_id,
-                                               params=params,
-                                               policy_info=content + param_info))
+                    param_info = (
+                        params.get("content", "") + " " + params.get("info", "")
+                    )
+                    results.append(
+                        ActionModel(
+                            tool_name=full_name,
+                            tool_call_id=tool_call.id,
+                            agent_name=agent_id,
+                            params=params,
+                            policy_info=content + param_info,
+                        )
+                    )
                     is_call_tool = True
-                    logger.debug(f"🤖 [Agent:{agent_id}] Added agent action: {full_name}")
+                    logger.debug(
+                        f"🤖 [Agent:{agent_id}] Added agent action: {full_name}"
+                    )
                 else:
-                    action_name = '__'.join(names[1:]) if len(names) > 1 else ''
-                    results.append(ActionModel(tool_name=tool_name,
-                                               tool_call_id=tool_call.id,
-                                               action_name=action_name,
-                                               agent_name=agent_id,
-                                               params=params,
-                                               policy_info=content))
+                    action_name = "__".join(names[1:]) if len(names) > 1 else ""
+                    results.append(
+                        ActionModel(
+                            tool_name=tool_name,
+                            tool_call_id=tool_call.id,
+                            action_name=action_name,
+                            agent_name=agent_id,
+                            params=params,
+                            policy_info=content,
+                        )
+                    )
                     is_call_tool = True
-                    logger.info(f"🔨 [Agent:{agent_id}] Added tool action: {tool_name}_{action_name}")
+                    logger.info(
+                        f"🔨 [Agent:{agent_id}] Added tool action: {tool_name}_{action_name}"
+                    )
         if not is_call_tool:
             if not content and resp.reasoning_content:
-                logger.info(f"💬 [Agent:{agent_id}] No tool calls or content, added reasoning content to action")
+                logger.info(
+                    f"💬 [Agent:{agent_id}] No tool calls or content, added reasoning content to action"
+                )
                 content = resp.reasoning_content
             results.append(ActionModel(agent_name=agent_id, policy_info=content))
             logger.debug(
-                f"💬 [Agent:{agent_id}] No tool calls, added text response action (content_length={len(content)})")
+                f"💬 [Agent:{agent_id}] No tool calls, added text response action (content_length={len(content)})"
+            )
 
-        logger.info(f"✅ [Agent:{agent_id}] Parse completed: {len(results)} action(s), is_call_tool={is_call_tool}")
-        return AgentResult(actions=results, current_state=None, is_call_tool=is_call_tool)
+        logger.info(
+            f"✅ [Agent:{agent_id}] Parse completed: {len(results)} action(s), is_call_tool={is_call_tool}"
+        )
+        return AgentResult(
+            actions=results, current_state=None, is_call_tool=is_call_tool
+        )
 
 
 class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
     """Basic agent for unified protocol within the framework."""
 
-    def __init__(self,
-                 name: str,
-                 conf: Config | None = None,
-                 desc: str = None,
-                 agent_id: str = None,
-                 *,
-                 task: Any = None,
-                 tool_names: List[str] = None,
-                 agent_names: List[str] = None,
-                 mcp_servers: List[str] = None,
-                 mcp_config: Dict[str, Any] = None,
-                 feedback_tool_result: bool = True,
-                 wait_tool_result: bool = False,
-                 sandbox: Sandbox = None,
-                 system_prompt: str = None,
-                 need_reset: bool = True,
-                 step_reset: bool = True,
-                 use_tools_in_prompt: bool = False,
-                 black_tool_actions: Dict[str, List[str]] = None,
-                 model_output_parser: Union[ModelOutputParser[..., AgentResult], Callable[
-                     [ModelResponse, Any], AgentResult]] = LlmOutputParser(),
-                 tool_aggregate_func: Callable[..., Any] = None,
-                 event_handler_name: str = None,
-                 event_driven: bool = True,
-                 skill_configs: Dict[str, Any] = None,
-                 llm_max_attempts: int = 3,
-                 llm_retry_delay: float = 10.0,
-                 enable_subagent: bool = False,
-                 subagent_search_paths: List[str] = None,
-                 **kwargs):
+    def __init__(
+        self,
+        name: str,
+        conf: Config | None = None,
+        desc: str = None,
+        agent_id: str = None,
+        *,
+        task: Any = None,
+        tool_names: List[str] = None,
+        agent_names: List[str] = None,
+        mcp_servers: List[str] = None,
+        mcp_config: Dict[str, Any] = None,
+        feedback_tool_result: bool = True,
+        wait_tool_result: bool = False,
+        sandbox: Sandbox = None,
+        system_prompt: str = None,
+        need_reset: bool = True,
+        step_reset: bool = True,
+        use_tools_in_prompt: bool = False,
+        black_tool_actions: Dict[str, List[str]] = None,
+        model_output_parser: Union[
+            ModelOutputParser[..., AgentResult],
+            Callable[[ModelResponse, Any], AgentResult],
+        ] = LlmOutputParser(),
+        tool_aggregate_func: Callable[..., Any] = None,
+        event_handler_name: str = None,
+        event_driven: bool = True,
+        skill_configs: Dict[str, Any] = None,
+        llm_max_attempts: int = 3,
+        llm_retry_delay: float = 10.0,
+        enable_subagent: bool = False,
+        subagent_search_paths: List[str] = None,
+        **kwargs,
+    ):
         """A api class implementation of agent, using the `Observation` and `List[ActionModel]` protocols.
 
         Args:
@@ -235,8 +319,10 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             assert api_key and model_name, (
                 "LLM_MODEL_NAME and LLM_API_KEY (environment variables) must be set, or pass AgentConfig explicitly"
             )
-            logger.info(f"AgentConfig is empty, using env variables:\n LLM_BASE_URL={base_url}\n"
-                        f"LLM_MODEL_NAME={model_name}")
+            logger.info(
+                f"AgentConfig is empty, using env variables:\n LLM_BASE_URL={base_url}\n"
+                f"LLM_MODEL_NAME={model_name}"
+            )
 
             conf = AgentConfig(
                 llm_provider=os.getenv("LLM_PROVIDER", "openai"),
@@ -245,18 +331,23 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                 llm_base_url=base_url,
                 llm_temperature=float(os.getenv("LLM_TEMPERATURE", "0.7")),
             )
-        super(Agent, self).__init__(name, conf, desc, agent_id,
-                                    task=task,
-                                    tool_names=tool_names,
-                                    agent_names=agent_names,
-                                    mcp_servers=mcp_servers,
-                                    mcp_config=mcp_config,
-                                    black_tool_actions=black_tool_actions,
-                                    feedback_tool_result=feedback_tool_result,
-                                    wait_tool_result=wait_tool_result,
-                                    sandbox=sandbox,
-                                    skill_configs=skill_configs,
-                                    **kwargs)
+        super(Agent, self).__init__(
+            name,
+            conf,
+            desc,
+            agent_id,
+            task=task,
+            tool_names=tool_names,
+            agent_names=agent_names,
+            mcp_servers=mcp_servers,
+            mcp_config=mcp_config,
+            black_tool_actions=black_tool_actions,
+            feedback_tool_result=feedback_tool_result,
+            wait_tool_result=wait_tool_result,
+            sandbox=sandbox,
+            skill_configs=skill_configs,
+            **kwargs,
+        )
         conf = self.conf
         self.model_name = conf.llm_config.llm_model_name
         self._llm = None
@@ -278,8 +369,12 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         if self.conf.llm_config and not self.conf.llm_config.llm_response_parser:
             self.conf.llm_config.llm_response_parser = ModelResponseParser()
 
-        self.use_tools_in_prompt = use_tools_in_prompt if use_tools_in_prompt else conf.use_tools_in_prompt
-        self.tools_aggregate_func = tool_aggregate_func if tool_aggregate_func else self._tools_aggregate_func
+        self.use_tools_in_prompt = (
+            use_tools_in_prompt if use_tools_in_prompt else conf.use_tools_in_prompt
+        )
+        self.tools_aggregate_func = (
+            tool_aggregate_func if tool_aggregate_func else self._tools_aggregate_func
+        )
         self.event_handler_name = event_handler_name
         self.context = kwargs.get("context", None)
         self._runtime_completion_contract = kwargs.get("completion_contract")
@@ -317,8 +412,7 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             # agent.md files will be scanned on first spawn() call (async context)
             # This avoids sync_exec in __init__ which can cause nested event loop issues
             self.subagent_manager = SubagentManager(
-                agent=self,
-                agent_md_search_paths=search_paths
+                agent=self, agent_md_search_paths=search_paths
             )
             logger.info(
                 f"Agent '{self.name()}': SubagentManager created "
@@ -332,7 +426,10 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             # Users must explicitly add 'async_spawn_subagent' (or 'spawn_subagent') to tool_names
             # if they want spawn capability.
             # Note: AsyncTool is registered with 'async_' prefix by ToolFactory
-            has_spawn_tool = 'async_spawn_subagent' in self.tool_names or 'spawn_subagent' in self.tool_names
+            has_spawn_tool = (
+                "async_spawn_subagent" in self.tool_names
+                or "spawn_subagent" in self.tool_names
+            )
             if has_spawn_tool:
                 logger.info(
                     f"Agent '{self.name()}': Subagent capability enabled with spawn_subagent tool. "
@@ -393,6 +490,8 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         if (
             context.completion_contract == contract
             and context.completion_mode is CompletionMode(mode)
+            and getattr(context, "_completion_evidence_resolver", None)
+            is self._runtime_completion_evidence_resolver
         ):
             return
         context.configure_completion_contract(
@@ -416,7 +515,7 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         except Exception as exc:
             logger.warning(
                 "Completion evidence resolver failed for agent "
-                f"{self.id()}: {type(exc).__name__}"
+                f"{self.id()}: {type(exc).__name__}: {str(exc)[:500]}"
             )
             context.context_info[f"completion_evidence_error:{self.id()}"] = {
                 "error_type": type(exc).__name__,
@@ -458,7 +557,9 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             {
                 "capture_stage": "compiled",
                 "call_id": call_id,
-                "step_id": message.context.current_step_id() if message.context else None,
+                "step_id": message.context.current_step_id()
+                if message.context
+                else None,
                 "agent_id": self.id(),
                 "started_at": started_at,
                 "request": {
@@ -466,7 +567,9 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                     "tools": to_serializable(tools),
                     "params": to_serializable(request_params or {}),
                 },
-                "request_metrics": collect_replay_message_metrics(serializable_messages),
+                "request_metrics": collect_replay_message_metrics(
+                    serializable_messages
+                ),
             },
             event_type="compiler_request_captured",
         )
@@ -517,7 +620,9 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                 if serialized_usage is not None:
                     updated_record["usage"] = serialized_usage
                 metadata = updated_record.get("assembly_observability")
-                if isinstance(metadata, dict) and self._usage_has_cache_tokens(serialized_usage):
+                if isinstance(metadata, dict) and self._usage_has_cache_tokens(
+                    serialized_usage
+                ):
                     metadata = dict(metadata)
                     metadata["provider_native_cache"] = True
                     updated_record["assembly_observability"] = metadata
@@ -611,8 +716,16 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
     def _is_context_cache_enabled(self, context: Any) -> bool:
         agent_config = self._get_agent_context_cache_config(context)
         model_config = self._get_model_context_cache_config()
-        agent_enabled = True if agent_config is None else bool(getattr(agent_config, "enabled", True))
-        model_enabled = True if model_config is None else bool(getattr(model_config, "enabled", True))
+        agent_enabled = (
+            True
+            if agent_config is None
+            else bool(getattr(agent_config, "enabled", True))
+        )
+        model_enabled = (
+            True
+            if model_config is None
+            else bool(getattr(model_config, "enabled", True))
+        )
         return agent_enabled and model_enabled
 
     def _allow_provider_native_cache(self, context: Any) -> bool:
@@ -620,11 +733,15 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             return False
         agent_config = self._get_agent_context_cache_config(context)
         model_config = self._get_model_context_cache_config()
-        agent_enabled = True if agent_config is None else bool(
-            getattr(agent_config, "allow_provider_native_cache", True)
+        agent_enabled = (
+            True
+            if agent_config is None
+            else bool(getattr(agent_config, "allow_provider_native_cache", True))
         )
-        model_enabled = True if model_config is None else bool(
-            getattr(model_config, "allow_provider_native_cache", True)
+        model_enabled = (
+            True
+            if model_config is None
+            else bool(getattr(model_config, "allow_provider_native_cache", True))
         )
         return agent_enabled and model_enabled
 
@@ -632,10 +749,9 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         if not isinstance(usage, dict):
             return False
         normalized_usage = normalize_usage(usage)
-        return (
-            (normalized_usage.get("cache_hit_tokens", 0) or 0) > 0
-            or (normalized_usage.get("cache_write_tokens", 0) or 0) > 0
-        )
+        return (normalized_usage.get("cache_hit_tokens", 0) or 0) > 0 or (
+            normalized_usage.get("cache_write_tokens", 0) or 0
+        ) > 0
 
     def _provider_native_cache_requested(
         self,
@@ -672,7 +788,9 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         tools: List[Dict[str, Any]] | None = None,
         request_kwargs: Dict[str, Any] | None = None,
     ):
-        metadata = self._build_prompt_assembly_metadata(context=context, request_kwargs=request_kwargs)
+        metadata = self._build_prompt_assembly_metadata(
+            context=context, request_kwargs=request_kwargs
+        )
         provider = self._get_prompt_assembly_provider(context)
         plan = provider.build_plan(messages=messages, tools=tools, metadata=metadata)
         provider_name = metadata.get("provider_name") or self._current_provider_name()
@@ -757,7 +875,9 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         return {
             "provider_name": provider_name,
             "cache_aware_assembly": False,
-            "provider_native_cache": self._provider_native_cache_requested(context, provider_name, request_kwargs),
+            "provider_native_cache": self._provider_native_cache_requested(
+                context, provider_name, request_kwargs
+            ),
         }
 
     def _build_prompt_assembly(
@@ -798,8 +918,17 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         # lazy
         if self._llm is None:
             llm_config = self.conf.llm_config or None
-            conf = llm_config if llm_config and (
-                    llm_config.llm_provider or llm_config.llm_base_url or llm_config.llm_api_key or llm_config.llm_model_name) else self.conf
+            conf = (
+                llm_config
+                if llm_config
+                and (
+                    llm_config.llm_provider
+                    or llm_config.llm_base_url
+                    or llm_config.llm_api_key
+                    or llm_config.llm_model_name
+                )
+                else self.conf
+            )
             self._llm = get_llm_model(conf)
         return self._llm
 
@@ -813,18 +942,22 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         # Register TeamSwarm members as subagents if subagent capability is enabled
         if self.enable_subagent and self.subagent_manager:
             try:
-                swarm = context.swarm if hasattr(context, 'swarm') else None
+                swarm = context.swarm if hasattr(context, "swarm") else None
                 if swarm:
                     # Register team members (idempotent operation)
                     await self.subagent_manager.register_team_members(swarm)
 
                     # Update system prompt with newly registered subagents
-                    subagent_section = self.subagent_manager.generate_system_prompt_section()
+                    subagent_section = (
+                        self.subagent_manager.generate_system_prompt_section()
+                    )
                     if subagent_section:
                         # Replace old subagent section while preserving content after it
                         if "## Available Subagents" in self.system_prompt:
                             # Split on section header
-                            parts = self.system_prompt.split("## Available Subagents", 1)
+                            parts = self.system_prompt.split(
+                                "## Available Subagents", 1
+                            )
                             before_section = parts[0].rstrip()
 
                             # Find the next section marker (##) after Available Subagents
@@ -835,10 +968,17 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                                 next_section_match = remaining.find("\n## ")
                                 if next_section_match != -1:
                                     # Preserve everything from the next section onward
-                                    after_section = "\n" + remaining[next_section_match:].lstrip('\n')
+                                    after_section = "\n" + remaining[
+                                        next_section_match:
+                                    ].lstrip("\n")
 
                             # Reconstruct: before + new subagent section + after
-                            self.system_prompt = before_section + "\n\n" + subagent_section + after_section
+                            self.system_prompt = (
+                                before_section
+                                + "\n\n"
+                                + subagent_section
+                                + after_section
+                            )
                         else:
                             # Append new section
                             self.system_prompt += "\n\n" + subagent_section
@@ -856,29 +996,56 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         # Stateless tool
         try:
             tool_names = self.tool_names or []
-            if getattr(context.get_agent_context_config(self.id()), "automated_reasoning_orchestrator", None):
-                from aworld.core.context.amni.tool.context_planning_tool import CONTEXT_PLANNING
+            if getattr(
+                context.get_agent_context_config(self.id()),
+                "automated_reasoning_orchestrator",
+                None,
+            ):
+                from aworld.core.context.amni.tool.context_planning_tool import (
+                    CONTEXT_PLANNING,
+                )
+
                 if CONTEXT_PLANNING not in tool_names:
                     tool_names.extend([CONTEXT_PLANNING])
 
-            if getattr(context.get_agent_context_config(self.id()), "automated_cognitive_ingestion", None):
-                from aworld.core.context.amni.tool.context_knowledge_tool import CONTEXT_KNOWLEDGE
+            if getattr(
+                context.get_agent_context_config(self.id()),
+                "automated_cognitive_ingestion",
+                None,
+            ):
+                from aworld.core.context.amni.tool.context_knowledge_tool import (
+                    CONTEXT_KNOWLEDGE,
+                )
+
                 if CONTEXT_KNOWLEDGE not in tool_names:
                     tool_names.extend([CONTEXT_KNOWLEDGE])
-            self.tools = tool_desc_transform(get_tool_desc(),
-                                             tools=tool_names,
-                                             black_tool_actions=self.black_tool_actions)
+            self.tools = tool_desc_transform(
+                get_tool_desc(),
+                tools=tool_names,
+                black_tool_actions=self.black_tool_actions,
+            )
         except:
-            logger.warning(f"{self.id()} get tools desc fail, no tool to use. error: {traceback.format_exc()}")
+            logger.warning(
+                f"{self.id()} get tools desc fail, no tool to use. error: {traceback.format_exc()}"
+            )
         # Agents as tool
         try:
-            self.tools.extend(agent_desc_transform(get_agent_desc(),
-                                                   agents=self.handoffs if self.handoffs else []))
+            self.tools.extend(
+                agent_desc_transform(
+                    get_agent_desc(), agents=self.handoffs if self.handoffs else []
+                )
+            )
         except:
-            logger.warning(f"{self.id()} get agent desc fail, no agent as tool to use. error: {traceback.format_exc()}")
+            logger.warning(
+                f"{self.id()} get agent desc fail, no agent as tool to use. error: {traceback.format_exc()}"
+            )
         # MCP servers are tools
         try:
-            if self.sandbox and hasattr(self.sandbox, 'mcpservers') and self.sandbox.mcpservers:
+            if (
+                self.sandbox
+                and hasattr(self.sandbox, "mcpservers")
+                and self.sandbox.mcpservers
+            ):
                 # Get all available MCP tools from shared sandbox
                 all_mcp_tools = await self.sandbox.mcpservers.list_tools(context)
 
@@ -888,16 +1055,21 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                 # - Shared sandbox doesn't expose all tools to all agents
                 # - Agent's mcp_servers acts as access control list
                 filtered_mcp_tools = filter_mcp_tools_by_servers(
-                    all_mcp_tools,
-                    allowed_servers=self.mcp_servers
+                    all_mcp_tools, allowed_servers=self.mcp_servers
                 )
 
-                processed_tools, tool_mapping = await process_mcp_tools(filtered_mcp_tools)
+                processed_tools, tool_mapping = await process_mcp_tools(
+                    filtered_mcp_tools
+                )
                 self.sandbox.mcpservers.map_tool_list = tool_mapping
                 self.tools.extend(processed_tools)
                 self.tool_mapping = tool_mapping
 
-                root_task_id = context.root.task_id if hasattr(context, 'root') and context.root.task_id else context.task_id
+                root_task_id = (
+                    context.root.task_id
+                    if hasattr(context, "root") and context.root.task_id
+                    else context.task_id
+                )
                 if self.sandbox.metadata is None:
                     self.sandbox.metadata = {}
                 task_list = self.sandbox.metadata.get("task_list")
@@ -907,38 +1079,56 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                 if root_task_id and root_task_id not in task_list:
                     task_list.append(root_task_id)
             else:
-                self.tools.extend(await mcp_tool_desc_transform(self.mcp_servers, self.mcp_config))
+                self.tools.extend(
+                    await mcp_tool_desc_transform(self.mcp_servers, self.mcp_config)
+                )
         except:
-            logger.warning(f"{self.id()} get MCP desc fail, no MCP to use. error: {traceback.format_exc()}")
+            logger.warning(
+                f"{self.id()} get MCP desc fail, no MCP to use. error: {traceback.format_exc()}"
+            )
 
         await self.process_by_ptc(self.tools, context)
 
-    def messages_transform(self,
-                           content: str,
-                           image_urls: List[str] = None,
-                           observation: Observation = None,
-                           message: Message = None,
-                           **kwargs) -> List[Dict[str, Any]]:
-        return sync_exec(self.async_messages_transform, image_urls=image_urls, observation=observation,
-                         message=message, **kwargs)
+    def messages_transform(
+        self,
+        content: str,
+        image_urls: List[str] = None,
+        observation: Observation = None,
+        message: Message = None,
+        **kwargs,
+    ) -> List[Dict[str, Any]]:
+        return sync_exec(
+            self.async_messages_transform,
+            image_urls=image_urls,
+            observation=observation,
+            message=message,
+            **kwargs,
+        )
 
     def _is_amni_context(self, context: Context):
         from aworld.core.context.amni import AmniContext
+
         return isinstance(context, AmniContext)
 
-    def _build_memory_filters(self, context: Context, additional_filters: Dict[str, Any] = None) -> Dict[str, Any]:
+    def _build_memory_filters(
+        self, context: Context, additional_filters: Dict[str, Any] = None
+    ) -> Dict[str, Any]:
         filters = {"agent_id": self.id()}
 
         agent_memory_config = context.get_agent_memory_config(self.id())
 
-        query_scope = agent_memory_config.history_scope if agent_memory_config and agent_memory_config.history_scope else "task"
+        query_scope = (
+            agent_memory_config.history_scope
+            if agent_memory_config and agent_memory_config.history_scope
+            else "task"
+        )
         task = context.get_task()
 
         if query_scope == "user":
             # Pass user_id when query_scope is user
-            if hasattr(context, 'user_id') and context.user_id:
+            if hasattr(context, "user_id") and context.user_id:
                 filters["user_id"] = context.user_id
-            elif hasattr(task, 'user_id') and task.user_id:
+            elif hasattr(task, "user_id") and task.user_id:
                 filters["user_id"] = task.user_id
         elif query_scope == "session":
             # Pass session_id when query_scope is session
@@ -961,29 +1151,43 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         try:
             for i in range(len(histories) - 1, -1, -1):
                 his = histories[i]
-                if his.metadata and "tool_calls" in his.metadata and his.metadata['tool_calls']:
-                    logger.info(f"Agent {self.id()} deleted tool call messages from memory: {his}")
+                if (
+                    his.metadata
+                    and "tool_calls" in his.metadata
+                    and his.metadata["tool_calls"]
+                ):
+                    logger.info(
+                        f"Agent {self.id()} deleted tool call messages from memory: {his}"
+                    )
                     MemoryFactory.instance().delete(his.id)
                 else:
                     break
         except Exception:
-            logger.error(f"Agent {self.id()} clean redundant tool_call_messages error: {traceback.format_exc()}")
+            logger.error(
+                f"Agent {self.id()} clean redundant tool_call_messages error: {traceback.format_exc()}"
+            )
 
     def postprocess_terminate_loop(self, message: Message):
         logger.info(f"Agent {self.id()} postprocess_terminate_loop: {self.loop_step}")
         super().postprocess_terminate_loop(message)
         try:
-            filters = self._build_memory_filters(message.context, additional_filters={"memory_type": "message"})
+            filters = self._build_memory_filters(
+                message.context, additional_filters={"memory_type": "message"}
+            )
             histories = MemoryFactory.instance().get_all(filters=filters)
             self._clean_redundant_tool_call_messages(histories)
         except Exception:
-            logger.error(f"Agent {self.id()} postprocess_terminate_loop error: {traceback.format_exc()}")
+            logger.error(
+                f"Agent {self.id()} postprocess_terminate_loop error: {traceback.format_exc()}"
+            )
 
-    async def async_messages_transform(self,
-                                       image_urls: List[str] = None,
-                                       observation: Observation = None,
-                                       message: Message = None,
-                                       **kwargs) -> List[Dict[str, Any]]:
+    async def async_messages_transform(
+        self,
+        image_urls: List[str] = None,
+        observation: Observation = None,
+        message: Message = None,
+        **kwargs,
+    ) -> List[Dict[str, Any]]:
         """Transform the original content to LLM messages of native format.
 
         Args:
@@ -995,13 +1199,17 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         """
         messages = []
         # append sys_prompt to memory
-        content = await self.custom_system_prompt(context=message.context,
-                                                  content=observation.content,
-                                                  tool_list=self.tools)
+        content = await self.custom_system_prompt(
+            context=message.context, content=observation.content, tool_list=self.tools
+        )
         if self.system_prompt:
-            await self._add_message_to_memory(context=message.context, payload=content, message_type=MemoryType.SYSTEM)
+            await self._add_message_to_memory(
+                context=message.context, payload=content, message_type=MemoryType.SYSTEM
+            )
 
-        filters = self._build_memory_filters(message.context, additional_filters={"memory_type": "message"})
+        filters = self._build_memory_filters(
+            message.context, additional_filters={"memory_type": "message"}
+        )
         histories = MemoryFactory.instance().get_all(filters=filters)
 
         # append observation to memory
@@ -1014,14 +1222,15 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             self._clean_redundant_tool_call_messages(histories)
             content = observation.content
             if image_urls:
-                urls = [{'type': 'text', 'text': content}]
+                urls = [{"type": "text", "text": content}]
                 for image_url in image_urls:
-                    urls.append(
-                        {'type': 'image_url', 'image_url': {"url": image_url}})
+                    urls.append({"type": "image_url", "image_url": {"url": image_url}})
                 content = urls
-            await self._add_message_to_memory(payload={"content": content, "memory_type": "init"},
-                                              message_type=MemoryType.HUMAN,
-                                              context=message.context)
+            await self._add_message_to_memory(
+                payload={"content": content, "memory_type": "init"},
+                message_type=MemoryType.HUMAN,
+                context=message.context,
+            )
 
         memory = MemoryFactory.instance()
         # from memory get last n messages
@@ -1029,21 +1238,26 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         # load pending message
         try:
             pending_filters = self._build_memory_filters(message.context)
-            pending_filters['memory_type'] = 'pending'
+            pending_filters["memory_type"] = "pending"
             pending_items = memory.memory_store.get_all(pending_filters)
             if pending_items:
                 for pending_item in pending_items:
                     pending_item.created_at = datetime.now().isoformat()
-                    pending_item.memory_type = 'message'
+                    pending_item.memory_type = "message"
         except Exception as e:
             logger.warning(f"Agent {self.id()} load pending message error: {e}")
 
         agent_memory_config = self.memory_config
         if self._is_amni_context(message.context):
-            agent_context_config = message.context.get_config().get_agent_context_config(self.id())
+            agent_context_config = (
+                message.context.get_config().get_agent_context_config(self.id())
+            )
             agent_memory_config = agent_context_config.to_memory_config()
-        histories = memory.get_last_n(agent_memory_config.history_rounds, filters=filters,
-                                      agent_memory_config=agent_memory_config)
+        histories = memory.get_last_n(
+            agent_memory_config.history_rounds,
+            filters=filters,
+            agent_memory_config=agent_memory_config,
+        )
         if histories:
             tool_calls_map = {}
             last_tool_calls = []
@@ -1052,14 +1266,18 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             def _is_tool_history(history) -> bool:
                 if isinstance(history, MemoryMessage):
                     return isinstance(history, MemoryToolMessage)
-                return history.metadata.get('role') == 'tool'
+                return history.metadata.get("role") == "tool"
 
             def _drop_incomplete_tool_call_turn(reason: str):
                 nonlocal tool_calls_map, last_tool_calls
                 if not last_tool_calls:
                     return
                 dropped_message = None
-                if messages and messages[-1].get("role") == "assistant" and messages[-1].get("tool_calls"):
+                if (
+                    messages
+                    and messages[-1].get("role") == "assistant"
+                    and messages[-1].get("tool_calls")
+                ):
                     dropped_message = messages.pop()
                 logger.warning(
                     "Skip incomplete tool-call turn in memory replay: "
@@ -1074,7 +1292,9 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                 nonlocal tool_calls_map, last_tool_calls
                 for tool_call_id in last_tool_calls:
                     if tool_call_id not in tool_calls_map:
-                        _drop_incomplete_tool_call_turn(f"missing tool result for {tool_call_id}")
+                        _drop_incomplete_tool_call_turn(
+                            f"missing tool result for {tool_call_id}"
+                        )
                         return
                     messages.append(tool_calls_map.get(tool_call_id))
                     matched_tool_call_ids.add(tool_call_id)
@@ -1082,7 +1302,9 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                 last_tool_calls = []
 
             for history in histories:
-                if len(last_tool_calls) > 0 and len(tool_calls_map) == len(last_tool_calls):
+                if len(last_tool_calls) > 0 and len(tool_calls_map) == len(
+                    last_tool_calls
+                ):
                     # Maintain the order of tool calls
                     _append_complete_tool_results()
                 elif last_tool_calls and not _is_tool_history(history):
@@ -1091,7 +1313,9 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                 if isinstance(history, MemoryMessage):
                     if isinstance(history, MemoryToolMessage):
                         if last_tool_calls and history.tool_call_id in last_tool_calls:
-                            tool_calls_map[history.tool_call_id] = history.to_openai_message()
+                            tool_calls_map[history.tool_call_id] = (
+                                history.to_openai_message()
+                            )
                         elif history.tool_call_id in matched_tool_call_ids:
                             logger.warning(
                                 f"Skip duplicate tool result in memory replay: "
@@ -1105,14 +1329,19 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                     else:
                         messages.append(history.to_openai_message())
                         if isinstance(history, MemoryAIMessage) and history.tool_calls:
-                            last_tool_calls.extend([tool_call.id for tool_call in history.tool_calls])
+                            last_tool_calls.extend(
+                                [tool_call.id for tool_call in history.tool_calls]
+                            )
                 else:
-                    role = history.metadata['role']
-                    if role == 'tool':
+                    role = history.metadata["role"]
+                    if role == "tool":
                         tool_call_id = history.metadata.get("tool_call_id")
                         if last_tool_calls and tool_call_id in last_tool_calls:
-                            msg = {'role': history.metadata['role'], 'content': history.content,
-                                   'tool_call_id': tool_call_id}
+                            msg = {
+                                "role": history.metadata["role"],
+                                "content": history.content,
+                                "tool_call_id": tool_call_id,
+                            }
                             tool_calls_map[tool_call_id] = msg
                         elif tool_call_id in matched_tool_call_ids:
                             logger.warning(
@@ -1125,15 +1354,35 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                                 f"tool_call_id={tool_call_id}, agent={self.id()}"
                             )
                     else:
-                        if not self.use_tools_in_prompt and history.metadata.get('tool_calls'):
-                            messages.append({'role': history.metadata['role'], 'content': history.content,
-                                             'tool_calls': [history.metadata['tool_calls']]})
+                        if not self.use_tools_in_prompt and history.metadata.get(
+                            "tool_calls"
+                        ):
+                            messages.append(
+                                {
+                                    "role": history.metadata["role"],
+                                    "content": history.content,
+                                    "tool_calls": [history.metadata["tool_calls"]],
+                                }
+                            )
                             last_tool_calls.extend(
-                                [tool_call.get('id') for tool_call in history.metadata['tool_calls']])
+                                [
+                                    tool_call.get("id")
+                                    for tool_call in history.metadata["tool_calls"]
+                                ]
+                            )
                         else:
-                            messages.append({'role': history.metadata['role'], 'content': history.content,
-                                             "tool_call_id": history.metadata.get("tool_call_id")})
-                if len(last_tool_calls) > 0 and len(tool_calls_map) == len(last_tool_calls):
+                            messages.append(
+                                {
+                                    "role": history.metadata["role"],
+                                    "content": history.content,
+                                    "tool_call_id": history.metadata.get(
+                                        "tool_call_id"
+                                    ),
+                                }
+                            )
+                if len(last_tool_calls) > 0 and len(tool_calls_map) == len(
+                    last_tool_calls
+                ):
                     # Maintain the order of tool calls
                     _append_complete_tool_results()
                 elif len(tool_calls_map) > len(last_tool_calls):
@@ -1146,8 +1395,12 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         return self._prepend_task_input_messages(messages, message.context)
 
     @staticmethod
-    def _prepend_task_input_messages(messages: List[Dict[str, Any]], context: Context = None) -> List[Dict[str, Any]]:
-        task_input = getattr(context, "task_input_object", None) if context is not None else None
+    def _prepend_task_input_messages(
+        messages: List[Dict[str, Any]], context: Context = None
+    ) -> List[Dict[str, Any]]:
+        task_input = (
+            getattr(context, "task_input_object", None) if context is not None else None
+        )
         task_messages = getattr(task_input, "messages", None) or []
         restored_messages = []
         for item in task_messages:
@@ -1173,26 +1426,44 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         # default use origin observation
         return observation
 
-    def _log_messages(self, messages: List[Dict[str, Any]], context: Context, **kwargs) -> None:
-        PromptLogger.log_agent_call_llm_messages(self, messages=messages, context=context, **kwargs)
+    def _log_messages(
+        self, messages: List[Dict[str, Any]], context: Context, **kwargs
+    ) -> None:
+        PromptLogger.log_agent_call_llm_messages(
+            self, messages=messages, context=context, **kwargs
+        )
 
-    def _agent_result(self, actions: List[ActionModel], caller: str, input_message: Message):
+    def _agent_result(
+        self, actions: List[ActionModel], caller: str, input_message: Message
+    ):
         if not actions:
-            return Message(payload=[ActionModel(agent_name=self.id(),
-                                                policy_info=f'{self.id()} no action decision has been made.')],
-                           caller=caller,
-                           sender=self.id(),
-                           category=self.event_handler_name,
-                           session_id=input_message.context.session_id if input_message.context else "",
-                           headers=self._update_headers(input_message))
+            return Message(
+                payload=[
+                    ActionModel(
+                        agent_name=self.id(),
+                        policy_info=f"{self.id()} no action decision has been made.",
+                    )
+                ],
+                caller=caller,
+                sender=self.id(),
+                category=self.event_handler_name,
+                session_id=input_message.context.session_id
+                if input_message.context
+                else "",
+                headers=self._update_headers(input_message),
+            )
         if self.event_handler_name:
-            return Message(payload=actions,
-                           caller=caller,
-                           sender=self.id(),
-                           receiver=actions[0].tool_name,
-                           category=self.event_handler_name,
-                           session_id=input_message.context.session_id if input_message.context else "",
-                           headers=self._update_headers(input_message))
+            return Message(
+                payload=actions,
+                caller=caller,
+                sender=self.id(),
+                receiver=actions[0].tool_name,
+                category=self.event_handler_name,
+                session_id=input_message.context.session_id
+                if input_message.context
+                else "",
+                headers=self._update_headers(input_message),
+            )
 
         tools = OrderedDict()
         agents = []
@@ -1206,67 +1477,101 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
 
         _group_name = None
         # agents and tools exist simultaneously, more than one agent/tool name
-        if (agents and tools) or len(agents) > 1 or len(tools) > 1 or (len(agents) == 1 and agents[0].tool_name):
+        if (
+            (agents and tools)
+            or len(agents) > 1
+            or len(tools) > 1
+            or (len(agents) == 1 and agents[0].tool_name)
+        ):
             _group_name = f"{self.id()}_{uuid.uuid1().hex}"
 
         # complex processing
         if _group_name:
-            return GroupMessage(payload=actions,
-                                caller=caller,
-                                sender=self.id(),
-                                receiver=actions[0].tool_name,
-                                session_id=input_message.context.session_id if input_message.context else "",
-                                group_id=_group_name,
-                                topic=TopicType.GROUP_ACTIONS,
-                                headers=self._update_headers(input_message))
+            return GroupMessage(
+                payload=actions,
+                caller=caller,
+                sender=self.id(),
+                receiver=actions[0].tool_name,
+                session_id=input_message.context.session_id
+                if input_message.context
+                else "",
+                group_id=_group_name,
+                topic=TopicType.GROUP_ACTIONS,
+                headers=self._update_headers(input_message),
+            )
         elif agents:
             payload = actions
             receiver = actions[0].tool_name
-            if self.wait_tool_result and any(action.params.get('is_tool_result', False) for action in actions):
-                content = ''
-                content += '\n\n'.join(action.policy_info for action in actions)
-                action_result = [ActionResult(content=action.policy_info) for action in actions]
+            if self.wait_tool_result and any(
+                action.params.get("is_tool_result", False) for action in actions
+            ):
+                content = ""
+                content += "\n\n".join(action.policy_info for action in actions)
+                action_result = [
+                    ActionResult(content=action.policy_info) for action in actions
+                ]
                 payload = Observation(content=content, action_result=action_result)
                 if self.feedback_tool_result:
                     # wait tool result and need feedback tool result, will be back to the agent
                     receiver = self.id()
 
-            return AgentMessage(payload=payload,
-                                caller=caller,
-                                sender=self.id(),
-                                receiver=receiver,
-                                session_id=input_message.context.session_id if input_message.context else "",
-                                headers=self._update_headers(input_message))
+            return AgentMessage(
+                payload=payload,
+                caller=caller,
+                sender=self.id(),
+                receiver=receiver,
+                session_id=input_message.context.session_id
+                if input_message.context
+                else "",
+                headers=self._update_headers(input_message),
+            )
 
         else:
-            return ToolMessage(payload=actions,
-                               caller=caller,
-                               sender=self.id(),
-                               receiver=actions[0].tool_name,
-                               session_id=input_message.context.session_id if input_message.context else "",
-                               headers=self._update_headers(input_message))
+            return ToolMessage(
+                payload=actions,
+                caller=caller,
+                sender=self.id(),
+                receiver=actions[0].tool_name,
+                session_id=input_message.context.session_id
+                if input_message.context
+                else "",
+                headers=self._update_headers(input_message),
+            )
 
-    def post_run(self, policy_result: List[ActionModel], policy_input: Observation, message: Message = None) -> Message:
+    def post_run(
+        self,
+        policy_result: List[ActionModel],
+        policy_input: Observation,
+        message: Message = None,
+    ) -> Message:
         return self._agent_result(
             policy_result,
-            policy_input.from_agent_name if policy_input.from_agent_name else policy_input.observer,
-            message
+            policy_input.from_agent_name
+            if policy_input.from_agent_name
+            else policy_input.observer,
+            message,
         )
 
-    async def async_post_run(self, policy_result: List[ActionModel], policy_input: Observation,
-                             message: Message = None) -> Message:
-
+    async def async_post_run(
+        self,
+        policy_result: List[ActionModel],
+        policy_input: Observation,
+        message: Message = None,
+    ) -> Message:
         # Check for pending messages in memory store
         memory = MemoryFactory.instance()
         filters = self._build_memory_filters(message.context)
-        filters['memory_type'] = 'pending'
+        filters["memory_type"] = "pending"
         pending_items = memory.memory_store.get_all(filters)
         if pending_items:
-            logger.info(f"🧠 [Agent:{self.id()}] Found {len(pending_items)} pending memory items, "
-                        f"holding task execution. Pending content: {pending_items[0]}...")
+            logger.info(
+                f"🧠 [Agent:{self.id()}] Found {len(pending_items)} pending memory items, "
+                f"holding task execution. Pending content: {pending_items[0]}..."
+            )
             self._finished = False
         if self._finished:
             from aworld.core.context.amni import AmniContext
+
             duration = None
             if isinstance(message.context, AmniContext):
                 agent_start_times = message.context.get("agent_start_times") or {}
@@ -1275,16 +1580,27 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                     if isinstance(start_time, (int, float)):
                         duration = round(time.time() - start_time, 2)
             if duration is None:
-                duration = round(time.time() - getattr(message.context, "_start", time.time()), 2)
-            digest_logger.info(f"agent_run|{self.id()}|{getattr(message.context, 'user', 'default')}|{message.context.session_id}|{message.context.task_id}|{duration}|success")
+                duration = round(
+                    time.time() - getattr(message.context, "_start", time.time()), 2
+                )
+            digest_logger.info(
+                f"agent_run|{self.id()}|{getattr(message.context, 'user', 'default')}|{message.context.session_id}|{message.context.task_id}|{duration}|success"
+            )
         return self._agent_result(
             policy_result,
-            policy_input.from_agent_name if policy_input.from_agent_name else policy_input.observer,
-            message
+            policy_input.from_agent_name
+            if policy_input.from_agent_name
+            else policy_input.observer,
+            message,
         )
 
-    def policy(self, observation: Observation, info: Dict[str, Any] = {}, message: Message = None, **kwargs) -> List[
-        ActionModel]:
+    def policy(
+        self,
+        observation: Observation,
+        info: Dict[str, Any] = {},
+        message: Message = None,
+        **kwargs,
+    ) -> List[ActionModel]:
         """The strategy of an agent can be to decide which tools to use in the environment, or to delegate tasks to other agents.
 
         Args:
@@ -1303,7 +1619,9 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         try:
             return await context.get_task_status()
         except Exception as exc:
-            logger.debug(f"Failed to inspect task status for interruption handling: {exc}")
+            logger.debug(
+                f"Failed to inspect task status for interruption handling: {exc}"
+            )
             return None
 
     async def _raise_if_task_interrupted(
@@ -1323,7 +1641,9 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         task_status = await self._current_task_status(context)
         if task_status in {TaskStatusValue.INTERRUPTED, TaskStatusValue.CANCELLED}:
             cancel_reason = f"{reason} ({task_status})"
-            logger.info(f"{self.id()} treating LLM flow as task interruption: {cancel_reason}")
+            logger.info(
+                f"{self.id()} treating LLM flow as task interruption: {cancel_reason}"
+            )
             if source_exception is None:
                 raise asyncio.CancelledError(cancel_reason)
             raise asyncio.CancelledError(cancel_reason) from source_exception
@@ -1349,9 +1669,7 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
 
         progress = semantic_progress_for_agent(context, agent_id=self.id())
         prompt_tokens = int(estimate_canonical_json_tokens(messages).value or 0)
-        input_budget = int(
-            getattr(self.llm, "_context_input_budget", 0) or 0
-        )
+        input_budget = int(getattr(self.llm, "_context_input_budget", 0) or 0)
         state_key = f"adaptive_context_state:{self.id()}"
         adaptive_state = context.context_info.get(state_key)
         if not isinstance(adaptive_state, dict):
@@ -1365,9 +1683,7 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             low_information_gain_count=int(
                 progress.get("low_information_gain_count", 0) or 0
             ),
-            no_goal_progress_count=int(
-                progress.get("no_goal_progress_count", 0) or 0
-            ),
+            no_goal_progress_count=int(progress.get("no_goal_progress_count", 0) or 0),
             turn_epoch=context.context_lifecycle_state.turn_epoch,
             last_checkpoint_turn=adaptive_state.get("last_checkpoint_turn"),
             policy=adaptive_policy,
@@ -1381,9 +1697,7 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                     estimate_canonical_json_tokens(compacted).value or 0
                 )
                 adaptive_state["last_prompt_tokens"] = prompt_tokens
-                adaptive_state["last_effective_prompt_tokens"] = (
-                    effective_prompt_tokens
-                )
+                adaptive_state["last_effective_prompt_tokens"] = effective_prompt_tokens
                 adaptive_state["last_estimated_saved_prompt_tokens"] = max(
                     0, prompt_tokens - effective_prompt_tokens
                 )
@@ -1453,8 +1767,13 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         )
         return compacted
 
-    async def async_policy(self, observation: Observation, info: Dict[str, Any] = {}, message: Message = None,
-                           **kwargs) -> List[ActionModel]:
+    async def async_policy(
+        self,
+        observation: Observation,
+        info: Dict[str, Any] = {},
+        message: Message = None,
+        **kwargs,
+    ) -> List[ActionModel]:
         """The strategy of an agent can be to decide which tools to use in the environment, or to delegate tasks to other agents.
 
         Args:
@@ -1490,18 +1809,18 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                     if callable(tool_output_policy_factory)
                     else None
                 ),
-                artifact_offload=getattr(
-                    self.llm, "_context_artifact_offload", True
-                ),
+                artifact_offload=getattr(self.llm, "_context_artifact_offload", True),
             )
 
         # Get current step information for trace recording
         source_span = trace.get_current_span()
         self._finished = False
-        if hasattr(observation, 'context') and observation.context:
+        if hasattr(observation, "context") and observation.context:
             self.task_histories = observation.context
 
-        raw_messages = await self.build_llm_input(observation, info, message=message, **kwargs)
+        raw_messages = await self.build_llm_input(
+            observation, info, message=message, **kwargs
+        )
         raw_messages = await self._apply_adaptive_context_policy(
             context=message.context,
             messages=raw_messages,
@@ -1524,8 +1843,7 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         )
         progressive_skill_proposal = None
         progressive_sticky = (
-            getattr(self.llm, "_context_task_catalog_policy", "sticky")
-            == "sticky"
+            getattr(self.llm, "_context_task_catalog_policy", "sticky") == "sticky"
         )
         if (
             getattr(self.llm, "_context_progressive_skills", True)
@@ -1542,9 +1860,7 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                     "agent_id": self.id(),
                     "skill_configs": self.skill_configs or {},
                     "available_tool_ids": available_tool_ids,
-                    "tool_identity_mapping": (
-                        getattr(self, "tool_mapping", {}) or {}
-                    ),
+                    "tool_identity_mapping": (getattr(self, "tool_mapping", {}) or {}),
                     "require_resolved_tools": (
                         explicit_progressive_catalog
                         and context_compiler_mode == "enforce"
@@ -1608,7 +1924,9 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
 
                 entries = []
                 for index, schema in enumerate(tools):
-                    function = schema.get("function", {}) if isinstance(schema, dict) else {}
+                    function = (
+                        schema.get("function", {}) if isinstance(schema, dict) else {}
+                    )
                     tool_id = (
                         function.get("name") if isinstance(function, dict) else None
                     ) or (schema.get("name") if isinstance(schema, dict) else None)
@@ -1624,10 +1942,7 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                             ),
                         )
                     )
-                if (
-                    explicit_progressive_catalog
-                    and context_compiler_mode == "enforce"
-                ):
+                if explicit_progressive_catalog and context_compiler_mode == "enforce":
                     skill_requested_tools = (
                         message.context.preview_task_skill_tool_requests(
                             self.id(),
@@ -1656,9 +1971,7 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                             ),
                         )
                         skill_requested_tools = tuple(
-                            dict.fromkeys(
-                                (*skill_requested_tools, *unmanaged_tools)
-                            )
+                            dict.fromkeys((*skill_requested_tools, *unmanaged_tools))
                         )
                     candidate_catalog = compile_minimal_tool_catalog(
                         entries,
@@ -1682,23 +1995,21 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                                 self.llm,
                                 "_context_task_catalog_policy",
                                 "sticky",
-                            ) == "sticky"
+                            )
+                            == "sticky"
                         )
                         else CatalogChangeAction.ACCEPT_CURRENT_EPOCH
                     ),
                 )
                 if (
-                    explicit_progressive_catalog
-                    and context_compiler_mode == "enforce"
+                    explicit_progressive_catalog and context_compiler_mode == "enforce"
                 ) or (
-                    transition.snapshot.catalog_hash
-                    != candidate_catalog.catalog_hash
+                    transition.snapshot.catalog_hash != candidate_catalog.catalog_hash
                 ):
                     from aworld.core.context.compiler import thaw_json
 
                     tools = [
-                        thaw_json(entry.schema)
-                        for entry in transition.snapshot.entries
+                        thaw_json(entry.schema) for entry in transition.snapshot.entries
                     ]
                 if progressive_skill_proposal is not None:
                     from aworld.skills.progressive_context import (
@@ -1722,11 +2033,13 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                     "Task Tool Catalog tracking failed; "
                     f"error_type={type(exc).__name__}"
                 )
-        prompt_assembly_plan, messages, prompt_assembly_observability = self._build_prompt_assembly_state(
-            context=message.context,
-            messages=raw_messages,
-            tools=tools,
-            request_kwargs=kwargs,
+        prompt_assembly_plan, messages, prompt_assembly_observability = (
+            self._build_prompt_assembly_state(
+                context=message.context,
+                messages=raw_messages,
+                tools=tools,
+                request_kwargs=kwargs,
+            )
         )
 
         serializable_messages = to_serializable(messages)
@@ -1735,7 +2048,9 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         agent_result = None
         validation_feedback = None
         if source_span:
-            source_span.set_attribute("messages", json.dumps(serializable_messages, ensure_ascii=False))
+            source_span.set_attribute(
+                "messages", json.dumps(serializable_messages, ensure_ascii=False)
+            )
         mark_post_tool_progress_llm_started(message.context, agent_id=self.id())
         # Record LLM call start time (used to set MemoryMessage's start_time)
         llm_call_start_time = datetime.now().isoformat()
@@ -1756,22 +2071,30 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
 
         try:
             events = []
-            async for event in run_hooks(message.context, HookPoint.PRE_LLM_CALL, hook_from=self.id(),
-                                         payload=observation):
+            async for event in run_hooks(
+                message.context,
+                HookPoint.PRE_LLM_CALL,
+                hook_from=self.id(),
+                payload=observation,
+            ):
                 events.append(event)
         except Exception as e:
-            logger.error(f"{self.id()} failed to run PRE_LLM_CALL hooks: {e}, traceback is {traceback.format_exc()}")
+            logger.error(
+                f"{self.id()} failed to run PRE_LLM_CALL hooks: {e}, traceback is {traceback.format_exc()}"
+            )
 
         try:
             response_parse_args = {
                 "use_tools_in_prompt": self.use_tools_in_prompt,
-                "agent_id": self.id()
+                "agent_id": self.id(),
             }
             kwargs["response_parse_args"] = response_parse_args
             kwargs["prepared_tools"] = tools
             if context_compiler_mode != "off":
                 try:
-                    from aworld.agents.final_context_adapter import adapt_agent_final_request
+                    from aworld.agents.final_context_adapter import (
+                        adapt_agent_final_request,
+                    )
                     from aworld.core.context.compiler import ContextObservationSidecar
 
                     source_identity = (
@@ -1808,7 +2131,10 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                         "Agent final Context publication failed; "
                         f"error_type={type(exc).__name__}"
                     )
-            provider_name = prompt_assembly_observability.get("provider_name") or self._current_provider_name()
+            provider_name = (
+                prompt_assembly_observability.get("provider_name")
+                or self._current_provider_name()
+            )
             configured_provider = getattr(
                 getattr(self.conf, "llm_config", None), "llm_provider", None
             ) or getattr(self.conf, "llm_provider", None)
@@ -1849,9 +2175,7 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             logger.warn(f"{self.id()} result error: {e}")
             raise AWorldRuntimeException(str(e)) from e
         finally:
-            self._safe_record_llm_call_response(
-                message, llm_call_id, llm_response
-            )
+            self._safe_record_llm_call_response(message, llm_call_id, llm_response)
             if not invoke_completed:
                 raise
             if llm_response:
@@ -1864,50 +2188,72 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                                 data=f"llm result error: {llm_response.error}"
                             ),
                             sender=self.id(),
-                            session_id=message.context.session_id if message.context else "",
-                            headers={"context": message.context}
+                            session_id=message.context.session_id
+                            if message.context
+                            else "",
+                            headers={"context": message.context},
                         )
                         await send_message(output_message)
                 else:
-                    if self.output_converter and isinstance(self.output_converter, Callable):
+                    if self.output_converter and isinstance(
+                        self.output_converter, Callable
+                    ):
                         if asyncio.iscoroutinefunction(self.output_converter):
-                            agent_result = await self.output_converter(llm_response,
-                                                                       agent_id=self.id(),
-                                                                       use_tools_in_prompt=self.use_tools_in_prompt)
+                            agent_result = await self.output_converter(
+                                llm_response,
+                                agent_id=self.id(),
+                                use_tools_in_prompt=self.use_tools_in_prompt,
+                            )
                         else:
-                            agent_result = self.output_converter(llm_response,
-                                                                 agent_id=self.id(),
-                                                                 use_tools_in_prompt=self.use_tools_in_prompt)
+                            agent_result = self.output_converter(
+                                llm_response,
+                                agent_id=self.id(),
+                                use_tools_in_prompt=self.use_tools_in_prompt,
+                            )
                     else:
-                        agent_result = await self.output_converter.parse(llm_response,
-                                                                         agent_id=self.id(),
-                                                                         agent=self,
-                                                                         use_tools_in_prompt=self.use_tools_in_prompt)
+                        agent_result = await self.output_converter.parse(
+                            llm_response,
+                            agent_id=self.id(),
+                            agent=self,
+                            use_tools_in_prompt=self.use_tools_in_prompt,
+                        )
                     candidate_finished = not agent_result.is_call_tool
                     if candidate_finished:
-                        validation_feedback = await self._completion_feedback_if_unsatisfied(
-                            context=message.context,
-                            final_response_text=llm_response.content or "",
+                        validation_feedback = (
+                            await self._completion_feedback_if_unsatisfied(
+                                context=message.context,
+                                final_response_text=llm_response.content or "",
+                            )
                         )
                     if candidate_finished and not validation_feedback:
-                        validation_feedback = self._build_result_validation_feedback_from_context(
-                            context=message.context,
-                            final_response_text=llm_response.content or "",
+                        validation_feedback = (
+                            self._build_result_validation_feedback_from_context(
+                                context=message.context,
+                                final_response_text=llm_response.content or "",
+                            )
                         )
                     # skip summary on final round
-                    await self._add_message_to_memory(payload=llm_response,
-                                                      message_type=MemoryType.AI,
-                                                      context=message.context,
-                                                      skip_summary=candidate_finished and not validation_feedback)
+                    await self._add_message_to_memory(
+                        payload=llm_response,
+                        message_type=MemoryType.AI,
+                        context=message.context,
+                        skip_summary=candidate_finished and not validation_feedback,
+                    )
 
                     try:
                         events = []
-                        async for event in run_hooks(message.context, HookPoint.POST_LLM_CALL, hook_from=self.id(),
-                                                     payload=llm_response, agent_message=message):
+                        async for event in run_hooks(
+                            message.context,
+                            HookPoint.POST_LLM_CALL,
+                            hook_from=self.id(),
+                            payload=llm_response,
+                            agent_message=message,
+                        ):
                             events.append(event)
                     except Exception as e:
                         logger.error(
-                            f"{self.id()} failed to run POST_LLM_CALL hooks: {e}, traceback is {traceback.format_exc()}")
+                            f"{self.id()} failed to run POST_LLM_CALL hooks: {e}, traceback is {traceback.format_exc()}"
+                        )
                         raise AWorldRuntimeException(str(e))
             else:
                 await self._raise_if_task_interrupted(
@@ -1933,7 +2279,9 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                 kwargs=kwargs,
             )
 
-        message.context.context_info.pop(self._result_validation_retry_key(self.id()), None)
+        message.context.context_info.pop(
+            self._result_validation_retry_key(self.id()), None
+        )
 
         if self.is_agent_finished(llm_response, agent_result):
             policy_result = agent_result.actions
@@ -1941,17 +2289,27 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             # Record all tool call start times (used to set MemoryMessage's start_time)
             for act in agent_result.actions:
                 tool_call_start_time = datetime.now().isoformat()
-                message.context.context_info[f"tool_call_start_time_{act.tool_call_id}"] = tool_call_start_time
+                message.context.context_info[
+                    f"tool_call_start_time_{act.tool_call_id}"
+                ] = tool_call_start_time
 
             if not self.wait_tool_result:
                 policy_result = agent_result.actions
             else:
-                policy_result = await self.execution_tools(agent_result.actions, message)
-        await self.send_agent_response_output(self, llm_response, message.context, kwargs.get("outputs"))
+                policy_result = await self.execution_tools(
+                    agent_result.actions, message
+                )
+        await self.send_agent_response_output(
+            self, llm_response, message.context, kwargs.get("outputs")
+        )
         return policy_result
 
     def _authoritative_request_from_context(self, context: Context) -> str:
-        return str(getattr(context, "origin_user_input", None) or getattr(context, "task_input", None) or "").strip()
+        return str(
+            getattr(context, "origin_user_input", None)
+            or getattr(context, "task_input", None)
+            or ""
+        ).strip()
 
     @staticmethod
     def _stringify_result_validation_content(content: Any) -> str:
@@ -1979,14 +2337,20 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         if isinstance(parsed, dict):
             message = parsed.get("message")
             if isinstance(message, str):
-                output_match = re.search(r"## Output\s*```(?:[^\n`]*)\n(.*?)\n```", message, re.DOTALL)
+                output_match = re.search(
+                    r"## Output\s*```(?:[^\n`]*)\n(.*?)\n```", message, re.DOTALL
+                )
                 if output_match:
                     return output_match.group(1).strip()
                 return message.strip()
             if "output" in parsed:
-                return self._stringify_result_validation_content(parsed.get("output")).strip()
+                return self._stringify_result_validation_content(
+                    parsed.get("output")
+                ).strip()
 
-        output_match = re.search(r"## Output\s*```(?:[^\n`]*)\n(.*?)\n```", text, re.DOTALL)
+        output_match = re.search(
+            r"## Output\s*```(?:[^\n`]*)\n(.*?)\n```", text, re.DOTALL
+        )
         if output_match:
             return output_match.group(1).strip()
         return text
@@ -1996,11 +2360,17 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         if not stripped:
             return "ignore"
 
-        if len(stripped) < 80 and "http://" not in stripped and "https://" not in stripped and "\n" not in stripped:
+        if (
+            len(stripped) < 80
+            and "http://" not in stripped
+            and "https://" not in stripped
+            and "\n" not in stripped
+        ):
             return "ignore"
 
         local_paths = [
-            path for path in extract_path_candidates(stripped, max_paths=8)
+            path
+            for path in extract_path_candidates(stripped, max_paths=8)
             if self._is_validation_local_path(path)
         ]
         preview_markers = (
@@ -2045,7 +2415,8 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             except Exception:
                 pass
         return [
-            path for path in extract_path_candidates(value, max_paths=24)
+            path
+            for path in extract_path_candidates(value, max_paths=24)
             if self._is_validation_local_path(path)
         ]
 
@@ -2058,8 +2429,20 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
     ) -> list[str]:
         task_start_time = getattr(context, "start_time", None)
         text_file_exts = {
-            ".md", ".txt", ".json", ".yaml", ".yml", ".html", ".xml", ".csv",
-            ".py", ".js", ".ts", ".tsx", ".jsx", ".sh",
+            ".md",
+            ".txt",
+            ".json",
+            ".yaml",
+            ".yml",
+            ".html",
+            ".xml",
+            ".csv",
+            ".py",
+            ".js",
+            ".ts",
+            ".tsx",
+            ".jsx",
+            ".sh",
         }
         previews: list[str] = []
         seen: set[str] = set()
@@ -2097,14 +2480,23 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
 
         return previews
 
-    def _collect_result_validation_evidence(self, context: Context, *, limit: int = 8) -> dict[str, str]:
+    def _collect_result_validation_evidence(
+        self, context: Context, *, limit: int = 8
+    ) -> dict[str, str]:
         try:
             memory = MemoryFactory.instance()
             agent_memory_config = context.get_agent_memory_config(self.id())
-            filters = self._build_memory_filters(context, additional_filters={"memory_type": "message"})
-            histories = memory.get_last_n(limit, filters=filters, agent_memory_config=agent_memory_config)
+            filters = self._build_memory_filters(
+                context, additional_filters={"memory_type": "message"}
+            )
+            histories = memory.get_last_n(
+                limit, filters=filters, agent_memory_config=agent_memory_config
+            )
         except Exception:
-            logger.debug("failed to collect result validation evidence: %s", traceback.format_exc())
+            logger.debug(
+                "failed to collect result validation evidence: %s",
+                traceback.format_exc(),
+            )
             return {"source": "", "artifact": ""}
 
         source_parts: list[str] = []
@@ -2119,21 +2511,35 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             if not isinstance(history, MemoryToolMessage):
                 continue
 
-            observation_text = self._extract_tool_observation_text(getattr(history, "content", None))
+            observation_text = self._extract_tool_observation_text(
+                getattr(history, "content", None)
+            )
             tool_call = tool_call_map.get(history.tool_call_id)
-            tool_name = str(getattr(getattr(tool_call, "function", None), "name", "") or "").lower()
+            tool_name = str(
+                getattr(getattr(tool_call, "function", None), "name", "") or ""
+            ).lower()
             if "spawn_subagent" in tool_name:
                 continue
-            evidence_kind = self._classify_result_validation_observation(observation_text)
+            evidence_kind = self._classify_result_validation_observation(
+                observation_text
+            )
             if evidence_kind == "source":
                 source_parts.append(observation_text)
             elif evidence_kind == "artifact":
                 artifact_parts.append(observation_text)
-                artifact_candidate_paths.extend(self._extract_validation_candidate_paths(getattr(history, "content", None)))
-                artifact_candidate_paths.extend(self._extract_validation_candidate_paths(tool_call))
+                artifact_candidate_paths.extend(
+                    self._extract_validation_candidate_paths(
+                        getattr(history, "content", None)
+                    )
+                )
+                artifact_candidate_paths.extend(
+                    self._extract_validation_candidate_paths(tool_call)
+                )
 
         artifact_parts.extend(
-            self._collect_validation_artifact_previews(context=context, candidate_paths=artifact_candidate_paths)
+            self._collect_validation_artifact_previews(
+                context=context, candidate_paths=artifact_candidate_paths
+            )
         )
 
         return {
@@ -2157,7 +2563,9 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         if not source_text:
             return None
 
-        missing_in_source = [anchor for anchor in anchors if not anchor_matches_text(anchor, source_text)]
+        missing_in_source = [
+            anchor for anchor in anchors if not anchor_matches_text(anchor, source_text)
+        ]
         if missing_in_source:
             logger.debug(
                 "result validation skipped soft missing anchors: %s",
@@ -2167,7 +2575,11 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
 
         artifact_text = (artifact_evidence_text or "").strip()
         if artifact_text:
-            missing_in_artifact = [anchor for anchor in anchors if not anchor_matches_text(anchor, artifact_text)]
+            missing_in_artifact = [
+                anchor
+                for anchor in anchors
+                if not anchor_matches_text(anchor, artifact_text)
+            ]
             if missing_in_artifact:
                 logger.debug(
                     "result validation skipped soft artifact missing anchors: %s",
@@ -2212,9 +2624,17 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         artifact_evidence_text: str = "",
     ) -> str:
         anchors = extract_required_anchors(authoritative_request)
-        anchor_lines = "\n".join(f"- {anchor}" for anchor in anchors[:6]) or "- (none extracted)"
-        source_excerpt = self._truncate_result_validation_text(source_evidence_text, limit=1600) or "(none)"
-        artifact_excerpt = self._truncate_result_validation_text(artifact_evidence_text, limit=1200) or "(none)"
+        anchor_lines = (
+            "\n".join(f"- {anchor}" for anchor in anchors[:6]) or "- (none extracted)"
+        )
+        source_excerpt = (
+            self._truncate_result_validation_text(source_evidence_text, limit=1600)
+            or "(none)"
+        )
+        artifact_excerpt = (
+            self._truncate_result_validation_text(artifact_evidence_text, limit=1200)
+            or "(none)"
+        )
         return (
             "Result validation detected a likely goal conflict. Treat this as unfinished.\n\n"
             f"Original request:\n{authoritative_request}\n\n"
@@ -2254,7 +2674,9 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         retry_key = self._result_validation_retry_key(self.id())
         retry_count = int(message.context.context_info.get(retry_key, 0) or 0)
         recovery_brief = validation_feedback
-        authoritative_request = self._authoritative_request_from_context(message.context)
+        authoritative_request = self._authoritative_request_from_context(
+            message.context
+        )
         if authoritative_request:
             evidence = self._collect_result_validation_evidence(message.context)
             recovery_brief = self._build_result_validation_recovery_brief(
@@ -2294,7 +2716,13 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         recursive_kwargs = {
             key: value
             for key, value in kwargs.items()
-            if key not in {"response_parse_args", "prepared_tools", "prompt_assembly_plan", "provider_native_prompt_cache"}
+            if key
+            not in {
+                "response_parse_args",
+                "prepared_tools",
+                "prompt_assembly_plan",
+                "provider_native_prompt_cache",
+            }
         }
         try:
             return await self.async_policy(
@@ -2326,7 +2754,9 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                 )
             ]
 
-    async def execution_tools(self, actions: List[ActionModel], message: Message = None, **kwargs) -> List[ActionModel]:
+    async def execution_tools(
+        self, actions: List[ActionModel], message: Message = None, **kwargs
+    ) -> List[ActionModel]:
         """Tool execution operations.
 
         Returns:
@@ -2340,48 +2770,70 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             context.agent_info.current_tool_call_id = act.tool_call_id
             if is_agent(act):
                 content = act.policy_info
-                if act.params and 'content' in act.params:
-                    content = act.params['content']
-                task_conf = TaskConfig(run_mode=message.context.get_task().conf.run_mode)
-                act_result = await exec_agent(question=content,
-                                              agent=AgentFactory.agent_instance(act.tool_name),
-                                              context=context,
-                                              sub_task=True,
-                                              outputs=message.context.outputs,
-                                              task_group_id=message.context.get_task().group_id or uuid.uuid4().hex,
-                                              task_conf=task_conf)
+                if act.params and "content" in act.params:
+                    content = act.params["content"]
+                task_conf = TaskConfig(
+                    run_mode=message.context.get_task().conf.run_mode
+                )
+                act_result = await exec_agent(
+                    question=content,
+                    agent=AgentFactory.agent_instance(act.tool_name),
+                    context=context,
+                    sub_task=True,
+                    outputs=message.context.outputs,
+                    task_group_id=message.context.get_task().group_id
+                    or uuid.uuid4().hex,
+                    task_conf=task_conf,
+                )
             else:
-                act_result = await exec_tool(tool_name=act.tool_name,
-                                             action_name=act.action_name,
-                                             params=act.params,
-                                             agent_name=self.id(),
-                                             context=context,
-                                             sub_task=True,
-                                             outputs=message.context.outputs,
-                                             task_group_id=message.context.get_task().group_id or uuid.uuid4().hex)
+                act_result = await exec_tool(
+                    tool_name=act.tool_name,
+                    action_name=act.action_name,
+                    params=act.params,
+                    agent_name=self.id(),
+                    context=context,
+                    sub_task=True,
+                    outputs=message.context.outputs,
+                    task_group_id=message.context.get_task().group_id
+                    or uuid.uuid4().hex,
+                )
 
             # tool hooks
             try:
                 events = []
-                async for event in run_hooks(context=message.context, hook_point=HookPoint.POST_TOOL_CALL,
-                                             hook_from=self.id(), payload=act_result):
+                async for event in run_hooks(
+                    context=message.context,
+                    hook_point=HookPoint.POST_TOOL_CALL,
+                    hook_from=self.id(),
+                    payload=act_result,
+                ):
                     events.append(event)
             except Exception:
                 logger.debug(traceback.format_exc())
 
             if not act_result or not act_result.success:
                 error_msg = act_result.msg if act_result else "Unknown error"
-                logger.warning(f"Agent {self.id()} _execute_tool failed with exception: {error_msg}",
-                               color=Color.red)
+                logger.warning(
+                    f"Agent {self.id()} _execute_tool failed with exception: {error_msg}",
+                    color=Color.red,
+                )
                 continue
-            act_res = ActionResult(tool_call_id=act.tool_call_id, tool_name=act.tool_name, content=act_result.answer)
+            act_res = ActionResult(
+                tool_call_id=act.tool_call_id,
+                tool_name=act.tool_name,
+                content=act_result.answer,
+            )
             tool_results.append(act_res)
-            await self._add_message_to_memory(payload=act_res, message_type=MemoryType.TOOL, context=message.context)
+            await self._add_message_to_memory(
+                payload=act_res, message_type=MemoryType.TOOL, context=message.context
+            )
         result = sync_exec(self.tools_aggregate_func, tool_results)
         await self._add_tool_result_token_ids_to_context(message.context)
         return result
 
-    async def _tools_aggregate_func(self, tool_results: List[ActionResult]) -> List[ActionModel]:
+    async def _tools_aggregate_func(
+        self, tool_results: List[ActionResult]
+    ) -> List[ActionModel]:
         """Aggregate tool results
         Args:
             tool_results: Tool results
@@ -2407,11 +2859,18 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                 content,
                 tool_name=result.tool_name,
                 action_name=result.action_name,
-                summary_content=(result.metadata or {}).get("tool_use_summary") if isinstance(result.metadata, dict) else None,
+                summary_content=(result.metadata or {}).get("tool_use_summary")
+                if isinstance(result.metadata, dict)
+                else None,
                 enabled=True,
                 preview_chars=2000,
-                force=bool(isinstance(result.metadata, dict) and result.metadata.get("offload") is True),
-                result_metadata=result.metadata if isinstance(result.metadata, dict) else None,
+                force=bool(
+                    isinstance(result.metadata, dict)
+                    and result.metadata.get("offload") is True
+                ),
+                result_metadata=result.metadata
+                if isinstance(result.metadata, dict)
+                else None,
             )
             return str(compaction.content if compaction.applied else content)
 
@@ -2438,11 +2897,13 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             "Cron did not return a confirmed next_run. Do not say the reminder time is confirmed."
         )
 
-    async def build_llm_input(self,
-                              observation: Observation,
-                              info: Dict[str, Any] = {},
-                              message: Message = None,
-                              **kwargs):
+    async def build_llm_input(
+        self,
+        observation: Observation,
+        info: Dict[str, Any] = {},
+        message: Message = None,
+        **kwargs,
+    ):
         """Build LLM input.
 
         Args:
@@ -2455,23 +2916,27 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         images = observation.images if self.conf.use_vision else None
         if self.conf.use_vision and not images and observation.image:
             images = [observation.image]
-        messages = await self.async_messages_transform(image_urls=images, observation=observation, message=message)
+        messages = await self.async_messages_transform(
+            image_urls=images, observation=observation, message=message
+        )
         # truncate and other process
         try:
-            messages = self._process_messages(messages=messages, context=message.context)
+            messages = self._process_messages(
+                messages=messages, context=message.context
+            )
         except Exception as e:
             logger.warning(f"Failed to process messages in messages_transform: {e}")
             logger.debug(f"Process messages error details: {traceback.format_exc()}")
         return messages
 
-    def _process_messages(self, messages: List[Dict[str, Any]],
-                          context: Context = None) -> Optional[List[Dict[str, Any]]]:
+    def _process_messages(
+        self, messages: List[Dict[str, Any]], context: Context = None
+    ) -> Optional[List[Dict[str, Any]]]:
         return messages
 
-    async def invoke_model(self,
-                           messages: List[Dict[str, str]] = [],
-                           message: Message = None,
-                           **kwargs) -> ModelResponse:
+    async def invoke_model(
+        self, messages: List[Dict[str, str]] = [], message: Message = None, **kwargs
+    ) -> ModelResponse:
         """Perform LLM call with retry mechanism.
 
         Args:
@@ -2496,8 +2961,11 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                 tools = None
             self._log_messages(messages, tools=tools, context=message.context)
 
-            stream_mode = kwargs.get("stream",
-                                     False) or self.conf.llm_config.llm_stream_call if self.conf.llm_config else False
+            stream_mode = (
+                kwargs.get("stream", False) or self.conf.llm_config.llm_stream_call
+                if self.conf.llm_config
+                else False
+            )
             float_temperature = float(self.conf.llm_config.llm_temperature)
 
             # Retry loop for LLM call
@@ -2508,25 +2976,32 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
 
             while attempt <= self.llm_max_attempts:
                 try:
-                    logger.info(f"🔄 Attempt {attempt}/{self.llm_max_attempts} for LLM call")
+                    logger.info(
+                        f"🔄 Attempt {attempt}/{self.llm_max_attempts} for LLM call"
+                    )
 
                     # Use non_stream_mode if stream_mode failed in previous attempt
                     current_stream_mode = stream_mode and not stream_failed_fallback
 
                     if stream_failed_fallback:
-                        logger.info(f"🔀 Using non-stream mode for attempt {attempt}/{self.llm_max_attempts} due to previous stream failure")
+                        logger.info(
+                            f"🔀 Using non-stream mode for attempt {attempt}/{self.llm_max_attempts} due to previous stream failure"
+                        )
 
                     if current_stream_mode:
                         # Pre-calc prompt tokens for display (API often does not return in stream chunks)
                         prompt_tokens_est = 0
                         try:
-                            breakdown = ModelUtils.calculate_token_breakdown(messages, self.model_name or "gpt-4o")
+                            breakdown = ModelUtils.calculate_token_breakdown(
+                                messages, self.model_name or "gpt-4o"
+                            )
                             prompt_tokens_est = breakdown.get("total", 0) or 0
                         except Exception:
                             pass
 
                         llm_response = ModelResponse(
-                            id="", model="", content="", tool_calls=[])
+                            id="", model="", content="", tool_calls=[]
+                        )
                         resp_stream = acall_llm_model_stream(
                             self.llm,
                             messages=messages,
@@ -2535,18 +3010,25 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                             tools=tools,
                             stream=True,
                             context=message.context,
-                            **kwargs
+                            **kwargs,
                         )
 
                         async for chunk in resp_stream:
-                            logger.info(f"llm_agent chunk [agent_name={self.name()}, agent_id={self.id()}]: {chunk}")
+                            logger.info(
+                                f"llm_agent chunk [agent_name={self.name()}, agent_id={self.id()}]: {chunk}"
+                            )
                             if chunk.content:
                                 llm_response.content += chunk.content
                             if chunk.tool_calls:
                                 for tc in chunk.tool_calls:
-                                    if tc.function.name == "unknown" and llm_response.tool_calls:
+                                    if (
+                                        tc.function.name == "unknown"
+                                        and llm_response.tool_calls
+                                    ):
                                         last = llm_response.tool_calls[-1]
-                                        last.function.arguments = (last.function.arguments or "") + (tc.function.arguments or "")
+                                        last.function.arguments = (
+                                            last.function.arguments or ""
+                                        ) + (tc.function.arguments or "")
                                     else:
                                         llm_response.tool_calls.append(tc)
                             if chunk.error:
@@ -2554,36 +3036,63 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                             llm_response.id = chunk.id
                             llm_response.model = chunk.model
                             llm_response.usage = nest_dict_counter(
-                                llm_response.usage, chunk.usage, ignore_zero=False)
+                                llm_response.usage, chunk.usage, ignore_zero=False
+                            )
                             llm_response.message.update(chunk.message)
                             if llm_response.tool_calls:
-                                llm_response.message["tool_calls"] = [tc.to_dict() for tc in llm_response.tool_calls]
+                                llm_response.message["tool_calls"] = [
+                                    tc.to_dict() for tc in llm_response.tool_calls
+                                ]
 
-                            await send_message(ChunkMessage(payload=chunk,
-                                                            source_type="llm",
-                                                            session_id=message.context.session_id,
-                                                            headers=message.headers))
+                            await send_message(
+                                ChunkMessage(
+                                    payload=chunk,
+                                    source_type="llm",
+                                    session_id=message.context.session_id,
+                                    headers=message.headers,
+                                )
+                            )
                             # Add chunk to task outputs for local executor to display (with token/tool_calls stats)
-                            task = message.context.get_task() if message.context else None
-                            if task and hasattr(task, "outputs") and hasattr(task.outputs, "add_output"):
+                            task = (
+                                message.context.get_task() if message.context else None
+                            )
+                            if (
+                                task
+                                and hasattr(task, "outputs")
+                                and hasattr(task.outputs, "add_output")
+                            ):
                                 from aworld.output.base import ChunkOutput
+
                                 u = llm_response.usage or {}
                                 out_tok = u.get("completion_tokens")
                                 out_estimated = False
                                 if out_tok is None or out_tok == 0:
-                                    out_tok = max(0, len(llm_response.content or "") // 4)
+                                    out_tok = max(
+                                        0, len(llm_response.content or "") // 4
+                                    )
                                     out_estimated = True
                                 inp_tok = u.get("prompt_tokens")
                                 inp_estimated = False
                                 if inp_tok is None or inp_tok == 0:
                                     inp_tok = prompt_tokens_est
                                     inp_estimated = True
-                                tc_count = len(llm_response.tool_calls) if llm_response.tool_calls else 0
+                                tc_count = (
+                                    len(llm_response.tool_calls)
+                                    if llm_response.tool_calls
+                                    else 0
+                                )
                                 tc_estimated = True  # streaming: count may be incomplete until stream ends
                                 tc_content_len = 0
                                 if llm_response.tool_calls:
                                     tc_content_len = sum(
-                                        len(getattr(getattr(tc, "function"), "arguments", None) or "")
+                                        len(
+                                            getattr(
+                                                getattr(tc, "function"),
+                                                "arguments",
+                                                None,
+                                            )
+                                            or ""
+                                        )
                                         for tc in llm_response.tool_calls
                                     )
                                 meta = {
@@ -2597,16 +3106,24 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                                     "tool_calls_content_estimated": True,  # char count, approx
                                     "agent_id": self.id(),
                                     "agent_name": self.name(),
-                                    "model_name": getattr(chunk, "model", None) or getattr(llm_response, "model", None) or self.model_name,
+                                    "model_name": getattr(chunk, "model", None)
+                                    or getattr(llm_response, "model", None)
+                                    or self.model_name,
                                 }
-                                await task.outputs.add_output(ChunkOutput(data=chunk, metadata=meta))
+                                await task.outputs.add_output(
+                                    ChunkOutput(data=chunk, metadata=meta)
+                                )
 
                     else:
                         # Remove stream-only kwargs to avoid leaking stale stream options into fallback calls.
                         non_stream_kwargs = {
-                            k: v for k, v in kwargs.items() if k not in {"stream", "stream_options"}
+                            k: v
+                            for k, v in kwargs.items()
+                            if k not in {"stream", "stream_options"}
                         }
-                        logger.info(f"🔀 Using non-stream mode (no timeout limit, relies on httpx client timeout)")
+                        logger.info(
+                            f"🔀 Using non-stream mode (no timeout limit, relies on httpx client timeout)"
+                        )
 
                         llm_response = await acall_llm_model(
                             self.llm,
@@ -2616,12 +3133,18 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                             tools=tools,
                             stream=False,  # Explicitly use non-stream mode
                             context=message.context,
-                            **non_stream_kwargs
+                            **non_stream_kwargs,
                         )
 
                     # Check if we got a valid response
-                    if llm_response and (llm_response.content or llm_response.tool_calls or llm_response.reasoning_content):
-                        logger.info(f"LLM Execute response: {json.dumps(llm_response.to_dict(), ensure_ascii=False, default=str)}")
+                    if llm_response and (
+                        llm_response.content
+                        or llm_response.tool_calls
+                        or llm_response.reasoning_content
+                    ):
+                        logger.info(
+                            f"LLM Execute response: {json.dumps(llm_response.to_dict(), ensure_ascii=False, default=str)}"
+                        )
                         if llm_response:
                             usage_process(llm_response.usage, message.context)
                         return llm_response
@@ -2631,8 +3154,12 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                             reason="LLM stream interrupted before any final response was assembled",
                         )
                         # Invalid response, treat as failure
-                        error_msg = f"LLM returned empty or invalid response: {llm_response}"
-                        logger.warning(f"⚠️[attempt {attempt}/{self.llm_max_attempts}] {error_msg}")
+                        error_msg = (
+                            f"LLM returned empty or invalid response: {llm_response}"
+                        )
+                        logger.warning(
+                            f"⚠️[attempt {attempt}/{self.llm_max_attempts}] {error_msg}"
+                        )
                         if attempt < self.llm_max_attempts:
                             attempt += 1
                             await asyncio.sleep(self.llm_retry_delay)
@@ -2647,42 +3174,58 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                         source_exception=e,
                     )
                     last_exception = e
-                    logger.warn(f"❌[attempt {attempt}/{self.llm_max_attempts}] LLM call failed : {str(e)}")
+                    logger.warn(
+                        f"❌[attempt {attempt}/{self.llm_max_attempts}] LLM call failed : {str(e)}"
+                    )
 
                     # Check if this is a context length error - don't retry for these
                     if "Please reduce the length of the messages" in str(e):
-                        await send_message(Message(
-                            category=Constants.OUTPUT,
-                            payload=Output(
-                                data=f"Failed to call llm model: {e}"
-                            ),
-                            sender=self.id(),
-                            session_id=message.context.session_id if message.context else "",
-                            headers={"context": message.context}
-                        ))
+                        await send_message(
+                            Message(
+                                category=Constants.OUTPUT,
+                                payload=Output(data=f"Failed to call llm model: {e}"),
+                                sender=self.id(),
+                                session_id=message.context.session_id
+                                if message.context
+                                else "",
+                                headers={"context": message.context},
+                            )
+                        )
                         # Meaning context too long, will return directly. You can develop a Processor to truncate or compress it.
-                        await send_message(Message(
-                            category=Constants.TASK,
-                            topic=TopicType.CANCEL,
-                            payload=TaskItem(data=messages, msg=str(e)),
-                            sender=self.id(),
-                            priority=-1,
-                            session_id=message.context.session_id if message.context else "",
-                            headers={"context": message.context}
-                        ))
-                        return ModelResponse(id=uuid.uuid4().hex, model=self.model_name, content=to_serializable(messages))
+                        await send_message(
+                            Message(
+                                category=Constants.TASK,
+                                topic=TopicType.CANCEL,
+                                payload=TaskItem(data=messages, msg=str(e)),
+                                sender=self.id(),
+                                priority=-1,
+                                session_id=message.context.session_id
+                                if message.context
+                                else "",
+                                headers={"context": message.context},
+                            )
+                        )
+                        return ModelResponse(
+                            id=uuid.uuid4().hex,
+                            model=self.model_name,
+                            content=to_serializable(messages),
+                        )
 
                     # If we haven't reached max attempts, try again
                     if attempt < self.llm_max_attempts:
                         # If stream_mode failed and we haven't tried non_stream_mode fallback yet, enable it
                         if stream_mode and not stream_failed_fallback:
                             stream_failed_fallback = True
-                            logger.warning(f"⚠️ Stream mode failed, switching to non-stream mode for retry (attempt {attempt + 1}/{self.llm_max_attempts})")
+                            logger.warning(
+                                f"⚠️ Stream mode failed, switching to non-stream mode for retry (attempt {attempt + 1}/{self.llm_max_attempts})"
+                            )
 
                         # Exponential backoff: retry_delay * (2 ^ (attempt - 1))
                         # attempt 1->2: 1.0s, attempt 2->3: 2.0s, attempt 3->4: 4.0s
                         backoff_delay = self.llm_retry_delay * (2 ** (attempt - 1))
-                        logger.info(f"⏳ Retrying in {backoff_delay}s (exponential backoff)...")
+                        logger.info(
+                            f"⏳ Retrying in {backoff_delay}s (exponential backoff)..."
+                        )
                         await asyncio.sleep(backoff_delay)
 
                         attempt += 1
@@ -2694,19 +3237,23 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                             tools=tools,
                             error=str(e),
                             attempt=attempt,
-                            context=message.context
+                            context=message.context,
                         )
 
                         # Send error message and raise
-                        await send_message(Message(
-                            category=Constants.OUTPUT,
-                            payload=Output(
-                                data=f"Failed to call llm model after {attempt} attempts: {e}"
-                            ),
-                            sender=self.id(),
-                            session_id=message.context.session_id if message.context else "",
-                            headers={"context": message.context}
-                        ))
+                        await send_message(
+                            Message(
+                                category=Constants.OUTPUT,
+                                payload=Output(
+                                    data=f"Failed to call llm model after {attempt} attempts: {e}"
+                                ),
+                                sender=self.id(),
+                                session_id=message.context.session_id
+                                if message.context
+                                else "",
+                                headers={"context": message.context},
+                            )
+                        )
                         failure_output_sent = True
                         raise e
 
@@ -2723,53 +3270,76 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             )
             logger.warn(f"Failed to call llm model: {e}")
             if not failure_output_sent:
-                await send_message(Message(
-                    category=Constants.OUTPUT,
-                    payload=Output(
-                        data=f"Failed to call llm model: {e}"
-                    ),
-                    sender=self.id(),
-                    session_id=message.context.session_id if message.context else "",
-                    headers={"context": message.context}
-                ))
+                await send_message(
+                    Message(
+                        category=Constants.OUTPUT,
+                        payload=Output(data=f"Failed to call llm model: {e}"),
+                        sender=self.id(),
+                        session_id=message.context.session_id
+                        if message.context
+                        else "",
+                        headers={"context": message.context},
+                    )
+                )
                 failure_output_sent = True
 
             if "Please reduce the length of the messages" in str(e):
                 # Meaning context too long, will return directly. You can develop a Processor to truncate or compress it.
-                await send_message(Message(
-                    category=Constants.TASK,
-                    topic=TopicType.CANCEL,
-                    payload=TaskItem(data=messages, msg=str(e)),
-                    sender=self.id(),
-                    priority=-1,
-                    session_id=message.context.session_id if message.context else "",
-                    headers={"context": message.context}
-                ))
-                return ModelResponse(id=uuid.uuid4().hex, model=self.model_name, content=to_serializable(messages))
+                await send_message(
+                    Message(
+                        category=Constants.TASK,
+                        topic=TopicType.CANCEL,
+                        payload=TaskItem(data=messages, msg=str(e)),
+                        sender=self.id(),
+                        priority=-1,
+                        session_id=message.context.session_id
+                        if message.context
+                        else "",
+                        headers={"context": message.context},
+                    )
+                )
+                return ModelResponse(
+                    id=uuid.uuid4().hex,
+                    model=self.model_name,
+                    content=to_serializable(messages),
+                )
             raise e
 
-    async def custom_system_prompt(self, context: Context, content: str, tool_list: List[str] = None):
+    async def custom_system_prompt(
+        self, context: Context, content: str, tool_list: List[str] = None
+    ):
         logger.info(f"llm_agent custom_system_prompt .. agent#{type(self)}#{self.id()}")
         from aworld.core.context.amni.prompt.prompt_ext import ContextPromptTemplate
         from aworld.core.context.amni import AmniContext
+
         if isinstance(context, AmniContext):
-            system_prompt_template = ContextPromptTemplate.from_template(self.system_prompt)
-            return await system_prompt_template.async_format(context=context, task=content, tool_list=tool_list,
-                                                             agent_id=self.id())
+            system_prompt_template = ContextPromptTemplate.from_template(
+                self.system_prompt
+            )
+            return await system_prompt_template.async_format(
+                context=context, task=content, tool_list=tool_list, agent_id=self.id()
+            )
         else:
-            system_prompt_template = StringPromptTemplate.from_template(self.system_prompt)
-            system_prompt = system_prompt_template.format(context=context, task=content, tool_list=tool_list)
+            system_prompt_template = StringPromptTemplate.from_template(
+                self.system_prompt
+            )
+            system_prompt = system_prompt_template.format(
+                context=context, task=content, tool_list=tool_list
+            )
             if self.ptc_tools:
                 from aworld.experimental.ptc.ptc_neuron import PTC_NEURON_PROMPT
+
                 system_prompt += PTC_NEURON_PROMPT
             return system_prompt
 
-    async def _save_failed_request_context(self,
-                                           messages: List[Dict[str, Any]],
-                                           tools: List[Dict[str, Any]],
-                                           error: str,
-                                           attempt: int,
-                                           context: Context) -> None:
+    async def _save_failed_request_context(
+        self,
+        messages: List[Dict[str, Any]],
+        tools: List[Dict[str, Any]],
+        error: str,
+        attempt: int,
+        context: Context,
+    ) -> None:
         """Save failed request context and tools to file for analysis.
 
         Args:
@@ -2822,7 +3392,7 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             }
 
             # Write to file
-            with open(filepath, 'w', encoding='utf-8') as f:
+            with open(filepath, "w", encoding="utf-8") as f:
                 json.dump(failed_data, f, ensure_ascii=False, indent=2, default=str)
 
             logger.warning(
@@ -2833,15 +3403,22 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             )
 
         except Exception as save_error:
-            logger.error(f"Failed to save failed request context: {save_error}\n{traceback.format_exc()}")
+            logger.error(
+                f"Failed to save failed request context: {save_error}\n{traceback.format_exc()}"
+            )
 
-    async def _add_message_to_memory(self, payload: Any, message_type: MemoryType, context: Context,
-                                     skip_summary: bool = False):
+    async def _add_message_to_memory(
+        self,
+        payload: Any,
+        message_type: MemoryType,
+        context: Context,
+        skip_summary: bool = False,
+    ):
         memory_msg = MemoryEventMessage(
             payload=payload,
             agent=self,
             memory_event_type=message_type,
-            headers={"context": context, "skip_summary": skip_summary}
+            headers={"context": context, "skip_summary": skip_summary},
         )
 
         # Send through message system (DIRECT mode handling is now in send_message_with_future)
@@ -2854,40 +3431,54 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             logger.warn(f"Memory write task failed: {traceback.format_exc()}")
 
     @staticmethod
-    async def send_agent_response_output(agent: BaseAgent, response: Any, context: Context, outputs: Outputs = None):
+    async def send_agent_response_output(
+        agent: BaseAgent, response: Any, context: Context, outputs: Outputs = None
+    ):
         model_name = getattr(response, "model", None) if response else None
         resp_output = MessageOutput(
             source=response,
-            metadata={"agent_id": agent.id(), "agent_name": agent.name(), "is_finished": agent._finished, "model_name": model_name}
+            metadata={
+                "agent_id": agent.id(),
+                "agent_name": agent.name(),
+                "is_finished": agent._finished,
+                "model_name": model_name,
+            },
         )
         if eventbus is not None:
-            await send_message(Message(
-                category=Constants.OUTPUT,
-                payload=resp_output,
-                sender=agent.id(),
-                session_id=context.session_id if context else "",
-                headers={"context": context}
-            ))
+            await send_message(
+                Message(
+                    category=Constants.OUTPUT,
+                    payload=resp_output,
+                    sender=agent.id(),
+                    session_id=context.session_id if context else "",
+                    headers={"context": context},
+                )
+            )
         elif outputs:
             await outputs.add_output(resp_output)
 
-    def is_agent_finished(self, llm_response: ModelResponse, agent_result: AgentResult) -> bool:
+    def is_agent_finished(
+        self, llm_response: ModelResponse, agent_result: AgentResult
+    ) -> bool:
         if not agent_result.is_call_tool:
             self._finished = True
         return self.finished
 
     async def _filter_tools(self, context: Context) -> List[Dict[str, Any]]:
         from aworld.core.context.amni import AmniContext
+
         if not isinstance(context, AmniContext) or not self.skill_configs:
-            logger.info(f"llm_agent don't need _filter_tools .. agent#{type(self)}#{self.id()}")
+            logger.info(
+                f"llm_agent don't need _filter_tools .. agent#{type(self)}#{self.id()}"
+            )
             return self.tools
         # get current active skills
         skills = await context.get_active_skills(namespace=self.id())
 
         forced_skill_names = self._requested_skill_names_from_context(context)
         if forced_skill_names and self._should_disable_tools_for_forced_skills(
-                forced_skill_names=forced_skill_names,
-                active_skills=skills,
+            forced_skill_names=forced_skill_names,
+            active_skills=skills,
         ):
             logger.info(
                 "Forced instruction-only skills active for agent %s; disabling runtime tool access",
@@ -2895,8 +3486,12 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             )
             return []
 
-        return await skill_translate_tools(skills=skills, skill_configs=self.skill_configs, tools=self.tools,
-                                           tool_mapping=self.tool_mapping)
+        return await skill_translate_tools(
+            skills=skills,
+            skill_configs=self.skill_configs,
+            tools=self.tools,
+            tool_mapping=self.tool_mapping,
+        )
 
     @staticmethod
     def _requested_skill_names_from_context(context: Context) -> List[str]:
@@ -2918,10 +3513,10 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         return not bool(skill_config.get("tool_list"))
 
     def _should_disable_tools_for_forced_skills(
-            self,
-            *,
-            forced_skill_names: List[str],
-            active_skills: List[str],
+        self,
+        *,
+        forced_skill_names: List[str],
+        active_skills: List[str],
     ) -> bool:
         if not forced_skill_names:
             return False
@@ -2940,13 +3535,17 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         if not forced_active_configs:
             return False
 
-        return all(self._is_instruction_only_skill(skill) for skill in forced_active_configs)
+        return all(
+            self._is_instruction_only_skill(skill) for skill in forced_active_configs
+        )
 
     async def _add_tool_result_token_ids_to_context(self, context: Context):
         """Add tool result token ids to context"""
         if context.get_task().conf.get("run_mode") != TaskRunMode.INTERACTIVE:
             return
-        filters = self._build_memory_filters(context, additional_filters={"memory_type": "message"})
+        filters = self._build_memory_filters(
+            context, additional_filters={"memory_type": "message"}
+        )
         memory = MemoryFactory.instance()
         histories = memory.get_all(filters=filters)
         tool_openai_messages_after_last_assistant = []
@@ -2954,18 +3553,28 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         tool_call_ids = []
         for i in range(len(histories) - 1, -1, -1):
             history = histories[i]
-            if hasattr(history, 'role') and history.role == 'assistant':
+            if hasattr(history, "role") and history.role == "assistant":
                 found_assistant = True
                 break
-            elif not found_assistant and hasattr(history, 'role') and history.role == 'tool':
-                tool_openai_messages_after_last_assistant.append(history.to_openai_message())
+            elif (
+                not found_assistant
+                and hasattr(history, "role")
+                and history.role == "tool"
+            ):
+                tool_openai_messages_after_last_assistant.append(
+                    history.to_openai_message()
+                )
                 tool_call_ids.append(history.tool_call_id)
 
         if tool_openai_messages_after_last_assistant:
-            tool_result_token_ids = apply_chat_template(self.llm, tool_openai_messages_after_last_assistant)
-            context.add_tool_resp_token_ids(tool_resp_token_ids=tool_result_token_ids,
-                                            resp_tool_call_ids=tool_call_ids,
-                                            agent_id=self.id())
+            tool_result_token_ids = apply_chat_template(
+                self.llm, tool_openai_messages_after_last_assistant
+            )
+            context.add_tool_resp_token_ids(
+                tool_resp_token_ids=tool_result_token_ids,
+                resp_tool_call_ids=tool_call_ids,
+                agent_id=self.id(),
+            )
 
     def to_dict(self):
         return {
@@ -2988,11 +3597,11 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             "tool_aggregate_func": self.tools_aggregate_func,
             "event_handler_name": self.event_handler_name,
             "event_driven": self.event_driven,
-            "skill_configs": self.skill_configs
+            "skill_configs": self.skill_configs,
         }
 
     @staticmethod
-    async def agent_to_dict(agent: 'LLMAgent', override: Dict[str, Any] = None):
+    async def agent_to_dict(agent: "LLMAgent", override: Dict[str, Any] = None):
         """Agent attribute dict."""
         attr_dict = agent.to_dict()
         if override:
@@ -3000,7 +3609,7 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         return attr_dict
 
     @staticmethod
-    def from_dict(attr_dict: Dict[str, Any]) -> 'Agent':
+    def from_dict(attr_dict: Dict[str, Any]) -> "Agent":
         return Agent(**attr_dict)
 
     async def process_by_ptc(self, tools, context: Context):
@@ -3010,7 +3619,9 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
 
         for tool in tools:
             if tool["function"]["name"] in ptc_tools:
-                tool["function"]["description"] = "[allow_code_execution]" + tool["function"]["description"]
+                tool["function"]["description"] = (
+                    "[allow_code_execution]" + tool["function"]["description"]
+                )
                 logger.debug(f"ptc augmented tool: {tool['function']['description']}")
 
 

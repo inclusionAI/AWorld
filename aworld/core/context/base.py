@@ -7,7 +7,16 @@ import uuid
 from collections import OrderedDict
 from dataclasses import dataclass, field, asdict
 from datetime import datetime
-from typing import Awaitable, Callable, Dict, Any, TYPE_CHECKING, List, Literal, Optional
+from typing import (
+    Awaitable,
+    Callable,
+    Dict,
+    Any,
+    TYPE_CHECKING,
+    List,
+    Literal,
+    Optional,
+)
 
 from aworld.checkpoint.inmemory import InMemoryCheckpointRepository
 from aworld.config import ConfigDict, AgentMemoryConfig
@@ -422,9 +431,10 @@ class Context:
 
     async def resolve_completion_evidence(self) -> None:
         """Execute the runtime-owned evidence resolver, when one is configured."""
-        if self._completion_contract is None or self._completion_evidence_resolver is None:
+        resolver = getattr(self, "_completion_evidence_resolver", None)
+        if self._completion_contract is None or resolver is None:
             return
-        await self._completion_evidence_resolver(self, self._completion_contract)
+        await resolver(self, self._completion_contract)
 
     def increment_completion_repair_attempt(self) -> int:
         self._completion_repair_attempt += 1
@@ -1512,6 +1522,9 @@ class Context:
         )
         new_context._completion_contract = self._completion_contract
         new_context._completion_mode = self._completion_mode
+        new_context._completion_evidence_resolver = getattr(
+            self, "_completion_evidence_resolver", None
+        )
         new_context._completion_artifact_evidence = list(
             self._completion_artifact_evidence
         )

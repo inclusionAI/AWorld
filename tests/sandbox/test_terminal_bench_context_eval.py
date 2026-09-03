@@ -90,9 +90,7 @@ async def test_benchmark_completion_contract_is_constructed_and_executes(monkeyp
         container = "task"
         container_workdir = "/workspace"
 
-        async def run_validation(
-            self, argv, *, cwd=None, timeout, env_names=()
-        ):
+        async def run_validation(self, argv, *, cwd=None, timeout, env_names=()):
             if tuple(argv[:2]) == ("test", "-f"):
                 assert cwd == "/"
             if tuple(argv) == ("test", "-f", "/verifier/test.sh"):
@@ -120,7 +118,9 @@ async def test_benchmark_completion_contract_is_constructed_and_executes(monkeyp
         {"context_compiler": {"completion_contract": "enforce"}},
     )
     assert configured["mode"] is CompletionMode.ENFORCE
-    assert configured["contract"].validation_commands[0].command_id == "packaged-verifier"
+    assert (
+        configured["contract"].validation_commands[0].command_id == "packaged-verifier"
+    )
     context = Context(task_id="completion")
     context.configure_completion_contract(
         configured["contract"],
@@ -144,9 +144,7 @@ async def test_benchmark_completion_timeout_becomes_failed_self_check():
         container = "task"
         container_workdir = "/workspace"
 
-        async def run_validation(
-            self, argv, *, cwd=None, timeout, env_names=()
-        ):
+        async def run_validation(self, argv, *, cwd=None, timeout, env_names=()):
             if tuple(argv) == ("test", "-f", "/verifier/test.sh"):
                 return subprocess.CompletedProcess(argv, 1, stdout="", stderr="")
             if tuple(argv) == ("test", "-f", "/tests/test.sh"):
@@ -177,6 +175,120 @@ async def test_benchmark_completion_timeout_becomes_failed_self_check():
     assessment = context.assess_completion_contract(agent_claimed_finished=True)
     assert assessment.status is CompletionStatus.REPAIR_REQUIRED
     assert assessment.reason_codes == ("self_check_failed",)
+
+
+@pytest.mark.asyncio
+async def test_completion_contract_uses_requested_python_function_verifier(monkeypatch):
+    runner = _load_example("docker_terminal_bench")
+    configured = {}
+    sidecar_calls = []
+
+    def fake_sidecar(**kwargs):
+        sidecar_calls.append(kwargs)
+        return subprocess.CompletedProcess(
+            ["docker", "run"], 0, stdout="ok", stderr=""
+        )
+
+    monkeypatch.setattr(runner, "run_python_function_verifier_sidecar", fake_sidecar)
+
+    class FakeSandbox:
+        docker_binary = "docker"
+        container = "task"
+        container_workdir = "/app"
+
+        async def run_validation(self, argv, *, cwd=None, timeout, env_names=()):
+            if tuple(argv[:2]) == ("test", "-f"):
+                return subprocess.CompletedProcess(
+                    argv,
+                    0 if argv[-1] == "/tests/test.sh" else 1,
+                    stdout="",
+                    stderr="",
+                )
+            raise AssertionError("python verifier must run in the sidecar")
+
+    class FakeAgent:
+        def configure_completion_contract(self, contract, *, mode, evidence_resolver):
+            configured.update(
+                contract=contract, mode=mode, evidence_resolver=evidence_resolver
+            )
+
+    await runner._configure_benchmark_completion_contract(
+        FakeAgent(),
+        FakeSandbox(),
+        {"context_compiler": {"completion_contract": "enforce"}},
+        verifier_mode="python-functions",
+    )
+    command = configured["contract"].validation_commands[0]
+    assert command.command_id == "python-functions-verifier"
+
+    context = Context(task_id="python-functions-completion")
+    context.configure_completion_contract(
+        configured["contract"],
+        mode=configured["mode"],
+        evidence_resolver=configured["evidence_resolver"],
+    )
+    context.record_completion_final_evidence("agent_final_response")
+    await context.resolve_completion_evidence()
+    assert sidecar_calls == [
+        {
+            "docker_binary": "docker",
+            "container": "task",
+            "test_path": "/tests/test_outputs.py",
+            "timeout": 900,
+            "env_names": (),
+            "scratch_root": None,
+        }
+    ]
+    assert (
+        context.assess_completion_contract(agent_claimed_finished=True).status
+        is CompletionStatus.SATISFIED
+    )
+
+
+def test_python_function_verifier_sidecar_uses_disposable_app_snapshot(
+    monkeypatch, tmp_path,
+):
+    runner = _load_example("docker_terminal_bench")
+    calls = []
+
+    def fake_run(command, **kwargs):
+        calls.append((command, kwargs))
+        return subprocess.CompletedProcess(command, 0, stdout="ok", stderr="")
+
+    monkeypatch.setattr(runner.subprocess, "run", fake_run)
+
+    result = runner.run_python_function_verifier_sidecar(
+        docker_binary="docker",
+        container="task",
+        test_path="/tests/test_outputs.py",
+        timeout=30,
+        env_names=("API_TOKEN",),
+        scratch_root=tmp_path,
+    )
+
+    assert result.returncode == 0
+    assert calls[0][0][:3] == ["docker", "cp", "task:/app/."]
+    assert calls[1][0][:3] == [
+        "docker",
+        "cp",
+        "task:/tests/test_outputs.py",
+    ]
+    sidecar = calls[2][0]
+    assert sidecar[:6] == [
+        "docker",
+        "run",
+        "--rm",
+        "--network",
+        "none",
+        "--read-only",
+    ]
+    assert ["--env", "API_TOKEN"] == sidecar[
+        sidecar.index("--env") : sidecar.index("--env") + 2
+    ]
+    assert any(value.endswith(":/app:rw") for value in sidecar)
+    assert any(value.endswith(":/tests/test_outputs.py:ro") for value in sidecar)
+    assert runner.PYTHON_FUNCTION_VERIFIER_IMAGE in sidecar
+    assert "/tests/test_outputs.py" in sidecar[-1]
 
 
 def test_legacy_observe_baseline_preserves_legacy_policy_and_adds_evidence_only():
@@ -364,6 +476,21 @@ def test_capture_reconciliation_preserves_live_retry_attempts_for_diagnostics():
     assert calls[0]["status"] == "success"
     assert continuity["snapshots_match"] is False
     assert continuity["reconciled_count"] == 2
+
+
+def test_identity_digest_ignores_only_multi_context_merge_order():
+    runner = _load_example("docker_terminal_bench")
+    first = {"request_id": "request-1", "status": "success"}
+    second = {"request_id": "request-2", "status": "success"}
+
+    assert runner._llm_calls_identity_digest(
+        [first, second]
+    ) == runner._llm_calls_identity_digest([second, first])
+
+    changed = {**second, "status": "failed"}
+    assert runner._llm_calls_identity_digest(
+        [first, second]
+    ) != runner._llm_calls_identity_digest([changed, first])
 
 
 def test_lifecycle_evidence_is_typed_hashed_and_privacy_safe():
@@ -1209,6 +1336,34 @@ def test_context_metrics_measure_real_provider_system_prefix_stability(tmp_path)
     assert metrics["provider_prefix_stable"] is True
 
 
+def test_capture_integrity_uses_reconciled_journal_not_task_response_projection(
+    tmp_path,
+):
+    harness = _load_example("terminal_bench_context_eval")
+    (tmp_path / "provider_calls.json").write_text(
+        json.dumps([{"request_id": "request-1"}]), encoding="utf-8"
+    )
+    (tmp_path / "raw_trajectory.json").write_text("[]", encoding="utf-8")
+    (tmp_path / "run_manifest.json").write_text(
+        json.dumps(
+            {
+                "capture": {
+                    "provider_capture_gate_passed": True,
+                    "llm_call_continuity": {
+                        "snapshots_match": False,
+                        "journal_reconciliation": {"snapshots_match": True},
+                    },
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    metrics = harness.collect_context_metrics(tmp_path)
+
+    assert metrics["capture_integrity_available"] is True
+
+
 def test_model_preflight_parser_prefers_typed_receipt():
     harness = _load_example("terminal_bench_context_eval")
     receipt = harness.parse_model_preflight(
@@ -1237,9 +1392,7 @@ def test_model_preflight_runner_persists_redacted_receipt_logs(tmp_path, monkeyp
             command, 0, stdout=json.dumps(payload), stderr="diagnostic"
         ),
     )
-    receipt = harness.run_model_preflight(
-        tmp_path, timeout_sec=12.0, model_seed=7
-    )
+    receipt = harness.run_model_preflight(tmp_path, timeout_sec=12.0, model_seed=7)
     assert receipt["status"] == "passed"
     assert receipt["process_exit_code"] == 0
     assert tmp_path.joinpath("model-preflight.stderr.log").read_text() == "diagnostic"
@@ -1348,6 +1501,42 @@ def test_final_capture_is_reconciled_with_journal_snapshot(tmp_path):
     assert not run_dir.joinpath("llm_calls.partial.json").exists()
 
 
+def test_final_capture_continuity_allows_only_branch_merge_reordering(tmp_path):
+    harness = _load_example("terminal_bench_context_eval")
+    from aworld.core.llm_call_journal import append_llm_call_snapshot
+
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    first = {
+        "request_id": "request-1",
+        "status": "success",
+        "provider_invoked": True,
+    }
+    second = {
+        "request_id": "request-2",
+        "status": "success",
+        "provider_invoked": True,
+    }
+    append_llm_call_snapshot(
+        context=Context(task_id="reordered-task"),
+        event_type="model_request_success",
+        llm_calls=[first, second],
+        path=run_dir / "llm_calls.journal.jsonl",
+    )
+    run_dir.joinpath("llm_calls.json").write_text(
+        json.dumps([second, first]), encoding="utf-8"
+    )
+    run_dir.joinpath("raw_trajectory.json").write_text("[]", encoding="utf-8")
+
+    evidence = harness.recover_inflight_capture(run_dir)
+
+    continuity = evidence["journal_final_continuity"]
+    assert continuity["comparison_basis"] == "stable_provider_identity"
+    assert continuity["sequence_match"] is False
+    assert continuity["snapshots_match"] is True
+    assert evidence["classification"] == "final_capture_available"
+
+
 def test_verifier_timeout_is_persisted_and_excluded_from_pairs(tmp_path, monkeypatch):
     harness = _load_example("terminal_bench_context_eval")
     root = tmp_path / "fixture"
@@ -1364,13 +1553,20 @@ def test_verifier_timeout_is_persisted_and_excluded_from_pairs(tmp_path, monkeyp
     def fake_run(command, **kwargs):
         if command[0] == sys.executable:
             return subprocess.CompletedProcess(command, 0, stdout="done", stderr="")
-        if command[:2] == ["docker", "exec"]:
-            raise subprocess.TimeoutExpired(
-                command, kwargs["timeout"], output="checking", stderr="too slow"
-            )
         return subprocess.CompletedProcess(command, 0, stdout="image-id\n", stderr="")
 
+    def timeout_sidecar(**kwargs):
+        raise subprocess.TimeoutExpired(
+            "python-functions-sidecar",
+            kwargs["timeout"],
+            output="checking",
+            stderr="too slow",
+        )
+
     monkeypatch.setattr(harness, "run_command", fake_run)
+    monkeypatch.setattr(
+        harness, "run_python_function_verifier_sidecar", timeout_sidecar
+    )
     result = harness.execute_job(
         docker="docker",
         fixture=fixture,
@@ -1404,7 +1600,9 @@ def test_verifier_timeout_is_persisted_and_excluded_from_pairs(tmp_path, monkeyp
     )
 
 
-def test_agent_nonzero_exit_is_fail_closed_without_running_verifier(tmp_path, monkeypatch):
+def test_agent_nonzero_exit_is_fail_closed_without_running_verifier(
+    tmp_path, monkeypatch
+):
     harness = _load_example("terminal_bench_context_eval")
     root = tmp_path / "fixture"
     root.joinpath("environment").mkdir(parents=True)
@@ -1450,6 +1648,25 @@ def test_agent_nonzero_exit_is_fail_closed_without_running_verifier(tmp_path, mo
         "aworld_failure": {"schema_version": "aworld.run.failure.v1"},
     }
     assert verifier_calls == []
+
+
+def test_finalized_checksum_valid_capture_can_run_independent_verifier():
+    harness = _load_example("terminal_bench_context_eval")
+
+    assert harness.finalized_capture_allows_independent_verifier(
+        {
+            "raw_trajectory_available": True,
+            "trajectory_generation_state": "finalized",
+            "journal_final_continuity": {"snapshots_match": True},
+        }
+    )
+    assert not harness.finalized_capture_allows_independent_verifier(
+        {
+            "raw_trajectory_available": True,
+            "trajectory_generation_state": "finalized",
+            "journal_final_continuity": {"snapshots_match": False},
+        }
+    )
 
 
 def test_summary_pairs_reward_with_context_effects():

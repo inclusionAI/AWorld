@@ -192,7 +192,7 @@ class AmniContext(Context):
 
 
     async def snapshot(self):
-        await get_context_manager().save_context(self)
+        return await get_context_manager().save_context(self)
 
     @trace.func_span(span_name="ApplicationContext#consolidation")
     async def consolidation(self):

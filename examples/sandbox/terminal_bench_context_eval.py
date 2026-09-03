@@ -38,7 +38,9 @@ from aworld.evaluations.normalized_cost import NormalizedCostPolicy  # noqa: E40
 from aworld.core.llm_call_journal import read_llm_call_journal  # noqa: E402
 from aworld.core.tool_action_journal import read_tool_action_journal  # noqa: E402
 from examples.sandbox.docker_terminal_bench import (  # noqa: E402
+    PYTHON_FUNCTION_VERIFIER_IMAGE,
     load_external_mcp_config,
+    run_python_function_verifier_sidecar,
 )
 
 
@@ -142,6 +144,29 @@ def parse_model_preflight(*streams: str) -> dict | None:
             ):
                 return value
     return None
+
+
+def call_snapshot_digest(calls: list[dict]) -> str:
+    """Hash provider calls by stable identity, independent of branch merge order."""
+    normalized = []
+    identities = set()
+    for call in calls:
+        if not isinstance(call, dict):
+            raise ValueError("LLM call snapshot entries must be objects")
+        identity = next(
+            (
+                (field, value)
+                for field in ("request_id", "call_id")
+                if isinstance((value := call.get(field)), str) and value
+            ),
+            None,
+        )
+        if identity is None or identity in identities:
+            raise ValueError("LLM call snapshot requires unique stable identities")
+        identities.add(identity)
+        normalized.append({"identity": list(identity), "call": call})
+    normalized.sort(key=lambda item: tuple(item["identity"]))
+    return canonical_json_digest(normalized)
 
 
 def run_model_preflight(
@@ -748,14 +773,20 @@ def recover_inflight_capture(run_dir: Path) -> dict:
             final_calls = json.loads(final_calls_path.read_text(encoding="utf-8"))
             if not isinstance(final_calls, list):
                 raise ValueError("final llm_calls is not a list")
-            journal_hash = canonical_json_digest(calls)
-            final_hash = canonical_json_digest(final_calls)
+            journal_ordered_hash = canonical_json_digest(calls)
+            final_ordered_hash = canonical_json_digest(final_calls)
+            journal_hash = call_snapshot_digest(calls)
+            final_hash = call_snapshot_digest(final_calls)
             continuity = {
                 "status": "available",
+                "comparison_basis": "stable_provider_identity",
                 "journal_count": len(calls),
                 "final_count": len(final_calls),
                 "journal_sha256": journal_hash,
                 "final_sha256": final_hash,
+                "journal_ordered_sha256": journal_ordered_hash,
+                "final_ordered_sha256": final_ordered_hash,
+                "sequence_match": journal_ordered_hash == final_ordered_hash,
                 "snapshots_match": journal_hash == final_hash,
             }
         except (OSError, UnicodeError, json.JSONDecodeError, ValueError):
@@ -856,11 +887,18 @@ def recover_inflight_capture(run_dir: Path) -> dict:
         )
         evidence["partial_raw_trajectory_available"] = True
         evidence["partial_raw_trajectory_path"] = partial_trajectory_path.name
-        evidence["partial_raw_trajectory_sha256"] = sha256_file(
-            partial_trajectory_path
-        )
+        evidence["partial_raw_trajectory_sha256"] = sha256_file(partial_trajectory_path)
     write_json(run_dir / "capture_recovery.json", evidence)
     return evidence
+
+
+def finalized_capture_allows_independent_verifier(recovery: dict) -> bool:
+    continuity = recovery.get("journal_final_continuity") or {}
+    return bool(
+        recovery.get("raw_trajectory_available") is True
+        and recovery.get("trajectory_generation_state") == "finalized"
+        and continuity.get("snapshots_match") is True
+    )
 
 
 def collect_context_metrics(run_dir: Path) -> dict:
@@ -894,6 +932,12 @@ def collect_context_metrics(run_dir: Path) -> dict:
     manifest = load_evidence(manifest_path, {}, "run_manifest_malformed")
     capture = manifest.get("capture") if isinstance(manifest, dict) else {}
     continuity = capture.get("llm_call_continuity") if isinstance(capture, dict) else {}
+    journal_continuity = (
+        continuity.get("journal_reconciliation")
+        if isinstance(continuity, dict)
+        else {}
+    )
+
     def provider_metrics(calls: object) -> dict[str, Any]:
         prompt_tokens = completion_tokens = cache_read_tokens = 0
         provider_request_bytes = trace_match_count = 0
@@ -904,17 +948,21 @@ def collect_context_metrics(run_dir: Path) -> dict:
                 continue
             provider_request = call.get("provider_request") or {}
             request = provider_request.get("payload") or call.get("request") or {}
-            request_messages = request.get("messages", []) if isinstance(request, dict) else []
+            request_messages = (
+                request.get("messages", []) if isinstance(request, dict) else []
+            )
             stable_prefix = []
-            for message in request_messages if isinstance(request_messages, list) else []:
+            for message in (
+                request_messages if isinstance(request_messages, list) else []
+            ):
                 if not isinstance(message, dict) or message.get("role") != "system":
                     break
                 stable_prefix.append(message)
             provider_prefix_hashes.append(canonical_json_digest(stable_prefix))
             provider_request_bytes += len(
-                json.dumps(request, ensure_ascii=False, sort_keys=True, default=str).encode(
-                    "utf-8"
-                )
+                json.dumps(
+                    request, ensure_ascii=False, sort_keys=True, default=str
+                ).encode("utf-8")
             )
             usage = call.get("usage_normalized") or call.get("usage") or {}
             raw_usage = call.get("usage_raw") or usage
@@ -1001,9 +1049,7 @@ def collect_context_metrics(run_dir: Path) -> dict:
         "partial_provider_prefix_unique_count": partial_metrics[
             "provider_prefix_unique_count"
         ],
-        "partial_provider_prefix_stable": partial_metrics[
-            "provider_prefix_stable"
-        ],
+        "partial_provider_prefix_stable": partial_metrics["provider_prefix_stable"],
         "partial_request_trace_match_count": partial_metrics[
             "request_trace_match_count"
         ],
@@ -1023,9 +1069,7 @@ def collect_context_metrics(run_dir: Path) -> dict:
         ),
         "partial_raw_trajectory_available": partial_trajectory_valid,
         "partial_raw_trajectory_call_count": (
-            len(partial_trajectory.get("calls", []))
-            if partial_trajectory_valid
-            else 0
+            len(partial_trajectory.get("calls", [])) if partial_trajectory_valid else 0
         ),
         "partial_raw_trajectory_tool_event_count": (
             len(partial_trajectory.get("tool_events", []))
@@ -1039,8 +1083,8 @@ def collect_context_metrics(run_dir: Path) -> dict:
         "capture_integrity_available": bool(
             isinstance(capture, dict)
             and capture.get("provider_capture_gate_passed") is True
-            and isinstance(continuity, dict)
-            and continuity.get("snapshots_match") is True
+            and isinstance(journal_continuity, dict)
+            and journal_continuity.get("snapshots_match") is True
         ),
         "request_trace_match_available": bool(
             isinstance(provider_calls, list)
@@ -1157,25 +1201,24 @@ def summarize_results(results: list[dict], baseline_variant: str) -> dict:
                 )
                 continue
             pair_record = {
-                    "task": task,
-                    "repetition": repetition,
-                    "baseline": baseline_variant,
-                    "candidate": candidate["variant"],
-                    "reward_delta": float(candidate["reward"])
-                    - float(baseline["reward"]),
-                    "provider_request_bytes_delta": (
-                        candidate["context_metrics"]["provider_request_bytes"]
-                        - baseline["context_metrics"]["provider_request_bytes"]
-                    ),
-                    "prompt_tokens_delta": (
-                        candidate["context_metrics"]["prompt_tokens"]
-                        - baseline["context_metrics"]["prompt_tokens"]
-                    ),
-                    "offloaded_artifact_bytes_delta": (
-                        candidate["context_metrics"]["offloaded_artifact_bytes"]
-                        - baseline["context_metrics"]["offloaded_artifact_bytes"]
-                    ),
-                }
+                "task": task,
+                "repetition": repetition,
+                "baseline": baseline_variant,
+                "candidate": candidate["variant"],
+                "reward_delta": float(candidate["reward"]) - float(baseline["reward"]),
+                "provider_request_bytes_delta": (
+                    candidate["context_metrics"]["provider_request_bytes"]
+                    - baseline["context_metrics"]["provider_request_bytes"]
+                ),
+                "prompt_tokens_delta": (
+                    candidate["context_metrics"]["prompt_tokens"]
+                    - baseline["context_metrics"]["prompt_tokens"]
+                ),
+                "offloaded_artifact_bytes_delta": (
+                    candidate["context_metrics"]["offloaded_artifact_bytes"]
+                    - baseline["context_metrics"]["offloaded_artifact_bytes"]
+                ),
+            }
             if isinstance(candidate.get("model_seed"), int):
                 pair_record["model_seed"] = candidate["model_seed"]
             paired.append(pair_record)
@@ -1313,8 +1356,7 @@ def execute_job(
         if declared_artifacts is None:
             declared_artifacts = []
         if not isinstance(declared_artifacts, list) or any(
-            not isinstance(path, str) or not path.strip()
-            for path in declared_artifacts
+            not isinstance(path, str) or not path.strip() for path in declared_artifacts
         ):
             raise ValueError("task artifacts must be a list of non-empty paths")
         for artifact_path in declared_artifacts:
@@ -1325,6 +1367,7 @@ def execute_job(
             agent_command.extend(
                 ["--mcp-config", str(external_mcp_config_path.resolve())]
             )
+        agent_command.extend(["--completion-verifier-mode", verifier_mode])
         configured_agent_timeout = float(
             fixture.config.get("agent", {}).get("timeout_sec", 900)
         )
@@ -1414,33 +1457,36 @@ def execute_job(
         )
         recovery = recover_inflight_capture(run_dir)
 
+        agent_failure = None
         if agent_result.returncode != 0:
             aworld_failure = parse_aworld_run_failure(
                 agent_result.stderr or "", agent_result.stdout or ""
             )
-            result = {
-                "schema_version": "aworld.context-eval-result/v1",
-                "task": fixture.name,
-                "variant": variant_name,
-                "repetition": repetition,
-                "model_seed": model_seed,
-                "agent_exit_code": agent_result.returncode,
-                "verifier_exit_code": None,
-                "verifier_mode": verifier_mode,
-                "reward": None,
-                "failure": {
-                    "stage": "agent",
-                    "reason_code": "agent_nonzero_exit",
-                    "aworld_failure": aworld_failure,
-                },
-                "capture_recovery": recovery,
-                "container_image_id": container_image_id(docker, container),
-                "task_archive_sha256": fixture.archive_sha256,
-                "verifier_environment": verifier_environment_evidence,
-                "context_metrics": collect_context_metrics(run_dir),
+            agent_failure = {
+                "stage": "agent",
+                "reason_code": "agent_nonzero_exit",
+                "aworld_failure": aworld_failure,
             }
-            write_json(run_dir / "result.json", result)
-            return result
+            if not finalized_capture_allows_independent_verifier(recovery):
+                result = {
+                    "schema_version": "aworld.context-eval-result/v1",
+                    "task": fixture.name,
+                    "variant": variant_name,
+                    "repetition": repetition,
+                    "model_seed": model_seed,
+                    "agent_exit_code": agent_result.returncode,
+                    "verifier_exit_code": None,
+                    "verifier_mode": verifier_mode,
+                    "reward": None,
+                    "failure": agent_failure,
+                    "capture_recovery": recovery,
+                    "container_image_id": container_image_id(docker, container),
+                    "task_archive_sha256": fixture.archive_sha256,
+                    "verifier_environment": verifier_environment_evidence,
+                    "context_metrics": collect_context_metrics(run_dir),
+                }
+                write_json(run_dir / "result.json", result)
+                return result
 
         verifier_timeout = float(
             verifier_timeout_sec_override
@@ -1460,44 +1506,27 @@ def execute_job(
                 f"{verifier_mount}/test.sh",
             ]
         else:
-            verifier_program = """
-import importlib.util
-import inspect
-
-spec = importlib.util.spec_from_file_location("terminal_bench_verifier", "/tests/test_outputs.py")
-module = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(module)
-tests = [
-    value
-    for name, value in sorted(vars(module).items())
-    if name.startswith("test_") and callable(value)
-]
-if not tests:
-    raise RuntimeError("verifier contains no test_* functions")
-unsupported = [test.__name__ for test in tests if inspect.signature(test).parameters]
-if unsupported:
-    raise RuntimeError("python-functions verifier does not support fixtures: " + ",".join(unsupported))
-for test in tests:
-    test()
-""".strip()
-            verifier_command = [
-                docker,
-                "exec",
-                *verifier_flags,
-                container,
-                "python3",
-                "-c",
-                verifier_program,
-            ]
+            verifier_command = None
         verifier_process_environment = os.environ.copy()
         verifier_process_environment.update(verifier_environment)
         try:
-            verifier_result = run_command(
-                verifier_command,
-                capture_output=True,
-                timeout=verifier_timeout,
-                env=verifier_process_environment,
-            )
+            if verifier_mode == "python-functions":
+                test_path = f"{verifier_mount}/test_outputs.py"
+                verifier_result = run_python_function_verifier_sidecar(
+                    docker_binary=docker,
+                    container=container,
+                    test_path=test_path,
+                    timeout=verifier_timeout,
+                    env_names=tuple(sorted(verifier_environment)),
+                    scratch_root=verifier_dir,
+                )
+            else:
+                verifier_result = run_command(
+                    verifier_command,
+                    capture_output=True,
+                    timeout=verifier_timeout,
+                    env=verifier_process_environment,
+                )
         except subprocess.TimeoutExpired as exc:
             (verifier_dir / "stdout.log").write_text(
                 timeout_output(exc, "stdout"), encoding="utf-8"
@@ -1520,6 +1549,7 @@ for test in tests:
                     "reason_code": "verifier_timeout",
                     "timeout_sec": verifier_timeout,
                 },
+                "agent_failure": agent_failure,
                 "container_image_id": container_image_id(docker, container),
                 "task_archive_sha256": fixture.archive_sha256,
                 "verifier_environment": verifier_environment_evidence,
@@ -1555,6 +1585,7 @@ for test in tests:
             "verifier_exit_code": verifier_result.returncode,
             "verifier_mode": verifier_mode,
             "reward": reward,
+            "agent_failure": agent_failure,
             "container_image_id": container_image_id(docker, container),
             "task_archive_sha256": fixture.archive_sha256,
             "verifier_environment": verifier_environment_evidence,
@@ -1632,7 +1663,9 @@ def main() -> None:
         "variants": [payload for _, _, payload in variants],
         "repeat": args.repeat,
         "seed": args.seed,
-        "model_seeds": [args.seed + repetition - 1 for repetition in range(1, args.repeat + 1)],
+        "model_seeds": [
+            args.seed + repetition - 1 for repetition in range(1, args.repeat + 1)
+        ],
         "minimum_model_seed_count_configured": args.repeat >= 3,
         "job_order": [
             {"task": fixture.name, "variant": variant, "repetition": repetition}
@@ -1649,6 +1682,11 @@ def main() -> None:
         "anti_overfitting": "Variants cannot contain task prompts, names, expected answers, or verifier logic.",
         "normalized_cost_policy": NormalizedCostPolicy().to_dict(),
         "verifier_mode": args.verifier_mode,
+        "python_function_verifier_image": (
+            PYTHON_FUNCTION_VERIFIER_IMAGE
+            if args.verifier_mode == "python-functions"
+            else None
+        ),
         "build_timeout_sec_override": args.build_timeout_sec,
         "agent_timeout_sec_override": args.agent_timeout_sec,
         "verifier_timeout_sec_override": args.verifier_timeout_sec,

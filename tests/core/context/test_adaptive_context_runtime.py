@@ -25,6 +25,33 @@ from aworld.runners.post_tool_progress import (
 )
 
 
+@pytest.mark.asyncio
+async def test_completion_evidence_resolver_survives_context_deep_copy():
+    calls = []
+
+    async def resolver(context, contract):
+        calls.append((context, contract))
+
+    context = Context(task_id="completion-resolver-copy")
+    contract = CompletionContract(
+        required_artifacts=(),
+        immutable_inputs=(),
+        validation_commands=(),
+        max_evidence_age_seconds=None,
+        required_final_evidence=(),
+    )
+    context.configure_completion_contract(
+        contract,
+        mode=CompletionMode.ENFORCE,
+        evidence_resolver=resolver,
+    )
+
+    cloned = context.deep_copy()
+    await cloned.resolve_completion_evidence()
+
+    assert calls == [(cloned, contract)]
+
+
 def test_semantic_progress_ignores_transport_ids_and_timing():
     left = {
         "tool_call_id": "one",
@@ -105,18 +132,33 @@ def test_semantic_progress_resets_when_task_artifact_changes():
         tool_name="terminal", action_name="run_code", params={"code": "make"}
     )
     record_semantic_tool_progress(
-        context, tool_name="terminal", agent_id="agent", actions=[action], observation=unchanged
+        context,
+        tool_name="terminal",
+        agent_id="agent",
+        actions=[action],
+        observation=unchanged,
     )
     record_semantic_tool_progress(
-        context, tool_name="terminal", agent_id="agent", actions=[action], observation=unchanged
+        context,
+        tool_name="terminal",
+        agent_id="agent",
+        actions=[action],
+        observation=unchanged,
     )
     state = record_semantic_tool_progress(
-        context, tool_name="terminal", agent_id="agent", actions=[action], observation=changed
+        context,
+        tool_name="terminal",
+        agent_id="agent",
+        actions=[action],
+        observation=changed,
     )
     assert state["repetition_count"] == 1
     assert state["low_information_gain_count"] == 1
     assert state["artifact_fingerprint"] == "after"
-    assert context.context_info["post_tool_progress_metrics"]["task_artifact_change_count"] == 1
+    assert (
+        context.context_info["post_tool_progress_metrics"]["task_artifact_change_count"]
+        == 1
+    )
 
 
 def test_diverse_tool_results_without_goal_evidence_trigger_progress_window():
@@ -131,7 +173,9 @@ def test_diverse_tool_results_without_goal_evidence_trigger_progress_window():
             agent_id="agent",
             actions=[action.model_copy(update={"tool_call_id": f"call-{index}"})],
             observation=Observation(
-                action_result=[ActionResult(content=f"novel result {index}", success=True)]
+                action_result=[
+                    ActionResult(content=f"novel result {index}", success=True)
+                ]
             ),
         )
 
@@ -278,7 +322,9 @@ def test_compaction_retains_task_system_policy_and_recent_turns():
     }
     assert receipt["removed_message_count"] == 8
     marker = next(
-        message for message in compacted if "AWorld compacted earlier" in message["content"]
+        message
+        for message in compacted
+        if "AWorld compacted earlier" in message["content"]
     )
     assert marker["role"] == "user"
     assert receipt["removed_messages_hash"] not in marker["content"]
@@ -393,7 +439,10 @@ async def test_agent_compacts_diverse_history_after_no_goal_progress(monkeypatch
         {"role": "system", "content": "policy"},
         {"role": "user", "content": "task"},
         *[
-            {"role": "assistant" if index % 2 == 0 else "tool", "content": f"unique {index}"}
+            {
+                "role": "assistant" if index % 2 == 0 else "tool",
+                "content": f"unique {index}",
+            }
             for index in range(20)
         ],
     ]
