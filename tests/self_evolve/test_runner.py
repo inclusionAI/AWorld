@@ -374,10 +374,10 @@ def test_replay_heartbeat_uses_frozen_measurement_member_deadline() -> None:
     ) is None
 
 
-def test_authoritative_evidence_finalization_timeout_is_latency_aware_and_bounded() -> None:
-    assert _authoritative_evidence_finalization_timeout_seconds(60) == 45.0
-    assert _authoritative_evidence_finalization_timeout_seconds(900) == 225.0
-    assert _authoritative_evidence_finalization_timeout_seconds(3600) == 300.0
+def test_authoritative_evidence_finalization_uses_member_deadline() -> None:
+    assert _authoritative_evidence_finalization_timeout_seconds(60) == 60.0
+    assert _authoritative_evidence_finalization_timeout_seconds(900) == 900.0
+    assert _authoritative_evidence_finalization_timeout_seconds(3600) == 3600.0
 
 
 def _independent_regression_suites_for_test(
@@ -2361,6 +2361,49 @@ def test_iteration_selection_prefers_candidate_that_reached_runtime_replay() -> 
 
     assert selected is not None
     assert selected["candidate"] is runtime_failed
+
+
+def test_iteration_selection_prefers_authoritative_replay_over_screening() -> None:
+    target = SelfEvolveTargetRef(target_type="skill", target_id="demo")
+    screening = CandidateVariant(
+        candidate_id="screening",
+        target=target,
+        content="# Screening\n",
+        rationale="screening failure",
+    )
+    authoritative = CandidateVariant(
+        candidate_id="authoritative",
+        target=target,
+        content="# Authoritative\n",
+        rationale="full replay failure",
+    )
+
+    selected = _select_iteration_state(
+        [
+            {
+                "candidate": authoritative,
+                "candidate_summary": None,
+                "status": "rejected",
+                "lifecycle_stage": "authoritative_replay",
+                "gate_results": (
+                    GateResult("candidate_replay", False, "one member failed"),
+                    GateResult("replay_confidence", False, "pair incomparable"),
+                ),
+            },
+            {
+                "candidate": screening,
+                "candidate_summary": None,
+                "status": "screening_rejected",
+                "lifecycle_stage": "screening",
+                "gate_results": (
+                    GateResult("candidate_replay", False, "screening failed"),
+                ),
+            },
+        ]
+    )
+
+    assert selected is not None
+    assert selected["candidate"] is authoritative
 
 
 def test_iteration_selection_does_not_treat_failed_replay_gate_as_deeper() -> None:

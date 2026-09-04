@@ -916,6 +916,107 @@ async def test_replay_backend_resumes_completed_pairs_from_prior_checkpoint(
 
 
 @pytest.mark.asyncio
+async def test_complete_replay_checkpoint_survives_workspace_seed_drift(
+    tmp_path: Path,
+) -> None:
+    calls: list[tuple[str, str]] = []
+
+    async def fake_executor(
+        request: ReplayExecutionRequest,
+    ) -> ReplayExecutionResult:
+        calls.append((request.task_id, request.variant_id))
+        return ReplayExecutionResult(
+            status="succeeded",
+            trajectory=[{"action": {"content": request.variant_id}}],
+        )
+
+    dataset = SelfEvolveDataset(
+        cases=(EvalCase(case_id="task-a", input="Replay task A"),),
+        recipe=DatasetRecipe(
+            source={"kind": "complete-resume-test", "case_count": 1},
+            split_seed="seed",
+            splits={"train": ["task-a"]},
+        ),
+    )
+    candidate = _candidate(
+        "---\nname: demo\n---\n# Demo\nCandidate.\n",
+        candidate_id="complete-resume-candidate",
+    )
+    adaptation = ReplayAdaptationCompiler().compile(
+        dataset=dataset,
+        workspace_root=tmp_path,
+        artifact_root=tmp_path / "source-adaptation",
+    )
+    source_request = build_replay_request(
+        run_id="source-complete-run",
+        workspace_root=str(tmp_path),
+        target=candidate.target,
+        candidate=candidate,
+        overlay_skill_root=str(tmp_path / "overlay"),
+        dataset=dataset,
+        baseline_repetitions=1,
+        candidate_repetitions=1,
+        replay_adaptation=adaptation,
+    )
+    backend = AWorldCliCandidateReplayBackend(executor=fake_executor)
+    await backend.replay_candidate(
+        source_request,
+        candidate=candidate,
+        dataset=dataset,
+    )
+    source_replay_dir = candidate_replay_artifact_directory(
+        workspace_root=tmp_path,
+        run_id=source_request.run_id,
+        candidate_id=candidate.candidate_id,
+    )
+    drifted_seed = "sha256:" + "f" * 64
+    drifted_adaptation = replace(
+        adaptation,
+        workspace_seed=str(tmp_path / "new-cycle-seed"),
+        workspace_seed_fingerprint=drifted_seed,
+        adaptation_fingerprint="sha256:" + "e" * 64,
+    )
+    resumed_request = replace(
+        source_request,
+        run_id="resumed-complete-run",
+        baseline_replay_dir=str(source_replay_dir / "members"),
+        resume_replay_dir=str(source_replay_dir),
+        replay_adaptation=drifted_adaptation,
+        workspace_seed_fingerprint=drifted_seed,
+        adaptation_fingerprint=drifted_adaptation.adaptation_fingerprint,
+    )
+
+    assert not _resume_root_is_compatible(resumed_request, source_request)
+    assert _resume_root_is_compatible(
+        resumed_request,
+        source_request,
+        allow_workspace_seed_drift=True,
+    )
+    calls.clear()
+    resumed = await backend.replay_candidate(
+        resumed_request,
+        candidate=candidate,
+        dataset=dataset,
+    )
+
+    assert calls == []
+    assert resumed.member_results is not None
+    assert [item.case_id for item in resumed.member_results] == ["task-a"]
+    checkpoint = json.loads(
+        (
+            candidate_replay_artifact_directory(
+                workspace_root=tmp_path,
+                run_id=resumed_request.run_id,
+                candidate_id=candidate.candidate_id,
+            )
+            / "members"
+            / "paired_replay_checkpoint.json"
+        ).read_text(encoding="utf-8")
+    )
+    assert checkpoint["resumed_pair_case_ids"] == ["task-a"]
+
+
+@pytest.mark.asyncio
 async def test_required_resume_reruns_candidate_without_activation_attestation(
     tmp_path: Path,
 ) -> None:
@@ -11909,6 +12010,53 @@ def test_replay_cli_supervisor_bounds_evidence_finalization_without_output(
         "evidence_finalization_deadline",
         False,
     ) is True
+
+
+def test_replay_cli_default_finalization_uses_attempt_deadline(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setattr(
+        replay_module,
+        "_EVIDENCE_FINALIZATION_GRACE_SECONDS",
+        0.05,
+    )
+    artifact_dir = tmp_path / "artifacts"
+    evidence_dir = artifact_dir / "evidence"
+    evidence_dir.mkdir(parents=True)
+    evidence_path = evidence_dir / "result.json"
+    manifest_path = evidence_dir / "evidence_manifest.jsonl"
+    manifest_text = json.dumps(
+        {
+            "source_id": "result",
+            "artifact_path": "result.json",
+            "extraction_method": "bounded_extract",
+            "fields": ["value"],
+        }
+    ) + "\n"
+    script = (
+        "from pathlib import Path; import time; "
+        f"Path({str(evidence_path)!r}).write_text('{{\"value\": 1}}'); "
+        f"Path({str(manifest_path)!r}).write_text({manifest_text!r}); "
+        "time.sleep(0.15); print('completed')"
+    )
+
+    completed = _run_replay_cli(
+        [sys.executable, "-c", script],
+        cwd=str(tmp_path),
+        text=True,
+        capture_output=True,
+        timeout=1,
+        start_new_session=True,
+        env={},
+        artifact_dir=artifact_dir,
+        evidence_manifest=manifest_path,
+        execution_started_at=time.time(),
+        replay_environment={},
+    )
+
+    assert completed.returncode == 0
+    assert "completed" in completed.stdout
 
 
 def test_replay_cli_supervisor_stops_on_skill_owned_capability_mismatch(

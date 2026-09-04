@@ -358,10 +358,14 @@ class AuthoritativeMeasurementController:
 def authoritative_evidence_finalization_timeout_seconds(
     member_timeout_seconds: float,
 ) -> float:
-    """Reserve a bounded, latency-aware terminal synthesis window."""
+    """Keep terminal TaskResponse synthesis inside the member deadline.
 
-    timeout = float(member_timeout_seconds)
-    return min(timeout, min(max(timeout * 0.25, 45.0), 300.0))
+    Artifact evidence is an intermediate observation, not proof that the task
+    response should already be complete.  Giving it a shorter independent
+    deadline made healthy long-running agents fail after producing evidence.
+    """
+
+    return float(member_timeout_seconds)
 
 
 def legacy_retryable_measurement_task_failed_work_unit_ids(

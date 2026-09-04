@@ -7064,6 +7064,9 @@ def derive_self_improvement_disposition(
     materialization_frontier_retryable = (
         _report_materialization_frontier_retryable(report)
     )
+    cycle_authoritative_frontier_retryable = (
+        _report_cycle_authoritative_frontier_retryable(report)
+    )
     candidate = actionable_candidate
     if candidate is not None:
         if candidate.get("code") == "evaluation_support_bootstrap_only":
@@ -7098,6 +7101,16 @@ def derive_self_improvement_disposition(
                 diagnostic_refs=_string_tuple(
                     report.get("optimizer_diagnostics_path")
                 ),
+            )
+        if cycle_authoritative_frontier_retryable:
+            # A run-local authoritative limit is a scheduling boundary, not
+            # proof that the Campaign's repair frontier is exhausted. Continue
+            # while both global candidate and Campaign cycle capacity remain.
+            return _event_disposition(
+                SelfImprovementDispositionKind.CONTINUE_CANDIDATE,
+                "cycle_authoritative_frontier_reached",
+                candidate,
+                delta,
             )
         if delta:
             return _event_disposition(
@@ -7268,6 +7281,48 @@ def _report_materialization_frontier_retryable(
         ):
             return False
     return True
+
+
+def _report_cycle_authoritative_frontier_retryable(
+    report: Mapping[str, Any],
+) -> bool:
+    """Return whether only this run's authoritative slice was exhausted."""
+
+    funnel = report.get("verification_funnel")
+    campaign = report.get("campaign")
+    attribution = report.get("campaign_failure_attribution")
+    if not all(
+        isinstance(item, Mapping)
+        for item in (funnel, campaign, attribution)
+    ):
+        return False
+    local_count = funnel.get("authoritative_candidate_count")
+    local_limit = funnel.get("max_authoritative_candidates")
+    cycle = campaign.get("cycle")
+    max_cycles = campaign.get("max_cycles")
+    campaign_count = campaign.get("authoritative_candidate_count")
+    campaign_limit = campaign.get("max_authoritative_candidates")
+    integer_values = (
+        local_count,
+        local_limit,
+        cycle,
+        max_cycles,
+        campaign_count,
+        campaign_limit,
+    )
+    return bool(
+        attribution.get("failure_class") == "candidate"
+        and attribution.get("repairable") is True
+        and funnel.get("generation_stop_reason")
+        == "authoritative_candidate_limit_reached"
+        and all(
+            isinstance(value, int) and not isinstance(value, bool)
+            for value in integer_values
+        )
+        and local_count >= local_limit
+        and cycle < max_cycles
+        and campaign_count < campaign_limit
+    )
 
 
 def campaign_usage_from_report(report: Mapping[str, Any]) -> CampaignUsage:
