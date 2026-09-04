@@ -2,11 +2,41 @@
 # Copyright (c) 2025 inclusionAI.
 import pickle
 import traceback
+from io import BytesIO
 
 from aworld.config import BaseConfig
 from aworld.core.event.base import Message
 from aworld.events import InMemoryEventbus
 from aworld.logs.util import logger
+
+
+class _RestrictedUnpickler(pickle.Unpickler):
+    """Unpickler that permits event data without allowing arbitrary imports.
+
+    Redis streams are an untrusted boundary: a stream entry can be inserted by
+    any client with access to Redis.  The default ``pickle.loads`` executes
+    reducers supplied by the payload (for example ``os.system``).  Messages
+    legitimately contain AWorld model objects, so retain compatibility for
+    AWorld modules and harmless data types while rejecting external globals.
+    """
+
+    _SAFE_BUILTINS = {
+        "bool", "bytearray", "bytes", "complex", "dict", "float", "frozenset",
+        "int", "list", "set", "slice", "str", "tuple", "object",
+    }
+
+    def find_class(self, module, name):
+        if module == "builtins" and name in self._SAFE_BUILTINS:
+            return super().find_class(module, name)
+        if module in {"collections", "collections.abc", "copyreg", "enum", "datetime"}:
+            return super().find_class(module, name)
+        if module.startswith("aworld."):
+            return super().find_class(module, name)
+        raise pickle.UnpicklingError(f"global '{module}.{name}' is not allowed")
+
+
+def _safe_loads(data: bytes):
+    return _RestrictedUnpickler(BytesIO(data)).load()
 
 
 class RedisConfig(BaseConfig):
@@ -49,7 +79,7 @@ class RedisEventbus(InMemoryEventbus):
             for msg in msgs:
                 message_id = msg[0]
                 message_content = msg[1]
-                data = pickle.loads(message_content.get(b"data"))
+                data = _safe_loads(message_content.get(b"data"))
                 logger.info(f"Get message: {message_id} with content {data}")
                 await self.client.xdel(name, message_id)
                 return data
@@ -61,7 +91,7 @@ class RedisEventbus(InMemoryEventbus):
             for msg in msgs:
                 message_id = msg[0]
                 message_content = msg[1]
-                data = pickle.loads(message_content.get(b"data"))
+                data = _safe_loads(message_content.get(b"data"))
                 logger.debug(f"Get message: {message_id} with content {data}")
                 await self.client.xdel(message.task_id, message_id)
                 return data
