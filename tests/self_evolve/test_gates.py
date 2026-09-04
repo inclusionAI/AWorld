@@ -534,6 +534,9 @@ def test_cost_latency_gate_fails_closed_when_verified_resource_evidence_missing(
     assert result.details is not None
     assert result.details["code"] == "resource_regression_evidence_missing"
     assert result.details["failure_owner"] == "framework"
+    assert result.details["failure_class"] == "measurement"
+    assert result.details["repairable"] is True
+    assert result.details["next_action"] == "repair_measurement"
 
 
 def test_cost_latency_gate_excludes_judge_measurement_overhead() -> None:
@@ -582,6 +585,36 @@ def test_cost_latency_gate_uses_replay_runtime_proxies() -> None:
     assert result.passed is True
     assert result.details["cost_metric"] == "replay_total_tokens"
     assert result.details["latency_metric"] == "replay_latency_ms"
+
+
+def test_cost_latency_gate_does_not_double_normalize_replay_resources() -> None:
+    result = CostLatencyRegressionGate(
+        max_cost_regression_ratio=0.25,
+        max_latency_regression_ratio=0.5,
+        require_resource_evidence=True,
+    ).evaluate(
+        baseline=EvaluationSummary(
+            variant_id="baseline",
+            metrics={
+                "replay_latency_ms": 100.0,
+                "effective_case_count": 2,
+            },
+        ),
+        candidate=EvaluationSummary(
+            variant_id="candidate",
+            metrics={
+                "replay_latency_ms": 160.0,
+                "effective_case_count": 2,
+            },
+        ),
+    )
+
+    assert result.passed is False
+    assert result.details["latency_regression_ratio"] == pytest.approx(0.6)
+    assert result.details["baseline_normalized_value"] == 100.0
+    assert result.details["candidate_normalized_value"] == 160.0
+    assert result.details["baseline_effective_case_count"] is None
+    assert result.details["candidate_effective_case_count"] is None
 
 
 def test_noop_and_skill_markdown_gates_reject_bad_candidates() -> None:

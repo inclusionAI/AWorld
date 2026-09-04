@@ -1509,6 +1509,7 @@ async def test_multiple_json_objects_receive_one_bounded_repair() -> None:
             f"Return exactly one candidate JSON object. Error: {error}. "
             f"Invalid output: {invalid}"
         ),
+        repair_output_merger=merge_candidate_repair_output,
         task_batch_executor=DeterministicTaskBatchExecutor(run_task=run_task),
     )
 
@@ -1520,6 +1521,47 @@ async def test_multiple_json_objects_receive_one_bounded_repair() -> None:
     assert result.slots[0].repaired is True
     assert result.diagnostics["repair_attempt_count"] == 1
     assert result.diagnostics["repair_success_count"] == 1
+
+
+def test_multiple_json_objects_extracts_one_unambiguous_candidate() -> None:
+    raw = (
+        '{"analysis":{"next":"emit candidate"}}\n'
+        '{"content":"# Demo\\n\\nRecovered candidate.\\n",'
+        '"rationale":"bounded deterministic extraction","files":[]}'
+    )
+
+    result = normalize_candidate_output(
+        raw,
+        current_content="# Demo\n\nOld guidance.\n",
+    )
+
+    assert result["content"] == "# Demo\n\nRecovered candidate.\n"
+    assert result["rationale"] == "bounded deterministic extraction"
+
+
+def test_surrounded_multiple_json_extracts_one_unambiguous_candidate() -> None:
+    raw = (
+        'Plan: {"analysis":"emit the package next"}\n'
+        '{"content":"# Demo\\n\\nRecovered candidate.\\n",'
+        '"rationale":"ignore structured chatter","files":[]}\nDone.'
+    )
+
+    result = normalize_candidate_output(raw, current_content="# Demo\n")
+
+    assert result["rationale"] == "ignore structured chatter"
+
+
+def test_multiple_candidate_objects_remain_ambiguous_and_repairable() -> None:
+    raw = (
+        '{"content":"# Demo\\nFirst"} '
+        '{"content":"# Demo\\nSecond"}'
+    )
+
+    with pytest.raises(CandidateProtocolError) as captured:
+        normalize_candidate_output(raw, current_content="# Demo\n")
+
+    assert captured.value.code == "multiple_json_objects"
+    assert captured.value.repairable is True
 
 
 @pytest.mark.asyncio

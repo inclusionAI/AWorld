@@ -691,6 +691,93 @@ async def test_capability_compile_failure_preserves_candidate_vs_shared_cause(
     assert result.gates[0].details["failure_class"] == failure_class
 
 
+@pytest.mark.asyncio
+async def test_capability_startup_timeout_remains_shared_and_retains_diagnostics(
+    tmp_path: Path,
+) -> None:
+    skill_path = tmp_path / "skills" / "demo" / "SKILL.md"
+    skill_path.parent.mkdir(parents=True)
+    skill_path.write_text("# Demo\n", encoding="utf-8")
+    candidate = CandidateVariant(
+        candidate_id="candidate-startup-timeout",
+        target=SelfEvolveTargetRef(
+            target_type="skill", target_id="demo", path=str(skill_path)
+        ),
+        content="# Demo changed\n",
+        rationale="test",
+    )
+    capability = SimpleNamespace(capability_id="capability-1", fingerprint="fp")
+    adaptation_calls = 0
+
+    def adaptation(_request):
+        nonlocal adaptation_calls
+        adaptation_calls += 1
+        if adaptation_calls == 1:
+            return ReplayAdaptationResult(
+                None,
+                GateResult("replay_adaptation", False, "baseline unavailable"),
+            )
+        return ReplayAdaptationResult(
+            SimpleNamespace(replay_capability=capability),
+            GateResult("replay_adaptation", True, "candidate compiled"),
+        )
+
+    async def preflight(_capability, *, artifact_dir):
+        artifact_root = Path(artifact_dir)
+        service_root = artifact_root / "replay_services" / "service-1"
+        diagnostic_root = artifact_root / "diagnostics" / "service-1"
+        service_root.mkdir(parents=True)
+        diagnostic_root.mkdir(parents=True)
+        (service_root / "stdout.txt").write_text("starting", encoding="utf-8")
+        (service_root / "stderr.txt").write_text("waiting", encoding="utf-8")
+        (diagnostic_root / "launch.json").write_text("{}", encoding="utf-8")
+        raise TimeoutError("readiness timeout")
+
+    result = await validate_candidate_capabilities(
+        CapabilityValidationRequest(
+            run_id="run-startup-timeout",
+            target=SimpleNamespace(
+                identity=SimpleNamespace(path=skill_path),
+                baseline_skill_roots=(),
+            ),
+            dataset=_dataset(),
+            candidate=candidate,
+            requirements=(SimpleNamespace(),),  # type: ignore[arg-type]
+        ),
+        CapabilityValidationPolicy(replay_enabled=True),
+        CapabilityValidationRuntime(
+            store=FilesystemSelfEvolveStore(tmp_path),
+            replay_adaptation=_adaptation_execution(tmp_path, override=adaptation),
+            create_candidate_skill_overlay=lambda **_: SimpleNamespace(
+                candidate_skill_path=skill_path
+            ),
+            validate_applicable_capabilities=lambda **_: (
+                SimpleNamespace(capability_type="replay", passed=True, diagnostics=()),
+            ),
+            preflight_frozen_replay_capability=preflight,
+            replay_service_start_failure_details=lambda *_args, **_kwargs: {
+                "code": "replay_service_startup_timeout",
+                "outcome": "infrastructure_failure",
+                "repairable": True,
+                "diagnostics": {"phase": "startup"},
+            },
+        ),
+    )
+
+    gate = result.gates[0]
+    assert gate.passed is False
+    assert gate.details["failure_class"] == "infrastructure"
+    assert gate.details["code"] == "replay_service_startup_timeout"
+    event = gate.details["failure_event"]
+    assert event["owner"] == "infrastructure"
+    assert event["scope"] == "shared_run"
+    assert {Path(ref).name for ref in gate.details["diagnostic_refs"]} == {
+        "launch.json",
+        "stderr.txt",
+        "stdout.txt",
+    }
+
+
 def test_phase_controllers_never_reverse_import_runner() -> None:
     for module in (
         run_replay_adaptation,

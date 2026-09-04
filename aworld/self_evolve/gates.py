@@ -502,10 +502,12 @@ class CostLatencyRegressionGate:
                     "code": "resource_regression_evidence_missing",
                     "cost_metric": None,
                     "latency_metric": None,
-                    "failure_class": "framework",
+                    "failure_class": "measurement",
                     "failure_owner": "framework",
                     "failure_scope": "shared_run",
-                    "repairable": False,
+                    "failure_stage": "evaluation",
+                    "repairable": True,
+                    "next_action": "repair_measurement",
                 },
             )
         cost_ratio = (
@@ -1941,6 +1943,11 @@ def _normalized_resource_metric(
     value = _number_metric(metrics, key)
     if value is None:
         return None, None
+    if key.startswith("replay_"):
+        # Root replay resources are already aggregated per executed member.
+        # Evaluator effective_case_count describes judge sampling and must not
+        # divide an independently-normalized replay observation a second time.
+        return value, None
     case_count = _number_metric(metrics, "effective_case_count")
     if case_count is None:
         case_count = _number_metric(metrics, "comparison_effective_case_count")

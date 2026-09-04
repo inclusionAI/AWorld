@@ -2234,6 +2234,14 @@ def run_self_improvement_campaign(
             controller,
             campaign,
         )
+        campaign = _migrate_missing_resource_evidence_for_resume(
+            controller,
+            campaign,
+        )
+        campaign = _migrate_startup_timeout_candidate_for_resume(
+            controller,
+            campaign,
+        )
         campaign = _migrate_lost_repair_champion_for_resume(
             controller,
             campaign,
@@ -2573,6 +2581,386 @@ def _migrate_misattributed_candidate_blocker_for_resume(
     return migrated
 
 
+def _migrate_missing_resource_evidence_for_resume(
+    controller: SelfImprovementCampaignController,
+    campaign: SelfImprovementCampaign,
+) -> SelfImprovementCampaign:
+    """Reopen a Campaign paused by the legacy member-metric projection bug."""
+
+    if (
+        campaign.status is not SelfImprovementCampaignStatus.PAUSED
+        or campaign.latest_disposition is None
+        or campaign.latest_disposition.kind
+        is not SelfImprovementDispositionKind.HANDOFF_GOAL
+        or not campaign.run_ids
+        or campaign.cycle_index >= _campaign_effective_max_cycles(campaign)
+        or campaign.cumulative_authoritative_candidates
+        >= _campaign_effective_authoritative_candidate_limit(campaign)
+    ):
+        return campaign
+    latest_run_id = campaign.run_ids[-1]
+    try:
+        report = controller.store.read_report(latest_run_id)
+    except (OSError, TypeError, ValueError, json.JSONDecodeError):
+        return campaign
+    attribution = report.get("campaign_failure_attribution")
+    rejection = report.get("rejection_attribution")
+    replay_path = report.get("replay_path")
+    if not (
+        isinstance(attribution, Mapping)
+        and attribution.get("code") == "resource_regression_evidence_missing"
+        and attribution.get("failure_class") == "framework"
+        and isinstance(rejection, Mapping)
+        and rejection.get("failure_class") == "candidate"
+        and rejection.get("repairable") is True
+        and isinstance(replay_path, str)
+        and replay_path
+    ):
+        return campaign
+    replay_root = Path(replay_path).expanduser()
+    run_root = controller.store.run_path(latest_run_id)
+    try:
+        if replay_root.is_symlink() or not replay_root.resolve().is_relative_to(
+            run_root.resolve()
+        ):
+            return campaign
+        from aworld.self_evolve.replay import load_candidate_replay_result
+        from aworld.self_evolve.resource_evidence import (
+            reproject_missing_resource_evidence,
+        )
+
+        replay_result = load_candidate_replay_result(replay_root)
+    except (OSError, TypeError, ValueError, json.JSONDecodeError):
+        return campaign
+    candidate_id = reproject_missing_resource_evidence(
+        report,
+        replay_result=replay_result,
+    )
+    if candidate_id is None:
+        return campaign
+    checkpoint = _discover_interrupted_paired_replay_checkpoint(
+        controller,
+        run_id=latest_run_id,
+        report=report,
+    )
+    progress_ids = self_improvement_progress(report).semantic_frontier_ids
+    corrected = (
+        SelfImprovementDisposition(
+            kind=SelfImprovementDispositionKind.COLLECT_MORE_EVIDENCE,
+            reason_code="interrupted_paired_replay_checkpoint_restored",
+            owner="evaluation_harness",
+            stage="candidate_replay",
+            scope="shared_run",
+            repairable=True,
+            progress_delta_ids=progress_ids,
+        )
+        if checkpoint is not None
+        else SelfImprovementDisposition(
+            kind=SelfImprovementDispositionKind.CONTINUE_CANDIDATE,
+            reason_code="resource_telemetry_projection_repaired",
+            owner="candidate",
+            stage="evaluation",
+            scope="candidate",
+            repairable=True,
+            progress_delta_ids=progress_ids,
+        )
+    )
+    report["campaign_causal_migration"] = {
+        "schema_version": "aworld.self_evolve.causal_campaign_migration.v1",
+        "action": "restore_member_resource_telemetry_projection",
+        "source_run_id": latest_run_id,
+        "candidate_id": candidate_id,
+        "previous_reason_code": campaign.latest_disposition.reason_code,
+        "corrected_reason_code": corrected.reason_code,
+    }
+    if checkpoint is not None:
+        report["paired_replay_resume_checkpoint"] = checkpoint.to_dict()
+        report["measurement_pending_candidate_id"] = checkpoint.candidate_id
+        report["measurement_pending_candidate_fingerprint"] = (
+            checkpoint.candidate_fingerprint
+        )
+    else:
+        report["repair_focus_candidate_id"] = candidate_id
+    report["self_improvement_disposition"] = corrected.to_dict()
+    controller.store.write_report(latest_run_id, report)
+    ledger = (
+        campaign.measurement_ledger.charge_continuation(latest_run_id)
+        if checkpoint is not None
+        else campaign.measurement_ledger
+    )
+    migrated = replace(
+        campaign,
+        status=SelfImprovementCampaignStatus.ACTIVE,
+        measurement_ledger=ledger,
+        latest_progress=self_improvement_progress(report),
+        latest_disposition=corrected,
+        latest_measurement_outcome=None,
+        measurement_pending_run_id=(
+            checkpoint.source_run_id if checkpoint is not None else None
+        ),
+        measurement_pending_candidate_id=(
+            checkpoint.candidate_id if checkpoint is not None else None
+        ),
+        goal_handoff_path=None,
+    )
+    controller.store.write_campaign(migrated)
+    return migrated
+
+
+def _migrate_startup_timeout_candidate_for_resume(
+    controller: SelfImprovementCampaignController,
+    campaign: SelfImprovementCampaign,
+) -> SelfImprovementCampaign:
+    """Restore a frozen candidate after legacy startup-timeout attribution.
+
+    Older capability validation collapsed a typed startup readiness timeout
+    into a candidate-owned operational-preflight failure.  That discarded the
+    paired replay cursor and generated a new repair even though no candidate
+    protocol/runtime violation had executed.  Reopen only when an immutable
+    earlier replay checkpoint for the affected candidate still validates.
+    """
+
+    migration_action = "restore_startup_timeout_infrastructure_retry"
+    if (
+        campaign.status is not SelfImprovementCampaignStatus.EXHAUSTED
+        or not campaign.run_ids
+        or campaign.infrastructure_retry_count
+        >= campaign.max_infrastructure_retries
+    ):
+        return campaign
+    latest_run_id = campaign.run_ids[-1]
+    try:
+        report = controller.store.read_report(latest_run_id)
+    except (OSError, TypeError, ValueError, json.JSONDecodeError):
+        return campaign
+    prior_migration = report.get("campaign_causal_migration")
+    if (
+        isinstance(prior_migration, Mapping)
+        and prior_migration.get("action") == migration_action
+    ):
+        return campaign
+
+    startup_details = next(
+        (
+            details
+            for gate in report.get("gate_results", ())
+            if isinstance(gate, Mapping)
+            and gate.get("gate_name") == "candidate_capability_replay"
+            and gate.get("passed") is False
+            and isinstance((details := gate.get("details")), Mapping)
+            and details.get("error_type") == "ReplayServiceReadinessTimeout"
+            and details.get("phase") == "startup"
+        ),
+        None,
+    )
+    if startup_details is None:
+        return campaign
+
+    checkpoint: PairedReplayResumeCheckpointV1 | None = None
+    for source_run_id in reversed(campaign.run_ids[:-1]):
+        try:
+            source_report = controller.store.read_report(source_run_id)
+        except (OSError, TypeError, ValueError, json.JSONDecodeError):
+            continue
+        attribution = next(
+            (
+                value
+                for value in (
+                    source_report.get("rejection_attribution"),
+                    source_report.get("campaign_failure_attribution"),
+                )
+                if isinstance(value, Mapping)
+                and isinstance(value.get("resume_candidate_id"), str)
+                and isinstance(
+                    value.get("resume_candidate_package_fingerprint"), str
+                )
+            ),
+            None,
+        )
+        if attribution is None:
+            continue
+        checkpoint = discover_paired_replay_resume_checkpoint(
+            controller.store,
+            run_id=source_run_id,
+            candidate_id=str(attribution["resume_candidate_id"]),
+            verified_candidate_package_fingerprint=str(
+                attribution["resume_candidate_package_fingerprint"]
+            ),
+        )
+        if checkpoint is not None:
+            break
+    if checkpoint is None:
+        return campaign
+
+    preflight_root = (
+        controller.store.run_path(latest_run_id) / "capability_preflight"
+    )
+    retained_diagnostics = sorted(
+        path
+        for candidate_root in (
+            tuple(preflight_root.iterdir()) if preflight_root.is_dir() else ()
+        )
+        if candidate_root.is_dir()
+        and candidate_root.name.startswith(checkpoint.candidate_id + "-")
+        for path in candidate_root.rglob("*")
+        if path.is_file()
+        and path.name in {"launch.json", "stdout.txt", "stderr.txt"}
+    )
+    raw_diagnostic_refs: object = [
+        (
+            path.relative_to(controller.store.workspace_root).as_posix()
+            if path.is_relative_to(controller.store.workspace_root)
+            else path.name
+        )
+        for path in retained_diagnostics[:16]
+    ]
+    if not raw_diagnostic_refs:
+        raw_diagnostic_refs = startup_details.get("diagnostic_refs")
+    if not isinstance(raw_diagnostic_refs, (list, tuple)):
+        artifact_root = startup_details.get("artifact_root")
+        raw_diagnostic_refs = (
+            [artifact_root]
+            if isinstance(artifact_root, str) and artifact_root
+            else []
+        )
+    diagnostic_refs = _string_tuple(raw_diagnostic_refs)
+    corrected = SelfImprovementDisposition(
+        kind=SelfImprovementDispositionKind.RETRY_INFRASTRUCTURE,
+        reason_code="typed_infrastructure_failure",
+        owner="infrastructure",
+        stage="capability_preflight",
+        scope="shared_run",
+        repairable=True,
+        progress_delta_ids=(
+            campaign.latest_disposition.progress_delta_ids
+            if campaign.latest_disposition is not None
+            else ()
+        ),
+        diagnostic_refs=diagnostic_refs,
+    )
+    ledger = campaign.measurement_ledger.charge_infrastructure_retry(
+        latest_run_id
+    )
+    charged_candidate_count = _report_authoritative_candidate_count(report)
+    authoritative_count = max(
+        0,
+        campaign.cumulative_authoritative_candidates - charged_candidate_count,
+    )
+    attribution = {
+        "primary_gate": "candidate_capability_replay",
+        "code": "replay_service_startup_timeout",
+        "failure_class": "infrastructure",
+        "failure_owner": "infrastructure",
+        "failure_scope": "shared_run",
+        "failure_stage": "capability_preflight",
+        "repairable": True,
+        "next_action": "retry_infrastructure",
+        "affected_candidate_count": 0,
+        "affected_candidate_ids": [],
+        "diagnostic_refs": list(diagnostic_refs),
+        "resume_candidate_id": checkpoint.candidate_id,
+        "resume_candidate_package_fingerprint": (
+            checkpoint.verified_candidate_package_fingerprint
+        ),
+    }
+    report["campaign_failure_attribution"] = attribution
+    report["paired_replay_resume_checkpoint"] = checkpoint.to_dict()
+    report["measurement_pending_candidate_id"] = checkpoint.candidate_id
+    report["measurement_pending_candidate_fingerprint"] = (
+        checkpoint.candidate_fingerprint
+    )
+    report["campaign_causal_migration"] = {
+        "schema_version": (
+            "aworld.self_evolve.startup_timeout_attribution_migration.v1"
+        ),
+        "action": migration_action,
+        "source_run_id": latest_run_id,
+        "checkpoint_run_id": checkpoint.source_run_id,
+        "candidate_id": checkpoint.candidate_id,
+        "candidate_reserve_restored": charged_candidate_count,
+        "infrastructure_retry_granted": True,
+    }
+    report["self_improvement_disposition"] = corrected.to_dict()
+    raw_campaign = report.get("campaign")
+    if isinstance(raw_campaign, dict):
+        raw_campaign.update(
+            {
+                "infrastructure_retry_count": ledger.infrastructure_retry_count,
+                "measurement_pending_run_id": checkpoint.source_run_id,
+                "measurement_pending_candidate_id": checkpoint.candidate_id,
+                "authoritative_candidate_count": authoritative_count,
+                "max_cycles": (
+                    campaign.max_cycles
+                    + ledger.control_plane_run_count
+                    + int(campaign.repair_continuation_used)
+                ),
+            }
+        )
+    controller.store.write_report(latest_run_id, report)
+    migrated = replace(
+        campaign,
+        status=SelfImprovementCampaignStatus.ACTIVE,
+        cumulative_authoritative_candidates=authoritative_count,
+        measurement_ledger=ledger,
+        latest_progress=self_improvement_progress(report),
+        latest_disposition=corrected,
+        latest_measurement_outcome=None,
+        latest_report_path=str(
+            controller.store.run_path(latest_run_id) / "report.json"
+        ),
+        measurement_pending_run_id=checkpoint.source_run_id,
+        measurement_pending_candidate_id=checkpoint.candidate_id,
+        goal_handoff_path=None,
+    )
+    controller.store.write_campaign(migrated)
+    return migrated
+
+
+def _discover_interrupted_paired_replay_checkpoint(
+    controller: SelfImprovementCampaignController,
+    *,
+    run_id: str,
+    report: Mapping[str, Any],
+) -> PairedReplayResumeCheckpointV1 | None:
+    """Recover the deepest safe cursor omitted by legacy terminal projection."""
+
+    raw_candidate_ids = report.get("candidate_ids")
+    candidate_ids = tuple(
+        item
+        for item in (
+            raw_candidate_ids
+            if isinstance(raw_candidate_ids, (list, tuple))
+            else ()
+        )
+        if isinstance(item, str) and item
+    )
+    for candidate_id in reversed(candidate_ids):
+        request_path = (
+            controller.store.run_path(run_id)
+            / "replay"
+            / candidate_id
+            / "request.json"
+        )
+        try:
+            request = json.loads(request_path.read_text(encoding="utf-8"))
+        except (OSError, TypeError, ValueError, json.JSONDecodeError):
+            continue
+        fingerprint = (
+            request.get("verified_candidate_package_fingerprint")
+            if isinstance(request, Mapping)
+            else None
+        )
+        if not isinstance(fingerprint, str) or not fingerprint:
+            continue
+        checkpoint = discover_paired_replay_resume_checkpoint(
+            controller.store,
+            run_id=run_id,
+            candidate_id=candidate_id,
+            verified_candidate_package_fingerprint=fingerprint,
+        )
+        if checkpoint is not None and checkpoint.pending_case_ids:
+            return checkpoint
+    return None
 def _report_has_repairable_framework_screening_admission_failure(
     report: Mapping[str, Any],
 ) -> bool:

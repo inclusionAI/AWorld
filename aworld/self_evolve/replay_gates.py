@@ -43,6 +43,7 @@ def _gate_has_typed_shared_measurement_failure(gate: GateResult) -> bool:
             "replay_confidence",
             "fresh_evaluator_rerun",
             "trusted_improvement_measurement",
+            "cost_latency_regression",
         }
         and details.get("failure_class")
         in {"measurement", "framework", "infrastructure"}

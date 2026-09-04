@@ -2082,6 +2082,60 @@ def test_mixed_member_aggregate_has_consistent_unexecuted_lifecycle(
     assert aggregate.repetition_results == ()
 
 
+def test_member_aggregate_preserves_variable_runtime_resource_metrics(
+    tmp_path: Path,
+) -> None:
+    request = CandidateReplayRequest(
+        run_id="run-resources",
+        task_id="root",
+        workspace_root=str(tmp_path),
+        target=SelfEvolveTargetRef(target_type="skill", target_id="demo"),
+        candidate_id="candidate",
+        overlay_skill_root=str(tmp_path / "overlay"),
+        task_input="root",
+    )
+
+    def variant(case_id: str, latency_ms: float) -> ReplayVariantResult:
+        return ReplayVariantResult(
+            variant_id="candidate",
+            status=ReplayExecutionStatus.SUCCEEDED,
+            trajectory=[{"action": {"content": case_id}}],
+            metrics={
+                "repetition_count": 1,
+                "successful_repetition_count": 1,
+                "failed_repetition_count": 0,
+                "latency_ms": latency_ms,
+                "total_tokens": latency_ms / 10,
+            },
+        )
+
+    first = variant("one", 100.0)
+    second = variant("two", 300.0)
+    members = (
+        CandidateReplayMemberResult(
+            "one", replace(request, task_id="one"), first, first
+        ),
+        CandidateReplayMemberResult(
+            "two", replace(request, task_id="two"), second, second
+        ),
+    )
+
+    aggregate = _aggregate_member_variant_results(
+        base_variant_id="candidate",
+        members=members,
+        select=lambda member: member.candidate,
+        artifact_dir=tmp_path / "aggregate-resources",
+        persist=False,
+    )
+
+    assert aggregate.metrics["latency_ms"] == 200.0
+    assert aggregate.metrics["total_tokens"] == 20.0
+    assert aggregate.metrics["latency_ms_coverage"] == 1.0
+    assert aggregate.metrics["latency_ms_aggregation"] == (
+        "mean_per_executed_member"
+    )
+
+
 @pytest.mark.parametrize("case_count", (1, 3))
 def test_normalized_replay_members_are_dataset_ordered_and_detect_contract_gaps(
     tmp_path: Path,
@@ -4953,6 +5007,32 @@ def test_replay_service_launch_diagnostic_is_bounded_and_payload_free(
         "SECRET_VALUE",
     ]
     assert "environment" not in diagnostic
+
+
+def test_failed_replay_service_launch_diagnostic_retains_exit_state(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "diagnostics" / "launch.json"
+    service = _frozen_skill_runtime_capability(tmp_path).services[0]
+
+    replay_module._write_replay_service_launch_diagnostic(
+        path,
+        service=service,
+        command=("python", "runtime.py", "--port", "9876"),
+        environment_keys=("AWORLD_REPLAY_PORT",),
+        host="127.0.0.1",
+        port=9876,
+        status="failed",
+        started_at=123.0,
+        process_id=42,
+        process_returncode=1,
+        error_type="ReplayServiceProcessExitedError",
+    )
+
+    diagnostic = json.loads(path.read_text(encoding="utf-8"))
+    assert diagnostic["status"] == "failed"
+    assert diagnostic["process_returncode"] == 1
+    assert diagnostic["error_type"] == "ReplayServiceProcessExitedError"
 
 
 @pytest.mark.asyncio
