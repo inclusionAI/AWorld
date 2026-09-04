@@ -8,6 +8,9 @@ from types import SimpleNamespace
 
 import pytest
 import aworld.self_evolve.campaign as campaign_module
+from aworld.self_evolve.resource_evidence import (
+    reproject_missing_resource_evidence,
+)
 
 from aworld.self_evolve.campaign import (
     CampaignMeasurementLedgerV2,
@@ -22,7 +25,9 @@ from aworld.self_evolve.campaign import (
 )
 from aworld.self_evolve.candidate_package import candidate_package_fingerprint
 from aworld.self_evolve.replay import (
+    CandidateReplayMemberResult,
     CandidateReplayRequest,
+    CandidateReplayResult,
     ReplayExecutionStatus,
     ReplayVariantResult,
     _member_artifact_name,
@@ -474,6 +479,138 @@ def test_resume_restores_completed_replay_after_framework_handoff(
     assert migrated_report["paired_replay_resume_checkpoint"][
         "pending_case_ids"
     ] == []
+
+
+def test_resume_reclassifies_startup_timeout_and_restores_frozen_candidate(
+    tmp_path: Path,
+) -> None:
+    controller = SelfImprovementCampaignController(workspace_root=tmp_path)
+    campaign = controller.create(
+        request={
+            "task": "retry frozen startup timeout candidate",
+            "from_trajectory": "trajectory.log",
+            "apply_policy": "verified_only",
+        },
+        max_cycles=3,
+    )
+    source_run_id = f"{campaign.campaign_id}-cycle-001"
+    pruned_run_id = f"{campaign.campaign_id}-cycle-002"
+    failed_run_id = f"{campaign.campaign_id}-cycle-003"
+    candidate = CandidateVariant(
+        candidate_id="candidate-frozen-startup-timeout",
+        target=SelfEvolveTargetRef("skill", "demo", "/skills/demo/SKILL.md"),
+        content="# Demo\n\nImproved.\n",
+        rationale="retain the immutable candidate",
+    )
+    fingerprint = _write_paired_replay_timeout_artifacts(
+        controller,
+        run_id=source_run_id,
+        candidate=candidate,
+    )
+    controller.store.write_report(
+        source_run_id,
+        {
+            "run_id": source_run_id,
+            "status": "rejected",
+            "campaign_failure_attribution": {
+                "code": "replay_total_timeout",
+                "resume_candidate_id": candidate.candidate_id,
+                "resume_candidate_package_fingerprint": fingerprint,
+            },
+        },
+    )
+    # The newest continuation can retain its report while artifact retention
+    # has made its replay cursor invalid. Resume must keep walking lineage.
+    controller.store.write_report(
+        pruned_run_id,
+        {
+            "run_id": pruned_run_id,
+            "status": "rejected",
+            "campaign_failure_attribution": {
+                "code": "replay_total_timeout",
+                "resume_candidate_id": candidate.candidate_id,
+                "resume_candidate_package_fingerprint": fingerprint,
+            },
+        },
+    )
+    report = {
+        "run_id": failed_run_id,
+        "status": "rejected",
+        "budget": _budget(),
+        "verification_funnel": {
+            "authoritative_candidate_count": 2,
+            "authoritative_candidate_ids": [candidate.candidate_id, "repair"],
+        },
+        "gate_results": [
+            {
+                "gate_name": "candidate_capability_replay",
+                "passed": False,
+                "details": {
+                    "code": "candidate_capability_operational_preflight_failed",
+                    "failure_class": "candidate",
+                    "error_type": "ReplayServiceReadinessTimeout",
+                    "phase": "startup",
+                    "artifact_root": "capability_preflight/candidate-frozen",
+                    "repairable": True,
+                },
+            }
+        ],
+        "campaign": {},
+    }
+    report_path = controller.store.write_report(failed_run_id, report)
+    retained_stderr = (
+        controller.store.run_path(failed_run_id)
+        / "capability_preflight"
+        / f"{candidate.candidate_id}-fingerprint"
+        / "replay_services"
+        / "service-1"
+        / "stderr.txt"
+    )
+    retained_stderr.parent.mkdir(parents=True)
+    retained_stderr.write_text("startup did not become ready", encoding="utf-8")
+    exhausted = campaign_module.replace(
+        campaign,
+        status=SelfImprovementCampaignStatus.EXHAUSTED,
+        cycle_index=3,
+        run_ids=(source_run_id, pruned_run_id, failed_run_id),
+        cumulative_authoritative_candidates=2,
+        latest_progress=self_improvement_progress(report),
+        latest_disposition=SelfImprovementDisposition(
+            kind=SelfImprovementDispositionKind.EXHAUSTED,
+            reason_code="candidate_repair_frontier_stalled",
+            owner="candidate",
+            stage="capability_preflight",
+            scope="candidate",
+            repairable=True,
+        ),
+        latest_report_path=str(report_path),
+    )
+    controller.store.write_campaign(exhausted)
+
+    migrated = campaign_module._migrate_startup_timeout_candidate_for_resume(
+        controller,
+        exhausted,
+    )
+
+    assert migrated.status is SelfImprovementCampaignStatus.ACTIVE
+    assert migrated.measurement_pending_run_id == source_run_id
+    assert migrated.measurement_pending_candidate_id == candidate.candidate_id
+    assert migrated.cumulative_authoritative_candidates == 0
+    assert migrated.infrastructure_retry_count == 1
+    assert migrated.latest_disposition is not None
+    assert migrated.latest_disposition.kind is (
+        SelfImprovementDispositionKind.RETRY_INFRASTRUCTURE
+    )
+    migrated_report = controller.store.read_report(failed_run_id)
+    assert migrated_report["campaign_failure_attribution"]["failure_class"] == (
+        "infrastructure"
+    )
+    assert migrated_report["campaign_causal_migration"]["candidate_id"] == (
+        candidate.candidate_id
+    )
+    assert migrated_report["campaign_failure_attribution"]["diagnostic_refs"] == [
+        retained_stderr.relative_to(tmp_path).as_posix()
+    ]
 
 
 def test_resume_migrates_paired_replay_member_timeout_handoff(
@@ -1592,6 +1729,139 @@ def test_shared_measurement_attribution_precedes_historical_candidate_event() ->
     assert disposition.owner == "evaluation_harness"
     assert disposition.scope == "shared_run"
     assert disposition.diagnostic_refs == ("/tmp/replay/request.json",)
+
+
+def test_missing_resource_evidence_repairs_measurement_instead_of_pausing() -> None:
+    report = _report(
+        _event(owner="candidate", code="evidence_quality"),
+    )
+    report["campaign_failure_attribution"] = {
+        "primary_gate": "cost_latency_regression",
+        "code": "resource_regression_evidence_missing",
+        "failure_class": "measurement",
+        "failure_owner": "framework",
+        "failure_scope": "shared_run",
+        "repairable": True,
+        "next_action": "repair_measurement",
+    }
+
+    disposition = derive_self_improvement_disposition(report)
+
+    assert disposition.kind is SelfImprovementDispositionKind.REPAIR_MEASUREMENT
+    assert disposition.reason_code == "shared_measurement_control_invalid"
+    assert disposition.owner == "evaluation_harness"
+
+
+def test_legacy_missing_resource_report_reprojects_completed_member_metrics(
+    tmp_path: Path,
+) -> None:
+    request = CandidateReplayRequest(
+        run_id="run-resource-migration",
+        task_id="case-1",
+        workspace_root=str(tmp_path),
+        target=SelfEvolveTargetRef("skill", "demo", None),
+        candidate_id="candidate-resource",
+        overlay_skill_root=str(tmp_path / "overlay"),
+        task_input="task",
+    )
+
+    def variant(variant_id: str, latency_ms: float) -> ReplayVariantResult:
+        return ReplayVariantResult(
+            variant_id=variant_id,
+            status=ReplayExecutionStatus.SUCCEEDED,
+            trajectory=[{"action": {"content": "done"}}],
+            metrics={
+                "repetition_count": 1,
+                "successful_repetition_count": 1,
+                "failed_repetition_count": 0,
+                "latency_ms": latency_ms,
+            },
+        )
+
+    baseline = variant("baseline", 100.0)
+    candidate = variant("candidate-resource", 130.0)
+    replay = CandidateReplayResult(
+        request=request,
+        baseline=baseline,
+        candidate=candidate,
+        member_results=(
+            CandidateReplayMemberResult(
+                "case-1",
+                request,
+                baseline,
+                candidate,
+            ),
+        ),
+    )
+    report = {
+        "baseline_metrics": {
+            "score": 70.0,
+            "effective_case_count": 1,
+        },
+        "candidate_metrics": {
+            "score": 80.0,
+            "effective_case_count": 1,
+        },
+        "gate_results": [
+            {
+                "gate_name": "cost_latency_regression",
+                "passed": False,
+                "reason": "verified evaluation has no comparable resource evidence",
+                "details": {"code": "resource_regression_evidence_missing"},
+            }
+        ],
+        "rejection_attribution": {
+            "code": "evidence_quality",
+            "failure_class": "candidate",
+            "repairable": True,
+        },
+        "campaign_failure_attribution": {
+            "code": "resource_regression_evidence_missing",
+            "failure_class": "framework",
+        },
+    }
+
+    candidate_id = reproject_missing_resource_evidence(
+        report,
+        replay_result=replay,
+    )
+
+    assert candidate_id == "candidate-resource"
+    assert report["baseline_metrics"]["replay_latency_ms"] == 100.0
+    assert report["candidate_metrics"]["replay_latency_ms"] == 130.0
+    assert report["gate_results"][0]["passed"] is True
+    assert report["campaign_failure_attribution"]["code"] == (
+        "evidence_quality"
+    )
+
+
+def test_resource_migration_discovers_interrupted_repair_replay(
+    tmp_path: Path,
+) -> None:
+    controller = SelfImprovementCampaignController(workspace_root=tmp_path)
+    run_id = "campaign-resource-cycle-002"
+    candidate = CandidateVariant(
+        candidate_id="candidate-resource-repair",
+        target=SelfEvolveTargetRef("skill", "demo", None),
+        content="# repaired evidence\n",
+        rationale="repair evidence quality",
+    )
+    _write_paired_replay_timeout_artifacts(
+        controller,
+        run_id=run_id,
+        candidate=candidate,
+    )
+
+    checkpoint = campaign_module._discover_interrupted_paired_replay_checkpoint(
+        controller,
+        run_id=run_id,
+        report={"candidate_ids": [candidate.candidate_id]},
+    )
+
+    assert checkpoint is not None
+    assert checkpoint.candidate_id == candidate.candidate_id
+    assert checkpoint.completed_pair_case_ids == ("case-complete",)
+    assert checkpoint.pending_case_ids == ("case-pending",)
 
 
 def test_terminal_nonretryable_infrastructure_attribution_pauses_operator() -> None:

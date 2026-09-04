@@ -10027,6 +10027,19 @@ async def _start_replay_services(
                     )
                     _reset_replay_service_protocol_trace(protocol_trace)
             except Exception as exc:
+                _write_replay_service_launch_diagnostic(
+                    launch_diagnostic_path,
+                    service=service,
+                    command=command,
+                    environment_keys=tuple(service_environment),
+                    host="127.0.0.1",
+                    port=port,
+                    status="failed",
+                    started_at=launch_started_at,
+                    process_id=process.pid,
+                    process_returncode=process.poll(),
+                    error_type=type(exc).__name__,
+                )
                 if isinstance(exc, ReplayServiceProtocolError):
                     exc = ReplayServiceProtocolError(
                         str(exc),
@@ -10078,6 +10091,7 @@ def _write_replay_service_launch_diagnostic(
     status: str,
     started_at: float,
     process_id: int | None = None,
+    process_returncode: int | None = None,
     error_type: str | None = None,
 ) -> None:
     """Persist a bounded, payload-free service launch record for failed runs."""
@@ -10098,6 +10112,7 @@ def _write_replay_service_launch_diagnostic(
         "host": host,
         "port": port,
         "process_id": process_id,
+        "process_returncode": process_returncode,
         "error_type": error_type,
         "command_fingerprint": (
             "sha256:" + hashlib.sha256(raw_command.encode("utf-8")).hexdigest()
@@ -14276,6 +14291,33 @@ def _aggregate_member_variant_results(
         values = [variant.metrics[key] for variant in member_variants]
         if all(value == values[0] for value in values[1:]):
             common_metrics[key] = values[0]
+    # Runtime resource values legitimately differ by case.  Requiring exact
+    # equality silently discarded every useful latency/token observation at
+    # the dataset root, which then made verified resource gates report that no
+    # evidence existed.  Repetition aggregates already express these values
+    # per execution, so preserve their per-member mean with explicit coverage.
+    executed_variants = [variant for variant in member_variants if variant.executed]
+    for key in (
+        "cost_usd",
+        "total_tokens",
+        "latency_ms",
+        "duration_ms",
+        "external_tool_call_count",
+    ):
+        values = [
+            float(value)
+            for variant in executed_variants
+            if isinstance((value := variant.metrics.get(key)), (int, float))
+            and not isinstance(value, bool)
+        ]
+        if values and len(values) == len(executed_variants):
+            common_metrics[key] = sum(values) / len(values)
+            common_metrics[f"{key}_values"] = values
+            common_metrics[f"{key}_coverage_count"] = len(values)
+            common_metrics[f"{key}_coverage"] = len(values) / len(
+                executed_variants
+            )
+            common_metrics[f"{key}_aggregation"] = "mean_per_executed_member"
     metrics = {
         **common_metrics,
         "member_count": len(members),

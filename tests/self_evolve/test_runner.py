@@ -2214,6 +2214,24 @@ def test_declared_shared_measurement_gate_publishes_typed_causal_event() -> None
     assert _gate_has_typed_shared_measurement_failure(gate)
 
 
+def test_missing_resource_evidence_is_shared_measurement_failure() -> None:
+    gate = GateResult(
+        gate_name="cost_latency_regression",
+        passed=False,
+        reason="verified evaluation has no comparable resource evidence",
+        details={
+            "code": "resource_regression_evidence_missing",
+            "failure_class": "measurement",
+            "failure_owner": "framework",
+            "failure_scope": "shared_run",
+            "repairable": True,
+            "next_action": "repair_measurement",
+        },
+    )
+
+    assert _gate_has_typed_shared_measurement_failure(gate) is True
+
+
 def test_iteration_selection_prefers_fewer_failed_gates_without_scores() -> None:
     target = SelfEvolveTargetRef(target_type="skill", target_id="demo")
     first = CandidateVariant(

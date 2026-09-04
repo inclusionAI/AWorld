@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 from aworld.self_evolve.capability_contracts import validate_applicable_capabilities
@@ -69,6 +70,37 @@ class CapabilityValidationResult:
 
     def as_list(self) -> list[GateResult]:
         return list(self.gates)
+
+
+def _persistent_preflight_diagnostic_refs(
+    artifact_dir: Path,
+    *,
+    workspace_root: Path,
+) -> tuple[str, ...]:
+    """Return concrete retained files instead of an ephemeral directory ref."""
+
+    retained_names = {"launch.json", "stdout.txt", "stderr.txt"}
+    paths = sorted(
+        path
+        for path in artifact_dir.rglob("*")
+        if path.is_file() and path.name in retained_names
+    )
+    refs: list[str] = []
+    for path in paths[:16]:
+        ref = (
+            path.relative_to(workspace_root).as_posix()
+            if path.is_relative_to(workspace_root)
+            else path.name
+        )
+        refs.append(sanitize_path_ref(ref))
+    if refs:
+        return tuple(refs)
+    ref = (
+        artifact_dir.relative_to(workspace_root).as_posix()
+        if artifact_dir.is_relative_to(workspace_root)
+        else artifact_dir.name
+    )
+    return (sanitize_path_ref(ref),)
 
 
 async def validate_candidate_capabilities(
@@ -274,6 +306,10 @@ async def validate_candidate_capabilities(
         owner = (
             FailureOwner.CANDIDATE if candidate_owned else FailureOwner.INFRASTRUCTURE
         )
+        diagnostic_refs = _persistent_preflight_diagnostic_refs(
+            artifact_dir,
+            workspace_root=runtime.store.workspace_root,
+        )
         event = ReplayFailureEvent(
             code=error_code,
             owner=owner,
@@ -289,13 +325,7 @@ async def validate_candidate_capabilities(
                 "reason": sanitize_text(str(exc), max_chars=512),
                 **diagnostic_details,
             },
-            artifact_refs=(
-                sanitize_path_ref(
-                    artifact_dir.relative_to(runtime.store.workspace_root).as_posix()
-                    if artifact_dir.is_relative_to(runtime.store.workspace_root)
-                    else artifact_dir.name
-                ),
-            ),
+            artifact_refs=diagnostic_refs,
             capability_id=capability.capability_id,
         )
         gates[replay_gate_index] = GateResult(
@@ -310,6 +340,7 @@ async def validate_candidate_capabilities(
                 "code": error_code,
                 "error_type": type(exc).__name__,
                 "artifact_root": str(artifact_dir),
+                "diagnostic_refs": list(diagnostic_refs),
                 **diagnostic_details,
                 "failure_event": event.to_dict(),
                 "causal_failure_events": [event.to_dict()],
