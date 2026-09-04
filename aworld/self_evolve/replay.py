@@ -3382,46 +3382,62 @@ def _materialize_task_skill_mount(
 def _resume_root_is_compatible(
     current: CandidateReplayRequest,
     stored: CandidateReplayRequest,
+    *,
+    allow_workspace_seed_drift: bool = False,
 ) -> bool:
     """Compare immutable experiment identity while ignoring run-local bindings."""
 
-    return _resume_adaptation_is_semantically_compatible(current, stored) and all(
+    identity_fields = [
+        "target",
+        "candidate_id",
+        "dataset_fingerprint",
+        "baseline_skill_fingerprint",
+        "verified_candidate_package_fingerprint",
+        "baseline_repetitions",
+        "candidate_repetitions",
+        "repetition_semantics",
+        "evidence_policy_mode",
+    ]
+    if not allow_workspace_seed_drift:
+        identity_fields.append("workspace_seed_fingerprint")
+    return _resume_adaptation_is_semantically_compatible(
+        current,
+        stored,
+        allow_workspace_seed_drift=allow_workspace_seed_drift,
+    ) and all(
         getattr(current, field_name) == getattr(stored, field_name)
-        for field_name in (
-            "target",
-            "candidate_id",
-            "dataset_fingerprint",
-            "baseline_skill_fingerprint",
-            "workspace_seed_fingerprint",
-            "verified_candidate_package_fingerprint",
-            "baseline_repetitions",
-            "candidate_repetitions",
-            "repetition_semantics",
-            "evidence_policy_mode",
-        )
+        for field_name in identity_fields
     ) and _resume_measurement_contract_is_compatible(current, stored)
 
 
 def _resume_member_is_compatible(
     current: CandidateReplayRequest,
     stored: CandidateReplayRequest,
+    *,
+    allow_workspace_seed_drift: bool = False,
 ) -> bool:
-    return _resume_adaptation_is_semantically_compatible(current, stored) and all(
+    identity_fields = [
+        "task_id",
+        "target",
+        "candidate_id",
+        "task_input_fingerprint",
+        "dataset_fingerprint",
+        "baseline_skill_fingerprint",
+        "verified_candidate_package_fingerprint",
+        "baseline_repetitions",
+        "candidate_repetitions",
+        "repetition_semantics",
+        "evidence_policy_mode",
+    ]
+    if not allow_workspace_seed_drift:
+        identity_fields.append("workspace_seed_fingerprint")
+    return _resume_adaptation_is_semantically_compatible(
+        current,
+        stored,
+        allow_workspace_seed_drift=allow_workspace_seed_drift,
+    ) and all(
         getattr(current, field_name) == getattr(stored, field_name)
-        for field_name in (
-            "task_id",
-            "target",
-            "candidate_id",
-            "task_input_fingerprint",
-            "dataset_fingerprint",
-            "baseline_skill_fingerprint",
-            "workspace_seed_fingerprint",
-            "verified_candidate_package_fingerprint",
-            "baseline_repetitions",
-            "candidate_repetitions",
-            "repetition_semantics",
-            "evidence_policy_mode",
-        )
+        for field_name in identity_fields
     ) and _resume_measurement_contract_is_compatible(current, stored)
 
 
@@ -3448,6 +3464,8 @@ def _resume_measurement_contract_is_compatible(
 def _resume_adaptation_is_semantically_compatible(
     current: CandidateReplayRequest,
     stored: CandidateReplayRequest,
+    *,
+    allow_workspace_seed_drift: bool = False,
 ) -> bool:
     """Compare logical replay capability without run-local paths or bindings."""
 
@@ -3500,8 +3518,11 @@ def _resume_adaptation_is_semantically_compatible(
         and stored_bundle.ready
         and current_bundle.environment_fingerprint
         == stored_bundle.environment_fingerprint
-        and current_bundle.workspace_seed_fingerprint
-        == stored_bundle.workspace_seed_fingerprint
+        and (
+            allow_workspace_seed_drift
+            or current_bundle.workspace_seed_fingerprint
+            == stored_bundle.workspace_seed_fingerprint
+        )
         and [
             (case.case_id, case.task_input_fingerprint, case.readiness)
             for case in current_bundle.cases
@@ -3541,21 +3562,41 @@ def _load_resumable_member_pairs(
             f"source={resume_root}"
         )
         return {}
-    if (
-        checkpoint.get("resume_safe") is not True
-        or not _resume_root_is_compatible(request, stored_root_request)
+    expected_case_ids = {case.case_id for case, _, _ in prepared_members}
+    raw_completed = checkpoint.get("candidate_phase_completed_case_ids")
+    raw_comparable = checkpoint.get("comparable_pair_case_ids")
+    raw_pending = checkpoint.get("pending_case_ids")
+    completed = (
+        {item for item in raw_completed if isinstance(item, str) and item}
+        if isinstance(raw_completed, list)
+        else set()
+    )
+    comparable = (
+        {item for item in raw_comparable if isinstance(item, str) and item}
+        if isinstance(raw_comparable, list)
+        else set()
+    )
+    pending = (
+        {item for item in raw_pending if isinstance(item, str) and item}
+        if isinstance(raw_pending, list)
+        else set()
+    )
+    complete_checkpoint = bool(
+        expected_case_ids
+        and completed == expected_case_ids
+        and comparable == expected_case_ids
+        and not pending
+    )
+    if checkpoint.get("resume_safe") is not True or not _resume_root_is_compatible(
+        request,
+        stored_root_request,
+        allow_workspace_seed_drift=complete_checkpoint,
     ):
         logger.info(
             "self_evolve.replay.resume.skip reason=experiment_identity_mismatch "
             f"source={resume_root}"
         )
         return {}
-    raw_completed = checkpoint.get("candidate_phase_completed_case_ids")
-    if not isinstance(raw_completed, list):
-        return {}
-    completed = {
-        item for item in raw_completed if isinstance(item, str) and item
-    }
     resumed: dict[str, CandidateReplayMemberResult] = {}
     for case, member_request, member_dir in prepared_members:
         if case.case_id not in completed:
@@ -3569,7 +3610,11 @@ def _load_resumable_member_pairs(
             )
         except (FileNotFoundError, ValueError, json.JSONDecodeError, OSError):
             continue
-        if not _resume_member_is_compatible(member_request, stored_member_request):
+        if not _resume_member_is_compatible(
+            member_request,
+            stored_member_request,
+            allow_workspace_seed_drift=complete_checkpoint,
+        ):
             continue
         source_baseline_dir = (
             Path(stored_member_request.baseline_replay_dir)
@@ -6504,8 +6549,12 @@ def _run_replay_cli(
     if not capture_output:
         raise ValueError("replay CLI supervision requires captured output")
     if evidence_finalization_timeout_seconds is None:
-        evidence_finalization_timeout_seconds = (
-            _EVIDENCE_FINALIZATION_GRACE_SECONDS
+        # Evidence can become available well before the agent has completed
+        # its terminal TaskResponse. The default therefore shares the attempt
+        # deadline instead of introducing an unrelated early kill switch.
+        evidence_finalization_timeout_seconds = max(
+            float(timeout),
+            _EVIDENCE_FINALIZATION_GRACE_SECONDS,
         )
     if (
         isinstance(evidence_finalization_timeout_seconds, bool)
@@ -8282,10 +8331,7 @@ class AWorldCliReplayExecutor:
                         if trust_context is not None
                         else None
                     ),
-                    evidence_finalization_timeout_seconds=(
-                        request.evidence_finalization_timeout_seconds
-                        or _EVIDENCE_FINALIZATION_GRACE_SECONDS
-                    ),
+                    evidence_finalization_timeout_seconds=request.evidence_finalization_timeout_seconds,
                     task_response_max_bytes=task_response_max_bytes,
                 )
             )
@@ -8332,7 +8378,10 @@ class AWorldCliReplayExecutor:
                         "termination_budget_axis": "finalization_grace",
                         "evidence_finalization_grace_seconds": (
                             request.evidence_finalization_timeout_seconds
-                            or _EVIDENCE_FINALIZATION_GRACE_SECONDS
+                            or max(
+                                float(request.timeout_seconds),
+                                _EVIDENCE_FINALIZATION_GRACE_SECONDS,
+                            )
                         ),
                     }
                 )

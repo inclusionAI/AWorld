@@ -869,6 +869,69 @@ def test_materialization_stall_continues_under_budget_candidate_repair() -> None
     assert disposition.repairable is True
 
 
+def test_cycle_authoritative_limit_continues_with_campaign_capacity() -> None:
+    report = _report(_event(code="replay_confidence"))
+    report["campaign_failure_attribution"] = {
+        "failure_class": "candidate",
+        "repairable": True,
+        "primary_gate": "replay_confidence",
+    }
+    report["verification_funnel"] = {
+        "authoritative_candidate_count": 2,
+        "max_authoritative_candidates": 2,
+        "generation_stop_reason": "authoritative_candidate_limit_reached",
+    }
+    report["campaign"] = {
+        "cycle": 2,
+        "max_cycles": 4,
+        "authoritative_candidate_count": 1,
+        "max_authoritative_candidates": 3,
+    }
+
+    disposition = derive_self_improvement_disposition(report)
+
+    assert disposition.kind is SelfImprovementDispositionKind.CONTINUE_CANDIDATE
+    assert disposition.reason_code == "cycle_authoritative_frontier_reached"
+
+
+@pytest.mark.parametrize(
+    ("campaign_overrides"),
+    (
+        {"cycle": 4},
+        {"authoritative_candidate_count": 3},
+    ),
+)
+def test_cycle_authoritative_limit_does_not_cross_campaign_bounds(
+    campaign_overrides: dict[str, int],
+) -> None:
+    report = _report(_event(code="replay_confidence"))
+    report["campaign_failure_attribution"] = {
+        "failure_class": "candidate",
+        "repairable": True,
+        "primary_gate": "replay_confidence",
+    }
+    report["verification_funnel"] = {
+        "authoritative_candidate_count": 2,
+        "max_authoritative_candidates": 2,
+        "generation_stop_reason": "authoritative_candidate_limit_reached",
+    }
+    report["campaign"] = {
+        "cycle": 2,
+        "max_cycles": 4,
+        "authoritative_candidate_count": 1,
+        "max_authoritative_candidates": 3,
+        **campaign_overrides,
+    }
+
+    disposition = derive_self_improvement_disposition(
+        report,
+        previous_progress=self_improvement_progress(report),
+    )
+
+    assert disposition.kind is SelfImprovementDispositionKind.EXHAUSTED
+    assert disposition.reason_code == "candidate_repair_frontier_stalled"
+
+
 def test_shared_scheduler_block_is_a_framework_goal_handoff() -> None:
     report = {
         "status": "rejected",

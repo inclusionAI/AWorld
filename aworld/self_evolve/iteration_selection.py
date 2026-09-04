@@ -25,7 +25,7 @@ def _select_iteration_state(
 
 def _iteration_candidate_score(
     state: Mapping[str, object],
-) -> tuple[int, int, int, float, float, int, int]:
+) -> tuple[int, int, int, int, float, float, int, int]:
     summary = state.get("candidate_summary")
     score = float("-inf")
     if isinstance(summary, EvaluationSummary):
@@ -68,9 +68,13 @@ def _iteration_candidate_score(
         if adaptation_compiled
         else 0
     )
+    authoritative_rank = int(
+        state.get("lifecycle_stage") == "authoritative_replay"
+    )
     paired_delta = _iteration_candidate_paired_delta(state, gates=gates)
     return (
         int(substantive_evaluation),
+        authoritative_rank,
         progress_rank,
         int(paired_delta is not None),
         paired_delta if paired_delta is not None else float("-inf"),
