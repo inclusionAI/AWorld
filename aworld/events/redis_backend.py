@@ -28,10 +28,17 @@ class _RestrictedUnpickler(pickle.Unpickler):
     def find_class(self, module, name):
         if module == "builtins" and name in self._SAFE_BUILTINS:
             return super().find_class(module, name)
-        if module in {"collections", "collections.abc", "copyreg", "enum", "datetime"}:
-            return super().find_class(module, name)
+        if module in {"collections", "collections.abc", "enum", "datetime"}:
+            resolved = super().find_class(module, name)
+            if isinstance(resolved, type):
+                return resolved
         if module.startswith("aworld."):
-            return super().find_class(module, name)
+            # Event payloads may contain AWorld classes, but permitting arbitrary
+            # callables would reintroduce reducer-based code execution (for
+            # example, ``aworld.some_module.some_function``).
+            resolved = super().find_class(module, name)
+            if isinstance(resolved, type):
+                return resolved
         raise pickle.UnpicklingError(f"global '{module}.{name}' is not allowed")
 
 
