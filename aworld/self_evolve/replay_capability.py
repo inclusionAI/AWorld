@@ -2873,6 +2873,11 @@ def _parse_compile_result(
     output_root: Path,
 ) -> ReplayCapabilityCompileResult:
     raw = _read_json_object(result_path, label="replay capability result")
+    raw = _canonicalize_nested_fixture_paths(raw, output_root=output_root)
+    raw = _canonicalize_framework_owned_service_fields(
+        raw,
+        output_root=output_root,
+    )
     schema_version = _required_string(raw, "schema_version", "result")
     if schema_version != REPLAY_CAPABILITY_RESULT_SCHEMA_VERSION:
         _raise_schema_field_error(
@@ -3044,7 +3049,38 @@ def _parse_compile_result(
         raise ReplayCapabilityError("result fixture count exceeds limit")
     fixture_total_bytes = 0
     for fixture in fixtures:
-        fixture_path = _resolve_output_file(output_root, fixture)
+        try:
+            fixture_path = _resolve_output_file(output_root, fixture)
+        except ReplayCapabilityError:
+            _raise_schema_field_error(
+                "declared replay fixture path does not identify an emitted file",
+                (
+                    _schema_field_violation(
+                        schema_layer="compile_result",
+                        field_path="fixtures[*]",
+                        rule="enum",
+                        expected=("compiler_emitted_relative_path",),
+                        value=fixture,
+                        value_domain="source_behavior",
+                        required_operations=(
+                            "write_fixture_beneath_output_root",
+                            "declare_exact_output_relative_fixture_path",
+                            "reuse_exact_path_in_fixture_provenance_and_services",
+                        ),
+                        forbidden_operations=(
+                            "declare_fixture_basename_for_nested_output_file",
+                        ),
+                    ),
+                ),
+                extra_details={
+                    "code": "fixture_output_path_mismatch",
+                    "required_fixture_path_contract": (
+                        "fixtures, fixture_evidence_refs keys, and service "
+                        "response_fixture values must use the exact path relative "
+                        "to the compiler output directory"
+                    ),
+                },
+            )
         fixture_size = fixture_path.stat().st_size
         if fixture_size > _MAX_FIXTURE_FILE_BYTES:
             raise ReplayCapabilityError("result fixture exceeds byte limit")
@@ -3375,6 +3411,172 @@ def _canonicalize_shared_fixture_provenance(
         if proven_refs:
             normalized[fixture] = proven_refs
     return normalized
+
+
+def _canonicalize_nested_fixture_paths(
+    raw: Mapping[str, Any],
+    *,
+    output_root: Path,
+) -> dict[str, Any]:
+    """Repair one provably equivalent fixture basename/path mismatch.
+
+    Candidate compilers commonly create ``output/fixtures/<name>`` but declare
+    only ``<name>`` in all compile-result fields.  Rewrite that metadata only
+    when the declared path is absent and the deterministic ``fixtures/``
+    counterpart is a regular, non-symlink file inside the output root.  All
+    linked result fields move atomically, preserving the strict undeclared-file
+    and provenance checks that run afterwards.
+    """
+
+    raw_fixtures = raw.get("fixtures")
+    raw_provenance = raw.get("fixture_evidence_refs")
+    raw_services = raw.get("services")
+    if (
+        not isinstance(raw_fixtures, list)
+        or not all(isinstance(item, str) for item in raw_fixtures)
+        or not isinstance(raw_provenance, Mapping)
+        or not isinstance(raw_services, list)
+    ):
+        return dict(raw)
+
+    replacements: dict[str, str] = {}
+    for declared in raw_fixtures:
+        try:
+            normalized = _normalized_relative_path(declared, label="fixture")
+        except ReplayCapabilityError:
+            return dict(raw)
+        exact = output_root.joinpath(*PurePosixPath(normalized).parts)
+        if exact.exists():
+            continue
+        if PurePosixPath(normalized).parts[:1] == ("fixtures",):
+            continue
+        nested = f"fixtures/{normalized}"
+        try:
+            _resolve_output_file(output_root, nested)
+        except ReplayCapabilityError:
+            continue
+        replacements[declared] = nested
+    if not replacements:
+        return dict(raw)
+
+    normalized_fixtures = [
+        replacements.get(item, item) for item in raw_fixtures
+    ]
+    if len(set(normalized_fixtures)) != len(normalized_fixtures):
+        return dict(raw)
+    normalized_provenance: dict[str, Any] = {}
+    for path, refs in raw_provenance.items():
+        normalized_path = replacements.get(path, path)
+        if normalized_path in normalized_provenance:
+            return dict(raw)
+        normalized_provenance[normalized_path] = refs
+    normalized_services: list[Any] = []
+    for service in raw_services:
+        if not isinstance(service, Mapping):
+            normalized_services.append(service)
+            continue
+        normalized_service = dict(service)
+        response_fixture = normalized_service.get("response_fixture")
+        if isinstance(response_fixture, str):
+            normalized_service["response_fixture"] = replacements.get(
+                response_fixture,
+                response_fixture,
+            )
+        normalized_services.append(normalized_service)
+
+    normalized_raw = dict(raw)
+    normalized_raw["fixtures"] = normalized_fixtures
+    normalized_raw["fixture_evidence_refs"] = normalized_provenance
+    normalized_raw["services"] = normalized_services
+    return normalized_raw
+
+
+def _canonicalize_framework_owned_service_fields(
+    raw: Mapping[str, Any],
+    *,
+    output_root: Path,
+) -> dict[str, Any]:
+    """Fill transport boilerplate that the framework can prove and execute.
+
+    TCP readiness only asserts that the framework-started service has bound its
+    assigned loopback port.  Likewise, an explicitly declared empty HTTP
+    response assertion can be replaced with the canonical assertion derived
+    from the immutable response fixture.  Neither transformation invents task
+    behavior; both remove model-authored duplication of framework-owned facts.
+    Invalid non-empty declarations remain subject to the strict validators.
+    """
+
+    raw_services = raw.get("services")
+    if not isinstance(raw_services, list):
+        return dict(raw)
+    assertions: dict[str, str | None] = {}
+    normalized_services: list[Any] = []
+    changed = False
+    for service in raw_services:
+        if not isinstance(service, Mapping):
+            normalized_services.append(service)
+            continue
+        normalized_service = dict(service)
+        if "readiness" not in normalized_service:
+            normalized_service["readiness"] = {
+                "kind": "tcp",
+                "timeout_seconds": 10.0,
+            }
+            changed = True
+        raw_probes = normalized_service.get("protocol_probes")
+        fixture = normalized_service.get("response_fixture")
+        if not isinstance(raw_probes, list) or not isinstance(fixture, str):
+            normalized_services.append(normalized_service)
+            continue
+        normalized_probes: list[Any] = []
+        for probe in raw_probes:
+            if not isinstance(probe, Mapping):
+                normalized_probes.append(probe)
+                continue
+            normalized_probe = dict(probe)
+            if (
+                normalized_probe.get("kind") == "http"
+                and normalized_probe.get("response_contains") == ""
+                and normalized_probe.get("validate_advertised_websockets")
+                is not True
+            ):
+                if fixture not in assertions:
+                    assertion: str | None = None
+                    try:
+                        fixture_bytes = _resolve_output_file(
+                            output_root,
+                            fixture,
+                        ).read_bytes()
+                        response_index = _build_recorded_response_index(
+                            fixture_bytes
+                        )
+                        assertion = next(
+                            (
+                                str(record["canonical_probe_assertion"])
+                                for record in response_index.get("records", ())
+                                if isinstance(record, Mapping)
+                                and record.get("non_empty") is True
+                                and isinstance(
+                                    record.get("canonical_probe_assertion"),
+                                    str,
+                                )
+                            ),
+                            None,
+                        )
+                    except (OSError, ReplayCapabilityError):
+                        assertion = None
+                    assertions[fixture] = assertion
+                if assertions[fixture] is not None:
+                    normalized_probe["response_contains"] = assertions[fixture]
+                    changed = True
+            normalized_probes.append(normalized_probe)
+        normalized_service["protocol_probes"] = normalized_probes
+        normalized_services.append(normalized_service)
+    if not changed:
+        return dict(raw)
+    normalized_raw = dict(raw)
+    normalized_raw["services"] = normalized_services
+    return normalized_raw
 
 
 def _evidence_source_values(

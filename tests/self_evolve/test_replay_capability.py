@@ -2011,6 +2011,126 @@ def test_shared_fixture_provenance_is_narrowed_to_proven_common_evidence(
     assert normalized == {"fixture.txt": (common_ref,)}
 
 
+def test_nested_fixture_basename_is_rebound_across_compile_result_fields(
+    tmp_path: Path,
+) -> None:
+    output_root = tmp_path / "output"
+    (output_root / "fixtures").mkdir(parents=True)
+    (output_root / "fixtures" / "fixture.bin").write_bytes(b"recorded")
+
+    normalized = replay_capability_module._canonicalize_nested_fixture_paths(
+        {
+            "fixtures": ["fixture.bin"],
+            "fixture_evidence_refs": {"fixture.bin": ["evidence-one"]},
+            "services": [
+                {
+                    "requirement_id": "requirement-one",
+                    "response_fixture": "fixture.bin",
+                }
+            ],
+        },
+        output_root=output_root,
+    )
+
+    assert normalized["fixtures"] == ["fixtures/fixture.bin"]
+    assert normalized["fixture_evidence_refs"] == {
+        "fixtures/fixture.bin": ["evidence-one"]
+    }
+    assert normalized["services"][0]["response_fixture"] == (
+        "fixtures/fixture.bin"
+    )
+
+
+def test_framework_owned_service_fields_are_derived_from_fixture(
+    tmp_path: Path,
+) -> None:
+    output_root = tmp_path / "output"
+    output_root.mkdir()
+    (output_root / "fixture.json").write_text(
+        json.dumps({"action_result": {"content": "recorded response"}}),
+        encoding="utf-8",
+    )
+
+    normalized = replay_capability_module._canonicalize_framework_owned_service_fields(
+        {
+            "services": [
+                {
+                    "transport": "skill_runtime",
+                    "response_fixture": "fixture.json",
+                    "protocol_probes": [
+                        {
+                            "kind": "http",
+                            "path": "/",
+                            "response_contains": "",
+                        }
+                    ],
+                }
+            ]
+        },
+        output_root=output_root,
+    )
+
+    service = normalized["services"][0]
+    assert service["readiness"] == {
+        "kind": "tcp",
+        "timeout_seconds": 10.0,
+    }
+    assert service["protocol_probes"][0]["response_contains"] == (
+        "recorded response"
+    )
+    replay_capability_module._validate_compile_result_service_schema(
+        normalized["services"]
+    )
+
+
+@pytest.mark.replay_sandbox
+def test_missing_fixture_output_path_is_typed_for_repair(tmp_path: Path) -> None:
+    skill = _write_capability_skill(tmp_path)
+    compiler_path = skill / "replay/compiler.py"
+    compiler_source = compiler_path.read_text(encoding="utf-8")
+    compiler_path.write_text(
+        compiler_source.replace(
+            "'fixture_evidence_refs': {\n        'fixture.txt':",
+            "'fixture_evidence_refs': {\n        'missing.txt':",
+        )
+        .replace("'fixtures': ['fixture.txt']", "'fixtures': ['missing.txt']")
+        .replace(
+            "'response_fixture': 'fixture.txt'",
+            "'response_fixture': 'missing.txt'",
+        ),
+        encoding="utf-8",
+    )
+    capability = discover_replay_capability(skill)
+    assert capability is not None
+
+    with pytest.raises(ReplayCapabilityError) as error:
+        compile_and_freeze_capability(
+            capability,
+            _request(skill),
+            tmp_path / "compile",
+        )
+
+    assert error.value.code == "schema_field_validation_failed"
+    assert error.value.details["code"] == "fixture_output_path_mismatch"
+    assert error.value.details["schema_field_constraints"] == [
+        {
+            "schema_layer": "compile_result",
+            "field_path": "fixtures[*]",
+            "rule": "enum",
+            "expected": ["compiler_emitted_relative_path"],
+            "value_domain": "source_behavior",
+            "required_operations": [
+                "write_fixture_beneath_output_root",
+                "declare_exact_output_relative_fixture_path",
+                "reuse_exact_path_in_fixture_provenance_and_services",
+            ],
+            "forbidden_operations": [
+                "declare_fixture_basename_for_nested_output_file"
+            ],
+        }
+    ]
+
+
 def test_service_fixture_requirement_mismatch_is_typed_for_repair(
     tmp_path: Path,
 ) -> None:
