@@ -6,6 +6,7 @@ from dataclasses import dataclass, replace
 from typing import Any
 from aworld.self_evolve.campaign_policy import (
     campaign_measurement_outcome_for_replay as _campaign_measurement_outcome_for_replay,
+    gate_has_candidate_owned_repair as _gate_has_candidate_owned_repair,
     is_verified_apply_policy as _is_verified_apply_policy,
 )
 from aworld.self_evolve.feedback_history import (
@@ -258,6 +259,11 @@ async def execute_terminal_lifecycle(
     selected_state = (
         selected_projection.state if selected_projection is not None else None
     )
+    evidence_candidate = (
+        selected_projection.evidence_candidate
+        if selected_projection is not None
+        else None
+    )
     if shared_validation_gate is not None:
         gate_results.append(shared_validation_gate)
     elif selected_projection is not None:
@@ -355,10 +361,13 @@ async def execute_terminal_lifecycle(
         )
     terminal_selection = project_terminal_selection(
         TerminalSelectionRequest(
-            selected_candidate=selected_candidate, gate_results=tuple(gate_results)
+            selected_candidate=selected_candidate,
+            evidence_candidate=evidence_candidate,
+            gate_results=tuple(gate_results),
         ),
         runtime=TerminalSelectionRuntime(
             candidate_prerequisite_failure=_gate_has_candidate_prerequisite_failure,
+            candidate_owned_repair=_gate_has_candidate_owned_repair,
             measurement_materialization_blocked=_gate_blocks_measurement_materialization,
         ),
     )

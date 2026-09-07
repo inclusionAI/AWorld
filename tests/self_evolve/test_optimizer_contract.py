@@ -21,6 +21,7 @@ from aworld.self_evolve.optimizers.base import (
 from aworld.self_evolve.optimizers.dspy_adapter import DSPyGEPAOptimizer, DSPyMIPROOptimizer
 from aworld.self_evolve.optimizers.llm_mutator import (
     TraceReflectiveLLMMutator,
+    _canonicalize_recorded_response_container_projection,
     _canonicalize_replay_manifest_path_heading_output,
     _focused_repair_prompt_instructions,
     _validate_focused_repair_mutation_scope,
@@ -41,6 +42,22 @@ from aworld.self_evolve.types import (
 
 def _target() -> SelfEvolveTargetRef:
     return SelfEvolveTargetRef(target_type="skill", target_id="demo-skill", path="SKILL.md")
+
+
+def test_recorded_response_container_normalizer_removes_gateway_scalar_collapse() -> None:
+    source = '''
+def build_response_body(value):
+    decoded = decode(value)
+    gateway_payload = _find_gateway_payload(decoded)
+    container = gateway_payload if gateway_payload is not None else decoded
+    return container
+'''
+
+    rewritten = _canonicalize_recorded_response_container_projection(source)
+
+    assert "container = decoded" in rewritten
+    assert "container = gateway_payload if" not in rewritten
+    compile(rewritten, "<test-runtime>", "exec")
 
 
 def _replay_requirement() -> ReplayCapabilityRequirement:

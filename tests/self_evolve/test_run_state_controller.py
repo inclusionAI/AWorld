@@ -278,6 +278,7 @@ def test_selection_projects_typed_evidence_and_fresh_rerun_policy() -> None:
     )
     assert ordinary is not None
     assert ordinary.state is record.state
+    assert ordinary.evidence_candidate is ordinary.selected_candidate
     assert ordinary.selected_candidate is not None
     assert ordinary.candidate_summary.metrics["score"] == 0.5
 
@@ -287,6 +288,7 @@ def test_selection_projects_typed_evidence_and_fresh_rerun_policy() -> None:
     )
     assert fresh_rerun is not None
     assert fresh_rerun.selected_candidate is None
+    assert fresh_rerun.evidence_candidate is ordinary.evidence_candidate
     assert fresh_rerun.candidate_summary is ordinary.candidate_summary
 
 

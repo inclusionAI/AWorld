@@ -45,6 +45,7 @@ class TerminalSelectionRequest:
 
     selected_candidate: CandidateVariant | None
     gate_results: tuple[GateResult, ...]
+    evidence_candidate: CandidateVariant | None = None
 
     def __post_init__(self) -> None:
         if self.selected_candidate is not None and not isinstance(
@@ -52,6 +53,11 @@ class TerminalSelectionRequest:
             CandidateVariant,
         ):
             raise TypeError("selected_candidate must be typed when present")
+        if self.evidence_candidate is not None and not isinstance(
+            self.evidence_candidate,
+            CandidateVariant,
+        ):
+            raise TypeError("evidence_candidate must be typed when present")
         object.__setattr__(self, "gate_results", _typed_gates(self.gate_results))
 
 
@@ -60,11 +66,13 @@ class TerminalSelectionRuntime:
     """Compatibility predicates needed to classify terminal gates."""
 
     candidate_prerequisite_failure: GatePredicate
+    candidate_owned_repair: GatePredicate
     measurement_materialization_blocked: GatePredicate
 
     def __post_init__(self) -> None:
         for field_name in (
             "candidate_prerequisite_failure",
+            "candidate_owned_repair",
             "measurement_materialization_blocked",
         ):
             if not callable(getattr(self, field_name)):
@@ -113,6 +121,16 @@ def project_terminal_selection(
     repair_focus_candidate = (
         request.selected_candidate if candidate_prerequisite_blocked else None
     )
+    if (
+        repair_focus_candidate is None
+        and request.selected_candidate is None
+        and request.evidence_candidate is not None
+        and any(runtime.candidate_owned_repair(gate) for gate in gates)
+    ):
+        # Promotion selection intentionally remains empty after a failed fresh
+        # evaluation.  Persist the evaluated package separately so the next
+        # Campaign cycle repairs the candidate that actually reached judge.
+        repair_focus_candidate = request.evidence_candidate
     reported_selected_candidate = (
         None
         if repair_focus_candidate is not None

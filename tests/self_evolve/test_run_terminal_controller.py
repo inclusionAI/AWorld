@@ -115,6 +115,7 @@ def test_terminal_selection_filters_synthetic_generation_gate() -> None:
         ),
         runtime=TerminalSelectionRuntime(
             candidate_prerequisite_failure=lambda _gate: False,
+            candidate_owned_repair=lambda _gate: False,
             measurement_materialization_blocked=lambda _gate: False,
         ),
     )
@@ -146,11 +147,37 @@ def test_terminal_selection_preserves_repair_focus_identity() -> None:
         ),
         runtime=TerminalSelectionRuntime(
             candidate_prerequisite_failure=lambda gate: gate is prerequisite,
+            candidate_owned_repair=lambda gate: gate is prerequisite,
             measurement_materialization_blocked=lambda _gate: False,
         ),
     )
 
     assert projection.candidate_prerequisite_blocked is True
+    assert projection.repair_focus_candidate == _candidate()
+    assert projection.reported_selected_candidate is None
+
+
+def test_terminal_selection_preserves_rejected_evaluation_candidate_as_repair_parent() -> None:
+    evidence_failure = GateResult(
+        "evidence_quality",
+        False,
+        "candidate evidence is incomplete",
+        details={"failure_owner": "candidate", "repairable": True},
+    )
+    projection = project_terminal_selection(
+        TerminalSelectionRequest(
+            selected_candidate=None,
+            evidence_candidate=_candidate(),
+            gate_results=(evidence_failure,),
+        ),
+        runtime=TerminalSelectionRuntime(
+            candidate_prerequisite_failure=lambda _gate: False,
+            candidate_owned_repair=lambda gate: gate is evidence_failure,
+            measurement_materialization_blocked=lambda _gate: False,
+        ),
+    )
+
+    assert projection.candidate_prerequisite_blocked is False
     assert projection.repair_focus_candidate == _candidate()
     assert projection.reported_selected_candidate is None
 

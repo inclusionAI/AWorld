@@ -73,6 +73,7 @@ class ExplicitRunSelection:
     """Typed evidence projected from the selected legacy iteration state."""
 
     state: dict[str, object]
+    evidence_candidate: CandidateVariant
     selected_candidate: CandidateVariant | None
     baseline_summary: EvaluationSummary | None
     candidate_summary: EvaluationSummary | None
@@ -685,6 +686,7 @@ class ExplicitRunStateAccumulator:
         )
         return ExplicitRunSelection(
             state=selected_state,
+            evidence_candidate=candidate,
             selected_candidate=selected_candidate,
             baseline_summary=optional_typed(
                 "baseline_summary",

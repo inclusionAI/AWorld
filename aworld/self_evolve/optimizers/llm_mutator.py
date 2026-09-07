@@ -2129,6 +2129,10 @@ def _canonicalize_recorded_response_index_output(
         return output
 
     runtime_paths = frozenset(contract.runtime_paths)
+    preserve_recorded_container = any(
+        constraint.preserve_decoded_container
+        for constraint in contract.runtime_response_constraints
+    )
     rewritten_files: list[CandidateFileDelta] = []
     changed = False
     for item in explicit_files:
@@ -2139,9 +2143,16 @@ def _canonicalize_recorded_response_index_output(
             and item.operation == "upsert"
             and isinstance(item.content, str)
         ):
-            rewritten = _canonicalize_recorded_response_index_reader_chain(
-                item.content
+            rewritten = (
+                _canonicalize_recorded_response_index_reader_chain(item.content)
+                or item.content
             )
+            if preserve_recorded_container:
+                rewritten = _canonicalize_recorded_response_container_projection(
+                    rewritten
+                )
+            if rewritten == item.content:
+                rewritten = None
         if rewritten is not None:
             item = CandidateFileDelta(
                 path=item.path,
@@ -2154,6 +2165,80 @@ def _canonicalize_recorded_response_index_output(
     if not changed:
         return output
     return _replace_output_files(output, tuple(rewritten_files))
+
+
+def _canonicalize_recorded_response_container_projection(
+    source: str,
+) -> str:
+    """Remove one proven scalar-collapse anti-pattern from a replay response.
+
+    A recurring generated implementation reads ``record['value']`` correctly,
+    decodes its JSON object, and then replaces that object with the first scalar
+    found by a generic gateway walk.  Under a preserve-container repair
+    contract, rewrite only the exact local assignment whose true branch is the
+    gateway result and whose fallback is the decoded container.
+    """
+
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        return source
+    lines = source.splitlines(keepends=True)
+    replacements: list[tuple[int, int, str]] = []
+    for function in (
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    ):
+        gateway_names: set[str] = set()
+        for node in ast.walk(function):
+            if (
+                isinstance(node, ast.Assign)
+                and len(node.targets) == 1
+                and isinstance(node.targets[0], ast.Name)
+                and isinstance(node.value, ast.Call)
+                and isinstance(node.value.func, ast.Name)
+                and node.value.func.id in {
+                    "_find_gateway_payload",
+                    "find_gateway_payload",
+                }
+                and len(node.value.args) == 1
+                and isinstance(node.value.args[0], ast.Name)
+                and node.value.args[0].id == "decoded"
+            ):
+                gateway_names.add(node.targets[0].id)
+        for node in ast.walk(function):
+            if not (
+                isinstance(node, ast.Assign)
+                and len(node.targets) == 1
+                and isinstance(node.targets[0], ast.Name)
+                and isinstance(node.value, ast.IfExp)
+                and isinstance(node.value.body, ast.Name)
+                and node.value.body.id in gateway_names
+                and isinstance(node.value.orelse, ast.Name)
+                and node.value.orelse.id == "decoded"
+                and node.end_lineno is not None
+            ):
+                continue
+            indentation = lines[node.lineno - 1][
+                : len(lines[node.lineno - 1]) - len(lines[node.lineno - 1].lstrip())
+            ]
+            newline = "\n" if lines[node.end_lineno - 1].endswith("\n") else ""
+            replacements.append(
+                (
+                    node.lineno - 1,
+                    node.end_lineno,
+                    f"{indentation}{node.targets[0].id} = decoded{newline}",
+                )
+            )
+    for start, end, replacement in reversed(replacements):
+        lines[start:end] = [replacement]
+    rewritten = "".join(lines)
+    try:
+        compile(rewritten, "<candidate-runtime>", "exec")
+    except (SyntaxError, TypeError, ValueError):
+        return source
+    return rewritten
 
 
 def _replace_output_files(

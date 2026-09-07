@@ -1457,7 +1457,28 @@ class SelfImprovementCampaignController:
         return campaign
 
     def load(self, campaign_id: str) -> SelfImprovementCampaign:
-        return self.store.read_campaign(campaign_id)
+        campaign = self.store.read_campaign(campaign_id)
+        request = dict(campaign.request)
+        if (
+            campaign.status
+            in {
+                SelfImprovementCampaignStatus.ACTIVE,
+                SelfImprovementCampaignStatus.PAUSED,
+            }
+            and request.get("_campaign_total_run_token_budget") is None
+            and request.get("total_run_token_budget") is None
+            and request.get("max_run_tokens") is None
+        ):
+            request["_campaign_total_run_token_budget"] = (
+                DEFAULT_RUN_TOKEN_BUDGET_PER_CYCLE * campaign.max_cycles
+            )
+            campaign = replace(
+                campaign,
+                request=request,
+                request_fingerprint=_fingerprint(request),
+            )
+            self.store.write_campaign(campaign)
+        return campaign
 
     def advance_once(
         self,

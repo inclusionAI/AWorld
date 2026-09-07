@@ -6329,6 +6329,33 @@ def test_campaign_applies_cumulative_default_budget_across_cycles(
     assert all("max_run_tokens" not in call for call in calls)
 
 
+def test_loading_legacy_active_campaign_migrates_default_hard_budget(
+    tmp_path: Path,
+) -> None:
+    controller = SelfImprovementCampaignController(workspace_root=tmp_path)
+    campaign = controller.create(
+        {
+            "from_trajectory": "trajectory.log",
+            "apply_policy": "verified_only",
+            "infer_target": True,
+        },
+        max_cycles=4,
+    )
+    legacy_request = dict(campaign.request)
+    legacy_request.pop("_campaign_total_run_token_budget")
+    legacy = campaign_module.replace(
+        campaign,
+        request=legacy_request,
+        request_fingerprint=campaign_module._fingerprint(legacy_request),
+    )
+    controller.store.write_campaign(legacy)
+
+    migrated = controller.load(campaign.campaign_id)
+
+    assert migrated.request["_campaign_total_run_token_budget"] == 2_000_000
+    assert controller.store.read_campaign(campaign.campaign_id) == migrated
+
+
 def test_campaign_stops_when_semantic_frontier_does_not_change(tmp_path: Path) -> None:
     calls: list[dict] = []
 
