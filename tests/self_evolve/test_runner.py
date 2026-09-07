@@ -4075,6 +4075,55 @@ def test_campaign_failure_attribution_prefers_terminal_shared_measurement() -> N
     assert attribution["resolved_failure_count"] == 1
 
 
+def test_campaign_failure_attribution_prefers_actionable_terminal_candidate_over_uncertainty() -> None:
+    candidate = CandidateVariant(
+        candidate_id="candidate",
+        target=SelfEvolveTargetRef(target_type="skill", target_id="demo"),
+        content="# Demo\n",
+        rationale="candidate",
+    )
+    score_gate = GateResult(
+        gate_name="score_improvement",
+        passed=False,
+        reason="score improvement is inconclusive",
+        details={
+            "code": "score_improvement_inconclusive",
+            "failure_class": "framework",
+            "failure_owner": "framework",
+            "failure_scope": "shared_run",
+        },
+    )
+    latency_gate = GateResult(
+        gate_name="cost_latency_regression",
+        passed=False,
+        reason="candidate latency exceeds policy",
+        details={
+            "code": "latency_regression_exceeds_policy",
+            "failure_class": "candidate",
+            "failure_owner": "candidate",
+            "failure_scope": "candidate",
+            "repairable": True,
+        },
+    )
+
+    attribution = _campaign_failure_attribution(
+        (
+            {
+                "candidate": candidate,
+                "status": "rejected",
+                "gate_results": [score_gate, latency_gate],
+            },
+        ),
+        generation_stop_reason="authoritative_candidate_limit_reached",
+        terminal_gates=(score_gate, latency_gate),
+    )
+
+    assert attribution is not None
+    assert attribution["primary_gate"] == "cost_latency_regression"
+    assert attribution["code"] == "latency_regression_exceeds_policy"
+    assert attribution["failure_owner"] == "candidate"
+
+
 def test_campaign_attribution_keeps_failed_held_out_signal_candidate_owned() -> None:
     candidate = CandidateVariant(
         candidate_id="candidate",
@@ -26507,7 +26556,9 @@ async def test_paired_replay_timeout_persists_progressive_resume_checkpoint(
             executor=executor
         ),
         replay_timeout_seconds=2,
-        replay_total_timeout_seconds=0.25,
+        # Leave enough headroom for framework startup under full-suite load;
+        # case-b still deterministically exceeds the aggregate deadline.
+        replay_total_timeout_seconds=0.75,
     )
 
     replay_result, replay_dataset, gate = await runner._replay_selected_candidate(

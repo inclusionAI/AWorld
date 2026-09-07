@@ -47,6 +47,7 @@ CAMPAIGN_MEASUREMENT_LEDGER_SCHEMA_VERSION = (
 DISPOSITION_SCHEMA_VERSION = "aworld.self_evolve.disposition.v1"
 PROGRESS_SCHEMA_VERSION = "aworld.self_evolve.progress.v1"
 DEFAULT_MAX_IMPROVEMENT_CYCLES = 3
+DEFAULT_RUN_TOKEN_BUDGET_PER_CYCLE = 500_000
 DEFAULT_MAX_MEASUREMENT_RETRIES = 2
 DEFAULT_MAX_INFRASTRUCTURE_RETRIES = 2
 LEGACY_SINGLE_TURN_REPLAY_REPLACEMENT_STEPS = 24
@@ -1378,6 +1379,14 @@ class SelfImprovementCampaignController:
             persistent["_campaign_total_run_token_budget"] = int(
                 explicit_legacy_tokens
             )
+        else:
+            # Control-plane continuations do not consume mutation cycles, so a
+            # cycle bound alone is not a hard resource bound.  Persist the
+            # documented default at campaign creation to keep every future
+            # continuation inside one immutable, cumulative ceiling.
+            persistent["_campaign_total_run_token_budget"] = (
+                DEFAULT_RUN_TOKEN_BUDGET_PER_CYCLE * max_cycles
+            )
         if str(persistent.get("apply_policy") or "proposal") not in {
             "auto_verified",
             "verified_only",
@@ -1573,7 +1582,25 @@ class SelfImprovementCampaignController:
             run_path.exists()
             and not expected_report_path.is_file()
         ):
-            reservation = _interrupted_run_reservation(request)
+            reservation_request = request
+            if (
+                campaign.request.get("total_run_token_budget") is None
+                and campaign.request.get("max_run_tokens") is None
+            ):
+                # The implicit ceiling is cumulative.  A single interrupted
+                # control-plane attempt may reserve at most its documented
+                # per-cycle share, otherwise one crash would consume the
+                # complete campaign budget.
+                reservation_request = dict(request)
+                raw_remaining = reservation_request.get(
+                    "total_run_token_budget"
+                )
+                if raw_remaining is not None:
+                    reservation_request["total_run_token_budget"] = min(
+                        int(raw_remaining),
+                        DEFAULT_RUN_TOKEN_BUDGET_PER_CYCLE,
+                    )
+            reservation = _interrupted_run_reservation(reservation_request)
             interrupted_archive_path = self.store.archive_interrupted_campaign_run(
                 campaign_id=campaign.campaign_id,
                 run_id=run_id,
@@ -8321,18 +8348,48 @@ def _campaign_measurement_resume_checkpoint(
     candidate_id = campaign.measurement_pending_candidate_id
     if run_id is None or candidate_id is None or run_id not in campaign.run_ids:
         return None
-    try:
-        report = store.read_report(run_id)
-    except (OSError, TypeError, ValueError, json.JSONDecodeError):
+    candidates: list[
+        tuple[
+            tuple[int, int, int, int],
+            MeasurementResumeCheckpointV1 | PairedReplayResumeCheckpointV1,
+        ]
+    ] = []
+    # The pending pointer is an optimization, not an authority boundary.  A
+    # crash can persist a newer valid cursor before updating that pointer, so
+    # revalidate the complete lineage and choose the most advanced compatible
+    # checkpoint deterministically.
+    ordered_run_ids = tuple(dict.fromkeys((*campaign.run_ids, run_id)))
+    for lineage_index, source_run_id in enumerate(ordered_run_ids):
+        try:
+            report = store.read_report(source_run_id)
+        except (OSError, TypeError, ValueError, json.JSONDecodeError):
+            continue
+        checkpoint = _measurement_resume_checkpoint(
+            store,
+            run_id=source_run_id,
+            report=report,
+        )
+        if checkpoint is None or checkpoint.candidate_id != candidate_id:
+            continue
+        if isinstance(checkpoint, MeasurementResumeCheckpointV1) or (
+            getattr(checkpoint, "stage", None) == "authoritative_replay"
+        ):
+            rank = (2, 0, 0, lineage_index)
+        else:
+            completed_pair_case_ids = getattr(
+                checkpoint, "completed_pair_case_ids", ()
+            )
+            pending_case_ids = getattr(checkpoint, "pending_case_ids", ())
+            rank = (
+                1,
+                len(completed_pair_case_ids),
+                -len(pending_case_ids),
+                lineage_index,
+            )
+        candidates.append((rank, checkpoint))
+    if not candidates:
         return None
-    checkpoint = _measurement_resume_checkpoint(
-        store,
-        run_id=run_id,
-        report=report,
-    )
-    if checkpoint is None or checkpoint.candidate_id != candidate_id:
-        return None
-    return checkpoint
+    return max(candidates, key=lambda item: item[0])[1]
 
 
 def _paired_replay_zero_yield_streak(

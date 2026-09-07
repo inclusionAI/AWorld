@@ -334,6 +334,64 @@ def test_measurement_checkpoint_recovers_valid_disk_cursor_from_attribution(
     assert checkpoint.pending_case_ids == ("case-pending",)
 
 
+def test_campaign_resume_selects_most_advanced_valid_lineage_checkpoint(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    controller = SelfImprovementCampaignController(workspace_root=tmp_path)
+    campaign = controller.create(
+        {
+            "from_trajectory": "trajectory.log",
+            "apply_policy": "verified_only",
+            "infer_target": True,
+        },
+        max_cycles=3,
+    )
+    run_ids = tuple(
+        f"{campaign.campaign_id}-cycle-{index:03d}" for index in range(1, 4)
+    )
+    campaign = campaign_module.replace(
+        campaign,
+        cycle_index=3,
+        run_ids=run_ids,
+        measurement_pending_run_id=run_ids[0],
+        measurement_pending_candidate_id="candidate",
+    )
+
+    class Store:
+        @staticmethod
+        def read_report(run_id: str) -> dict[str, str]:
+            return {"run_id": run_id}
+
+    checkpoints = {
+        run_ids[0]: SimpleNamespace(
+            source_run_id=run_ids[0],
+            candidate_id="candidate",
+            completed_pair_case_ids=("case-1",),
+            pending_case_ids=("case-2", "case-3"),
+        ),
+        run_ids[1]: SimpleNamespace(
+            source_run_id=run_ids[1],
+            candidate_id="candidate",
+            completed_pair_case_ids=("case-1", "case-2"),
+            pending_case_ids=("case-3",),
+        ),
+        run_ids[2]: None,
+    }
+    monkeypatch.setattr(
+        campaign_module,
+        "_measurement_resume_checkpoint",
+        lambda _store, *, run_id, report: checkpoints[run_id],
+    )
+
+    checkpoint = campaign_module._campaign_measurement_resume_checkpoint(
+        Store(),
+        campaign=campaign,
+    )
+
+    assert checkpoint is checkpoints[run_ids[1]]
+
+
 def test_paired_replay_zero_yield_counts_only_unchanged_pending_set(
     tmp_path: Path,
 ) -> None:
@@ -6224,7 +6282,7 @@ def test_measurement_retry_reuses_source_checkpoint_after_resumed_timeout(
     assert result["campaign_measurement_retry_count"] == 2
 
 
-def test_campaign_has_no_implicit_default_budget_per_cycle(
+def test_campaign_applies_cumulative_default_budget_across_cycles(
     tmp_path: Path,
 ) -> None:
     calls: list[dict] = []
@@ -6264,7 +6322,10 @@ def test_campaign_has_no_implicit_default_budget_per_cycle(
     )
 
     assert result["status"] == "succeeded"
-    assert all("total_run_token_budget" not in call for call in calls)
+    assert [call["total_run_token_budget"] for call in calls] == [
+        1_500_000,
+        1_499_990,
+    ]
     assert all("max_run_tokens" not in call for call in calls)
 
 
@@ -6634,9 +6695,9 @@ def test_campaign_archives_dead_incomplete_run_and_retries_same_cycle(
 
     assert advanced.status is SelfImprovementCampaignStatus.COMPLETE
     assert advanced.cycle_index == 1
-    assert advanced.cumulative_usage.tokens == 10
+    assert advanced.cumulative_usage.tokens == 500_010
     assert calls[0]["campaign_cycle"] == 1
-    assert "total_run_token_budget" not in calls[0]
+    assert calls[0]["total_run_token_budget"] == 1_000_000
     archive = Path(summary["interrupted_run_archive_path"])
     assert archive.name == f"{run_id}-attempt-001"
     assert (archive / "interruption.json").is_file()

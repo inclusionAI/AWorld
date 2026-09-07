@@ -25,7 +25,7 @@ from dataclasses import dataclass, field, fields as dataclass_fields, replace
 from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
-from typing import Any, Callable, Mapping, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Any, Callable, Mapping, Protocol, runtime_checkable
 from urllib.parse import urlsplit
 
 from aworld.core.context.amni.local import LocalIsolatedApplicationContext
@@ -130,6 +130,13 @@ from aworld.self_evolve.schema_diagnostics import (
     websocket_handshake_http_version_constraint,
 )
 from aworld.self_evolve.types import CandidateVariant, DatasetRecipe, SelfEvolveTargetRef, to_json_dict
+
+if TYPE_CHECKING:
+    from aworld.self_evolve.measurement_scheduler import (
+        LaneExecutionContext,
+        PairLaneWorkItem,
+        ResolvedControl,
+    )
 
 _EVIDENCE_RETRY_LIMIT = 1
 _SERVICE_STARTUP_RETRY_LIMIT = 1
@@ -9721,6 +9728,9 @@ async def _start_replay_services(
         capability
     )
     fixture_service = Path(__file__).with_name("fixture_service.py").resolve()
+    service_supervisor = Path(__file__).with_name(
+        "replay_service_supervisor.py"
+    ).resolve()
     try:
         for service in capability.services:
             declared_binding = declared_endpoints.get(service.service_id)
@@ -9787,6 +9797,19 @@ async def _start_replay_services(
                 max_memory_bytes=512 * 1024 * 1024,
                 cpu_seconds=600,
             )
+            # A replay runtime can spawn descendants and outlive a hard-killed
+            # optimize process.  Keep the sandbox/resource-limited command as
+            # the supervised child; the small framework supervisor binds its
+            # lifetime to this process and owns descendant cleanup.
+            command = [
+                sys.executable,
+                "-I",
+                str(service_supervisor),
+                "--parent-pid",
+                str(os.getpid()),
+                "--",
+                *command,
+            ]
             service_environment = {
                 "PATH": os.environ.get("PATH", ""),
                 "PYTHONIOENCODING": "utf-8",

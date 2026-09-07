@@ -127,6 +127,7 @@ def test_exact_user_argv_reaches_outer_task_without_external_execution(
     assert runner.measurement_mode.value == "shadow"
     assert runner.replay_timeout_seconds == 900
     assert runner.replay_total_timeout_seconds == 3600
+    assert runner.total_run_token_budget == 1_500_000
     assert runner.evaluation_backend.judge_agent == str(judge_path.resolve())
     assert runner.evaluation_backend.judge_model_profile == "gpt-5.5"
     assert runner.evaluation_backend.judge_timeout_seconds == 600
@@ -139,9 +140,13 @@ def test_exact_user_argv_reaches_outer_task_without_external_execution(
         )
     )
     assert len(campaign_paths) == 1
-    assert json.loads(campaign_paths[0].read_text(encoding="utf-8"))[
-        "max_cycles"
-    ] == 3
+    campaign_payload = json.loads(
+        campaign_paths[0].read_text(encoding="utf-8")
+    )
+    assert campaign_payload["max_cycles"] == 3
+    assert campaign_payload["request"]["_campaign_total_run_token_budget"] == (
+        1_500_000
+    )
 
 
 @pytest.mark.parametrize(

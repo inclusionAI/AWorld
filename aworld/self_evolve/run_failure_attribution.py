@@ -588,17 +588,40 @@ def _campaign_failure_attribution(
     """
 
     resolved_contracts = set(resolved_contract_fingerprints)
-    for gate in terminal_gates:
+    failed_terminal_gates = tuple(gate for gate in terminal_gates if not gate.passed)
+    actionable_terminal_candidate = next(
+        (
+            gate
+            for gate in failed_terminal_gates
+            if _gate_has_candidate_owned_repair(gate)
+        ),
+        None,
+    )
+    for gate in failed_terminal_gates:
         if gate.passed or not isinstance(gate.details, Mapping):
             continue
         details = gate.details
         owner = str(details.get("failure_owner") or "")
         scope = str(details.get("failure_scope") or "")
         failure_class = str(details.get("failure_class") or "")
+        shared_measurement_continuation = (
+            details.get("next_action") == "continue_measurement"
+            and details.get("resume_safe") is True
+        )
         if (
             owner in {"framework", "infrastructure"}
             and scope == "shared_run"
             and failure_class in {"framework", "infrastructure", "measurement"}
+            # An incomplete/resumable measurement or a real infrastructure
+            # failure remains authoritative.  A non-resumable framework
+            # uncertainty must not hide a simultaneous actionable candidate
+            # regression merely because its gate happened to run first.
+            and (
+                actionable_terminal_candidate is None
+                or shared_measurement_continuation
+                or owner == "infrastructure"
+                or failure_class == "infrastructure"
+            )
         ):
             result: dict[str, object] = {
                 "primary_gate": gate.gate_name,
