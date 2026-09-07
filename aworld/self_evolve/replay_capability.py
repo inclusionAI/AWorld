@@ -3051,8 +3051,16 @@ def _parse_compile_result(
         fixture_total_bytes += fixture_size
     if fixture_total_bytes > _MAX_FIXTURE_TOTAL_BYTES:
         raise ReplayCapabilityError("result fixture total exceeds byte limit")
-    fixture_evidence_refs = _validate_fixture_provenance(
+    raw_fixture_evidence_refs = _canonicalize_shared_fixture_provenance(
         raw.get("fixture_evidence_refs"),
+        raw_services=raw.get("services", ()),
+        fixtures=fixtures,
+        requirement_evidence_refs=evidence_refs,
+        request=request,
+        output_root=output_root,
+    )
+    fixture_evidence_refs = _validate_fixture_provenance(
+        raw_fixture_evidence_refs,
         fixtures=fixtures,
         requirement_evidence_refs=evidence_refs,
         request=request,
@@ -3295,6 +3303,78 @@ def _validate_fixture_provenance(
             )
         validated[fixture] = refs
     return dict(sorted(validated.items()))
+
+
+def _canonicalize_shared_fixture_provenance(
+    raw: Any,
+    *,
+    raw_services: Any,
+    fixtures: Sequence[str],
+    requirement_evidence_refs: Mapping[str, tuple[str, ...]],
+    request: ReplayCapabilityCompileRequest,
+    output_root: Path,
+) -> Any:
+    """Narrow shared-fixture provenance when the bytes prove a common source.
+
+    Generated compilers often deduplicate fixture files by source path while
+    retaining every evidence reference from the first requirement that used
+    the file.  A later requirement may share the exact source reference but
+    not the first requirement's additional references.  The resulting bytes
+    are safe to share, but the over-broad provenance annotation fails the
+    requirement boundary.
+
+    Normalize only when every service consuming the fixture has a common
+    evidence reference and the fixture bytes are directly derivable from that
+    reference.  This can only narrow authority; it never invents provenance or
+    relaxes the parser's containment check.
+    """
+
+    if not isinstance(raw, Mapping) or not isinstance(raw_services, list):
+        return raw
+    consumers: dict[str, set[str]] = {}
+    for service in raw_services:
+        if not isinstance(service, Mapping):
+            continue
+        fixture = service.get("response_fixture")
+        requirement_id = service.get("requirement_id")
+        if isinstance(fixture, str) and isinstance(requirement_id, str):
+            consumers.setdefault(fixture, set()).add(requirement_id)
+
+    normalized = dict(raw)
+    for fixture in fixtures:
+        requirement_ids = consumers.get(fixture, set())
+        if not requirement_ids or any(
+            requirement_id not in requirement_evidence_refs
+            for requirement_id in requirement_ids
+        ):
+            continue
+        declared = raw.get(fixture)
+        if not isinstance(declared, (list, tuple)) or not all(
+            isinstance(item, str) for item in declared
+        ):
+            continue
+        allowed_sets = [
+            set(requirement_evidence_refs[requirement_id])
+            for requirement_id in sorted(requirement_ids)
+        ]
+        if all(set(declared).issubset(allowed) for allowed in allowed_sets):
+            continue
+        common_refs = set.intersection(*allowed_sets)
+        if not common_refs:
+            continue
+        try:
+            fixture_bytes = _resolve_output_file(output_root, fixture).read_bytes()
+            proven_refs = tuple(
+                evidence_ref
+                for evidence_ref in sorted(common_refs)
+                if fixture_bytes
+                in _evidence_source_values(evidence_ref, request=request)
+            )
+        except (OSError, ReplayCapabilityError):
+            continue
+        if proven_refs:
+            normalized[fixture] = proven_refs
+    return normalized
 
 
 def _evidence_source_values(
@@ -4450,8 +4530,33 @@ def _parse_services(
         if not set(fixture_evidence_refs[response_fixture]).issubset(
             requirement_evidence_refs[requirement_id]
         ):
-            raise ReplayCapabilityError(
-                "replay service fixture evidence belongs to a different requirement"
+            _raise_schema_field_error(
+                "replay service fixture evidence belongs to a different requirement",
+                (
+                    _schema_field_violation(
+                        schema_layer="compile_result",
+                        field_path="services[*].response_fixture",
+                        rule="enum",
+                        expected=("requirement_scoped_fixture_provenance",),
+                        value=response_fixture,
+                        value_domain="source_behavior",
+                        required_operations=(
+                            "bind_fixture_to_requirement_evidence_subset",
+                            "allocate_requirement_qualified_fixture_when_needed",
+                        ),
+                        forbidden_operations=(
+                            "reuse_fixture_with_foreign_requirement_provenance",
+                        ),
+                    ),
+                ),
+                extra_details={
+                    "code": "service_fixture_requirement_mismatch",
+                    "required_fixture_strategy": (
+                        "reuse a fixture only when its proven evidence refs are "
+                        "a subset of every consuming requirement; otherwise emit "
+                        "a requirement-qualified fixture path"
+                    ),
+                },
             )
         runtime_entrypoint_raw = value.get("runtime_entrypoint")
         runtime_entrypoint: str | None = None

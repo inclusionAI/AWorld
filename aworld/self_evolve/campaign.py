@@ -2140,10 +2140,19 @@ class SelfImprovementCampaignController:
             disposition.continuable
             and next_cycle >= _campaign_effective_max_cycles(advanced)
         ):
-            advanced = _exhaust_campaign(
-                advanced,
-                reason_code=_campaign_exhaustion_reason(advanced),
-            )
+            if (
+                disposition.owner == "budget"
+                and disposition.reason_code == "cycle_focused_budget_denied"
+            ):
+                advanced = _limit_campaign(
+                    advanced,
+                    reason_code="campaign_cycle_budget_exhausted",
+                )
+            else:
+                advanced = _exhaust_campaign(
+                    advanced,
+                    reason_code=_campaign_exhaustion_reason(advanced),
+                )
             disposition = advanced.latest_disposition
             assert disposition is not None
         elif (

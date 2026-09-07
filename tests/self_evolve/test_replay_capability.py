@@ -1962,6 +1962,101 @@ def test_fixture_provenance_shape_errors_are_typed_schema_constraints(
     ]
 
 
+def test_shared_fixture_provenance_is_narrowed_to_proven_common_evidence(
+    tmp_path: Path,
+) -> None:
+    skill = _write_capability_skill(tmp_path)
+    base_request = _request(skill)
+    common_ref = base_request.requirements[0].evidence_refs[0]
+    foreign_ref = "context:case-2:sha256:foreign"
+    first = replace(
+        base_request.requirements[0],
+        requirement_id="requirement-first",
+        evidence_refs=(common_ref, foreign_ref),
+    )
+    second = replace(
+        base_request.requirements[0],
+        requirement_id="requirement-second",
+        evidence_refs=(common_ref,),
+    )
+    request = replace(base_request, requirements=(first, second))
+    output_root = tmp_path / "output"
+    output_root.mkdir()
+    (output_root / "fixture.txt").write_text(
+        "recorded fixture",
+        encoding="utf-8",
+    )
+
+    normalized = replay_capability_module._canonicalize_shared_fixture_provenance(
+        {"fixture.txt": [common_ref, foreign_ref]},
+        raw_services=[
+            {
+                "requirement_id": "requirement-first",
+                "response_fixture": "fixture.txt",
+            },
+            {
+                "requirement_id": "requirement-second",
+                "response_fixture": "fixture.txt",
+            },
+        ],
+        fixtures=("fixture.txt",),
+        requirement_evidence_refs={
+            "requirement-first": (common_ref, foreign_ref),
+            "requirement-second": (common_ref,),
+        },
+        request=request,
+        output_root=output_root,
+    )
+
+    assert normalized == {"fixture.txt": (common_ref,)}
+
+
+def test_service_fixture_requirement_mismatch_is_typed_for_repair(
+    tmp_path: Path,
+) -> None:
+    output_root = tmp_path / "output"
+    output_root.mkdir()
+    (output_root / "fixture.txt").write_text("recorded", encoding="utf-8")
+
+    with pytest.raises(ReplayCapabilityError) as error:
+        replay_capability_module._parse_services(
+            [
+                {
+                    "service_id": "service-one",
+                    "requirement_id": "requirement-one",
+                    "transport": "http_fixture",
+                    "response_fixture": "fixture.txt",
+                    "readiness": {"kind": "tcp", "timeout_seconds": 2.0},
+                }
+            ],
+            output_root=output_root,
+            fixtures=("fixture.txt",),
+            runtime_files=(),
+            handled_requirements={"requirement-one"},
+            fixture_evidence_refs={"fixture.txt": ("evidence-foreign",)},
+            requirement_evidence_refs={"requirement-one": ("evidence-own",)},
+        )
+
+    assert error.value.code == "schema_field_validation_failed"
+    assert error.value.details["code"] == "service_fixture_requirement_mismatch"
+    assert error.value.details["schema_field_constraints"] == [
+        {
+            "schema_layer": "compile_result",
+            "field_path": "services[*].response_fixture",
+            "rule": "enum",
+            "expected": ["requirement_scoped_fixture_provenance"],
+            "value_domain": "source_behavior",
+            "required_operations": [
+                "bind_fixture_to_requirement_evidence_subset",
+                "allocate_requirement_qualified_fixture_when_needed",
+            ],
+            "forbidden_operations": [
+                "reuse_fixture_with_foreign_requirement_provenance"
+            ],
+        }
+    ]
+
+
 @pytest.mark.replay_sandbox
 def test_skill_runtime_accepts_semantically_decoded_fixture_container_expectation(
     tmp_path: Path,

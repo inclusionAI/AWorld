@@ -1322,6 +1322,51 @@ def test_campaign_continues_after_per_cycle_focused_budget_denial(
     assert len(calls) == 2
 
 
+def test_final_cycle_focused_budget_denial_is_budget_limited(
+    tmp_path: Path,
+) -> None:
+    calls: list[dict] = []
+
+    def run_once(**request):
+        calls.append(request)
+        run_id = f"{request['campaign_id']}-cycle-{request['campaign_cycle']:03d}"
+        report = _report(_event(), tokens=100)
+        report.update(
+            {
+                "run_id": run_id,
+                "rejection_attribution": {
+                    "failure_class": "candidate",
+                    "scheduler_reason_code": "focused_budget_denied",
+                },
+            }
+        )
+        report_path = tmp_path / ".aworld" / "self_evolve" / run_id / "report.json"
+        report_path.parent.mkdir(parents=True)
+        report_path.write_text(json.dumps(report), encoding="utf-8")
+        return {
+            "run_id": run_id,
+            "status": "rejected",
+            "report_path": str(report_path),
+        }
+
+    result = run_self_improvement_campaign(
+        workspace_root=tmp_path,
+        request={
+            "from_trajectory": "trajectory.log",
+            "apply_policy": "verified_only",
+            "infer_target": True,
+        },
+        max_improvement_cycles=3,
+        run_once=run_once,
+    )
+
+    assert len(calls) == 3
+    assert result["campaign_status"] == "budget_limited"
+    assert result["self_improvement_disposition"]["reason_code"] == (
+        "campaign_cycle_budget_exhausted"
+    )
+
+
 def test_disposition_keeps_distinct_member_constraints() -> None:
     disposition = derive_self_improvement_disposition(
         _report(
