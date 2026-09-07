@@ -791,7 +791,7 @@ async def test_legacy_replay_overlaps_adjacent_isolated_single_controls(
 
 
 @pytest.mark.asyncio
-async def test_replay_backend_resumes_completed_pairs_from_prior_checkpoint(
+async def test_replay_backend_resumes_completed_pairs_across_run_local_seed_drift(
     tmp_path: Path,
 ) -> None:
     calls: list[tuple[str, str]] = []
@@ -834,7 +834,11 @@ async def test_replay_backend_resumes_completed_pairs_from_prior_checkpoint(
         "candidate_repetitions": 1,
     }
     backend = AWorldCliCandidateReplayBackend(executor=fake_executor)
-    source_request = CandidateReplayRequest(run_id="source-run", **common)
+    source_request = CandidateReplayRequest(
+        run_id="source-run",
+        workspace_seed_fingerprint="sha256:" + "1" * 64,
+        **common,
+    )
     await backend.replay_candidate(
         source_request,
         candidate=candidate,
@@ -870,6 +874,7 @@ async def test_replay_backend_resumes_completed_pairs_from_prior_checkpoint(
             run_id="resumed-run",
             baseline_replay_dir=str(source_replay_dir / "members"),
             resume_replay_dir=str(source_replay_dir),
+            workspace_seed_fingerprint="sha256:" + "2" * 64,
             **common,
         ),
         candidate=candidate,
@@ -913,6 +918,17 @@ async def test_replay_backend_resumes_completed_pairs_from_prior_checkpoint(
     )
     assert resumed_checkpoint["resumed_pair_case_ids"] == ["task-a"]
     assert resumed_checkpoint["pending_case_ids"] == []
+    resumed_member_root = (
+        tmp_path
+        / ".aworld"
+        / "self_evolve"
+        / "resumed-run"
+        / "replay"
+        / candidate.candidate_id
+        / "members"
+        / _member_artifact_name("task-a")
+    )
+    assert (resumed_member_root / "baseline" / "lifecycle.json").is_file()
 
 
 @pytest.mark.asyncio
@@ -7430,6 +7446,24 @@ async def test_multi_member_replay_reuses_complete_task_failure_baselines(
         member.baseline.metrics["baseline_cache_status"]
         for member in second_result.member_results
     ] == ["hit", "hit"]
+    second_members_root = (
+        tmp_path
+        / ".aworld"
+        / "self_evolve"
+        / "run-partial-member-cache"
+        / "replay"
+        / "cand-2"
+        / "members"
+    )
+    assert all(
+        (
+            second_members_root
+            / _member_artifact_name(case_id)
+            / "baseline"
+            / "lifecycle.json"
+        ).is_file()
+        for case_id in ("task-a", "task-b")
+    )
 
 
 @pytest.mark.asyncio

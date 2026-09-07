@@ -1819,6 +1819,37 @@ class SelfImprovementCampaignController:
             if measurement_checkpoint is not None
             else None
         )
+        if (
+            measurement_continuation_requested
+            and isinstance(
+                measurement_checkpoint,
+                PairedReplayResumeCheckpointV1,
+            )
+            and _paired_replay_zero_yield_streak(
+                self.store,
+                campaign=campaign,
+                current=measurement_checkpoint,
+            )
+            >= _positive_int(
+                campaign.request.get("measurement_zero_yield_patience") or 2,
+                "measurement_zero_yield_patience",
+            )
+        ):
+            disposition = SelfImprovementDisposition(
+                kind=SelfImprovementDispositionKind.EXHAUSTED,
+                reason_code="paired_replay_continuation_stalled",
+                owner="evaluation_harness",
+                stage="evaluation",
+                scope="shared_run",
+                repairable=False,
+                progress_delta_ids=disposition.progress_delta_ids,
+                diagnostic_refs=disposition.diagnostic_refs,
+            )
+            status = _status_for_disposition(disposition)
+            measurement_continuation_requested = False
+            paired_replay_continuation_requested = False
+            measurement_checkpoint = None
+            measurement_pending_candidate_id = None
         measurement_retry_available = bool(
             measurement_retry_requested
             and measurement_pending_candidate_id is not None
@@ -8240,11 +8271,45 @@ def _measurement_resume_checkpoint(
     )
     if authoritative is not None:
         return authoritative
-    return load_paired_replay_resume_checkpoint(
+    recorded = load_paired_replay_resume_checkpoint(
         store,
         run_id=run_id,
         report=report,
     )
+    if recorded is not None:
+        return recorded
+
+    # Terminal projection is deliberately downstream of replay persistence.
+    # If that projection was interrupted or produced before the checkpoint was
+    # attached to the report, recover only from the typed timeout attribution
+    # and revalidate the canonical on-disk replay tree.  This prevents the
+    # campaign from silently falling back to an older, less advanced cursor.
+    for key in ("campaign_failure_attribution", "rejection_attribution"):
+        attribution = report.get(key)
+        if not isinstance(attribution, Mapping):
+            continue
+        candidate_id = attribution.get("resume_candidate_id")
+        package_fingerprint = attribution.get(
+            "resume_candidate_package_fingerprint"
+        )
+        if (
+            attribution.get("resume_safe") is not True
+            or attribution.get("next_action") != "continue_measurement"
+            or not isinstance(candidate_id, str)
+            or not candidate_id
+            or not isinstance(package_fingerprint, str)
+            or not package_fingerprint
+        ):
+            continue
+        discovered = discover_paired_replay_resume_checkpoint(
+            store,
+            run_id=run_id,
+            candidate_id=candidate_id,
+            verified_candidate_package_fingerprint=package_fingerprint,
+        )
+        if discovered is not None:
+            return discovered
+    return None
 
 
 def _campaign_measurement_resume_checkpoint(
@@ -8268,6 +8333,46 @@ def _campaign_measurement_resume_checkpoint(
     if checkpoint is None or checkpoint.candidate_id != candidate_id:
         return None
     return checkpoint
+
+
+def _paired_replay_zero_yield_streak(
+    store: Any,
+    *,
+    campaign: SelfImprovementCampaign,
+    current: PairedReplayResumeCheckpointV1,
+) -> int:
+    """Count consecutive continuations that completed no additional member.
+
+    Pending-set reduction is the durable paired-replay yield signal: a member
+    leaves that set only after both arms reached a terminal lifecycle state.
+    Comparable-pair count alone is insufficient because a completed negative
+    or task-failure pair is still useful, non-repeatable evidence.
+    """
+
+    streak = 0
+    reference_pending = frozenset(current.pending_case_ids)
+    for run_id in reversed(campaign.run_ids):
+        try:
+            report = store.read_report(run_id)
+        except (OSError, TypeError, ValueError, json.JSONDecodeError):
+            break
+        previous = _measurement_resume_checkpoint(
+            store,
+            run_id=run_id,
+            report=report,
+        )
+        if (
+            not isinstance(previous, PairedReplayResumeCheckpointV1)
+            or previous.candidate_id != current.candidate_id
+            or previous.candidate_fingerprint != current.candidate_fingerprint
+        ):
+            break
+        previous_pending = frozenset(previous.pending_case_ids)
+        if previous_pending != reference_pending:
+            break
+        streak += 1
+        reference_pending = previous_pending
+    return streak
 
 
 def _campaign_summary(

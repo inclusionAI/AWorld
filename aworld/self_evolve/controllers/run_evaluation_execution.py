@@ -726,6 +726,10 @@ async def execute_candidate_evaluation(
     if (
         evaluation.source_disposition.requires_fresh_evaluation
         and not any(
+            not gate.passed and gate.gate_name == "candidate_replay"
+            for gate in gate_results
+        )
+        and not any(
             not gate.passed
             and runtime.gate_is_replay_infrastructure_failure(gate)
             for gate in gate_results

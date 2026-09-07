@@ -153,8 +153,49 @@ def test_replay_total_budget_admission_uses_completed_member_phases() -> None:
     assert admission is not None
     assert admission["trigger"] == "insufficient_remaining_total_budget"
     assert admission["remaining_phase_count"] == 2
+    assert admission["admitted_phase_count"] == 2
     assert admission["estimated_required_seconds"] == 340.0
     assert admission["remaining_budget_seconds"] == 117.0
+
+
+def test_replay_budget_admission_reserves_next_pair_not_dataset_tail() -> None:
+    admission = _replay_total_budget_admission(
+        payload={
+            "event": "member_phase_started",
+            "case_id": "case-4",
+            "case_index": 4,
+            "case_count": 11,
+            "phase": "baseline",
+        },
+        replay_started_at=0.0,
+        now=880.0,
+        total_timeout_seconds=3_600.0,
+        completed_phase_durations=(435.0, 435.0),
+    )
+
+    # The remaining 16 phases do not fit, but the next complete pair does.
+    assert admission is None
+
+
+def test_candidate_phase_admission_reserves_only_candidate_arm() -> None:
+    admission = _replay_total_budget_admission(
+        payload={
+            "event": "member_phase_started",
+            "case_id": "case-11",
+            "case_index": 11,
+            "case_count": 11,
+            "phase": "candidate",
+        },
+        replay_started_at=0.0,
+        now=3_300.0,
+        total_timeout_seconds=3_600.0,
+        completed_phase_durations=(350.0, 350.0),
+    )
+
+    assert admission is not None
+    assert admission["remaining_phase_count"] == 1
+    assert admission["admitted_phase_count"] == 1
+    assert admission["estimated_required_seconds"] == 350.0
 
 
 def test_remaining_replay_phases_respects_resumed_case_position() -> None:

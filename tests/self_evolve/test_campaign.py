@@ -284,6 +284,128 @@ def test_safe_paired_replay_timeout_is_collect_more_evidence() -> None:
     assert disposition.continuable is True
 
 
+def test_measurement_checkpoint_recovers_valid_disk_cursor_from_attribution(
+    tmp_path: Path,
+) -> None:
+    controller = SelfImprovementCampaignController(workspace_root=tmp_path)
+    campaign = controller.create(
+        request={
+            "task": "resume persisted replay",
+            "from_trajectory": "trajectory.log",
+            "apply_policy": "verified_only",
+        },
+        max_cycles=2,
+    )
+    run_id = f"{campaign.campaign_id}-cycle-001"
+    candidate = CandidateVariant(
+        candidate_id="candidate-disk-cursor",
+        target=SelfEvolveTargetRef("skill", "demo", "/skills/demo/SKILL.md"),
+        content="# Demo\n",
+        rationale="test disk checkpoint recovery",
+    )
+    fingerprint = _write_paired_replay_timeout_artifacts(
+        controller,
+        run_id=run_id,
+        candidate=candidate,
+    )
+    report = {
+        "run_id": run_id,
+        "status": "rejected",
+        "campaign_failure_attribution": {
+            "code": "replay_total_timeout",
+            "failure_owner": "framework",
+            "failure_scope": "shared_run",
+            "resume_safe": True,
+            "next_action": "continue_measurement",
+            "resume_candidate_id": candidate.candidate_id,
+            "resume_candidate_package_fingerprint": fingerprint,
+        },
+    }
+
+    checkpoint = campaign_module._measurement_resume_checkpoint(
+        controller.store,
+        run_id=run_id,
+        report=report,
+    )
+
+    assert checkpoint is not None
+    assert checkpoint.source_run_id == run_id
+    assert checkpoint.candidate_id == candidate.candidate_id
+    assert checkpoint.pending_case_ids == ("case-pending",)
+
+
+def test_paired_replay_zero_yield_counts_only_unchanged_pending_set(
+    tmp_path: Path,
+) -> None:
+    controller = SelfImprovementCampaignController(workspace_root=tmp_path)
+    campaign = controller.create(
+        request={
+            "task": "detect stalled replay",
+            "from_trajectory": "trajectory.log",
+            "apply_policy": "verified_only",
+        },
+        max_cycles=2,
+    )
+    run_id = f"{campaign.campaign_id}-cycle-001"
+    candidate = CandidateVariant(
+        candidate_id="candidate-stall",
+        target=SelfEvolveTargetRef("skill", "demo", "/skills/demo/SKILL.md"),
+        content="# Demo\n",
+        rationale="test replay yield",
+    )
+    fingerprint = _write_paired_replay_timeout_artifacts(
+        controller,
+        run_id=run_id,
+        candidate=candidate,
+    )
+    checkpoint = campaign_module.discover_paired_replay_resume_checkpoint(
+        controller.store,
+        run_id=run_id,
+        candidate_id=candidate.candidate_id,
+        verified_candidate_package_fingerprint=fingerprint,
+    )
+    assert checkpoint is not None
+    controller.store.write_report(
+        run_id,
+        {
+            "run_id": run_id,
+            "status": "rejected",
+            "paired_replay_resume_checkpoint": checkpoint.to_dict(),
+        },
+    )
+    prior = campaign_module.replace(
+        campaign,
+        cycle_index=1,
+        run_ids=(run_id,),
+    )
+
+    assert campaign_module._paired_replay_zero_yield_streak(
+        controller.store,
+        campaign=prior,
+        current=checkpoint,
+    ) == 1
+    progressed = type(checkpoint).create(
+        source_run_id="progressed-run",
+        candidate_id=checkpoint.candidate_id,
+        candidate_fingerprint=checkpoint.candidate_fingerprint,
+        verified_candidate_package_fingerprint=(
+            checkpoint.verified_candidate_package_fingerprint
+        ),
+        pending_case_ids=(),
+        completed_pair_case_ids=(
+            *checkpoint.completed_pair_case_ids,
+            *checkpoint.pending_case_ids,
+        ),
+        resumed_pair_case_ids=checkpoint.resumed_pair_case_ids,
+        protected_paths=checkpoint.protected_paths,
+    )
+    assert campaign_module._paired_replay_zero_yield_streak(
+        controller.store,
+        campaign=prior,
+        current=progressed,
+    ) == 0
+
+
 def test_persisted_framework_member_timeout_is_measurement_retry() -> None:
     report = {
         "status": "rejected",

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ast
 import inspect
+from dataclasses import replace
 from decimal import Decimal
 from types import SimpleNamespace
 
@@ -37,6 +38,10 @@ from aworld.self_evolve.controllers.run_replay_execution import (
     CandidateReplayExecutionResult,
 )
 from aworld.self_evolve.datasets import EvalCase, SelfEvolveDataset
+from aworld.self_evolve.optimizers.base import (
+    CandidateSourceDisposition,
+    CandidateSourceKind,
+)
 from aworld.self_evolve.types import (
     CandidateVariant,
     DatasetRecipe,
@@ -375,6 +380,52 @@ async def test_evaluation_execution_requires_backend_for_verified_apply() -> Non
     gate = next(gate for gate in result.gate_results if not gate.passed)
     assert gate.gate_name == "auto_verified_evaluation"
     assert gate.details["code"] == "evaluation_backend_missing"
+
+
+@pytest.mark.asyncio
+async def test_incomplete_replay_does_not_emit_derived_fresh_rerun_failure() -> None:
+    telemetry = SelfEvolveExecutionTelemetry()
+
+    async def must_not_evaluate(_backend, **_kwargs):
+        raise AssertionError("incomplete replay must not start judge evaluation")
+
+    request, policy = _request(apply_policy="verified_only")
+    replay_gate = GateResult(
+        "candidate_replay",
+        False,
+        "paired replay has a resumable checkpoint",
+        details={
+            "code": "replay_total_timeout",
+            "failure_class": "measurement",
+            "next_action": "continue_measurement",
+        },
+    )
+    source = CandidateSourceDisposition(
+        kind=CandidateSourceKind.STORED_EVIDENCE_RERUN,
+        source_run_id="source-run",
+    )
+    evaluation = replace(request.evaluation, source_disposition=source)
+    replay = replace(request.replay, gate_results=(replay_gate,))
+    admission = replace(
+        request.admission,
+        gate_results=(replay_gate,),
+        replay_blocked_verified_apply=True,
+    )
+
+    result = await execute_candidate_evaluation(
+        CandidateEvaluationExecutionRequest(
+            evaluation=evaluation,
+            replay=replay,
+            admission=admission,
+        ),
+        policy,
+        _runtime(telemetry=telemetry, evaluate_pair=must_not_evaluate),
+    )
+
+    assert [gate.gate_name for gate in result.gate_results] == [
+        "candidate_replay"
+    ]
+    assert result.fresh_evaluation_completed is False
 
 
 def test_run_evaluation_execution_controller_does_not_import_runner() -> None:

@@ -81,7 +81,16 @@ def _replay_total_budget_admission(
         float(total_timeout_seconds) - elapsed_seconds,
     )
     mean_phase_seconds = sum(bounded_durations) / len(bounded_durations)
-    estimated_required_seconds = mean_phase_seconds * remaining_phase_count
+    # Progressive paired replay persists every completed member. Admission
+    # therefore needs to reserve only the next indivisible unit, not every
+    # phase remaining in the dataset. Requiring the whole tail to fit caused a
+    # resumed run to execute one member and immediately schedule another
+    # Campaign cycle even when several additional pairs fit safely.
+    admitted_phase_count = min(
+        remaining_phase_count,
+        2 if phase == "baseline" else 1,
+    )
+    estimated_required_seconds = mean_phase_seconds * admitted_phase_count
     if estimated_required_seconds < remaining_budget_seconds:
         return None
     return {
@@ -92,6 +101,7 @@ def _replay_total_budget_admission(
         "phase": phase,
         "completed_phase_count": len(bounded_durations),
         "remaining_phase_count": remaining_phase_count,
+        "admitted_phase_count": admitted_phase_count,
         "mean_completed_phase_seconds": round(mean_phase_seconds, 3),
         "estimated_required_seconds": round(estimated_required_seconds, 3),
         "remaining_budget_seconds": round(remaining_budget_seconds, 3),

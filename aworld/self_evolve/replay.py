@@ -3562,35 +3562,24 @@ def _load_resumable_member_pairs(
             f"source={resume_root}"
         )
         return {}
-    expected_case_ids = {case.case_id for case, _, _ in prepared_members}
     raw_completed = checkpoint.get("candidate_phase_completed_case_ids")
-    raw_comparable = checkpoint.get("comparable_pair_case_ids")
-    raw_pending = checkpoint.get("pending_case_ids")
     completed = (
         {item for item in raw_completed if isinstance(item, str) and item}
         if isinstance(raw_completed, list)
         else set()
     )
-    comparable = (
-        {item for item in raw_comparable if isinstance(item, str) and item}
-        if isinstance(raw_comparable, list)
-        else set()
-    )
-    pending = (
-        {item for item in raw_pending if isinstance(item, str) and item}
-        if isinstance(raw_pending, list)
-        else set()
-    )
-    complete_checkpoint = bool(
-        expected_case_ids
-        and completed == expected_case_ids
-        and comparable == expected_case_ids
-        and not pending
-    )
+    # Workspace snapshots are compiled into a new run-local directory on each
+    # campaign continuation.  Their byte fingerprint can therefore drift even
+    # when the frozen capability, environment, case inputs, baseline package,
+    # and candidate package are identical.  Completed pairs remain internally
+    # causal and are revalidated below; incomplete members are never reused.
+    # Permit only that run-local seed drift at the pair boundary.  The stricter
+    # baseline-only cache path still reruns controls when its seed changes.
+    allow_paired_workspace_seed_drift = True
     if checkpoint.get("resume_safe") is not True or not _resume_root_is_compatible(
         request,
         stored_root_request,
-        allow_workspace_seed_drift=complete_checkpoint,
+        allow_workspace_seed_drift=allow_paired_workspace_seed_drift,
     ):
         logger.info(
             "self_evolve.replay.resume.skip reason=experiment_identity_mismatch "
@@ -3613,7 +3602,7 @@ def _load_resumable_member_pairs(
         if not _resume_member_is_compatible(
             member_request,
             stored_member_request,
-            allow_workspace_seed_drift=complete_checkpoint,
+            allow_workspace_seed_drift=allow_paired_workspace_seed_drift,
         ):
             continue
         source_baseline_dir = (
@@ -5619,8 +5608,20 @@ class AWorldCliCandidateReplayBackend:
         baseline_cache_status = "not_offered"
         if request.baseline_replay_dir and _stored_baseline_matches_request(request):
             baseline_cache_status = "hit"
+            source_baseline_dir = Path(request.baseline_replay_dir)
+            local_baseline_dir = replay_dir / "baseline"
+            # A cache hit is evidence, not merely a run-local pointer.  The
+            # progressive checkpoint and baseline manifest both describe the
+            # current replay tree, so materialize the validated control arm
+            # there before publishing either artifact.  Otherwise a later
+            # continuation sees a manifest entry whose baseline directory is
+            # absent and correctly rejects the whole checkpoint.
+            _clone_replay_variant_tree(
+                source_baseline_dir,
+                local_baseline_dir,
+            )
             baseline = _load_variant_result_from_dir(
-                Path(request.baseline_replay_dir),
+                local_baseline_dir,
                 base_variant_id="baseline",
             )
             logger.info(
