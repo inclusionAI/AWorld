@@ -7,7 +7,7 @@
     "sha256": "79787541403882a9bcc2e375809b6026dc72acae8a69e97ce3aef22907dd2937"
   },
   "selection_policy": {
-    "algorithm": "python random.Random(seed).sample(catalog_rows, candidate_pool_size)",
+    "algorithm": "python random.Random(seed).sample(sorted archive task ids, candidate_pool_size)",
     "seed": 20260902,
     "candidate_pool_size": 5,
     "evaluation_prefix_size": 3,
@@ -67,13 +67,14 @@
     "legacy-observe",
     "unified-context-progressive"
   ],
+  "ablation_plan": "examples/sandbox/context_eval_ablations/systematic-context-v1.json",
   "repeat": 1,
   "seed": 20260902,
-  "max_steps": 20,
+  "max_steps": 120,
   "minimum_complete_pair_requirement": 3,
   "timeouts_sec": {
     "build": 1800,
-    "agent": 900,
-    "verifier": 900
+    "agent": 14400,
+    "verifier": 7200
   }
 }

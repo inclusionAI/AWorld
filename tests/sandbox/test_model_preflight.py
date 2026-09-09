@@ -16,11 +16,13 @@ def _load_preflight():
 
 class _FakeModel:
     response = None
+    last_kwargs = None
 
     def __init__(self, conf):
         self.conf = conf
 
     async def acompletion(self, **kwargs):
+        type(self).last_kwargs = kwargs
         return self.response
 
 
@@ -46,8 +48,42 @@ async def test_reasoning_only_truncated_response_proves_provider_connectivity(
     assert receipt["status"] == "passed"
     assert receipt["provider_response_observed"] is True
     assert receipt["semantic_probe_complete"] is False
+    assert receipt["tool_call_probe_complete"] is False
     assert receipt["response_quality"] == "degraded"
     assert receipt["quality_reason_code"] == "response_truncated_after_reasoning"
+    assert _FakeModel.last_kwargs["max_tokens"] == 512
+    assert _FakeModel.last_kwargs["tools"][0]["function"]["name"] == "health_probe"
+
+
+@pytest.mark.asyncio
+async def test_tool_call_probe_matches_real_benchmark_request_shape(monkeypatch):
+    preflight = _load_preflight()
+    monkeypatch.setenv("LLM_MODEL_NAME", "tool-model")
+    monkeypatch.setenv("LLM_API_KEY", "test-key")
+    monkeypatch.setattr("aworld.models.llm.LLMModel", _FakeModel)
+    _FakeModel.response = SimpleNamespace(
+        id="response-tool",
+        content="",
+        reasoning_content="",
+        error=None,
+        finish_reason="tool_calls",
+        tool_calls=[
+            {
+                "function": {
+                    "name": "health_probe",
+                    "arguments": '{"value":"READY"}',
+                }
+            }
+        ],
+        usage={"prompt_tokens": 30, "completion_tokens": 10},
+    )
+
+    receipt = await preflight.probe(1, 7)
+
+    assert receipt["status"] == "passed"
+    assert receipt["semantic_probe_complete"] is True
+    assert receipt["tool_call_probe_complete"] is True
+    assert receipt["response_quality"] == "complete"
 
 
 @pytest.mark.asyncio

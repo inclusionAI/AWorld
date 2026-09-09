@@ -1035,9 +1035,18 @@ class AworldMemory(Memory):
             logger.debug(f"result_items[0]: {result_items[0]}")
             logger.debug("-" * 50)
 
-            while isinstance(result_items[-last_rounds], MemoryToolMessage):
-                last_rounds = last_rounds + 1
-            result_items = init_items + result_items[-last_rounds:]
+            # Expand the window through a trailing Tool run without indexing
+            # beyond the available history.  Event-driven persistence can
+            # temporarily expose only Tool messages (their assistant owner is
+            # still being committed); that is a valid partial view and must
+            # not turn a recoverable read-after-write lag into IndexError.
+            window = min(last_rounds, len(result_items))
+            while (
+                window < len(result_items)
+                and isinstance(result_items[-window], MemoryToolMessage)
+            ):
+                window += 1
+            result_items = init_items + result_items[-window:]
 
         result_items.sort(key=lambda x: x.created_at, reverse=False)
         return result_items

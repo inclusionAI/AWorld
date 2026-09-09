@@ -32,6 +32,8 @@ from aworld.core.common import (
 )
 from aworld.core.context.amni.prompt.assembly import DefaultPromptAssemblyProvider
 from aworld.core.context.base import Context
+from aworld.core.context.compiler.frozen_json import canonical_json_hash
+from aworld.core.context.compiler.turn_economics import TurnCauseCode
 from aworld.core.context.compiler.parity import (
     ContextEntryPoint,
     _ContextEntrypointClaim,
@@ -71,6 +73,7 @@ from aworld.memory.models import (
     MemoryMessage,
     MemoryToolMessage,
 )
+from aworld.memory.history_replay import causalize_memory_history
 from aworld.models.llm import (
     ModelResponseParser,
     acall_llm_model,
@@ -98,7 +101,10 @@ from aworld.runners.hook.hooks import HookPoint
 from aworld.runners.hook.utils import run_hooks
 from aworld.runners.post_tool_progress import (
     acknowledge_semantic_checkpoint,
+    increment_watchdog_metric,
     mark_post_tool_progress_llm_started,
+    post_tool_turn_for_continuation,
+    record_adaptive_context_metrics,
     semantic_progress_for_agent,
 )
 from aworld.sandbox import Sandbox
@@ -1258,6 +1264,7 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             filters=filters,
             agent_memory_config=agent_memory_config,
         )
+        histories = causalize_memory_history(histories or [])
         if histories:
             tool_calls_map = {}
             last_tool_calls = []
@@ -1392,7 +1399,175 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             else:
                 _drop_incomplete_tool_call_turn("end of history reached")
 
+        messages = self._restore_current_tool_turn(
+            messages,
+            observation=observation,
+            message=message,
+        )
         return self._prepend_task_input_messages(messages, message.context)
+
+    def _restore_current_tool_turn(
+        self,
+        messages: List[Dict[str, Any]],
+        *,
+        observation: Observation,
+        message: Message,
+    ) -> List[Dict[str, Any]]:
+        """Provide read-your-write consistency for the current Tool turn.
+
+        Amni Memory remains the durable history authority.  This fallback only
+        repairs the causal turn named by the event's continuation token when
+        event-driven persistence is not query-visible quickly enough.  It never
+        invents a Tool result or reaches into benchmark-specific state.
+        """
+        if not getattr(observation, "is_tool_result", False):
+            return messages
+        headers = getattr(message, "headers", None) or {}
+        continuation_token = headers.get("post_tool_continuation_token")
+        turn = post_tool_turn_for_continuation(
+            message.context,
+            agent_id=self.id(),
+            continuation_token=continuation_token,
+        )
+        if not isinstance(turn, dict):
+            return messages
+
+        def attach_continuation_work_state(
+            values: List[Dict[str, Any]],
+        ) -> List[Dict[str, Any]]:
+            policy_name = getattr(self.llm, "_context_checkpoint_policy", "explicit")
+            if policy_name == "explicit":
+                return values
+            from aworld.core.context.compiler import attach_adaptive_work_state
+
+            return attach_adaptive_work_state(
+                values,
+                turn.get("adaptive_work_state"),
+            )
+
+        actions = turn.get("actions")
+        observation_value = turn.get("followup_observation")
+        result_values = (
+            observation_value.get("action_result")
+            if isinstance(observation_value, dict)
+            else None
+        )
+        if (
+            not isinstance(actions, list)
+            or not actions
+            or not isinstance(result_values, list)
+        ):
+            return attach_continuation_work_state(messages)
+
+        call_ids = [
+            action.get("tool_call_id")
+            for action in actions
+            if isinstance(action, dict)
+            and isinstance(action.get("tool_call_id"), str)
+            and action.get("tool_call_id")
+        ]
+        if not call_ids:
+            return attach_continuation_work_state(messages)
+        expected_ids = set(call_ids)
+        replay_assistant_ids: set[str] = set()
+        replay_tool_ids: set[str] = set()
+        for item in messages:
+            if item.get("role") == "assistant":
+                replay_assistant_ids.update(
+                    call.get("id")
+                    for call in (item.get("tool_calls") or [])
+                    if isinstance(call, dict) and isinstance(call.get("id"), str)
+                )
+            elif item.get("role") == "tool" and isinstance(
+                item.get("tool_call_id"), str
+            ):
+                replay_tool_ids.add(item["tool_call_id"])
+        if expected_ids.issubset(replay_assistant_ids) and expected_ids.issubset(
+            replay_tool_ids
+        ):
+            return attach_continuation_work_state(messages)
+
+        # Remove a partial version of this exact group before appending the
+        # immutable Action/Observation pair in provider-valid causal order.
+        repaired: List[Dict[str, Any]] = []
+        for item in messages:
+            if item.get("role") == "assistant" and any(
+                isinstance(call, dict) and call.get("id") in expected_ids
+                for call in (item.get("tool_calls") or [])
+            ):
+                continue
+            if item.get("role") == "tool" and item.get("tool_call_id") in expected_ids:
+                continue
+            repaired.append(item)
+
+        tool_calls = []
+        for action in actions:
+            if (
+                not isinstance(action, dict)
+                or action.get("tool_call_id") not in expected_ids
+            ):
+                continue
+            params = action.get("params")
+            try:
+                arguments = json.dumps(
+                    params if isinstance(params, dict) else {},
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                )
+            except TypeError:
+                arguments = "{}"
+            tool_calls.append(
+                {
+                    "id": action["tool_call_id"],
+                    "type": "function",
+                    "function": {
+                        "name": action.get("action_name")
+                        or action.get("tool_name")
+                        or "unknown",
+                        "arguments": arguments,
+                    },
+                }
+            )
+        if not tool_calls:
+            return messages
+        repaired.append({"role": "assistant", "content": "", "tool_calls": tool_calls})
+
+        results_by_id = {
+            value.get("tool_call_id"): value
+            for value in result_values
+            if isinstance(value, dict) and isinstance(value.get("tool_call_id"), str)
+        }
+        for action_index, action in enumerate(actions):
+            if not isinstance(action, dict):
+                continue
+            call_id = action.get("tool_call_id")
+            if call_id not in expected_ids:
+                continue
+            value = results_by_id.get(call_id)
+            if value is None:
+                value = (
+                    result_values[action_index]
+                    if action_index < len(result_values)
+                    and isinstance(result_values[action_index], dict)
+                    else None
+                )
+            if not isinstance(value, dict):
+                return attach_continuation_work_state(messages)
+            try:
+                result = ActionResult(**value)
+                content = self._format_tool_result_for_followup(result)
+            except Exception:
+                content = str(value.get("content", ""))
+            repaired.append(
+                {
+                    "role": "tool",
+                    "tool_call_id": call_id,
+                    "content": content,
+                }
+            )
+        increment_watchdog_metric(message.context, "current_tool_turn_repaired_count")
+        return attach_continuation_work_state(repaired)
 
     @staticmethod
     def _prepend_task_input_messages(
@@ -1661,19 +1836,138 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             return messages
 
         from aworld.core.context.compiler import (
+            ADAPTIVE_WORK_STATE_KEY,
             AdaptiveCheckpointPolicy,
+            AdaptiveEscalationStage,
+            adaptive_escalation_message,
+            advance_adaptive_escalation,
+            attach_adaptive_work_state,
             compact_message_history,
             estimate_canonical_json_tokens,
             evaluate_adaptive_checkpoint,
+            restore_adaptive_continuation,
         )
 
         progress = semantic_progress_for_agent(context, agent_id=self.id())
         prompt_tokens = int(estimate_canonical_json_tokens(messages).value or 0)
         input_budget = int(getattr(self.llm, "_context_input_budget", 0) or 0)
         state_key = f"adaptive_context_state:{self.id()}"
-        adaptive_state = context.context_info.get(state_key)
+        runtime_state_key = "adaptive_context_state"
+        continuation_key = "adaptive_continuation_capsule"
+        event_manager = getattr(context, "event_manager", None)
+        state_context = (
+            getattr(event_manager, "context", None)
+            if event_manager is not None
+            else None
+        )
+        if state_context is None:
+            state_context = context
+        shared_reader = getattr(state_context, "read_task_runtime_state", None)
+        shared_writer = getattr(state_context, "write_task_runtime_state", None)
+        get_working_state = getattr(state_context, "get", None)
+        put_working_state = getattr(state_context, "put", None)
+        adaptive_state = (
+            shared_reader(self.id(), runtime_state_key)
+            if callable(shared_reader)
+            else None
+        )
+        if not isinstance(adaptive_state, dict):
+            adaptive_state = state_context.context_info.get(state_key)
+        if not isinstance(adaptive_state, dict) and callable(get_working_state):
+            try:
+                adaptive_state = get_working_state(state_key)
+            except Exception:
+                adaptive_state = None
         if not isinstance(adaptive_state, dict):
             adaptive_state = {}
+
+        def save_adaptive_state() -> None:
+            state_context.context_info[state_key] = adaptive_state
+            if callable(shared_writer):
+                shared_writer(self.id(), runtime_state_key, adaptive_state)
+            if callable(put_working_state):
+                try:
+                    put_working_state(state_key, adaptive_state)
+                except Exception:
+                    pass
+
+        continuation_capsule = (
+            shared_reader(self.id(), continuation_key)
+            if callable(shared_reader)
+            else None
+        )
+        continuation_state_key = f"{continuation_key}:{self.id()}"
+        if not isinstance(continuation_capsule, list):
+            continuation_capsule = state_context.context_info.get(
+                continuation_state_key
+            )
+        if not isinstance(continuation_capsule, list) and callable(get_working_state):
+            try:
+                continuation_capsule = get_working_state(continuation_state_key)
+            except Exception:
+                continuation_capsule = None
+
+        def save_continuation_capsule(values: List[Dict[str, Any]]) -> None:
+            state_context.context_info[continuation_state_key] = values
+            if callable(shared_writer):
+                shared_writer(self.id(), continuation_key, values)
+            if callable(put_working_state):
+                try:
+                    put_working_state(continuation_state_key, values)
+                except Exception:
+                    pass
+
+        work_state_key = f"{ADAPTIVE_WORK_STATE_KEY}:{self.id()}"
+        adaptive_work_state = (
+            shared_reader(self.id(), ADAPTIVE_WORK_STATE_KEY)
+            if callable(shared_reader)
+            else None
+        )
+        if not isinstance(adaptive_work_state, dict):
+            adaptive_work_state = state_context.context_info.get(work_state_key)
+        if not isinstance(adaptive_work_state, dict):
+            if callable(get_working_state):
+                try:
+                    adaptive_work_state = get_working_state(work_state_key)
+                except Exception:
+                    adaptive_work_state = None
+
+        def attach_work_state(values):
+            return attach_adaptive_work_state(values, adaptive_work_state)
+
+        if adaptive_state.get("compaction_active") is True:
+            messages = restore_adaptive_continuation(
+                messages,
+                continuation_capsule,
+                keep_recent=AdaptiveCheckpointPolicy().keep_recent_messages,
+            )
+            messages = attach_work_state(messages)
+            prompt_tokens = int(estimate_canonical_json_tokens(messages).value or 0)
+
+        def adaptive_state_count(key: str) -> int:
+            value = adaptive_state.get(key, 0)
+            return (
+                value
+                if isinstance(value, int) and not isinstance(value, bool) and value >= 0
+                else 0
+            )
+
+        turn_coordinate = context.context_lifecycle_state.turn_epoch
+        get_agent_step = getattr(state_context, "get_agent_step", None)
+        if callable(get_agent_step):
+            shared_agent_step = get_agent_step(self.id())
+            if isinstance(shared_agent_step, int) and not isinstance(
+                shared_agent_step, bool
+            ):
+                turn_coordinate = max(turn_coordinate, shared_agent_step)
+        raw_last_checkpoint_turn = adaptive_state.get("last_checkpoint_turn")
+        last_checkpoint_turn = (
+            raw_last_checkpoint_turn
+            if isinstance(raw_last_checkpoint_turn, int)
+            and not isinstance(raw_last_checkpoint_turn, bool)
+            and raw_last_checkpoint_turn >= 0
+            else None
+        )
         adaptive_policy = AdaptiveCheckpointPolicy()
         decision = evaluate_adaptive_checkpoint(
             policy_name=policy_name,
@@ -1684,15 +1978,38 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                 progress.get("low_information_gain_count", 0) or 0
             ),
             no_goal_progress_count=int(progress.get("no_goal_progress_count", 0) or 0),
-            turn_epoch=context.context_lifecycle_state.turn_epoch,
-            last_checkpoint_turn=adaptive_state.get("last_checkpoint_turn"),
+            turn_epoch=turn_coordinate,
+            last_checkpoint_turn=last_checkpoint_turn,
             policy=adaptive_policy,
         )
+        previous_no_progress_checkpoints = adaptive_state_count(
+            "no_progress_checkpoint_count"
+        )
+        escalation = advance_adaptive_escalation(
+            previous_no_progress_checkpoints=previous_no_progress_checkpoints,
+            checkpoint_reasons=decision.reasons if decision.checkpoint else (),
+            goal_progress=progress.get("goal_progress") is True,
+        )
+        if escalation.progress_reset:
+            adaptive_state.update(
+                {
+                    "schema_version": "aworld.context.adaptive-state/v2",
+                    "no_progress_checkpoint_count": 0,
+                    "escalation_stage": AdaptiveEscalationStage.NONE.value,
+                    "goal_progress_reset_count": adaptive_state_count(
+                        "goal_progress_reset_count"
+                    )
+                    + 1,
+                }
+            )
+            record_adaptive_context_metrics(state_context, progress_reset=True)
+            save_adaptive_state()
         if not decision.checkpoint:
             if adaptive_state.get("compaction_active") is True:
                 compacted, _ = compact_message_history(
                     messages, keep_recent=adaptive_policy.keep_recent_messages
                 )
+                compacted = attach_work_state(compacted)
                 effective_prompt_tokens = int(
                     estimate_canonical_json_tokens(compacted).value or 0
                 )
@@ -1701,46 +2018,80 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                 adaptive_state["last_estimated_saved_prompt_tokens"] = max(
                     0, prompt_tokens - effective_prompt_tokens
                 )
-                context.context_info[state_key] = adaptive_state
+                save_continuation_capsule(compacted)
+                save_adaptive_state()
                 return compacted
             return messages
 
-        checkpoint = await context.snapshot()
         compacted, receipt = compact_message_history(
             messages, keep_recent=adaptive_policy.keep_recent_messages
         )
+        compacted = attach_work_state(compacted)
         reasons = [reason.value for reason in decision.reasons]
+        no_progress_checkpoint = (
+            escalation.no_progress_checkpoint_count > previous_no_progress_checkpoints
+        )
+        escalation_levels = {
+            AdaptiveEscalationStage.NONE: 0,
+            AdaptiveEscalationStage.REASSESS: 1,
+            AdaptiveEscalationStage.DIVERSIFY: 2,
+            AdaptiveEscalationStage.RECOVER: 3,
+        }
         adaptive_state.update(
             {
-                "schema_version": "aworld.context.adaptive-state/v1",
-                "last_checkpoint_turn": context.context_lifecycle_state.turn_epoch,
-                "last_checkpoint_id": getattr(checkpoint, "id", None),
+                "schema_version": "aworld.context.adaptive-state/v2",
+                "last_checkpoint_turn": turn_coordinate,
+                # The checkpoint cannot contain its own repository id.  Mark
+                # the prepared state explicitly, persist all continuity data,
+                # then replace this marker in the live state after snapshot().
+                "last_checkpoint_id": None,
+                "checkpoint_snapshot_state": "prepared",
                 "last_reasons": reasons,
                 "last_prompt_tokens": prompt_tokens,
                 "last_input_budget": input_budget,
                 "last_compaction_receipt": receipt,
                 "compaction_active": receipt is not None,
+                "work_state_revision": (
+                    int(adaptive_work_state.get("revision", 0) or 0)
+                    if isinstance(adaptive_work_state, dict)
+                    else 0
+                ),
+                "no_progress_checkpoint_count": (
+                    escalation.no_progress_checkpoint_count
+                ),
+                "escalation_stage": escalation.stage.value,
             }
         )
         decisions = list(adaptive_state.get("decisions") or [])
         decisions.append(
             {
-                "turn_epoch": context.context_lifecycle_state.turn_epoch,
+                "turn_epoch": turn_coordinate,
                 "reasons": reasons,
                 "prompt_tokens": prompt_tokens,
                 "input_budget": input_budget,
                 "compacted": receipt is not None,
+                "no_progress_checkpoint_count": (
+                    escalation.no_progress_checkpoint_count
+                ),
+                "escalation_stage": escalation.stage.value,
             }
         )
         adaptive_state["decisions"] = decisions[-32:]
         acknowledge_semantic_checkpoint(context, agent_id=self.id())
-
+        record_adaptive_context_metrics(
+            state_context,
+            checkpoint=True,
+            no_progress_checkpoint=no_progress_checkpoint,
+            escalation_level=(
+                escalation_levels[escalation.stage] if no_progress_checkpoint else 0
+            ),
+        )
         progress_signal = {
             "role": "user",
-            "content": (
-                "AWorld detected insufficient semantic progress. Reassess the plan, "
-                "inspect new evidence, "
-                "and do not repeat an operation unless it can change the result."
+            "content": adaptive_escalation_message(
+                escalation.stage
+                if no_progress_checkpoint
+                else AdaptiveEscalationStage.NONE
             ),
         }
         compacted = list(compacted)
@@ -1760,7 +2111,22 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                 ),
             }
         )
-        context.context_info[state_key] = adaptive_state
+        save_continuation_capsule(compacted)
+        save_adaptive_state()
+        # Snapshot only after the continuation capsule and adaptive decision
+        # are in Amni WorkingState.  A resumed checkpoint therefore contains
+        # the exact bounded work state projected into the next provider call.
+        checkpoint_context = (
+            state_context if self._is_amni_context(state_context) else context
+        )
+        checkpoint = (
+            await checkpoint_context.snapshot(checkpoint_only=True)
+            if self._is_amni_context(checkpoint_context)
+            else await checkpoint_context.snapshot()
+        )
+        adaptive_state["last_checkpoint_id"] = getattr(checkpoint, "id", None)
+        adaptive_state["checkpoint_snapshot_state"] = "captured"
+        save_adaptive_state()
         logger.info(
             f"Adaptive Context checkpoint for agent {self.id()}: "
             f"reasons={reasons} compacted={receipt is not None}"
@@ -2041,6 +2407,21 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                 request_kwargs=kwargs,
             )
         )
+
+        # Provider structural lowering is part of the final compiler input,
+        # not an unobserved post-compile mutation. The LLM model boundary runs
+        # the same reviewed normalizer again as an idempotent safety net for
+        # non-Agent entry points.
+        if context_compiler_mode != "off":
+            provider = getattr(self.llm, "provider", None)
+            normalizer = getattr(provider, "context_model_boundary_messages", None)
+            if callable(normalizer):
+                normalized_messages = normalizer(messages)
+                if not isinstance(normalized_messages, list):
+                    raise TypeError(
+                        "provider model-boundary normalizer must return a list"
+                    )
+                messages = normalized_messages
 
         serializable_messages = to_serializable(messages)
         llm_response = None
@@ -2699,6 +3080,14 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             ]
 
         message.context.context_info[retry_key] = retry_count + 1
+        schedule_turn_cause = getattr(message.context, "schedule_turn_cause", None)
+        if callable(schedule_turn_cause):
+            schedule_turn_cause(
+                TurnCauseCode.VALIDATION_REPAIR,
+                evidence_hash=canonical_json_hash(
+                    {"validation_feedback": validation_feedback}
+                ),
+            )
         followup_observation = Observation(
             observer=self.id(),
             from_agent_name=observation.from_agent_name or self.id(),
@@ -2979,6 +3368,27 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                     logger.info(
                         f"🔄 Attempt {attempt}/{self.llm_max_attempts} for LLM call"
                     )
+
+                    if attempt > 1 and context is not None:
+                        schedule_turn_cause = getattr(
+                            context, "schedule_turn_cause", None
+                        )
+                        if callable(schedule_turn_cause):
+                            try:
+                                schedule_turn_cause(
+                                    TurnCauseCode.FRAMEWORK_RETRY,
+                                    evidence_hash=canonical_json_hash(
+                                        {
+                                            "retry_attempt": attempt,
+                                            "maximum_attempts": self.llm_max_attempts,
+                                        }
+                                    ),
+                                )
+                            except Exception as exc:
+                                logger.warning(
+                                    "Failed to type LLM retry turn; "
+                                    f"error_type={type(exc).__name__}"
+                                )
 
                     # Use non_stream_mode if stream_mode failed in previous attempt
                     current_stream_mode = stream_mode and not stream_failed_fallback

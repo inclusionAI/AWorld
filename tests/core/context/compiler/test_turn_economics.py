@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+from enum import Enum
+from types import SimpleNamespace
 
 import pytest
 
@@ -146,6 +148,516 @@ def test_generic_noisy_output_offload_retrieval_and_next_model_consumption(tmp_p
     assert copied.get_artifact_retrieval_receipts() == ()
 
 
+def test_retrieval_consumption_accepts_lossless_standard_text_part_encoding(tmp_path):
+    context = _candidate(tmp_path)
+    noise, digest, artifact_ref, _ = _source_output(context)
+    chunk = noise[4096:4352]
+    action = Value(
+        tool_call_id="call-retrieve",
+        tool_name="generic_stream",
+        action_name="read_output_artifact",
+        params={"artifact_ref": artifact_ref, "offset": 4096, "limit": 256},
+    )
+    result = Value(
+        tool_call_id="call-retrieve",
+        tool_name="generic_stream",
+        action_name="read_output_artifact",
+        metadata={},
+        content={
+            "type": "text",
+            "content": chunk.decode("ascii"),
+            "artifact_ref": artifact_ref,
+            "offset": 4096,
+            "next_offset": 4352,
+            "returned_bytes": 256,
+            "total_bytes": len(noise),
+            "complete": False,
+            "content_sha256": digest,
+            "chunk_sha256": "sha256:" + hashlib.sha256(chunk).hexdigest(),
+        },
+    )
+    context.register_model_tool_choices("request-retrieve", [{"id": "call-retrieve"}])
+    enforce_tool_output_boundary(
+        (Value(action_result=[result]),),
+        (action,),
+        context,
+        prepare_tool_output_plans(context, (action,)),
+    )
+
+    model_turn = context.record_model_turn(
+        "request-after-retrieval",
+        [
+            {
+                "role": "tool",
+                "tool_call_id": "call-retrieve",
+                "content": [
+                    {
+                        "type": "text",
+                        "text": json.dumps(result.content, ensure_ascii=False),
+                    }
+                ],
+            }
+        ],
+    )
+
+    receipt = context.get_artifact_retrieval_receipts()[0]
+    assert receipt.consumed is True
+    assert receipt.consumed_content_hash == receipt.result_content_hash
+    assert model_turn.cause is TurnCauseCode.ARTIFACT_RETRIEVAL
+
+
+def test_retrieval_consumption_accepts_owner_text_part_without_type(tmp_path):
+    context = _candidate(tmp_path)
+    noise, digest, artifact_ref, _ = _source_output(context)
+    chunk = noise[:16]
+    action = Value(
+        tool_call_id="call-retrieve",
+        tool_name="generic_stream",
+        action_name="read_output_artifact",
+        params={"artifact_ref": artifact_ref, "offset": 0, "limit": 16},
+    )
+    content = json.dumps({
+        "type": "text",
+        "content": chunk.decode("ascii"),
+        "artifact_ref": artifact_ref,
+        "offset": 0,
+        "next_offset": 16,
+        "returned_bytes": 16,
+        "total_bytes": len(noise),
+        "complete": False,
+        "content_sha256": digest,
+        "chunk_sha256": "sha256:" + hashlib.sha256(chunk).hexdigest(),
+    })
+    result = Value(
+        tool_call_id="call-retrieve",
+        tool_name="generic_stream",
+        action_name="read_output_artifact",
+        metadata={},
+        content=content,
+    )
+    context.register_model_tool_choices("request-retrieve", [{"id": "call-retrieve"}])
+    enforce_tool_output_boundary(
+        (Value(action_result=[result]),),
+        (action,),
+        context,
+        prepare_tool_output_plans(context, (action,)),
+    )
+
+    model_turn = context.record_model_turn(
+        "request-after-retrieval",
+        [{
+            "role": "tool",
+            "tool_call_id": "call-retrieve",
+            "content": [{"text": content}],
+        }],
+    )
+
+    assert context.get_artifact_retrieval_receipts()[0].consumed is True
+    assert model_turn.cause is TurnCauseCode.ARTIFACT_RETRIEVAL
+
+
+def test_retrieval_consumption_rejects_tampered_text_part_encoding(tmp_path):
+    context = _candidate(tmp_path)
+    noise, digest, artifact_ref, _ = _source_output(context)
+    chunk = noise[:32]
+    action = Value(
+        tool_call_id="call-retrieve",
+        tool_name="generic_stream",
+        action_name="read_output_artifact",
+        params={"artifact_ref": artifact_ref, "offset": 0, "limit": 32},
+    )
+    result = Value(
+        tool_call_id="call-retrieve",
+        tool_name="generic_stream",
+        action_name="read_output_artifact",
+        metadata={},
+        content={
+            "artifact_ref": artifact_ref,
+            "content": chunk.decode("ascii"),
+            "offset": 0,
+            "next_offset": 32,
+            "returned_bytes": 32,
+            "total_bytes": len(noise),
+            "complete": False,
+            "content_sha256": digest,
+            "chunk_sha256": "sha256:" + hashlib.sha256(chunk).hexdigest(),
+        },
+    )
+    context.register_model_tool_choices("request-retrieve", [{"id": "call-retrieve"}])
+    enforce_tool_output_boundary(
+        (Value(action_result=[result]),),
+        (action,),
+        context,
+        prepare_tool_output_plans(context, (action,)),
+    )
+    tampered = dict(result.content)
+    tampered["content"] = "different"
+
+    model_turn = context.record_model_turn(
+        "request-after-retrieval",
+        [{
+            "role": "tool",
+            "tool_call_id": "call-retrieve",
+            "content": [{"type": "text", "text": json.dumps(tampered)}],
+        }],
+    )
+
+    assert context.get_artifact_retrieval_receipts()[0].consumed is False
+    assert model_turn.cause is TurnCauseCode.MODEL_CHOICE
+
+
+def test_verified_bounded_retrieval_is_not_recursively_offloaded(tmp_path):
+    context = _candidate(tmp_path)
+    noise, digest, artifact_ref, _ = _source_output(context)
+    chunk = noise[:1_536]
+    action = Value(
+        tool_call_id="call-retrieve-large",
+        tool_name="generic_stream",
+        action_name="read_output_artifact",
+        params={"artifact_ref": artifact_ref, "offset": 0, "limit": 50_000},
+    )
+    original = {
+        "type": "text",
+        "content": chunk.decode("ascii"),
+        "artifact_ref": artifact_ref,
+        "offset": 0,
+        "next_offset": 1_536,
+        "returned_bytes": 1_536,
+        "total_bytes": len(noise),
+        "complete": False,
+        "content_sha256": digest,
+        "chunk_sha256": "sha256:" + hashlib.sha256(chunk).hexdigest(),
+    }
+    result = Value(
+        tool_call_id="call-retrieve-large",
+        tool_name="generic_stream",
+        action_name="read_output_artifact",
+        metadata={},
+        content=original,
+    )
+
+    enforce_tool_output_boundary(
+        (Value(action_result=[result]),),
+        (action,),
+        context,
+        prepare_tool_output_plans(context, (action,)),
+    )
+
+    assert result.content == original
+    policy = result.metadata["tool_output_policy"]
+    assert policy["reason_code"] == "artifact_retrieval_inline"
+    assert policy["context_artifact_ref"] is None
+    assert policy["offloaded_tokens"] == 0
+    assert policy["upstream_artifacts"] == [{
+        "ref": artifact_ref,
+        "content_hash": digest,
+        "byte_count": len(noise),
+        "owner_tool": "generic_stream",
+        "retrieval_action": "read_output_artifact",
+    }]
+    assert action.params["limit"] == 1_536
+    assert result.metadata["artifact_retrieval_planning"]["limit_adjusted"] is True
+    assert result.metadata["artifact_retrieval_planning"]["requested_limit"] == 50_000
+    assert result.metadata["artifact_retrieval"]["returned_byte_count"] == 1_536
+    next_action = Value(
+        tool_call_id="call-retrieve-next",
+        tool_name="generic_stream",
+        action_name="read_output_artifact",
+        params={"artifact_ref": artifact_ref, "offset": 1_536, "limit": 1024},
+    )
+    prepare_tool_output_plans(context, (next_action,))
+    assert context.get_artifact_retrieval_plan(
+        "call-retrieve-next"
+    ).artifact_ref == artifact_ref
+
+
+def test_retrieval_larger_than_framework_visibility_cap_remains_offloaded(tmp_path):
+    context = _candidate(tmp_path)
+    noise, digest, artifact_ref, _ = _source_output(context)
+    chunk = noise[:70_000]
+    action = Value(
+        tool_call_id="call-retrieve-too-large",
+        tool_name="generic_stream",
+        action_name="read_output_artifact",
+        params={"artifact_ref": artifact_ref, "offset": 0, "limit": 70_000},
+    )
+    result = Value(
+        tool_call_id="call-retrieve-too-large",
+        tool_name="generic_stream",
+        action_name="read_output_artifact",
+        metadata={},
+        content={
+            "type": "text",
+            "content": chunk.decode("ascii"),
+            "artifact_ref": artifact_ref,
+            "offset": 0,
+            "next_offset": 70_000,
+            "returned_bytes": 70_000,
+            "total_bytes": len(noise),
+            "complete": False,
+            "content_sha256": digest,
+            "chunk_sha256": "sha256:" + hashlib.sha256(chunk).hexdigest(),
+        },
+    )
+
+    enforce_tool_output_boundary(
+        (Value(action_result=[result]),),
+        (action,),
+        context,
+        prepare_tool_output_plans(context, (action,)),
+    )
+
+    assert result.metadata["tool_output_policy"]["context_artifact_ref"]
+    assert result.metadata["tool_output_policy"]["offloaded_tokens"] > 0
+    assert result.metadata["artifact_retrieval"]["status"] == "unavailable"
+
+
+def test_shadow_observation_registers_upstream_artifact_for_retrieval():
+    context = Context(task_id="shadow-upstream-artifact")
+    source_ref = "/tmp/tool-owned-output.bin"
+    source_hash = "sha256:" + "a" * 64
+    source_action = Value(
+        tool_call_id="source-call",
+        tool_name="docker",
+        action_name="run_code",
+        params={"code": "produce output"},
+    )
+    source_result = Value(
+        content={
+            "output_policy": {
+                "artifact_ref": source_ref,
+                "content_sha256": source_hash,
+                "raw_bytes": 4096,
+            }
+        },
+        metadata={},
+        tool_call_id="source-call",
+        tool_name="docker",
+        action_name="run_code",
+    )
+    enforce_tool_output_boundary(
+        (Value(action_result=[source_result]),),
+        (source_action,),
+        context,
+        {},
+    )
+
+    retrieval_action = Value(
+        tool_call_id="retrieval-call",
+        tool_name="docker",
+        action_name="read_output_artifact",
+        params={"artifact_ref": source_ref, "offset": 0, "limit": 16},
+    )
+    plans = prepare_tool_output_plans(context, (retrieval_action,))
+
+    assert plans == {}
+    plan = context._artifact_retrieval_plans["retrieval-call"]
+    assert plan.artifact_ref == source_ref
+    assert plan.artifact_content_hash == source_hash
+    assert plan.artifact_byte_count == 4096
+
+
+def test_artifact_receipts_fan_in_across_transport_copies_and_string_ranges(tmp_path):
+    root = _candidate(tmp_path)
+    source_context = root.deep_copy()
+    noise, digest, artifact_ref, _ = _source_output(source_context)
+
+    retrieval_context = root.deep_copy()
+    retrieval_context.register_model_tool_choices(
+        "request-retrieve", [{"id": "call-retrieve"}]
+    )
+    action = Value(
+        tool_call_id="call-retrieve",
+        tool_name="generic_stream",
+        action_name="read_output_artifact",
+        params={"artifact_ref": artifact_ref, "offset": "4096", "limit": "256"},
+    )
+    chunk = noise[4096:4352]
+    result = Value(
+        tool_call_id="call-retrieve",
+        tool_name="generic_stream",
+        action_name="read_output_artifact",
+        metadata={},
+        content={
+            "type": "text",
+            "content": chunk.decode("ascii"),
+            "artifact_ref": artifact_ref,
+            "offset": 4096,
+            "next_offset": 4352,
+            "returned_bytes": 256,
+            "total_bytes": len(noise),
+            "complete": False,
+            "content_sha256": digest,
+            "chunk_sha256": "sha256:" + hashlib.sha256(chunk).hexdigest(),
+        },
+    )
+    plans = prepare_tool_output_plans(retrieval_context, (action,))
+    enforce_tool_output_boundary(
+        (Value(action_result=[result]),),
+        (action,),
+        retrieval_context,
+        plans,
+    )
+
+    consumer_context = root.deep_copy()
+    model_turn = consumer_context.record_model_turn(
+        "request-after-retrieval",
+        [{"role": "tool", "tool_call_id": "call-retrieve", "content": result.content}],
+    )
+
+    assert result.metadata["artifact_retrieval"]["returned_byte_count"] == 256
+    assert model_turn.cause is TurnCauseCode.ARTIFACT_RETRIEVAL
+    assert root.get_artifact_retrieval_receipts()[0].consumed is True
+
+
+def test_artifact_plan_uses_framework_work_state_when_transport_record_is_absent():
+    context = Context(task_id="work-state-artifact")
+    source_ref = "sandbox-output://from-work-state"
+    source_hash = "sha256:" + "b" * 64
+    context.write_task_runtime_state(
+        "agent-1",
+        "adaptive_work_state",
+        {
+            "available_artifacts": [
+                {
+                    "ref": source_ref,
+                    "content_hash": source_hash,
+                    "byte_count": 2048,
+                    "tool": "docker",
+                    "action": "read_output_artifact",
+                }
+            ]
+        },
+    )
+    action = Value(
+        tool_call_id="retrieval-from-work-state",
+        tool_name="docker",
+        action_name="read_output_artifact",
+        agent_name="agent-1",
+        params={"artifact_ref": source_ref, "offset": "12", "limit": "32"},
+    )
+
+    assert prepare_tool_output_plans(context, (action,)) == {}
+    plan = context.get_artifact_retrieval_plan("retrieval-from-work-state")
+    assert plan is not None
+    assert plan.offset == 12
+    assert plan.limit == 32
+    assert plan.artifact_content_hash == source_hash
+
+
+def test_artifact_plan_falls_back_to_amni_working_state():
+    context = Context(task_id="amni-work-state-artifact")
+    source_ref = "sandbox-output://from-amni-state"
+    source_hash = "sha256:" + "c" * 64
+    context.get = lambda key: {
+        "available_artifacts": [
+            {
+                "ref": source_ref,
+                "content_hash": source_hash,
+                "byte_count": 1024,
+                "tool": "docker",
+                "action": "read_output_artifact",
+            }
+        ]
+    }
+    action = Value(
+        tool_call_id="retrieval-from-amni-state",
+        tool_name="docker",
+        action_name="read_output_artifact",
+        agent_name="agent-1",
+        params={"artifact_ref": source_ref, "offset": 0, "limit": 64},
+    )
+
+    assert prepare_tool_output_plans(context, (action,)) == {}
+    assert context.get_artifact_retrieval_plan(
+        "retrieval-from-amni-state"
+    ).artifact_ref == source_ref
+
+
+def test_artifact_records_share_through_event_manager_runtime_owner(tmp_path):
+    root = _candidate(tmp_path)
+    manager = SimpleNamespace(context=root)
+    root.event_manager = manager
+
+    source_context = _candidate(tmp_path)
+    source_context.event_manager = manager
+    noise, digest, artifact_ref, _ = _source_output(source_context)
+
+    retrieval_context = _candidate(tmp_path)
+    retrieval_context.event_manager = manager
+    action = Value(
+        tool_call_id="runtime-owner-retrieval",
+        tool_name="generic_stream",
+        action_name="read_output_artifact",
+        agent_name="agent-1",
+        params={"artifact_ref": artifact_ref, "offset": 0, "limit": 8},
+    )
+    result = Value(
+        metadata={},
+        content={
+            "type": "text",
+            "content": noise[:8].decode("ascii"),
+            "artifact_ref": artifact_ref,
+            "offset": 0,
+            "next_offset": 8,
+            "returned_bytes": 8,
+            "total_bytes": len(noise),
+            "complete": False,
+            "content_sha256": digest,
+            "chunk_sha256": "sha256:" + hashlib.sha256(noise[:8]).hexdigest(),
+        },
+    )
+    plans = prepare_tool_output_plans(retrieval_context, (action,))
+    enforce_tool_output_boundary(
+        (Value(action_result=[result]),), (action,), retrieval_context, plans
+    )
+
+    assert result.metadata["artifact_retrieval"]["returned_byte_count"] == 8
+    assert len(root.get_artifact_retrieval_receipts()) == 1
+
+
+def test_artifact_plan_normalizes_string_backed_tool_identities(tmp_path):
+    class ToolIdentity(Enum):
+        STREAM = "generic_stream"
+
+    class ActionIdentity(Enum):
+        READ = "read_output_artifact"
+
+    context = _candidate(tmp_path)
+    _, _, artifact_ref, _ = _source_output(context)
+    action = Value(
+        tool_call_id="enum-identity-retrieval",
+        tool_name=ToolIdentity.STREAM,
+        action_name=ActionIdentity.READ,
+        params={"artifact_ref": artifact_ref, "offset": 0, "limit": 8},
+    )
+
+    prepare_tool_output_plans(context, (action,))
+
+    assert context.get_artifact_retrieval_plan(
+        "enum-identity-retrieval"
+    ).artifact_ref == artifact_ref
+
+
+def test_artifact_plan_resolves_pre_invocation_mcp_route(tmp_path):
+    context = _candidate(tmp_path)
+    _, _, artifact_ref, _ = _source_output(context)
+    action = Value(
+        tool_call_id="mcp-route-retrieval",
+        tool_name="mcp",
+        action_name="generic_stream__read_output_artifact",
+        agent_name="agent-1",
+        params={"artifact_ref": artifact_ref, "offset": "0", "limit": "8"},
+    )
+
+    prepare_tool_output_plans(context, (action,))
+
+    plan = context.get_artifact_retrieval_plan("mcp-route-retrieval")
+    assert plan is not None
+    assert plan.owner_tool == "generic_stream"
+    assert plan.retrieval_action == "read_output_artifact"
+
+
 def test_legacy_and_candidate_keep_task_input_and_answer_invariant(tmp_path):
     task_prompt = "Summarize the relevant record and return the exact identifier."
     task_answer = {"identifier": "record-7"}
@@ -265,7 +777,7 @@ def test_turn_contract_is_redacted_and_capabilities_are_explicit():
     assert "/private/path" not in serialized
     support = turn_cause_support()
     assert support[TurnCauseCode.MODEL_CHOICE.value] is True
-    assert support[TurnCauseCode.VALIDATION_REPAIR.value] is False
+    assert support[TurnCauseCode.VALIDATION_REPAIR.value] is True
     assert support[TurnCauseCode.DEFERRED_CATALOG_EXPANSION.value] is False
     assert support[TurnCauseCode.DEFERRED_SKILL_EXPANSION.value] is False
     assert TurnKind.MODEL.value == "model"

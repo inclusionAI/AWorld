@@ -38,6 +38,7 @@ class TurnCauseCode(str, Enum):
 SUPPORTED_TURN_CAUSES = frozenset({
     TurnCauseCode.INITIAL_INPUT,
     TurnCauseCode.MODEL_CHOICE,
+    TurnCauseCode.VALIDATION_REPAIR,
     TurnCauseCode.FRAMEWORK_RETRY,
     TurnCauseCode.ARTIFACT_RETRIEVAL,
 })

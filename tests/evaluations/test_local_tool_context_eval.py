@@ -54,9 +54,7 @@ def test_non_terminal_case_keeps_expected_result_outside_agent_workspace(tmp_pat
 def test_non_terminal_verifier_scores_exact_host_only_artifact(tmp_path):
     driver = _load_driver()
     expected = tmp_path / "expected.json"
-    expected.write_text(
-        json.dumps({"artifact": "result.json", "exact": {"answer": 7}})
-    )
+    expected.write_text(json.dumps({"artifact": "result.json", "exact": {"answer": 7}}))
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     (workspace / "result.json").write_text(json.dumps({"answer": 7}))
@@ -71,7 +69,62 @@ def test_non_terminal_verifier_scores_exact_host_only_artifact(tmp_path):
     assert failed["errors"] == ["artifact_exact_value_mismatch"]
 
 
-def test_benefit_report_consumes_real_artifact_contract_and_stays_not_ready_for_smoke(tmp_path):
+def test_experiment_manifest_rejects_mixed_runtime_source_fingerprints(tmp_path):
+    reporter = _load_reporter()
+    experiment = tmp_path / "experiment"
+    experiment.mkdir()
+    payload = {
+        "benchmark_adapter": "local-tool-research/v1",
+        "cases": [
+            {
+                "case_id": "case",
+                "workload_kind": "tool_research",
+                "checksum": "sha256:" + "1" * 64,
+                "verifier_id": "exact-json-v1",
+            }
+        ],
+        "variants": [
+            {"name": "baseline"},
+            {"name": "candidate", "context_compiler": {"mode": "enforce"}},
+        ],
+        "repeat": 1,
+        "seed": 7,
+    }
+    results = []
+    for variant, fingerprint in (
+        ("baseline", "sha256:" + "a" * 64),
+        ("candidate", "sha256:" + "b" * 64),
+    ):
+        run = experiment / "runs" / "case" / variant / "repeat-01"
+        run.mkdir(parents=True)
+        (run / "run_manifest.json").write_text(
+            json.dumps(
+                {
+                    "aworld_source": {
+                        "commit": "abc",
+                        "source_fingerprint": fingerprint,
+                    },
+                    "invariants": {},
+                    "container": {},
+                }
+            )
+        )
+        results.append({"task": "case", "variant": variant, "repetition": 1})
+
+    try:
+        reporter.experiment_manifest(experiment, payload, results)
+    except ValueError as exc:
+        assert (
+            str(exc)
+            == "experiment mixes AWorld runtime source fingerprints across runs"
+        )
+    else:
+        raise AssertionError("mixed runtime source fingerprints must fail closed")
+
+
+def test_benefit_report_consumes_real_artifact_contract_and_stays_not_ready_for_smoke(
+    tmp_path,
+):
     reporter = _load_reporter()
     experiment = tmp_path / "experiment"
     variants = [
@@ -111,7 +164,10 @@ def test_benefit_report_consumes_real_artifact_contract_and_stays_not_ready_for_
     for name, reward, tokens in (("legacy", 0, 100), ("candidate", 1, 60)):
         run = experiment / "runs" / "case" / name / "repeat-01"
         run.mkdir(parents=True)
-        provider_payload = {"model": "test", "messages": [{"role": "user", "content": "x"}]}
+        provider_payload = {
+            "model": "test",
+            "messages": [{"role": "user", "content": "x"}],
+        }
         provider_call = {
             "provider_invoked": True,
             "provider_attempt_status": "attempted",
@@ -191,7 +247,10 @@ def test_benefit_report_consumes_real_artifact_contract_and_stays_not_ready_for_
     assert report["benefit_evidence"]["path"] == "quality"
     assert report["combined_benefit"]["metric_means"]["prompt_tokens"] == -40.0
     assert report["combined_benefit"]["metric_means"]["normalized_cost"] == -40.0
-    assert report["combined_benefit"]["metric_means"]["normalized_cost_microunits"] == -40_000_000.0
+    assert (
+        report["combined_benefit"]["metric_means"]["normalized_cost_microunits"]
+        == -40_000_000.0
+    )
     assert report["normalized_cost_policy_ready"] is True
     tampered = json.loads(json.dumps(report["workloads"]))
     tampered[0]["trials"][0]["metrics"]["normalized_cost_receipt"][
@@ -205,11 +264,26 @@ def test_benefit_report_consumes_real_artifact_contract_and_stays_not_ready_for_
         trial["metrics"].pop("normalized_cost_microunits", None)
     assert reporter.normalized_cost_evidence_ready(legacy_only) is False
     assert report["default_on_readiness"]["status"] == "not_ready"
-    assert "insufficient_paired_evidence" in report["default_on_readiness"]["gate_failures"]
-    assert "cross_workload_evidence_missing" in report["default_on_readiness"]["gate_failures"]
-    assert "provider_attribution_pairing_incomplete" in report["default_on_readiness"]["gate_failures"]
-    assert "capability_matrix_incomplete" in report["default_on_readiness"]["gate_failures"]
-    assert "canary_receipt_evidence_incomplete" in report["default_on_readiness"]["gate_failures"]
+    assert (
+        "insufficient_paired_evidence"
+        in report["default_on_readiness"]["gate_failures"]
+    )
+    assert (
+        "cross_workload_evidence_missing"
+        in report["default_on_readiness"]["gate_failures"]
+    )
+    assert (
+        "provider_attribution_pairing_incomplete"
+        in report["default_on_readiness"]["gate_failures"]
+    )
+    assert (
+        "capability_matrix_incomplete"
+        in report["default_on_readiness"]["gate_failures"]
+    )
+    assert (
+        "canary_receipt_evidence_incomplete"
+        in report["default_on_readiness"]["gate_failures"]
+    )
     assert "rollback_bundle_missing" in report["default_on_readiness"]["gate_failures"]
     assert report["rollout_capabilities"] == []
     assert report["rollback_bundle"] is None
@@ -229,6 +303,25 @@ def test_benefit_report_accepts_only_explicit_cost_metric_for_efficiency_path():
     assert evidence["proven"] is True
     assert evidence["path"] == "efficiency"
     assert evidence["cost_metric"] == "cost_per_successful_task"
+
+
+def test_benefit_report_accepts_provider_work_reduction_with_quality_non_regression():
+    reporter = _load_reporter()
+    summary = SimpleNamespace(
+        reward_interval=SimpleNamespace(lower=0.0, upper=0.2),
+        metric_intervals={
+            "provider_call_count": SimpleNamespace(lower=-20.0, upper=-2.0)
+        },
+    )
+
+    evidence = reporter.benefit_evidence(summary)
+
+    assert evidence == {
+        "proven": True,
+        "path": "execution_efficiency",
+        "reason": "quality_non_regression_and_provider_work_confidence_upper_bound_negative",
+        "cost_metric": "provider_call_count",
+    }
 
 
 def test_benefit_report_reads_frozen_intervals_from_real_summary_contract():
@@ -260,6 +353,18 @@ def test_benefit_report_reads_frozen_intervals_from_real_summary_contract():
     assert evidence["cost_metric"] == "cost_per_successful_task"
 
 
+def test_benefit_report_reads_losslessly_compressed_json(tmp_path):
+    import lzma
+
+    reporter = _load_reporter()
+    expected = {"status": "complete", "count": 3}
+    path = tmp_path / "task_response.json"
+    with lzma.open(path.with_name(path.name + ".xz"), "wt", encoding="utf-8") as stream:
+        json.dump(expected, stream)
+
+    assert reporter.read_json(path) == expected
+
+
 def test_normalized_cost_efficiency_requires_a_revalidated_policy():
     reporter = _load_reporter()
     summary = SimpleNamespace(
@@ -270,9 +375,7 @@ def test_normalized_cost_efficiency_requires_a_revalidated_policy():
     )
 
     unavailable = reporter.benefit_evidence(summary)
-    available = reporter.benefit_evidence(
-        summary, normalized_cost_policy_ready=True
-    )
+    available = reporter.benefit_evidence(summary, normalized_cost_policy_ready=True)
 
     assert unavailable["proven"] is False
     assert available["proven"] is True
@@ -280,13 +383,71 @@ def test_normalized_cost_efficiency_requires_a_revalidated_policy():
 
     old_float_only = SimpleNamespace(
         reward_interval=SimpleNamespace(lower=0.0, upper=0.0),
+        metric_intervals={"normalized_cost": SimpleNamespace(lower=-10.0, upper=-1.0)},
+    )
+    assert (
+        reporter.benefit_evidence(old_float_only, normalized_cost_policy_ready=True)[
+            "proven"
+        ]
+        is False
+    )
+
+    conservative = SimpleNamespace(
+        reward_interval=SimpleNamespace(lower=0.0, upper=0.0),
         metric_intervals={
-            "normalized_cost": SimpleNamespace(lower=-10.0, upper=-1.0)
+            "normalized_cost_conservative_delta_microunits": SimpleNamespace(
+                lower=-20.0, upper=-2.0
+            )
         },
     )
-    assert reporter.benefit_evidence(
-        old_float_only, normalized_cost_policy_ready=True
-    )["proven"] is False
+    conservative_evidence = reporter.benefit_evidence(
+        conservative, normalized_cost_policy_ready=True
+    )
+    assert conservative_evidence["proven"] is True
+    assert conservative_evidence["cost_metric"] == (
+        "normalized_cost_conservative_delta_microunits"
+    )
+
+
+def test_normalized_cost_bounds_are_conservative_for_missing_cache_and_failed_attempt():
+    reporter = _load_reporter()
+    provider_request = {
+        "request_id": "dynamic",
+        "provider_name": "openai",
+        "payload": {"messages": [{"role": "user", "content": "hello"}]},
+    }
+    successful = {
+        "provider_invoked": True,
+        "provider_attempt_status": "attempted",
+        "status": "success",
+        "provider_request": provider_request,
+        "response": {"content": "ok"},
+        "usage_normalized": {"prompt_tokens": 100, "completion_tokens": 10},
+        "usage_raw": {"prompt_tokens": 100, "completion_tokens": 10},
+    }
+    failed = {
+        "provider_invoked": True,
+        "provider_attempt_status": "attempted",
+        "status": "failed",
+        "provider_request": provider_request,
+        "response": None,
+    }
+
+    bounds, reason = reporter.authoritative_normalized_usage_bounds(
+        [successful, failed]
+    )
+
+    assert reason is None
+    assert bounds["lower"] == {
+        "input_tokens": 100,
+        "cache_read_tokens": 100,
+        "output_tokens": 10,
+    }
+    assert bounds["upper"]["input_tokens"] > 100
+    assert bounds["upper"]["cache_read_tokens"] == 0
+    assert bounds["upper"]["output_tokens"] == 10
+    assert bounds["cache_bounded_call_count"] == 1
+    assert bounds["provider_attempt_bounded_call_count"] == 1
 
 
 def test_quality_path_does_not_require_normalized_cost_evidence():
@@ -296,12 +457,30 @@ def test_quality_path_does_not_require_normalized_cost_evidence():
         metric_intervals={},
     )
 
-    evidence = reporter.benefit_evidence(
-        summary, normalized_cost_policy_ready=False
-    )
+    evidence = reporter.benefit_evidence(summary, normalized_cost_policy_ready=False)
 
     assert evidence["proven"] is True
     assert evidence["path"] == "quality"
+
+
+def test_task_benchmark_manifest_preserves_workload_and_verifier_identity(tmp_path):
+    reporter = _load_reporter()
+    payload = {
+        "benchmark_adapter": "skillsbench-official-1.1",
+        "tasks": ["pdf-excel-diff"],
+        "dataset_sha256": "sha256:" + "a" * 64,
+        "variants": [{"name": "baseline"}, {"name": "candidate"}],
+        "repeat": 3,
+        "seed": 7,
+        "verifier_mode": "python-functions",
+    }
+
+    manifest = reporter.experiment_manifest(tmp_path, payload, [])
+
+    assert manifest.workload_kind == "skills_bench"
+    assert manifest.independent_verifier_id == (
+        "python-functions-immutable-task-snapshot-v1"
+    )
 
 
 def test_normalized_usage_fails_closed_on_missing_or_conflicting_truth():
@@ -362,14 +541,18 @@ def _turn_receipt(reporter, kind, cause, identity, parent=None):
         "cause": cause,
         "cause_supported": True,
         "turn_id_hash": reporter.value_hash({f"{kind}_turn": identity}),
-        "request_id_hash": reporter.value_hash({"request_id": identity}) if kind == "model" else None,
-        "tool_call_id_hash": reporter.value_hash({"tool_call_id": identity}) if kind == "tool" else None,
+        "request_id_hash": reporter.value_hash({"request_id": identity})
+        if kind == "model"
+        else None,
+        "tool_call_id_hash": reporter.value_hash({"tool_call_id": identity})
+        if kind == "tool"
+        else None,
         "parent_turn_id_hash": parent,
         "evidence_hash": None,
     }
 
 
-def _retrieval_content():
+def _retrieval_content(*, artifact_content_hash="sha256:" + "1" * 64):
     chunk = "x" * 256
     return {
         "type": "text",
@@ -379,21 +562,25 @@ def _retrieval_content():
         "next_offset": 4352,
         "returned_bytes": 256,
         "total_bytes": 131072,
-        "content_sha256": "sha256:" + "1" * 64,
+        "content_sha256": artifact_content_hash,
         "chunk_sha256": "sha256:" + hashlib.sha256(chunk.encode()).hexdigest(),
         "complete": False,
     }
 
 
-def _retrieval_receipt(reporter, *, consumed):
-    content = _retrieval_content()
+def _retrieval_receipt(
+    reporter, *, consumed, artifact_content_hash="sha256:" + "1" * 64
+):
+    content = _retrieval_content(artifact_content_hash=artifact_content_hash)
     result_hash = reporter.value_hash(content)
     plan = {
         "schema_version": "aworld.context.artifact-retrieval-plan.v1",
         "owner_code": reporter.value_hash({"owner_tool": "generic_stream"}),
-        "action_code": reporter.value_hash({"retrieval_action": "read_output_artifact"}),
+        "action_code": reporter.value_hash(
+            {"retrieval_action": "read_output_artifact"}
+        ),
         "artifact_ref_hash": reporter.value_hash({"artifact_ref": "opaque-ref"}),
-        "artifact_content_hash": "sha256:" + "1" * 64,
+        "artifact_content_hash": artifact_content_hash,
         "artifact_byte_count": 131072,
         "offset": 4096,
         "limit": 256,
@@ -407,10 +594,12 @@ def _retrieval_receipt(reporter, *, consumed):
         "next_offset": 4352,
         "returned_byte_count": 256,
         "chunk_checksum": content["chunk_sha256"],
-        "source_content_hash": "sha256:" + "1" * 64,
+        "source_content_hash": artifact_content_hash,
         "result_content_hash": result_hash,
         "complete": False,
-        "next_request_id_hash": reporter.value_hash({"request_id": "after"}) if consumed else None,
+        "next_request_id_hash": reporter.value_hash({"request_id": "after"})
+        if consumed
+        else None,
         "consumed_content_hash": result_hash if consumed else None,
         "consumed": consumed,
     }
@@ -420,55 +609,84 @@ def _retrieval_receipt(reporter, *, consumed):
 def test_turn_artifact_economics_uses_only_typed_truth(tmp_path):
     reporter = _load_reporter()
     artifact_bytes = b"x" * 131072
-    tool_retrieval = _retrieval_receipt(reporter, consumed=False)
-    provider_consumption = _retrieval_receipt(reporter, consumed=True)
-    raw = [{"state": {"input": {"action_result": [
+    artifact_content_hash = "sha256:" + hashlib.sha256(artifact_bytes).hexdigest()
+    tool_retrieval = _retrieval_receipt(
+        reporter, consumed=False, artifact_content_hash=artifact_content_hash
+    )
+    provider_consumption = _retrieval_receipt(
+        reporter, consumed=True, artifact_content_hash=artifact_content_hash
+    )
+    raw = [
         {
-            "tool_call_id": "retrieve",
-            "tool_name": "generic_stream",
-            "action_name": "read_output_artifact",
-            "content": _retrieval_content(),
-            "metadata": {
-                "turn_economics": _turn_receipt(
-                    reporter, "tool", "artifact_retrieval", "retrieve",
-                    parent=reporter.value_hash({"model_turn": "after"}),
-                ),
-                "tool_output_policy": {
-                    "policy_version": "v1",
-                    "raw_byte_count": 131072,
-                    "raw_checksum": "sha256:" + hashlib.sha256(artifact_bytes).hexdigest(),
-                    "inline_tokens": 128,
-                    "offloaded_tokens": 32640,
-                    "artifact_ref": "opaque",
-                    "context_artifact_ref": "opaque-context",
-                    "context_artifact_role": "audit_snapshot",
-                    "upstream_artifacts": [{
-                        "ref": "opaque",
-                        "content_hash": "sha256:" + "1" * 64,
-                        "byte_count": 131072,
-                        "owner_tool": "generic_stream",
-                        "retrieval_action": "read_output_artifact",
-                    }],
-                },
-                "artifact_retrieval": tool_retrieval,
-            },
+            "state": {
+                "input": {
+                    "action_result": [
+                        {
+                            "tool_call_id": "retrieve",
+                            "tool_name": "generic_stream",
+                            "action_name": "read_output_artifact",
+                            "content": _retrieval_content(
+                                artifact_content_hash=artifact_content_hash
+                            ),
+                            "metadata": {
+                                "turn_economics": _turn_receipt(
+                                    reporter,
+                                    "tool",
+                                    "artifact_retrieval",
+                                    "retrieve",
+                                    parent=reporter.value_hash({"model_turn": "after"}),
+                                ),
+                                "tool_output_policy": {
+                                    "policy_version": "v1",
+                                    "raw_byte_count": 131072,
+                                    "raw_checksum": "sha256:"
+                                    + hashlib.sha256(artifact_bytes).hexdigest(),
+                                    "inline_tokens": 128,
+                                    "offloaded_tokens": 32640,
+                                    "artifact_ref": "opaque",
+                                    "context_artifact_ref": "opaque-context",
+                                    "context_artifact_role": "audit_snapshot",
+                                    "upstream_artifacts": [
+                                        {
+                                            "ref": "opaque",
+                                            "content_hash": artifact_content_hash,
+                                            "byte_count": 131072,
+                                            "owner_tool": "generic_stream",
+                                            "retrieval_action": "read_output_artifact",
+                                        }
+                                    ],
+                                },
+                                "artifact_retrieval": tool_retrieval,
+                            },
+                        }
+                    ]
+                }
+            }
         }
-    ]}}}]
-    calls = [{
-        "request_id": "after",
-        "turn_economics": _turn_receipt(
-            reporter, "model", "artifact_retrieval", "after",
-            parent=reporter.value_hash({"tool_turn": "retrieve"}),
-        ),
-        "artifact_retrieval_consumption": [provider_consumption],
-    }]
+    ]
+    calls = [
+        {
+            "request_id": "after",
+            "turn_economics": _turn_receipt(
+                reporter,
+                "model",
+                "artifact_retrieval",
+                "after",
+                parent=reporter.value_hash({"tool_turn": "retrieve"}),
+            ),
+            "artifact_retrieval_consumption": [provider_consumption],
+        }
+    ]
     artifact = tmp_path / "artifact.bin"
     artifact.write_bytes(artifact_bytes)
 
     summary = reporter.turn_artifact_economics_summary(calls, raw, [artifact])
 
     assert summary["turn_causes"]["status"] == "available"
-    assert summary["turn_causes"]["counts"]["artifact_retrieval"] == {"model": 1, "tool": 1}
+    assert summary["turn_causes"]["counts"]["artifact_retrieval"] == {
+        "model": 1,
+        "tool": 1,
+    }
     assert summary["tool_outputs"] == {
         "status": "available",
         "raw_bytes": 131072,
@@ -486,9 +704,7 @@ def test_turn_artifact_economics_uses_only_typed_truth(tmp_path):
     replayed_raw[0]["state"]["input"]["action_result"].append(
         json.loads(json.dumps(raw[0]["state"]["input"]["action_result"][0]))
     )
-    replayed = reporter.turn_artifact_economics_summary(
-        calls, replayed_raw, [artifact]
-    )
+    replayed = reporter.turn_artifact_economics_summary(calls, replayed_raw, [artifact])
     assert replayed["turn_causes"]["status"] == "unavailable"
     assert replayed["retrieval"]["status"] == "unavailable"
 
@@ -501,7 +717,13 @@ def test_turn_artifact_economics_uses_only_typed_truth(tmp_path):
     )
     assert broken_parent["turn_causes"]["status"] == "unavailable"
     runs = [
-        {"experiment": "generic", "case_id": "noisy", "repeat": 1, "variant": variant, "summary": summary}
+        {
+            "experiment": "generic",
+            "case_id": "noisy",
+            "repeat": 1,
+            "variant": variant,
+            "summary": summary,
+        }
         for variant in ("legacy", "candidate")
     ]
     delta = reporter.paired_turn_artifact_deltas(
@@ -513,7 +735,13 @@ def test_turn_artifact_economics_uses_only_typed_truth(tmp_path):
 
 def test_turn_artifact_economics_missing_receipts_is_unavailable_not_heuristic():
     reporter = _load_reporter()
-    calls = [{"request": {"messages": [{"content": "read_output_artifact retry validation"}]}}]
+    calls = [
+        {
+            "request": {
+                "messages": [{"content": "read_output_artifact retry validation"}]
+            }
+        }
+    ]
     raw = [{"action_result": [{"content": "artifact retrieved", "metadata": {}}]}]
 
     summary = reporter.turn_artifact_economics_summary(calls, raw, [])
@@ -523,6 +751,86 @@ def test_turn_artifact_economics_missing_receipts_is_unavailable_not_heuristic()
     assert summary["tool_outputs"]["status"] == "unavailable"
     assert summary["retrieval"]["status"] == "not_applicable"
     assert summary["retrieval"]["opportunity_count"] == 0
+
+
+def test_turn_economics_recovers_only_cryptographically_bound_framework_retry():
+    reporter = _load_reporter()
+    first = _turn_receipt(reporter, "model", "initial_input", "request-1")
+    retry = _turn_receipt(reporter, "model", "unavailable", "request-2")
+    retry["cause_supported"] = False
+    tool = _turn_receipt(
+        reporter,
+        "tool",
+        "model_choice",
+        "tool-1",
+        parent=retry["turn_id_hash"],
+    )
+    calls = [
+        {
+            "request_id": "request-1",
+            "call_id": "logical-call",
+            "step_id": "step-1",
+            "task_id": "task-1",
+            "model": "model-1",
+            "provider_name": "openai",
+            "attempt": 1,
+            "status": "failed",
+            "provider_invoked": True,
+            "turn_economics": first,
+        },
+        {
+            "request_id": "request-2",
+            "call_id": "logical-call",
+            "step_id": "step-1",
+            "task_id": "task-1",
+            "model": "model-1",
+            "provider_name": "openai",
+            "attempt": 2,
+            "status": "success",
+            "provider_invoked": True,
+            "turn_economics": retry,
+        },
+    ]
+    content = "ok"
+    raw = [
+        {
+            "action_result": [
+                {
+                    "tool_call_id": "tool-1",
+                    "content": content,
+                    "metadata": {
+                        "turn_economics": tool,
+                        "tool_output_policy": {
+                            "raw_byte_count": len(content),
+                            "raw_checksum": "sha256:"
+                            + hashlib.sha256(content.encode()).hexdigest(),
+                            "inline_tokens": 1,
+                            "offloaded_tokens": 0,
+                            "artifact_ref": None,
+                            "context_artifact_ref": None,
+                            "context_artifact_role": None,
+                            "upstream_artifacts": [],
+                        },
+                    },
+                }
+            ]
+        }
+    ]
+
+    summary = reporter.turn_artifact_economics_summary(calls, raw, [])
+
+    assert summary["turn_causes"]["status"] == "available"
+    assert summary["turn_causes"]["inferred_framework_retry_count"] == 1
+    assert summary["turn_causes"]["counts"]["framework_retry"]["model"] == 1
+
+    unbound = json.loads(json.dumps(calls))
+    unbound[1]["step_id"] = "different-step"
+    assert (
+        reporter.turn_artifact_economics_summary(unbound, raw, [])["turn_causes"][
+            "status"
+        ]
+        == "unavailable"
+    )
 
 
 def test_report_revalidates_manifest_bound_context_artifact_files(tmp_path):
@@ -549,6 +857,37 @@ def test_report_revalidates_manifest_bound_context_artifact_files(tmp_path):
     assert reporter.validated_context_artifact_files(run) == [artifact.resolve()]
     artifact.write_bytes(b"tampered")
     assert reporter.validated_context_artifact_files(run) == []
+
+
+def test_report_revalidates_manifest_bound_upstream_artifact_files(tmp_path):
+    reporter = _load_reporter()
+    run = tmp_path / "run"
+    context_artifact = run / "tool-output-artifacts" / "context.bin"
+    upstream_artifact = run / "tool-output-artifacts" / "upstream.bin"
+    context_artifact.parent.mkdir(parents=True)
+    context_artifact.write_bytes(b"context")
+    upstream_artifact.write_bytes(b"upstream")
+
+    def entry(path):
+        data = path.read_bytes()
+        return {
+            "artifact_ref_hash": "sha256:" + "1" * 64,
+            "content_hash": "sha256:" + hashlib.sha256(data).hexdigest(),
+            "byte_count": len(data),
+            "path": str(path.relative_to(run)),
+        }
+
+    manifest = {
+        "capture": {
+            "context_tool_output_artifacts": [entry(context_artifact)],
+            "upstream_tool_output_artifacts": [entry(upstream_artifact)],
+        }
+    }
+    (run / "run_manifest.json").write_text(json.dumps(manifest))
+
+    assert reporter.validated_context_artifact_files(run) == sorted(
+        [context_artifact.resolve(), upstream_artifact.resolve()]
+    )
 
 
 def _compiler_plan_evidence(
@@ -652,7 +991,10 @@ def test_benefit_report_aggregates_receipts_and_never_classifies_missing_prompt(
                     "attribution_plan_fingerprint": compiler_plan["plan_fingerprint"],
                 },
                 "compiler_attribution_plan": compiler_plan,
-                "provider_lowering": {"candidate_content_hash": candidate_hash, "attribution": receipt},
+                "provider_lowering": {
+                    "candidate_content_hash": candidate_hash,
+                    "attribution": receipt,
+                },
                 # Older trajectory projection used a global seen-set and
                 # stringified this shared sibling. The independently retained
                 # provider-lowering receipt remains authoritative.
@@ -666,9 +1008,7 @@ def test_benefit_report_aggregates_receipts_and_never_classifies_missing_prompt(
         },
         {
             "request": {
-                "messages": [
-                    {"role": "system", "content": "must-not-be-classified"}
-                ]
+                "messages": [{"role": "system", "content": "must-not-be-classified"}]
             }
         },
     ]
@@ -683,6 +1023,16 @@ def test_benefit_report_aggregates_receipts_and_never_classifies_missing_prompt(
     assert summary["fallback"] == "none"
     assert "must-not-be-classified" not in repr(summary)
 
+    # A transport failure after provider invocation has no trusted usage, but
+    # it still has an immutable provider request and a valid attribution
+    # receipt. Request attribution and billing evidence are separate gates.
+    failed_attempt = json.loads(json.dumps(calls[0]))
+    failed_attempt["status"] = "failed"
+    failed_summary = reporter.provider_attribution_summary([failed_attempt])
+    assert failed_summary["status"] == "available"
+    assert failed_summary["coverage_rate"] == 1.0
+    assert failed_summary["byte_conservation"] is True
+
 
 def test_benefit_report_marks_all_missing_attribution_unavailable():
     reporter = _load_reporter()
@@ -695,6 +1045,30 @@ def test_benefit_report_marks_all_missing_attribution_unavailable():
     assert summary["available_receipt_count"] == 0
     assert summary["reason"] == "provider_attribution_incomplete"
     assert summary["by_dimension"]["owner"] == {}
+
+
+def test_task_experiment_manifest_preserves_benchmark_workload_identity(tmp_path):
+    reporter = _load_reporter()
+    experiment = tmp_path / "skills-eval"
+    experiment.mkdir()
+    manifest = reporter.experiment_manifest(
+        experiment,
+        {
+            "benchmark_adapter": "skillsbench-official-1.1",
+            "tasks": ["task"],
+            "variants": [{"name": "baseline"}, {"name": "candidate"}],
+            "repeat": 3,
+            "seed": 7,
+            "verifier_mode": "python-functions",
+        },
+        [],
+    )
+
+    assert manifest.workload_kind == "skills_bench"
+    assert (
+        manifest.independent_verifier_id
+        == "python-functions-immutable-task-snapshot-v1"
+    )
 
 
 def test_benefit_report_rejects_legal_owner_tamper_against_compiler_plan():
@@ -719,19 +1093,21 @@ def test_benefit_report_rejects_legal_owner_tamper_against_compiler_plan():
         "provider_envelope_and_params": len(reporter.canonical_json_bytes(payload)) - 1,
         "byte_conservation": True,
         "entry_count": 1,
-        "entries": [{
-            "item_identity_hash": "sha256:" + "b" * 64,
-            "owner_code": "progressive_skill",
-            "kind": "user",
-            "source_kind": "agent",
-            "stability": "turn_dynamic",
-            "collection": "messages",
-            "ordinal": 0,
-            "content_hash": reporter.value_hash(payload["messages"][0]),
-            "token_estimate": {"value": 1, "estimator": "test-v1", "exact": False},
-            "residency": "dynamic",
-            "canonical_value_bytes": 1,
-        }],
+        "entries": [
+            {
+                "item_identity_hash": "sha256:" + "b" * 64,
+                "owner_code": "progressive_skill",
+                "kind": "user",
+                "source_kind": "agent",
+                "stability": "turn_dynamic",
+                "collection": "messages",
+                "ordinal": 0,
+                "content_hash": reporter.value_hash(payload["messages"][0]),
+                "token_estimate": {"value": 1, "estimator": "test-v1", "exact": False},
+                "residency": "dynamic",
+                "canonical_value_bytes": 1,
+            }
+        ],
     }
     compiler_entry = dict(forged["entries"][0])
     compiler_entry["owner_code"] = "model_final_messages"
@@ -743,27 +1119,29 @@ def test_benefit_report_rejects_legal_owner_tamper_against_compiler_plan():
         messages_count=1,
     )
     forged["plan_fingerprint"] = compiler_plan["plan_fingerprint"]
-    calls = [{
-        "request_id": "r1",
-        "provider_request": {
+    calls = [
+        {
             "request_id": "r1",
-            "payload": payload,
-            "content_hash": reporter.value_hash(payload),
-            "capture_stage": "provider_prepared",
-            "fidelity": "provider_prepared",
-        },
-        "context_rollout": {
-            "candidate_snapshot": {
-                "content_hash": "sha256:" + "a" * 64,
-                "attribution_plan_fingerprint": compiler_plan["plan_fingerprint"],
+            "provider_request": {
+                "request_id": "r1",
+                "payload": payload,
+                "content_hash": reporter.value_hash(payload),
+                "capture_stage": "provider_prepared",
+                "fidelity": "provider_prepared",
             },
-            "compiler_attribution_plan": compiler_plan,
-            "provider_lowering": {
-                "candidate_content_hash": "sha256:" + "a" * 64,
-                "attribution": forged,
+            "context_rollout": {
+                "candidate_snapshot": {
+                    "content_hash": "sha256:" + "a" * 64,
+                    "attribution_plan_fingerprint": compiler_plan["plan_fingerprint"],
+                },
+                "compiler_attribution_plan": compiler_plan,
+                "provider_lowering": {
+                    "candidate_content_hash": "sha256:" + "a" * 64,
+                    "attribution": forged,
+                },
             },
-        },
-    }]
+        }
+    ]
 
     summary = reporter.provider_attribution_summary(calls)
 
@@ -787,9 +1165,30 @@ def test_provider_attribution_deltas_are_run_bound_and_unsupported_without_basel
     legacy_available = {**available, "subject": "legacy_observed"}
     candidate_available = {**available, "subject": "candidate_selected"}
     rows = [
-        {"experiment": "exp-a", "run": "legacy-run", "case_id": "case", "repeat": 0, "variant": "legacy", "summary": legacy_available},
-        {"experiment": "exp-a", "run": "candidate-run", "case_id": "case", "repeat": 0, "variant": "candidate", "summary": candidate_available},
-        {"experiment": "exp-b", "run": "candidate-only", "case_id": "case", "repeat": 0, "variant": "candidate", "summary": candidate_available},
+        {
+            "experiment": "exp-a",
+            "run": "legacy-run",
+            "case_id": "case",
+            "repeat": 0,
+            "variant": "legacy",
+            "summary": legacy_available,
+        },
+        {
+            "experiment": "exp-a",
+            "run": "candidate-run",
+            "case_id": "case",
+            "repeat": 0,
+            "variant": "candidate",
+            "summary": candidate_available,
+        },
+        {
+            "experiment": "exp-b",
+            "run": "candidate-only",
+            "case_id": "case",
+            "repeat": 0,
+            "variant": "candidate",
+            "summary": candidate_available,
+        },
     ]
 
     deltas = reporter.paired_attribution_deltas(
@@ -807,12 +1206,33 @@ def test_provider_attribution_deltas_are_run_bound_and_unsupported_without_basel
 def test_provider_attribution_delta_rejects_subject_mismatch():
     reporter = _load_reporter()
     dimensions = {
-        "owner": {}, "kind": {}, "source_kind": {}, "residency": {},
+        "owner": {},
+        "kind": {},
+        "source_kind": {},
+        "residency": {},
     }
-    wrong = {"status": "available", "subject": "candidate_selected", "by_dimension": dimensions}
+    wrong = {
+        "status": "available",
+        "subject": "candidate_selected",
+        "by_dimension": dimensions,
+    }
     rows = [
-        {"experiment": "exp", "run": "legacy", "case_id": "case", "repeat": 1, "variant": "legacy", "summary": wrong},
-        {"experiment": "exp", "run": "candidate", "case_id": "case", "repeat": 1, "variant": "candidate", "summary": wrong},
+        {
+            "experiment": "exp",
+            "run": "legacy",
+            "case_id": "case",
+            "repeat": 1,
+            "variant": "legacy",
+            "summary": wrong,
+        },
+        {
+            "experiment": "exp",
+            "run": "candidate",
+            "case_id": "case",
+            "repeat": 1,
+            "variant": "candidate",
+            "summary": wrong,
+        },
     ]
 
     delta = reporter.paired_attribution_deltas(
@@ -821,6 +1241,56 @@ def test_provider_attribution_delta_rejects_subject_mismatch():
 
     assert delta["status"] == "unsupported"
     assert delta["reason"] == "paired_attribution_subject_mismatch"
+
+
+def test_provider_attribution_delta_supports_candidate_to_candidate_ablation():
+    reporter = _load_reporter()
+    common = {
+        "status": "available",
+        "subject": "candidate_selected",
+        "total_canonical_bytes": 100,
+        "per_call": [],
+        "by_dimension": {
+            "owner": {},
+            "kind": {},
+            "source_kind": {},
+            "residency": {},
+        },
+        "dimension_resolution": {
+            "owner": "compiler_owner_v1",
+            "kind": "provider_occurrence_kind_v1",
+            "source_kind": "provider_occurrence_source_v1",
+            "residency": "compiler_logical_residency_v1",
+        },
+    }
+    rows = [
+        {
+            "experiment": "exp",
+            "run": "before",
+            "case_id": "case",
+            "repeat": 1,
+            "variant": "before",
+            "summary": common,
+        },
+        {
+            "experiment": "exp",
+            "run": "after",
+            "case_id": "case",
+            "repeat": 1,
+            "variant": "after",
+            "summary": {**common, "total_canonical_bytes": 90},
+        },
+    ]
+
+    delta = reporter.paired_attribution_deltas(
+        rows,
+        baseline="before",
+        candidate="after",
+        allow_candidate_baseline=True,
+    )[0]
+
+    assert delta["status"] == "available"
+    assert delta["total_canonical_bytes_delta"] == -10
 
 
 def test_provider_attribution_delta_marks_owner_and_residency_resolution_mismatch():
@@ -856,10 +1326,28 @@ def test_provider_attribution_delta_marks_owner_and_residency_resolution_mismatc
             "residency": "compiler_logical_residency_v1",
         },
     }
-    delta = reporter.paired_attribution_deltas([
-        {"experiment": "exp", "run": "legacy", "case_id": "case", "repeat": 1, "variant": "legacy", "summary": legacy},
-        {"experiment": "exp", "run": "candidate", "case_id": "case", "repeat": 1, "variant": "candidate", "summary": candidate},
-    ], baseline="legacy", candidate="candidate")[0]
+    delta = reporter.paired_attribution_deltas(
+        [
+            {
+                "experiment": "exp",
+                "run": "legacy",
+                "case_id": "case",
+                "repeat": 1,
+                "variant": "legacy",
+                "summary": legacy,
+            },
+            {
+                "experiment": "exp",
+                "run": "candidate",
+                "case_id": "case",
+                "repeat": 1,
+                "variant": "candidate",
+                "summary": candidate,
+            },
+        ],
+        baseline="legacy",
+        candidate="candidate",
+    )[0]
 
     assert delta["status"] == "available"
     assert delta["total_canonical_bytes_delta"] == -10
@@ -869,12 +1357,400 @@ def test_provider_attribution_delta_marks_owner_and_residency_resolution_mismatc
     assert delta["dimension_status"]["kind"]["status"] == "available"
 
 
+def test_request_amplification_separates_aligned_and_extra_call_bytes():
+    reporter = _load_reporter()
+    baseline = {
+        "total_canonical_bytes": 250,
+        "per_call": [
+            {
+                "ordinal": 0,
+                "total_canonical_bytes": 100,
+                "message_bytes": 60,
+                "tool_schema_bytes": 30,
+                "provider_envelope_and_params": 10,
+                "messages_content_hash": "sha256:" + "a" * 64,
+                "tools_content_hash": "sha256:" + "b" * 64,
+            },
+            {
+                "ordinal": 1,
+                "total_canonical_bytes": 150,
+                "message_bytes": 110,
+                "tool_schema_bytes": 30,
+                "provider_envelope_and_params": 10,
+                "messages_content_hash": "sha256:" + "c" * 64,
+                "tools_content_hash": "sha256:" + "b" * 64,
+            },
+        ],
+    }
+    candidate = {
+        "total_canonical_bytes": 440,
+        "per_call": [
+            {
+                "ordinal": 0,
+                "total_canonical_bytes": 110,
+                "message_bytes": 60,
+                "tool_schema_bytes": 30,
+                "provider_envelope_and_params": 20,
+                "messages_content_hash": "sha256:" + "a" * 64,
+                "tools_content_hash": "sha256:" + "b" * 64,
+            },
+            {
+                "ordinal": 1,
+                "total_canonical_bytes": 160,
+                "message_bytes": 120,
+                "tool_schema_bytes": 30,
+                "provider_envelope_and_params": 10,
+                "messages_content_hash": "sha256:" + "d" * 64,
+                "tools_content_hash": "sha256:" + "b" * 64,
+            },
+            {
+                "ordinal": 2,
+                "total_canonical_bytes": 170,
+                "message_bytes": 130,
+                "tool_schema_bytes": 30,
+                "provider_envelope_and_params": 10,
+                "messages_content_hash": "sha256:" + "e" * 64,
+                "tools_content_hash": "sha256:" + "b" * 64,
+            },
+        ],
+    }
+
+    delta = reporter.request_amplification_delta(baseline, candidate)
+
+    assert delta == {
+        "status": "available",
+        "baseline_call_count": 2,
+        "candidate_call_count": 3,
+        "aligned_call_count": 2,
+        "candidate_only_call_count": 1,
+        "baseline_only_call_count": 0,
+        "aligned_provider_bytes_delta": 20,
+        "candidate_only_provider_bytes": 170,
+        "baseline_only_provider_bytes": 0,
+        "total_provider_bytes_delta": 190,
+        "byte_reconciliation": True,
+        "first_call": {
+            "messages_match": True,
+            "tools_match": True,
+            "model_visible_inputs_match": True,
+            "provider_bytes_delta": 10,
+            "message_bytes_delta": 0,
+            "tool_schema_bytes_delta": 0,
+            "provider_envelope_and_params_delta": 10,
+        },
+    }
+
+
+def test_artifact_progress_is_recomputed_from_raw_trajectory_receipts():
+    reporter = _load_reporter()
+    raw = [
+        {
+            "state": {
+                "input": {
+                    "action_result": [
+                        {
+                            "metadata": {
+                                "context_management": {
+                                    "schema_version": "aworld.sandbox-artifact-progress/v1",
+                                    "artifact_changed": False,
+                                    "artifact_fingerprint_after": "same",
+                                    "rollback_performed": False,
+                                    "implicit_artifact_loss_detected": False,
+                                }
+                            }
+                        }
+                    ]
+                }
+            }
+        },
+        {
+            "state": {
+                "input": {
+                    "action_result": [
+                        {
+                            "metadata": {
+                                "context_management": {
+                                    "schema_version": "aworld.sandbox-artifact-progress/v1",
+                                    "artifact_changed": False,
+                                    "artifact_fingerprint_after": "same",
+                                    "rollback_performed": True,
+                                    "implicit_artifact_loss_detected": True,
+                                }
+                            }
+                        },
+                        {
+                            "metadata": {
+                                "context_management": {
+                                    "schema_version": "aworld.sandbox-artifact-progress/v1",
+                                    "artifact_changed": True,
+                                    "artifact_fingerprint_after": "new",
+                                    "rollback_performed": False,
+                                    "implicit_artifact_loss_detected": False,
+                                }
+                            }
+                        },
+                    ]
+                }
+            }
+        },
+    ]
+
+    progress = reporter.artifact_progress_summary(raw)
+
+    assert progress == {
+        "status": "available",
+        "evidence_basis": "raw_trajectory_sandbox_receipts",
+        "artifact_receipt_count": 3,
+        "artifact_change_count": 1,
+        "new_artifact_state_count": 1,
+        "rollback_count": 1,
+        "implicit_artifact_loss_count": 1,
+        "implicit_artifact_loss_prevented_count": 1,
+        "no_artifact_change_count": 2,
+    }
+
+
+def test_semantic_progress_report_requires_run_manifest_checksum(tmp_path):
+    reporter = _load_reporter()
+    progress_path = tmp_path / "semantic_progress.json"
+    progress_path.write_text(
+        json.dumps(
+            {
+                "schema_version": "aworld.context.semantic-progress-evidence/v1",
+                "status": "available",
+                "counts": {
+                    "goal_progress_count": 2,
+                    "no_goal_progress_observation_count": 3,
+                },
+                "agents": [],
+            }
+        )
+    )
+    (tmp_path / "run_manifest.json").write_text(
+        json.dumps(
+            {
+                "capture": {
+                    "checksums": {
+                        "semantic_progress.json": reporter.file_hash(progress_path)
+                    }
+                }
+            }
+        )
+    )
+
+    assert reporter.semantic_progress_summary(tmp_path)["counts"] == {
+        "goal_progress_count": 2,
+        "no_goal_progress_observation_count": 3,
+    }
+
+    progress_path.write_text(progress_path.read_text() + " ")
+    assert reporter.semantic_progress_summary(tmp_path) == {
+        "status": "unavailable",
+        "reason": "semantic_progress_checksum_mismatch",
+    }
+
+
+def test_execution_depth_uses_partial_journals_without_promoting_reward(tmp_path):
+    reporter = _load_reporter()
+    (tmp_path / "raw_trajectory.partial.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "aworld.raw-trajectory.partial/v1",
+                "completion_state": "incomplete",
+                "calls": [{"status": "success"}] * 7,
+                "tool_events": [
+                    {"event_type": "sandbox_call_started"},
+                    {"event_type": "sandbox_call_completed"},
+                    {"event_type": "tool_observation_recorded"},
+                ],
+            }
+        )
+    )
+    result = {
+        "agent_exit_code": None,
+        "reward": None,
+        "failure": {"reason_code": "experiment_interrupted"},
+        "context_metrics": {
+            "partial_provider_call_count": 7,
+            "partial_raw_trajectory_available": True,
+        },
+        "capture_recovery": {
+            "tool_action_journal": {
+                "event_type_counts": {
+                    "sandbox_call_started": 1,
+                    "sandbox_call_completed": 1,
+                    "tool_observation_recorded": 1,
+                }
+            }
+        },
+    }
+
+    summary = reporter.execution_depth_summary(tmp_path, result)
+
+    assert summary["status"] == "available"
+    assert summary["agent_completed"] is False
+    assert summary["reward_available"] is False
+    assert summary["model_round_count"] == 7
+    assert summary["model_round_fidelity"] == "partial_journal"
+    assert summary["tool_started_count"] == 1
+    assert summary["tool_completed_count"] == 1
+    assert summary["classification"] == "sustained_incomplete_progress_unavailable"
+    assert summary["supports_quality_claim"] is False
+
+
+def test_execution_depth_does_not_count_loop_budget_as_agent_completion(tmp_path):
+    reporter = _load_reporter()
+    (tmp_path / "provider_calls.json").write_text(
+        json.dumps([{"request_id": "request", "status": "success"}])
+    )
+    progress_path = tmp_path / "semantic_progress.json"
+    progress_path.write_text(
+        json.dumps(
+            {
+                "schema_version": "aworld.context.semantic-progress-evidence/v1",
+                "status": "available",
+                "counts": {
+                    "agent_step_count": 120,
+                    "agent_loop_budget_exhausted_count": 1,
+                    "goal_progress_count": 2,
+                },
+                "agents": [],
+            }
+        )
+    )
+    (tmp_path / "run_manifest.json").write_text(
+        json.dumps(
+            {
+                "capture": {
+                    "checksums": {
+                        "semantic_progress.json": reporter.file_hash(progress_path)
+                    }
+                }
+            }
+        )
+    )
+
+    summary = reporter.execution_depth_summary(
+        tmp_path,
+        {"agent_exit_code": 0, "reward": 0, "context_metrics": {}},
+    )
+
+    assert summary["agent_process_completed"] is True
+    assert summary["agent_completed"] is False
+    assert summary["loop_budget_exhausted"] is True
+    assert summary["classification"] == "budget_exhausted_with_typed_progress"
+
+
+def test_paired_execution_depth_distinguishes_productive_growth_from_repetition():
+    reporter = _load_reporter()
+    common = {
+        "experiment": "exp",
+        "case_id": "case",
+        "repeat": 1,
+    }
+    productive = reporter.paired_execution_depth_deltas(
+        [
+            {
+                **common,
+                "variant": "base",
+                "summary": {
+                    "status": "available",
+                    "agent_completed": False,
+                    "model_round_count": 4,
+                    "tool_completed_count": 3,
+                    "agent_step_count": 4,
+                    "wall_time_seconds": 20.0,
+                    "typed_progress": {
+                        "status": "available",
+                        "positive_count": 1,
+                        "no_progress_count": 1,
+                    },
+                },
+            },
+            {
+                **common,
+                "variant": "candidate",
+                "summary": {
+                    "status": "available",
+                    "agent_completed": True,
+                    "model_round_count": 7,
+                    "tool_completed_count": 6,
+                    "agent_step_count": 7,
+                    "wall_time_seconds": 35.0,
+                    "typed_progress": {
+                        "status": "available",
+                        "positive_count": 4,
+                        "no_progress_count": 1,
+                    },
+                },
+            },
+        ],
+        baseline="base",
+        candidate="candidate",
+    )[0]
+
+    assert productive["classification"] == "completion_improved"
+    assert productive["model_round_count_delta"] == 3
+    assert productive["typed_positive_progress_delta"] == 3
+    assert productive["supports_quality_claim"] is False
+
+    repeated_rows = json.loads(
+        json.dumps(
+            [
+                {
+                    **common,
+                    "variant": "base",
+                    "summary": {
+                        "status": "available",
+                        "agent_completed": False,
+                        "model_round_count": 4,
+                        "tool_completed_count": 3,
+                        "agent_step_count": 4,
+                        "wall_time_seconds": 20.0,
+                        "typed_progress": {
+                            "status": "available",
+                            "positive_count": 1,
+                            "no_progress_count": 1,
+                        },
+                    },
+                },
+                {
+                    **common,
+                    "variant": "candidate",
+                    "summary": {
+                        "status": "available",
+                        "agent_completed": False,
+                        "model_round_count": 9,
+                        "tool_completed_count": 8,
+                        "agent_step_count": 9,
+                        "wall_time_seconds": 50.0,
+                        "typed_progress": {
+                            "status": "available",
+                            "positive_count": 1,
+                            "no_progress_count": 6,
+                        },
+                    },
+                },
+            ]
+        )
+    )
+    repeated = reporter.paired_execution_depth_deltas(
+        repeated_rows,
+        baseline="base",
+        candidate="candidate",
+    )[0]
+    assert repeated["classification"] == "no_progress_amplification"
+
+
 def test_attribution_pairing_gate_detects_manifest_run_missing_after_ten_pairs():
     reporter = _load_reporter()
     summary = {
         "status": "available",
         "by_dimension": {
-            "owner": {}, "kind": {}, "source_kind": {}, "residency": {},
+            "owner": {},
+            "kind": {},
+            "source_kind": {},
+            "residency": {},
         },
     }
     legacy_summary = {**summary, "subject": "legacy_observed"}
@@ -882,15 +1758,27 @@ def test_attribution_pairing_gate_detects_manifest_run_missing_after_ten_pairs()
     case_ids = tuple(f"case-{index}" for index in range(11))
     rows = []
     for case_id in case_ids:
-        rows.append({
-            "experiment": "exp", "run": f"{case_id}/legacy", "case_id": case_id,
-            "repeat": 1, "variant": "legacy", "summary": legacy_summary,
-        })
+        rows.append(
+            {
+                "experiment": "exp",
+                "run": f"{case_id}/legacy",
+                "case_id": case_id,
+                "repeat": 1,
+                "variant": "legacy",
+                "summary": legacy_summary,
+            }
+        )
         if case_id != "case-10":
-            rows.append({
-                "experiment": "exp", "run": f"{case_id}/candidate", "case_id": case_id,
-                "repeat": 1, "variant": "candidate", "summary": candidate_summary,
-            })
+            rows.append(
+                {
+                    "experiment": "exp",
+                    "run": f"{case_id}/candidate",
+                    "case_id": case_id,
+                    "repeat": 1,
+                    "variant": "candidate",
+                    "summary": candidate_summary,
+                }
+            )
 
     status = reporter.provider_attribution_pairing_status(
         rows,
@@ -913,15 +1801,39 @@ def test_attribution_pairing_gate_detects_duplicate_run():
     summary = {
         "status": "available",
         "by_dimension": {
-            "owner": {}, "kind": {}, "source_kind": {}, "residency": {},
+            "owner": {},
+            "kind": {},
+            "source_kind": {},
+            "residency": {},
         },
     }
     legacy_summary = {**summary, "subject": "legacy_observed"}
     candidate_summary = {**summary, "subject": "candidate_selected"}
     rows = [
-        {"experiment": "exp", "run": "legacy", "case_id": "case", "repeat": 1, "variant": "legacy", "summary": legacy_summary},
-        {"experiment": "exp", "run": "candidate", "case_id": "case", "repeat": 1, "variant": "candidate", "summary": candidate_summary},
-        {"experiment": "exp", "run": "candidate-duplicate", "case_id": "case", "repeat": 1, "variant": "candidate", "summary": candidate_summary},
+        {
+            "experiment": "exp",
+            "run": "legacy",
+            "case_id": "case",
+            "repeat": 1,
+            "variant": "legacy",
+            "summary": legacy_summary,
+        },
+        {
+            "experiment": "exp",
+            "run": "candidate",
+            "case_id": "case",
+            "repeat": 1,
+            "variant": "candidate",
+            "summary": candidate_summary,
+        },
+        {
+            "experiment": "exp",
+            "run": "candidate-duplicate",
+            "case_id": "case",
+            "repeat": 1,
+            "variant": "candidate",
+            "summary": candidate_summary,
+        },
     ]
 
     status = reporter.provider_attribution_pairing_status(
@@ -936,3 +1848,60 @@ def test_attribution_pairing_gate_detects_duplicate_run():
     assert status["status"] == "unavailable"
     assert status["duplicate_run_count"] == 1
     assert status["reason"] == "provider_attribution_pairing_incomplete"
+
+
+def test_attribution_pairing_ignores_other_declared_ablation_arms():
+    reporter = _load_reporter()
+    common = {
+        "status": "available",
+        "by_dimension": {
+            "owner": {},
+            "kind": {},
+            "source_kind": {},
+            "residency": {},
+        },
+        "dimension_resolution": {
+            "owner": "compiler_owner_v1",
+            "kind": "provider_occurrence_kind_v1",
+            "source_kind": "provider_occurrence_source_v1",
+            "residency": "compiler_logical_residency_v1",
+        },
+    }
+    rows = [
+        {
+            "experiment": "exp",
+            "run": "baseline",
+            "case_id": "case",
+            "repeat": 1,
+            "variant": "baseline",
+            "summary": {**common, "subject": "legacy_observed"},
+        },
+        {
+            "experiment": "exp",
+            "run": "candidate",
+            "case_id": "case",
+            "repeat": 1,
+            "variant": "candidate",
+            "summary": {**common, "subject": "candidate_selected"},
+        },
+        {
+            "experiment": "exp",
+            "run": "third",
+            "case_id": "case",
+            "repeat": 1,
+            "variant": "third",
+            "summary": {**common, "subject": "candidate_selected"},
+        },
+    ]
+
+    status = reporter.provider_attribution_pairing_status(
+        rows,
+        experiment="exp",
+        case_ids=("case",),
+        repeats=1,
+        baseline="baseline",
+        candidate="candidate",
+    )
+
+    assert status["status"] == "available"
+    assert status["actual_run_count"] == 2

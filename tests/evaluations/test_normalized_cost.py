@@ -3,6 +3,7 @@ from __future__ import annotations
 import pytest
 
 from aworld.evaluations.normalized_cost import (
+    NormalizedCostBoundReceipt,
     NormalizedCostPolicy,
     NormalizedCostReceipt,
     compute_normalized_cost,
@@ -60,4 +61,43 @@ def test_normalized_cost_rejects_values_outside_exact_json_integer_range():
             input_tokens=(1 << 53),
             cache_read_tokens=0,
             output_tokens=0,
+        )
+
+
+def test_normalized_cost_bound_receipt_round_trip_and_rejects_inversion():
+    policy = NormalizedCostPolicy()
+    lower = compute_normalized_cost(
+        policy=policy, input_tokens=100, cache_read_tokens=100, output_tokens=10
+    )
+    upper = compute_normalized_cost(
+        policy=policy, input_tokens=140, cache_read_tokens=0, output_tokens=10
+    )
+    receipt = NormalizedCostBoundReceipt(
+        policy_hash=policy.policy_hash,
+        lower=lower,
+        upper=upper,
+        total_call_count=3,
+        exact_call_count=1,
+        cache_bounded_call_count=1,
+        provider_attempt_bounded_call_count=1,
+        usage_bounded_call_count=0,
+        source_hash="sha256:" + "a" * 64,
+    )
+
+    assert (
+        NormalizedCostBoundReceipt.from_dict(receipt.to_dict(), policy=policy)
+        == receipt
+    )
+
+    with pytest.raises(ValueError, match="lower bound"):
+        NormalizedCostBoundReceipt(
+            policy_hash=policy.policy_hash,
+            lower=upper,
+            upper=lower,
+            total_call_count=1,
+            exact_call_count=1,
+            cache_bounded_call_count=0,
+            provider_attempt_bounded_call_count=0,
+            usage_bounded_call_count=0,
+            source_hash="sha256:" + "b" * 64,
         )

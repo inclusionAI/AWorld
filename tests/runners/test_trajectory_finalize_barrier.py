@@ -226,6 +226,36 @@ async def test_finalize_once_is_idempotent(monkeypatch):
     assert reads == 1
 
 
+@pytest.mark.asyncio
+async def test_finalize_binds_task_scoped_llm_call_fan_in(monkeypatch):
+    runner, context = _runner()
+    context.trajectory_update_registry.open("task-1")
+    context.append_llm_call({"call_id": "root", "status": "in_progress"})
+    branch = context.deep_copy()
+    branch.append_llm_call({"call_id": "branch", "status": "in_progress"})
+    branch.replace_llm_call(
+        1,
+        {"call_id": "branch", "request_id": "request-2", "status": "success"},
+    )
+    context.replace_llm_call(
+        0,
+        {"call_id": "root", "request_id": "request-1", "status": "success"},
+    )
+    monkeypatch.setattr(
+        context,
+        "get_task_trajectory",
+        lambda task_id, **kwargs: _async_result([]),
+    )
+
+    result = await runner._save_trajectories()
+
+    assert result.llm_call_count == 2
+    assert [call["request_id"] for call in runner._task_response.llm_calls] == [
+        "request-1",
+        "request-2",
+    ]
+
+
 def test_response_creates_missing_taskresponse_before_stripping_context():
     runner, context = _runner()
     runner._task_response = None

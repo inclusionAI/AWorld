@@ -215,6 +215,9 @@ class TaskEventRunner(TaskRunner):
                     "context": retry_context,
                     "history_sanitized_retry": True,
                     "post_tool_watchdog_retry": True,
+                    "post_tool_continuation_token": state.get(
+                        "continuation_token"
+                    ),
                 },
             )
             next_state = dict(state)
@@ -1047,7 +1050,12 @@ class TaskEventRunner(TaskRunner):
             self._task_response.context = None
         if task_conf and task_conf.get("resp_carry_raw_llm_resp", False) is True:
             self._task_response.raw_llm_resp = self.context.context_info.get('llm_output')
-        self._task_response.llm_calls = copy.deepcopy(self.context.context_info.get("llm_calls", []))
+        reconciled_calls = getattr(self.context, "get_reconciled_llm_calls", None)
+        self._task_response.llm_calls = (
+            reconciled_calls()
+            if callable(reconciled_calls)
+            else copy.deepcopy(self.context.context_info.get("llm_calls", []))
+        )
         self._task_response.trace_id = get_trace_id()
         return self._task_response
 
@@ -1353,7 +1361,12 @@ class TaskEventRunner(TaskRunner):
                 status = TrajectoryBuildStatus.EMPTY
                 fidelity = TrajectoryFidelity.UNAVAILABLE
 
-            llm_calls = self.context.context_info.get("llm_calls", [])
+            reconciled_calls = getattr(self.context, "get_reconciled_llm_calls", None)
+            llm_calls = (
+                reconciled_calls()
+                if callable(reconciled_calls)
+                else self.context.context_info.get("llm_calls", [])
+            )
             build_result = TrajectoryBuildResult(
                 task_id=self.task.id,
                 session_id=self.context.session_id,

@@ -1,0 +1,15 @@
+{
+  "schema_version": "aworld.context-ablation-suite/v1",
+  "name": "adaptive-default-on-gate-v1",
+  "variants": [
+    "../context_eval_variants/ablation-40-progressive-skills.json",
+    "../context_eval_variants/ablation-50-adaptive.json"
+  ],
+  "contrasts": [
+    {
+      "baseline_variant": "ablation-40-progressive-skills",
+      "candidate_variant": "ablation-50-adaptive",
+      "component": "adaptive_checkpoint"
+    }
+  ]
+}

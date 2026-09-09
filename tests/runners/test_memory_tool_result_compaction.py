@@ -456,6 +456,82 @@ async def test_llm_message_replay_skips_orphan_tool_result(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_llm_message_replay_repairs_out_of_order_causal_tool_groups(monkeypatch):
+    meta = MessageMetadata(
+        session_id="session-1",
+        user_id="user-1",
+        task_id="task-1",
+        agent_id="agent-1",
+        agent_name="Aworld",
+    )
+
+    def ai(call_id: str) -> MemoryAIMessage:
+        return MemoryAIMessage(
+            content=f"invoke {call_id}",
+            tool_calls=[
+                ToolCall.from_dict(
+                    {
+                        "id": call_id,
+                        "function": {"name": "run_code", "arguments": "{}"},
+                    }
+                )
+            ],
+            metadata=meta,
+        )
+
+    def tool(call_id: str) -> MemoryToolMessage:
+        return MemoryToolMessage(
+            content=f"result {call_id}",
+            tool_call_id=call_id,
+            metadata=meta,
+        )
+
+    fake_memory = _FakeMemory()
+    # This is a valid causal history observed through out-of-order event-driven
+    # persistence: both assistant calls reached storage before either result.
+    fake_memory.items = [
+        (ai("call-a"), None),
+        (ai("call-b"), None),
+        (tool("call-a"), None),
+        (tool("call-b"), None),
+    ]
+    monkeypatch.setattr(
+        "aworld.agents.llm_agent.MemoryFactory",
+        type("MemoryFactory", (), {"instance": staticmethod(lambda: fake_memory)}),
+    )
+    context = _build_context()
+    agent = LLMAgent(
+        name="Aworld",
+        agent_id="agent-1",
+        conf=AgentConfig(
+            llm_model_name="test-model",
+            llm_api_key="test-key",
+            memory_config=AgentMemoryConfig(history_rounds=10),
+        ),
+    )
+
+    messages = await agent.async_messages_transform(
+        image_urls=[],
+        observation=Observation(
+            action_result=[ActionResult(content="tool result already recorded")]
+        ),
+        message=Message(headers={"context": context}),
+    )
+
+    causal = [
+        (message.get("role"), message.get("tool_call_id"))
+        for message in messages
+        if message.get("role") in {"assistant", "tool"}
+    ]
+    assert causal == [
+        ("assistant", None),
+        ("tool", "call-a"),
+        ("assistant", None),
+        ("tool", "call-b"),
+    ]
+
+
+@pytest.mark.asyncio
 async def test_default_memory_handler_compacts_large_tool_results_by_char_length(monkeypatch):
     fake_memory = _FakeMemory()
     monkeypatch.setattr(

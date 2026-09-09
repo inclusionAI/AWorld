@@ -31,8 +31,14 @@ def test_openai_provider_preprocess_drops_string_none_reasoning_details_and_extr
     assert processed[2]["tool_calls"][0]["extra_content"] is None
 
 
-def test_openai_provider_preprocess_keeps_valid_reasoning_details():
-    reasoning_details = [{"type": "reasoning.text", "text": "step 1"}]
+def test_openai_provider_preprocess_keeps_opaque_reasoning_continuation():
+    reasoning_details = [
+        {
+            "type": "reasoning.encrypted",
+            "data": "opaque-provider-state",
+            "id": "reasoning-1",
+        }
+    ]
     messages = [
         {
             "role": "assistant",
@@ -53,6 +59,36 @@ def test_openai_provider_preprocess_keeps_valid_reasoning_details():
 
     assert processed[0]["reasoning_details"] == reasoning_details
     assert processed[0]["tool_calls"][0]["extra_content"] == {"foo": "bar"}
+
+
+def test_openai_provider_preprocess_drops_plaintext_reasoning_trace():
+    messages = [
+        {
+            "role": "assistant",
+            "content": [{"type": "text", "text": "I will use the Tool."}],
+            "tool_calls": [
+                {
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {"name": "search", "arguments": "{}"},
+                }
+            ],
+            "reasoning_details": [
+                {
+                    "type": "reasoning.text",
+                    "text": "private reasoning" * 10_000,
+                    "data": None,
+                    "id": None,
+                }
+            ],
+        }
+    ]
+
+    processed = sanitize_openai_messages(messages)
+
+    assert processed[0]["reasoning_details"] is None
+    assert processed[0]["content"] == [{"type": "text", "text": "I will use the Tool."}]
+    assert processed[0]["tool_calls"][0]["function"]["name"] == "search"
 
 
 def test_openai_provider_preprocess_drops_string_none_tool_calls():
@@ -81,7 +117,7 @@ def test_openai_provider_preprocess_omits_empty_text_parts_for_tool_call_message
                 {
                     "id": "call_1",
                     "type": "function",
-                    "function": {"name": "bash", "arguments": "{\"command\":\"echo hi\"}"},
+                    "function": {"name": "bash", "arguments": '{"command":"echo hi"}'},
                 }
             ],
         },
@@ -109,7 +145,9 @@ def test_openai_provider_preprocess_sanitizes_malformed_tool_call_arguments():
     ]
 
     processed = sanitize_openai_messages(messages)
-    sanitized_arguments = json.loads(processed[0]["tool_calls"][0]["function"]["arguments"])
+    sanitized_arguments = json.loads(
+        processed[0]["tool_calls"][0]["function"]["arguments"]
+    )
 
     assert sanitized_arguments["_aworld_replay"] == "compacted_tool_call_arguments"
     assert sanitized_arguments["tool_name"] == "bash"

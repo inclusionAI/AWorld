@@ -191,6 +191,59 @@ Tool output policy, cache identity, lifecycle, delegation, and evaluation consum
 - **Acceptance criteria:** extra turns have typed causes; offload benefit and retrieval correctness are independently measurable.
 - **Status:** complete for mechanism/economics truth; real paired benefit remains Milestone 9 evidence
 
+#### Task 7.4: Component ablation and progress-normalized attribution
+- **Parallel:** no; depends on 7.1-7.3
+- **Files:** evaluation contracts/report, benchmark variant manifests, run evidence export, focused tests.
+- **Approach:** validate a pre-frozen component contrast graph, decompose provider bytes into aligned-call and unmatched-call
+  amplification, and report generic artifact/semantic progress beside wall time and token cost. Absolute token growth is not
+  a regression by itself: retained benefit must be judged by independent reward, completion, recoverability, or typed goal
+  progress, while duplicate injection and no-progress amplification remain optimization targets. Adaptive checkpointing
+  retains a task-scoped staged escalation window across Context copies and resets it only on typed goal progress.
+- **Tests:** config allow-list parity, illegal multi-component contrasts, exact byte reconciliation, extra-call attribution,
+  privacy-safe progress receipts, cross-copy reassess/diversify/recover escalation, multi-arm manifest pairing and
+  deterministic replay.
+- **Acceptance criteria:** every multi-arm comparison is bound to one declared Context component; request deltas reconcile;
+  longer successful/stable execution is distinguishable from repeated no-progress calls without prompt-text heuristics.
+- **Status:** in progress
+
+#### Task 7.5: Progress-gated elastic Agent budget and call-boundary fidelity
+- **Parallel:** no; depends on Task 7.4 execution evidence
+- **Files:** core Agent/Context budget contracts, semantic progress recorder, benchmark variant/runner, evaluation report,
+  focused Agent/trajectory tests.
+- **Approach:** retain `max_loop_steps` as the soft budget only when an explicit elastic policy is configured; grant bounded
+  extension chunks up to an immutable hard limit only when new typed artifact/Completion progress occurred recently and
+  since the prior grant. Keep default behavior byte-compatible. Attribute provider-call amplification within one Agent step
+  to typed framework retry/repair causes and fail benefit readiness when unexplained calls outlive trajectory finalization.
+- **Tests:** default fixed-budget compatibility, recent/stale/no/new progress, multi-grant hard cap, deep-copy monotonicity,
+  concurrent final-step/provider completion, interrupted partial trajectory, manifest/report evidence.
+- **Acceptance criteria:** productive tasks can exceed 120 decisions without an unbounded loop; stagnating tasks stop at the
+  soft budget; provider calls, Agent decisions and trajectory projection reconcile through typed one-to-many causes.
+- **Status:** mechanism complete and locally verified; frozen three-seed GLM run completed after exact retries of two
+  provider-failure trials. Clean rewards were baseline `2/3` versus candidate `0/3`; no benefit was proven and component
+  ablation remains required before any default-on decision.
+
+#### Task 7.6: State-preserving adaptive compaction and Amni continuity
+- **Parallel:** no; depends on the Task 7.5 frozen negative evidence
+- **Files:** Amni/Memory history replay, Context task-scoped runtime state, adaptive compiler/runtime policy, watchdog,
+  focused Context/Memory/Agent tests.
+- **Approach:** reuse Amni's typed working state, summaries and checkpoint lifecycle as the continuation substrate. Make
+  assistant/Tool history replay causal and atomic even when event-driven persistence completes out of append order; reject
+  stale watchdog retries after another turn has already consumed the same Tool observation; preserve a bounded continuation
+  capsule and recent complete Tool groups across adaptive checkpoints. Bind each continuation token to its immutable
+  Action/Observation pair so the next request has read-your-write semantics even while Memory indexing lags. Project a
+  bounded attempted-work/artifact ledger into Amni WorkingState so snapshot/resume and compaction retain verified work.
+  Semantic progress and adaptive state must fan in by task/agent across Context transport copies. No task text, benchmark
+  id, verifier expectation or executable special case may influence these policies.
+- **Tests:** out-of-order AI/Tool persistence, multi-Tool atomic groups, stale queued retry, cross-copy progress fan-in,
+  repeated compaction with only prefix input, Amni checkpoint/resume parity and no raw Tool content in receipts.
+- **Acceptance criteria:** a nonterminal provider request after compaction never collapses to system+original-task when
+  verified continuation evidence exists; every consumed Tool result has one causal assistant group; retries cannot create
+  duplicate exploration branches; the exact frozen SkillsBench pairs are rerun before broader benefit claims.
+- **Status:** implementation and focused tests complete (causal replay, exactly-once continuation, current Tool-turn
+  read-your-write repair, task-scoped fan-in, bounded Amni WorkingState ledger and adaptive continuation projection).
+  Frozen same-task/same-seed verification now preserves SkillsBench and `db-wal-recovery` reward at `3/3 -> 3/3` while
+  reducing provider calls in both workloads; the broader Milestone 9 quality default-on gate remains open.
+
 ### Milestone 8: Provider and Entry-Point Production Parity
 **Goal:** Extend enforce only where the real send boundary can prove immutable candidate fidelity.
 **Depends on:** Milestone 7 attribution contract.
@@ -213,9 +266,10 @@ Tool output policy, cache identity, lifecycle, delegation, and evaluation consum
 - Run real-model variants at least five times where quality variance is measured, randomly interleaved.
 - Add provider billing or a frozen/versioned normalized-cost model; report paired bootstrap confidence intervals.
 - **Status:** evidence collection in progress; two complete cross-workload observe-baseline pairs have full attribution and a
-  smoke-level normalized-cost efficiency path. A frozen three-task SkillsBench suite now covers artifact search,
-  multi-Skill planning and long prefix-cache traces, with immutable-image/verifier substrate proven; provider timeout left
-  it at 0 complete pairs, so the aggregate remains 2/10 and workload/repeat evidence is still insufficient.
+  smoke-level normalized-cost efficiency path. SkillsBench and BrowseComp expansion must use a pre-frozen, outcome-blind
+  random sample and the same component contrasts/statistical contract as Terminal Bench. Existing SkillsBench substrate is
+  proven, but provider timeout left it at 0 complete pairs, so the aggregate remains 2/10 and workload/repeat evidence is
+  still insufficient.
 
 ### Milestone 10: Canary, Default-On, and Legacy Cleanup
 **Goal:** Ship only after all hard gates and one quality-or-cost benefit path pass.

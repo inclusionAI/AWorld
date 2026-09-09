@@ -19,12 +19,13 @@ import asyncio
 import hashlib
 import json
 import os
+import posixpath
 import re
 import subprocess
 import sys
 import tempfile
 import time
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 
 # Example scripts must exercise the worktree that contains them, not whichever
@@ -44,6 +45,32 @@ SYSTEM_PROMPT = (
 PYTHON_FUNCTION_VERIFIER_TEMPLATE = """
 import importlib.util
 import inspect
+import sys
+import types
+
+class _Raises:
+    def __init__(self, expected):
+        self.expected = expected
+    def __enter__(self):
+        return self
+    def __exit__(self, exception_type, exception, traceback):
+        if exception_type is None:
+            raise AssertionError("expected exception was not raised")
+        return issubclass(exception_type, self.expected)
+
+class _Mark:
+    def __getattr__(self, name):
+        def marker(*args, **kwargs):
+            if len(args) == 1 and callable(args[0]) and not kwargs:
+                return args[0]
+            return lambda value: value
+        return marker
+
+pytest = types.ModuleType("pytest")
+pytest.fail = lambda message="": (_ for _ in ()).throw(AssertionError(message))
+pytest.raises = lambda expected: _Raises(expected)
+pytest.mark = _Mark()
+sys.modules.setdefault("pytest", pytest)
 
 spec = importlib.util.spec_from_file_location("terminal_bench_verifier", {test_path!r})
 module = importlib.util.module_from_spec(spec)
@@ -53,6 +80,15 @@ tests = [
     for name, value in sorted(vars(module).items())
     if name.startswith("test_") and callable(value)
 ]
+for class_name, class_value in sorted(vars(module).items()):
+    if not class_name.startswith("Test") or not inspect.isclass(class_value):
+        continue
+    instance = class_value()
+    tests.extend(
+        getattr(instance, name)
+        for name in sorted(dir(instance))
+        if name.startswith("test_") and callable(getattr(instance, name))
+    )
 if not tests:
     raise RuntimeError("verifier contains no test_* functions")
 unsupported = [test.__name__ for test in tests if inspect.signature(test).parameters]
@@ -61,9 +97,6 @@ if unsupported:
 for test in tests:
     test()
 """.strip()
-PYTHON_FUNCTION_VERIFIER_IMAGE = (
-    "python@sha256:9d2e5553305c7c7b0097999bb17187c69b921ccd6bc9d40e4bb5ebe652c00285"
-)
 
 
 def _sha256_bytes(value: bytes) -> str:
@@ -119,16 +152,30 @@ def run_python_function_verifier_sidecar(
     test_path: str,
     timeout: float,
     env_names: tuple[str, ...] = (),
-    verifier_image: str = PYTHON_FUNCTION_VERIFIER_IMAGE,
+    artifact_paths: tuple[str, ...] = (),
     scratch_root: Path | None = None,
 ) -> subprocess.CompletedProcess[str]:
-    """Run original zero-argument verifier functions outside the task image."""
+    """Run zero-argument verifier functions in a disposable task snapshot.
+
+    A temporary image captures the complete post-agent filesystem, so verifier
+    correctness does not depend on benchmark-specific artifact declarations.
+    Bind-mounted verifier files are copied separately because ``docker commit``
+    excludes mount contents. The verifier container has no network and is always
+    removed.
+    """
     if not test_path.startswith("/") or not test_path.endswith("/test_outputs.py"):
         raise ValueError("test_path must be an absolute test_outputs.py path")
     if timeout <= 0:
         raise ValueError("verifier timeout must be positive")
     if any(not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name) for name in env_names):
         raise ValueError("verifier environment names must be safe identifiers")
+    if any(
+        not isinstance(path, str)
+        or not PurePosixPath(path).is_absolute()
+        or path == "/"
+        for path in artifact_paths
+    ):
+        raise ValueError("verifier artifact paths must be narrow absolute paths")
     deadline = time.monotonic() + timeout
 
     def remaining() -> float:
@@ -145,20 +192,11 @@ def run_python_function_verifier_sidecar(
         dir=str(scratch_root) if scratch_root is not None else None,
     ) as temporary:
         root = Path(temporary)
-        app = root / "app"
-        app.mkdir()
-        tests = root / "test_outputs.py"
-        copy_app = subprocess.run(
-            [docker_binary, "cp", f"{container}:/app/.", str(app)],
-            capture_output=True,
-            text=True,
-            timeout=remaining(),
-            check=False,
-        )
-        if copy_app.returncode != 0:
-            return copy_app
+        verifier = root / "verifier"
+        verifier.mkdir()
+        verifier_directory = posixpath.dirname(test_path)
         copy_tests = subprocess.run(
-            [docker_binary, "cp", f"{container}:{test_path}", str(tests)],
+            [docker_binary, "cp", f"{container}:{verifier_directory}/.", str(verifier)],
             capture_output=True,
             text=True,
             timeout=remaining(),
@@ -166,44 +204,64 @@ def run_python_function_verifier_sidecar(
         )
         if copy_tests.returncode != 0:
             return copy_tests
-        command = [
-            docker_binary,
-            "run",
-            "--rm",
-            "--network",
-            "none",
-            "--read-only",
-            "--tmpfs",
-            "/tmp:rw,nosuid,size=64m",
-        ]
-        for name in env_names:
-            command.extend(["--env", name])
-        command.extend(
-            [
-                "-v",
-                # The verifier receives a disposable copy. Keep that copy writable
-                # because otherwise ordinary readers such as SQLite may fail while
-                # attempting to create locks or merge journals. The task container
-                # itself remains untouched.
-                f"{app.resolve()}:/app:rw",
-                "-v",
-                f"{tests.resolve()}:/tests/test_outputs.py:ro",
-                verifier_image,
-                "python3",
-                "-B",
-                "-c",
-                PYTHON_FUNCTION_VERIFIER_TEMPLATE.format(
-                    test_path="/tests/test_outputs.py"
-                ),
-            ]
-        )
-        return subprocess.run(
-            command,
+        commit = subprocess.run(
+            [docker_binary, "commit", "--no-pause", container],
             capture_output=True,
             text=True,
             timeout=remaining(),
             check=False,
         )
+        if commit.returncode != 0:
+            return commit
+        image_match = re.search(r"sha256:[0-9a-fA-F]{64}", commit.stdout or "")
+        if image_match is None:
+            return subprocess.CompletedProcess(
+                commit.args,
+                1,
+                stdout=commit.stdout,
+                stderr=(commit.stderr or "")
+                + "\ndocker commit did not return an immutable image id",
+            )
+        image_id = image_match.group(0)
+        try:
+            command = [
+                docker_binary,
+                "run",
+                "--rm",
+                "--network",
+                "none",
+                "--tmpfs",
+                "/tmp:rw,nosuid,size=64m",
+            ]
+            for name in env_names:
+                command.extend(["--env", name])
+            command.extend(
+                [
+                    "-v",
+                    f"{verifier.resolve()}:{verifier_directory}:ro",
+                    "--entrypoint",
+                    "python3",
+                    image_id,
+                    "-B",
+                    "-c",
+                    PYTHON_FUNCTION_VERIFIER_TEMPLATE.format(test_path=test_path),
+                ]
+            )
+            return subprocess.run(
+                command,
+                capture_output=True,
+                text=True,
+                timeout=remaining(),
+                check=False,
+            )
+        finally:
+            subprocess.run(
+                [docker_binary, "image", "rm", "-f", image_id],
+                capture_output=True,
+                text=True,
+                timeout=60,
+                check=False,
+            )
 
 
 def _context_lifecycle_evidence(agent) -> dict:
@@ -262,6 +320,130 @@ def _completion_contract_evidence(agent) -> dict:
             if assessment is not None
             else None
         ),
+    }
+
+
+def _semantic_progress_evidence(agent) -> dict:
+    """Export bounded framework progress counters without Tool payloads."""
+    context = getattr(agent, "context", None)
+    event_manager = getattr(context, "event_manager", None)
+    runtime_context = (
+        getattr(event_manager, "context", None) if event_manager is not None else None
+    ) or context
+    info = getattr(runtime_context, "context_info", None)
+    if info is None or not callable(getattr(info, "get", None)):
+        return {
+            "schema_version": "aworld.context.semantic-progress-evidence/v1",
+            "status": "unavailable",
+            "reason_code": "runtime_context_info_unavailable",
+        }
+    raw_metrics = info.get("post_tool_progress_metrics")
+    raw_agents = info.get("context_semantic_progress")
+    allowed_counts = {
+        "semantic_tool_observation_count",
+        "repeated_operation_count",
+        "low_information_gain_count",
+        "task_artifact_change_count",
+        "goal_progress_count",
+        "no_goal_progress_observation_count",
+        "sandbox_rollback_count",
+        "implicit_artifact_loss_count",
+        "watchdog_trigger_count",
+        "sanitized_history_retry_count",
+        "tool_success_to_next_llm_count",
+        "adaptive_checkpoint_count",
+        "adaptive_no_progress_checkpoint_count",
+        "adaptive_escalation_count",
+        "adaptive_escalation_level_max",
+        "adaptive_goal_progress_reset_count",
+        "agent_step_budget_extension_count",
+        "agent_step_budget_extended_steps",
+        "agent_step_budget_effective_limit",
+        "agent_step_budget_hard_limit",
+    }
+    counts = {
+        key: int(value)
+        for key, value in sorted((raw_metrics or {}).items())
+        if key in allowed_counts
+        and isinstance(value, int)
+        and not isinstance(value, bool)
+        and value >= 0
+    }
+    agent_id_getter = getattr(agent, "id", None)
+    agent_id = agent_id_getter() if callable(agent_id_getter) else None
+    get_agent_step = getattr(runtime_context, "get_agent_step", None)
+    if agent_id and callable(get_agent_step):
+        step_count = get_agent_step(agent_id)
+        if isinstance(step_count, int) and not isinstance(step_count, bool):
+            counts["agent_step_count"] = max(step_count, 0)
+        if info.get(f"agent_loop_budget_exhausted:{agent_id}") is not None:
+            counts["agent_loop_budget_exhausted_count"] = 1
+        budget_receipt = info.get(f"agent_step_budget:{agent_id}")
+        if (
+            isinstance(budget_receipt, dict)
+            and budget_receipt.get("schema_version")
+            == "aworld.context.elastic-step-budget/v1"
+        ):
+            for source, target in (
+                ("extension_count", "agent_step_budget_extension_count"),
+                ("total_extended_steps", "agent_step_budget_extended_steps"),
+                ("effective_limit", "agent_step_budget_effective_limit"),
+                ("hard_limit", "agent_step_budget_hard_limit"),
+            ):
+                value = budget_receipt.get(source)
+                if (
+                    isinstance(value, int)
+                    and not isinstance(value, bool)
+                    and value >= 0
+                ):
+                    counts[target] = value
+    configured_max_steps = getattr(agent, "max_loop_steps", None)
+    if (
+        isinstance(configured_max_steps, int)
+        and not isinstance(configured_max_steps, bool)
+        and configured_max_steps > 0
+    ):
+        counts["configured_max_steps"] = configured_max_steps
+    agent_rows = []
+    if isinstance(raw_agents, dict):
+        for agent_id, state in sorted(
+            raw_agents.items(), key=lambda item: str(item[0])
+        ):
+            if not isinstance(state, dict):
+                continue
+            row = {
+                "agent_id_hash": _sha256_bytes(str(agent_id).encode("utf-8")),
+            }
+            for key in (
+                "repetition_count",
+                "low_information_gain_count",
+                "no_goal_progress_count",
+                "goal_progress_count",
+                "last_goal_progress_agent_step",
+            ):
+                value = state.get(key)
+                if (
+                    isinstance(value, int)
+                    and not isinstance(value, bool)
+                    and value >= 0
+                ):
+                    row[key] = value
+            for key in ("goal_progress", "artifact_advanced", "completion_advanced"):
+                value = state.get(key)
+                if isinstance(value, bool):
+                    row[key] = value
+            for key in ("operation_hash", "result_hash"):
+                value = state.get(key)
+                if isinstance(value, str) and re.fullmatch(
+                    r"sha256:[0-9a-f]{64}", value
+                ):
+                    row[key] = value
+            agent_rows.append(row)
+    return {
+        "schema_version": "aworld.context.semantic-progress-evidence/v1",
+        "status": "available",
+        "counts": counts,
+        "agents": agent_rows,
     }
 
 
@@ -373,6 +555,7 @@ async def _configure_benchmark_completion_contract(
                         test_path=test_path,
                         timeout=command.timeout_seconds,
                         env_names=completion_env_names,
+                        artifact_paths=required_artifacts,
                         scratch_root=verifier_scratch_root,
                     )
                 else:
@@ -444,7 +627,91 @@ def _export_context_tool_output_artifacts(agent, output_dir: Path) -> list[dict]
     return [exported[key] for key in sorted(exported)]
 
 
-def _resolve_llm_call_capture(response, agent) -> tuple[list, str, dict]:
+def _trajectory_action_results(raw_trajectory) -> list[dict]:
+    """Return typed ActionResult payloads without interpreting Tool text."""
+    found: list[dict] = []
+
+    def visit(value) -> None:
+        if isinstance(value, list):
+            for item in value:
+                visit(item)
+            return
+        if not isinstance(value, dict):
+            return
+        action_results = value.get("action_result")
+        if isinstance(action_results, list):
+            found.extend(item for item in action_results if isinstance(item, dict))
+        for key, item in value.items():
+            if key != "action_result":
+                visit(item)
+
+    visit(raw_trajectory)
+    return found
+
+
+def _export_upstream_tool_output_artifacts(
+    raw_trajectory, output_dir: Path
+) -> list[dict]:
+    """Bind sandbox-owned output artifacts into the immutable run manifest.
+
+    The sandbox Tool server is the authority for these files.  We accept only
+    typed upstream receipts already attached at the Tool boundary, require the
+    reference to resolve directly below this run's artifact directory, and
+    re-read both length and checksum before publishing evidence.
+    """
+    destination = (output_dir / "tool-output-artifacts").resolve()
+    exported: dict[str, dict] = {}
+    for result in _trajectory_action_results(raw_trajectory):
+        metadata = result.get("metadata")
+        policy = (
+            metadata.get("tool_output_policy") if isinstance(metadata, dict) else None
+        )
+        upstream = (
+            policy.get("upstream_artifacts") if isinstance(policy, dict) else None
+        )
+        if not isinstance(upstream, list):
+            continue
+        for receipt in upstream:
+            if not isinstance(receipt, dict):
+                raise RuntimeError("upstream_tool_output_artifact_receipt_invalid")
+            ref = receipt.get("ref")
+            content_hash = receipt.get("content_hash")
+            byte_count = receipt.get("byte_count")
+            if (
+                not isinstance(ref, str)
+                or not isinstance(content_hash, str)
+                or not content_hash.startswith("sha256:")
+                or len(content_hash) != 71
+                or isinstance(byte_count, bool)
+                or not isinstance(byte_count, int)
+                or byte_count < 0
+            ):
+                raise RuntimeError("upstream_tool_output_artifact_receipt_invalid")
+            artifact = Path(ref).expanduser().resolve()
+            if artifact.parent != destination or not artifact.is_file():
+                raise RuntimeError("upstream_tool_output_artifact_outside_run")
+            digest = f"sha256:{_sha256_bytes(artifact.read_bytes())}"
+            if artifact.stat().st_size != byte_count or digest != content_hash:
+                raise RuntimeError("upstream_tool_output_artifact_mismatch")
+            evidence = {
+                "artifact_ref_hash": f"sha256:{_sha256_bytes(ref.encode('utf-8'))}",
+                "content_hash": content_hash,
+                "byte_count": byte_count,
+                "path": str(artifact.relative_to(output_dir.resolve())),
+            }
+            previous = exported.get(ref)
+            if previous is not None and previous != evidence:
+                raise RuntimeError("upstream_tool_output_artifact_receipt_conflict")
+            exported[ref] = evidence
+    return [exported[key] for key in sorted(exported)]
+
+
+def _resolve_llm_call_capture(
+    response,
+    agent,
+    *,
+    journal_calls: list | None = None,
+) -> tuple[list, str, dict]:
     """Preserve blocked-call evidence when TaskResponse propagation is incomplete."""
     response_calls = list(getattr(response, "llm_calls", None) or [])
     live_context = getattr(agent, "context", None)
@@ -459,6 +726,59 @@ def _resolve_llm_call_capture(response, agent) -> tuple[list, str, dict]:
         "snapshots_match": _llm_calls_digest(response_calls)
         == _llm_calls_digest(live_calls),
     }
+
+    if journal_calls is not None:
+
+        def identities(calls: list) -> set[tuple[str, str]] | None:
+            found: set[tuple[str, str]] = set()
+            for call in calls:
+                if not isinstance(call, dict):
+                    return None
+                identity = next(
+                    (
+                        (field, value)
+                        for field in ("request_id", "call_id")
+                        if isinstance((value := call.get(field)), str) and value
+                    ),
+                    None,
+                )
+                if identity is None or identity in found:
+                    return None
+                found.add(identity)
+            return found
+
+        journal_identities = identities(journal_calls)
+        response_identities = identities(response_calls)
+        live_identities = identities(live_calls)
+        response_covered = bool(
+            journal_identities is not None
+            and response_identities is not None
+            and response_identities.issubset(journal_identities)
+        )
+        live_covered = bool(
+            journal_identities is not None
+            and live_identities is not None
+            and live_identities.issubset(journal_identities)
+        )
+        journal_superset = bool(
+            journal_calls
+            and response_covered
+            and live_covered
+            and journal_identities is not None
+        )
+        continuity.update(
+            {
+                "journal_count": len(journal_calls),
+                "journal_sha256": _llm_calls_digest(journal_calls),
+                "task_response_journal_identity_coverage": response_covered,
+                "live_context_journal_identity_coverage": live_covered,
+                "journal_superset": journal_superset,
+            }
+        )
+        if journal_superset:
+            continuity["reconciled_count"] = len(journal_calls)
+            continuity["reconciled_sha256"] = _llm_calls_digest(journal_calls)
+            return list(journal_calls), "finalized_append_only_journal", continuity
     if response_calls and live_calls:
         reconciled: list = []
         index_by_identity: dict[tuple[str, str], int] = {}
@@ -546,67 +866,19 @@ def _load_variant(path: Path | None) -> dict:
     payload.setdefault("agent_memory_config", {})
     payload.setdefault("context_compiler", {})
     payload.setdefault("docker_output_policy", {})
-    allowed_memory_fields = {
-        "history_scope",
-        "enable_summary",
-        "summary_rounds",
-        "summary_context_length",
-        "summary_summaried",
-        "tool_result_offload",
-        "tool_action_white_list",
-        "tool_result_length_threshold",
-        "tool_result_preview_chars",
+    from aworld.evaluations.context_benefit import ContextVariant
+
+    settings = {
+        key: payload[key]
+        for key in ("agent_memory_config", "context_compiler", "docker_output_policy")
     }
-    unexpected_memory = sorted(
-        set(payload["agent_memory_config"]) - allowed_memory_fields
-    )
-    if unexpected_memory:
-        raise ValueError(
-            "Variant agent_memory_config contains non-evaluation fields: "
-            + ", ".join(unexpected_memory)
-        )
-    allowed_compiler_fields = {
-        "mode",
-        "compiler_version",
-        "policy_version",
-        "universal_final",
-        "context_limit",
-        "reserved_output_tokens",
-        "provider_protocol_reserve",
-        "safety_margin_tokens",
-        "max_item_tokens",
-        "require_proven_semantics_for_enforce",
-        "scoped_instructions",
-        "progressive_skills",
-        "progressive_tools",
-        "progressive_tool_base_tools",
-        "progressive_tool_unmanaged_policy",
-        "task_catalog_policy",
-        "checkpoint_policy",
-        "destructive_sandbox_checkpoint",
-        "default_tool_output_inline_tokens",
-        "artifact_offload",
-        "context_inspector",
-        "trace_level",
-        "completion_contract",
-    }
-    unexpected_compiler = sorted(
-        set(payload["context_compiler"]) - allowed_compiler_fields
-    )
-    if unexpected_compiler:
-        raise ValueError(
-            "Variant context_compiler contains unsupported fields: "
-            + ", ".join(unexpected_compiler)
-        )
-    allowed_output_fields = {"max_inline_output_bytes", "output_head_bytes"}
-    unexpected_output = sorted(
-        set(payload["docker_output_policy"]) - allowed_output_fields
-    )
-    if unexpected_output:
-        raise ValueError(
-            "Variant docker_output_policy contains unsupported fields: "
-            + ", ".join(unexpected_output)
-        )
+    try:
+        ContextVariant.build(str(payload["name"]), settings)
+    except (TypeError, ValueError) as exc:
+        message = str(exc)
+        if message == "context_compiler variant contains non-Context fields":
+            message = "context_compiler contains unsupported fields"
+        raise ValueError(f"Variant {message}") from exc
     return payload
 
 
@@ -669,15 +941,56 @@ def load_external_mcp_config(path: Path | None) -> tuple[dict, dict]:
     return payload, evidence
 
 
-def _agent_loop_budget(max_steps: int) -> dict[str, int]:
+def _agent_loop_budget(
+    max_steps: int, context_compiler: dict | None = None
+) -> dict[str, int]:
     if isinstance(max_steps, bool) or not isinstance(max_steps, int) or max_steps <= 0:
         raise ValueError("--max-steps must be positive")
     # BaseAgent owns the actual loop guard through max_loop_steps. AgentConfig's
     # max_steps is retained for compatibility but does not bind that guard.
-    return {"max_loop_steps": max_steps}
+    budget = {"max_loop_steps": max_steps}
+    compiler = context_compiler or {}
+    if compiler.get("elastic_step_budget") is True:
+        extension_steps = compiler.get("step_budget_extension_steps", 40)
+        hard_limit = compiler.get("step_budget_hard_limit", max_steps + 120)
+        progress_window = compiler.get("step_budget_recent_progress_window", 20)
+        if (
+            isinstance(extension_steps, bool)
+            or not isinstance(extension_steps, int)
+            or extension_steps <= 0
+        ):
+            raise ValueError("step_budget_extension_steps must be positive")
+        if (
+            isinstance(hard_limit, bool)
+            or not isinstance(hard_limit, int)
+            or hard_limit <= max_steps
+        ):
+            raise ValueError("step_budget_hard_limit must exceed --max-steps")
+        if (
+            isinstance(progress_window, bool)
+            or not isinstance(progress_window, int)
+            or progress_window <= 0
+        ):
+            raise ValueError("step_budget_recent_progress_window must be positive")
+        budget.update(
+            {
+                "loop_step_extension_steps": extension_steps,
+                "max_extended_loop_steps": hard_limit,
+                "loop_step_progress_window": progress_window,
+            }
+        )
+    return budget
 
 
 def _git_snapshot() -> dict:
+    runtime_pathspecs = (
+        "aworld",
+        "examples/evaluations",
+        "examples/sandbox",
+        "pyproject.toml",
+        "setup.py",
+        "setup.cfg",
+    )
     commit = subprocess.run(
         ["git", "rev-parse", "HEAD"],
         cwd=REPO_ROOT,
@@ -693,11 +1006,66 @@ def _git_snapshot() -> dict:
         check=False,
     )
     status_text = status.stdout if status.returncode == 0 else ""
+    tracked_diff = subprocess.run(
+        ["git", "diff", "--binary", "HEAD", "--", *runtime_pathspecs],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        check=False,
+    )
+    untracked = subprocess.run(
+        [
+            "git",
+            "ls-files",
+            "--others",
+            "--exclude-standard",
+            "-z",
+            "--",
+            *runtime_pathspecs,
+        ],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        check=False,
+    )
+    untracked_digest = hashlib.sha256()
+    untracked_count = 0
+    if untracked.returncode == 0:
+        for raw_path in sorted(filter(None, untracked.stdout.split(b"\0"))):
+            try:
+                relative = raw_path.decode("utf-8")
+                content = (REPO_ROOT / relative).read_bytes()
+            except (OSError, UnicodeDecodeError):
+                continue
+            untracked_digest.update(raw_path)
+            untracked_digest.update(b"\0")
+            untracked_digest.update(content)
+            untracked_digest.update(b"\0")
+            untracked_count += 1
+    tracked_diff_sha256 = "sha256:" + _sha256_bytes(
+        tracked_diff.stdout if tracked_diff.returncode == 0 else b""
+    )
+    untracked_source_sha256 = "sha256:" + untracked_digest.hexdigest()
+    source_fingerprint = "sha256:" + _sha256_bytes(
+        json.dumps(
+            {
+                "commit": commit.stdout.strip() if commit.returncode == 0 else None,
+                "tracked_runtime_diff_sha256": tracked_diff_sha256,
+                "untracked_runtime_source_sha256": untracked_source_sha256,
+                "untracked_runtime_source_count": untracked_count,
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    )
     return {
         "source_root": str(REPO_ROOT),
         "commit": commit.stdout.strip() if commit.returncode == 0 else None,
         "dirty": bool(status_text.strip()),
         "status_sha256": _sha256_bytes(status_text.encode("utf-8")),
+        "tracked_runtime_diff_sha256": tracked_diff_sha256,
+        "untracked_runtime_source_sha256": untracked_source_sha256,
+        "untracked_runtime_source_count": untracked_count,
+        "source_fingerprint": source_fingerprint,
     }
 
 
@@ -714,6 +1082,18 @@ def parse_args() -> argparse.Namespace:
         help="Allowed absolute container path; may be specified more than once.",
     )
     parser.add_argument("--max-steps", type=int, default=10)
+    parser.add_argument(
+        "--llm-max-attempts",
+        type=int,
+        default=3,
+        help="Invariant per-call transport attempt budget shared by paired variants.",
+    )
+    parser.add_argument(
+        "--llm-retry-delay-sec",
+        type=float,
+        default=10.0,
+        help="Invariant base delay for exponential LLM transport retry backoff.",
+    )
     parser.add_argument("--model-seed", type=int)
     parser.add_argument(
         "--variant-config",
@@ -773,6 +1153,10 @@ def parse_args() -> argparse.Namespace:
 
 async def run(args: argparse.Namespace) -> int:
     started_at = time.time()
+    if args.llm_max_attempts < 1:
+        raise ValueError("--llm-max-attempts must be positive")
+    if args.llm_retry_delay_sec < 0:
+        raise ValueError("--llm-retry-delay-sec must be non-negative")
     args.output_dir.mkdir(parents=True, exist_ok=True)
     log_dir = args.output_dir / "logs"
     log_dir.mkdir(parents=True, exist_ok=True)
@@ -784,6 +1168,11 @@ async def run(args: argparse.Namespace) -> int:
     os.environ["AWORLD_TOOL_ACTION_JOURNAL_PATH"] = str(
         (args.output_dir / "tool_actions.journal.jsonl").resolve()
     )
+    # A paired rollout must not scan or mutate state left by another task/run.
+    # This isolates framework persistence only; task instructions, container,
+    # Tools and verifier remain byte-identical across variants.
+    os.environ["AWORLD_MEMORY_ROOT"] = str((args.output_dir / "memory").resolve())
+    os.environ["DB_PATH"] = str((args.output_dir / "amni_context.db").resolve())
 
     # Import after AWORLD_LOG_PATH is configured so trajectory.log is placed
     # beside the canonical TaskResponse artifacts.
@@ -871,7 +1260,9 @@ async def run(args: argparse.Namespace) -> int:
             sandbox=sandbox,
             feedback_tool_result=True,
             system_prompt=system_prompt,
-            **_agent_loop_budget(args.max_steps),
+            llm_max_attempts=args.llm_max_attempts,
+            llm_retry_delay=args.llm_retry_delay_sec,
+            **_agent_loop_budget(args.max_steps, variant["context_compiler"]),
         )
         if args.deterministic_capture_provider:
             from aworld.core.llm_provider import LLMProviderBase
@@ -927,14 +1318,18 @@ async def run(args: argparse.Namespace) -> int:
         response = await Runners.run(instruction, agent=agent)
         response_payload = to_serializable(response.to_dict())
         trajectory_payload = to_serializable(response.trajectory)
-        captured_llm_calls, llm_capture_source, llm_capture_continuity = (
-            _resolve_llm_call_capture(response, agent)
-        )
-        llm_calls = to_serializable(captured_llm_calls)
-        provider_calls = [call for call in llm_calls if _is_provider_bound_call(call)]
         llm_journal_path = args.output_dir / "llm_calls.journal.jsonl"
         llm_journal_recovery = read_llm_call_journal(llm_journal_path)
         journal_calls = list(llm_journal_recovery.merged_llm_calls)
+        captured_llm_calls, llm_capture_source, llm_capture_continuity = (
+            _resolve_llm_call_capture(
+                response,
+                agent,
+                journal_calls=journal_calls if llm_journal_recovery.available else None,
+            )
+        )
+        llm_calls = to_serializable(captured_llm_calls)
+        provider_calls = [call for call in llm_calls if _is_provider_bound_call(call)]
         try:
             reconciled_identity_hash = _llm_calls_identity_digest(llm_calls)
             journal_identity_hash = _llm_calls_identity_digest(journal_calls)
@@ -959,9 +1354,39 @@ async def run(args: argparse.Namespace) -> int:
             "reason_code": journal_capture_reason,
         }
         provider_capture_gate_passed = bool(provider_calls) and journal_capture_match
+        trajectory_build_result = getattr(response, "trajectory_build_result", None)
+        trajectory_llm_call_count = getattr(
+            trajectory_build_result, "llm_call_count", None
+        )
+        finalized_projection_match = bool(
+            isinstance(trajectory_llm_call_count, int)
+            and not isinstance(trajectory_llm_call_count, bool)
+            and trajectory_llm_call_count == len(llm_calls)
+        )
+        finalized_projection_reconciliation = {
+            "status": (
+                "available"
+                if isinstance(trajectory_llm_call_count, int)
+                and not isinstance(trajectory_llm_call_count, bool)
+                else "unavailable"
+            ),
+            "comparison_basis": "trajectory_build_result_llm_call_count",
+            "trajectory_llm_call_count": trajectory_llm_call_count,
+            "final_llm_call_count": len(llm_calls),
+            "call_count_delta": (
+                len(llm_calls) - trajectory_llm_call_count
+                if isinstance(trajectory_llm_call_count, int)
+                and not isinstance(trajectory_llm_call_count, bool)
+                else None
+            ),
+            "snapshots_match": finalized_projection_match,
+        }
         lifecycle_evidence = _context_lifecycle_evidence(agent)
         context_artifacts = _export_context_tool_output_artifacts(
             agent, args.output_dir
+        )
+        upstream_artifacts = _export_upstream_tool_output_artifacts(
+            trajectory_payload, args.output_dir
         )
         tool_journal_path = args.output_dir / "tool_actions.journal.jsonl"
         tool_journal_recovery = read_tool_action_journal(tool_journal_path)
@@ -984,6 +1409,10 @@ async def run(args: argparse.Namespace) -> int:
             "completion_contract.json": _write_json(
                 args.output_dir / "completion_contract.json",
                 _completion_contract_evidence(agent),
+            ),
+            "semantic_progress.json": _write_json(
+                args.output_dir / "semantic_progress.json",
+                _semantic_progress_evidence(agent),
             ),
             "context_trace.json": _write_json(
                 args.output_dir / "context_trace.json",
@@ -1028,6 +1457,8 @@ async def run(args: argparse.Namespace) -> int:
                 "temperature": float(os.environ.get("LLM_TEMPERATURE", "0")),
                 "model_seed": args.model_seed,
                 "max_steps": args.max_steps,
+                "llm_max_attempts": args.llm_max_attempts,
+                "llm_retry_delay_sec": args.llm_retry_delay_sec,
                 "system_prompt_sha256": _sha256_bytes(system_prompt.encode("utf-8")),
                 "instruction_sha256": _sha256_bytes(instruction.encode("utf-8")),
                 "task_skill_count": len(skill_configs),
@@ -1048,6 +1479,7 @@ async def run(args: argparse.Namespace) -> int:
                 ),
                 "external_mcp": external_mcp_evidence,
                 "structural_capture_only": args.deterministic_capture_provider,
+                "context_storage_isolated": True,
             },
             "container": {
                 "name": args.container,
@@ -1062,10 +1494,17 @@ async def run(args: argparse.Namespace) -> int:
                 "llm_call_source": llm_capture_source,
                 "llm_call_continuity": llm_capture_continuity,
                 "provider_capture_gate_passed": provider_capture_gate_passed,
+                "finalized_projection_reconciliation": (
+                    finalized_projection_reconciliation
+                ),
                 "trajectory_items": len(response.trajectory or []),
                 "context_tool_output_artifacts": context_artifacts,
+                "upstream_tool_output_artifacts": upstream_artifacts,
                 "tool_action_journal": tool_journal_recovery.to_evidence(),
                 "checksums": checksums,
+                "semantic_progress_status": _semantic_progress_evidence(agent)[
+                    "status"
+                ],
             },
             "started_at_epoch": started_at,
             "finished_at_epoch": time.time(),

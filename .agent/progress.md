@@ -2,13 +2,79 @@
 
 ## Current Status
 
-**Phase:** Milestone 9 cross-workload evidence collection
-**Current milestone:** Benefit evidence and operational rollout gates
-**Current task:** expand pre-frozen paired samples without benchmark-specific policy
-**Last action:** added SkillsBench official 1.1 as a third, outcome-blind workload family. Three frozen tasks now cover
-artifact search, progressive multi-Skill planning and long prefix-cache traces; immutable public-endpoint images, task
-Skills and the original verifier substrate pass locally. The first real-model pair produced a typed provider-driven timeout,
-not a reward, so complete evidence remains 2/10 and default-on is still not-ready.
+**Phase:** Milestone 9/10 default-on evidence completion
+**Current milestone:** preserve the proven adaptive repair and close the remaining release-evidence gates
+**Current task:** extend the existing six clean pairs to the preregistered threshold and collect real artifact-retrieval,
+rollback and canary receipts; do not reopen the already-settled causal-state defect or treat provider outages as Reward 0
+**Last action:** completed six current-code, same-model/same-seed pairs across Terminal Bench `db-wal-recovery` and
+SkillsBench PDF/Excel. Both workloads preserved Reward at `3/3 -> 3/3`; all 12 rollouts finalized checksum-valid Raw
+trajectory with request-trace match 1.0. Adaptive reduced mean provider calls by 46.2% and 33.8%; Terminal request bytes fell
+46.3%, SkillsBench median request bytes fell 70.3%, and the Terminal candidate performed six generic tracked-artifact
+rollbacks. The reviewed `openai:amni:async` capability is now reconstructed from successful provider-bound receipts. A later
+`regex-log` attempt had zero successful provider calls and is infrastructure-invalid (`reward=null`), not contrary evidence.
+The current gate is therefore evidence-incomplete, not mechanism-unproven: 6/10 complete pairs, no valid real retrieval
+receipt yet, and no externally bound rollback/canary receipt. Focused regression is 457/457 green.
+
+### Task 7.4: Component ablation and progress-normalized attribution
+
+**Status:** in progress
+
+- Task 7.5 mechanism verification is green: 252 focused tests passed, the opt-in real Docker suite passed 3/3, and a local
+  deterministic structural rollout finalized one Raw trajectory item with trajectory/journal LLM call delta 0. A broader
+  relevant run produced 758 passes and only 10 known environment/path failures unrelated to Context changes.
+- A new frozen `pdf-excel-diff` three-seed/six-job manifest preserves the prior order and invariants while enabling the
+  candidate-only elastic policy. Mandatory GLM-5.2 preflight returned `provider_connectivity_failed`, so image resolution,
+  benchmark jobs, Reward and paired statistics were correctly not attempted. Evidence is in
+  `skillsbench-pdf-excel-elastic-ablation-3seed-20260906/validation-status.md`.
+
+- The unchanged GLM endpoint recovered on 2026-09-06 and the frozen `pdf-excel-diff` comparison was completed. Initial
+  baseline seed `20260903` and candidate seed `20260904` failed only because of provider connection errors; exact-configuration
+  retries replaced those invalid trials. Clean rewards are baseline `2/3` versus candidate `0/3` (`1->0`, `1->0`, `0->0`).
+  Both variants had 3/3 normal Agent completion and every selected run has finalized Raw trajectory, full provider/request
+  trace evidence and zero final call-count delta. Candidate used 255 versus 72 provider calls, 257 versus 72 Agent steps,
+  19,263 versus 6,962 seconds and 351,294.6 versus 293,080.2 normalized-cost units. The three-pair reward bootstrap interval
+  is `[-1, 0]`, so conventional statistical significance is not established, but the current bundle has no positive quality
+  or efficiency evidence and shows a strong negative direction. Default-on remains closed; task-specific tuning is forbidden.
+
+- Formal cross-workload suites now use `max_steps=120` and a 14,400-second Agent timeout; smaller budgets remain mechanism
+  smoke only. A shared task-scoped monotonic Agent-step registry prevents watchdog/deep-copy transport from silently resetting
+  the configured limit.
+- The first SkillsBench `pdf-excel-diff` adaptive run exposed a final capture fan-in defect: 120 journaled calls and 120 Raw
+  trajectory steps were reduced to one TaskResponse/live-Context branch. Finalized checksum-valid append-only journal truth is
+  now accepted only when it is an identity superset of both projections; the capture-fixed rerun achieved 120/120 provider
+  calls, request-trace match 1.0, complete Raw trajectory and a real verifier result.
+- The capture-fixed 120-step GLM-5.2 run produced reward 0 after 7,769 seconds. It recorded 106 completed Tool calls, 8 semantic
+  goal-progress events, 9 artifact changes, 5 rollbacks and 73 no-goal-progress observations, then exhausted its step budget
+  without creating the required artifact. This proves execution continuity and capture fidelity, but refutes treating longer
+  execution alone as benefit evidence.
+- Reporting now separates process completion, non-budget Agent completion, budget exhaustion, model/Tool depth, wall time,
+  typed progress/recovery and no-progress amplification. These fields are leading indicators and explicitly cannot substitute
+  for independent Reward.
+- Adaptive checkpoint acknowledgement no longer erases cross-checkpoint failure history. A task-scoped v2 state uses the
+  shared Agent-step coordinate for cooldown across deep copies, escalates only semantic-stagnation reasons, preserves
+  budget-pressure-only behavior, resets on typed goal progress and exports checkpoint/escalation/max-stage/reset counts.
+  Corrupt resumed counters degrade to zero rather than blocking model execution. Focused adaptive, loop-budget, sandbox and
+  evaluation regression is green at 116 tests; lint and diff checks pass.
+- The capture-complete same-task/same-seed mechanism rerun finished with reward 0 and again exhausted 120 steps, so staged
+  escalation has not established a quality or progress-density gain. It did preserve 120/120 provider/trajectory fidelity
+  while reducing provider request bytes 51.8%, prompt tokens 57.2%, cache-adjusted tokens 58.2% and wall time 47.6% versus
+  the prior source snapshot. No-progress ratio stayed effectively flat (90.12% to 90.00%). This is descriptive efficiency
+  evidence only because the source snapshot changed and there is one seed; the next gate is a same-source multi-seed
+  `ablation-40-progressive-skills` versus `ablation-50-adaptive` pair.
+- The same-source frozen ablation was paused after 5/6 completed runs. Baseline seeds 20260903/04/05 all scored reward 1 in
+  19/16/23 calls. Adaptive seed 20260904 preserved reward 1 in 14 calls and slightly reduced cache-adjusted cost; seed
+  20260905 regressed to reward 0 with 121 captured provider calls and 120 trajectory items. Adaptive seed 20260903 was
+  interrupted after 47 partial calls and has no reward. This is sufficient to reject any current default-on/quality-benefit
+  claim and exposes a 121-provider-call versus 120-step/trajectory hard-gate discrepancy. The pause left zero processes and
+  containers; stage evidence is recorded in `skillsbench-pdf-excel-adaptive-ablation-3seed-20260904/stage-conclusion.md`.
+- The user confirmed that longer, more stable task execution may legitimately consume more tokens. Evaluation will therefore
+  not classify absolute token growth as a regression without outcome/progress evidence; it will separate fixed request
+  structure, unmatched-call amplification, typed goal progress, completion, reward and cost per successful task.
+- Real v5 offline replay exposed configuration-contract drift: `destructive_sandbox_checkpoint` is accepted by the runtime
+  harness but rejected by `ContextVariant`, preventing the report from replaying the frozen experiment. Fixing this through
+  one shared validator is the first implementation task.
+- Cross-workload expansion is frozen to outcome-blind random selection from archive task identities only. BrowseComp already
+  has a seed-reproducible five-case pool/three-case prefix; SkillsBench will receive the same auditable selection contract.
 
 ### Task 7.2a: Legacy observe attribution baseline
 
@@ -591,3 +657,40 @@ not a reward, so complete evidence remains 2/10 and default-on is still not-read
   actual loop guard and supports independently recorded agent/verifier timeout overrides. The bounded retry still hit
   repeated `glm-5.2` connection failures and persisted `agent_timeout`, `reward=null`; it is excluded from paired benefit
   evidence and the candidate was stopped after the baseline became unavailable.
+
+### 2026-09-07 adaptive negative-evidence root cause
+
+- The clean frozen SkillsBench comparison is baseline `2/3` versus adaptive candidate `0/3`; this blocks default-on and is
+  being treated as a release defect, not as acceptable evidence that longer execution is inherently better.
+- Provider-owned request capture proves the candidate eventually collapsed to exactly `system + original task` (calls
+  61/81/101/119) after earlier calls repeatedly replayed the same stale ten-message suffix. It then produced 125-151 exact
+  repeated Tool operations across the two exhausted runs.
+- Amni/Memory logs identify the causal boundary failure: event-driven persistence can expose a later non-Tool record before
+  the matching Tool result. The current sequential replay drops the assistant as incomplete and later drops the result as
+  orphaned. A queued watchdog retry can amplify that ordering problem into a second exploration branch.
+- Decision: reuse Amni typed working state/summary/checkpoint concepts, but make causal assistant/Tool groups and a bounded
+  continuation capsule shared runtime invariants. Adaptive compaction must fail safe (retain evidence or skip compaction),
+  and task-scoped progress must survive Context transport copies. No benchmark-specific prompt, Tool, environment or
+  verifier changes are permitted.
+- Implemented task-scoped runtime fan-in shared by Context transport copies, causal out-of-order Memory replay,
+  exactly-once post-Tool continuation claims, and a continuation capsule that preserves complete assistant/Tool groups.
+- A further frozen rollout exposed a read-after-write gap before compaction: a Tool continuation could start while Amni
+  Memory query still returned the prior snapshot. Each continuation token now binds the immutable Action/Observation pair;
+  `LLMAgent` repairs only that current causal group when absent and never duplicates a complete Memory group.
+- Tool boundaries now also update a bounded operational ledger in both the runtime registry and Amni
+  `WorkingState.kv_store`. It preserves recent attempted actions, result previews, artifact milestones and semantic hashes,
+  redacts sensitive fields, bounds large values, and renders Tool-derived evidence inside an untrusted-data boundary after
+  compaction. Amni snapshot/resume therefore carries useful work state instead of only a generic compaction marker.
+- Focused Context/Agent/Memory/loop regressions are 66/66 green; an explicit ApplicationContext deep-copy test proves the
+  ledger uses Amni WorkingState. In the repaired real GLM run, the first five provider requests grew monotonically from
+  2 to 5/7/9/11 messages and each contained the immediately preceding Tool group; the previous repeated stale 5-message
+  snapshots did not recur. Final compact/reward evidence is still running and no benefit claim has been made yet.
+- 2026-09-08 frozen verification now has six complete cross-workload pairs. `db-wal-recovery` and SkillsBench PDF/Excel
+  both preserved reward at `3/3 -> 3/3`; adaptive reduced mean provider calls by 46.2% and 33.8% respectively, with
+  finalized Raw trajectory and exact request/trace reconciliation in all twelve valid runs. Terminal request bytes fell
+  46.3%; SkillsBench median request bytes fell 70.3%. The combined gate remains `NOT_READY` at 6/10 pairs with zero Reward
+  delta, incomplete normalized-cost evidence, and no production canary/rollback bundle.
+- A subsequent `regex-log` retry exposed an evaluation-control defect rather than a Context policy result: six provider
+  attempts failed before any model response or Tool action, but the independent verifier path emitted reward 0. Recovery
+  evidence now records successful/failed/active provider counts, provider exhaustion yields `reward=null`, and the batch
+  opens an infrastructure circuit-breaker instead of consuming remaining frozen jobs. The affected 101-test suite passes.

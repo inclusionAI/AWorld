@@ -329,7 +329,7 @@ def test_tool_output_boundary_preserves_origin_tool_retrieval_receipt(tmp_path):
     assert len(record.upstream_artifacts) == 1
     assert record.reason_code == "artifact_offloaded_upstream_preserved"
     assert result.content["artifact_ref"] == upstream_path
-    assert result.content["context_artifact_ref"] == record.artifact.ref
+    assert "context_artifact_ref" not in result.content
     assert result.content["artifact_retrieval"] == {
         "tool": "docker",
         "action": "read_output_artifact",

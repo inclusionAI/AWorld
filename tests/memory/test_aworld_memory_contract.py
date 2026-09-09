@@ -65,6 +65,37 @@ async def test_get_last_n_keeps_tool_pair_integrity(tmp_path) -> None:
     assert [item.metadata["role"] for item in items[-2:]] == ["assistant", "tool"]
 
 
+@pytest.mark.asyncio
+async def test_get_last_n_tolerates_partial_history_containing_only_tools(
+    tmp_path,
+) -> None:
+    memory = AworldMemory(
+        memory_store=FileSystemMemoryStore(memory_root=str(tmp_path)),
+        config=MemoryConfig(provider="aworld"),
+    )
+    metadata = _metadata()
+    for index in range(3):
+        await memory.add(
+            MemoryToolMessage(
+                tool_call_id=f"call-{index}",
+                content={"index": index},
+                metadata=metadata,
+            )
+        )
+
+    items = memory.get_last_n(
+        1,
+        filters={
+            "agent_id": "agent-1",
+            "session_id": "session-1",
+            "task_id": "task-1",
+        },
+    )
+
+    assert len(items) == 3
+    assert all(isinstance(item, MemoryToolMessage) for item in items)
+
+
 def test_search_without_vector_store_remains_empty(tmp_path) -> None:
     memory = AworldMemory(
         memory_store=FileSystemMemoryStore(memory_root=str(tmp_path)),

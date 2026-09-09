@@ -15,6 +15,7 @@ import time
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
+PREFLIGHT_MAX_TOKENS = 512
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
@@ -56,11 +57,29 @@ async def probe(timeout_sec: float, model_seed: int | None) -> dict:
             messages=[
                 {
                     "role": "user",
-                    "content": "Reply with exactly READY and no explanation.",
+                    "content": (
+                        "Call the health_probe tool exactly once with value READY. "
+                        "Do not answer with text."
+                    ),
+                }
+            ],
+            tools=[
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "health_probe",
+                        "description": "Validate tool-call model connectivity.",
+                        "parameters": {
+                            "type": "object",
+                            "properties": {"value": {"type": "string"}},
+                            "required": ["value"],
+                            "additionalProperties": False,
+                        },
+                    },
                 }
             ],
             temperature=0,
-            max_tokens=128,
+            max_tokens=PREFLIGHT_MAX_TOKENS,
         ),
         timeout=timeout_sec,
     )
@@ -73,14 +92,42 @@ async def probe(timeout_sec: float, model_seed: int | None) -> dict:
         raise RuntimeError("provider returned an error response")
     if not (content or reasoning or finish_reason or response_id):
         raise RuntimeError("provider response did not contain observable evidence")
-    semantic_probe_complete = bool(content and finish_reason != "length")
+    tool_calls = getattr(response, "tool_calls", None) or []
+    normalized_tool_calls = []
+    for call in tool_calls:
+        function = (
+            call.get("function")
+            if isinstance(call, dict)
+            else getattr(call, "function", None)
+        )
+        name = (
+            function.get("name")
+            if isinstance(function, dict)
+            else getattr(function, "name", None)
+        )
+        arguments = (
+            function.get("arguments")
+            if isinstance(function, dict)
+            else getattr(function, "arguments", None)
+        )
+        try:
+            decoded = json.loads(arguments) if isinstance(arguments, str) else arguments
+        except json.JSONDecodeError:
+            decoded = None
+        normalized_tool_calls.append((name, decoded))
+    tool_call_probe_complete = normalized_tool_calls == [
+        ("health_probe", {"value": "READY"})
+    ]
+    semantic_probe_complete = bool(
+        tool_call_probe_complete and finish_reason != "length"
+    )
     response_quality = "complete" if semantic_probe_complete else "degraded"
     quality_reason = None
     if not semantic_probe_complete:
         quality_reason = (
             "response_truncated_after_reasoning"
             if reasoning and finish_reason == "length"
-            else "readiness_content_not_observed"
+            else "tool_call_readiness_not_observed"
         )
     usage = getattr(response, "usage", None) or {}
     return {
@@ -93,6 +140,7 @@ async def probe(timeout_sec: float, model_seed: int | None) -> dict:
         "response_sha256": hashlib.sha256((content or reasoning).encode()).hexdigest(),
         "provider_response_observed": True,
         "semantic_probe_complete": semantic_probe_complete,
+        "tool_call_probe_complete": tool_call_probe_complete,
         "response_quality": response_quality,
         "quality_reason_code": quality_reason,
         "finish_reason": finish_reason,

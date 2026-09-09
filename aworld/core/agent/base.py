@@ -16,6 +16,7 @@ from aworld.core.common import ActionModel, TaskItem
 from aworld.events import eventbus
 from aworld.core.event.base import Constants, Message, AgentMessage, TopicType
 from aworld.core.factory import Factory
+from aworld.core.context.step_budget import ElasticStepBudgetPolicy
 from aworld.events.util import send_message
 from aworld.logs.util import logger, digest_logger
 from aworld.output.base import StepOutput
@@ -199,6 +200,62 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
             )
         self.loop_step = 0
         self.max_loop_steps = kwargs.pop("max_loop_steps", 20)
+        explicit_elastic_budget = any(
+            key in kwargs
+            for key in (
+                "loop_step_extension_steps",
+                "max_extended_loop_steps",
+            )
+        )
+        llm_config = self.conf.get("llm_config") or {}
+        if isinstance(llm_config, BaseModel):
+            llm_config = llm_config.model_dump()
+        compiler_config = (
+            llm_config.get("context_compiler", {})
+            if isinstance(llm_config, dict)
+            else {}
+        )
+        if isinstance(compiler_config, BaseModel):
+            compiler_config = compiler_config.model_dump()
+        if not isinstance(compiler_config, dict):
+            compiler_config = {}
+        adaptive_budget_enabled = (
+            compiler_config.get("mode") == "enforce"
+            and compiler_config.get("elastic_step_budget") is True
+            and self.max_loop_steps > 0
+        )
+        default_extension_steps = (
+            compiler_config.get("step_budget_extension_steps", 0)
+            if adaptive_budget_enabled
+            else 0
+        )
+        default_hard_limit = (
+            compiler_config.get("step_budget_hard_limit", self.max_loop_steps)
+            if adaptive_budget_enabled
+            else self.max_loop_steps
+        )
+        default_progress_window = compiler_config.get(
+            "step_budget_recent_progress_window", 20
+        )
+        extension_steps = kwargs.pop(
+            "loop_step_extension_steps", default_extension_steps
+        )
+        hard_limit = kwargs.pop("max_extended_loop_steps", default_hard_limit)
+        progress_window = kwargs.pop(
+            "loop_step_progress_window", default_progress_window
+        )
+        self._elastic_step_budget_policy = None
+        if explicit_elastic_budget or (
+            adaptive_budget_enabled
+            and hard_limit > self.max_loop_steps
+            and extension_steps > 0
+        ):
+            self._elastic_step_budget_policy = ElasticStepBudgetPolicy(
+                soft_limit=self.max_loop_steps,
+                extension_steps=extension_steps,
+                hard_limit=hard_limit,
+                recent_progress_window_steps=progress_window,
+            )
 
     @staticmethod
     def _get_current_context() -> Optional["Context"]:
@@ -306,6 +363,22 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
     async def async_run(self, message: Message, **kwargs) -> Message:
         # Store context in contextvars for task-safe access (prevents race conditions)
         # Capture token to ensure proper cleanup in finally block
+        execution_lock = None
+        lock_getter = getattr(message.context, "get_agent_execution_lock", None)
+        if callable(lock_getter):
+            execution_lock = lock_getter(self.id())
+            await execution_lock.acquire()
+        continuation_token = message.headers.get("post_tool_continuation_token")
+        if isinstance(continuation_token, str) and continuation_token:
+            claim_token = getattr(message.context, "claim_task_runtime_token", None)
+            if callable(claim_token) and not claim_token(self.id(), continuation_token):
+                logger.info(
+                    "Discard stale duplicate post-tool continuation for agent %s",
+                    self.id(),
+                )
+                if execution_lock is not None:
+                    execution_lock.release()
+                return None
         token = _agent_context.set(message.context)
         step_info: dict[str, Any] | None = None
         try:
@@ -394,6 +467,8 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
         finally:
             # Reset context to prevent leakage in task reuse scenarios
             _agent_context.reset(token)
+            if execution_lock is not None:
+                execution_lock.release()
 
     def _build_failed_step_message(
         self,
@@ -598,6 +673,57 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
             return False
         context = getattr(message, "context", None)
         get_agent_step = getattr(context, "get_agent_step", None)
+        if self._elastic_step_budget_policy is not None and callable(get_agent_step):
+            event_manager = getattr(context, "event_manager", None)
+            state_context = (
+                getattr(event_manager, "context", None)
+                if event_manager is not None
+                else None
+            )
+            if state_context is None:
+                state_context = context
+            progress_by_agent = state_context.context_info.get(
+                "context_semantic_progress"
+            )
+            progress = (
+                progress_by_agent.get(self.id(), {})
+                if isinstance(progress_by_agent, dict)
+                else {}
+            )
+            raw_goal_progress_count = progress.get("goal_progress_count", 0)
+            goal_progress_count = (
+                raw_goal_progress_count
+                if isinstance(raw_goal_progress_count, int)
+                and not isinstance(raw_goal_progress_count, bool)
+                and raw_goal_progress_count >= 0
+                else 0
+            )
+            raw_last_goal_step = (
+                progress.get("last_goal_progress_agent_step")
+                if isinstance(progress, dict)
+                else None
+            )
+            last_goal_step = (
+                raw_last_goal_step
+                if isinstance(raw_last_goal_step, int)
+                and not isinstance(raw_last_goal_step, bool)
+                and raw_last_goal_step >= 0
+                else None
+            )
+            decision = context.evaluate_agent_step_budget(
+                self.id(),
+                policy=self._elastic_step_budget_policy,
+                observed_goal_progress_count=goal_progress_count,
+                last_goal_progress_agent_step=last_goal_step,
+            )
+            state_context.context_info[f"agent_step_budget:{self.id()}"] = (
+                decision.to_dict()
+            )
+            if state_context is not context:
+                context.context_info[f"agent_step_budget:{self.id()}"] = (
+                    decision.to_dict()
+                )
+            return decision.terminate
         if callable(get_agent_step):
             return get_agent_step(self.id()) >= self.max_loop_steps
         return self.loop_step >= self.max_loop_steps
@@ -606,7 +732,7 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
         context = getattr(message, "context", None)
         if context is None:
             return
-        context.context_info[f"agent_loop_budget_exhausted:{self.id()}"] = {
+        exhaustion = {
             "loop_step": self.loop_step,
             "context_agent_step": (
                 context.get_agent_step(self.id())
@@ -615,6 +741,24 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
             ),
             "max_loop_steps": self.max_loop_steps,
         }
+        event_manager = getattr(context, "event_manager", None)
+        state_context = (
+            getattr(event_manager, "context", None)
+            if event_manager is not None
+            else None
+        )
+        if state_context is None:
+            state_context = context
+        elastic_budget = state_context.context_info.get(
+            f"agent_step_budget:{self.id()}"
+        )
+        if elastic_budget is not None:
+            exhaustion["elastic_budget"] = elastic_budget
+        context.context_info[f"agent_loop_budget_exhausted:{self.id()}"] = exhaustion
+        if state_context is not context:
+            state_context.context_info[f"agent_loop_budget_exhausted:{self.id()}"] = (
+                dict(exhaustion)
+            )
         resolver = getattr(context, "resolve_completion_evidence", None)
         if callable(resolver):
             await resolver()
