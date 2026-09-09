@@ -76,6 +76,87 @@ def _profile() -> InferenceProfile:
     )
 
 
+def test_runtime_segments_oversized_required_text_without_content_loss():
+    request_id = "oversized-required-system"
+    system_content = ("System paragraph with detailed instructions.\n\n" * 30).strip()
+    messages = (
+        {"role": "system", "content": system_content},
+        {"role": "user", "content": "Who are you?"},
+    )
+    message_result, _ = adapt_agent_final_request(
+        messages=messages,
+        tools=(),
+        source_identity=(
+            "model-final://agent/task-task/epoch-1/"
+            f"request-{request_id}"
+        ),
+        task_id="task",
+        task_epoch=1,
+        agent_id="agent",
+        amni_folded_system=False,
+    )
+    sidecar = ContextObservationSidecar.from_adapter_result(
+        owner="model.final_messages",
+        namespace="agent",
+        source_identity="messages",
+        result=message_result,
+        request_id_hash=canonical_json_hash({"request_id": request_id}),
+        collection=AttributionCollection.MESSAGES,
+        task_epoch=1,
+    )
+    legacy = ProviderRequestSnapshot(
+        request_id=request_id,
+        provider_name="openai",
+        payload={"messages": messages, "tools": None, "params": {}},
+        capture_stage=RequestCaptureStage.MODEL_BOUNDARY,
+        fidelity=ProviderRequestFidelity.MODEL_BOUNDARY,
+    )
+    policy = FinalCompilePolicy(
+        compiler_version="segmentation-test-v1",
+        policy_version="policy-v1",
+        input_budget=ContextInputBudget(10000, 100, 10, 10, 50),
+    )
+
+    result = compile_model_boundary_context(
+        legacy_request=legacy,
+        observations=(sidecar,),
+        inference_profile=_profile(),
+        policy=policy,
+        created_at=datetime.now(timezone.utc),
+        task_id="task",
+        session_id=None,
+        trace_id=None,
+        task_epoch=1,
+    )
+
+    emitted = result.request_snapshot.payload["messages"]
+    system_segments = tuple(
+        item for item in emitted if item["role"] == "system"
+    )
+    assert result.enforce_ready is True
+    assert len(system_segments) > 1
+    assert "".join(item["content"] for item in system_segments) == system_content
+    assert all(
+        estimate_canonical_json_tokens(item).value <= 50
+        for item in system_segments
+    )
+    selected_system_items = tuple(
+        item for item in result.selected_items if item.kind is ContextKind.SYSTEM
+    )
+    assert [item.source.ref["segment_index"] for item in selected_system_items] == list(
+        range(len(system_segments))
+    )
+    assert all(
+        item.source.ref["segment_count"] == len(system_segments)
+        for item in selected_system_items
+    )
+    assert emitted[-1]["content"] == "Who are you?"
+    assert all(
+        entry.owner_code is AttributionOwnerCode.MODEL_FINAL_MESSAGES
+        for entry in result.attribution_plan.entries
+    )
+
+
 def _item(
     item_id: str,
     payload: dict,
