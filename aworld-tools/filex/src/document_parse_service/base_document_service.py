@@ -6,6 +6,7 @@ stage logging, empty-result validation, metrics, and post-write processing.
 
 from __future__ import annotations
 
+import json
 import logging
 import time
 from pathlib import Path
@@ -91,6 +92,12 @@ class BaseDocumentService:
             file_path=file_path,
             stage_logger=stage_logger,
         )
+        document_ir = getattr(artifact, "document_ir", None)
+        if document_ir is not None:
+            output_path.with_suffix(".document.json").write_text(
+                json.dumps(document_ir, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
 
         total_duration_ms = int((time.perf_counter() - total_start) * 1000)
         metrics = build_parse_metrics(

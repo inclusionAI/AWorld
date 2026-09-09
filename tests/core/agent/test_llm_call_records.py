@@ -9,9 +9,15 @@ from aworld.core.common import TaskStatusValue
 from aworld.core.context.amni.config import AgentContextConfig, ContextCacheConfig
 from aworld.core.context.amni.prompt.assembly import PromptAssemblyPlan
 from aworld.core.context.base import Context
+from aworld.core.context.compiler import (
+    ContextObservationSidecar,
+    adapt_final_messages,
+)
 from aworld.core.context.context_state import ContextState
 from aworld.core.event.base import Constants, Message
 from aworld.core.task import Task
+from aworld.core.exceptions import AWorldRuntimeException
+from aworld.models.llm import AWORLD_CONTEXT_CALL_ID_KWARG
 from aworld.models.model_response import ModelResponse
 
 
@@ -120,6 +126,35 @@ def test_prompt_assembly_observability_metadata_is_attached_to_call_record():
     assert observability["cache_aware_assembly"] is False
     assert observability["provider_native_cache"] is True
     assert observability["stable_prefix_hash"]
+
+
+def test_prompt_assembly_observability_includes_only_redacted_owner_sidecars():
+    agent = _build_agent()
+    context = _build_context("task-owner-sidecar")
+    result = adapt_final_messages(
+        [{"role": "system", "content": "private-neuron-output"}],
+        source_identity="owner://private/neuron/path",
+    )
+    context.publish_context_observation(
+        ContextObservationSidecar.from_adapter_result(
+            owner="amni.neuron_outputs",
+            namespace=agent.id(),
+            source_identity="owner://private/neuron/path",
+            result=result,
+        )
+    )
+
+    observability = agent._build_prompt_assembly_observability(
+        context=context,
+        messages=[{"role": "user", "content": "hello"}],
+    )
+
+    sidecars = observability["context_observations"]
+    assert len(sidecars) == 1
+    assert sidecars[0]["owner"] == "amni.neuron_outputs"
+    rendered = str(sidecars)
+    assert "private-neuron-output" not in rendered
+    assert "owner://private/neuron/path" not in rendered
 
 
 def test_llm_call_response_upgrades_native_cache_flag_when_cache_tokens_exist():
@@ -282,6 +317,330 @@ async def test_async_policy_does_not_forward_prompt_cache_kwargs_to_unknown_prov
     ]
     assert "prompt_assembly_plan" not in captured["kwargs"]
     assert "provider_native_prompt_cache" not in captured["kwargs"]
+    assert AWORLD_CONTEXT_CALL_ID_KWARG not in captured["kwargs"]
+    assert context.get_llm_calls()[0]["call_id"]
+
+
+def test_enforce_compiles_after_assembly_without_replaying_provider_plan():
+    assert Agent._forward_legacy_prompt_assembly_plan("openai", "off") is True
+    assert Agent._forward_legacy_prompt_assembly_plan("openai", "shadow") is True
+    assert Agent._forward_legacy_prompt_assembly_plan("openai", "enforce") is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("mode", "progressive_tools", "base_tools", "expected_names"),
+    [
+        ("enforce", True, None, ["write", "read"]),
+        ("enforce", True, (), []),
+        ("enforce", True, ("read",), ["read"]),
+        ("enforce", False, ("read",), ["write", "read"]),
+        ("observe", True, ("read",), ["write", "read"]),
+        ("shadow", True, ("read",), ["write", "read"]),
+    ],
+)
+async def test_progressive_catalog_requires_explicit_enforce_opt_in(
+    monkeypatch, mode, progressive_tools, base_tools, expected_names
+):
+    captured = {}
+    schemas = [
+        {"type": "function", "function": {"name": "write"}},
+        {"type": "function", "function": {"name": "read"}},
+    ]
+
+    class CapturingAgent(Agent):
+        async def build_llm_input(self, observation, info=None, message=None, **kwargs):
+            return [{"role": "user", "content": "hello"}]
+
+        async def _filter_tools(self, context=None):
+            return schemas
+
+        async def invoke_model(self, messages=None, message=None, **kwargs):
+            captured["tools"] = kwargs.get("prepared_tools")
+            return ModelResponse(
+                id="resp-progressive-tools",
+                model="fake-model",
+                content="done",
+                usage={"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+            )
+
+    agent = CapturingAgent(
+        name="Aworld",
+        conf=AgentConfig(
+            llm_provider="custom",
+            llm_model_name="fake-model",
+            llm_api_key="fake-key",
+        ),
+    )
+    agent._llm = SimpleNamespace(
+        context_compiler_mode=mode,
+        _context_progressive_skills=False,
+        _context_progressive_tools=progressive_tools,
+        _context_progressive_tool_base_tools=base_tools,
+        _context_task_catalog_policy="sticky",
+        _context_artifact_offload=True,
+        enforced_tool_output_policy=None,
+    )
+    async def skip_memory(*args, **kwargs):
+        return None
+
+    monkeypatch.setattr(agent, "_add_message_to_memory", skip_memory)
+    context = _build_context("task-progressive-tools")
+    message = Message(
+        category=Constants.AGENT,
+        sender="user",
+        receiver=agent.name(),
+        headers={"context": context},
+    )
+
+    await agent.async_policy(
+        SimpleNamespace(observer="user", from_agent_name=None, context=None),
+        message=message,
+    )
+
+    actual = captured["tools"] or []
+    assert [schema["function"]["name"] for schema in actual] == expected_names
+
+
+@pytest.mark.asyncio
+async def test_progressive_catalog_preserves_new_unmanaged_mcp_namespace(monkeypatch):
+    captured = {}
+    schemas = [
+        {"type": "function", "function": {"name": "run_code"}},
+        {"type": "function", "function": {"name": "read_file"}},
+        {"type": "function", "function": {"name": "browser_navigate"}},
+        {"type": "function", "function": {"name": "browser_snapshot"}},
+    ]
+
+    class CapturingAgent(Agent):
+        async def build_llm_input(self, observation, info=None, message=None, **kwargs):
+            return [{"role": "user", "content": "research a question"}]
+
+        async def _filter_tools(self, context=None):
+            self.tool_mapping = {
+                "run_code": "docker__run_code",
+                "read_file": "docker__read_file",
+                "browser_navigate": "ms-playwright__browser_navigate",
+                "browser_snapshot": "ms-playwright__browser_snapshot",
+            }
+            return schemas
+
+        async def invoke_model(self, messages=None, message=None, **kwargs):
+            captured["tools"] = kwargs.get("prepared_tools")
+            return ModelResponse(
+                id="resp-progressive-unmanaged-tools",
+                model="fake-model",
+                content="done",
+                usage={"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+            )
+
+    agent = CapturingAgent(
+        name="Aworld",
+        conf=AgentConfig(
+            llm_provider="custom",
+            llm_model_name="fake-model",
+            llm_api_key="fake-key",
+        ),
+    )
+    agent._llm = SimpleNamespace(
+        context_compiler_mode="enforce",
+        _context_progressive_skills=False,
+        _context_progressive_tools=True,
+        _context_progressive_tool_base_tools=("run_code",),
+        _context_progressive_tool_unmanaged_policy="preserve",
+        _context_task_catalog_policy="sticky",
+        _context_artifact_offload=True,
+        enforced_tool_output_policy=None,
+    )
+
+    async def skip_memory(*args, **kwargs):
+        return None
+
+    monkeypatch.setattr(agent, "_add_message_to_memory", skip_memory)
+    context = _build_context("task-progressive-unmanaged-tools")
+    message = Message(
+        category=Constants.AGENT,
+        sender="user",
+        receiver=agent.name(),
+        headers={"context": context},
+    )
+
+    await agent.async_policy(
+        SimpleNamespace(observer="user", from_agent_name=None, context=None),
+        message=message,
+    )
+
+    actual = captured["tools"] or []
+    assert [schema["function"]["name"] for schema in actual] == [
+        "run_code",
+        "browser_navigate",
+        "browser_snapshot",
+    ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "capture_method",
+    ["_record_llm_call_request", "_update_llm_call_observability"],
+)
+async def test_async_policy_request_or_assembly_capture_failure_does_not_skip_model(
+    monkeypatch,
+    capture_method,
+):
+    model_calls = 0
+
+    class CapturingAgent(Agent):
+        async def build_llm_input(self, observation, info=None, message=None, **kwargs):
+            return [{"role": "user", "content": "hello"}]
+
+        async def _filter_tools(self, context=None):
+            return None
+
+        async def invoke_model(self, messages=None, message=None, **kwargs):
+            nonlocal model_calls
+            model_calls += 1
+            return ModelResponse(
+                id="resp-capture-begin",
+                model="fake-model",
+                content="done",
+                usage={"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+            )
+
+    agent = CapturingAgent(
+        name="Aworld",
+        conf=AgentConfig(
+            llm_provider="custom",
+            llm_model_name="fake-model",
+            llm_api_key="fake-key",
+        ),
+    )
+
+    def fail_request_capture(*args, **kwargs):
+        raise RuntimeError("agent-request-capture-secret")
+
+    monkeypatch.setattr(agent, capture_method, fail_request_capture)
+
+    async def skip_memory(*args, **kwargs):
+        return None
+
+    monkeypatch.setattr(agent, "_add_message_to_memory", skip_memory)
+    context = _build_context("task-agent-request-fail-open")
+    message = Message(
+        category=Constants.AGENT,
+        sender="user",
+        receiver=agent.name(),
+        headers={"context": context},
+    )
+
+    await agent.async_policy(
+        SimpleNamespace(observer="user", from_agent_name=None, context=None),
+        message=message,
+    )
+
+    assert model_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_async_policy_response_capture_failure_preserves_success(monkeypatch):
+    class SuccessfulAgent(Agent):
+        async def build_llm_input(self, observation, info=None, message=None, **kwargs):
+            return [{"role": "user", "content": "hello"}]
+
+        async def _filter_tools(self, context=None):
+            return None
+
+        async def invoke_model(self, messages=None, message=None, **kwargs):
+            return ModelResponse(
+                id="resp-capture-finish",
+                model="fake-model",
+                content="done",
+                usage={"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+            )
+
+    agent = SuccessfulAgent(
+        name="Aworld",
+        conf=AgentConfig(
+            llm_provider="custom",
+            llm_model_name="fake-model",
+            llm_api_key="fake-key",
+        ),
+    )
+
+    def fail_response_capture(*args, **kwargs):
+        raise RuntimeError("agent-response-capture-secret")
+
+    monkeypatch.setattr(agent, "_record_llm_call_response", fail_response_capture)
+
+    async def skip_memory(*args, **kwargs):
+        return None
+
+    monkeypatch.setattr(agent, "_add_message_to_memory", skip_memory)
+    context = _build_context("task-agent-response-success")
+    message = Message(
+        category=Constants.AGENT,
+        sender="user",
+        receiver=agent.name(),
+        headers={"context": context},
+    )
+
+    result = await agent.async_policy(
+        SimpleNamespace(observer="user", from_agent_name=None, context=None),
+        message=message,
+    )
+
+    assert len(result) == 1
+    assert result[0].policy_info == "done"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("primary", [ValueError("provider-primary"), asyncio.CancelledError()])
+async def test_async_policy_response_capture_failure_preserves_primary_error(
+    monkeypatch,
+    primary,
+):
+    class FailingAgent(Agent):
+        async def build_llm_input(self, observation, info=None, message=None, **kwargs):
+            return [{"role": "user", "content": "hello"}]
+
+        async def _filter_tools(self, context=None):
+            return None
+
+        async def invoke_model(self, messages=None, message=None, **kwargs):
+            raise primary
+
+    agent = FailingAgent(
+        name="Aworld",
+        conf=AgentConfig(
+            llm_provider="custom",
+            llm_model_name="fake-model",
+            llm_api_key="fake-key",
+        ),
+    )
+
+    def fail_response_capture(*args, **kwargs):
+        raise RuntimeError("agent-response-capture-secret")
+
+    monkeypatch.setattr(agent, "_record_llm_call_response", fail_response_capture)
+    context = _build_context("task-agent-response-primary")
+    message = Message(
+        category=Constants.AGENT,
+        sender="user",
+        receiver=agent.name(),
+        headers={"context": context},
+    )
+
+    if isinstance(primary, asyncio.CancelledError):
+        with pytest.raises(asyncio.CancelledError):
+            await agent.async_policy(
+                SimpleNamespace(observer="user", from_agent_name=None, context=None),
+                message=message,
+            )
+    else:
+        with pytest.raises(AWorldRuntimeException, match="provider-primary"):
+            await agent.async_policy(
+                SimpleNamespace(observer="user", from_agent_name=None, context=None),
+                message=message,
+            )
 
 
 @pytest.mark.asyncio

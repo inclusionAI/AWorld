@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import json
 import logging
 import os
 import sys
@@ -1185,6 +1186,31 @@ async def _run_serve_mode(
         print("✅ All servers stopped")
 
 
+def _emit_direct_run_failure(
+    *,
+    stage: str,
+    error_code: str,
+    agent_name: str,
+    details: Optional[dict] = None,
+) -> None:
+    """Emit a stable failure record that benchmark adapters can preserve."""
+    payload = {
+        "schema_version": "aworld.run.failure.v1",
+        "status": "failed",
+        "stage": stage,
+        "error_code": error_code,
+        "agent_name": agent_name,
+        "trajectory_fidelity": "unavailable",
+        "llm_call_count": 0,
+    }
+    if details:
+        payload["details"] = details
+    print(
+        "AWORLD_RUN_FAILURE=" + json.dumps(payload, ensure_ascii=False, sort_keys=True),
+        file=sys.stderr,
+    )
+
+
 async def _run_direct_mode(
     prompt: str,
     agent_name: str,
@@ -1210,7 +1236,7 @@ async def _run_direct_mode(
     show_iteration_header: bool = True,
     echo_prompt_as_turn: bool = False,
     self_evolve_config=None,
-) -> None:
+) -> object:
     """
     Run agent in direct mode (non-interactive).
     
@@ -1253,7 +1279,20 @@ async def _run_direct_mode(
         self_evolve_config=self_evolve_config,
         skill_paths=skill_paths,
     )
-    all_agents = await runtime._load_agents()
+    try:
+        all_agents = await runtime._load_agents()
+    except Exception as exc:
+        print(f"❌ Error: Failed to load agents: {type(exc).__name__}: {exc}")
+        _emit_direct_run_failure(
+            stage="agent_load",
+            error_code="agent_load_failed",
+            agent_name=agent_name,
+            details={
+                "error_type": type(exc).__name__,
+                "message": str(exc)[:1000],
+            },
+        )
+        return False
 
     # Find the requested agent
     selected_agent = None
@@ -1264,17 +1303,50 @@ async def _run_direct_mode(
     
     if not selected_agent:
         print(f"❌ Error: Agent '{agent_name}' not found")
-        return
+        failure_details = {
+            "available_agents": sorted(agent.name for agent in all_agents),
+        }
+        load_failures = getattr(runtime, "_agent_load_failures", None)
+        if load_failures:
+            failure_details["load_failures"] = load_failures
+        _emit_direct_run_failure(
+            stage="agent_load",
+            error_code="agent_not_found",
+            agent_name=agent_name,
+            details=failure_details,
+        )
+        return False
     
     # Create agent executor using CliRuntime (session_id is already passed to runtime)
     from aworld.core.scheduler import get_scheduler
     runtime._scheduler = get_scheduler()
     runtime._bind_scheduler_default_agent(selected_agent.name)
-    agent_executor = await runtime._create_executor(selected_agent)
+    try:
+        agent_executor = await runtime._create_executor(selected_agent)
+    except Exception as exc:
+        print(
+            f"❌ Error: Failed to create executor for agent '{agent_name}': "
+            f"{type(exc).__name__}: {exc}"
+        )
+        _emit_direct_run_failure(
+            stage="executor_create",
+            error_code="executor_creation_failed",
+            agent_name=agent_name,
+            details={
+                "error_type": type(exc).__name__,
+                "message": str(exc)[:1000],
+            },
+        )
+        return False
 
     if not agent_executor:
         print(f"❌ Error: Failed to create executor for agent '{agent_name}'")
-        return
+        _emit_direct_run_failure(
+            stage="executor_create",
+            error_code="executor_creation_failed",
+            agent_name=agent_name,
+        )
+        return False
 
     # Match interactive mode so direct runs can access runtime-scoped features
     # such as steering checkpoints and HUD state.

@@ -1,0 +1,664 @@
+"""Model-boundary adapter into the pure universal final compiler."""
+
+from __future__ import annotations
+
+from dataclasses import replace
+from datetime import datetime
+import math
+from typing import Iterable
+
+from .adapters import adapt_final_messages, adapt_tool_schemas
+from .budget import AtomicGroupRef, BudgetAllocationTier
+from .final import (
+    ContextEmissionKind,
+    FinalCompileCandidate,
+    FinalCompileInput,
+    FinalCompilePolicy,
+    FinalCompileResult,
+    compile_final_context,
+)
+from .frozen_json import FrozenMap, canonical_json_bytes, canonical_json_hash
+from .attribution import (
+    AttributionCollection,
+    AttributionCollectionShape,
+    AttributionOwnerCode,
+    ContextAttributionPlanEntry,
+    LogicalResidency,
+    ProviderAttributionSubject,
+    ProviderRequestAttributionPlan,
+)
+from .models import (
+    ContextItem,
+    ContextKind,
+    InferenceProfile,
+    ProviderRequestSnapshot,
+    TokenEstimate,
+)
+from .scope import ContextResolutionTarget
+from .sidecar import (
+    ContextEmissionIntent,
+    ContextObservationSidecar,
+    ModelResidency,
+)
+from .trust import verifies_trust_isolation
+
+
+_TOKEN_ESTIMATOR = "aworld-canonical-json-byte4-v1"
+
+
+def estimate_canonical_json_tokens(payload) -> TokenEstimate:
+    """Versioned conservative transport-neutral estimate, never claimed exact."""
+    return TokenEstimate(
+        value=math.ceil(len(canonical_json_bytes(payload)) / 4),
+        estimator=_TOKEN_ESTIMATOR,
+        exact=False,
+    )
+
+
+def _known_semantics(item: ContextItem, task_epoch: int | None) -> bool:
+    from .models import Authority, Lifetime, ScopeKind, Stability, Trust
+
+    return (
+        item.authority is not Authority.UNKNOWN
+        and item.scope.kinds != (ScopeKind.UNKNOWN,)
+        and item.lifetime is not Lifetime.UNKNOWN
+        and item.trust is not Trust.UNKNOWN
+        and item.stability is not Stability.UNKNOWN
+        and (
+            task_epoch is None
+            or item.task_epoch == task_epoch
+            or (
+                item.task_epoch is None
+                and item.lifetime in {Lifetime.INSTALLATION, Lifetime.WORKSPACE}
+            )
+        )
+    )
+
+
+def _final_owner_sidecar(
+    observations: tuple[ContextObservationSidecar, ...],
+    *,
+    owner: str,
+    request_id: str,
+    collection: AttributionCollection,
+    task_epoch: int | None,
+) -> ContextObservationSidecar | None:
+    """Select only the current model-owned collection sidecar.
+
+    Source identity is an in-memory correlation key.  Payload hashes are not
+    used to find, rank, or choose provenance.
+    """
+    request_id_hash = canonical_json_hash({"request_id": request_id})
+    matches = [
+        sidecar
+        for sidecar in observations
+        if sidecar.owner == owner
+        and sidecar.request_id_hash == request_id_hash
+        and sidecar.collection is collection
+        and sidecar.task_epoch == task_epoch
+    ]
+    return matches[0] if len(matches) == 1 else None
+
+
+def _atomic_group(item: ContextItem) -> AtomicGroupRef | None:
+    ref = item.source.ref
+    if not isinstance(ref, FrozenMap):
+        return None
+    group_id = ref.get("atomic_group_id")
+    if not isinstance(group_id, str) or not group_id:
+        return None
+    group_priority = ref.get("atomic_group_priority")
+    if isinstance(group_priority, bool) or not isinstance(group_priority, int):
+        return None
+    return AtomicGroupRef(
+        owner="agent.final_messages",
+        namespace="tool-call-turn",
+        group_id=group_id,
+        selection_priority=group_priority,
+    )
+
+
+_SEGMENTABLE_MESSAGE_ROLES = frozenset({"system", "user", "developer"})
+_SEGMENTABLE_MESSAGE_FIELDS = frozenset({"role", "content", "name"})
+
+
+def _message_with_content(item: ContextItem, content: str) -> dict:
+    if not isinstance(item.payload, FrozenMap):
+        raise TypeError("message payload must be an object")
+    payload = dict(item.payload.items())
+    payload["content"] = content
+    return payload
+
+
+def _largest_fitting_prefix(item: ContextItem, content: str, limit: int) -> int:
+    """Return the largest non-empty prefix whose exact estimator fits."""
+    low = 1
+    high = len(content)
+    fitting = 0
+    while low <= high:
+        middle = (low + high) // 2
+        estimate = estimate_canonical_json_tokens(
+            _message_with_content(item, content[:middle])
+        ).value
+        if estimate is not None and estimate <= limit:
+            fitting = middle
+            low = middle + 1
+        else:
+            high = middle - 1
+    return fitting
+
+
+def _preferred_text_boundary(content: str, maximum: int) -> int:
+    """Prefer a nearby paragraph, line, or word boundary without tiny chunks."""
+    minimum = max(1, maximum // 2)
+    for separator in ("\n\n", "\n", " "):
+        boundary = content.rfind(separator, minimum, maximum)
+        if boundary >= minimum:
+            return boundary + len(separator)
+    return maximum
+
+
+def _segment_required_text_message(
+    item: ContextItem,
+    *,
+    max_item_tokens: int,
+) -> tuple[ContextItem, ...]:
+    """Split an oversized required text message without dropping any content.
+
+    The final budget planner intentionally never rewrites candidates. This
+    model-boundary adapter therefore normalizes only plain, required chat
+    messages before they become budget candidates. Tool-coupled messages and
+    messages with provider-specific fields remain untouched.
+    """
+    payload = item.payload
+    if (
+        not item.required
+        or not isinstance(payload, FrozenMap)
+        or set(payload) - _SEGMENTABLE_MESSAGE_FIELDS
+        or payload.get("role") not in _SEGMENTABLE_MESSAGE_ROLES
+        or not isinstance(payload.get("content"), str)
+    ):
+        return (item,)
+    limit = min(
+        max_item_tokens,
+        item.token_limit if item.token_limit is not None else max_item_tokens,
+    )
+    if limit <= 0:
+        return (item,)
+    estimate = estimate_canonical_json_tokens(payload).value
+    if estimate is None or estimate <= limit:
+        return (item,)
+
+    remaining = payload["content"]
+    chunks: list[str] = []
+    while remaining:
+        maximum = _largest_fitting_prefix(item, remaining, limit)
+        if maximum == 0:
+            # Preserve the original item so the planner raises its typed error.
+            return (item,)
+        boundary = _preferred_text_boundary(remaining, maximum)
+        chunks.append(remaining[:boundary])
+        remaining = remaining[boundary:]
+
+    if len(chunks) < 2:
+        return (item,)
+    source_ref = (
+        dict(item.source.ref.items())
+        if isinstance(item.source.ref, FrozenMap)
+        else {}
+    )
+    return tuple(
+        replace(
+            item,
+            id=f"{item.id}:segment:{index}",
+            payload=_message_with_content(item, chunk),
+            source=replace(
+                item.source,
+                ref={
+                    **source_ref,
+                    "segmented_from_item_id": item.id,
+                    "segmented_from_content_hash": item.content_hash,
+                    "segment_index": index,
+                    "segment_count": len(chunks),
+                },
+            ),
+            content_hash=None,
+        )
+        for index, chunk in enumerate(chunks)
+    )
+
+
+def _segment_oversized_required_messages(
+    items: tuple[ContextItem, ...],
+    *,
+    policy: FinalCompilePolicy,
+) -> tuple[ContextItem, ...]:
+    replacement_ids = {replacement.item_id for replacement in policy.replacements}
+    segmented: list[ContextItem] = []
+    for item in items:
+        # Reducer receipts are hash-bound to the original item. Let the reducer
+        # run instead of invalidating that contract with derived segment ids.
+        if item.id in replacement_ids:
+            segmented.append(item)
+            continue
+        segmented.extend(
+            _segment_required_text_message(
+                item,
+                max_item_tokens=policy.input_budget.max_item_tokens,
+            )
+        )
+    return tuple(segmented)
+
+
+def _bind_final_collection(
+    fallback_items: tuple[ContextItem, ...],
+    sidecar: ContextObservationSidecar | None,
+    *,
+    allow_trust_isolation: bool = False,
+) -> tuple[tuple[ContextItem, ...], bool]:
+    """Bind by ordinal and prove the exact value or deterministic isolation."""
+    if sidecar is None or len(sidecar.result.items) != len(fallback_items):
+        return fallback_items, False
+    bound: list[ContextItem] = []
+    for ordinal, fallback in enumerate(fallback_items):
+        item = sidecar.result.items[ordinal]
+        ref = item.source.ref
+        exact_payload = item.content_hash == fallback.content_hash
+        isolated_payload = (
+            allow_trust_isolation
+            and verifies_trust_isolation(item, original_item=fallback)
+        )
+        if (
+            item.occurrence != ordinal
+            or not isinstance(ref, FrozenMap)
+            or ref.get("occurrence") != ordinal
+            or ref.get("model_final_boundary") is not True
+            or not (exact_payload or isolated_payload)
+        ):
+            return fallback_items, False
+        bound.append(item)
+    return tuple(bound), True
+
+
+def build_observed_model_boundary_attribution_plan(
+    *,
+    observed_request: ProviderRequestSnapshot,
+    observations: Iterable[ContextObservationSidecar],
+    task_epoch: int | None,
+) -> ProviderRequestAttributionPlan:
+    """Attribute an already-selected legacy request without compiling a candidate."""
+    payload = observed_request.payload
+    if not isinstance(payload, FrozenMap):
+        raise TypeError("observed model-boundary payload must be an object")
+    messages = payload.get("messages")
+    tools = payload.get("tools")
+    if not isinstance(messages, tuple):
+        raise TypeError("observed messages must be an array")
+    if tools is not None and not isinstance(tools, tuple):
+        raise TypeError("observed tools must be an array or null")
+    observations = tuple(observations)
+    fallback_messages = adapt_final_messages(
+        messages,
+        source_identity=f"observed-boundary:{observed_request.request_id}:messages",
+        task_epoch=task_epoch,
+    ).items
+    fallback_tools = adapt_tool_schemas(
+        tools or (),
+        source_identity=f"observed-boundary:{observed_request.request_id}:tools",
+        task_epoch=task_epoch,
+    ).items
+    message_items, messages_bound = _bind_final_collection(
+        fallback_messages,
+        _final_owner_sidecar(
+            observations,
+            owner="model.final_messages",
+            request_id=observed_request.request_id or "",
+            collection=AttributionCollection.MESSAGES,
+            task_epoch=task_epoch,
+        ),
+    )
+    tool_items, tools_bound = _bind_final_collection(
+        fallback_tools,
+        _final_owner_sidecar(
+            observations,
+            owner="model.final_tool_catalog",
+            request_id=observed_request.request_id or "",
+            collection=AttributionCollection.TOOLS,
+            task_epoch=task_epoch,
+        ),
+    )
+    entries: list[ContextAttributionPlanEntry] = []
+    for collection, items, bound, owner_code in (
+        (
+            AttributionCollection.MESSAGES,
+            message_items,
+            messages_bound,
+            AttributionOwnerCode.MODEL_FINAL_MESSAGES,
+        ),
+        (
+            AttributionCollection.TOOLS,
+            tool_items,
+            tools_bound,
+            AttributionOwnerCode.MODEL_FINAL_TOOL_CATALOG,
+        ),
+    ):
+        for ordinal, item in enumerate(items):
+            entries.append(
+                ContextAttributionPlanEntry.from_item(
+                    item=item,
+                    owner_code=(owner_code if bound else AttributionOwnerCode.UNKNOWN),
+                    collection=collection,
+                    ordinal=ordinal,
+                    token_estimate=estimate_canonical_json_tokens(item.payload),
+                    residency=LogicalResidency.UNKNOWN,
+                )
+            )
+    return ProviderRequestAttributionPlan(
+        request_id_hash=canonical_json_hash({"request_id": observed_request.request_id}),
+        candidate_content_hash=observed_request.content_hash,
+        entries=tuple(entries),
+        messages_count=len(messages),
+        tools_shape=(
+            AttributionCollectionShape.NULL
+            if tools is None
+            else AttributionCollectionShape.ARRAY
+        ),
+        tools_count=(None if tools is None else len(tools)),
+        subject=ProviderAttributionSubject.LEGACY_OBSERVED,
+    )
+
+
+def _owner_code(owner: str) -> AttributionOwnerCode:
+    if owner == "workspace.nested_instructions":
+        return AttributionOwnerCode.SCOPED_INSTRUCTION
+    if owner == "skills.progressive":
+        return AttributionOwnerCode.PROGRESSIVE_SKILL
+    if owner == "delegation.context_pack":
+        return AttributionOwnerCode.DELEGATION_CONTEXT
+    if owner in {"amni.folded_system", "amni.restored_folded_system"}:
+        return AttributionOwnerCode.AMNI_FOLDED_SYSTEM
+    return AttributionOwnerCode.UNKNOWN
+
+
+def compile_model_boundary_context(
+    *,
+    legacy_request: ProviderRequestSnapshot,
+    observations: Iterable[ContextObservationSidecar],
+    inference_profile: InferenceProfile,
+    policy: FinalCompilePolicy,
+    created_at: datetime,
+    task_id: str | None,
+    session_id: str | None,
+    trace_id: str | None,
+    task_epoch: int | None,
+    resolution_target: ContextResolutionTarget | None = None,
+) -> FinalCompileResult:
+    """Reconcile exact finalized occurrences with owner-proven sidecars."""
+    payload = legacy_request.payload
+    if not isinstance(payload, FrozenMap):
+        raise TypeError("legacy model-boundary payload must be an object")
+    messages = payload["messages"]
+    tools = payload["tools"]
+    params = payload["params"]
+    if not isinstance(messages, tuple):
+        raise TypeError("legacy messages must be an array")
+    if tools is not None and not isinstance(tools, tuple):
+        raise TypeError("legacy tools must be an array or null")
+    if not isinstance(params, FrozenMap):
+        raise TypeError("legacy params must be an object")
+
+    observations = tuple(observations)
+    fallback_message_items = adapt_final_messages(
+        messages,
+        source_identity=f"model-boundary:{legacy_request.request_id}:messages",
+        task_epoch=task_epoch,
+    ).items
+    fallback_tool_items = adapt_tool_schemas(
+        tools or (),
+        source_identity=f"model-boundary:{legacy_request.request_id}:tools",
+        task_epoch=task_epoch,
+    ).items
+    message_items, messages_bound = _bind_final_collection(
+        fallback_message_items,
+        _final_owner_sidecar(
+            observations,
+            owner="model.final_messages",
+            request_id=legacy_request.request_id or "",
+            collection=AttributionCollection.MESSAGES,
+            task_epoch=task_epoch,
+        ),
+        allow_trust_isolation=True,
+    )
+    tool_items, tools_bound = _bind_final_collection(
+        fallback_tool_items,
+        _final_owner_sidecar(
+            observations,
+            owner="model.final_tool_catalog",
+            request_id=legacy_request.request_id or "",
+            collection=AttributionCollection.TOOLS,
+            task_epoch=task_epoch,
+        ),
+    )
+    message_items = _segment_oversized_required_messages(
+        message_items,
+        policy=policy,
+    )
+    tool_item_by_visible_id: dict[str, ContextItem] = {}
+    for item in tool_items:
+        payload = item.payload
+        function = payload.get("function") if isinstance(payload, FrozenMap) else None
+        tool_id = (
+            function.get("name")
+            if isinstance(function, FrozenMap)
+            else payload.get("name") if isinstance(payload, FrozenMap) else None
+        )
+        if isinstance(tool_id, str) and tool_id:
+            if tool_id in tool_item_by_visible_id:
+                raise ValueError("model-visible Tool ids must be unique")
+            tool_item_by_visible_id[tool_id] = item
+    consumed_owner_ids = {
+        item.id
+        for item in (
+            *(message_items if messages_bound else ()),
+            *(tool_items if tools_bound else ()),
+        )
+    }
+    candidates: list[FinalCompileCandidate] = []
+    for item in message_items:
+        required = item.required
+        candidates.append(
+            FinalCompileCandidate(
+                item=item,
+                tokens=estimate_canonical_json_tokens(item.payload),
+                allocation_tier=BudgetAllocationTier(
+                    rank=0 if required else 3,
+                    name="required" if required else "dynamic_context",
+                ),
+                emission=ContextEmissionKind.MESSAGE,
+                atomic_group=_atomic_group(item),
+                semantics_proven=messages_bound and _known_semantics(item, task_epoch),
+                lowering_proven=messages_bound,
+                owner_code=(
+                    AttributionOwnerCode.MODEL_FINAL_MESSAGES
+                    if messages_bound
+                    else AttributionOwnerCode.UNKNOWN
+                ),
+            )
+        )
+    for item in tool_items:
+        candidates.append(
+            FinalCompileCandidate(
+                item=item,
+                tokens=estimate_canonical_json_tokens(item.payload),
+                allocation_tier=BudgetAllocationTier(rank=2, name="tool_catalog"),
+                emission=ContextEmissionKind.TOOL,
+                semantics_proven=tools_bound and _known_semantics(item, task_epoch),
+                lowering_proven=tools_bound,
+                owner_code=(
+                    AttributionOwnerCode.MODEL_FINAL_TOOL_CATALOG
+                    if tools_bound
+                    else AttributionOwnerCode.UNKNOWN
+                ),
+            )
+        )
+    candidate_ids = {candidate.item.id for candidate in candidates}
+    amni_folded_selected = any(
+        sidecar.owner in {"amni.folded_system", "amni.restored_folded_system"}
+        for sidecar in observations
+    )
+    evidence_by_id: dict[str, tuple[ContextObservationSidecar, ContextItem]] = {}
+    for sidecar in observations:
+        for item in sidecar.result.items:
+            if item.id in consumed_owner_ids:
+                continue
+            # These owners are alternative observations of the same exact
+            # final occurrence, not additional prompt material.  A stronger
+            # owner (for example Amni's post-template fold) may have won the
+            # reconciliation without making the downstream observation a new
+            # message.
+            if sidecar.owner in {
+                    "agent.final_messages",
+                    "agent.final_tool_catalog",
+                    "model.final_messages",
+                    "model.final_tool_catalog",
+                    "amni.folded_system",
+                    "amni.restored_folded_system",
+                }:
+                continue
+            # Exact folded-system ownership covers the pre-fold neuron
+            # observations.  They remain auditable sidecars but are not a
+            # second set of provider messages.
+            if amni_folded_selected and sidecar.owner == "amni.neuron_outputs":
+                continue
+            existing = evidence_by_id.get(item.id)
+            if existing is not None and existing[1] != item:
+                raise ValueError("owner sidecars contain conflicting Context item ids")
+            evidence_by_id[item.id] = (sidecar, item)
+    additional_message_candidates: list[FinalCompileCandidate] = []
+    for sidecar, item in evidence_by_id.values():
+        sidecar_owner = sidecar.owner
+        if item.id in candidate_ids:
+            raise ValueError("owner evidence collides with an emitted candidate id")
+        delegated = (
+            isinstance(item.source.ref, FrozenMap)
+            and item.source.ref.get("delegation_context_pack") is True
+        )
+        message_shaped = (
+            isinstance(item.payload, FrozenMap)
+            and isinstance(item.payload.get("content"), str)
+        )
+        has_explicit_non_resident_emission = (
+            sidecar.model_residency is ModelResidency.NOT_RESIDENT
+            and sidecar.emission_intent is ContextEmissionIntent.MESSAGE
+        )
+        dependency_item_ids: tuple[str, ...] = ()
+        if sidecar_owner == "skills.progressive" and item.kind is ContextKind.SKILL:
+            ref = item.source.ref
+            required_tool_ids = (
+                ref.get("required_tool_ids") if isinstance(ref, FrozenMap) else None
+            )
+            if not isinstance(required_tool_ids, tuple) or any(
+                not isinstance(tool_id, str) for tool_id in required_tool_ids
+            ):
+                raise ValueError("progressive Skill lacks exact Tool dependencies")
+            missing_tool_ids = tuple(
+                tool_id
+                for tool_id in required_tool_ids
+                if tool_id not in tool_item_by_visible_id
+            )
+            if missing_tool_ids:
+                raise ValueError("progressive Skill required Tool is unavailable")
+            dependency_item_ids = tuple(
+                tool_item_by_visible_id[tool_id].id for tool_id in required_tool_ids
+            )
+        can_lower_instruction = (
+            has_explicit_non_resident_emission
+            and message_shaped
+            and _known_semantics(item, task_epoch)
+            and (
+                (
+                    item.kind in {ContextKind.INSTRUCTION, ContextKind.SKILL}
+                    and item.payload.get("role") == "system"
+                )
+                or (
+                    delegated
+                    and item.kind is not ContextKind.TOOL_CATALOG
+                    and item.payload.get("role") in {"system", "user", "assistant"}
+                )
+            )
+        )
+        candidate = FinalCompileCandidate(
+                item=item,
+                tokens=(
+                    estimate_canonical_json_tokens(item.payload)
+                    if can_lower_instruction
+                    else TokenEstimate(
+                        value=0,
+                        estimator="aworld-evidence-only-v1",
+                        exact=True,
+                    )
+                ),
+                allocation_tier=BudgetAllocationTier(
+                    rank=(1 if can_lower_instruction else 4),
+                    name=(
+                        (
+                            "delegated_context"
+                            if delegated
+                            else "progressive_skill"
+                            if item.kind is ContextKind.SKILL
+                            else "scoped_instruction"
+                        )
+                        if can_lower_instruction
+                        else "owner_evidence"
+                    ),
+                ),
+                emission=(
+                    ContextEmissionKind.MESSAGE
+                    if can_lower_instruction
+                    else ContextEmissionKind.EVIDENCE_ONLY
+                ),
+                dependency_item_ids=dependency_item_ids,
+                semantics_proven=_known_semantics(item, task_epoch),
+                lowering_proven=can_lower_instruction,
+                owner_code=_owner_code(sidecar_owner),
+            )
+        if can_lower_instruction:
+            additional_message_candidates.append(candidate)
+        else:
+            candidates.append(candidate)
+    if additional_message_candidates:
+        insert_at = next(
+            (
+                index
+                for index, candidate in enumerate(candidates)
+                if candidate.emission is ContextEmissionKind.MESSAGE
+                and candidate.item.kind is not ContextKind.SYSTEM
+            ),
+            len(candidates),
+        )
+        candidates[insert_at:insert_at] = additional_message_candidates
+    all_proven = all(candidate.semantics_proven for candidate in candidates)
+    return compile_final_context(
+        compiler_input=FinalCompileInput(
+            request_id=legacy_request.request_id,
+            provider_name=legacy_request.provider_name,
+            provider_params=params,
+            candidates=tuple(candidates),
+            inference_profile=inference_profile,
+            created_at=created_at,
+            trace_id=trace_id,
+            task_id=task_id,
+            session_id=session_id,
+            task_epoch=task_epoch,
+            tools_present=tools is not None,
+            resolution_target=resolution_target if all_proven else None,
+        ),
+        policy=policy,
+    )
+
+
+__all__ = [
+    "compile_model_boundary_context",
+    "estimate_canonical_json_tokens",
+    "build_observed_model_boundary_attribution_plan",
+]

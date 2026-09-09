@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<openbox_config xmlns="http://openbox.org/3.4/rc" xmlns:xi="http://www.w3.org/2001/XInclude">
+  <desktops>
+    <number>1</number>
+  </desktops>
+  <margins>
+    <top>0</top>
+    <bottom>0</bottom>
+    <left>0</left>
+    <right>0</right>
+  </margins>
+  <theme>
+  </theme>
+  <applications>
+    <application class="*">
+      <decor>yes</decor>
+      <maximized>yes</maximized>
+      <fullscreen>no</fullscreen>
+      <focus>yes</focus>
+      <desktop>1</desktop>
+      <layer>normal</layer>
+    </application>
+    <application name="tint2">
+      <decor>no</decor>
+      <maximized>no</maximized>
+      <fullscreen>no</fullscreen>
+      <skip_pager>yes</skip_pager>
+      <skip_taskbar>yes</skip_taskbar>
+      <layer>above</layer>
+    </application>
+  </applications>
+</openbox_config>

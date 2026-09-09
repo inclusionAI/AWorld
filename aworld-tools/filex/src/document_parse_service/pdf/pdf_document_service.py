@@ -417,7 +417,48 @@ class PdfDocumentService(LiteParseDocumentService):
             ),
             assets=[asset for artifact in artifacts for asset in artifact.assets],
             diagnostics=diagnostics,
+            document_ir=PdfDocumentService._merge_document_ir(
+                artifacts,
+                requested_pages=requested_pages,
+            ),
         )
+
+    @staticmethod
+    def _merge_document_ir(
+        artifacts: list[MarkdownArtifact],
+        *,
+        requested_pages: list[int],
+    ) -> dict[str, Any] | None:
+        pages: list[dict[str, Any]] = []
+        source_page_offset = 0
+        for artifact in artifacts:
+            document_ir = getattr(artifact, "document_ir", None)
+            if not isinstance(document_ir, dict):
+                continue
+            for local_page in document_ir.get("pages") or []:
+                if not isinstance(local_page, dict):
+                    continue
+                merged_page = dict(local_page)
+                local_index = int(merged_page.get("page_index") or 0)
+                requested_index = min(source_page_offset + local_index, len(requested_pages) - 1)
+                merged_page["page_index"] = requested_pages[requested_index] - 1
+                pages.append(merged_page)
+            source_page_offset += len(document_ir.get("pages") or [])
+        if not pages:
+            return None
+        has_v2_spans = any(
+            str((getattr(artifact, "document_ir", None) or {}).get("schema_version") or "")
+            == "filex-document-ir-v2"
+            for artifact in artifacts
+            if isinstance(getattr(artifact, "document_ir", None), dict)
+        )
+        return {
+            "schema_version": (
+                "filex-document-ir-v2" if has_v2_spans else "filex-document-ir-v1"
+            ),
+            "coordinate_system": "pixel_top_left_xyxy",
+            "pages": pages,
+        }
 
     def _apply_page_selection_diagnostics(
         self,

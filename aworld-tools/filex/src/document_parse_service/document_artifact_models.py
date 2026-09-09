@@ -6,8 +6,13 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal
 
-
-AssetKind = Literal["embedded_image", "figure_crop", "page_screenshot"]
+AssetKind = Literal[
+    "embedded_image",
+    "figure_crop",
+    "page_screenshot",
+    "video_keyframe",
+    "video_storyboard",
+]
 
 
 @dataclass(slots=True)
@@ -42,3 +47,4 @@ class MarkdownArtifact:
     markdown_text: str
     assets: list[DocumentAsset] = field(default_factory=list)
     diagnostics: dict[str, Any] = field(default_factory=dict)
+    document_ir: dict[str, Any] | None = None

@@ -18,9 +18,12 @@ from .asset_reference import AssetReferenceMode
 from .document_parse_executor import DocumentParseExecutor
 from .document_service_factory import DocumentServiceFactory
 from .filex_config import build_default_env_content, merge_env_content
-from .media_file_types import MEDIA_FILE_TYPES
-from .media_file_types import AUDIO_FILE_TYPES, IMAGE_FILE_TYPES, VIDEO_FILE_TYPES
-from .paths import DOCUMENT_PARSE_WORKSPACE, FS_WORKSPACE_ROOT
+from .media_file_types import (
+    AUDIO_FILE_TYPES,
+    IMAGE_FILE_TYPES,
+    MEDIA_FILE_TYPES,
+    VIDEO_FILE_TYPES,
+)
 from .parse_result_cache import (
     CACHE_KEY_VERSION,
     DEFAULT_MAX_ENTRIES,
@@ -28,6 +31,7 @@ from .parse_result_cache import (
     ParseResultCache,
     build_parse_cache_key,
 )
+from .paths import FS_WORKSPACE_ROOT
 from .provider_registry import normalize_provider_env
 
 logger = logging.getLogger(__name__)
@@ -77,7 +81,9 @@ class DocumentParseService:
     def __init__(self, workspace_root: Path | None = None) -> None:
         self._workspace_root = workspace_root or FS_WORKSPACE_ROOT
         self._output_root = self._workspace_root / "document_parse"
-        self._parse_result_cache = ParseResultCache(self._workspace_root / ".filex_parse_cache")
+        self._parse_result_cache = ParseResultCache(
+            self._workspace_root / ".filex_parse_cache"
+        )
 
     async def parse(
         self,
@@ -97,7 +103,9 @@ class DocumentParseService:
 
         normalized_env = normalize_env_content(env_content)
         if file_type:
-            normalized_env = normalize_provider_env(file_type, normalized_env, use_default=False)
+            normalized_env = normalize_provider_env(
+                file_type, normalized_env, use_default=False
+            )
         cache_enabled = _as_bool(normalized_env.pop("filex_cache_enabled", True))
         no_cache = _as_bool(normalized_env.pop("filex_no_cache", False))
         force_refresh = _as_bool(normalized_env.pop("filex_force_refresh", False))
@@ -197,7 +205,9 @@ class DocumentParseService:
         if not validation_result["is_valid"]:
             raise RuntimeError(validation_result["error_message"])
         if not await verify_file_type(source_path, source_file_type):
-            raise RuntimeError(f"下载的文件类型与指定的file_type不匹配。预期: {source_file_type}")
+            raise RuntimeError(
+                f"下载的文件类型与指定的file_type不匹配。预期: {source_file_type}"
+            )
 
         source_path = self._ensure_expected_file_suffix(source_path, source_file_type)
         source_file_name = source_path.stem
@@ -232,7 +242,9 @@ class DocumentParseService:
                 "output_file_id": "",
                 "file_path": "",
                 "source_file_path": self._to_workspace_relative_path(source_path),
-                "file_dir_path": self._to_workspace_relative_path(self._output_root / resolved_task_id),
+                "file_dir_path": self._to_workspace_relative_path(
+                    self._output_root / resolved_task_id
+                ),
             }
 
         result = await executor.sync_parse(
@@ -256,20 +268,30 @@ class DocumentParseService:
             "file_path": result.get("file_path", ""),
             "source_file_path": self._to_workspace_relative_path(source_path),
             "file_url": file_url,
-            "file_dir_path": self._to_workspace_relative_path(self._output_root / resolved_task_id),
+            "file_dir_path": self._to_workspace_relative_path(
+                self._output_root / resolved_task_id
+            ),
             "metrics": result.get("metrics") or {},
             "metrics_file_path": result.get("metrics_file_path") or "",
             "evidence_file_path": result.get("evidence_file_path") or "",
+            "document_file_path": result.get("document_file_path") or "",
+            "storyboard_file_path": result.get("storyboard_file_path") or "",
         }
 
     @staticmethod
-    def _apply_provider_identity(result: dict[str, Any], env_content: dict[str, Any]) -> None:
+    def _apply_provider_identity(
+        result: dict[str, Any], env_content: dict[str, Any]
+    ) -> None:
         metrics = result.get("metrics")
         if not isinstance(metrics, dict):
             return
-        metrics["provider"] = str(env_content.get("filex_parse_provider") or metrics.get("provider") or "")
+        metrics["provider"] = str(
+            env_content.get("filex_parse_provider") or metrics.get("provider") or ""
+        )
         metrics["provider_version"] = str(
-            env_content.get("filex_provider_version") or metrics.get("provider_version") or ""
+            env_content.get("filex_provider_version")
+            or metrics.get("provider_version")
+            or ""
         )
         metrics_relative_path = str(result.get("metrics_file_path") or "").strip()
         if not metrics_relative_path:
@@ -302,7 +324,9 @@ class DocumentParseService:
             raise FileNotFoundError(f"file not found: {path}")
         return path
 
-    def _resolve_file_type(self, source_path: Path, explicit_file_type: Optional[str]) -> str:
+    def _resolve_file_type(
+        self, source_path: Path, explicit_file_type: Optional[str]
+    ) -> str:
         if explicit_file_type:
             normalized_type = explicit_file_type.lower().strip()
             if normalized_type not in SUPPORTED_FILE_TYPES:
@@ -338,7 +362,9 @@ class DocumentParseService:
 
     @staticmethod
     def _detect_media_file_type(header: bytes) -> str:
-        if header.startswith(b"ID3") or header.startswith((b"\xff\xfb", b"\xff\xf3", b"\xff\xf2")):
+        if header.startswith(b"ID3") or header.startswith(
+            (b"\xff\xfb", b"\xff\xf3", b"\xff\xf2")
+        ):
             return "mp3"
         if header.startswith(b"RIFF") and header[8:12] == b"WAVE":
             return "wav"

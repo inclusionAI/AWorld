@@ -1,11 +1,11 @@
 ---
 name: filex
-description: Parse workspace files or HTTP(S) URLs into Markdown and inspect resumable PDF batch status with the FileX CLI inside an AWorld sandbox. Use for reading, extracting, transcribing, inspecting, summarizing, or answering questions about PDF, Word, PowerPoint, Excel, CSV, text, Markdown, image, audio, or video files.
+description: Parse workspace files, HTTP(S) file URLs, or supported source URLs such as YouTube into Markdown, inspect source routing, and inspect resumable PDF batch status with the FileX CLI inside an AWorld sandbox. Use for reading, extracting, transcribing, inspecting, summarizing, or answering questions about PDF, Word, PowerPoint, Excel, CSV, text, Markdown, image, audio, or video files.
 ---
 
 # Use FileX
 
-Use the bundled wrapper for FileX `parse` and `status`. It validates workspace paths, downloads HTTP(S) inputs into the workspace, keeps credentials out of command-line arguments, preserves FileX JSON fields, and returns `output_path` for synchronous parsing.
+Use the bundled wrapper for FileX `inspect`, `parse`, and `status`. It validates workspace paths, resolves supported URL sources, keeps credentials out of command-line arguments, preserves FileX JSON fields, and returns `output_path` for synchronous parsing.
 
 ## Parse a local file
 
@@ -54,6 +54,36 @@ python3 /skills/filex/scripts/filex.py parse \
 The default maximum download is 512 MiB and the default timeout is 120 seconds.
 Operators may adjust `FILEX_MAX_DOWNLOAD_BYTES` and
 `FILEX_DOWNLOAD_TIMEOUT_SECONDS` on the container.
+
+## Inspect and parse YouTube
+
+Inspect metadata, chapters, subtitle tracks, publisher transcript candidates, and
+the recommended route without downloading media:
+
+```bash
+python3 /skills/filex/scripts/filex.py inspect \
+  --url "https://www.youtube.com/watch?v=VIDEO_ID"
+```
+
+Parse the best available text track into timestamped Markdown:
+
+```bash
+python3 /skills/filex/scripts/filex.py parse \
+  --url "https://www.youtube.com/watch?v=VIDEO_ID" \
+  --mode transcript \
+  --language en
+```
+
+FileX prefers human subtitles, then automatic captions. If neither exists, do
+not download media unless the user explicitly confirms an applicable rights
+basis. Only then use `--allow-media-download --rights-basis user-owned` (or
+`licensed`, `service-permitted`, `applicable-law`) to acquire audio for local
+Whisper. Never infer permission, use browser cookies, or bypass access controls.
+
+The current YouTube source provider records publisher transcript candidates but
+does not fetch arbitrary external HTML. It does not yet perform scene detection,
+keyframe OCR, or full audiovisual understanding; preserve these limitations in
+the response.
 
 ## PDF page and batch controls
 

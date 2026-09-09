@@ -64,6 +64,17 @@ class DocumentServiceFactory:
 
             return VideoDocumentService(file_type=normalized_file_type, env_content=env_content)
         if normalized_file_type in IMAGE_FILE_TYPES:
+            provider = str((env_content or {}).get("filex_parse_provider") or "").strip()
+            if provider == "paddle_ocr":
+                from .paddle_ocr_image_document_service import (
+                    PaddleOcrImageDocumentService,
+                )
+
+                return PaddleOcrImageDocumentService(
+                    file_type=normalized_file_type,
+                    env_content=env_content,
+                    asset_reference_mode=asset_reference_mode,
+                )
             from .media_document_service import ImageDocumentService
 
             return ImageDocumentService(file_type=normalized_file_type, env_content=env_content)

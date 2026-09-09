@@ -1,0 +1,709 @@
+# Project Progress
+
+## Current Status
+
+**Phase:** Milestone 9/10 default-on evidence completion
+**Current milestone:** preserve the proven adaptive repair and close the remaining release-evidence gates
+**Current task:** extend the existing six clean pairs to the preregistered threshold and collect real artifact-retrieval,
+rollback and canary receipts; do not reopen the already-settled causal-state defect or treat provider outages as Reward 0
+**Last action:** completed six current-code, same-model/same-seed pairs across Terminal Bench `db-wal-recovery` and
+SkillsBench PDF/Excel. Both workloads preserved Reward at `3/3 -> 3/3`; all 12 rollouts finalized checksum-valid Raw
+trajectory with request-trace match 1.0. Adaptive reduced mean provider calls by 46.2% and 33.8%; Terminal request bytes fell
+46.3%, SkillsBench median request bytes fell 70.3%, and the Terminal candidate performed six generic tracked-artifact
+rollbacks. The reviewed `openai:amni:async` capability is now reconstructed from successful provider-bound receipts. A later
+`regex-log` attempt had zero successful provider calls and is infrastructure-invalid (`reward=null`), not contrary evidence.
+The current gate is therefore evidence-incomplete, not mechanism-unproven: 6/10 complete pairs, no valid real retrieval
+receipt yet, and no externally bound rollback/canary receipt. Focused regression is 457/457 green.
+
+### Task 7.4: Component ablation and progress-normalized attribution
+
+**Status:** in progress
+
+- Task 7.5 mechanism verification is green: 252 focused tests passed, the opt-in real Docker suite passed 3/3, and a local
+  deterministic structural rollout finalized one Raw trajectory item with trajectory/journal LLM call delta 0. A broader
+  relevant run produced 758 passes and only 10 known environment/path failures unrelated to Context changes.
+- A new frozen `pdf-excel-diff` three-seed/six-job manifest preserves the prior order and invariants while enabling the
+  candidate-only elastic policy. Mandatory GLM-5.2 preflight returned `provider_connectivity_failed`, so image resolution,
+  benchmark jobs, Reward and paired statistics were correctly not attempted. Evidence is in
+  `skillsbench-pdf-excel-elastic-ablation-3seed-20260906/validation-status.md`.
+
+- The unchanged GLM endpoint recovered on 2026-09-06 and the frozen `pdf-excel-diff` comparison was completed. Initial
+  baseline seed `20260903` and candidate seed `20260904` failed only because of provider connection errors; exact-configuration
+  retries replaced those invalid trials. Clean rewards are baseline `2/3` versus candidate `0/3` (`1->0`, `1->0`, `0->0`).
+  Both variants had 3/3 normal Agent completion and every selected run has finalized Raw trajectory, full provider/request
+  trace evidence and zero final call-count delta. Candidate used 255 versus 72 provider calls, 257 versus 72 Agent steps,
+  19,263 versus 6,962 seconds and 351,294.6 versus 293,080.2 normalized-cost units. The three-pair reward bootstrap interval
+  is `[-1, 0]`, so conventional statistical significance is not established, but the current bundle has no positive quality
+  or efficiency evidence and shows a strong negative direction. Default-on remains closed; task-specific tuning is forbidden.
+
+- Formal cross-workload suites now use `max_steps=120` and a 14,400-second Agent timeout; smaller budgets remain mechanism
+  smoke only. A shared task-scoped monotonic Agent-step registry prevents watchdog/deep-copy transport from silently resetting
+  the configured limit.
+- The first SkillsBench `pdf-excel-diff` adaptive run exposed a final capture fan-in defect: 120 journaled calls and 120 Raw
+  trajectory steps were reduced to one TaskResponse/live-Context branch. Finalized checksum-valid append-only journal truth is
+  now accepted only when it is an identity superset of both projections; the capture-fixed rerun achieved 120/120 provider
+  calls, request-trace match 1.0, complete Raw trajectory and a real verifier result.
+- The capture-fixed 120-step GLM-5.2 run produced reward 0 after 7,769 seconds. It recorded 106 completed Tool calls, 8 semantic
+  goal-progress events, 9 artifact changes, 5 rollbacks and 73 no-goal-progress observations, then exhausted its step budget
+  without creating the required artifact. This proves execution continuity and capture fidelity, but refutes treating longer
+  execution alone as benefit evidence.
+- Reporting now separates process completion, non-budget Agent completion, budget exhaustion, model/Tool depth, wall time,
+  typed progress/recovery and no-progress amplification. These fields are leading indicators and explicitly cannot substitute
+  for independent Reward.
+- Adaptive checkpoint acknowledgement no longer erases cross-checkpoint failure history. A task-scoped v2 state uses the
+  shared Agent-step coordinate for cooldown across deep copies, escalates only semantic-stagnation reasons, preserves
+  budget-pressure-only behavior, resets on typed goal progress and exports checkpoint/escalation/max-stage/reset counts.
+  Corrupt resumed counters degrade to zero rather than blocking model execution. Focused adaptive, loop-budget, sandbox and
+  evaluation regression is green at 116 tests; lint and diff checks pass.
+- The capture-complete same-task/same-seed mechanism rerun finished with reward 0 and again exhausted 120 steps, so staged
+  escalation has not established a quality or progress-density gain. It did preserve 120/120 provider/trajectory fidelity
+  while reducing provider request bytes 51.8%, prompt tokens 57.2%, cache-adjusted tokens 58.2% and wall time 47.6% versus
+  the prior source snapshot. No-progress ratio stayed effectively flat (90.12% to 90.00%). This is descriptive efficiency
+  evidence only because the source snapshot changed and there is one seed; the next gate is a same-source multi-seed
+  `ablation-40-progressive-skills` versus `ablation-50-adaptive` pair.
+- The same-source frozen ablation was paused after 5/6 completed runs. Baseline seeds 20260903/04/05 all scored reward 1 in
+  19/16/23 calls. Adaptive seed 20260904 preserved reward 1 in 14 calls and slightly reduced cache-adjusted cost; seed
+  20260905 regressed to reward 0 with 121 captured provider calls and 120 trajectory items. Adaptive seed 20260903 was
+  interrupted after 47 partial calls and has no reward. This is sufficient to reject any current default-on/quality-benefit
+  claim and exposes a 121-provider-call versus 120-step/trajectory hard-gate discrepancy. The pause left zero processes and
+  containers; stage evidence is recorded in `skillsbench-pdf-excel-adaptive-ablation-3seed-20260904/stage-conclusion.md`.
+- The user confirmed that longer, more stable task execution may legitimately consume more tokens. Evaluation will therefore
+  not classify absolute token growth as a regression without outcome/progress evidence; it will separate fixed request
+  structure, unmatched-call amplification, typed goal progress, completion, reward and cost per successful task.
+- Real v5 offline replay exposed configuration-contract drift: `destructive_sandbox_checkpoint` is accepted by the runtime
+  harness but rejected by `ContextVariant`, preventing the report from replaying the frozen experiment. Fixing this through
+  one shared validator is the first implementation task.
+- Cross-workload expansion is frozen to outcome-blind random selection from archive task identities only. BrowseComp already
+  has a seed-reproducible five-case pool/three-case prefix; SkillsBench will receive the same auditable selection contract.
+
+### Task 7.2a: Legacy observe attribution baseline
+
+**Status:** complete in the implementation branch
+
+- Added a frozen `legacy_observed` provider attribution envelope and receipt. Observe derives its plan by request-bound
+  message/Tool ordinals, never invokes candidate compilation, never replaces the legacy request, and degrades attribution
+  failures without adding a second provider call. Off mode creates no attribution state.
+- Exact reviewed OpenAI lowering now binds the observed plan to the actual SDK-prepared or controlled HTTP serialized
+  payload. Candidate evidence is also dual-written to the provider-neutral attribution sibling for compatible reporting.
+- Paired attribution reporting independently revalidates subject, provider raw payload, plan fingerprint, canonical bytes,
+  and manifest completeness before computing section deltas.
+- Added explicit sidecar residency/emission intent. Unspecified sidecars are evidence-only, preventing accidental duplicate
+  model-visible insertion; intentional non-resident instruction/context-pack owners opt in structurally.
+- Affected compiler, provider, reporting, progressive Skill, and delegation suites pass (177 tests).
+
+### Task 7.2b: Observe attribution and residency hardening
+
+**Status:** complete
+
+- Observe SDK canonicalization, receipt construction, and Context storage are fail-open; SDK-native opaque parameters reach
+  the provider exactly once with the same public kwargs as off mode. HTTP serialization remains transport-owned and errors
+  are not reclassified as optional observation failures.
+- Provider invocation truth now starts false for observe and moves to attempted at the immediate send boundary. Attribution
+  commit failure falls back to ordinary provider capture, then typed unavailable evidence where Context remains writable.
+- Attribution plan/receipt schema v2 binds `legacy_observed` versus `candidate_selected` into the independent fingerprint.
+  Reports require attempted successful calls and expose owner/residency resolution mismatches as unsupported dimensions while
+  retaining total-byte and compatible kind/source comparisons.
+- Progressive Skill observations no longer assert `NOT_RESIDENT/MESSAGE` without request-bound composition proof. Their safe
+  default is `UNKNOWN/EVIDENCE_ONLY`, preventing duplicate Skill injection into already-folded legacy/Amni requests.
+
+### Task 7.2c: Progressive Skill/Tool atomicity and lifecycle
+
+**Status:** complete
+
+- Final budget candidates now carry typed, exact item dependencies. Optional Skill content and its required provider-visible
+  Tool closure are selected or excluded together, including shared Tools; a required dependency closure fails closed when it
+  cannot fit or is unavailable.
+- Task-sticky Skill state is a versioned snapshot of descriptor/content identity plus resolved Tool ids. Skill and Tool
+  proposals are applied jointly: deferred Tool expansion retains the previous Skill content, while permission contraction
+  removes the incomplete Skill immediately.
+- `CHILD_CONTEXT` Tool Catalog transitions are pure previews and do not create or mutate parent active catalog state.
+- Versioned, hash-validated Tool/Skill snapshots now round-trip through AMNI checkpoints and same-task resume; deep copies
+  retain isolated immutable bindings and malformed checkpoint state is rejected.
+- Focused compiler/context/provider/evaluation regression is green at 164 tests; audit counterexamples are included.
+
+### Task 7.3: Turn and artifact economics hardening review
+
+**Status:** implementation hardened; paired benefit evidence remains pending
+
+- Legal dual ownership is explicit: the Tool-owned upstream artifact remains primary and the Context-owned exact
+  ActionResult is an `audit_snapshot`; only an explicitly competing Context primary counts as double offload.
+- Legacy/off Tool results now receive observation-only byte/token receipts without changing content. Economics recording and
+  retrieval receipt failures degrade to typed unavailable metadata and never change provider or Tool execution.
+- Reports revalidate request/Tool identities, parent-turn membership, raw inline bytes or checksum-bound artifact files,
+  retrieval chunks and provider consumption. Duplicate/replayed plans and receipts cannot disappear through dictionary
+  aggregation.
+- Zero retrieval opportunities are `not_applicable` per run, but cannot pass the aggregate default-on gate: at least one
+  opportunity is required and every opportunity must have a bound provider consumption receipt.
+- The opt-in Docker integration now routes an actual container artifact read through the runtime boundary and proves its
+  chunk checksum, source identity and next-model consumption receipt.
+
+## Completed Foundations
+
+- Built-in Agent portability, optional native capability degradation, and direct-run typed failure/non-zero semantics.
+- Provider-bound LLM call capture and compiler/provider snapshot merge.
+- DockerSandbox attach implementation, bounded/reversible Tool output artifacts, real Docker capability gate.
+- Generic paired benchmark driver, evidence provenance, and Context-benefit evaluation contract.
+- Cross-workload paired smoke, actual-provider metric recomputation, dual artifact-ownership interoperability and real Docker
+  artifact recovery gate.
+
+## Current Milestone: Candidate Overhead Attribution and Elimination
+
+### Task Status
+
+| Task | Status | Notes |
+|---|---|---|
+| 7.1 Provider-bound section attribution | complete | Third review APPROVE; ordinal plan, provider receipt, raw revalidation, paired hard gate |
+| 7.2 Eliminate duplicate/non-resident context | complete | Observe residency plus dependency-atomic progressive Skill/Tool reviewed |
+| 7.3 Turn and artifact economics | complete | Mechanism approved; real paired noisy-output benefit remains Milestone 9 |
+
+### Milestone 7 Evidence Audit (2026-09-01)
+- The first provider request in both paired workloads is byte-equivalent after removing `prompt_cache_key`; system/user
+  messages, all 15 Tool schemas, model and temperature are the same. The current evidence therefore does **not** support a
+  compiler fixed-prompt-injection hypothesis.
+- Terminal total request delta `+6,310` decomposes into messages `+13,332`, repeated Tool schemas `-6,148` from one fewer
+  provider call, and other/provider structure `-874`. Candidate made fewer provider calls but more Tool calls inside turns.
+- Non-Terminal total request delta `+52,313` decomposes into messages `+46,787`, repeated Tool schemas `+6,148` from one
+  extra provider call, and other/provider structure `-622`. One run per variant cannot attribute the extra turn or Tool
+  behavior to Context policy.
+- Every call sends the same 15-Tool catalog (`6,148` canonical bytes per call); this is a general progressive-catalog/cache
+  opportunity, not a candidate regression proven by these samples.
+- The only directly attributable request difference is that legacy carries `provider_request.payload.prompt_cache_key`
+  while candidate does not; candidate cache continuity is therefore `unavailable`. This is not yet classified as a defect:
+  the sampled Amni folded system is dynamic and the candidate logical stable prefix is empty, so copying the legacy key may
+  be unsafe. The provider boundary must first prove whether the legacy key represents the exact stable wire prefix.
+- All four real-model runs report zero offloaded artifacts, so the mechanism's deterministic Docker receipt proof is not yet
+  a behavioral benefit proof.
+
+### Task 7.2 Progressive Tool Catalog Audit (2026-09-01)
+- `progressive_tools=true` currently controls only sticky catalog transitions. The Agent builds the first
+  `TaskCatalogSnapshot` from the complete permission-filtered catalog and never calls `compile_minimal_tool_catalog`, so all
+  15 schemas in the paired runs are expected and do not prove a candidate-only regression.
+- Safe minimization must be explicit opt-in. Missing/`None` base-Tool configuration preserves the complete filtered catalog;
+  an explicit list selects only exact model-visible ids; an explicit empty list permits only Tools requested by activated
+  Skills. No task-text, Tool-description, history or benchmark-specific inference is allowed.
+- The result of `_filter_tools` is the sole permission upper bound. Skill configuration may request Tools but can never
+  restore a Tool removed by server/workspace/user policy. Selection must preserve the filtered catalog order for cache
+  continuity.
+- Current Skill `tool_list` keys are commonly MCP server ids while the provider catalog uses model-visible function ids.
+  These identities cannot be intersected or fuzzily matched. Unknown/ambiguous mappings require typed unavailable evidence;
+  Skill content and its required Tools must remain atomic under enforce.
+- Existing transition evidence conflates requested, applied and deferred additions, reports a cache break even when a
+  deferred expansion leaves the actual snapshot unchanged, and gives `CHILD_CONTEXT` no isolation semantics. These contract
+  defects must be fixed before real minimization is enabled.
+
+### Task 7.3 Turn and Artifact Economics Audit (2026-09-01)
+- The four real paired runs did not cross either output boundary. Candidate Docker output was at most 15,041 bytes versus a
+  65,536-byte cap, and the largest Context ActionResult was 3,915 estimated tokens versus a 4,096-token cap. The 322,505-byte
+  noisy stream was redirected into a workspace file, so it never became a Tool result. Zero offload is therefore valid
+  mechanism evidence, not a runtime failure.
+- Current `offloaded_artifact_count` scans only `run_dir/tool-output-artifacts/*.bin`; it does not prove all owner receipts,
+  successful retrieval, later provider consumption or absence of double offload. These metrics must be recomputed from Raw
+  trajectory, provider calls and checksum-bound artifacts, with unavailable used whenever the evidence chain is incomplete.
+- A generic noisy-output validation fixture must return deterministic 128–256 KiB content directly through the Tool boundary,
+  place required evidence outside the inline head/tail, and require receipt-bound retrieval. The paired prompt, Tool surface,
+  fixture checksum and verifier remain invariant; variants may change only generic Context/Tool-output policy.
+- Extra model/Tool turns require typed causal receipts written at scheduling boundaries. Supported causes are model choice,
+  validation repair, framework retry, deferred catalog expansion, deferred Skill expansion and artifact retrieval. Counts
+  cannot be inferred from text, Tool names or aggregate call differences.
+- Existing run-level `cache_read_tokens` summaries are stale zeros while provider-call truth recomputes non-zero values;
+  all new economics must continue to use the lowest available truth plane instead of trusting cached aggregates.
+
+### Milestone 7.1 Architecture Review — Iteration 1
+- Verdict: REQUEST CHANGES; P0/critical=0, important=4, minor=2.
+- Important fixes required: bind absent/null/empty collection shape; atomically commit lowering + provider snapshot without
+  premature `provider_invoked`/cache mutation; recompute attribution from raw provider payload in the benefit report; emit
+  variant-paired section deltas and require complete coverage before claiming byte conservation.
+- Minor follow-up: replace source-identity suffix correlation with typed sidecar request binding; preserve additive/versioned
+  compatibility for exported frozen contracts or clearly make them internal.
+- Positive result retained: emitted provenance is ordinal-selected then hash-validated; non-empty reorder/add/drop is
+  fail-closed; SDK/HTTP fidelity and serialized checksum semantics are correct.
+
+### Milestone 7.1 Architecture Review — Iteration 2
+- Verdict: REQUEST CHANGES; no critical, two important remain.
+- Closed: collection absent/null/array binding; provider prepared/attempted/cache rollback; typed sidecar request binding;
+  additive constructor compatibility.
+- Remaining: bind report dimensions to an independent compiler attribution-plan fingerprint so a valid-enum owner rewrite is
+  rejected; derive expected attribution pairs from manifest cases × repeats × variants so a missing run cannot disappear
+  from the hard gate.
+
+### Milestone 7.1 Architecture Review — Iteration 3
+- Verdict: APPROVE; no critical or important findings, focused adversarial suite 32/32.
+- Independent compiler plan evidence and provider receipt now reject legal-enum owner rewrites; receipt cannot self-certify.
+- Manifest Cartesian expected-run validation rejects missing, duplicate, unexpected or unavailable attribution pairs and
+  emits `provider_attribution_pairing_incomplete` even when ten other pairs are complete.
+
+## Architecture State — Milestone 7.1
+- Final compiler emits an immutable, privacy-safe ordinal attribution plan in the same loop that emits messages/Tools.
+- Reviewed OpenAI lowering validates collection shape, ordinal and hash, then records canonical provider bytes plus an
+  explicit provider-envelope/params bucket; SDK and HTTP fidelity remain distinct.
+- Provider execution records transition `prepared` → `attempted`; `provider_invoked` means the external invocation attempt
+  started, while pre-send Context/cache failures roll back and prevent external action.
+- Benefit reports recompute attribution from provider request truth, compare independent plan/receipt fingerprints, and only
+  expose paired section deltas when every manifest-declared run has valid evidence.
+- Known limitation: legacy/off runs created before attribution do not have comparable receipts; they remain explicitly
+  unsupported rather than being heuristically classified.
+
+### Decision: Continue from evidence, not benchmark outcomes
+- Options considered: tune Terminal prompts; reduce arbitrary sections; first add exact provider-bound attribution.
+- Chose: exact attribution first.
+- Rationale: current aggregate deltas cannot distinguish duplicate assembly, stable-prefix cost, Tool schema growth or model
+  variance. Removing context without owner/request evidence would violate the framework hypothesis and risk score tuning.
+- Trade-offs accepted: another compiler/reporting slice precedes broader paired runs.
+
+### Decision: Do not treat single-sample Tool behavior as compiler overhead
+- Options considered: remove Context based on aggregate prompt deltas; tune Tool-use prompts; isolate request components and
+  repeat model runs before causal changes.
+- Chose: exact component attribution, restore cache-key parity only where provider-wire stability is proven, then repeat
+  paired runs.
+- Rationale: initial request semantics are equal and later deltas are history accumulated from different stochastic Tool
+  paths. A single sample cannot establish causality.
+- Trade-offs accepted: no immediate token-reduction claim from the current two pairs.
+
+### Decision: Progressive Tool selection is explicit and permission-bounded
+- Options considered: infer a minimal catalog from the task/prompt; make `progressive_tools=true` immediately minimize;
+  introduce an explicit base set and combine it with precisely resolved activated-Skill requirements.
+- Chose: explicit base set with `None` preserving the current full catalog, exact identity resolution, permission
+  intersection, original-order retention and task-sticky expansion semantics.
+- Rationale: a Context framework must reduce generic repeated schema cost without learning benchmark answers or silently
+  changing existing applications. Exact owner evidence and ACL intersection make the reduction causal and auditable.
+- Trade-offs accepted: applications without an explicit base set see no schema reduction; unavailable Skill identity
+  mappings fail closed instead of receiving a guessed Tool.
+
+### Decision: Scope of provider parity
+- Options considered: authorize OpenAI-compatible subclasses generically; modify external runtimes; review each built-in send
+  boundary and keep unsupported providers fail-closed.
+- Chose: per-boundary reviewed built-in parity with artifact-level external integration only.
+- Rationale: self-declared compatibility does not prove immutable lowering, and the user explicitly excludes mcpgateway and
+  lingguang-bench-runtime-dsh code changes.
+- Trade-offs accepted: default-on can initially cover only a subset of providers/entry points.
+
+### Milestone 8 independent parity hardening
+- Semantic parity now retains compiler policy, inference profile, the complete input budget, typed authority/scope/trust
+  outcomes, ordered duplicate occurrences, Tool/Skill/cache identities and model-visible provider parameters, while excluding
+  raw request/trace/task/path identity values.
+- Entrypoint evidence is issued only at framework Agent/Amni/CLI/ACP/resume boundaries; mutable Context labels and arbitrary
+  claim-shaped objects cannot attest a production path. Sync/async and streaming call shapes are separate capability keys.
+- Default-on capability is rebuilt from raw provider-prepared call records, checksum-bound lifecycle evidence and the typed
+  trajectory build result. Empty/self-declared matrices, incomplete calls, stale summaries and missing external rollback
+  bundles fail closed.
+- `context_benefit_report.py` no longer synthesizes an Agent capability, lifecycle success or rollback bundle from aggregate
+  rates. The Terminal Bench runner exports a privacy-safe typed lifecycle sidecar so production evidence can be revalidated.
+- Logical cache identity intentionally omits runtime `item_id`, but retains ordered occurrence count, kind, version and content;
+  repeated identical occurrences remain multiplicity-preserving.
+
+## Current Milestone: Context Models, Adapters, and Observe Mode
+
+### Task Status
+
+| Task | Status | Notes |
+|---|---|---|
+| 1.1 Typed trajectory build contracts | complete | Immutable control result, canonical checksum, invariants, TaskResponse projections |
+| 1.2 Tracked update/finalize barrier | complete | Root registry, HWM drain, revision fence, typed finalize and cancellation |
+| 1.3 JSONL v2 dual-read/write | complete | Finalize-time dual writer, codec, real legacy reader, checksum/revision selection |
+| 1.4 Integration and architecture review | complete | Fifth review approved: P0=0, P1=0; focused TC suite 10 passed |
+
+## Decisions Log
+
+### Decision: First implementation milestone
+- Options considered: Context Compiler models first; trajectory finalization first; scoped instructions first.
+- Chose: trajectory control plane first.
+- Rationale: provider capture and benchmark driver already exist, while missing finalize/fidelity makes every later Context
+  experiment unable to distinguish execution failure from persistence failure.
+- Trade-offs accepted: Context compilation remains observe-only/implicit until Milestone 2.
+
+### Decision: Benchmark role
+- Options considered: optimize Terminal Bench directly; use it as one validation adapter.
+- Chose: interchangeable validation adapter.
+- Rationale: the goal is generalized AWorld framework capability from Context Management.
+- Trade-offs accepted: improvements require broader evidence and may take longer to validate.
+
+### Decision: Trajectory build contract ownership
+- Options considered: store control metadata inside `TrajectoryItem`; import a dataset contract from `core.task`; define a
+  dependency-light core contract.
+- Chose: `aworld.core.trajectory` owns immutable build metadata and canonical trajectory checksum; `TaskResponse` binds one
+  canonical result and exposes read-only compatibility projections.
+- Rationale: SAR remains the existing semantic projection, and importing `aworld.dataset` from `core.task` would initialize
+  dataset modules that already depend on core, risking a circular import.
+- Trade-offs accepted: JSONL envelopes and finalize integration remain separate Tasks 1.2-1.3.
+
+### Decision: Trajectory registry ownership
+- Options considered: runner-local task set; Context-owned registry; root TrajectoryDataset-owned registry.
+- Chose: one registry reachable from the root Context/TrajectoryDataset boundary, partitioned by task id.
+- Rationale: Post-LLM hooks, subtask group merges, deep-copied Context, and Amni root delegation bypass a runner-only set.
+- Trade-offs accepted: the dataset/control boundary gains lifecycle state and must explicitly fence storage writes.
+
+### Decision: JSONL v2 physical format
+- Options considered: reuse Loguru trajectory.log; replace legacy output; use an independent v2 JSONL sibling.
+- Chose: independent `trajectory.jsonl` sink with legacy/dual/jsonl_v2 modes.
+- Rationale: a real Loguru record has a header plus Python repr and nested JSON strings, so it cannot satisfy one-object-per-
+  line integrity. Dual mode preserves existing consumers.
+- Trade-offs accepted: dual mode duplicates redacted trajectory bytes during migration and requires explicit retention.
+
+### Decision: Context compiler dependency and truth boundary
+- Options considered: infer provenance from final role/content; let core import Amni/CLI owners; use owner-side adapters into a
+  dependency-light core model.
+- Chose: stdlib-only models/freeze/trace under `aworld.core.context.compiler`; Amni, memory, Skill, Tool, Steering, CLI, and
+  provider owners adapt downward and retain UNKNOWN when provenance cannot be proved.
+- Rationale: final folded system messages lose neuron ordering/source semantics, and upward imports would introduce cycles.
+- Trade-offs accepted: some legacy sources remain unknown until owner boundaries add provenance sidecars.
+
+### Decision: Observe-mode fidelity
+- Options considered: call providers from a reconstructed canonical request; inspect only the model-boundary request; freeze
+  a copy of the already-prepared provider request while sending the untouched original.
+- Chose: prepare once, snapshot a deep copy immediately before SDK/HTTP send, and send the original object unchanged.
+- Rationale: observe must not change types, ordering, defaults, cache hints, hooks, or external call count.
+- Trade-offs accepted: SDK providers report `provider_prepared` structural fidelity; only controlled HTTP paths may claim
+  serialized-byte fidelity.
+
+### Decision: First enforce-mode budget hard gate
+- Options considered: shrink reserved output automatically; use heuristic zero/defaults for unknown estimates; fail with a
+  typed budget result before request enforcement.
+- Chose: keep output/protocol/safety reserves immutable and reject required overflow or unknown estimates before enforce.
+- Rationale: silently changing output capacity or treating unknown as zero makes benchmark gains non-causal and can drop
+  required Context. Reducers must run explicitly before the planner and supply a new versioned estimate.
+- Trade-offs accepted: shadow can diagnose requests that are not yet enforceable; early enforce coverage is narrower.
+
+### Decision: Atomic budget groups
+- Options considered: independently rank every occurrence; reconstruct Tool pairs after pruning; require owner-supplied
+  atomic groups and select them as one unit.
+- Chose: owner-supplied atomic groups, with any required member making the complete group required.
+- Rationale: the budget layer must never create an orphaned Tool call/result or split another owner-defined invariant.
+- Trade-offs accepted: owners must emit group evidence before enforce; the planner does not infer pairs from text.
+
+### Decision: Runtime candidate compiler boundary
+- Options considered: inject an arbitrary compiler Protocol; run third-party compilers with timeouts; use one sealed,
+  framework-owned pure function with frozen declarative input/policy.
+- Chose: a sealed pure function and exact frozen policy type; runtime APIs expose no callable, Context, provider, Tool,
+  workspace, artifact repository, or action executor to candidate compilation.
+- Rationale: a capability-free input does not constrain capabilities retained by an injected object, and a synchronous
+  arbitrary compiler can both perform hidden external actions and indefinitely block shadow's legacy request.
+- Trade-offs accepted: third-party compiler extensions require a future isolated serialized boundary; the current runtime
+  policy supports only framework-reviewed deterministic compilation.
+
+### Decision: Enforce readiness at the current model boundary
+- Options considered: thaw and send a model-boundary candidate; label a compiler-ready snapshot enforceable; block until a
+  provider owns immutable lowering and execution of the same snapshot.
+- Chose: fail closed before provider invocation and persist one `blocked_before_provider` llm-call attempt with
+  `provider_invoked=false`, candidate/legacy hashes, structural fidelity, projection, direction, compiler identity/version,
+  overhead, and a typed reason.
+- Rationale: the current projection omits provider-specific kwargs/serialization and cannot prove that the candidate is the
+  exact provider-bound request. Persisting the block distinguishes execution policy failure from missing trajectory capture.
+- Trade-offs accepted: normal-model enforce is intentionally unavailable until provider lowering supplies immutable
+  provider-prepared/serialized evidence; shadow remains the supported runtime rollout mode.
+
+### Decision: First provider-owned lowering slice
+- Options considered: trust any provider capability declaration; enable all OpenAI-compatible subclasses; authorize only a
+  reviewed exact built-in provider class and add providers after their real send boundaries are tested.
+- Chose: exact built-in `OpenAIProvider` registration with a frozen candidate envelope and versioned
+  `ProviderLoweringReceipt`; Azure and custom providers remain blocked even if they self-declare the same interface.
+- Rationale: a declaration alone cannot prove the candidate was applied. The OpenAI adapter now owns candidate projection,
+  final parameter freezing, unique request-id receipt binding, and the immediately following SDK/HTTP invocation.
+- Trade-offs accepted: evidence is `PROVIDER_PREPARED` structural fidelity, not HTTP serialized bytes; enforce requires a
+  writable Context receipt and initially covers only OpenAI Chat Completions.
+
+## Architecture State
+
+### Components
+- `llm_calls`: provider request truth with provider-bound snapshots.
+- Provider lowering: exact registered adapters consume frozen candidates and persist provider-prepared hash receipts before
+  sending the same structure; the top-level raw request remains truthfully labeled model-boundary fidelity.
+- Runtime events/TrajectoryDataset: action/result truth and mutable SAR projection.
+- Docker Tool output policy: bounded inline view plus checksummed retrievable artifact.
+- Benchmark driver: frozen invariant manifests, independent verifier, paired Context metrics.
+
+### Known Issues
+- Native streaming still needs a runner-local terminal fallback for failures before EventManager initialization and for
+  partial publication failures.
+- Cancellation cleanup/finalization must preserve the original `CancelledError` even when secondary operations fail.
+- `trajectory.log` remains an unacknowledged legacy logger/Python-repr projection; only JSONL v2 can claim persisted.
+- Current compiler/request capture can observe hook drift but does not yet enforce a universal final boundary.
+- Provider-owned enforce currently covers only exact built-in `OpenAIProvider`; Azure/custom providers remain fail-closed,
+  and HTTP serialized-byte fidelity still requires a transport-owned serialization receipt.
+
+### Audit Findings
+- Three event-runner trajectory updates are bare `create_task` calls and can race the final storage read.
+- The same logical message has before/after builds without revision fencing; completion order can overwrite newer state.
+- Update/storage exceptions are swallowed, so coroutine completion does not prove persistence acknowledgement.
+- Existing evaluation reader fails on real Loguru headers when iterating all records and selects the first repeated task.
+- Runtime/ATIF projection receipts live outside this repository and must not be claimed complete in Milestone 1.
+- Milestone review found `TASK_RESPONSE` could reach streaming consumers before finalization; terminal delivery must be
+  deferred until the final registry revision is drained and bound.
+- Fixed a dataset lazy-import regression that left TaskConfig subclasses with unresolved Pydantic forward refs; the wider
+  runner/evaluation/dataset suite now passes 219 tests.
+- Fixed separate/remote child imports so they open, drain, acknowledge, fence, and retain diagnostics in the root registry.
+- Envelope invariants, legacy partial fidelity, execution-not-started classification, retry epoch, delivery receipts, and
+  finalize-before-response are implemented and in the second review pass.
+- Second review found native-stream bootstrap hangs, non-atomic terminal publication, cancellation masking, rewritten
+  legacy canonical metadata, a false legacy persistence receipt, and weak float epoch validation.
+- Fixed legacy embedded build-result round-trip, remote child import independence from emitted handler-event count,
+  strict integer epochs, `emitted/unacknowledged` legacy receipts, and Redis publish failure propagation. Focused tests:
+  49 passed after these fixes.
+- Added runner-local terminal fallback and bootstrap completion signals so pre-run and partial emit failures terminate native
+  streams. Publication is fenced before the first external attempt and cannot be retried into duplicate responses.
+- Hardened terminal cleanup so finalize, publish, output, and sandbox cleanup failures cannot replace an original or newly
+  arriving `CancelledError`; focused cancellation/publication tests pass.
+- Added one TC-TRAJECTORY-IO-023 fixture that uses the real configured trajectory logger in an isolated process, dual v2
+  appends, and a second epoch/revision for the same task. It verifies physical JSON lines plus formal legacy/v2/mixed latest
+  reads and canonical checksums.
+- Post-fix wide regression: 304 passed, four skipped across runners, evaluations, dataset, trajectory contracts, compiler
+  adapters/models/trace, PromptSection adapter, and Redis delivery propagation.
+- Third review confirmed all second-review findings closed, then reproduced three deeper interleavings not covered by the
+  suite. TC-IO-023 is approved; TC-FINALIZE-021 and the generalized TC-EMPTY-022 contract remain blocked until a single
+  shielded finalize/delivery attempt and typed projection failure are implemented.
+- Fixed those three interleavings: emitter cancellation installs fallback before propagation; a cancelled `to_thread`
+  append is joined rather than recreated; pre-run and normal finalization share the same attempt; SAR projection/checksum
+  failures bind `FAILED/BUILD_FAILED/TRAJECTORY_BUILD_FAILED` with no inline items. Main-tree trajectory regression:
+  104 passed, including real IO-023.
+- Fourth review approved the normal-run repeated-cancellation path and all prior fidelity/delivery fixes, but found one P1
+  in the execution-not-started path: after two cancellations during a blocked v2 append, the run restores the pre-run
+  failure before `_publish_task_response_once`, leaving native streaming without a terminal response or fallback. The
+  physical append remains exactly once and its receipt eventually persists, so the remaining defect is terminal-delivery
+  ordering rather than trajectory duplication or storage corruption.
+- The post-observer/post-third-review wide regression is green: 322 passed and four skipped across runners, evaluations,
+  dataset, trajectory contracts, compiler/owner adapters, PromptSection, and Redis delivery propagation.
+- Replaced the execution-not-started fixed single compensation wait with an unbounded cancellation join loop also used by
+  the normal path. Regression covers two and three cleanup cancellations plus a primary cancellation with two additional
+  cleanup cancellations; the focused main-tree run is four passed, with one append/record and one native stream terminal.
+- Fifth independent review approved Milestone 1 with no P0/P1. It also stress-tested ten caller cancellations for both a
+  primary RuntimeError and primary CancelledError: both retained exactly one persisted record and one stream terminal while
+  restoring the primary outcome. The TC-FINALIZE/EMPTY/IO plus repeated-cancel focused suite is ten passed.
+- Non-blocking P2 carried forward: the thread-backed JSONL append/flock/write path has no bounded I/O acknowledgement, so a
+  permanently stuck exporter intentionally delays cleanup cancellation. A future bounded exporter must remain idempotent
+  and confirm persistence; cancelling a file-writing worker thread is not an acceptable fix.
+
+### Milestone 2 Readiness
+- Task 2.1 dependency-light frozen models/trace is merged; it has no runtime integration and therefore cannot bypass the
+  unfinished Milestone 1 finalize/writer gate.
+- Task 2.2a generic occurrence-preserving legacy adapters and the Amni PromptSection owner adapter are implemented and
+  merged, tested, and exposed through owner/core public APIs. Their dedicated seven tests pass; a broader context run had
+  84 passes and nine unrelated AWORLD-file tests that selected the user's real `~/.aworld/AWORLD.md` instead of fixtures.
+- Task 2.2b adds an Agent-owner adapter for the exact replay occurrences after `LLMAgent.async_messages_transform` cleanup.
+  It delegates to the generic occurrence adapter, performs no second cleanup/inference/runtime integration, and preserves
+  repaired Tool ordering and duplicates; adapter plus owner cleanup regression is 16 passed.
+- Task 2.3 adds a pure legacy-request observer: exact immutable request snapshot, one legacy-included decision per
+  occurrence, unknown token/hash evidence when unproved, redacted trace IDs, and raw-value-free mismatch paths. It performs
+  no resolver/provider/runtime action; compiler plus owner adapter regression is 46 passed.
+- Added owner-side Skill descriptor and loaded-content adapters. They preserve caller order, duplicates, and the complete
+  owner payload while leaving activation, authority, scope, lifetime, trust, stability, budget, and token semantics unknown.
+  They do not load/activate Skills or alter prompt behavior; Skill adapter/provider regression is 18 passed.
+- Added a CLI steering owner adapter for already-drained `SteeringInput` occurrences. It preserves coordinator sequence,
+  duplicates, text, and timestamp; maps only explicitly supplied session/task scope; and leaves policy semantics unknown.
+  It neither drains nor applies steering and does not alter the existing hook; steering regression is 67 passed.
+- Added a final Tool Catalog owner adapter that observes the exact schema occurrences after owner filtering/lowering. It
+  reuses the generic immutable occurrence adapter, preserves full nested schemas/order/duplicates, and never minimizes,
+  authorizes, deduplicates, or infers policy from names/descriptions; related adapter regression is 12 passed.
+- Added an Amni neuron pre-fold sidecar contract and owner adapter. It observes exact executed neuron outputs without
+  executing neurons or reconstructing them from the folded system message, preserves identity/order/duplicates, and only
+  maps explicitly supplied owner evidence; new contract tests are five passed and combined compiler/assembly is 46 passed.
+- The combined dependency-light compiler plus all current owner adapters is green at 55 passed. A duplicate pytest module
+  basename discovered only in the combined run was removed by giving the Skill adapter test a unique module name.
+- Existing PromptAssemblyProvider still sees Amni neuron sections only after folding; the new `NeuronOutputOccurrence`
+  contract provides the required pre-fold sidecar shape, but runtime emission remains deliberately unconnected in observe
+  adapter scope and must be wired at the owner assembly boundary before enforce mode.
+- Memory adapters must follow the exact cleaned replay list, including Tool pair repair and duplicate occurrences.
+- Removed the former post-success/latest-unmatched Agent correlation heuristic; request identity is now reserved before the
+  provider call so failures and concurrent calls bind deterministically.
+- Model-boundary observe now begins the authoritative `llm_calls` record after compatibility transforms and before provider
+  invocation, then finishes that exact request-id record on success/failure/cancellation. Agent calls pass a private exact
+  call-id that is popped before provider invocation; direct model calls append independently. The nested observe snapshot
+  declares only `model_boundary` fidelity, stores redacted trace/hash evidence, and leaves raw extra kwargs/secrets out.
+- Provider failure, caller cancellation, sync/async stream failure, and early stream close retain one terminal snapshot;
+  same-agent concurrent requests do not cross-correlate. Main-tree model-boundary/capture/Agent/hook regression: 31 passed.
+- Adversarial review reproduced a fail-open violation outside the pure observer: if `llm_calls` storage raised during begin,
+  the provider was never called; if it raised during finish, it replaced provider success or the primary provider error.
+  Begin/finish storage are now guarded by redacted type-only warnings, and focused regressions prove provider success/error
+  semantics survive capture-storage failure (two passed).
+- The next adversarial pass reproduced four further model-boundary P1s: helper-level early async-stream close did not close
+  the underlying model generator; a reused Agent call id overwrote the previous provider attempt; a child `ContextState`
+  mutated an inherited parent `llm_calls` list; and stream response folding could leak capture exceptions into provider
+  delivery. The implementation now closes delegated streams, appends one attempt record per provider invocation, applies
+  child copy-on-write isolation, and contains response-folding failures. All four focused regressions pass.
+- Model-boundary records no longer claim `provider_bound` fidelity: they now identify the exact AWorld standard projection,
+  explicitly leave provider-prepared matching unknown, and scope compiler matching to that projection. Match-observation
+  failures retain unknown (`None`) mismatch evidence instead of falsely reporting zero differences. Async process-control
+  exceptions now also close the request record before the original `KeyboardInterrupt`/`SystemExit` is re-raised.
+- `ContextDecisionTrace.build` now redacts item identifiers by default, closing a path/URI disclosure risk for owner-derived
+  ids while retaining an explicit opt-out for trusted local diagnostics. Model boundary, legacy capture, and trace regression
+  is green at 30 passed.
+- `AdapterDiagnostic` now tuple-freezes caller-supplied `unknown_fields`, so its frozen dataclass contract cannot retain a
+  mutable list alias. The dedicated legacy adapter suite is green at five passed.
+- Agent-side compiled-request, assembly-metadata, and response capture now use fail-open wrappers, so their serialization or
+  `ContextState` failures cannot skip `invoke_model`, replace a successful response, or mask provider failure/cancellation.
+  The invoke `finally` only performs response business logic after a normal return; active failures are re-raised unchanged
+  after best-effort capture. Seven focused Agent regressions pass, including the pre-existing interrupted-task path.
+- Agent/model correlation now travels through a task-local `ContextVar` for the duration of `invoke_model`. Custom Agent
+  overrides no longer receive the private `_aworld_context_call_id` extension kwarg, while the standard model boundary still
+  resolves the exact compiled call id; the historical direct-call kwarg remains accepted and is popped before providers.
+- Full post-fix Agent call-record and model-boundary suites are green at 16 and 15 tests respectively.
+- Independent final review approved Milestone 2 with no P0/P1. Accepted P2s: a failed best-effort finish may retain an
+  `in_progress` record; ContextVar correlation does not cross a caller-created non-context-propagating thread; synchronous
+  capture wrappers deliberately do not swallow process-control `BaseException`. None changes provider/task semantics.
+- Milestone 3 first owner integration now publishes exact Amni neuron outputs before the legacy dict sort/fold into an
+  immutable `ContextObservationSidecar`. Sidecars live outside serialized `ContextState`, survive Context copies, expose
+  only redacted refs/diagnostics to `llm_calls` assembly observability, and are never passed into prompt assembly. Capture
+  errors are fail-open, while the existing prompt messages/order/content remain unchanged. Sidecar/Amni/Agent regression:
+  29 passed; compiler files and affected modules also pass `py_compile` and diff checks.
+- Added the first deterministic input budget planner. It computes the spec reserve formula, requires versioned token
+  estimates, keeps required/atomic groups intact, selects optional groups by explicit priority, and returns selections in
+  original request order with one decision per occurrence. Required overflow, unknown estimates, and required item-cap
+  violations are typed failures; no reducer, offload, reserve mutation, or payload rewrite occurs implicitly. Dedicated
+  budget tests are 6/6 and the combined compiler/PromptSection/neuron adapter suite is 48/48.
+- Hardened sidecar redaction after adversarial review: owner-controlled diagnostic codes are hashed and unknown fields are
+  reduced to counts, so default observability cannot leak arbitrary diagnostic strings. Child construction and root task-id
+  transitions now clear request observations instead of silently inheriting an epoch-less prior-task sidecar; same-task deep
+  copies still retain the immutable observation. Checkpoint stale/unavailable diagnostics remain part of Milestone 4.
+- Hardened the budget planner after adversarial review. Atomic identities are now typed and owner/namespace-scoped, internal
+  singleton keys cannot collide with caller groups, and optional allocation uses explicit global tiers while comparing
+  item priority only within the same authority/scope domain. Complete reserve evidence is fingerprinted in
+  `TokenAccounting`, item-cap group mates receive a distinct reason, and enforce refuses unversioned estimator identities.
+  Independent budget re-review approved P0/P1=0 at 33 tests. The broader compiler/Amni/TaskRunner regression is green at
+  67 tests, including cross-authority Tool pairs and real root Context reuse. Independent sidecar/lifecycle re-review also
+  approved P0/P1=0; both Base Context and ApplicationContext task-transition behavior now have persistent regressions.
+- Added the first pure cache layer: contiguous stable-prefix partitioning without reordering, logical stable/dynamic hashes,
+  complete `InferenceProfile`/`CacheBreakReason` comparison, and exact byte checksums. A serialized prefix can create a
+  provider-verified identity only through typed HTTP-serialized evidence bound to provider, adapter/version, request id,
+  request checksum, capture stage, and fidelity; logical canonical JSON bytes are rejected. The durable `CacheIdentity`
+  alone deliberately does not regain runtime verification when deserialized.
+- Added side-effect-free `off/observe/shadow/enforce` request selection. Off/observe preserve the exact legacy snapshot,
+  shadow compares an immutable candidate without applying it, and enforce alone selects the candidate for the existing
+  provider call. Comparison paths hash all non-allowlisted mapping keys so params/Tool/message keys cannot leak raw owner
+  strings. Runtime integration and counted fake provider/Tool/offload tests remain required before shadow/enforce rollout.
+  The complete dependency-light compiler suite is green at 58 tests. Independent cache and rollout/privacy re-reviews both
+  approved P0/P1=0; the cache evidence review additionally verified that repr/asdict retain only hashes and lengths.
+- Wired rollout selection into async, sync, sync-stream, and async-stream model paths. Off preserves the pre-existing llm-call
+  record shape; observe never compiles; shadow compiles once with a sealed framework pure function, sends the exact original
+  legacy messages/Tools once, and records only redacted structural evidence. Candidate compilation consumes immutable
+  model-boundary snapshots plus owner observation sidecars and cannot receive runtime action capabilities.
+- Removed the arbitrary in-process compiler Protocol after adversarial tests proved it could retain provider/Tool/offload
+  capabilities and block the async event loop. Candidate policy and mode are exact-typed, private, and exposed read-only;
+  compiler identity/version are bounded identifiers and raw diagnostics/errors never enter rollout metadata.
+- Enforce now records a pre-provider blocked attempt instead of disappearing before llm-call capture. The receipt explicitly
+  says `provider_invoked=false`, retains candidate/legacy logical hashes and MODEL_BOUNDARY fidelity without claiming
+  provider bytes, and round-trips through the real JSONL v2 sink/reader. Provider-lowered immutable execution remains the
+  next gate. Focused compiler/model/trajectory regression is 140 passed; Agent/hook regression is 19 passed. Two independent
+  re-reviews approved P0/P1=0 after reproducing the original ambient-capability and missing-evidence counterexamples.
+- Added provider-owned immutable lowering for the exact built-in OpenAI Chat Completions adapter. A frozen envelope binds
+  compiler/candidate identity to a versioned provider capability; sync/async/stream paths freeze the final params, commit a
+  redacted `PROVIDER_PREPARED` receipt to the unique llm-call, then invoke SDK/HTTP with the same structure. Missing Context,
+  receipt failures, unsupported schemas/transforms, unsnapshotable lowering, non-ready candidates, Azure, and self-
+  authorizing custom providers all block before send. Focused lowering/runtime tests are 15 passed; the wider selected run
+  is 180 passed with four pre-existing `ModelResponse.usage` expectation failures in an untouched test/module pair.
+- Local final review kept the raw/capture fidelity boundaries distinct, labeled the legacy observer as pre-rollout baseline,
+  verified that private envelopes never reach SDK/HTTP params, and reran the focused compiler/OpenAI/trajectory/Agent/hook
+  suite at 108 passed. No reviewed issue remains open in this slice.
+- Integrated Milestones 3-6 validation is open. Focused scope/progressive/offload/delegation/completion/evaluation/canary,
+  OpenAI lowering, HTTP serialization, Amni, runner trajectory and Docker adapter regression reached 170 passed before
+  real-workload smoke; subsequent integration fixes have dedicated regressions and the latest affected set is 31 passed.
+- Real local Docker `prove-plus-comm` validation exposed five framework integration defects and fixed them without task-
+  specific policy: blank optional trace-id normalization, known low-trust Amni folded system semantics, no legacy prompt-
+  plan replay after final compilation, atomic latest Tool-turn tiering, and append-first diagnostic capture with live-Context
+  fallback/provider-lowering receipt recognition.
+- The repaired unified-context-enforce rollout completed with TaskResponse success, eight raw trajectory items, eight
+  successful provider calls and eight provider-prepared receipts. TaskResponse carried zero call records while the live
+  Context carried eight, and the manifest now records that continuity mismatch instead of dropping evidence. The local
+  Docker daemon exited before independent verifier/result aggregation, so this is an execution/capture proof only, not a
+  benchmark reward or Context-benefit claim.
+- Authority, trust, lifetime, stability, source URI, task epoch, and exact token counts remain UNKNOWN unless their owner can
+  prove them; role/content heuristics are not acceptable.
+- Independent normalized-cost review hardened benefit evidence to fail closed on missing, contradictory, non-attempted, or
+  impossible per-call usage. Cache truth must agree across normalized/raw provider views and cannot exceed input tokens.
+  Every cost receipt is now versioned and independently recomputed against a policy whose hash is included in the paired
+  evaluation manifest; old float-only artifacts and tampered receipts cannot establish an efficiency benefit.
+- Normalized-cost confidence gates now use exact integer microunits (bounded to JSON's exact integer range); the float value
+  remains display-only. Missing normalized-cost evidence no longer defeats an independently proven quality-improvement
+  path. The full evaluation suite is green at 178 passed, 4 skipped.
+- Independent canary review connected health decisions to default-on readiness: missing/hold health now fails closed and a
+  rollback decision propagates `ROLLBACK_REQUIRED`. Healthy continuation requires an executable, self-validating rollback
+  bundle and an explicitly frozen expected canary-policy fingerprint; readiness binds the exact health decision fingerprint.
+  Baseline/enforce attempt sample floors, exact baseline
+  error counts and per-session provider-attempt coverage prevent sparse or contradictory aggregate evidence from passing.
+- Terminal Bench Docker timeout overrides remain global infrastructure policy. The experiment manifest now records each
+  task's effective timeout/source, complete build-context checksum, image reference and resolved immutable image id; paired
+  jobs run that immutable id. Invalid dataset timeouts fail before build, timeout diagnostics are typed without captured
+  Docker output leakage, and failed image resolution is persisted in the manifest. Affected tests are 20 passed; the wider
+  evaluation/sandbox run is 270 passed, 5 skipped with one unrelated mac-ui test still referencing a deleted worktree path.
+- The follow-up rollout-timeout review confirms agent and verifier `TimeoutExpired` results retain `reward=None`, a stable
+  failure stage/reason/timeout and a per-run result, so they cannot form a paired benefit claim and later jobs can continue.
+  Verifier timeout now has a dedicated regression; malformed partial provider/trajectory/manifest files become typed
+  unavailable metrics rather than masking the primary timeout before its incomplete result is persisted.
+
+### 2026-09-01 final observe-baseline validation
+
+- Fixed deterministic Tool-result trust isolation so the owner recomputes the candidate boundary from the exact original
+  ordinal/content hash; altered boundary payloads still fail closed. A real candidate-only `prove-plus-comm` run then
+  reached reward 1 with 5/5 provider calls, request traces and Raw trajectory items, and exact TaskResponse/live continuity.
+- Fixed shared-reference serialization without weakening real cycle detection. Provider lowering and attribution receipts
+  now both remain structured, and old runs can only recover attribution from an independently retained structured lowering
+  receipt, never from string repr or summary fields.
+- Exported Context-owned offload snapshots into the durable run artifact tree and bound reference/content hashes, byte count
+  and relative path into the manifest. Benefit reporting revalidates those files before accepting retrieval economics.
+- Added `legacy-observe` as the attribution baseline while preserving the same model-visible legacy, Tool-output and memory
+  policies as pure legacy. Pure `off` remains a compatibility diagnostic and cannot satisfy paired attribution by itself.
+- Final local evidence is in `progressive-observe-paired-20260901` for Terminal and Tool/research workloads, with the combined
+  report at `context-benefit-progressive-observe-final-20260901.json`. Both pairs preserved reward 1. The frozen normalized-
+  cost deltas are negative and the two-pair bootstrap interval is `[-1,502,400,000, -1,278,000,000]` microunits, which proves
+  only a smoke-level efficiency path. Default-on remains `NOT_READY`: 2/10 pairs, no qualifying retrieval opportunity,
+  missing operational canary health, and no external rollback bundle.
+
+### 2026-09-01 SkillsBench acceptance extension
+
+- Added safe extraction for `yolo-dataset-package/v2` archives, catalog/task binding, immutable prebuilt-image enforcement,
+  original verifier mounts and task Skill discovery. Registry rewriting is hostname-exact and retains the image digest.
+- Froze `enterprise-information-search`, `travel-planning` and `llm-prefix-cache-replay` before any complete reward was
+  observed. Their dimensions are artifact retrieval, progressive multi-Skill/tool constraints and long stable-prefix traces.
+- All three immutable public ACR images pulled successfully and passed input/Skill mount preflight. The prefix-cache official
+  oracle plus unmodified verifier passed 10/10 with reward 1; this is labeled substrate-only evidence.
+- A real paired attempt exposed that `--max-steps` had not controlled `BaseAgent.max_loop_steps`; the runner now binds the
+  actual loop guard and supports independently recorded agent/verifier timeout overrides. The bounded retry still hit
+  repeated `glm-5.2` connection failures and persisted `agent_timeout`, `reward=null`; it is excluded from paired benefit
+  evidence and the candidate was stopped after the baseline became unavailable.
+
+### 2026-09-07 adaptive negative-evidence root cause
+
+- The clean frozen SkillsBench comparison is baseline `2/3` versus adaptive candidate `0/3`; this blocks default-on and is
+  being treated as a release defect, not as acceptable evidence that longer execution is inherently better.
+- Provider-owned request capture proves the candidate eventually collapsed to exactly `system + original task` (calls
+  61/81/101/119) after earlier calls repeatedly replayed the same stale ten-message suffix. It then produced 125-151 exact
+  repeated Tool operations across the two exhausted runs.
+- Amni/Memory logs identify the causal boundary failure: event-driven persistence can expose a later non-Tool record before
+  the matching Tool result. The current sequential replay drops the assistant as incomplete and later drops the result as
+  orphaned. A queued watchdog retry can amplify that ordering problem into a second exploration branch.
+- Decision: reuse Amni typed working state/summary/checkpoint concepts, but make causal assistant/Tool groups and a bounded
+  continuation capsule shared runtime invariants. Adaptive compaction must fail safe (retain evidence or skip compaction),
+  and task-scoped progress must survive Context transport copies. No benchmark-specific prompt, Tool, environment or
+  verifier changes are permitted.
+- Implemented task-scoped runtime fan-in shared by Context transport copies, causal out-of-order Memory replay,
+  exactly-once post-Tool continuation claims, and a continuation capsule that preserves complete assistant/Tool groups.
+- A further frozen rollout exposed a read-after-write gap before compaction: a Tool continuation could start while Amni
+  Memory query still returned the prior snapshot. Each continuation token now binds the immutable Action/Observation pair;
+  `LLMAgent` repairs only that current causal group when absent and never duplicates a complete Memory group.
+- Tool boundaries now also update a bounded operational ledger in both the runtime registry and Amni
+  `WorkingState.kv_store`. It preserves recent attempted actions, result previews, artifact milestones and semantic hashes,
+  redacts sensitive fields, bounds large values, and renders Tool-derived evidence inside an untrusted-data boundary after
+  compaction. Amni snapshot/resume therefore carries useful work state instead of only a generic compaction marker.
+- Focused Context/Agent/Memory/loop regressions are 66/66 green; an explicit ApplicationContext deep-copy test proves the
+  ledger uses Amni WorkingState. In the repaired real GLM run, the first five provider requests grew monotonically from
+  2 to 5/7/9/11 messages and each contained the immediately preceding Tool group; the previous repeated stale 5-message
+  snapshots did not recur. Final compact/reward evidence is still running and no benefit claim has been made yet.
+- 2026-09-08 frozen verification now has six complete cross-workload pairs. `db-wal-recovery` and SkillsBench PDF/Excel
+  both preserved reward at `3/3 -> 3/3`; adaptive reduced mean provider calls by 46.2% and 33.8% respectively, with
+  finalized Raw trajectory and exact request/trace reconciliation in all twelve valid runs. Terminal request bytes fell
+  46.3%; SkillsBench median request bytes fell 70.3%. The combined gate remains `NOT_READY` at 6/10 pairs with zero Reward
+  delta, incomplete normalized-cost evidence, and no production canary/rollback bundle.
+- A subsequent `regex-log` retry exposed an evaluation-control defect rather than a Context policy result: six provider
+  attempts failed before any model response or Tool action, but the independent verifier path emitted reward 0. Recovery
+  evidence now records successful/failed/active provider counts, provider exhaustion yields `reward=null`, and the batch
+  opens an infrastructure circuit-breaker instead of consuming remaining frozen jobs. The affected 101-test suite passes.
+
+### 2026-09-10 self-evolve integration
+
+- Recovered the deleted 11-case `~/Documents/trajectory1.log` from the immutable campaign snapshot; the requested
+  `~/Documents/agent.md` judge file was still present and usable.
+- Fixed implicit campaign continuation budgets, widened the staged near-pass frontier, made candidate patch composition
+  fence-aware/idempotent, hardened judge schema handling, retained replay artifacts, and resumed incomplete authoritative
+  measurements without charging a new candidate slot.
+- The pre-integration campaign reached multiple 11/11 replay candidates and a held-out mean of 83.55, but remained blocked
+  by a single evidence veto. This isolated the remaining failure to evidence quality rather than replay feasibility.
+- Merged `origin/main` at `b4d24300`, integrating Adaptive Context while preserving self-evolve LLM usage truth, runtime
+  tool budgets, task-response capture, and evaluator compatibility. Conflict-focused tests pass 117/117, Context tests
+  pass 230/230, and the combined self-evolve/evaluator suite passes 2905 with 5 skips.

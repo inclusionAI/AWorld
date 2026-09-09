@@ -1,11 +1,14 @@
+import copy
 from types import SimpleNamespace
 
 import pytest
 
+from aworld.agents.history_context_adapter import adapt_cleaned_history_replay
 from aworld.agents.llm_agent import LLMAgent
 from aworld.config import AgentConfig, AgentMemoryConfig
 from aworld.core.common import ActionResult, Observation
 from aworld.core.context.base import Context
+from aworld.core.context.compiler import thaw_json
 from aworld.core.event.base import Message
 from aworld.core.task import Task
 from aworld.memory.models import MemoryAIMessage, MemoryToolMessage, MessageMetadata
@@ -197,6 +200,57 @@ async def test_default_memory_handler_keeps_small_tool_results_unchanged(monkeyp
     stored_item, _ = fake_memory.items[0]
 
     assert stored_item.content == "short output"
+    assert "tool_result_compaction" not in stored_item.metadata["ext_info"]
+
+
+@pytest.mark.asyncio
+async def test_default_memory_handler_preserves_context_artifact_boundary(monkeypatch):
+    fake_memory = _FakeMemory()
+    monkeypatch.setattr(
+        "aworld.runners.handler.memory.MemoryFactory",
+        type("MemoryFactory", (), {"instance": staticmethod(lambda: fake_memory)}),
+    )
+    handler = _build_handler()
+    agent = _FakeAgent(
+        AgentMemoryConfig(
+            tool_result_offload=True,
+            tool_result_length_threshold=20,
+            tool_result_preview_chars=80,
+        )
+    )
+    context = _build_context()
+    bounded = {
+        "artifact_ref": "/tmp/tool-owned.bin",
+        "context_artifact_ref": "aworld-tool-output://" + "b" * 64,
+        "head": "H" * 5000,
+        "tail": "T" * 5000,
+    }
+    metadata = {
+        "tool_output_policy": {
+            "policy_version": "aworld-tool-output-v1",
+            "reason_code": "artifact_offloaded_upstream_preserved",
+            "raw_checksum": "sha256:" + "c" * 64,
+            "artifact_ref": "/tmp/tool-owned.bin",
+            "context_artifact_ref": "aworld-tool-output://" + "b" * 64,
+        }
+    }
+
+    await handler._do_add_tool_result_to_memory(
+        agent,
+        "call-boundary",
+        ActionResult(
+            content=bounded,
+            tool_call_id="call-boundary",
+            tool_name="docker",
+            action_name="run_code",
+            success=True,
+            metadata=metadata,
+        ),
+        context,
+    )
+
+    stored_item, _ = fake_memory.items[0]
+    assert stored_item.content == bounded
     assert "tool_result_compaction" not in stored_item.metadata["ext_info"]
 
 
@@ -393,6 +447,89 @@ async def test_llm_message_replay_skips_orphan_tool_result(monkeypatch):
     )
 
     assert not any(message.get("role") == "tool" for message in messages)
+    owner_final = copy.deepcopy(messages)
+    observed = adapt_cleaned_history_replay(
+        messages,
+        source_identity="llm-agent://agent-1/final-history-replay",
+    )
+    assert [thaw_json(item.payload) for item in observed.items] == owner_final
+    assert messages == owner_final
+
+
+@pytest.mark.asyncio
+async def test_llm_message_replay_repairs_out_of_order_causal_tool_groups(monkeypatch):
+    meta = MessageMetadata(
+        session_id="session-1",
+        user_id="user-1",
+        task_id="task-1",
+        agent_id="agent-1",
+        agent_name="Aworld",
+    )
+
+    def ai(call_id: str) -> MemoryAIMessage:
+        return MemoryAIMessage(
+            content=f"invoke {call_id}",
+            tool_calls=[
+                ToolCall.from_dict(
+                    {
+                        "id": call_id,
+                        "function": {"name": "run_code", "arguments": "{}"},
+                    }
+                )
+            ],
+            metadata=meta,
+        )
+
+    def tool(call_id: str) -> MemoryToolMessage:
+        return MemoryToolMessage(
+            content=f"result {call_id}",
+            tool_call_id=call_id,
+            metadata=meta,
+        )
+
+    fake_memory = _FakeMemory()
+    # This is a valid causal history observed through out-of-order event-driven
+    # persistence: both assistant calls reached storage before either result.
+    fake_memory.items = [
+        (ai("call-a"), None),
+        (ai("call-b"), None),
+        (tool("call-a"), None),
+        (tool("call-b"), None),
+    ]
+    monkeypatch.setattr(
+        "aworld.agents.llm_agent.MemoryFactory",
+        type("MemoryFactory", (), {"instance": staticmethod(lambda: fake_memory)}),
+    )
+    context = _build_context()
+    agent = LLMAgent(
+        name="Aworld",
+        agent_id="agent-1",
+        conf=AgentConfig(
+            llm_model_name="test-model",
+            llm_api_key="test-key",
+            memory_config=AgentMemoryConfig(history_rounds=10),
+        ),
+    )
+
+    messages = await agent.async_messages_transform(
+        image_urls=[],
+        observation=Observation(
+            action_result=[ActionResult(content="tool result already recorded")]
+        ),
+        message=Message(headers={"context": context}),
+    )
+
+    causal = [
+        (message.get("role"), message.get("tool_call_id"))
+        for message in messages
+        if message.get("role") in {"assistant", "tool"}
+    ]
+    assert causal == [
+        ("assistant", None),
+        ("tool", "call-a"),
+        ("assistant", None),
+        ("tool", "call-b"),
+    ]
 
 
 @pytest.mark.asyncio

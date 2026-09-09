@@ -8,14 +8,11 @@ import uuid
 from collections import OrderedDict
 from enum import Enum
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Callable, Union, Iterable, Type, TYPE_CHECKING, Literal
+from typing import Any, Dict, List, Optional, Callable, Union, Iterable, Literal, Type
 
 import yaml
 from pydantic import BaseModel, Field, model_validator
 
-if TYPE_CHECKING:
-    from aworld.dataset.trajectory_strategy import TrajectoryStrategy
-    from aworld.dataset.trajectory_storage import TrajectoryStorage
 
 def load_config(file_name: str, dir_name: str = None) -> Dict[str, Any]:
     from aworld.logs.util import logger
@@ -68,7 +65,7 @@ def wipe_secret_info(config: Dict[str, Any], keys: List[str]) -> Dict[str, Any]:
             key_list.append(key)
         for key in key_list:
             if key.strip('"') in keys:
-                conf[key] = '-^_^-'
+                conf[key] = "-^_^-"
             else:
                 _wipe_secret_plain_value(conf[key])
         return conf
@@ -85,12 +82,14 @@ class ClientType(Enum):
 
 class HistoryWriteStrategy(Enum):
     """History write strategy for memory operations."""
+
     EVENT_DRIVEN = "event_driven"  # Write through message system (default)
     DIRECT = "direct"  # Direct call to memory handler
 
 
 class ConfigDict(dict):
     """Object mode operates dict, can read non-existent attributes through `get` method."""
+
     __setattr__ = dict.__setitem__
     __getattr__ = dict.__getitem__
 
@@ -122,11 +121,48 @@ class ContextCacheConfig(BaseConfig):
     allow_provider_native_cache: bool = True
 
 
+class ContextCompilerRuntimeConfig(BaseConfig):
+    # Adaptive Context is the shipped default for the capability-gated runtime.
+    # Callers retain an explicit ``off``/``shadow`` rollback path.
+    mode: Literal["off", "observe", "shadow", "enforce"] = "enforce"
+    compiler_version: str = "v1"
+    policy_version: str = "v1"
+    universal_final: bool = True
+    context_limit: Optional[int] = None
+    reserved_output_tokens: int = 4096
+    provider_protocol_reserve: int = 256
+    safety_margin_tokens: int = 512
+    max_item_tokens: int = 10000
+    require_proven_semantics_for_enforce: bool = True
+    scoped_instructions: Literal["workspace_only", "nested"] = "nested"
+    progressive_skills: bool = True
+    progressive_tools: bool = True
+    # ``None`` preserves the complete permission-filtered catalog.  An
+    # explicitly configured list (including ``[]``) opts into progressive
+    # selection and is combined only with activated Skill Tool requests.
+    progressive_tool_base_tools: Optional[List[str]] = None
+    progressive_tool_unmanaged_policy: Literal["preserve", "drop"] = "preserve"
+    task_catalog_policy: Literal["per_call", "sticky"] = "sticky"
+    checkpoint_policy: Literal["explicit", "budget_pressure", "adaptive"] = "adaptive"
+    destructive_sandbox_checkpoint: bool = True
+    elastic_step_budget: bool = True
+    step_budget_extension_steps: int = Field(default=40, gt=0)
+    step_budget_hard_limit: int = Field(default=240, gt=0)
+    step_budget_recent_progress_window: int = Field(default=20, gt=0)
+    default_tool_output_inline_tokens: int = Field(default=4096, gt=0)
+    artifact_offload: bool = True
+    context_inspector: bool = True
+    trace_level: Literal["none", "summary", "decisions", "full_redacted"] = "decisions"
+    completion_contract: Literal["off", "observe", "enforce"] = "off"
+
+
 class ModelConfig(BaseConfig):
-    model_config = ConfigDict(extra='allow')
-    llm_provider: Optional[str] = None  # Set to None to allow automatic provider detection
+    model_config = ConfigDict(extra="allow")
+    llm_provider: Optional[str] = (
+        None  # Set to None to allow automatic provider detection
+    )
     llm_model_name: Optional[str] = None
-    llm_temperature: float = 1.
+    llm_temperature: float = 1.0
     llm_base_url: Optional[str] = None
     llm_api_key: Optional[str] = None
     llm_client_type: ClientType = ClientType.SDK
@@ -135,11 +171,16 @@ class ModelConfig(BaseConfig):
     llm_stream_call: bool = False
     max_retries: int = 3
     max_model_len: Optional[int] = None  # Maximum model context length
-    model_type: Optional[str] = 'qwen'  # Model type determines tokenizer and maximum length
+    model_type: Optional[str] = (
+        "qwen"  # Model type determines tokenizer and maximum length
+    )
     params: Optional[Dict[str, Any]] = {}
     ext_config: Optional[Dict[str, Any]] = {}
     llm_response_parser: Optional[Any] = None
     context_cache: ContextCacheConfig = Field(default_factory=ContextCacheConfig)
+    context_compiler: ContextCompilerRuntimeConfig = Field(
+        default_factory=ContextCompilerRuntimeConfig
+    )
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
@@ -153,14 +194,18 @@ class ModelConfig(BaseConfig):
         # init max_model_len
         if self.max_model_len is None:
             # qwen or other default model_type
-            self.max_model_len = 128000 if self.model_type != 'claude' else 200000
+            self.max_model_len = 128000 if self.model_type != "claude" else 200000
 
 
 class LlmCompressionConfig(BaseConfig):
     enabled: bool = False
-    compress_type: str = 'llm'  # llm, llmlingua
-    trigger_compress_token_length: int = 10000  # Trigger compression when exceeding this length
-    compress_model: Optional[ModelConfig] = Field(default=None, description="Compression model configuration")
+    compress_type: str = "llm"  # llm, llmlingua
+    trigger_compress_token_length: int = (
+        10000  # Trigger compression when exceeding this length
+    )
+    compress_model: Optional[ModelConfig] = Field(
+        default=None, description="Compression model configuration"
+    )
 
 
 class OptimizationConfig(BaseConfig):
@@ -176,16 +221,16 @@ class MetaLearningConfig(BaseConfig):
     behavior based on observed outcomes. This comprehensive configuration supports
     multiple learning modes and specialized learning components.
     """
+
     # Core enablement
     enabled: bool = Field(
-        default=False,
-        description="Whether to enable meta-learning capabilities"
+        default=False, description="Whether to enable meta-learning capabilities"
     )
 
     # Storage configuration
     learning_knowledge_storage_base_path: Optional[str] = Field(
         default=None,
-        description="Base path for storing trajectory data. Defaults to './' or TRAJ_STORAGE_BASE_PATH env var"
+        description="Base path for storing trajectory data. Defaults to './' or TRAJ_STORAGE_BASE_PATH env var",
     )
 
 
@@ -405,14 +450,22 @@ class SelfEvolveConfig(BaseConfig):
         )
         return self
 
-
 class SummaryPromptConfig(BaseConfig):
     """Configuration for summary prompt templates."""
-    
-    template: str = Field(description="Base template, such as AWORLD_MEMORY_EXTRACT_NEW_SUMMARY")
-    summary_rule: str = Field(description="Summary rule, used to guide how to generate summaries")
-    summary_schema: str = Field(description="Summary schema, defines output format and structure")
-    memory_type: str = Field(default="summary", description="Memory type, used to distinguish different types of summaries")
+
+    template: str = Field(
+        description="Base template, such as AWORLD_MEMORY_EXTRACT_NEW_SUMMARY"
+    )
+    summary_rule: str = Field(
+        description="Summary rule, used to guide how to generate summaries"
+    )
+    summary_schema: str = Field(
+        description="Summary schema, defines output format and structure"
+    )
+    memory_type: str = Field(
+        default="summary",
+        description="Memory type, used to distinguish different types of summaries",
+    )
 
 
 class ContextRuleConfig(BaseConfig):
@@ -429,26 +482,49 @@ class AgentMemoryConfig(BaseConfig):
     """Configuration for procedural memory."""
 
     model_config = ConfigDict(
-        from_attributes=True, validate_default=True, revalidate_instances='always', validate_assignment=True,
-        arbitrary_types_allowed=True
+        from_attributes=True,
+        validate_default=True,
+        revalidate_instances="always",
+        validate_assignment=True,
+        arbitrary_types_allowed=True,
     )
     # short-term config
-    history_rounds: int = Field(default=100,
-                                description="rounds of message msg; when the number of messages is greater than the history_rounds, the memory will be trimmed")
-    history_write_strategy: HistoryWriteStrategy = Field(default=HistoryWriteStrategy.EVENT_DRIVEN,
-                                                         description="History write strategy: event_driven (through message system) or direct (direct call to handler)")
-    history_scope: Optional[str] = Field(default="task", description="History initialization scope: user, session, or task")
+    history_rounds: int = Field(
+        default=100,
+        description="rounds of message msg; when the number of messages is greater than the history_rounds, the memory will be trimmed",
+    )
+    history_write_strategy: HistoryWriteStrategy = Field(
+        default=HistoryWriteStrategy.EVENT_DRIVEN,
+        description="History write strategy: event_driven (through message system) or direct (direct call to handler)",
+    )
+    history_scope: Optional[str] = Field(
+        default="task",
+        description="History initialization scope: user, session, or task",
+    )
 
-    enable_summary: bool = Field(default=False,
-                                 description="enable_summary use llm to create summary short-term memory")
-    summary_model: Optional[str] = Field(default=None, description="short-term summary model")
-    summary_rounds: Optional[int] = Field(default=5,
-                                          description="rounds of message msg; when the number of messages is greater than the summary_rounds, the summary will be created")
-    summary_context_length: Optional[int] = Field(default=40960,
-                                                  description=" when the content length is greater than the summary_context_length, the summary will be created")
+    enable_summary: bool = Field(
+        default=False,
+        description="enable_summary use llm to create summary short-term memory",
+    )
+    summary_model: Optional[str] = Field(
+        default=None, description="short-term summary model"
+    )
+    summary_rounds: Optional[int] = Field(
+        default=5,
+        description="rounds of message msg; when the number of messages is greater than the summary_rounds, the summary will be created",
+    )
+    summary_context_length: Optional[int] = Field(
+        default=40960,
+        description=" when the content length is greater than the summary_context_length, the summary will be created",
+    )
     summary_prompts: Optional[List[SummaryPromptConfig]] = Field(default=[])
-    summary_summaried: Optional[bool] = Field(default=True, description="whether to summarize historical summary messages when summary is triggered")
-    summary_role: Optional[str] = Field(default="assistant", description="role for summary memory items")
+    summary_summaried: Optional[bool] = Field(
+        default=True,
+        description="whether to summarize historical summary messages when summary is triggered",
+    )
+    summary_role: Optional[str] = Field(
+        default="assistant", description="role for summary memory items"
+    )
     tool_result_offload: bool = Field(
         default=True,
         description="compact oversized tool results before storing them in prompt-facing short-term memory",
@@ -467,23 +543,29 @@ class AgentMemoryConfig(BaseConfig):
     )
 
     # Long-term memory config
-    enable_long_term: bool = Field(default=False, description="enable_long_term use to store long-term memory")
-    long_term_model: Optional[str] = Field(default=None, description="long-term extract model")
+    enable_long_term: bool = Field(
+        default=False, description="enable_long_term use to store long-term memory"
+    )
+    long_term_model: Optional[str] = Field(
+        default=None, description="long-term extract model"
+    )
     # LongTermConfig
-    long_term_config: Optional[BaseModel] = Field(default=None, description="long_term_config")
+    long_term_config: Optional[BaseModel] = Field(
+        default=None, description="long_term_config"
+    )
 
     def __deepcopy__(self, memo=None):
         """Support copy.deepcopy for AgentMemoryConfig."""
         if memo is None:
             memo = {}
-        
+
         # Check if already copied (avoid circular references)
         if id(self) in memo:
             return memo[id(self)]
-        
+
         # Create a new instance using model_dump and model_validate to avoid recursion
         # Use mode='python' to get plain Python objects
-        data = self.model_dump(mode='python')
+        data = self.model_dump(mode="python")
         # Deep copy the data dict to handle nested objects
         copied_data = copy.deepcopy(data, memo)
         # Create new instance from copied data
@@ -553,8 +635,13 @@ class TaskRunMode(Enum):
 class TaskConfig(BaseConfig):
     model_config = {"arbitrary_types_allowed": True}
     max_steps: int = 100
-    trajectory_strategy: Optional[Type['TrajectoryStrategy']] = None
-    trajectory_storage: Optional[Type['TrajectoryStorage']] = None
+    # Runtime trajectory implementations live in ``aworld.dataset`` and are
+    # intentionally not imported while core configuration classes are being
+    # defined. Dataset construction validates the concrete strategy/storage;
+    # keeping these as class-valued extension points removes a fragile
+    # package-import-order dependency for TaskConfig subclasses.
+    trajectory_strategy: Optional[Type[Any]] = None
+    trajectory_storage: Optional[Type[Any]] = None
     stream: bool = False
     resp_carry_context: bool = True
     resp_carry_raw_llm_resp: bool = False
@@ -635,9 +722,10 @@ class DatasetConfig(BaseConfig):
 
 
 class EvaluationConfig(BaseConfig):
-    '''
+    """
     Evaluation run config.
-    '''
+    """
+
     # full class name of eval target, e.g. aworld.evaluations.base.EvalTarget
     eval_target: Any = None
     eval_target_full_class_name: str = None

@@ -25,6 +25,7 @@ from aworld.core.agent.swarm import Swarm
 from aworld.core.common import Observation
 from aworld.core.context.amni import TaskInput, ApplicationContext
 from aworld.core.context.amni.config import AmniConfigFactory, AmniConfigLevel
+from aworld.core.context.compiler.parity import _issue_context_entrypoint_claim
 from aworld.core.task import Task, TaskResponse
 from aworld.logs.util import logger
 from aworld.memory.main import _default_file_memory_store
@@ -84,6 +85,14 @@ class LocalAgentExecutor(BaseAgentExecutor):
     All other capabilities (session management, output rendering, logging) are inherited from BaseAgentExecutor.
     """
     TASK_PROGRESS_HOOK_MIN_INTERVAL_SECONDS = 2.0
+
+    def _context_entry_point(self) -> str:
+        return "resume" if getattr(self, "_aworld_cli_resumed", False) else "cli"
+
+    def _attest_context_entry_point(self, context: ApplicationContext) -> None:
+        context._aworld_context_entrypoint_claim = _issue_context_entrypoint_claim(
+            self._context_entry_point()
+        )
     
     def __init__(
         self, 
@@ -941,6 +950,8 @@ class LocalAgentExecutor(BaseAgentExecutor):
         # Get updated context from kwargs
         context = hook_kwargs.get('context', context)
         context.workspace_path = os.getcwd()
+        self._attest_context_entry_point(context)
+        context.set_state("context_entry_point", self._context_entry_point())
         if runtime is not None and getattr(runtime, "_steering", None) is not None:
             context._aworld_cli_steering = runtime._steering
 
@@ -983,6 +994,8 @@ class LocalAgentExecutor(BaseAgentExecutor):
             task_input.task_content = hook_kwargs['task_content']
 
         # 6. Build task with context and observation
+        self._attest_context_entry_point(context)
+        context.set_state("context_entry_point", self._context_entry_point())
         task = Task(
             id=context.task_id,
             user_id=context.user_id,

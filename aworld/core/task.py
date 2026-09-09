@@ -15,6 +15,7 @@ from aworld.core.context.base import Context
 from aworld.core.tool.base import Tool, AsyncTool
 from aworld.output.outputs import Outputs, DefaultOutputs
 from aworld.core.context.amni.config import AmniContextConfig
+from aworld.core.trajectory import TrajectoryBuildResult, TrajectoryDeliveryReceipt
 
 if TYPE_CHECKING:
     from aworld.agents.llm_agent import Agent
@@ -63,6 +64,15 @@ class Task:
     task_status: TaskStatus = field(default=TaskStatusValue.INIT)
     # streaming support
     streaming_mode: StreamingMode = field(default=None)
+    # Explicit identity epoch for repeated executions of the same task id.
+    trajectory_task_epoch: int | None = field(default=None)
+
+    def __post_init__(self) -> None:
+        epoch = self.trajectory_task_epoch
+        if epoch is not None and (
+            isinstance(epoch, bool) or not isinstance(epoch, int) or epoch < 0
+        ):
+            raise ValueError("trajectory_task_epoch must be a non-negative integer")
 
     def to_dict(self) -> Dict[str, Any]:
         """Serialize Task to dict while excluding parent_task to avoid recursion.
@@ -97,6 +107,7 @@ class Task:
             "task_status": self.task_status,
             # Streaming-related fields (serializable)
             "streaming_mode": self.streaming_mode,
+            "trajectory_task_epoch": self.trajectory_task_epoch,
         }
 
 
@@ -116,6 +127,30 @@ class TaskResponse:
     user_visible: bool = field(default=True)
     # task final status, e.g. success/failed/cancelled
     status: TaskStatus | None = field(default=TaskStatusValue.SUCCESS)
+    # Canonical trajectory control-plane result. Inline trajectory remains the
+    # compatibility data plane and is not reconstructed from this metadata.
+    trajectory_build_result: TrajectoryBuildResult | None = field(default=None)
+    trajectory_delivery_receipt: TrajectoryDeliveryReceipt | None = field(default=None)
+
+    @property
+    def trajectory_status(self) -> str | None:
+        result = self.trajectory_build_result
+        return result.status.value if result is not None else None
+
+    @property
+    def trajectory_fidelity(self) -> str | None:
+        result = self.trajectory_build_result
+        return result.fidelity.value if result is not None else None
+
+    @property
+    def trajectory_ref(self) -> str | None:
+        result = self.trajectory_build_result
+        return result.trajectory_ref if result is not None else None
+
+    @property
+    def trajectory_checksum(self) -> str | None:
+        result = self.trajectory_build_result
+        return result.trajectory_checksum if result is not None else None
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -129,7 +164,21 @@ class TaskResponse:
             "msg": self.msg,
             "trajectory": self.trajectory,
             "user_visible": self.user_visible,
-            "status": self.status
+            "status": self.status,
+            "trajectory_build_result": (
+                self.trajectory_build_result.to_dict()
+                if self.trajectory_build_result is not None
+                else None
+            ),
+            "trajectory_delivery_receipt": (
+                self.trajectory_delivery_receipt.to_dict()
+                if self.trajectory_delivery_receipt is not None
+                else None
+            ),
+            "trajectory_status": self.trajectory_status,
+            "trajectory_fidelity": self.trajectory_fidelity,
+            "trajectory_ref": self.trajectory_ref,
+            "trajectory_checksum": self.trajectory_checksum,
         }
 
 

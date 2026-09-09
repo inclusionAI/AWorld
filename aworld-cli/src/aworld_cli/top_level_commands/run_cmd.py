@@ -394,7 +394,7 @@ class RunTopLevelCommand:
         judge_model_profile = getattr(args, "judge_model_profile", None) or global_evolve.judge_model_profile
         agent_name = self._resolve_agent_name(args)
         if agent_name is None:
-            return 0
+            return 1
 
         summary = asyncio.run(
             _run_direct_mode(
@@ -421,6 +421,8 @@ class RunTopLevelCommand:
                 ),
             )
         )
+        if summary is False:
+            return 1
         emit_trajectory = getattr(args, "emit_trajectory", False)
         task_response_path = os.environ.get(
             "AWORLD_SELF_EVOLVE_TASK_RESPONSE_PATH"

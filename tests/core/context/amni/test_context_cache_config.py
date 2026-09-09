@@ -1,7 +1,11 @@
 from aworld.agents.audio_agent import AudioAgent
 from aworld.agents.image_agent import ImageAgent
 from aworld.config.conf import AgentConfig, ModelConfig
-from aworld.core.context.amni.config import AgentContextConfig, AmniConfigFactory, ContextCacheConfig
+from aworld.core.context.amni.config import (
+    AgentContextConfig,
+    AmniConfigFactory,
+    ContextCacheConfig,
+)
 
 
 def test_context_cache_defaults_are_enabled():
@@ -17,12 +21,34 @@ def test_context_cache_defaults_are_enabled():
     assert model_config.context_cache.allow_provider_native_cache is True
 
 
+def test_adaptive_context_is_default_on_with_explicit_rollback_modes():
+    default = ModelConfig().context_compiler
+
+    assert default.mode == "enforce"
+    assert default.checkpoint_policy == "adaptive"
+    assert default.scoped_instructions == "nested"
+    assert default.destructive_sandbox_checkpoint is True
+    assert default.elastic_step_budget is True
+    assert default.step_budget_extension_steps == 40
+    assert default.step_budget_hard_limit == 240
+    assert default.step_budget_recent_progress_window == 20
+    assert default.progressive_tool_base_tools is None
+
+    assert (
+        ModelConfig(context_compiler={"mode": "shadow"}).context_compiler.mode
+        == "shadow"
+    )
+    assert ModelConfig(context_compiler={"mode": "off"}).context_compiler.mode == "off"
+
+
 def test_agent_config_top_level_context_cache_passthrough():
     agent_config = AgentConfig(
         llm_provider="openai",
         llm_model_name="fake-model",
         llm_api_key="fake-key",
-        context_cache=ContextCacheConfig(enabled=False, allow_provider_native_cache=False),
+        context_cache=ContextCacheConfig(
+            enabled=False, allow_provider_native_cache=False
+        ),
     )
 
     assert agent_config.llm_config.context_cache.enabled is False

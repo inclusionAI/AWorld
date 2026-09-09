@@ -6,7 +6,6 @@ import subprocess
 import sys
 from pathlib import Path
 
-
 REPO_ROOT = Path(__file__).resolve().parents[2]
 FILEX_SCRIPT = REPO_ROOT / "aworld-skills" / "filex" / "scripts" / "filex.py"
 
@@ -21,7 +20,9 @@ import pathlib
 import sys
 
 args = sys.argv[1:]
-pathlib.Path(os.environ["FILEX_ARGS_LOG"]).write_text(json.dumps(args), encoding="utf-8")
+pathlib.Path(os.environ["FILEX_ARGS_LOG"]).write_text(
+    json.dumps(args), encoding="utf-8"
+)
 workspace = pathlib.Path(os.environ["FILEX_WORKSPACE_ROOT"])
 
 if args[0] == "parse":
@@ -33,6 +34,12 @@ if args[0] == "parse":
         "task_id": "fake-task",
         "file_path": str(result.relative_to(workspace)),
         "metrics": {"provider": "python_docx"},
+    }
+elif args[0] == "inspect":
+    payload = {
+        "success": True,
+        "source_provider": "youtube",
+        "recommended_route": ["youtube_subtitle", "local_whisper"],
     }
 else:
     payload = {"success": True, "status": "parsing", "completed_batches": 2}
@@ -97,11 +104,15 @@ def test_filex_wrapper_parses_any_supported_local_file(tmp_path: Path) -> None:
     assert provider == {"filex_parse_provider": "python_docx"}
 
 
-def test_filex_wrapper_parses_url_and_passes_env_file_without_exposing_secret(tmp_path: Path) -> None:
+def test_filex_wrapper_parses_url_and_passes_env_file_without_exposing_secret(
+    tmp_path: Path,
+) -> None:
     workspace, args_log, env = _environment(tmp_path)
     env_file = workspace / "filex-env.json"
     secret = "sensitive-test-value"
-    env_file.write_text(json.dumps({"gateway_vllm": {"api_key": secret}}), encoding="utf-8")
+    env_file.write_text(
+        json.dumps({"gateway_vllm": {"api_key": secret}}), encoding="utf-8"
+    )
     output = workspace / "parsed" / "remote.md"
 
     completed = subprocess.run(
@@ -152,6 +163,60 @@ def test_filex_wrapper_reads_batch_status(tmp_path: Path) -> None:
     cli_args = json.loads(args_log.read_text(encoding="utf-8"))
     assert cli_args[:3] == ["status", "--batch-resume-id", "stable-id"]
     assert "--include-results" in cli_args
+
+
+def test_filex_wrapper_inspects_youtube_without_media_download(tmp_path: Path) -> None:
+    _, args_log, env = _environment(tmp_path)
+    url = "https://www.youtube.com/watch?v=abc123"
+
+    completed = subprocess.run(
+        [sys.executable, str(FILEX_SCRIPT), "inspect", "--url", url],
+        check=False,
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+
+    assert completed.returncode == 0
+    payload = json.loads(completed.stdout)
+    assert payload["source_provider"] == "youtube"
+    cli_args = json.loads(args_log.read_text(encoding="utf-8"))
+    assert cli_args == ["inspect", url]
+
+
+def test_filex_wrapper_forwards_youtube_transcript_options(tmp_path: Path) -> None:
+    workspace, args_log, env = _environment(tmp_path)
+    output = workspace / "parsed" / "youtube.md"
+
+    completed = subprocess.run(
+        [
+            sys.executable,
+            str(FILEX_SCRIPT),
+            "parse",
+            "--url",
+            "https://www.youtube.com/watch?v=abc123",
+            "--output",
+            str(output),
+            "--mode",
+            "transcript",
+            "--language",
+            "en",
+            "--allow-media-download",
+            "--rights-basis",
+            "user-owned",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+
+    assert completed.returncode == 0
+    cli_args = json.loads(args_log.read_text(encoding="utf-8"))
+    assert cli_args[cli_args.index("--mode") + 1] == "transcript"
+    assert cli_args[cli_args.index("--language") + 1] == "en"
+    assert "--allow-media-download" in cli_args
+    assert cli_args[cli_args.index("--rights-basis") + 1] == "user-owned"
 
 
 def test_filex_wrapper_rejects_local_input_outside_workspace(tmp_path: Path) -> None:
