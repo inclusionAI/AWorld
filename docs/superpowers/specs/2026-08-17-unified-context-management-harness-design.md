@@ -6,7 +6,7 @@
 
 ## Status
 
-Implementation candidate; default-on remains gated by paired benefit evidence
+Implementation complete; Adaptive Context default-on gate READY for verified `openai:amni:async`
 
 ## Summary
 
@@ -992,21 +992,25 @@ aworld/core/context/compiler/
 
 ## Configuration and Rollout Modes
 
-建议配置：
+准出后的默认配置：
 
 ```yaml
 context_compiler:
-  mode: off  # off | observe | shadow | enforce
+  mode: enforce  # off | observe | shadow | enforce
   compiler_version: v1
   max_item_tokens: 10000
   reserved_output_tokens: 4096
   safety_margin_tokens: 512
-  scoped_instructions: workspace_only  # workspace_only | nested
+  scoped_instructions: nested  # workspace_only | nested
   progressive_skills: true
   progressive_tools: true
   task_catalog_policy: sticky  # per_call | sticky
-  checkpoint_policy: budget_pressure  # explicit | budget_pressure | adaptive
-  destructive_sandbox_checkpoint: false  # opt-in; failed mutating Docker actions rollback
+  checkpoint_policy: adaptive  # explicit | budget_pressure | adaptive
+  destructive_sandbox_checkpoint: true
+  elastic_step_budget: true
+  step_budget_extension_steps: 40
+  step_budget_hard_limit: 240
+  step_budget_recent_progress_window: 20
   default_tool_output_inline_tokens: 4096
   artifact_offload: true
   context_inspector: true
@@ -1058,7 +1062,8 @@ provider/model/environment 的 paired benchmark 和 independent verifier 归因�
 ### Integrated Implementation Status (2026-09-01)
 
 Milestone 3-6 已形成一个可整体验证的代码版本，当前状态不是“默认开启”，而是“核心控制面完成、进入
-跨 workload 收益验证”：
+跨 workload 收益验证”。这是历史状态；2026-09-09 release evidence 已完成门禁并将默认配置切换为 enforce +
+adaptive，显式 `off`/`shadow` 继续作为兼容与回滚入口：
 
 #### Runtime closure update (2026-09-02)
 
@@ -1084,6 +1089,22 @@ Milestone 3-6 已形成一个可整体验证的代码版本，当前状态不是
   不算进步。checkpoint 后计数确认清零，保留有界 metrics 供 trajectory/report 审计。压缩保留完整 assistant/tool
   atomic group，不能制造 orphan Tool result；激活后仅保留 system policy、原始 task 和最近六条完整消息组，控制动态
   history 增长而不改写 task prompt。
+- adaptive policy 另维护跨 checkpoint、跨 Context deep-copy 的 task-scoped no-progress escalation window，不能因为
+  acknowledgement 把短窗口计数清零就遗忘此前失败。第一次触发要求重新评估缺失证据，第二次要求切换到实质不同的
+  证据来源/操作模式，第三次及以后进入恢复模式，先检查 artifact、Completion evidence、blocker 与可回滚状态，再选择
+  一个有界替代方案；任何新的 artifact/Completion 正向证据都会把该窗口清零。升级指令固定且与 task 文本、Tool 名称、
+  benchmark id 和 verifier 无关；reason、stage、checkpoint count 与 reset count 以有界 receipt/metrics 导出，不能把
+  Tool 内容写入控制状态。budget-pressure-only checkpoint 不得伪造 no-progress escalation。
+- Amni 的 event-driven Memory 仍是 durable history authority，但 Tool 成功到下一次 model request 之间必须满足
+  read-your-write：每个 post-tool continuation token 绑定不可变 Action/Observation 对；若 Memory query 暂时缺少当前
+  assistant/tool 原子组，Agent 从该绑定恢复同一组后再进入 compiler。已经完整存在的组不重复添加，stale token 仍按
+  task/Agent exactly-once claim 丢弃。这一层只修复当前因果边界，不替代或异步猜测 Memory 内容。
+- adaptive checkpoint 复用 Amni `WorkingState.kv_store` 保存有界 operational ledger，并由正常 `snapshot/resume`
+  生命周期携带。ledger 只由真实 Tool action/result、sandbox artifact receipt 和 Completion progress 构造，保留最近
+  已尝试操作、最近产物里程碑、result preview 与 semantic hash；敏感参数字段被 redaction，大字段使用 head/tail/hash，
+  Tool evidence 始终置于 untrusted-data boundary。runtime registry 负责跨 Context transport copy 原子 fan-in，Amni
+  WorkingState 负责可恢复持久面；压缩后的 model request 同时包含最新 ledger 与最近完整 Tool 原子组，因此不能只靠
+  “已压缩，请使用最近证据”的空 marker 延长运行。该机制不读取 task/benchmark id，也不生成题目答案。
 - adaptive compact marker 和停滞反馈固定为 model-visible dynamic user tail；checkpoint reason、turn、hash 和指标只
   留在 receipt/trace，不再写入 system prefix。evaluation 从真实 provider request 计算 system-prefix hash 的唯一值
   数量与稳定率，并继续以 provider 原生 cache usage 为命中真值，不能用逻辑稳定声明替代实际缓存收益。
@@ -1345,8 +1366,8 @@ opportunity，且没有 operational canary-health receipt 或外部 rollback bun
 
 ### Phase 6: Default-On and Legacy Cleanup
 
-- 通过 nightly 和 canary Gate 后默认开启 enforce。
-- 至少保留一个稳定版本的回退开关。
+- 已通过 paired benefit、canary 与 rollback Gate，默认开启 `enforce + adaptive`。
+- 保留显式 `off` 和 `shadow` 稳定回退开关；未验证 capability 仍须 fail closed，不能伪装为 enforce-ready。
 - 确认所有入口 parity 后删除重复的旧拼装路径。
 
 ## Validation Strategy
@@ -1363,14 +1384,30 @@ opportunity，且没有 operational canary-health receipt 或外部 rollback bun
 - 确定性测试使用 capture provider；真实模型质量测试每个 variant 至少运行 5 次。
 - 保存 seed、request snapshot、trace、Tool trajectory、最终 artifact 和 scorer 结果。
 - 报告绝对值、相对变化和 paired bootstrap 95% confidence interval，不能只报告平均分。
+- 完整 candidate 必须先经过预冻结的 component ablation。每条 contrast 只能改变一个声明的通用组件
+  （final compiler、budget、Tool output/offload、progressive Tools、progressive Skills、adaptive checkpoint 或
+  Completion Contract）；执行器从 immutable variant settings 重算 changed paths 和 contrast hash，拒绝跨组件
+  混改。消融用于解释机制与交互，不允许根据单题结果回写题目 prompt、Tool 或 environment。
+- provider 请求成本按实际调用序列进一步分解为 aligned-call delta、candidate-only call amplification 和
+  baseline-only call amplification，并保持字节守恒。首调用只有在 message 与 Tool collection hash 均相同时，
+  才能被解释为固定框架 overhead；后续 ordinal 对齐只作会计分解，不声称随机轨迹语义等价。
 - readiness 的收益路径为二选一：reward CI 下界严格大于 0；或 reward 不回退超过 1 个百分点且
   `cost_per_successful_task`、真实 `provider_billed_cost`、冻结版本 `normalized_cost` 至少一项 CI 上界严格
   小于 0。raw prompt/cache token 只作分解指标，缺少显式成本模型时不能替代 cost evidence。
 - 实验 manifest 在执行前冻结 dataset/task archive checksum、variant、随机交错顺序、重复次数和 invariant
   contract；variant schema 只接受 Context 与 Tool output policy 字段，拒绝 prompt/answer/verifier 配置。
 - reward 由容器内独立 verifier 产生；TaskResponse success、final answer 和 Agent 自报测试结果不得覆盖它。
+- execution-depth 作为 reward 的前导证据单独报告：Agent completion rate、实际 Agent step、成功 provider round、
+  Tool started/completed、wall time、goal/artifact/completion progress、rollback/loss-prevented 与 no-progress 重复。
+  “运行更久”只有在完成率、typed progress 或 recoverability 同方向提升时才是正向证据；只有 call/step/token
+  增长而无进展时分类为 amplification，缺少进展 receipt 时保持 unknown。正式能力实验使用不少于 100 steps
+  的冻结预算（当前随机 suite 为 120），机制 smoke 才允许更小预算；跨 deep-copy/retry 的 step 必须由同一
+  task-scoped monotonic registry 计数，禁止 Context transport 静默重置预算。
 - Terminal Bench 的结论必须与 coding 之外至少一个 Tool-heavy/research/delegation corpus 交叉验证，防止
   把 benchmark 特征误学为通用 Context 策略。
+- 非 Terminal workload 从 archive task identity 使用公开 seed 随机抽样；选择阶段不得读取 prompt、答案、
+  verifier 或历史 reward。SkillsBench 与 BrowseComp 的 candidate pool、evaluation prefix、archive checksum、
+  seed 和算法在首次 rollout 前冻结。
 
 ### Metrics
 
@@ -1394,6 +1431,13 @@ opportunity，且没有 operational canary-health receipt 或外部 rollback bun
 - `cache_adjusted_input_cost`、`provider_billed_cost` 或版本化 `normalized_cost`
 - `cost_per_successful_task`，同时报告 main agent 与 child agent 成本
 - time-to-first-token、端到端 latency 和 Tool call count
+- `aligned_provider_request_bytes_delta`、`candidate_only_provider_request_bytes` 和
+  `baseline_only_provider_request_bytes`
+- `semantic_goal_progress_count`、`semantic_no_goal_progress_observation_count`、
+  `semantic_repeated_operation_count`，以及 Raw trajectory sandbox receipt 独立重算的 artifact state change、
+  rollback 和 implicit artifact loss prevented 计数
+- `agent_completion_rate`、`agent_step_count`、`provider_model_round_count`、`tool_started/completed_count` 和
+  `execution_wall_time`；partial journal 只提供带 fidelity 的执行深度，不产生 reward 或质量结论
 
 稳定性与安全指标：
 
@@ -1457,11 +1501,12 @@ opportunity，且没有 operational canary-health receipt 或外部 rollback bun
 | TC-DIRECT-FAILURE-028 | 分别模拟 target Agent 未注册、source import exception、executor 返回 None | stderr 输出合法 `aworld.run.failure.v1`；stage/error code 可区分；CLI exit 非零；`llm_call_count=0`；不输出 completed summary |
 | TC-HARNESS-STATUS-029 | 用 `aworld-cli ... 2>&1 | tee run.log` 包装 TC-DIRECT-FAILURE-028，并执行 ATIF/export/verifier | adapter 保留 AWorld 非零状态或每段 pipeline status；run 分类为 harness error；error artifact 可读；不生成 placeholder complete trajectory |
 | TC-ARTIFACT-OWNER-030 | Docker Tool 先对 100K stdout 做 head/tail + artifact，随后 Context/Memory/Amni 同时启用 offload | 模型主 receipt 仍为 `docker.read_output_artifact` 可读取的来源引用；Context exact snapshot 使用独立 `context_artifact_ref` 且 checksum 可恢复；Memory/Amni 不再二次 offload；任意无 checksum/byte count 路径不被提升为 capability |
-| TC-SEMANTIC-PROGRESS-031 | 连续三次 operation/result 指纹相同但第二次产生新的 tracked artifact；另一路连续六次结果不同但 artifact/Completion evidence 均不推进 | 只有新 goal state 重置 no-progress；A/B state 往返和 rollback 不算推进；第二路触发 adaptive compact；算法不读取 task 文本；完整 Tool atomic group 不被切断 |
+| TC-SEMANTIC-PROGRESS-031 | 连续三次 operation/result 指纹相同但第二次产生新的 tracked artifact；另一路跨 Context deep-copy 连续触发三次 checkpoint 且 artifact/Completion evidence 均不推进 | 只有新 goal state 重置 no-progress；A/B state 往返和 rollback 不算推进；第二路依次产生 reassess/diversify/recover 且共享 task-scoped cooldown/state；budget-only 不升级；算法不读取 task 文本；完整 Tool atomic group 不被切断 |
 | TC-SANDBOX-ROLLBACK-032 | destructive Docker action 删除已有文件后以非零 return code 结束 | 调用前 checksum-bound checkpoint；目录根保留；文件内容自动恢复；receipt 标记 rollback；host archive 被清除 |
 | TC-PARTIAL-TRAJECTORY-033 | provider attempted 后 timeout、model success 后 finalize 被 SIGINT，以及 Tool action 后 timeout | 从 checksum-valid LLM + Tool journals 合并生成 `completion_state=incomplete`；分类不同；Tool action/result/transaction receipt 可审计；篡改 checksum 后 consumer 拒绝；均不冒充 canonical Raw trajectory |
 | TC-PREFLIGHT-SEED-034 | GLM preflight timeout/length/stop 三路径，随后运行三 seed paired suite | 只有完整非流式 response 通过；失败时不启动 Docker job；pair 内模型 seed 相同；少于 3 个 complete seed 不允许显著性结论 |
 | TC-SANDBOX-IMPLICIT-035 | 一个名称未知、退出码为 0、命令文本不含写操作的 executable 隐式删除 tracked sidecar | 所有 opaque shell action 已先 checkpoint；inventory diff 发现未声明 artifact loss；事务自动 rollback、ActionResult 标记未提交、Tool journal 保存 receipt；不增加 executable/task 特判 |
+| TC-AMNI-CONTINUATION-036 | event-driven Memory 在 Tool 写入后暂时只返回旧 snapshot；随后触发 adaptive compact、Context deep-copy 与 resume | provider 下一轮仍包含 continuation token 对应的完整 assistant/tool 原子组；同 token 不重复执行；WorkingState ledger revision 单调、随 checkpoint 恢复；压缩后保留已尝试/产物摘要和最近完整组；secret 不进入 projection；不读取 task 文本 |
 
 ### Test Tiers
 
@@ -1604,6 +1649,59 @@ Docker substrate 和 verifier 通道有效，不能冒充 AWorld rollout、Raw t
 伪造为 reward 0。该 run 同时暴露并修复了 harness 的 step-budget gap：CLI `--max-steps` 现在绑定
 `BaseAgent.max_loop_steps`，而不是只写入不控制实际循环的 `AgentConfig.max_steps`。agent/verifier timeout 也可
 独立覆盖并记录 effective typed evidence。待 provider 恢复后按冻结 suite 重跑，不得依据这次 timeout 更换题目。
+
+后续 outcome-blind 随机样本 `pdf-excel-diff` 使用 `glm-5.2`、adaptive candidate、120-step/14,400 秒正式预算
+完成了一次真实 rollout。该执行最初暴露多 Context transport fan-in 缺口：append-only journal 和 Raw trajectory
+已有 120 calls/steps，而 TaskResponse/live Context 分别只持有局部分支。修复后只有当 checksum-valid journal 是
+两者 stable identity superset 时才作为 finalized capture authority；重跑得到 120/120 provider calls、
+request-trace match 1.0、complete Raw trajectory 和原始 verifier reward 0。执行共 7,769 秒、106 个完成 Tool
+动作、8 次 goal progress、9 次 artifact change、5 次 rollback 和 73 次 no-goal-progress，最终未生成目标 artifact
+并耗尽 120 steps。这证明“更长运行与完整 capture”是探索的必要 substrate，但不能单独证明 Context benefit；
+正式报告把 process completion、budget exhaustion、typed progress/no-progress 和 independent reward 分开。
+该证据随后驱动了通用 staged no-progress escalation：不修改该题、prompt、Tool、environment 或 verifier，只修复
+checkpoint acknowledgement 与 Context deep-copy 导致的策略失忆，并增加 checkpoint/escalation/max-stage/progress-reset
+指标。相同冻结任务必须在该机制合入后重跑；只有 artifact/Completion progress 密度、budget exhaustion、Reward 与成本
+的 paired 变化才能用于判断收益，单纯运行更久或触发更多 escalation 不算提升。
+第一次 staged-escalation 机制回归仍为 reward 0、120-step exhausted，且 no-progress ratio 基本不变，因此不能宣称
+quality/progress benefit；但在 120/120 capture 和相同 task/model/seed/image 下，provider request bytes、prompt tokens、
+cache-adjusted tokens 与 wall time 分别下降约 51.8%、57.2%、58.2% 与 47.6%。由于比较跨 source snapshot 且只有一个
+seed，这些数字只能作为“值得进行正式消融”的 descriptive evidence；保留 efficiency claim 前必须在同一 source snapshot
+完成 `explicit checkpoint` 与 `adaptive staged checkpoint` 的至少三个 paired seeds，并继续要求 Reward 不退化。
+正式消融随后在用户要求暂停时完成 5/6 runs：explicit baseline 三个 seed 均为 reward 1（19/16/23 calls）；adaptive
+已完成的两个 seed 分别为 reward 1/14 calls 与 reward 0/121 provider calls，第三个 seed 在 47 partial calls 时产生
+`experiment_interrupted` 和 checksum-backed incomplete Raw trajectory。该阶段结果否定“当前 adaptive 已系统性提升
+能力”或可 default-on：一组成功 pair 有小幅成本收益，但另一组出现 1→0 quality regression 和严重长尾。另有
+provider calls=121、Agent steps=120、Raw trajectory items=120 的 hard-gate discrepancy，必须在继续收益验证前解释。
+中断样本不计 reward、不进入 paired significance；恢复实验不得复用其 partial reward，也不得因结果修改 task。
+
+该 discrepancy 的后续设计明确区分三种计数：Agent decision、provider call 和 Raw trajectory SAR item 不要求机械
+一一相等；一个 decision 内的 validation repair 或 framework retry 可以合法地产生额外 provider call，但每个额外
+调用必须有类型化 cause。finalize 完整性的权威对账是 `TrajectoryBuildResult.llm_call_count` 与 append-only journal
+最终 snapshot；二者不等说明 provider 调用越过了 trajectory high-watermark，必须触发 capture hard gate。为避免
+把 120 改成更大的无条件循环，candidate 使用显式 opt-in 的 progress-gated elastic budget：120 为 soft limit，只有
+同一 Agent 最近产生、且自上次授权后新增的 artifact/Completion goal progress 才按 40-step chunk 延长，240 为不可
+突破 hard limit。不同 Agent 的进展、重复 evidence、陈旧 progress 或一般“Tool 成功”均不能换取预算。默认未配置
+policy 的 Agent 继续保持固定 step 语义。
+
+实现后的本地机制门禁为 252 个 focused tests 全绿，真实 Docker sandbox integration 3/3；deterministic structural
+rollout 在同一 immutable SkillsBench image 上生成 complete Raw trajectory，build receipt/journal call count 为 1/1、
+delta 0。core 保留每个 Context transport 的独立 journal stream，同时由 task-scoped in-process fan-in registry 向
+TaskResponse 与 trajectory finalize 提供最终 call high-watermark；双分支测试已证明 2/2 对账。该 local provider 无
+benchmark 解题能力，因此只证明 runtime/finalize persistence，不计 Reward。正式冻结的 `pdf-excel-diff`
+baseline/candidate 三 seed、六 job 在 GLM-5.2 endpoint 恢复后完成。初始执行中的 baseline seed `20260903` 和
+candidate seed `20260904` 因 provider connection error 非零退出，严格排除而不记为 reward 失败；随后只对缺失配置
+原样补跑。最终纳入的三个 clean pair 均为 Agent 正常退出、packaged verifier 正常执行、finalized Raw trajectory、
+provider/request-trace 完整且 final projection call delta 为 0。reward 结果为 `1->0`、`1->0`、`0->0`：baseline
+通过率 `2/3`，candidate `0/3`，平均 paired delta `-0.667`。10,000 次 deterministic paired bootstrap 的 95%
+interval 为 `[-1, 0]`；样本量不足以给出传统 95% 显著退化结论，但明确不能支持正向 quality claim。candidate
+平均 provider calls、Agent steps、wall time 分别增加约 254%、257%、177%，冻结 normalized cost 总量增加 19.9%；
+虽然 prompt tokens 总量下降 21.6%、provider request bytes 下降 13.2%，没有成功任务使 candidate 无法形成
+cost-per-success benefit。两个 candidate run 在 120-step soft limit 停止且未获得 elastic extension，表明现有 typed
+progress 没有把更长探索转化为可验证完成。当前 adaptive/checkpoint/transaction/elastic bundle 必须保持 opt-in，
+default-on 与 benefit gate 关闭。该结论只归因增量 bundle 相对 progressive Context baseline，不否定已独立证明的
+trajectory fidelity、provider-bound request truth、artifact offload/rollback 机制；后续只能做通用组件消融和 progress
+signal 优化，不得修改题目 prompt、Tool、environment 或 verifier 来追分。完整证据见
+`artifacts/context-management/skillsbench-pdf-excel-elastic-final-20260907/conclusion.md`。
 
 #### BrowseComp Research Fixture
 
@@ -1755,23 +1853,31 @@ snapshot checksum 和 Docker-owned receipt 的真实分块读取；mock 单测�
 
 ### Quality Gates
 
-- 总体 `task_success_rate` 不低于 baseline 1 个百分点以上。
-- context-stress 子集成功率至少提升 8 个百分点。
-- `pass^3` 至少提升 5 个百分点，证明多次运行稳定性而非偶然成功。
+- default-on 要求总体 paired Reward 的 95% CI 下界不低于 `-0.01`，并且同时满足 Quality benefit 或
+  Efficiency benefit 中至少一条正向收益路径；“无显著退化”本身不能单独准出。
+- 若声明 Context 带来显著质量提升，而不是效率提升，则 context-stress 子集成功率至少提升 8 个百分点，
+  `pass^3` 至少提升 5 个百分点，证明多次运行稳定性而非偶然成功。
 - scoped instruction 和 prompt injection 专项不得回退。
 
 ### Efficiency Gates
 
-- median task-level `input_tokens` 至少下降 15%。
-- median `tool_schema_tokens` 至少下降 30%。
-- 在 provider 有真实 billing usage 时，median `cost_per_successful_task` 至少下降 10%；否则使用冻结版本
-  的 normalized cost，并同时报告各 token 类别，不能混用不同成本模型。
-- Tool-heavy 子集的 median `inline_output_tokens` 至少下降 30%，且 artifact 取回后的任务成功率不回退。
-- p95 latency 不劣化超过 5%，且 time-to-first-token 不显著回退。
-- 相同 session 的 `stable_prefix_reuse_rate` 至少提升 20 个百分点。
+- Efficiency benefit 路径要求 reward 不回退超过 1 个百分点，并且真实 `cost_per_successful_task`、provider
+  billing、冻结版本 normalized cost 或 provider journal 中权威 `provider_call_count` 至少一项的 paired CI
+  上界严格小于 0；同时报告所有 token 类别，不能混用不同成本模型。`provider_call_count` 是实际 provider
+  工作量而非价格代理，只能证明执行效率，不能声称货币成本下降。
+- 若声明具体机制收益，则使用对应的诊断目标：context/budget 声明需报告 task-level input 与
+  context-token-turns；progressive Tool 声明需报告 tool schema tokens；offload 声明需报告 inline/offloaded/
+  retrieved bytes 和成功消费率；cache 声明需报告 stable-prefix reuse 与真实 cache usage。
+- Quality benefit 路径（reward CI 下界严格大于 0）不要求原始 token 或 latency 同时下降。更长且最终成功、
+  或通过 checkpoint/rollback 避免不可恢复状态的运行可以合理增加成本，但必须完整披露绝对成本、
+  cost-per-success、wall time、额外调用分解和 typed progress/recovery evidence，并仍受 context limit、deadline、
+  安全与其他 Hard Gates 约束。
+- typed progress、运行更久或 trajectory 更完整本身不能替代独立 verifier reward；它们只用于区分有效持续
+  执行与 duplicate injection、相同 operation/result 重复、无 artifact/completion 进展的调用放大。
 
 所有提升结论必须同时给出样本量和 confidence interval。若质量无显著变化但成本显著下降，可以判定
-效率收益；若成本下降但触发任一 Hard Gate 或质量回退，则不得判定成功。
+效率收益；若质量显著提升但成本增加，可以判定质量收益而不能宣称效率收益；若触发任一 Hard Gate，
+则两条路径均不得判定成功。
 
 ## Compatibility
 
@@ -1797,6 +1903,76 @@ snapshot checksum 和 Docker-owned receipt 的真实分块读取；mock 单测�
   环境只禁用相关 capability，并保留 terminal/filesystem/context 等核心能力。
 - 外部 adapter 尚未消费 `RunFailureRecord` 时仍可保留原始 stderr artifact，但必须传播 CLI exit status；
   不允许为兼容旧 ATIF schema 而合成 completed assistant message。
+
+## 2026-09-08 Frozen Adaptive Evidence Checkpoint
+
+本轮在不修改 task instruction、environment、verifier 断言或增加 task-specific Tool 的前提下，完成了两类
+workload、6 组同模型/同 seed paired rollout：Terminal Bench `db-wal-recovery` 以及 SkillsBench PDF/Excel。
+两组 baseline/candidate Reward 均为 `3/3 -> 3/3`，12 个有效 rollout 均具有 finalized Raw trajectory、
+checksum-valid capture 和 `request_trace_match_rate=1.0`。因此已经证明最新 adaptive 修复消除了此前的明显质量
+退化，但尚未证明 Reward 的统计增益。
+
+`db-wal-recovery` 中 candidate 的平均 provider call 从 `21.67 -> 11.67`，provider request bytes 从
+`1,211,888 -> 651,190`，平均 wall time 从 `377.51s -> 317.12s`；三个 seed 共执行 6 次由 tracked-artifact
+变化触发的通用 sandbox rollback。SkillsBench candidate 的平均 provider call 从 `22.67 -> 15.00`，request
+bytes 中位数从 `1,831,037 -> 543,951`。这些结果为“Amni WorkingState + causal Tool group + checkpoint/rollback
+能够保留继续探索所需状态并减少无效调用”提供了跨 workload 机制证据；由于部分 GLM 调用缺失或冲突的 cache
+usage，仍不得把 prompt/request 代理指标伪装成完整 billed/normalized-cost 证明。
+
+同日的 `regex-log` 重跑再次遇到 GLM transport outage：一次 6/6 provider attempts 失败且 0 Tool action，另一次
+被中断。它们必须是 `reward=null` 的 infrastructure-invalid evidence，不能记为 benchmark 0。runner 因此增加
+基于 append-only call terminal status 的 provider-exhaustion 判定与 batch circuit-breaker；该逻辑不读取 task 文本、
+benchmark id 或异常消息中的题目语义，并保留完整/partial Raw trajectory 供审计。
+
+机器证据位于 `artifacts/context-management/default-on-evidence-20260908/`。当前 default-on 仍为 `NOT_READY`：
+有效 pair 为 `6/10`，combined Reward delta 为 0，versioned normalized cost 尚不完整，且 production canary、
+真实 artifact retrieval opportunity 和外部可执行 rollback bundle 仍未提供。`openai:amni:async` required
+capability 已能从 6 个 candidate rollout 的成功 provider-bound receipts 重新校验，包含失败后成功的重试不会再把
+整条 capability 错判为 unavailable；所有非终态调用仍 fail closed。该 checkpoint 允许继续 shadow/canary，但不能
+降低 Milestone 9/10 的准出门槛，也不能把后续 GLM transport outage 解释为 adaptive 机制失效。
+
+## 2026-09-09 Adaptive Default-on Release Evidence
+
+本节延续 2026-09-08 的确定性机制证据，而不是重新从零检验 Adaptive Context 是否有意义。前一阶段已经证明
+checkpoint/rollback、WorkingState、Tool output offload、artifact retrieval 和 append-only trajectory capture
+能够按契约工作；本阶段仅补齐影响准出的运行时审计、跨 workload 统计和 rollback/canary binding。
+
+同一 `db-wal-recovery` 冻结样本新增 3-seed 当前代码复验：baseline Reward 为 `2/3`，candidate 为 `3/3`，
+其中一组 `0/1 -> 1/1`；candidate 平均模型轮次为 `11`，baseline 为 `61`，平均 wall time为 `182.7s` 与
+`1003.9s`。三个 candidate 均由通用 tracked-artifact checkpoint/rollback 保护破坏性操作，未读取题目 id、
+任务文本或 verifier 语义。随后增加一个预声明 seed，双方均为 Reward 1，作为正向稳定性样本而不是刷题样本。
+
+最终 release portfolio 包含 Terminal Bench、SkillsBench 和本地 Tool Research 三类 workload，共 12 个完整
+baseline/candidate pair。逐调用 provider snapshot、request trace、finalized Raw trajectory 和 checksum capture
+均为 `100%`；8 次真实 artifact retrieval opportunity 全部具有 checksum-bound consumption receipt。分层 paired
+bootstrap 固定每个 workload 的观察数量，避免普通 bootstrap 抽样时把整个 workload 随机遗漏：Reward delta
+95% CI 为 `[0, 0.25]`，不宣称严格 Reward 增益；权威 provider call delta 95% CI 为
+`[-28.33, -4.25]`，因此证明“质量不退化且 provider 工作量显著下降”的执行效率收益。normalized-cost 的
+保守区间仍跨 0，故不得声称精确货币成本下降。
+
+报告器同时补齐三项通用审计能力：
+
+- provider retry 在下一次实际模型尝试前记录 `framework_retry`；旧 receipt 仅在相邻调用拥有相同
+  `call_id/step_id/task_id/model/provider`、attempt 严格递增且前一次为 provider-invoked failure 时允许离线重建，
+  其他 `unavailable` 一律 fail closed；
+- provider 不返回一致 cache usage 时生成带 policy/source hash 的 normalized-cost lower/upper bound receipt，
+  不把未知 cache 或失败调用伪造成零成本；
+- evidence reader 支持 `.json.xz` 的无损透明读取，使已完成 rollout 可压缩归档而不破坏 TaskResponse 中的
+  trajectory build result、Context trace 或准出重放。
+
+最终机器判定见
+`artifacts/context-management/default-on-evidence-20260908/combined-adaptive-default-on-v13-release.json`：
+`default_on_readiness.status=ready`、`gate_failures=[]`。该状态绑定 `openai:amni:async` capability matrix、
+状态为 `continue` 的 canary health decision，以及回退到 shadow 配置的 rollback bundle；三者的 fingerprint
+必须一致，任何 provider parity、trajectory fidelity、security、quality 或 canary 健康回退都会重新 fail closed。
+该准出只覆盖已声明并验证的 capability，不把未验证的 Azure/custom provider 或外部 pipeline 自动视为 ready。
+准出后 `ContextCompilerRuntimeConfig` 默认 profile 切换为 `mode=enforce`、`checkpoint_policy=adaptive`、nested
+instructions、progressive Skills/Tools、artifact offload、destructive sandbox checkpoint 与 elastic step budget；
+`BaseAgent` 会从该 profile 自动构造 elastic step budget policy，显式 Agent step-budget 参数仍具有更高优先级；
+`mode=off|observe|shadow` 不引入默认执行时行为，继续作为稳定观测或回滚路径。默认 progressive Tool 配置保留
+完整的 permission-filtered catalog，不以 benchmark 工具白名单改变生产权限面。`destructive_sandbox_checkpoint=true`
+表达事务能力意图，只有 sandbox adapter 提供明确且有界的 tracked task path 时才实际启用，不能把宿主根目录或
+未界定 workdir 自动纳入 checkpoint。
 
 ## Risks and Mitigations
 
@@ -1893,9 +2069,9 @@ TC-PARITY-013 阻止入口语义分叉。
 7. enforce 模式下 required items 超预算时，是直接失败还是允许自动降低 reserved output？
 8. 哪些 provider 参数参与 `CacheIdentity`，adapter 如何报告 TTL evidence 和 usage 可信度？
 9. task-sticky Tool/Skill 集合的默认粒度是 task epoch、session 还是 provider-specific cache segment？
-10. `checkpoint/compact` 的默认值保持 `explicit`；paired candidate 可选择 `budget_pressure` 或 `adaptive`。adaptive
-    使用冻结阈值的预算压力、重复 operation/result、低信息增益和 artifact/Completion evidence goal-progress window，
-    不使用 benchmark/task 文本分类；阈值的 default-on 调整仍须由跨 workload paired evidence 决定。
+10. `checkpoint/compact` 已根据 2026-09-09 release evidence 冻结为默认 `adaptive`。其信号只包含预算压力、
+    重复 operation/result、低信息增益和 artifact/Completion evidence goal-progress window，不使用 benchmark/task
+    文本分类；调用方可显式选择 `explicit` 或 `budget_pressure`，后续阈值调整仍须由跨 workload paired evidence 决定。
 11. Tool adapter 如何声明 quiet/structured 输出能力，无法控制的第三方 Tool 使用哪种 fallback？
 12. provider 缺少 billing/reasoning/cache usage 时，normalized cost 的权重、版本和跨 provider 可比性
     如何治理？

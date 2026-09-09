@@ -207,6 +207,167 @@ def test_forked_context_streams_replay_independently_and_merge_by_identity(
     }
 
 
+def test_transport_copy_forks_exact_parent_tip_without_repeating_large_history(
+    tmp_path, monkeypatch
+):
+    path = tmp_path / "llm_calls.journal.jsonl"
+    monkeypatch.setenv(JOURNAL_PATH_ENV, str(path))
+    parent = Context(task_id="task-bounded-fork")
+    parent.append_llm_call(
+        {
+            "request_id": "parent-request",
+            "status": "in_progress",
+            "request": {"messages": [{"role": "user", "content": "x" * 100_000}]},
+        }
+    )
+    child = parent.deep_copy()
+
+    # Advance the parent after copying.  The child must inherit the immutable
+    # tip captured at copy time rather than the parent's later replacement.
+    parent.replace_llm_call(
+        0,
+        {
+            "request_id": "parent-request",
+            "status": "success",
+            "request": {"messages": [{"role": "user", "content": "x" * 100_000}]},
+        },
+    )
+    child.append_llm_call(
+        {"request_id": "child-request", "status": "in_progress"}
+    )
+
+    records = [json.loads(line) for line in path.read_text().splitlines()]
+    child_records = [
+        record
+        for record in records
+        if record["stream_id"] == child._llm_call_journal_stream_id
+    ]
+    assert [record["operation"] for record in child_records] == ["fork", "append"]
+    assert "llm_calls" not in child_records[0]
+    assert path.stat().st_size < 120_000
+
+    recovery = read_llm_call_journal(path)
+    by_stream = {stream.stream_id: stream for stream in recovery.streams}
+    child_calls = by_stream[child._llm_call_journal_stream_id].llm_calls
+    assert child_calls[0]["status"] == "in_progress"
+    assert child_calls[1]["request_id"] == "child-request"
+    merged = {call["request_id"]: call for call in recovery.merged_llm_calls}
+    assert merged["parent-request"]["status"] == "success"
+    assert merged["child-request"]["status"] == "in_progress"
+
+
+def test_uninitialized_transport_root_resolves_shared_task_tip(tmp_path, monkeypatch):
+    path = tmp_path / "llm_calls.journal.jsonl"
+    monkeypatch.setenv(JOURNAL_PATH_ENV, str(path))
+    writer = Context(task_id="task-transport-root")
+    writer.append_llm_call(
+        {
+            "request_id": "request-1",
+            "status": "success",
+            "request": {"messages": [{"role": "user", "content": "x" * 100_000}]},
+        }
+    )
+
+    # Event transport can retain the local call/version state and shared
+    # registries while not carrying ownership of the writer stream itself.
+    transport_root = writer.deep_copy()
+    transport_root._llm_call_journal_initialized = False
+    transport_root._llm_call_journal_parent_stream_id = None
+    transport_root._llm_call_journal_parent_record_checksum = None
+    transport_root._llm_call_journal_previous_checksum = None
+    transport_root._llm_call_journal_next_sequence = 0
+    transport_root._llm_call_journal_stream_id = "transport-root"
+    child = transport_root.deep_copy()
+    child.append_llm_call({"request_id": "request-2", "status": "in_progress"})
+
+    records = [json.loads(line) for line in path.read_text().splitlines()]
+    child_records = [
+        record
+        for record in records
+        if record["stream_id"] == child._llm_call_journal_stream_id
+    ]
+    assert [record["operation"] for record in child_records] == ["fork", "append"]
+    assert sum(record["operation"] == "snapshot" for record in records) == 1
+    recovery = read_llm_call_journal(path)
+    assert [call["request_id"] for call in recovery.merged_llm_calls] == [
+        "request-1",
+        "request-2",
+    ]
+
+
+def test_invalid_fork_reference_isolated_from_valid_parent_stream(
+    tmp_path, monkeypatch
+):
+    path = tmp_path / "llm_calls.journal.jsonl"
+    monkeypatch.setenv(JOURNAL_PATH_ENV, str(path))
+    parent = Context(task_id="task-invalid-fork")
+    parent.append_llm_call({"request_id": "parent", "status": "success"})
+    child = parent.deep_copy()
+    child._llm_call_journal_parent_record_checksum = "sha256:" + "0" * 64
+    child.append_llm_call({"request_id": "child", "status": "in_progress"})
+
+    recovery = read_llm_call_journal(path)
+
+    by_stream = {stream.stream_id: stream for stream in recovery.streams}
+    assert by_stream[parent._llm_call_journal_stream_id].invalid_record_count == 0
+    assert parent._llm_call_journal_stream_id in by_stream
+    # The bad fork is rejected; the following delta in its now-broken stream
+    # cannot silently become recovery truth.
+    assert child._llm_call_journal_stream_id not in by_stream
+    assert recovery.invalid_record_count == 2
+
+
+def test_forked_context_calls_have_an_in_process_task_fan_in_high_watermark():
+    parent = Context(task_id="task-fan-in")
+    parent.append_llm_call({"call_id": "parent", "status": "in_progress"})
+    child = parent.deep_copy()
+    child.append_llm_call({"call_id": "child", "status": "in_progress"})
+    parent.replace_llm_call(
+        0,
+        {"call_id": "parent", "request_id": "request-1", "status": "success"},
+    )
+    child.replace_llm_call(
+        1,
+        {"call_id": "child", "request_id": "request-2", "status": "failed"},
+    )
+
+    expected = [
+        {"call_id": "parent", "request_id": "request-1", "status": "success"},
+        {"call_id": "child", "request_id": "request-2", "status": "failed"},
+    ]
+    assert parent.get_reconciled_llm_calls() == expected
+    assert child.get_reconciled_llm_calls() == expected
+
+
+def test_transport_copy_structurally_shares_immutable_call_payloads():
+    parent = Context(task_id="task-structural-sharing")
+    large_messages = [{"role": "user", "content": "x" * 1_000_000}]
+    parent.append_llm_call(
+        {
+            "request_id": "request-1",
+            "status": "in_progress",
+            "request": {"messages": large_messages},
+        }
+    )
+    parent.context_info["mutable_runtime_state"] = {"items": [1]}
+
+    child = parent.deep_copy()
+
+    parent_call = parent.get_llm_calls()[0]
+    child_call = child.get_llm_calls()[0]
+    assert child.get_llm_calls() is not parent.get_llm_calls()
+    assert child_call is not parent_call
+    assert child_call["request"] is parent_call["request"]
+    child.replace_llm_call(
+        0,
+        {**child_call, "status": "success"},
+        event_type="child_completed",
+    )
+    assert parent.get_llm_calls()[0]["status"] == "in_progress"
+    child.context_info["mutable_runtime_state"]["items"].append(2)
+    assert parent.context_info["mutable_runtime_state"] == {"items": [1]}
+
+
 def test_late_child_snapshot_does_not_overwrite_newer_parent_call(
     tmp_path, monkeypatch
 ):
@@ -272,6 +433,9 @@ def test_provider_retries_with_distinct_request_ids_are_not_collapsed(
         "request-1",
         "request-2",
     ]
+    assert [
+        call["request_id"] for call in context.get_reconciled_llm_calls()
+    ] == ["request-1", "request-2"]
 
 
 def test_corruption_in_one_context_stream_does_not_poison_sibling_stream(

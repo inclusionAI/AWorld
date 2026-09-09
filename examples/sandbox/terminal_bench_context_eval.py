@@ -30,15 +30,25 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+try:
+    import psutil
+except ImportError:  # pragma: no cover - minimal installations use fail-closed fallback
+    psutil = None
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from aworld.evaluations.normalized_cost import NormalizedCostPolicy  # noqa: E402
+from aworld.evaluations.context_benefit import (  # noqa: E402
+    ContextAblationComponent,
+    ContextAblationContrast,
+    ContextAblationPlan,
+    ContextVariant,
+)
 from aworld.core.llm_call_journal import read_llm_call_journal  # noqa: E402
 from aworld.core.tool_action_journal import read_tool_action_journal  # noqa: E402
 from examples.sandbox.docker_terminal_bench import (  # noqa: E402
-    PYTHON_FUNCTION_VERIFIER_IMAGE,
     load_external_mcp_config,
     run_python_function_verifier_sidecar,
 )
@@ -108,6 +118,61 @@ def require_success(result: subprocess.CompletedProcess, operation: str) -> None
         raise RuntimeError(f"{operation} failed ({result.returncode}): {detail}")
 
 
+def wait_for_local_capacity(
+    *,
+    docker: str,
+    minimum_available_memory_mb: int,
+    timeout_sec: float,
+    poll_interval_sec: float = 15.0,
+) -> dict[str, object]:
+    """Wait until one serial rollout can start without pressuring the host.
+
+    This is deliberately host-generic and task-agnostic.  It prevents this
+    harness from stacking AWorld evaluation containers and records the memory
+    sample that authorized the next rollout.
+    """
+    started = time.monotonic()
+    latest_available_mb = None
+    latest_container_count = None
+    while True:
+        if psutil is not None:
+            latest_available_mb = int(psutil.virtual_memory().available // (1024 * 1024))
+        running = run_command(
+            [
+                docker,
+                "ps",
+                "--format",
+                "{{.Names}}",
+            ],
+            capture_output=True,
+        )
+        require_success(running, "inspect active AWorld evaluation containers")
+        latest_container_count = sum(
+            line.strip().startswith(("aworld-eval-", "aworld-tool-eval-"))
+            for line in (running.stdout or "").splitlines()
+        )
+        memory_ready = (
+            latest_available_mb is not None
+            and latest_available_mb >= minimum_available_memory_mb
+        )
+        if memory_ready and latest_container_count == 0:
+            return {
+                "status": "available",
+                "available_memory_mb": latest_available_mb,
+                "minimum_available_memory_mb": minimum_available_memory_mb,
+                "active_aworld_eval_containers": 0,
+                "wait_seconds": round(time.monotonic() - started, 3),
+            }
+        if time.monotonic() - started >= timeout_sec:
+            raise RuntimeError(
+                "local_resource_capacity_unavailable: "
+                f"available_memory_mb={latest_available_mb}, "
+                f"minimum_available_memory_mb={minimum_available_memory_mb}, "
+                f"active_aworld_eval_containers={latest_container_count}"
+            )
+        time.sleep(min(poll_interval_sec, max(0.1, timeout_sec)))
+
+
 def timeout_output(exc: subprocess.TimeoutExpired, stream: str) -> str:
     value = getattr(exc, stream, None) or ""
     if isinstance(value, bytes):
@@ -144,6 +209,20 @@ def parse_model_preflight(*streams: str) -> dict | None:
             ):
                 return value
     return None
+
+
+def model_preflight_allows_benchmark(receipt: dict) -> bool:
+    """Require both transport reachability and a complete semantic response."""
+    status = receipt.get("status")
+    if status == "skipped":
+        return True
+    return bool(
+        status == "passed"
+        and receipt.get("provider_response_observed") is True
+        and receipt.get("semantic_probe_complete") is True
+        and receipt.get("tool_call_probe_complete") is True
+        and receipt.get("response_quality") == "complete"
+    )
 
 
 def call_snapshot_digest(calls: list[dict]) -> str:
@@ -479,6 +558,27 @@ def rewrite_image_registry(
     return f"{matches[0]}/{remainder}", "cli_registry_rewrite"
 
 
+def outcome_blind_archive_sample(
+    dataset: Path, *, seed: int, sample_size: int
+) -> list[str]:
+    """Sample task identities without reading prompts, answers, or verifier data."""
+    if isinstance(seed, bool) or not isinstance(seed, int):
+        raise ValueError("selection seed must be an integer")
+    if isinstance(sample_size, bool) or not isinstance(sample_size, int) or sample_size < 1:
+        raise ValueError("sample size must be positive")
+    with zipfile.ZipFile(dataset) as archive:
+        task_ids = sorted(
+            name.removeprefix("tasks/").removesuffix(".tar.gz")
+            for name in archive.namelist()
+            if name.startswith("tasks/")
+            and name.endswith(".tar.gz")
+            and "/" not in name.removeprefix("tasks/").removesuffix(".tar.gz")
+        )
+    if len(task_ids) < sample_size or len(set(task_ids)) != len(task_ids):
+        raise ValueError("dataset does not contain enough unique task identities")
+    return random.Random(seed).sample(task_ids, sample_size)
+
+
 def load_variant(path: Path | None) -> tuple[str, Path | None, dict]:
     if path is None:
         payload = {
@@ -497,11 +597,81 @@ def load_variant(path: Path | None) -> tuple[str, Path | None, dict]:
     return name, path.resolve(), payload
 
 
+def load_ablation_plan(
+    path: Path,
+) -> tuple[list[tuple[str, Path | None, dict]], dict[str, Any]]:
+    """Load and causally validate a pre-frozen multi-arm Context experiment."""
+    resolved = path.resolve()
+    payload = json.loads(resolved.read_text(encoding="utf-8"))
+    if not isinstance(payload, dict) or set(payload) != {
+        "schema_version", "name", "variants", "contrasts"
+    }:
+        raise ValueError("ablation plan has unexpected or missing fields")
+    if payload.get("schema_version") != "aworld.context-ablation-suite/v1":
+        raise ValueError("unsupported ablation plan schema")
+    variant_paths = payload.get("variants")
+    if not isinstance(variant_paths, list) or len(variant_paths) < 2 or not all(
+        isinstance(value, str) and value.strip() for value in variant_paths
+    ):
+        raise ValueError("ablation plan requires at least two variant paths")
+    variants = [
+        load_variant((resolved.parent / value).resolve()) for value in variant_paths
+    ]
+    if len({name for name, _, _ in variants}) != len(variants):
+        raise ValueError("ablation variant names must be unique")
+    contracts = {
+        name: ContextVariant.build(
+            name,
+            {
+                key: variant_payload.get(key, {})
+                for key in (
+                    "agent_memory_config",
+                    "context_compiler",
+                    "docker_output_policy",
+                )
+            },
+        )
+        for name, _, variant_payload in variants
+    }
+    contrast_payloads = payload.get("contrasts")
+    if not isinstance(contrast_payloads, list) or not contrast_payloads:
+        raise ValueError("ablation plan requires contrasts")
+    contrasts = []
+    for contrast in contrast_payloads:
+        if not isinstance(contrast, dict) or set(contrast) != {
+            "baseline_variant", "candidate_variant", "component"
+        }:
+            raise ValueError("ablation contrast has unexpected or missing fields")
+        baseline = contracts.get(contrast["baseline_variant"])
+        candidate = contracts.get(contrast["candidate_variant"])
+        if baseline is None or candidate is None:
+            raise ValueError("ablation contrast references an undeclared variant")
+        contrasts.append(
+            ContextAblationContrast.build(
+                baseline=baseline,
+                candidate=candidate,
+                component=ContextAblationComponent(contrast["component"]),
+            )
+        )
+    plan = ContextAblationPlan.build(
+        name=str(payload.get("name") or ""),
+        variants=contracts.values(),
+        contrasts=contrasts,
+    )
+    return variants, plan.to_dict()
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("--dataset", required=True, type=Path)
     parser.add_argument("--task", required=True, action="append", dest="tasks")
-    parser.add_argument("--variant-config", type=Path, action="append", dest="variants")
+    variants = parser.add_mutually_exclusive_group()
+    variants.add_argument("--variant-config", type=Path, action="append", dest="variants")
+    variants.add_argument(
+        "--ablation-plan",
+        type=Path,
+        help="Pre-frozen multi-arm Context component ablation plan.",
+    )
     parser.add_argument("--repeat", type=int, default=1)
     parser.add_argument("--seed", type=int, default=20260831)
     parser.add_argument(
@@ -511,12 +681,36 @@ def parse_args() -> argparse.Namespace:
         help="Fail-fast provider connectivity timeout before Docker image work starts.",
     )
     parser.add_argument(
+        "--minimum-host-available-memory-mb",
+        type=int,
+        default=2048,
+        help="Wait before each rollout until at least this much host memory is available.",
+    )
+    parser.add_argument(
+        "--resource-wait-timeout-sec",
+        type=float,
+        default=900,
+        help="Maximum time to wait for host memory and the single-container slot.",
+    )
+    parser.add_argument(
         "--skip-model-preflight",
         action="store_true",
         help="Explicit diagnostic-only escape hatch; makes quality claims ineligible.",
     )
     parser.add_argument("--output-dir", required=True, type=Path)
     parser.add_argument("--max-steps", type=int, default=10)
+    parser.add_argument(
+        "--llm-max-attempts",
+        type=int,
+        default=3,
+        help="Invariant per-call transport attempt budget for every paired variant.",
+    )
+    parser.add_argument(
+        "--llm-retry-delay-sec",
+        type=float,
+        default=10.0,
+        help="Invariant base delay for exponential LLM transport retry backoff.",
+    )
     parser.add_argument(
         "--use-declared-image",
         action="store_true",
@@ -768,6 +962,10 @@ def recover_inflight_capture(run_dir: Path) -> dict:
         call for call in attempted if call.get("status") == "in_progress"
     ]
     successful_calls = [call for call in calls if call.get("status") == "success"]
+    failed_calls = [call for call in calls if call.get("status") == "failed"]
+    evidence["successful_provider_call_count"] = len(successful_calls)
+    evidence["failed_provider_call_count"] = len(failed_calls)
+    evidence["active_provider_call_count"] = len(active_attempts)
     if final_calls_path.exists():
         try:
             final_calls = json.loads(final_calls_path.read_text(encoding="utf-8"))
@@ -901,6 +1099,27 @@ def finalized_capture_allows_independent_verifier(recovery: dict) -> bool:
     )
 
 
+def provider_attempts_exhausted(recovery: dict) -> bool:
+    """Return true only when every observed provider attempt terminally failed.
+
+    This is deliberately derived from append-only provider-bound evidence, not
+    task text, a benchmark id, or an exception-message substring.  A finalized
+    Raw trajectory is still retained, but it cannot turn an unavailable model
+    transport into a task Reward observation.
+    """
+    attempted = recovery.get("attempted_provider_call_count")
+    successful = recovery.get("successful_provider_call_count")
+    failed = recovery.get("failed_provider_call_count")
+    active = recovery.get("active_provider_call_count")
+    return bool(
+        isinstance(attempted, int)
+        and attempted > 0
+        and successful == 0
+        and failed == attempted
+        and active == 0
+    )
+
+
 def collect_context_metrics(run_dir: Path) -> dict:
     parse_failures: list[str] = []
 
@@ -936,6 +1155,19 @@ def collect_context_metrics(run_dir: Path) -> dict:
         continuity.get("journal_reconciliation")
         if isinstance(continuity, dict)
         else {}
+    )
+    projection_continuity = (
+        capture.get("finalized_projection_reconciliation")
+        if isinstance(capture, dict)
+        else {}
+    )
+    projection_continuity_present = isinstance(projection_continuity, dict) and bool(
+        projection_continuity
+    )
+    projection_continuity_match = bool(
+        isinstance(projection_continuity, dict)
+        and projection_continuity.get("status") == "available"
+        and projection_continuity.get("snapshots_match") is True
     )
 
     def provider_metrics(calls: object) -> dict[str, Any]:
@@ -1085,6 +1317,21 @@ def collect_context_metrics(run_dir: Path) -> dict:
             and capture.get("provider_capture_gate_passed") is True
             and isinstance(journal_continuity, dict)
             and journal_continuity.get("snapshots_match") is True
+            and (
+                projection_continuity_match
+                if projection_continuity_present
+                else True
+            )
+        ),
+        "finalized_projection_reconciliation_available": (
+            projection_continuity_match
+        ),
+        "finalized_projection_call_count_delta": (
+            projection_continuity.get("call_count_delta")
+            if isinstance(projection_continuity, dict)
+            and isinstance(projection_continuity.get("call_count_delta"), int)
+            and not isinstance(projection_continuity.get("call_count_delta"), bool)
+            else None
         ),
         "request_trace_match_available": bool(
             isinstance(provider_calls, list)
@@ -1265,6 +1512,10 @@ def execute_job(
     max_steps: int,
     keep_container: bool,
     verifier_mode: str,
+    # Keep transport retry policy variant-invariant while preserving compatibility
+    # for callers that construct a single evaluation job directly.
+    llm_max_attempts: int = 3,
+    llm_retry_delay_sec: float = 10.0,
     agent_timeout_sec_override: float | None = None,
     verifier_timeout_sec_override: float | None = None,
     external_mcp_config_path: Path | None = None,
@@ -1345,6 +1596,10 @@ def execute_job(
             str(run_dir),
             "--max-steps",
             str(max_steps),
+            "--llm-max-attempts",
+            str(llm_max_attempts),
+            "--llm-retry-delay-sec",
+            str(llm_retry_delay_sec),
         ]
         if model_seed is not None:
             agent_command.extend(["--model-seed", str(model_seed)])
@@ -1385,6 +1640,21 @@ def execute_job(
             else repo_root + os.pathsep + existing_pythonpath
         )
         agent_environment.update(verifier_environment)
+        agent_started_at = time.time()
+        agent_finished_at: float | None = None
+
+        def bind_agent_execution(
+            payload: dict[str, Any], *, finished_at: float | None = None
+        ) -> dict[str, Any]:
+            ended = time.time() if finished_at is None else finished_at
+            payload["agent_execution"] = {
+                "started_at_epoch": agent_started_at,
+                "finished_at_epoch": ended,
+                "wall_time_seconds": max(0.0, ended - agent_started_at),
+                "configured_max_steps": max_steps,
+            }
+            return payload
+
         try:
             agent_result = run_command(
                 agent_command,
@@ -1392,11 +1662,12 @@ def execute_job(
                 timeout=agent_timeout,
                 env=agent_environment,
             )
+            agent_finished_at = time.time()
         except KeyboardInterrupt:
             recovery = recover_inflight_capture(run_dir)
             write_json(
                 run_dir / "result.json",
-                {
+                bind_agent_execution({
                     "schema_version": "aworld.context-eval-result/v1",
                     "task": fixture.name,
                     "variant": variant_name,
@@ -1415,7 +1686,7 @@ def execute_job(
                     "task_archive_sha256": fixture.archive_sha256,
                     "verifier_environment": verifier_environment_evidence,
                     "context_metrics": collect_context_metrics(run_dir),
-                },
+                }),
             )
             raise
         except subprocess.TimeoutExpired as exc:
@@ -1426,7 +1697,7 @@ def execute_job(
                 timeout_output(exc, "stderr"), encoding="utf-8"
             )
             recovery = recover_inflight_capture(run_dir)
-            result = {
+            result = bind_agent_execution({
                 "schema_version": "aworld.context-eval-result/v1",
                 "task": fixture.name,
                 "variant": variant_name,
@@ -1446,7 +1717,7 @@ def execute_job(
                 "task_archive_sha256": fixture.archive_sha256,
                 "verifier_environment": verifier_environment_evidence,
                 "context_metrics": collect_context_metrics(run_dir),
-            }
+            })
             write_json(run_dir / "result.json", result)
             return result
         (run_dir / "agent.stdout.log").write_text(
@@ -1467,8 +1738,32 @@ def execute_job(
                 "reason_code": "agent_nonzero_exit",
                 "aworld_failure": aworld_failure,
             }
+            if provider_attempts_exhausted(recovery):
+                result = bind_agent_execution({
+                    "schema_version": "aworld.context-eval-result/v1",
+                    "task": fixture.name,
+                    "variant": variant_name,
+                    "repetition": repetition,
+                    "model_seed": model_seed,
+                    "agent_exit_code": agent_result.returncode,
+                    "verifier_exit_code": None,
+                    "verifier_mode": verifier_mode,
+                    "reward": None,
+                    "failure": {
+                        "stage": "provider",
+                        "reason_code": "provider_attempts_exhausted",
+                    },
+                    "agent_failure": agent_failure,
+                    "capture_recovery": recovery,
+                    "container_image_id": container_image_id(docker, container),
+                    "task_archive_sha256": fixture.archive_sha256,
+                    "verifier_environment": verifier_environment_evidence,
+                    "context_metrics": collect_context_metrics(run_dir),
+                }, finished_at=agent_finished_at)
+                write_json(run_dir / "result.json", result)
+                return result
             if not finalized_capture_allows_independent_verifier(recovery):
-                result = {
+                result = bind_agent_execution({
                     "schema_version": "aworld.context-eval-result/v1",
                     "task": fixture.name,
                     "variant": variant_name,
@@ -1484,7 +1779,7 @@ def execute_job(
                     "task_archive_sha256": fixture.archive_sha256,
                     "verifier_environment": verifier_environment_evidence,
                     "context_metrics": collect_context_metrics(run_dir),
-                }
+                }, finished_at=agent_finished_at)
                 write_json(run_dir / "result.json", result)
                 return result
 
@@ -1518,6 +1813,7 @@ def execute_job(
                     test_path=test_path,
                     timeout=verifier_timeout,
                     env_names=tuple(sorted(verifier_environment)),
+                    artifact_paths=tuple(declared_artifacts),
                     scratch_root=verifier_dir,
                 )
             else:
@@ -1534,7 +1830,7 @@ def execute_job(
             (verifier_dir / "stderr.log").write_text(
                 timeout_output(exc, "stderr"), encoding="utf-8"
             )
-            result = {
+            result = bind_agent_execution({
                 "schema_version": "aworld.context-eval-result/v1",
                 "task": fixture.name,
                 "variant": variant_name,
@@ -1555,7 +1851,7 @@ def execute_job(
                 "verifier_environment": verifier_environment_evidence,
                 "capture_recovery": recovery,
                 "context_metrics": collect_context_metrics(run_dir),
-            }
+            }, finished_at=agent_finished_at)
             write_json(run_dir / "result.json", result)
             return result
         (verifier_dir / "stdout.log").write_text(
@@ -1570,12 +1866,17 @@ def execute_job(
                 "1\n" if verifier_result.returncode == 0 else "0\n",
                 encoding="utf-8",
             )
-        reward = (
+        independent_verifier_reward = (
             reward_path.read_text(encoding="utf-8").strip()
             if reward_path.exists()
             else None
         )
-        result = {
+        reward = (
+            independent_verifier_reward
+            if agent_result.returncode == 0
+            else None
+        )
+        result = bind_agent_execution({
             "schema_version": "aworld.context-eval-result/v1",
             "task": fixture.name,
             "variant": variant_name,
@@ -1585,13 +1886,19 @@ def execute_job(
             "verifier_exit_code": verifier_result.returncode,
             "verifier_mode": verifier_mode,
             "reward": reward,
+            "diagnostic_verifier_reward": (
+                independent_verifier_reward
+                if agent_result.returncode != 0
+                else None
+            ),
+            "failure": agent_failure,
             "agent_failure": agent_failure,
             "container_image_id": container_image_id(docker, container),
             "task_archive_sha256": fixture.archive_sha256,
             "verifier_environment": verifier_environment_evidence,
             "capture_recovery": recovery,
             "context_metrics": collect_context_metrics(run_dir),
-        }
+        }, finished_at=agent_finished_at)
         write_json(run_dir / "result.json", result)
         return result
     finally:
@@ -1603,6 +1910,14 @@ def main() -> None:
     args = parse_args()
     if args.repeat < 1:
         raise ValueError("--repeat must be positive")
+    if args.llm_max_attempts < 1:
+        raise ValueError("--llm-max-attempts must be positive")
+    if args.llm_retry_delay_sec < 0:
+        raise ValueError("--llm-retry-delay-sec must be non-negative")
+    if args.minimum_host_available_memory_mb < 1:
+        raise ValueError("--minimum-host-available-memory-mb must be positive")
+    if not math.isfinite(args.resource_wait_timeout_sec) or args.resource_wait_timeout_sec <= 0:
+        raise ValueError("--resource-wait-timeout-sec must be positive")
     if args.build_timeout_sec is not None and (
         not math.isfinite(args.build_timeout_sec) or args.build_timeout_sec <= 0
     ):
@@ -1621,7 +1936,11 @@ def main() -> None:
     if not docker and not args.dry_run:
         raise RuntimeError("Docker is not installed or not on PATH")
 
-    variants = [load_variant(path) for path in (args.variants or [None])]
+    ablation_plan = None
+    if args.ablation_plan is not None:
+        variants, ablation_plan = load_ablation_plan(args.ablation_plan)
+    else:
+        variants = [load_variant(path) for path in (args.variants or [None])]
     if len({name for name, _, _ in variants}) != len(variants):
         raise ValueError("Variant names must be unique")
     _, external_mcp_evidence = load_external_mcp_config(args.mcp_config)
@@ -1661,6 +1980,7 @@ def main() -> None:
         "dataset_sha256": sha256_file(dataset),
         "tasks": [fixture.name for fixture in fixtures],
         "variants": [payload for _, _, payload in variants],
+        "ablation_plan": ablation_plan,
         "repeat": args.repeat,
         "seed": args.seed,
         "model_seeds": [
@@ -1682,13 +2002,18 @@ def main() -> None:
         "anti_overfitting": "Variants cannot contain task prompts, names, expected answers, or verifier logic.",
         "normalized_cost_policy": NormalizedCostPolicy().to_dict(),
         "verifier_mode": args.verifier_mode,
-        "python_function_verifier_image": (
-            PYTHON_FUNCTION_VERIFIER_IMAGE
+        "python_function_verifier_runtime": (
+            "immutable_task_container_snapshot"
             if args.verifier_mode == "python-functions"
             else None
         ),
         "build_timeout_sec_override": args.build_timeout_sec,
         "agent_timeout_sec_override": args.agent_timeout_sec,
+        "llm_transport_retry": {
+            "max_attempts": args.llm_max_attempts,
+            "base_delay_seconds": args.llm_retry_delay_sec,
+            "variant_invariant": True,
+        },
         "verifier_timeout_sec_override": args.verifier_timeout_sec,
         "external_mcp": external_mcp_evidence,
         "verifier_environment_contracts": {
@@ -1703,6 +2028,12 @@ def main() -> None:
         "image_build_plans": image_build_plans,
         "image_resolution": {"status": "not_attempted", "images": {}},
         "model_preflight": {"status": "not_attempted"},
+        "resource_policy": {
+            "execution": "strictly_serial",
+            "maximum_active_aworld_eval_containers": 1,
+            "minimum_host_available_memory_mb": args.minimum_host_available_memory_mb,
+            "wait_timeout_sec": args.resource_wait_timeout_sec,
+        },
         "created_at_epoch": time.time(),
     }
     write_json(output_dir / "experiment_manifest.json", experiment)
@@ -1724,9 +2055,10 @@ def main() -> None:
             model_seed=args.seed,
         )
     write_json(output_dir / "experiment_manifest.json", experiment)
-    if experiment["model_preflight"].get("status") == "failed":
+    if not model_preflight_allows_benchmark(experiment["model_preflight"]):
         raise RuntimeError(
-            "Model connectivity preflight failed; benchmark jobs were not started"
+            "Model readiness preflight did not produce a complete semantic response; "
+            "benchmark jobs were not started"
         )
 
     assert docker is not None
@@ -1788,29 +2120,64 @@ def main() -> None:
     }
     write_json(output_dir / "experiment_manifest.json", experiment)
     results = []
+    circuit_breaker = None
     for fixture, variant_name, variant_path, repetition in jobs:
-        results.append(
-            execute_job(
-                docker=docker,
-                fixture=fixture,
-                image=images[fixture.name],
-                variant_name=variant_name,
-                variant_path=variant_path,
-                repetition=repetition,
-                output_dir=output_dir,
-                max_steps=args.max_steps,
-                keep_container=args.keep_containers,
-                verifier_mode=args.verifier_mode,
-                agent_timeout_sec_override=args.agent_timeout_sec,
-                verifier_timeout_sec_override=args.verifier_timeout_sec,
-                external_mcp_config_path=args.mcp_config,
-                model_seed=args.seed + repetition - 1,
-            )
+        capacity = wait_for_local_capacity(
+            docker=docker,
+            minimum_available_memory_mb=args.minimum_host_available_memory_mb,
+            timeout_sec=args.resource_wait_timeout_sec,
         )
+        result = execute_job(
+            docker=docker,
+            fixture=fixture,
+            image=images[fixture.name],
+            variant_name=variant_name,
+            variant_path=variant_path,
+            repetition=repetition,
+            output_dir=output_dir,
+            max_steps=args.max_steps,
+            llm_max_attempts=args.llm_max_attempts,
+            llm_retry_delay_sec=args.llm_retry_delay_sec,
+            keep_container=args.keep_containers,
+            verifier_mode=args.verifier_mode,
+            agent_timeout_sec_override=args.agent_timeout_sec,
+            verifier_timeout_sec_override=args.verifier_timeout_sec,
+            external_mcp_config_path=args.mcp_config,
+            model_seed=args.seed + repetition - 1,
+        )
+        result["resource_admission"] = capacity
+        write_json(
+            output_dir
+            / "runs"
+            / fixture.name
+            / variant_name
+            / f"repeat-{repetition:02d}"
+            / "result.json",
+            result,
+        )
+        results.append(result)
+        failure = result.get("failure")
+        if (
+            isinstance(failure, dict)
+            and failure.get("reason_code") == "provider_attempts_exhausted"
+        ):
+            circuit_breaker = {
+                "status": "open",
+                "reason_code": "provider_attempts_exhausted",
+                "task": fixture.name,
+                "variant": variant_name,
+                "repetition": repetition,
+                "model_seed": args.seed + repetition - 1,
+                "remaining_jobs_not_started": len(jobs) - len(results),
+            }
+            break
     write_json(output_dir / "results.json", results)
     summary = summarize_results(results, variants[0][0])
     write_json(output_dir / "summary.json", summary)
     experiment["minimum_seed_gate"] = summary["minimum_seed_gate"]
+    experiment["infrastructure_circuit_breaker"] = circuit_breaker or {
+        "status": "closed"
+    }
     write_json(output_dir / "experiment_manifest.json", experiment)
     print(
         json.dumps(

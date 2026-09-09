@@ -21,6 +21,97 @@ class AdaptiveCheckpointReason(str, Enum):
     NO_GOAL_PROGRESS = "no_goal_progress"
 
 
+class AdaptiveEscalationStage(str, Enum):
+    NONE = "none"
+    REASSESS = "reassess"
+    DIVERSIFY = "diversify"
+    RECOVER = "recover"
+
+
+@dataclass(frozen=True, slots=True)
+class AdaptiveEscalationDecision:
+    stage: AdaptiveEscalationStage
+    no_progress_checkpoint_count: int
+    progress_reset: bool
+
+
+_NO_PROGRESS_REASONS = frozenset(
+    {
+        AdaptiveCheckpointReason.REPEATED_OPERATION,
+        AdaptiveCheckpointReason.LOW_INFORMATION_GAIN,
+        AdaptiveCheckpointReason.NO_GOAL_PROGRESS,
+    }
+)
+
+
+def advance_adaptive_escalation(
+    *,
+    previous_no_progress_checkpoints: int,
+    checkpoint_reasons: Sequence[AdaptiveCheckpointReason],
+    goal_progress: bool,
+) -> AdaptiveEscalationDecision:
+    """Advance a task-generic escalation window across adaptive checkpoints.
+
+    A checkpoint acknowledgement deliberately resets short-window repetition
+    counters.  This separate counter preserves whether multiple such resets
+    still failed to produce artifact or Completion Contract progress.
+    """
+    if (
+        isinstance(previous_no_progress_checkpoints, bool)
+        or not isinstance(previous_no_progress_checkpoints, int)
+        or previous_no_progress_checkpoints < 0
+    ):
+        raise ValueError("previous_no_progress_checkpoints must be non-negative")
+    if goal_progress:
+        return AdaptiveEscalationDecision(
+            stage=AdaptiveEscalationStage.NONE,
+            no_progress_checkpoint_count=0,
+            progress_reset=previous_no_progress_checkpoints > 0,
+        )
+    increment = any(reason in _NO_PROGRESS_REASONS for reason in checkpoint_reasons)
+    checkpoint_count = previous_no_progress_checkpoints + int(increment)
+    if checkpoint_count <= 0:
+        stage = AdaptiveEscalationStage.NONE
+    elif checkpoint_count == 1:
+        stage = AdaptiveEscalationStage.REASSESS
+    elif checkpoint_count == 2:
+        stage = AdaptiveEscalationStage.DIVERSIFY
+    else:
+        stage = AdaptiveEscalationStage.RECOVER
+    return AdaptiveEscalationDecision(
+        stage=stage,
+        no_progress_checkpoint_count=checkpoint_count,
+        progress_reset=False,
+    )
+
+
+def adaptive_escalation_message(stage: AdaptiveEscalationStage) -> str:
+    """Return a benchmark-independent strategy directive for a typed stage."""
+    if stage is AdaptiveEscalationStage.REASSESS:
+        return (
+            "AWorld detected insufficient semantic progress. Reassess the plan, "
+            "identify the missing evidence, and do not repeat an operation unless "
+            "it can change the result."
+        )
+    if stage is AdaptiveEscalationStage.DIVERSIFY:
+        return (
+            "AWorld detected another checkpoint without goal progress. Use a "
+            "materially different approach: validate assumptions, target a new "
+            "source of evidence, and avoid prior operation/result patterns."
+        )
+    if stage is AdaptiveEscalationStage.RECOVER:
+        return (
+            "AWorld recovery mode: inspect current artifacts and completion "
+            "evidence, identify the blocker, preserve or restore valid work, and "
+            "choose one bounded alternative not already attempted. Do not repeat "
+            "an action without a stated path to new evidence."
+        )
+    return (
+        "AWorld checkpointed under Context budget pressure. Preserve the task and "
+        "verified evidence while continuing with the smallest useful next step."
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class AdaptiveCheckpointPolicy:
     budget_pressure_ratio: float = 0.78
@@ -126,6 +217,8 @@ _VOLATILE_KEYS = {
     "finished_at",
     "timestamp",
     "execution_time",
+    "checkpoint_duration_seconds",
+    "transaction_wall_seconds",
     "latency",
     "latency_seconds",
 }
@@ -231,6 +324,11 @@ def compact_message_history(
             ):
                 group.add(result_index)
         tool_groups.append(group)
+    # The latest completed Tool exchange is the operational hand-off point for
+    # the next model call. Preserve it even when later framework/user sidecars
+    # would otherwise push the whole group beyond ``keep_recent``.
+    latest_tool_group = tool_groups[-1] if tool_groups else set()
+    protected.update(latest_tool_group)
     changed = True
     while changed:
         changed = False
@@ -251,6 +349,15 @@ def compact_message_history(
         "removed_message_count": len(removed),
         "removed_role_counts": dict(sorted(role_counts.items())),
         "removed_messages_hash": semantic_fingerprint(removed),
+        "latest_tool_atomic_group_retained": bool(latest_tool_group),
+        "latest_tool_atomic_group_size": len(latest_tool_group),
+        "latest_tool_atomic_group_hash": (
+            semantic_fingerprint(
+                [values[index] for index in sorted(latest_tool_group)]
+            )
+            if latest_tool_group
+            else None
+        ),
     }
     marker = {
         "role": "user",
@@ -274,11 +381,82 @@ def compact_message_history(
     return compacted, receipt
 
 
+def restore_adaptive_continuation(
+    messages: Sequence[Mapping[str, Any]],
+    capsule: Sequence[Mapping[str, Any]] | None,
+    *,
+    keep_recent: int = 8,
+) -> list[dict[str, Any]]:
+    """Merge a prior verified continuation capsule with newly replayed history.
+
+    Event-driven Memory/Amni persistence may be observed through different
+    Context transport copies.  A compacted request must not forget already
+    verified work merely because one copy temporarily exposes only the stable
+    prefix.  The capsule is runtime-only; this function never adds its content
+    to receipts or checkpoint metadata.
+    """
+    current = [dict(message) for message in messages]
+    previous = [dict(message) for message in (capsule or ())]
+    if not previous:
+        return current
+
+    def split_prefix(values: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+        first_user = next(
+            (index for index, item in enumerate(values) if item.get("role") == "user"),
+            None,
+        )
+        prefix_indexes = {
+            index for index, item in enumerate(values) if item.get("role") == "system"
+        }
+        if first_user is not None:
+            prefix_indexes.add(first_user)
+        return (
+            [item for index, item in enumerate(values) if index in prefix_indexes],
+            [item for index, item in enumerate(values) if index not in prefix_indexes],
+        )
+
+    current_prefix, current_body = split_prefix(current)
+    _, previous_body = split_prefix(previous)
+
+    def identity(message: Mapping[str, Any]) -> tuple[Any, ...]:
+        role = str(message.get("role") or "")
+        if role == "tool" and message.get("tool_call_id"):
+            return role, str(message.get("tool_call_id"))
+        tool_calls = message.get("tool_calls")
+        if role == "assistant" and isinstance(tool_calls, list) and tool_calls:
+            call_ids = tuple(
+                str(call.get("id"))
+                for call in tool_calls
+                if isinstance(call, Mapping) and call.get("id")
+            )
+            if call_ids:
+                return role, "tool_calls", call_ids
+        return role, semantic_fingerprint(message)
+
+    body: list[dict[str, Any]] = []
+    seen: set[tuple[Any, ...]] = set()
+    for message in [*previous_body, *current_body]:
+        message_identity = identity(message)
+        if message_identity in seen:
+            continue
+        seen.add(message_identity)
+        body.append(message)
+
+    merged = [*current_prefix, *body]
+    compacted, _ = compact_message_history(merged, keep_recent=keep_recent)
+    return compacted
+
+
 __all__ = [
     "AdaptiveCheckpointDecision",
     "AdaptiveCheckpointPolicy",
     "AdaptiveCheckpointReason",
+    "AdaptiveEscalationDecision",
+    "AdaptiveEscalationStage",
+    "adaptive_escalation_message",
+    "advance_adaptive_escalation",
     "compact_message_history",
+    "restore_adaptive_continuation",
     "evaluate_adaptive_checkpoint",
     "semantic_fingerprint",
     "semantic_result_fingerprint",

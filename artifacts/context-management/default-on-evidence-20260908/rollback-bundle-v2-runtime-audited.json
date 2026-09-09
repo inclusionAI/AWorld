@@ -1,0 +1,40 @@
+{
+  "previous_mode": "shadow",
+  "previous_config": {
+    "mode": "shadow",
+    "compiler_version": "v1",
+    "policy_version": "v1",
+    "universal_final": true,
+    "require_proven_semantics_for_enforce": true,
+    "scoped_instructions": "nested",
+    "progressive_skills": true,
+    "progressive_tools": true,
+    "progressive_tool_base_tools": [
+      "run_code",
+      "read_output_artifact",
+      "read_file",
+      "write_file",
+      "edit_file",
+      "list_directory",
+      "search_content",
+      "search_files",
+      "create_directory",
+      "move_file"
+    ],
+    "progressive_tool_unmanaged_policy": "preserve",
+    "task_catalog_policy": "sticky",
+    "checkpoint_policy": "adaptive",
+    "destructive_sandbox_checkpoint": true,
+    "elastic_step_budget": true,
+    "step_budget_extension_steps": 40,
+    "step_budget_hard_limit": 240,
+    "step_budget_recent_progress_window": 20,
+    "default_tool_output_inline_tokens": 4096,
+    "artifact_offload": true,
+    "context_inspector": true,
+    "trace_level": "decisions",
+    "completion_contract": "off"
+  },
+  "provider_capability_hash": "sha256:22221ddb6549662a84e1ea91681b5c00246692dbb9c32eeaa79895dce30e22b9",
+  "bundle_hash": "sha256:ee6eebaa11a4f287270073a82a54a05f9ddb9897f947da4c2e36ddd289dfeebb"
+}

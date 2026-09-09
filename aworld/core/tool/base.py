@@ -624,7 +624,7 @@ class Tool(BaseTool[Observation, List[ActionModel]]):
         else:
             feedback_tool_result = True
         if feedback_tool_result:
-            arm_post_tool_progress_watchdog(
+            watchdog_state = arm_post_tool_progress_watchdog(
                 context,
                 tool_name=self.name(),
                 agent_id=action[0].agent_name,
@@ -637,7 +637,12 @@ class Tool(BaseTool[Observation, List[ActionModel]]):
                                 sender=self.name(),
                                 receiver=action[0].agent_name,
                                 session_id=context.session_id,
-                                headers={"context": context})
+                                headers={
+                                    "context": context,
+                                    "post_tool_continuation_token": watchdog_state.get(
+                                        "continuation_token"
+                                    ) if isinstance(watchdog_state, dict) else None,
+                                })
         else:
             return AgentMessage(payload=step_res,
                                 sender=action[0].agent_name,
@@ -715,8 +720,9 @@ class Tool(BaseTool[Observation, List[ActionModel]]):
 
     def _update_headers(self, message: Message, input_message: Message):
         headers = input_message.headers.copy()
+        headers.update(message.headers or {})
         headers['context'] = message.context
-        headers['level'] = headers.get('level', 0) + 1
+        headers['level'] = input_message.headers.get('level', 0) + 1
         message.headers = headers
 
 
@@ -928,7 +934,7 @@ class AsyncTool(AsyncBaseTool[Observation, List[ActionModel]]):
         else:
             feedback_tool_result = True
         if feedback_tool_result:
-            arm_post_tool_progress_watchdog(
+            watchdog_state = arm_post_tool_progress_watchdog(
                 context,
                 tool_name=self.name(),
                 agent_id=action[0].agent_name,
@@ -941,7 +947,12 @@ class AsyncTool(AsyncBaseTool[Observation, List[ActionModel]]):
                                 sender=self.name(),
                                 receiver=action[0].agent_name,
                                 session_id=context.session_id,
-                                headers={"context": context})
+                                headers={
+                                    "context": context,
+                                    "post_tool_continuation_token": watchdog_state.get(
+                                        "continuation_token"
+                                    ) if isinstance(watchdog_state, dict) else None,
+                                })
         else:
             result = AgentMessage(payload=step_res,
                                 sender=action[0].agent_name,
@@ -1046,8 +1057,9 @@ class AsyncTool(AsyncBaseTool[Observation, List[ActionModel]]):
 
     def _update_headers(self, message: Message, input_message: Message):
         headers = input_message.headers.copy()
+        headers.update(message.headers or {})
         headers['context'] = message.context
-        headers['level'] = headers.get('level', 0) + 1
+        headers['level'] = input_message.headers.get('level', 0) + 1
         message.headers = headers
 
     async def run_hooks(self, message: Message, hook_point: str, hook_from: str, payload: Any = None) -> List[Message]:

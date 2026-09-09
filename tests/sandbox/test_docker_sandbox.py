@@ -146,6 +146,47 @@ def test_docker_sandbox_mutation_classifier_is_generic() -> None:
     )
 
 
+def test_docker_sandbox_narrows_declared_file_transactions(docker_runtime: None) -> None:
+    sandbox = DockerSandbox(
+        container="task",
+        destructive_checkpoint=True,
+        tracked_artifact_paths=["/workspace"],
+        reuse=False,
+    )
+
+    paths, opaque = sandbox._effective_checkpoint_paths(
+        [{"action_name": "write_file", "params": {"path": "nested/result.txt"}}]
+    )
+    assert paths == ["/workspace/nested/result.txt"]
+    assert opaque is False
+
+    paths, opaque = sandbox._effective_checkpoint_paths(
+        [{"action_name": "move_file", "params": {
+            "source": "/workspace/a",
+            "destination": "/workspace/b",
+        }}]
+    )
+    assert paths == ["/workspace/a", "/workspace/b"]
+    assert opaque is False
+
+
+def test_docker_sandbox_keeps_opaque_transactions_on_declared_scope(
+    docker_runtime: None,
+) -> None:
+    sandbox = DockerSandbox(
+        container="task",
+        destructive_checkpoint=True,
+        tracked_artifact_paths=["/workspace"],
+        reuse=False,
+    )
+
+    paths, opaque = sandbox._effective_checkpoint_paths(
+        [{"action_name": "run_code", "params": {"code": "opaque-reader"}}]
+    )
+    assert paths == ["/workspace"]
+    assert opaque is True
+
+
 @pytest.mark.asyncio
 async def test_failed_unchanged_action_skips_unnecessary_restore(
     docker_runtime: None, tmp_path, monkeypatch: pytest.MonkeyPatch
@@ -163,9 +204,9 @@ async def test_failed_unchanged_action_skips_unnecessary_restore(
     fingerprints = iter(("before", "before"))
     restored = []
 
-    monkeypatch.setattr(sandbox, "_artifact_fingerprint_sync", lambda: next(fingerprints))
-    monkeypatch.setattr(sandbox, "_artifact_paths_sync", lambda: frozenset({"/workspace"}))
-    monkeypatch.setattr(sandbox, "_create_checkpoint_sync", lambda: checkpoint)
+    monkeypatch.setattr(sandbox, "_artifact_fingerprint_sync", lambda *args: next(fingerprints))
+    monkeypatch.setattr(sandbox, "_artifact_paths_sync", lambda *args: frozenset({"/workspace"}))
+    monkeypatch.setattr(sandbox, "_create_checkpoint_sync", lambda *args, **kwargs: checkpoint)
     monkeypatch.setattr(sandbox, "_restore_checkpoint_sync", lambda value: restored.append(value))
 
     async def failed_call(
@@ -215,9 +256,9 @@ async def test_failed_changed_action_rolls_back_artifact_state(
     checkpoint = {"id": "checkpoint", "archive": archive, "sha256": "digest"}
     fingerprints = iter(("before", "damaged", "before"))
     restored = []
-    monkeypatch.setattr(sandbox, "_artifact_fingerprint_sync", lambda: next(fingerprints))
-    monkeypatch.setattr(sandbox, "_artifact_paths_sync", lambda: frozenset({"/workspace"}))
-    monkeypatch.setattr(sandbox, "_create_checkpoint_sync", lambda: checkpoint)
+    monkeypatch.setattr(sandbox, "_artifact_fingerprint_sync", lambda *args: next(fingerprints))
+    monkeypatch.setattr(sandbox, "_artifact_paths_sync", lambda *args: frozenset({"/workspace"}))
+    monkeypatch.setattr(sandbox, "_create_checkpoint_sync", lambda *args, **kwargs: checkpoint)
     monkeypatch.setattr(sandbox, "_restore_checkpoint_sync", lambda value: restored.append(value))
 
     async def failed_call(
@@ -261,12 +302,12 @@ async def test_successful_mutation_reports_artifact_progress_without_rollback(
     checkpoint = {"id": "checkpoint", "archive": archive, "sha256": "digest"}
     fingerprints = iter(("before", "after"))
     restored = []
-    monkeypatch.setattr(sandbox, "_artifact_fingerprint_sync", lambda: next(fingerprints))
+    monkeypatch.setattr(sandbox, "_artifact_fingerprint_sync", lambda *args: next(fingerprints))
     path_states = iter(
         (frozenset({"/workspace/result.txt"}), frozenset({"/workspace/result.txt"}))
     )
-    monkeypatch.setattr(sandbox, "_artifact_paths_sync", lambda: next(path_states))
-    monkeypatch.setattr(sandbox, "_create_checkpoint_sync", lambda: checkpoint)
+    monkeypatch.setattr(sandbox, "_artifact_paths_sync", lambda *args: next(path_states))
+    monkeypatch.setattr(sandbox, "_create_checkpoint_sync", lambda *args, **kwargs: checkpoint)
     monkeypatch.setattr(sandbox, "_restore_checkpoint_sync", lambda value: restored.append(value))
 
     async def successful_call(
@@ -313,9 +354,9 @@ async def test_successful_opaque_shell_artifact_loss_is_rolled_back(
         )
     )
     restored = []
-    monkeypatch.setattr(sandbox, "_artifact_fingerprint_sync", lambda: next(fingerprints))
-    monkeypatch.setattr(sandbox, "_artifact_paths_sync", lambda: next(path_states))
-    monkeypatch.setattr(sandbox, "_create_checkpoint_sync", lambda: checkpoint)
+    monkeypatch.setattr(sandbox, "_artifact_fingerprint_sync", lambda *args: next(fingerprints))
+    monkeypatch.setattr(sandbox, "_artifact_paths_sync", lambda *args: next(path_states))
+    monkeypatch.setattr(sandbox, "_create_checkpoint_sync", lambda *args, **kwargs: checkpoint)
     monkeypatch.setattr(sandbox, "_restore_checkpoint_sync", lambda value: restored.append(value))
 
     async def successful_call(
@@ -368,9 +409,9 @@ async def test_successful_opaque_shell_addition_is_not_misclassified_as_loss(
         )
     )
     restored = []
-    monkeypatch.setattr(sandbox, "_artifact_fingerprint_sync", lambda: next(fingerprints))
-    monkeypatch.setattr(sandbox, "_artifact_paths_sync", lambda: next(path_states))
-    monkeypatch.setattr(sandbox, "_create_checkpoint_sync", lambda: checkpoint)
+    monkeypatch.setattr(sandbox, "_artifact_fingerprint_sync", lambda *args: next(fingerprints))
+    monkeypatch.setattr(sandbox, "_artifact_paths_sync", lambda *args: next(path_states))
+    monkeypatch.setattr(sandbox, "_create_checkpoint_sync", lambda *args, **kwargs: checkpoint)
     monkeypatch.setattr(sandbox, "_restore_checkpoint_sync", lambda value: restored.append(value))
 
     async def successful_call(
@@ -411,11 +452,11 @@ async def test_tool_exception_rollback_is_preserved_in_action_journal(
     checkpoint = {"id": "checkpoint", "archive": archive, "sha256": "digest"}
     fingerprints = iter(("before", "before"))
     restored = []
-    monkeypatch.setattr(sandbox, "_artifact_fingerprint_sync", lambda: next(fingerprints))
+    monkeypatch.setattr(sandbox, "_artifact_fingerprint_sync", lambda *args: next(fingerprints))
     monkeypatch.setattr(
-        sandbox, "_artifact_paths_sync", lambda: frozenset({"/workspace"})
+        sandbox, "_artifact_paths_sync", lambda *args: frozenset({"/workspace"})
     )
-    monkeypatch.setattr(sandbox, "_create_checkpoint_sync", lambda: checkpoint)
+    monkeypatch.setattr(sandbox, "_create_checkpoint_sync", lambda *args, **kwargs: checkpoint)
     monkeypatch.setattr(sandbox, "_restore_checkpoint_sync", lambda value: restored.append(value))
 
     async def exceptional_call(

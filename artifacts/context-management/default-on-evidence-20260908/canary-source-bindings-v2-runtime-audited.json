@@ -1,0 +1,41 @@
+{
+  "schema_version": "aworld.context.canary-source-bindings.v1",
+  "derivation": {
+    "shadow": "Count terminal provider attempts from the checksum-bound shadow run. Every attempt must be trace-matched, attribution-complete, and emitted with context_rollout.mode=shadow without applying the candidate request.",
+    "baseline_and_enforce": "Count terminal provider attempts, failed attempts, and unique sessions from the v12 preflight report after it revalidates every selected raw provider call and trajectory. A failed attempt followed by the same logical call_id and step_id is classified as a framework retry, never as benchmark failure.",
+    "quality": "quality_regression is false because the stratified paired Reward 95% confidence lower bound is 0.0; the report does not claim a strictly positive Reward effect.",
+    "security": "No typed security violation is present in the selected runtime receipts; absence is recorded as zero and is not inferred from Reward."
+  },
+  "sources": [
+    {
+      "role": "shadow_experiment_manifest",
+      "path": "../canary-shadow-tool-research-20260908/experiment_manifest.json",
+      "checksum": "sha256:fb22c024ded1555b5ecaab1946e7946c46311d79e6b63c15a27f5971f12ea238"
+    },
+    {
+      "role": "shadow_results",
+      "path": "../canary-shadow-tool-research-20260908/results.json",
+      "checksum": "sha256:34707a8930c0584fed7d1173ca1a8b4e1b1adddef0df4b938425fa5757b6bb8c"
+    },
+    {
+      "role": "shadow_provider_calls",
+      "path": "../canary-shadow-tool-research-20260908/runs/noisy-record-recovery/ablation-50-adaptive-shadow/repeat-01/provider_calls.json",
+      "checksum": "sha256:5db0eba9b18fe707542eb162dffd140d43da2cfea6273a6046d4a8aa268711d7"
+    },
+    {
+      "role": "baseline_enforce_preflight",
+      "path": "combined-adaptive-default-on-v12-runtime-audited-preflight.json",
+      "checksum": "sha256:49a93bfeb490c7efe2144eea4cf048b7718b718ad79da16d4624243384288017"
+    },
+    {
+      "role": "rollback_bundle",
+      "path": "rollback-bundle-v2-runtime-audited.json",
+      "checksum": "sha256:f3a7468df18d08048528bb7634dbf2261d519a8d09687e27d75c38b34de0acaa"
+    },
+    {
+      "role": "canary_health_receipt",
+      "path": "canary-health-receipt-v2-runtime-audited.json",
+      "checksum": "sha256:d9ac5fca2ce9bf4833a336834a21c467416a5937fa00eab46da31c0132f48eda"
+    }
+  ]
+}

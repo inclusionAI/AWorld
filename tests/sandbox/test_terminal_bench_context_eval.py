@@ -81,6 +81,17 @@ def test_variant_contract_accepts_context_policy_only(tmp_path):
     assert loaded["context_compiler"]["mode"] == "enforce"
 
 
+def test_git_snapshot_binds_dirty_runtime_content_not_only_status_paths():
+    runner = _load_example("docker_terminal_bench")
+
+    snapshot = runner._git_snapshot()
+
+    assert snapshot["source_fingerprint"].startswith("sha256:")
+    assert snapshot["tracked_runtime_diff_sha256"].startswith("sha256:")
+    assert snapshot["untracked_runtime_source_sha256"].startswith("sha256:")
+    assert isinstance(snapshot["untracked_runtime_source_count"], int)
+
+
 @pytest.mark.asyncio
 async def test_benchmark_completion_contract_is_constructed_and_executes(monkeypatch):
     runner = _load_example("docker_terminal_bench")
@@ -185,9 +196,7 @@ async def test_completion_contract_uses_requested_python_function_verifier(monke
 
     def fake_sidecar(**kwargs):
         sidecar_calls.append(kwargs)
-        return subprocess.CompletedProcess(
-            ["docker", "run"], 0, stdout="ok", stderr=""
-        )
+        return subprocess.CompletedProcess(["docker", "run"], 0, stdout="ok", stderr="")
 
     monkeypatch.setattr(runner, "run_python_function_verifier_sidecar", fake_sidecar)
 
@@ -236,6 +245,7 @@ async def test_completion_contract_uses_requested_python_function_verifier(monke
             "test_path": "/tests/test_outputs.py",
             "timeout": 900,
             "env_names": (),
+            "artifact_paths": (),
             "scratch_root": None,
         }
     ]
@@ -245,14 +255,19 @@ async def test_completion_contract_uses_requested_python_function_verifier(monke
     )
 
 
-def test_python_function_verifier_sidecar_uses_disposable_app_snapshot(
-    monkeypatch, tmp_path,
+def test_python_function_verifier_sidecar_uses_disposable_task_snapshot(
+    monkeypatch,
+    tmp_path,
 ):
     runner = _load_example("docker_terminal_bench")
     calls = []
 
     def fake_run(command, **kwargs):
         calls.append((command, kwargs))
+        if command[:3] == ["docker", "commit", "--no-pause"]:
+            return subprocess.CompletedProcess(
+                command, 0, stdout="sha256:" + "a" * 64 + "\n", stderr=""
+            )
         return subprocess.CompletedProcess(command, 0, stdout="ok", stderr="")
 
     monkeypatch.setattr(runner.subprocess, "run", fake_run)
@@ -263,32 +278,73 @@ def test_python_function_verifier_sidecar_uses_disposable_app_snapshot(
         test_path="/tests/test_outputs.py",
         timeout=30,
         env_names=("API_TOKEN",),
+        artifact_paths=("/root/result.json",),
         scratch_root=tmp_path,
     )
 
     assert result.returncode == 0
-    assert calls[0][0][:3] == ["docker", "cp", "task:/app/."]
-    assert calls[1][0][:3] == [
+    assert calls[0][0][:3] == [
         "docker",
         "cp",
-        "task:/tests/test_outputs.py",
+        "task:/tests/.",
     ]
+    assert calls[1][0] == ["docker", "commit", "--no-pause", "task"]
     sidecar = calls[2][0]
-    assert sidecar[:6] == [
+    assert sidecar[:5] == [
         "docker",
         "run",
         "--rm",
         "--network",
         "none",
-        "--read-only",
     ]
     assert ["--env", "API_TOKEN"] == sidecar[
         sidecar.index("--env") : sidecar.index("--env") + 2
     ]
-    assert any(value.endswith(":/app:rw") for value in sidecar)
-    assert any(value.endswith(":/tests/test_outputs.py:ro") for value in sidecar)
-    assert runner.PYTHON_FUNCTION_VERIFIER_IMAGE in sidecar
+    assert any(value.endswith(":/tests:ro") for value in sidecar)
+    assert sidecar[sidecar.index("--entrypoint") + 1] == "python3"
+    assert "sha256:" + "a" * 64 in sidecar
     assert "/tests/test_outputs.py" in sidecar[-1]
+    assert calls[3][0] == [
+        "docker",
+        "image",
+        "rm",
+        "-f",
+        "sha256:" + "a" * 64,
+    ]
+
+
+def test_python_function_verifier_sidecar_rejects_missing_commit_identity(
+    monkeypatch,
+    tmp_path,
+):
+    runner = _load_example("docker_terminal_bench")
+    calls = []
+
+    def fake_run(command, **kwargs):
+        calls.append(command)
+        if command[:2] == ["docker", "commit"]:
+            return subprocess.CompletedProcess(
+                command, 0, stdout="unexpected", stderr=""
+            )
+        return subprocess.CompletedProcess(command, 0, stdout="ok", stderr="")
+
+    monkeypatch.setattr(runner.subprocess, "run", fake_run)
+
+    result = runner.run_python_function_verifier_sidecar(
+        docker_binary="docker",
+        container="task",
+        test_path="/verifier/test_outputs.py",
+        timeout=30,
+        artifact_paths=("/root/result.json",),
+        scratch_root=tmp_path,
+    )
+
+    assert result.returncode == 1
+    assert "immutable image id" in result.stderr
+    assert calls == [
+        ["docker", "cp", "task:/verifier/.", calls[0][-1]],
+        ["docker", "commit", "--no-pause", "task"],
+    ]
 
 
 def test_legacy_observe_baseline_preserves_legacy_policy_and_adds_evidence_only():
@@ -304,6 +360,145 @@ def test_legacy_observe_baseline_preserves_legacy_policy_and_adds_evidence_only(
         "max_inline_output_bytes": 1048576,
         "output_head_bytes": 524288,
     }
+
+
+def test_variant_contract_uses_evaluation_validator_for_checkpoint_policy(tmp_path):
+    runner = _load_example("docker_terminal_bench")
+    variant = tmp_path / "checkpoint.json"
+    variant.write_text(
+        json.dumps(
+            {
+                "schema_version": "aworld.context-eval-variant/v1",
+                "name": "adaptive-checkpoint",
+                "context_compiler": {
+                    "mode": "enforce",
+                    "checkpoint_policy": "adaptive",
+                    "destructive_sandbox_checkpoint": True,
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    loaded = runner._load_variant(variant)
+
+    assert loaded["context_compiler"]["destructive_sandbox_checkpoint"] is True
+
+
+def test_ablation_plan_loads_variants_and_binds_single_component_contrast(tmp_path):
+    harness = _load_example("terminal_bench_context_eval")
+    for name, policy in (("explicit", "explicit"), ("adaptive", "adaptive")):
+        (tmp_path / f"{name}.json").write_text(
+            json.dumps(
+                {
+                    "schema_version": "aworld.context-eval-variant/v1",
+                    "name": name,
+                    "context_compiler": {
+                        "mode": "enforce",
+                        "checkpoint_policy": policy,
+                        "destructive_sandbox_checkpoint": policy == "adaptive",
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+    plan_path = tmp_path / "plan.json"
+    plan_path.write_text(
+        json.dumps(
+            {
+                "schema_version": "aworld.context-ablation-suite/v1",
+                "name": "generic-context-ablation",
+                "variants": ["explicit.json", "adaptive.json"],
+                "contrasts": [
+                    {
+                        "baseline_variant": "explicit",
+                        "candidate_variant": "adaptive",
+                        "component": "adaptive_checkpoint",
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    variants, receipt = harness.load_ablation_plan(plan_path)
+
+    assert [name for name, _, _ in variants] == ["explicit", "adaptive"]
+    assert receipt["schema_version"] == "aworld.context-ablation-plan/v1"
+    assert receipt["contrasts"][0]["changed_paths"] == [
+        "context_compiler.checkpoint_policy",
+        "context_compiler.destructive_sandbox_checkpoint",
+    ]
+    assert receipt["plan_hash"].startswith("sha256:")
+
+
+def test_ablation_plan_rejects_a_contrast_that_changes_multiple_components(tmp_path):
+    harness = _load_example("terminal_bench_context_eval")
+    (tmp_path / "before.json").write_text(
+        json.dumps(
+            {
+                "name": "before",
+                "context_compiler": {
+                    "mode": "enforce",
+                    "checkpoint_policy": "explicit",
+                    "completion_contract": "off",
+                },
+            }
+        )
+    )
+    (tmp_path / "after.json").write_text(
+        json.dumps(
+            {
+                "name": "after",
+                "context_compiler": {
+                    "mode": "enforce",
+                    "checkpoint_policy": "adaptive",
+                    "completion_contract": "enforce",
+                },
+            }
+        )
+    )
+    plan = tmp_path / "plan.json"
+    plan.write_text(
+        json.dumps(
+            {
+                "schema_version": "aworld.context-ablation-suite/v1",
+                "name": "invalid",
+                "variants": ["before.json", "after.json"],
+                "contrasts": [
+                    {
+                        "baseline_variant": "before",
+                        "candidate_variant": "after",
+                        "component": "adaptive_checkpoint",
+                    }
+                ],
+            }
+        )
+    )
+
+    with pytest.raises(ValueError, match="changes fields outside"):
+        harness.load_ablation_plan(plan)
+
+
+def test_repository_ablation_plan_is_causal_and_pre_frozen():
+    harness = _load_example("terminal_bench_context_eval")
+    variants, receipt = harness.load_ablation_plan(
+        ROOT
+        / "examples"
+        / "sandbox"
+        / "context_eval_ablations"
+        / "systematic-context-v1.json"
+    )
+
+    assert len(variants) == 7
+    assert [row["component"] for row in receipt["contrasts"]] == [
+        "final_compiler",
+        "tool_output",
+        "progressive_tools",
+        "progressive_skills",
+        "adaptive_checkpoint",
+        "completion_contract",
+    ]
 
 
 def test_variant_contract_rejects_unknown_context_compiler_fields(tmp_path):
@@ -362,6 +557,258 @@ def test_context_tool_output_artifacts_are_exported_with_manifest_evidence(tmp_p
         }
     ]
     assert (tmp_path / evidence[0]["path"]).read_bytes() == data
+
+
+def test_resource_admission_requires_memory_and_empty_serial_slot(monkeypatch):
+    runner = _load_example("terminal_bench_context_eval")
+    monkeypatch.setattr(
+        runner,
+        "psutil",
+        SimpleNamespace(
+            virtual_memory=lambda: SimpleNamespace(available=4096 * 1024 * 1024)
+        ),
+    )
+    monkeypatch.setattr(
+        runner,
+        "run_command",
+        lambda *args, **kwargs: SimpleNamespace(returncode=0, stdout="", stderr=""),
+    )
+
+    receipt = runner.wait_for_local_capacity(
+        docker="docker",
+        minimum_available_memory_mb=2048,
+        timeout_sec=1,
+        poll_interval_sec=0.01,
+    )
+
+    assert receipt["status"] == "available"
+    assert receipt["available_memory_mb"] == 4096
+    assert receipt["active_aworld_eval_containers"] == 0
+
+
+def test_resource_admission_fails_closed_when_slot_stays_busy(monkeypatch):
+    runner = _load_example("terminal_bench_context_eval")
+    monkeypatch.setattr(
+        runner,
+        "psutil",
+        SimpleNamespace(
+            virtual_memory=lambda: SimpleNamespace(available=4096 * 1024 * 1024)
+        ),
+    )
+    monkeypatch.setattr(
+        runner,
+        "run_command",
+        lambda *args, **kwargs: SimpleNamespace(
+            returncode=0, stdout="aworld-tool-eval-busy\n", stderr=""
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match="local_resource_capacity_unavailable"):
+        runner.wait_for_local_capacity(
+            docker="docker",
+            minimum_available_memory_mb=2048,
+            timeout_sec=0.01,
+            poll_interval_sec=0.01,
+        )
+
+
+def test_upstream_tool_output_artifacts_are_bound_from_typed_receipts(tmp_path):
+    runner = _load_example("docker_terminal_bench")
+    data = b"sandbox-owned-output"
+    digest = runner._sha256_bytes(data)
+    artifact = tmp_path / "tool-output-artifacts" / f"stdout-{digest}.bin"
+    artifact.parent.mkdir(parents=True)
+    artifact.write_bytes(data)
+    raw = [
+        {
+            "state": {
+                "input": {
+                    "action_result": [
+                        {
+                            "metadata": {
+                                "tool_output_policy": {
+                                    "upstream_artifacts": [
+                                        {
+                                            "ref": str(artifact),
+                                            "content_hash": f"sha256:{digest}",
+                                            "byte_count": len(data),
+                                        }
+                                    ]
+                                }
+                            }
+                        }
+                    ]
+                }
+            }
+        }
+    ]
+
+    evidence = runner._export_upstream_tool_output_artifacts(raw, tmp_path)
+
+    assert evidence == [
+        {
+            "artifact_ref_hash": "sha256:"
+            + runner._sha256_bytes(str(artifact).encode()),
+            "content_hash": f"sha256:{digest}",
+            "byte_count": len(data),
+            "path": f"tool-output-artifacts/stdout-{digest}.bin",
+        }
+    ]
+
+
+def test_upstream_tool_output_artifact_export_rejects_escape(tmp_path):
+    runner = _load_example("docker_terminal_bench")
+    artifact = tmp_path / "outside.bin"
+    artifact.write_bytes(b"outside")
+    raw = [
+        {
+            "action_result": [
+                {
+                    "metadata": {
+                        "tool_output_policy": {
+                            "upstream_artifacts": [
+                                {
+                                    "ref": str(artifact),
+                                    "content_hash": "sha256:"
+                                    + runner._sha256_bytes(b"outside"),
+                                    "byte_count": 7,
+                                }
+                            ]
+                        }
+                    }
+                }
+            ]
+        }
+    ]
+
+    with pytest.raises(RuntimeError, match="outside_run"):
+        runner._export_upstream_tool_output_artifacts(raw, tmp_path)
+
+
+def test_semantic_progress_evidence_is_bounded_and_privacy_safe():
+    runner = _load_example("docker_terminal_bench")
+    context = SimpleNamespace(
+        context_info={
+            "post_tool_progress_metrics": {
+                "semantic_tool_observation_count": 8,
+                "goal_progress_count": 3,
+                "no_goal_progress_observation_count": 5,
+                "repeated_operation_count": 2,
+                "adaptive_checkpoint_count": 3,
+                "adaptive_escalation_level_max": 2,
+                "tool_success_to_next_llm_latencies": [0.1, 0.2],
+                "unexpected_raw_value": "secret",
+            },
+            "context_semantic_progress": {
+                "agent": {
+                    "repetition_count": 2,
+                    "low_information_gain_count": 1,
+                    "no_goal_progress_count": 4,
+                    "goal_progress": False,
+                    "artifact_advanced": False,
+                    "completion_advanced": False,
+                    "operation_hash": "sha256:" + "a" * 64,
+                    "result_hash": "sha256:" + "b" * 64,
+                    "raw_result": "secret",
+                }
+            },
+        }
+    )
+
+    evidence = runner._semantic_progress_evidence(SimpleNamespace(context=context))
+
+    assert evidence["status"] == "available"
+    assert evidence["counts"] == {
+        "adaptive_checkpoint_count": 3,
+        "adaptive_escalation_level_max": 2,
+        "goal_progress_count": 3,
+        "no_goal_progress_observation_count": 5,
+        "repeated_operation_count": 2,
+        "semantic_tool_observation_count": 8,
+    }
+    assert evidence["agents"][0]["no_goal_progress_count"] == 4
+    assert "secret" not in repr(evidence)
+
+
+def test_semantic_progress_reads_context_state_and_shared_agent_step_registry():
+    runner = _load_example("docker_terminal_bench")
+    context = Context(task_id="task")
+    agent = SimpleNamespace(
+        id=lambda: "agent",
+        context=context,
+        max_loop_steps=120,
+    )
+    context.update_agent_step("agent")
+    context.deep_copy().update_agent_step("agent")
+    context.context_info["agent_loop_budget_exhausted:agent"] = {"step": 2}
+
+    evidence = runner._semantic_progress_evidence(agent)
+
+    assert evidence["status"] == "available"
+    assert evidence["counts"]["agent_step_count"] == 2
+    assert evidence["counts"]["agent_loop_budget_exhausted_count"] == 1
+
+
+def test_semantic_progress_exports_runtime_root_after_context_transport_copy():
+    runner = _load_example("docker_terminal_bench")
+    runtime_root = Context(task_id="task")
+    runtime_root.context_info["post_tool_progress_metrics"] = {
+        "adaptive_checkpoint_count": 4,
+        "adaptive_no_progress_checkpoint_count": 3,
+    }
+    runtime_root.context_info["context_semantic_progress"] = {
+        "agent": {
+            "no_goal_progress_count": 5,
+            "goal_progress_count": 1,
+            "goal_progress": False,
+        }
+    }
+    transported = SimpleNamespace(
+        context_info={},
+        event_manager=SimpleNamespace(context=runtime_root),
+    )
+    agent = SimpleNamespace(
+        id=lambda: "agent",
+        context=transported,
+        max_loop_steps=120,
+    )
+
+    evidence = runner._semantic_progress_evidence(agent)
+
+    assert evidence["counts"]["adaptive_checkpoint_count"] == 4
+    assert evidence["counts"]["adaptive_no_progress_checkpoint_count"] == 3
+    assert evidence["agents"] == [
+        {
+            "agent_id_hash": runner._sha256_bytes(b"agent"),
+            "no_goal_progress_count": 5,
+            "goal_progress_count": 1,
+            "goal_progress": False,
+        }
+    ]
+
+
+def test_semantic_progress_exports_typed_elastic_budget_receipt():
+    runner = _load_example("docker_terminal_bench")
+    context = Context(task_id="task")
+    agent = SimpleNamespace(
+        id=lambda: "agent",
+        context=context,
+        max_loop_steps=120,
+    )
+    context.context_info["agent_step_budget:agent"] = {
+        "schema_version": "aworld.context.elastic-step-budget/v1",
+        "extension_count": 2,
+        "total_extended_steps": 80,
+        "effective_limit": 200,
+        "hard_limit": 240,
+    }
+
+    evidence = runner._semantic_progress_evidence(agent)
+
+    assert evidence["counts"]["agent_step_budget_extension_count"] == 2
+    assert evidence["counts"]["agent_step_budget_extended_steps"] == 80
+    assert evidence["counts"]["agent_step_budget_effective_limit"] == 200
+    assert evidence["counts"]["agent_step_budget_hard_limit"] == 240
 
 
 def test_context_tool_output_artifact_export_rejects_receipt_mismatch(tmp_path):
@@ -476,6 +923,51 @@ def test_capture_reconciliation_preserves_live_retry_attempts_for_diagnostics():
     assert calls[0]["status"] == "success"
     assert continuity["snapshots_match"] is False
     assert continuity["reconciled_count"] == 2
+
+
+def test_finalized_append_only_journal_superset_is_capture_authority():
+    runner = _load_example("docker_terminal_bench")
+    response = SimpleNamespace(
+        llm_calls=[{"request_id": "request-1", "status": "started"}]
+    )
+    live_calls = [{"request_id": "request-2", "status": "started"}]
+    agent = SimpleNamespace(context=SimpleNamespace(get_llm_calls=lambda: live_calls))
+    journal_calls = [
+        {"request_id": "request-1", "status": "success"},
+        {"request_id": "request-2", "status": "success"},
+        {"request_id": "request-3", "status": "failed"},
+    ]
+
+    calls, source, continuity = runner._resolve_llm_call_capture(
+        response,
+        agent,
+        journal_calls=journal_calls,
+    )
+
+    assert calls == journal_calls
+    assert source == "finalized_append_only_journal"
+    assert continuity["journal_superset"] is True
+    assert continuity["task_response_journal_identity_coverage"] is True
+    assert continuity["live_context_journal_identity_coverage"] is True
+    assert continuity["reconciled_count"] == 3
+
+
+def test_journal_missing_live_identity_cannot_replace_runtime_capture():
+    runner = _load_example("docker_terminal_bench")
+    response = SimpleNamespace(llm_calls=[])
+    live_calls = [{"request_id": "request-live", "status": "success"}]
+    agent = SimpleNamespace(context=SimpleNamespace(get_llm_calls=lambda: live_calls))
+
+    calls, source, continuity = runner._resolve_llm_call_capture(
+        response,
+        agent,
+        journal_calls=[{"request_id": "request-journal", "status": "success"}],
+    )
+
+    assert calls == live_calls
+    assert source == "live_context_fallback"
+    assert continuity["journal_superset"] is False
+    assert continuity["live_context_journal_identity_coverage"] is False
 
 
 def test_identity_digest_ignores_only_multi_context_merge_order():
@@ -781,12 +1273,60 @@ def test_browsecomp_suite_freezes_outcome_blind_random_prefix():
     assert suite["tool_profile"]["shared_by_all_variants"] is True
 
 
+def test_random_cross_workload_suites_reproduce_from_archive_identities_only():
+    harness = _load_example("terminal_bench_context_eval")
+    cases = (
+        (
+            Path.home() / "Desktop" / "skillsbench_official_prebuilt_1_1.zip",
+            ROOT
+            / "examples/sandbox/context_eval_suites/skillsbench-random-20260903.json",
+        ),
+        (
+            Path.home() / "Desktop" / "openai_browsecomp_652c89d.zip",
+            ROOT
+            / "examples/sandbox/context_eval_suites/browsecomp-random-20260902.json",
+        ),
+    )
+    for archive, suite_path in cases:
+        if not archive.exists():
+            pytest.skip(f"local benchmark archive unavailable: {archive}")
+        suite = json.loads(suite_path.read_text(encoding="utf-8"))
+        policy = suite["selection_policy"]
+        selected = harness.outcome_blind_archive_sample(
+            archive,
+            seed=policy["seed"],
+            sample_size=policy["candidate_pool_size"],
+        )
+        assert selected == [item["task_id"] for item in suite["candidate_pool"]]
+        assert suite["tasks"] == selected[: policy["evaluation_prefix_size"]]
+        assert policy["ground_truth_not_used_for_selection"] is True
+
+
 def test_runner_max_steps_binds_the_actual_agent_loop_guard():
     runner = _load_example("docker_terminal_bench")
 
     assert runner._agent_loop_budget(7) == {"max_loop_steps": 7}
+    assert runner._agent_loop_budget(
+        120,
+        {
+            "elastic_step_budget": True,
+            "step_budget_extension_steps": 40,
+            "step_budget_hard_limit": 240,
+            "step_budget_recent_progress_window": 20,
+        },
+    ) == {
+        "max_loop_steps": 120,
+        "loop_step_extension_steps": 40,
+        "max_extended_loop_steps": 240,
+        "loop_step_progress_window": 20,
+    }
     with pytest.raises(ValueError, match="max-steps must be positive"):
         runner._agent_loop_budget(0)
+    with pytest.raises(ValueError, match="extension_steps must be positive"):
+        runner._agent_loop_budget(
+            120,
+            {"elastic_step_budget": True, "step_budget_extension_steps": True},
+        )
 
 
 def test_verifier_environment_resolution_is_typed_and_secret_safe():
@@ -1364,6 +1904,40 @@ def test_capture_integrity_uses_reconciled_journal_not_task_response_projection(
     assert metrics["capture_integrity_available"] is True
 
 
+def test_capture_integrity_rejects_late_calls_after_trajectory_projection(tmp_path):
+    harness = _load_example("terminal_bench_context_eval")
+    (tmp_path / "provider_calls.json").write_text(
+        json.dumps([{"request_id": "request-1"}]), encoding="utf-8"
+    )
+    (tmp_path / "raw_trajectory.json").write_text("[]", encoding="utf-8")
+    (tmp_path / "run_manifest.json").write_text(
+        json.dumps(
+            {
+                "capture": {
+                    "provider_capture_gate_passed": True,
+                    "llm_call_continuity": {
+                        "journal_reconciliation": {"snapshots_match": True}
+                    },
+                    "finalized_projection_reconciliation": {
+                        "status": "available",
+                        "trajectory_llm_call_count": 120,
+                        "final_llm_call_count": 121,
+                        "call_count_delta": 1,
+                        "snapshots_match": False,
+                    },
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    metrics = harness.collect_context_metrics(tmp_path)
+
+    assert metrics["capture_integrity_available"] is False
+    assert metrics["finalized_projection_reconciliation_available"] is False
+    assert metrics["finalized_projection_call_count_delta"] == 1
+
+
 def test_model_preflight_parser_prefers_typed_receipt():
     harness = _load_example("terminal_bench_context_eval")
     receipt = harness.parse_model_preflight(
@@ -1376,6 +1950,31 @@ def test_model_preflight_parser_prefers_typed_receipt():
         )
     )
     assert receipt["status"] == "passed"
+
+
+def test_benchmark_requires_complete_semantic_model_preflight():
+    harness = _load_example("terminal_bench_context_eval")
+
+    assert harness.model_preflight_allows_benchmark(
+        {
+            "status": "passed",
+            "provider_response_observed": True,
+            "semantic_probe_complete": True,
+            "tool_call_probe_complete": True,
+            "response_quality": "complete",
+        }
+    )
+    assert not harness.model_preflight_allows_benchmark(
+        {
+            "status": "passed",
+            "provider_response_observed": True,
+            "semantic_probe_complete": False,
+            "response_quality": "degraded",
+        }
+    )
+    assert harness.model_preflight_allows_benchmark(
+        {"status": "skipped", "reason_code": "explicit_diagnostic_override"}
+    )
 
 
 def test_model_preflight_runner_persists_redacted_receipt_logs(tmp_path, monkeypatch):
@@ -1665,6 +2264,35 @@ def test_finalized_checksum_valid_capture_can_run_independent_verifier():
             "raw_trajectory_available": True,
             "trajectory_generation_state": "finalized",
             "journal_final_continuity": {"snapshots_match": False},
+        }
+    )
+
+
+def test_provider_attempt_exhaustion_requires_append_only_terminal_evidence():
+    harness = _load_example("terminal_bench_context_eval")
+
+    assert harness.provider_attempts_exhausted(
+        {
+            "attempted_provider_call_count": 6,
+            "successful_provider_call_count": 0,
+            "failed_provider_call_count": 6,
+            "active_provider_call_count": 0,
+        }
+    )
+    assert not harness.provider_attempts_exhausted(
+        {
+            "attempted_provider_call_count": 6,
+            "successful_provider_call_count": 1,
+            "failed_provider_call_count": 5,
+            "active_provider_call_count": 0,
+        }
+    )
+    assert not harness.provider_attempts_exhausted(
+        {
+            "attempted_provider_call_count": 6,
+            "successful_provider_call_count": 0,
+            "failed_provider_call_count": 5,
+            "active_provider_call_count": 1,
         }
     )
 

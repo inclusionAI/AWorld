@@ -1,7 +1,10 @@
 # coding: utf-8
 # Copyright (c) 2025 inclusionAI.
+import asyncio
 import copy
 import hashlib
+import json
+import threading
 import time
 import uuid
 from collections import OrderedDict
@@ -60,6 +63,13 @@ from aworld.core.context.compiler.turn_economics import (
     turn_cause_support,
 )
 from aworld.core.context.compiler.frozen_json import canonical_json_hash
+from aworld.core.context.step_budget import (
+    ElasticStepBudgetDecision,
+    ElasticStepBudgetPolicy,
+    ElasticStepBudgetState,
+    evaluate_elastic_step_budget,
+)
+from aworld.core.context.runtime_state import TaskRuntimeStateRegistry
 from aworld.core.context.session import Session
 from aworld.logs.util import logger
 from aworld.core.trajectory_update_registry import (
@@ -67,6 +77,7 @@ from aworld.core.trajectory_update_registry import (
     TrajectoryUpdateRegistry,
 )
 from aworld.core.llm_call_journal import (
+    append_llm_call_fork,
     append_llm_call_mutation,
     append_llm_call_snapshot,
 )
@@ -143,6 +154,199 @@ class StepLifecycleRecord:
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
+
+
+class _AgentStepRegistry:
+    """Monotonic per-task Agent steps shared by Context transport copies.
+
+    Context.deep_copy() deliberately isolates most mutable state.  Agent loop
+    budgets, however, are execution control state: a retry transported through
+    a sibling Context must not reset the number of turns already consumed.
+    """
+
+    def __init__(self):
+        self._lock = threading.RLock()
+        self._steps: Dict[tuple[str, Optional[str]], int] = {}
+        self._budgets: Dict[
+            tuple[str, Optional[str]], ElasticStepBudgetState
+        ] = {}
+
+    def increment(
+        self,
+        agent_id: str,
+        task_id: Optional[str],
+        *,
+        floor: int = 0,
+    ) -> int:
+        key = (agent_id, task_id)
+        with self._lock:
+            next_step = max(self._steps.get(key, 0), floor) + 1
+            self._steps[key] = next_step
+            return next_step
+
+    def get(self, agent_id: str, task_id: Optional[str]) -> int:
+        with self._lock:
+            return self._steps.get((agent_id, task_id), 0)
+
+    def evaluate_budget(
+        self,
+        agent_id: str,
+        task_id: Optional[str],
+        *,
+        policy: ElasticStepBudgetPolicy,
+        current_step: int,
+        observed_goal_progress_count: int,
+        last_goal_progress_agent_step: int | None,
+    ) -> ElasticStepBudgetDecision:
+        key = (agent_id, task_id)
+        with self._lock:
+            decision, state = evaluate_elastic_step_budget(
+                policy=policy,
+                current_step=current_step,
+                observed_goal_progress_count=observed_goal_progress_count,
+                last_goal_progress_agent_step=last_goal_progress_agent_step,
+                state=self._budgets.get(key),
+            )
+            self._budgets[key] = state
+            return decision
+
+
+class _AgentExecutionRegistry:
+    """Per-task async serialization shared by Context transport copies."""
+
+    def __init__(self):
+        self._lock = threading.RLock()
+        self._async_locks: Dict[tuple[str, Optional[str]], asyncio.Lock] = {}
+
+    def async_lock(
+        self, agent_id: str, task_id: Optional[str]
+    ) -> asyncio.Lock:
+        key = (agent_id, task_id)
+        with self._lock:
+            lock = self._async_locks.get(key)
+            if lock is None:
+                lock = asyncio.Lock()
+                self._async_locks[key] = lock
+            return lock
+
+
+class _LLMCallFanInRegistry:
+    """Task-scoped call truth shared by Context transport copies.
+
+    Each transport copy retains its local list for compatible message merging and
+    append-only journal streams. This registry only provides the reconciled
+    in-process high-watermark consumed by TaskResponse and trajectory finalize.
+    """
+
+    def __init__(self):
+        self._lock = threading.RLock()
+        self._calls: Dict[Optional[str], List[Dict[str, Any]]] = {}
+
+    @staticmethod
+    def _identity(llm_call: Dict[str, Any]) -> tuple[str, str] | None:
+        if not isinstance(llm_call, dict):
+            return None
+        for field in ("request_id", "call_id"):
+            value = llm_call.get(field)
+            if isinstance(value, str) and value:
+                return field, value
+        return None
+
+    def _upsert_locked(
+        self, calls: List[Dict[str, Any]], llm_call: Dict[str, Any]
+    ) -> None:
+        incoming = copy.deepcopy(llm_call)
+        identity = self._identity(incoming)
+        if identity is not None:
+            for index, existing in enumerate(calls):
+                if self._identity(existing) == identity:
+                    calls[index] = incoming
+                    return
+        request_id = incoming.get("request_id")
+        call_id = incoming.get("call_id")
+        if (
+            isinstance(request_id, str)
+            and request_id
+            and isinstance(call_id, str)
+            and call_id
+        ):
+            for index, existing in enumerate(calls):
+                if (
+                    isinstance(existing, dict)
+                    and not existing.get("request_id")
+                    and existing.get("call_id") == call_id
+                ):
+                    calls[index] = incoming
+                    return
+        calls.append(incoming)
+
+    def ensure_seeded(
+        self, task_id: Optional[str], calls: List[Dict[str, Any]]
+    ) -> None:
+        with self._lock:
+            if task_id in self._calls:
+                return
+            target: List[Dict[str, Any]] = []
+            for llm_call in calls:
+                self._upsert_locked(target, llm_call)
+            self._calls[task_id] = target
+
+    def upsert(self, task_id: Optional[str], llm_call: Dict[str, Any]) -> None:
+        with self._lock:
+            calls = self._calls.setdefault(task_id, [])
+            self._upsert_locked(calls, llm_call)
+
+    def snapshot(self, task_id: Optional[str]) -> List[Dict[str, Any]]:
+        with self._lock:
+            return copy.deepcopy(self._calls.get(task_id, []))
+
+
+class _LLMCallJournalTipRegistry:
+    """Bounded immutable stream tips shared by Context transport copies.
+
+    Event transport may repeatedly copy from a root Context that never owns the
+    provider mutation itself. Matching on per-call logical timestamps lets a
+    new isolated stream fork an exact on-disk ancestor without copying the full
+    provider history into another snapshot.
+    """
+
+    _MAX_TIPS_PER_TASK = 512
+
+    def __init__(self) -> None:
+        self._lock = threading.RLock()
+        self._tips: Dict[
+            Optional[str], OrderedDict[tuple[int, ...], tuple[str, str]]
+        ] = {}
+
+    def publish(
+        self,
+        task_id: Optional[str],
+        call_versions: List[int],
+        stream_id: str,
+        record_checksum: str,
+    ) -> None:
+        if not stream_id or not record_checksum:
+            return
+        key = tuple(call_versions)
+        with self._lock:
+            tips = self._tips.setdefault(task_id, OrderedDict())
+            tips[key] = (stream_id, record_checksum)
+            tips.move_to_end(key)
+            while len(tips) > self._MAX_TIPS_PER_TASK:
+                tips.popitem(last=False)
+
+    def resolve(
+        self, task_id: Optional[str], call_versions: List[int]
+    ) -> tuple[str, str] | None:
+        key = tuple(call_versions)
+        with self._lock:
+            tips = self._tips.get(task_id)
+            if tips is None:
+                return None
+            tip = tips.get(key)
+            if tip is not None:
+                tips.move_to_end(key)
+            return tip
 
 
 class Context:
@@ -226,6 +430,8 @@ class Context:
         self._task_id = task_id
         self._llm_call_journal_stream_id = uuid.uuid4().hex
         self._llm_call_journal_initialized = False
+        self._llm_call_journal_parent_stream_id = None
+        self._llm_call_journal_parent_record_checksum = None
         self._llm_call_journal_call_versions: list[int] = []
         self._llm_call_journal_next_sequence = 0
         self._llm_call_journal_previous_checksum = None
@@ -234,6 +440,11 @@ class Context:
         self._session: Session = session
         self.context_info = ContextState()
         self.agent_info = ConfigDict()
+        self._agent_step_registry = _AgentStepRegistry()
+        self._agent_execution_registry = _AgentExecutionRegistry()
+        self._llm_call_fan_in_registry = _LLMCallFanInRegistry()
+        self._llm_call_journal_tip_registry = _LLMCallJournalTipRegistry()
+        self._task_runtime_state_registry = TaskRuntimeStateRegistry()
         self.trajectories = OrderedDict()
         self._token_usage = {
             "completion_tokens": 0,
@@ -470,8 +681,40 @@ class Context:
                 raise ValueError("artifact Tool output requires a local path")
             self._tool_output_artifact_paths[record.artifact.ref] = artifact_path
 
+        def publish(current):
+            state = dict(current or {})
+            records = dict(state.get("records") or {})
+            existing_shared = records.get(record.tool_call_id)
+            if existing_shared is not None and existing_shared != record:
+                raise ValueError("conflicting shared Tool output record for tool_call_id")
+            records[record.tool_call_id] = record
+            state["records"] = records
+            paths = dict(state.get("artifact_paths") or {})
+            if record.artifact is not None:
+                existing_path = paths.get(record.artifact.ref)
+                if existing_path is not None and existing_path != artifact_path:
+                    raise ValueError("conflicting shared Tool output artifact path")
+                paths[record.artifact.ref] = artifact_path
+            state["artifact_paths"] = paths
+            return state
+
+        self.update_task_runtime_state(
+            "context.tool-output-runtime.v1",
+            f"epoch:{self.task_epoch}",
+            publish,
+        )
+
     def get_tool_output_records(self) -> tuple[ToolOutputRecord, ...]:
-        return tuple(self._tool_output_records.values())
+        state = self.read_task_runtime_state(
+            "context.tool-output-runtime.v1", f"epoch:{self.task_epoch}"
+        )
+        records = dict((state or {}).get("records") or {})
+        for tool_call_id, record in self._tool_output_records.items():
+            existing = records.get(tool_call_id)
+            if existing is not None and existing != record:
+                raise ValueError("conflicting local/shared Tool output record")
+            records[tool_call_id] = record
+        return tuple(records.values())
 
     def register_model_tool_choices(self, request_id: str, tool_calls: Any) -> None:
         if not isinstance(request_id, str) or not request_id:
@@ -492,7 +735,10 @@ class Context:
         self, cause: TurnCauseCode, *, evidence_hash: str | None = None
     ) -> None:
         cause = TurnCauseCode(cause)
-        if cause is not TurnCauseCode.FRAMEWORK_RETRY:
+        if cause not in {
+            TurnCauseCode.FRAMEWORK_RETRY,
+            TurnCauseCode.VALIDATION_REPAIR,
+        }:
             raise ValueError("only implemented scheduler causes may be scheduled")
         if evidence_hash is not None and not evidence_hash.startswith("sha256:"):
             raise ValueError("evidence_hash must be canonical or None")
@@ -514,7 +760,7 @@ class Context:
     def record_tool_turn(self, tool_call_id: str) -> TurnEconomicsReceipt:
         if not isinstance(tool_call_id, str) or not tool_call_id:
             raise ValueError("tool_call_id must be non-empty")
-        retrieval = self._artifact_retrieval_plans.get(tool_call_id)
+        retrieval = self.get_artifact_retrieval_plan(tool_call_id)
         parent_request = self._model_tool_origins.get(tool_call_id)
         cause = (
             TurnCauseCode.ARTIFACT_RETRIEVAL
@@ -556,12 +802,40 @@ class Context:
             raise ValueError("artifact retrieval plan conflict")
         self._artifact_retrieval_plans[tool_call_id] = plan
 
+        def publish(current):
+            state = dict(current or {})
+            plans = dict(state.get("retrieval_plans") or {})
+            existing_shared = plans.get(tool_call_id)
+            if existing_shared is not None and existing_shared != plan:
+                raise ValueError("shared artifact retrieval plan conflict")
+            plans[tool_call_id] = plan
+            state["retrieval_plans"] = plans
+            return state
+
+        self.update_task_runtime_state(
+            "context.tool-output-runtime.v1",
+            f"epoch:{self.task_epoch}",
+            publish,
+        )
+
+    def get_artifact_retrieval_plan(
+        self, tool_call_id: str
+    ) -> ArtifactRetrievalPlan | None:
+        local = self._artifact_retrieval_plans.get(tool_call_id)
+        state = self.read_task_runtime_state(
+            "context.tool-output-runtime.v1", f"epoch:{self.task_epoch}"
+        )
+        shared = dict((state or {}).get("retrieval_plans") or {}).get(tool_call_id)
+        if local is not None and shared is not None and local != shared:
+            raise ValueError("conflicting local/shared artifact retrieval plan")
+        return shared or local
+
     def record_artifact_retrieval(
         self, tool_call_id: str, receipt: ArtifactRetrievalReceipt
     ) -> None:
         if not isinstance(receipt, ArtifactRetrievalReceipt):
             raise TypeError("receipt must be ArtifactRetrievalReceipt")
-        if receipt.plan != self._artifact_retrieval_plans.get(tool_call_id):
+        if receipt.plan != self.get_artifact_retrieval_plan(tool_call_id):
             raise ValueError("artifact retrieval receipt is not bound to plan")
         existing = self._artifact_retrieval_receipts.get(tool_call_id)
         if existing is not None:
@@ -571,6 +845,86 @@ class Context:
                 else "artifact retrieval receipt conflict"
             )
         self._artifact_retrieval_receipts[tool_call_id] = receipt
+
+        def publish(current):
+            state = dict(current or {})
+            receipts = dict(state.get("retrieval_receipts") or {})
+            existing_shared = receipts.get(tool_call_id)
+            if existing_shared is not None:
+                raise ValueError(
+                    "artifact retrieval receipt replay"
+                    if existing_shared == receipt
+                    else "artifact retrieval receipt conflict"
+                )
+            receipts[tool_call_id] = receipt
+            state["retrieval_receipts"] = receipts
+            return state
+
+        self.update_task_runtime_state(
+            "context.tool-output-runtime.v1",
+            f"epoch:{self.task_epoch}",
+            publish,
+        )
+
+    def _consume_artifact_retrieval(
+        self, tool_call_id: str, *, request_id: str, content_hash: str
+    ) -> ArtifactRetrievalReceipt | None:
+        consumed = None
+
+        def bind(current):
+            nonlocal consumed
+            state = dict(current or {})
+            receipts = dict(state.get("retrieval_receipts") or {})
+            receipt = receipts.get(tool_call_id)
+            if receipt is None or receipt.consumed:
+                return state
+            if content_hash != receipt.result_content_hash:
+                return state
+            consumed = receipt.bind_consumption(
+                request_id=request_id, content_hash=content_hash
+            )
+            receipts[tool_call_id] = consumed
+            state["retrieval_receipts"] = receipts
+            return state
+
+        self.update_task_runtime_state(
+            "context.tool-output-runtime.v1",
+            f"epoch:{self.task_epoch}",
+            bind,
+        )
+        if consumed is not None:
+            self._artifact_retrieval_receipts[tool_call_id] = consumed
+        return consumed
+
+    @staticmethod
+    def _model_tool_content_hashes(content: Any) -> tuple[str, ...]:
+        """Return hashes for exact, reversible model-message encodings.
+
+        Tool results are objects at the execution boundary, while the message
+        layer may encode that same object as JSON text (including the standard
+        single text-part form).  Consumption evidence must accept those lossless
+        encodings without weakening the check to tool-call identity alone.
+        """
+        values = [content]
+        encoded = content
+        if (
+            isinstance(content, list)
+            and len(content) == 1
+            and isinstance(content[0], dict)
+            and set(content[0]) in ({"text"}, {"type", "text"})
+            and content[0].get("type", "text") == "text"
+            and isinstance(content[0].get("text"), str)
+        ):
+            encoded = content[0]["text"]
+        if isinstance(encoded, str):
+            values.append(encoded)
+            try:
+                decoded = json.loads(encoded)
+            except (TypeError, ValueError):
+                decoded = None
+            if decoded is not None:
+                values.append(decoded)
+        return tuple(dict.fromkeys(canonical_json_hash(value) for value in values))
 
     def record_model_turn(self, request_id: str, messages: Any) -> TurnEconomicsReceipt:
         consumed_tool_ids: list[str] = []
@@ -585,16 +939,29 @@ class Context:
                 continue
             consumed_tool_ids.append(tool_call_id)
             parent_tool_id = tool_call_id
-            retrieval = self._artifact_retrieval_receipts.get(tool_call_id)
+            retrieval = next(
+                (
+                    item
+                    for item in self.get_artifact_retrieval_receipts()
+                    if item.plan.consumer_tool_call_id_hash
+                    == hashed_identity("tool_call_id", tool_call_id)
+                ),
+                None,
+            )
             if retrieval is None or retrieval.consumed:
                 continue
-            content_hash = canonical_json_hash(message.get("content"))
-            if content_hash == retrieval.result_content_hash:
-                self._artifact_retrieval_receipts[tool_call_id] = (
-                    retrieval.bind_consumption(
-                        request_id=request_id, content_hash=content_hash
-                    )
+            bound = None
+            for content_hash in self._model_tool_content_hashes(
+                message.get("content")
+            ):
+                bound = self._consume_artifact_retrieval(
+                    tool_call_id,
+                    request_id=request_id,
+                    content_hash=content_hash,
                 )
+                if bound is not None:
+                    break
+            if bound is not None:
                 artifact_consumed = True
                 artifact_parent_tool_id = tool_call_id
         pending = self._pending_turn_cause
@@ -603,9 +970,9 @@ class Context:
             cause, evidence_hash = pending
         elif artifact_consumed:
             cause = TurnCauseCode.ARTIFACT_RETRIEVAL
-            evidence_hash = self._artifact_retrieval_receipts[
+            evidence_hash = self.get_artifact_retrieval_plan(
                 artifact_parent_tool_id
-            ].plan.fingerprint
+            ).fingerprint
         elif any(
             tool_call_id in self._model_tool_origins
             for tool_call_id in consumed_tool_ids
@@ -645,7 +1012,7 @@ class Context:
         request_id_hash = hashed_identity("request_id", request_id)
         return tuple(
             receipt
-            for receipt in self._artifact_retrieval_receipts.values()
+            for receipt in self.get_artifact_retrieval_receipts()
             if receipt.next_request_id_hash == request_id_hash
         )
 
@@ -653,16 +1020,33 @@ class Context:
         return tuple(self._turn_economics_receipts)
 
     def get_artifact_retrieval_receipts(self) -> tuple[ArtifactRetrievalReceipt, ...]:
-        return tuple(self._artifact_retrieval_receipts.values())
+        state = self.read_task_runtime_state(
+            "context.tool-output-runtime.v1", f"epoch:{self.task_epoch}"
+        )
+        receipts = dict((state or {}).get("retrieval_receipts") or {})
+        for tool_call_id, receipt in self._artifact_retrieval_receipts.items():
+            existing = receipts.get(tool_call_id)
+            if existing is not None and existing != receipt:
+                # A shared receipt may be the later, consumption-bound form.
+                if existing.plan != receipt.plan:
+                    raise ValueError("conflicting local/shared artifact retrieval receipt")
+                continue
+            receipts[tool_call_id] = receipt
+        return tuple(receipts.values())
 
     def read_tool_output_artifact(self, artifact_ref: str) -> bytes:
-        path = self._tool_output_artifact_paths.get(artifact_ref)
+        state = self.read_task_runtime_state(
+            "context.tool-output-runtime.v1", f"epoch:{self.task_epoch}"
+        )
+        path = dict((state or {}).get("artifact_paths") or {}).get(
+            artifact_ref, self._tool_output_artifact_paths.get(artifact_ref)
+        )
         if path is None:
             raise KeyError("unknown Tool output artifact ref")
         record = next(
             (
                 value
-                for value in self._tool_output_records.values()
+                for value in self.get_tool_output_records()
                 if value.artifact is not None and value.artifact.ref == artifact_ref
             ),
             None,
@@ -1020,6 +1404,8 @@ class Context:
         }
         self._merge_token_baseline = copy.deepcopy(self._token_usage)
         self._merge_llm_calls_baseline = 0
+        self._llm_call_fan_in_registry = _LLMCallFanInRegistry()
+        self._task_runtime_state_registry = TaskRuntimeStateRegistry()
         self.configure_completion_contract(None, mode=CompletionMode.OFF)
         self._task_tool_catalogs = {}
         self._tool_catalog_transitions = []
@@ -1158,6 +1544,16 @@ class Context:
             self.context_info["llm_calls"] = llm_calls
         return llm_calls
 
+    def get_reconciled_llm_calls(self) -> List[Dict[str, Any]]:
+        """Return the task-wide call high-watermark across transport copies."""
+        local_calls = self.get_llm_calls()
+        registry = getattr(self, "_llm_call_fan_in_registry", None)
+        if registry is None:
+            registry = _LLMCallFanInRegistry()
+            self._llm_call_fan_in_registry = registry
+        registry.ensure_seeded(self.task_id, local_calls)
+        return registry.snapshot(self.task_id)
+
     def _journal_llm_call_mutation(
         self,
         *,
@@ -1165,21 +1561,72 @@ class Context:
         index: int,
         current: Dict[str, Any],
         previous: Dict[str, Any] | None = None,
+        previous_recorded_at_epoch_ns: int | None = None,
         recorded_at_epoch_ns: int,
     ) -> None:
         """Persist optional crash-recovery evidence without affecting execution."""
         try:
+            tip_registry = getattr(self, "_llm_call_journal_tip_registry", None)
+            if tip_registry is None:
+                tip_registry = _LLMCallJournalTipRegistry()
+                self._llm_call_journal_tip_registry = tip_registry
             if not getattr(self, "_llm_call_journal_initialized", False):
-                destination = append_llm_call_snapshot(
-                    context=self,
-                    event_type=f"{event_type}:stream_snapshot",
-                    llm_calls=self.get_llm_calls(),
-                    call_recorded_at_epoch_ns=self._llm_call_journal_call_versions,
+                parent_stream_id = getattr(
+                    self, "_llm_call_journal_parent_stream_id", None
                 )
+                parent_checksum = getattr(
+                    self, "_llm_call_journal_parent_record_checksum", None
+                )
+                if not (
+                    isinstance(parent_stream_id, str)
+                    and isinstance(parent_checksum, str)
+                ):
+                    base_versions = list(self._llm_call_journal_call_versions)
+                    if previous is None:
+                        del base_versions[index:]
+                    elif previous_recorded_at_epoch_ns is not None:
+                        base_versions[index] = previous_recorded_at_epoch_ns
+                    resolved_tip = tip_registry.resolve(self.task_id, base_versions)
+                    if resolved_tip is not None:
+                        parent_stream_id, parent_checksum = resolved_tip
+                if isinstance(parent_stream_id, str) and isinstance(
+                    parent_checksum, str
+                ):
+                    destination = append_llm_call_fork(
+                        context=self,
+                        event_type=f"{event_type}:stream_fork",
+                        parent_stream_id=parent_stream_id,
+                        parent_record_checksum=parent_checksum,
+                    )
+                    if destination is not None:
+                        self._llm_call_journal_initialized = True
+                        append_llm_call_mutation(
+                            context=self,
+                            event_type=event_type,
+                            index=index,
+                            current=current,
+                            previous=previous,
+                            recorded_at_epoch_ns=recorded_at_epoch_ns,
+                        )
+                else:
+                    destination = append_llm_call_snapshot(
+                        context=self,
+                        event_type=f"{event_type}:stream_snapshot",
+                        llm_calls=self.get_llm_calls(),
+                        call_recorded_at_epoch_ns=self._llm_call_journal_call_versions,
+                    )
                 if destination is not None:
                     self._llm_call_journal_initialized = True
+                    self._llm_call_journal_parent_stream_id = None
+                    self._llm_call_journal_parent_record_checksum = None
+                    tip_registry.publish(
+                        self.task_id,
+                        self._llm_call_journal_call_versions,
+                        self._llm_call_journal_stream_id,
+                        self._llm_call_journal_previous_checksum,
+                    )
                 return
-            append_llm_call_mutation(
+            destination = append_llm_call_mutation(
                 context=self,
                 event_type=event_type,
                 index=index,
@@ -1187,6 +1634,15 @@ class Context:
                 previous=previous,
                 recorded_at_epoch_ns=recorded_at_epoch_ns,
             )
+            if destination is not None and getattr(
+                self, "_llm_call_journal_initialized", False
+            ):
+                tip_registry.publish(
+                    self.task_id,
+                    self._llm_call_journal_call_versions,
+                    self._llm_call_journal_stream_id,
+                    self._llm_call_journal_previous_checksum,
+                )
         except Exception as exc:
             # A failed delta leaves the on-disk tip ambiguous. Rotate to a new
             # isolated stream so the next mutation writes a complete snapshot
@@ -1195,6 +1651,8 @@ class Context:
             self._llm_call_journal_initialized = False
             self._llm_call_journal_next_sequence = 0
             self._llm_call_journal_previous_checksum = None
+            self._llm_call_journal_parent_stream_id = None
+            self._llm_call_journal_parent_record_checksum = None
             logger.warning(
                 f"LLM call journal append failed open; error_type={type(exc).__name__}"
             )
@@ -1203,8 +1661,14 @@ class Context:
         self, llm_call: Dict[str, Any], *, event_type: str = "call_appended"
     ) -> None:
         calls = self.get_llm_calls()
+        registry = getattr(self, "_llm_call_fan_in_registry", None)
+        if registry is None:
+            registry = _LLMCallFanInRegistry()
+            self._llm_call_fan_in_registry = registry
+        registry.ensure_seeded(self.task_id, calls)
         self._synchronize_llm_call_journal_versions(calls)
         calls.append(llm_call)
+        registry.upsert(self.task_id, llm_call)
         recorded_at = time.time_ns()
         self._llm_call_journal_call_versions.append(recorded_at)
         self._journal_llm_call_mutation(
@@ -1222,9 +1686,16 @@ class Context:
         event_type: str = "call_updated",
     ) -> None:
         calls = self.get_llm_calls()
+        registry = getattr(self, "_llm_call_fan_in_registry", None)
+        if registry is None:
+            registry = _LLMCallFanInRegistry()
+            self._llm_call_fan_in_registry = registry
+        registry.ensure_seeded(self.task_id, calls)
         self._synchronize_llm_call_journal_versions(calls)
         previous = calls[index]
+        previous_recorded_at = self._llm_call_journal_call_versions[index]
         calls[index] = llm_call
+        registry.upsert(self.task_id, llm_call)
         recorded_at = time.time_ns()
         self._llm_call_journal_call_versions[index] = recorded_at
         self._journal_llm_call_mutation(
@@ -1232,6 +1703,7 @@ class Context:
             index=index,
             current=llm_call,
             previous=previous,
+            previous_recorded_at_epoch_ns=previous_recorded_at,
             recorded_at_epoch_ns=recorded_at,
         )
 
@@ -1380,7 +1852,7 @@ class Context:
                         ],
                         "artifact_retrievals": [
                             receipt.to_redacted_dict()
-                            for receipt in self._artifact_retrieval_receipts.values()
+                            for receipt in self.get_artifact_retrieval_receipts()
                         ],
                     },
                 }
@@ -1496,6 +1968,19 @@ class Context:
         new_context._trace_id = self._trace_id
         new_context._llm_call_journal_stream_id = uuid.uuid4().hex
         new_context._llm_call_journal_initialized = False
+        new_context._llm_call_journal_parent_stream_id = (
+            self._llm_call_journal_stream_id
+            if getattr(self, "_llm_call_journal_initialized", False)
+            and isinstance(
+                getattr(self, "_llm_call_journal_previous_checksum", None), str
+            )
+            else None
+        )
+        new_context._llm_call_journal_parent_record_checksum = (
+            self._llm_call_journal_previous_checksum
+            if new_context._llm_call_journal_parent_stream_id is not None
+            else None
+        )
         new_context._llm_call_journal_call_versions = copy.deepcopy(
             getattr(self, "_llm_call_journal_call_versions", [])
         )
@@ -1504,6 +1989,31 @@ class Context:
         new_context._start = self._start
         new_context._workspace_path = self._workspace_path
         new_context._checkpoint_repository = self._checkpoint_repository
+        new_context._agent_step_registry = getattr(
+            self,
+            "_agent_step_registry",
+            _AgentStepRegistry(),
+        )
+        new_context._agent_execution_registry = getattr(
+            self,
+            "_agent_execution_registry",
+            _AgentExecutionRegistry(),
+        )
+        new_context._llm_call_fan_in_registry = getattr(
+            self,
+            "_llm_call_fan_in_registry",
+            _LLMCallFanInRegistry(),
+        )
+        new_context._llm_call_journal_tip_registry = getattr(
+            self,
+            "_llm_call_journal_tip_registry",
+            _LLMCallJournalTipRegistry(),
+        )
+        new_context._task_runtime_state_registry = getattr(
+            self,
+            "_task_runtime_state_registry",
+            TaskRuntimeStateRegistry(),
+        )
         # Session - shallow copy to maintain reference
         new_context._session = self._session
 
@@ -1563,9 +2073,27 @@ class Context:
             getattr(self, "_pending_cache_break_reasons", ())
         )
 
-        # Deep copy complex state objects
+        # Provider call records are immutable snapshots: all framework updates
+        # replace a whole top-level record through ``replace_llm_call``.  Share
+        # their large nested request/response payloads across transport copies
+        # while retaining independent lists/top-level dicts.  Deep-copying the
+        # cumulative call history on every Event message made long executions
+        # O(turns²) in live Python objects and could stall unrelated Amni reads
+        # under swap pressure.
         try:
-            new_context.context_info = copy.deepcopy(self.context_info)
+            if isinstance(self.context_info, ContextState):
+                transport_state = ContextState()
+                for key, value in self.context_info.items():
+                    if key == "llm_calls" and isinstance(value, list):
+                        transport_state[key] = [
+                            dict(call) if isinstance(call, dict) else call
+                            for call in value
+                        ]
+                    else:
+                        transport_state[key] = copy.deepcopy(value)
+                new_context.context_info = transport_state
+            else:
+                new_context.context_info = copy.deepcopy(self.context_info)
         except Exception:
             new_context.context_info = copy.copy(self.context_info)
 
@@ -1915,18 +2443,114 @@ class Context:
         if self.task_id not in self.agent_info[agent_id]:
             self.agent_info[agent_id][self.task_id] = {}
         agent_task_info = self.agent_info[agent_id][self.task_id]
-        agent_task_info["step"] = agent_task_info.get("step", 0) + 1
+        legacy_step = int(agent_task_info.get("step", 0) or 0)
+        registry = getattr(self, "_agent_step_registry", None)
+        if registry is None:
+            registry = _AgentStepRegistry()
+            self._agent_step_registry = registry
+        agent_task_info["step"] = registry.increment(
+            agent_id,
+            self.task_id,
+            floor=legacy_step,
+        )
 
     def get_agent_step(
         self, agent_id: str, task_id: str = None, agent_info: dict = None
     ):
-        if not agent_info:
-            agent_info = self.agent_info
         if not task_id:
             task_id = self.task_id
-        if not agent_id or not agent_info.get(agent_id, {}).get(task_id):
+        if not agent_id:
             return 0
-        return agent_info[agent_id][task_id].get("step", 0)
+        use_current_context = agent_info is None or agent_info is self.agent_info
+        if agent_info is None:
+            agent_info = self.agent_info
+        legacy_step = 0
+        if agent_info.get(agent_id, {}).get(task_id):
+            legacy_step = int(agent_info[agent_id][task_id].get("step", 0) or 0)
+        if not use_current_context:
+            return legacy_step
+        registry = getattr(self, "_agent_step_registry", None)
+        if registry is None:
+            return legacy_step
+        return max(legacy_step, registry.get(agent_id, task_id))
+
+    def get_agent_execution_lock(
+        self, agent_id: str, task_id: str | None = None
+    ) -> asyncio.Lock:
+        registry = getattr(self, "_agent_execution_registry", None)
+        if registry is None:
+            registry = _AgentExecutionRegistry()
+            self._agent_execution_registry = registry
+        return registry.async_lock(agent_id, task_id or self.task_id)
+
+    def read_task_runtime_state(self, namespace: str, key: str) -> Any:
+        owner = self._task_runtime_registry_owner()
+        registry = getattr(owner, "_task_runtime_state_registry", None)
+        if registry is None:
+            registry = TaskRuntimeStateRegistry()
+            owner._task_runtime_state_registry = registry
+        return registry.read(self.task_id, namespace, key)
+
+    def write_task_runtime_state(
+        self, namespace: str, key: str, value: Any
+    ) -> None:
+        owner = self._task_runtime_registry_owner()
+        registry = getattr(owner, "_task_runtime_state_registry", None)
+        if registry is None:
+            registry = TaskRuntimeStateRegistry()
+            owner._task_runtime_state_registry = registry
+        registry.write(self.task_id, namespace, key, value)
+
+    def update_task_runtime_state(
+        self, namespace: str, key: str, updater
+    ) -> Any:
+        owner = self._task_runtime_registry_owner()
+        registry = getattr(owner, "_task_runtime_state_registry", None)
+        if registry is None:
+            registry = TaskRuntimeStateRegistry()
+            owner._task_runtime_state_registry = registry
+        return registry.update(self.task_id, namespace, key, updater)
+
+    def claim_task_runtime_token(self, namespace: str, token: str) -> bool:
+        owner = self._task_runtime_registry_owner()
+        registry = getattr(owner, "_task_runtime_state_registry", None)
+        if registry is None:
+            registry = TaskRuntimeStateRegistry()
+            owner._task_runtime_state_registry = registry
+        return registry.claim_token(self.task_id, namespace, token)
+
+    def _task_runtime_registry_owner(self) -> "Context":
+        """Resolve the task-run owner shared by independently transported copies."""
+        event_manager = getattr(self, "_event_manager", None)
+        root_context = (
+            getattr(event_manager, "context", None)
+            if event_manager is not None
+            else None
+        )
+        return root_context if isinstance(root_context, Context) else self
+
+    def evaluate_agent_step_budget(
+        self,
+        agent_id: str,
+        *,
+        policy: ElasticStepBudgetPolicy,
+        observed_goal_progress_count: int,
+        last_goal_progress_agent_step: int | None,
+        task_id: str | None = None,
+    ) -> ElasticStepBudgetDecision:
+        resolved_task_id = task_id or self.task_id
+        registry = getattr(self, "_agent_step_registry", None)
+        if registry is None:
+            registry = _AgentStepRegistry()
+            self._agent_step_registry = registry
+        return registry.evaluate_budget(
+            agent_id,
+            resolved_task_id,
+            policy=policy,
+            current_step=self.get_agent_step(agent_id, resolved_task_id),
+            observed_goal_progress_count=observed_goal_progress_count,
+            last_goal_progress_agent_step=last_goal_progress_agent_step,
+        )
 
     def open_step(
         self,

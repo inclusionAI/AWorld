@@ -28,6 +28,10 @@ from aworld.core.context.compiler import (
 )
 
 
+_RETRIEVAL_PLAN_DIAGNOSTICS: dict[str, dict[str, Any]] = {}
+_MAX_MODEL_VISIBLE_RETRIEVAL_BYTES = 64 * 1024
+
+
 def _canonical_sha256(value: Any) -> str | None:
     if not isinstance(value, str):
         return None
@@ -37,6 +41,14 @@ def _canonical_sha256(value: Any) -> str | None:
     if len(normalized) != 64 or any(ch not in "0123456789abcdef" for ch in normalized):
         return None
     return f"sha256:{normalized}"
+
+
+def _canonical_identity(value: Any) -> str | None:
+    """Normalize string-backed enum/wrapper identities at Tool boundaries."""
+    if isinstance(value, str):
+        return value
+    enum_value = getattr(value, "value", None)
+    return enum_value if isinstance(enum_value, str) else None
 
 
 def _extract_upstream_artifacts(
@@ -135,7 +147,9 @@ def prepare_tool_output_plans(context, actions: Iterable[Any]) -> dict[str, Tool
     plans: dict[str, ToolOutputPlan] = {}
     for action in actions:
         tool_call_id = getattr(action, "tool_call_id", None)
-        retrieval_planned = _prepare_artifact_retrieval(context, action)
+        retrieval_planned = _prepare_artifact_retrieval(
+            context, action, tool_output_policy=policy
+        )
         if not isinstance(tool_call_id, str) or not tool_call_id:
             if policy is not None or retrieval_planned:
                 raise ValueError("enforced Tool boundary requires a tool_call_id")
@@ -150,20 +164,133 @@ def prepare_tool_output_plans(context, actions: Iterable[Any]) -> dict[str, Tool
     return plans
 
 
-def _prepare_artifact_retrieval(context, action: Any) -> bool:
+def _prepare_artifact_retrieval(
+    context,
+    action: Any,
+    *,
+    tool_output_policy: Any = None,
+) -> bool:
     if context is None:
         return False
-    owner_tool = getattr(action, "tool_name", None)
-    action_name = getattr(action, "action_name", None)
-    declared = [
+    owner_tool = _canonical_identity(getattr(action, "tool_name", None))
+    action_name = _canonical_identity(getattr(action, "action_name", None))
+    # MCP actions are still expressed as ``mcp`` + ``server__action`` when
+    # pre-invocation plans are frozen; McpTool mutates them to the canonical
+    # server/action pair only inside do_step. Resolve that framework routing
+    # syntax here so the plan and post-invocation receipt use one identity.
+    if owner_tool == "mcp" and isinstance(action_name, str) and "__" in action_name:
+        routed_owner, routed_action = action_name.split("__", 1)
+        if routed_owner and routed_action:
+            owner_tool, action_name = routed_owner, routed_action
+    direct_records = context.get_tool_output_records()
+    direct_artifacts = [
         receipt
-        for record in context.get_tool_output_records()
+        for record in direct_records
         for receipt in record.upstream_artifacts
-        if receipt.owner_tool == owner_tool and receipt.retrieval_action == action_name
     ]
-    if not declared:
-        return False
+    declared: list[UpstreamToolArtifactReceipt] = []
+    for receipt in direct_artifacts:
+        if (
+            receipt.owner_tool == owner_tool
+            and receipt.retrieval_action == action_name
+            and receipt not in declared
+        ):
+            declared.append(receipt)
     tool_call_id = getattr(action, "tool_call_id", None)
+    diagnostic = {
+        "schema_version": "aworld.context.artifact-retrieval-planning.v1",
+        "status": "unavailable",
+        "reason_code": "declared_artifact_not_found",
+        "direct_record_count": len(direct_records),
+        "direct_artifact_count": len(direct_artifacts),
+        "direct_owner_match_count": sum(
+            receipt.owner_tool == owner_tool for receipt in direct_artifacts
+        ),
+        "direct_action_match_count": sum(
+            receipt.retrieval_action == action_name for receipt in direct_artifacts
+        ),
+        "direct_match_count": len(declared),
+        "work_state_source": "unavailable",
+        "work_state_artifact_count": 0,
+        "work_state_match_count": 0,
+    }
+    # Amni transports the next agent turn through several Context copies. The
+    # bounded WorkingState ledger is already the task-scoped, read-your-write
+    # continuity channel for those copies, so use its framework-authored
+    # artifact registry as a second authoritative source. Never parse the
+    # model-visible prompt or infer a capability from a path-like string.
+    agent_name = getattr(action, "agent_name", None)
+    event_manager = getattr(context, "event_manager", None)
+    runtime_context = (
+        getattr(event_manager, "context", None)
+        if event_manager is not None
+        else None
+    ) or context
+    shared_reader = getattr(runtime_context, "read_task_runtime_state", None)
+    if isinstance(agent_name, str) and agent_name:
+        try:
+            from aworld.core.context.compiler.work_state import ADAPTIVE_WORK_STATE_KEY
+
+            work_state = (
+                shared_reader(agent_name, ADAPTIVE_WORK_STATE_KEY)
+                if callable(shared_reader)
+                else None
+            )
+            if isinstance(work_state, dict):
+                diagnostic["work_state_source"] = "task_runtime"
+            state_key = f"{ADAPTIVE_WORK_STATE_KEY}:{agent_name}"
+            if not isinstance(work_state, dict):
+                work_state = runtime_context.context_info.get(state_key)
+                if isinstance(work_state, dict):
+                    diagnostic["work_state_source"] = "context_info"
+            if not isinstance(work_state, dict):
+                get_working_state = getattr(runtime_context, "get", None)
+                work_state = (
+                    get_working_state(state_key)
+                    if callable(get_working_state)
+                    else None
+                )
+                if isinstance(work_state, dict):
+                    diagnostic["work_state_source"] = "amni_working_state"
+            work_artifacts = (work_state or {}).get("available_artifacts", ())
+            diagnostic["work_state_artifact_count"] = (
+                len(work_artifacts) if isinstance(work_artifacts, (list, tuple)) else 0
+            )
+            for value in work_artifacts:
+                if not isinstance(value, dict):
+                    continue
+                checksum = _canonical_sha256(value.get("content_hash"))
+                byte_count = value.get("byte_count")
+                if (
+                    value.get("tool") != owner_tool
+                    or value.get("action") != action_name
+                    or not isinstance(value.get("ref"), str)
+                    or not value["ref"].strip()
+                    or checksum is None
+                    or isinstance(byte_count, bool)
+                    or not isinstance(byte_count, int)
+                    or byte_count < 0
+                ):
+                    continue
+                receipt = UpstreamToolArtifactReceipt(
+                    ref=value["ref"],
+                    content_hash=checksum,
+                    byte_count=byte_count,
+                    owner_tool=owner_tool,
+                    retrieval_action=action_name,
+                )
+                if receipt not in declared:
+                    declared.append(receipt)
+                    diagnostic["work_state_match_count"] += 1
+        except Exception as exc:
+            # A missing or stale operational ledger must not interfere with
+            # ordinary Tool execution; an unproven retrieval remains untyped.
+            diagnostic["work_state_source"] = "error"
+            diagnostic["work_state_error_type"] = type(exc).__name__
+    if not declared:
+        if isinstance(tool_call_id, str) and tool_call_id:
+            _RETRIEVAL_PLAN_DIAGNOSTICS[tool_call_id] = diagnostic
+        return False
     if not isinstance(tool_call_id, str) or not tool_call_id:
         return True
     params = getattr(action, "params", None) or {}
@@ -174,8 +301,36 @@ def _prepare_artifact_retrieval(context, action: Any) -> bool:
     source = matches[0]
     offset = params.get("offset", 0)
     limit = params.get("limit")
+    # Some provider-compatible schemas serialize integer arguments as decimal
+    # strings. Normalize only canonical non-negative integers at the framework
+    # boundary; arbitrary strings still fail closed in ArtifactRetrievalPlan.
+    if isinstance(offset, str) and offset.isdecimal():
+        offset = int(offset)
+    if isinstance(limit, str) and limit.isdecimal():
+        limit = int(limit)
     if limit is None and isinstance(offset, int) and not isinstance(offset, bool):
         limit = max(1, source.byte_count - offset)
+    requested_limit = limit
+    if (
+        isinstance(limit, int)
+        and not isinstance(limit, bool)
+        and isinstance(offset, int)
+        and not isinstance(offset, bool)
+    ):
+        policy_tokens = getattr(tool_output_policy, "max_inline_tokens", None)
+        policy_byte_cap = (
+            max(1, policy_tokens * 3)
+            if isinstance(policy_tokens, int) and not isinstance(policy_tokens, bool)
+            else _MAX_MODEL_VISIBLE_RETRIEVAL_BYTES
+        )
+        effective_cap = min(_MAX_MODEL_VISIBLE_RETRIEVAL_BYTES, policy_byte_cap)
+        remaining = max(0, source.byte_count - offset)
+        if remaining > 0:
+            limit = min(limit, effective_cap, remaining)
+            params["limit"] = limit
+            diagnostic["requested_limit"] = requested_limit
+            diagnostic["effective_limit"] = limit
+            diagnostic["limit_adjusted"] = limit != requested_limit
     plan = ArtifactRetrievalPlan(
         owner_tool=source.owner_tool,
         retrieval_action=source.retrieval_action,
@@ -187,6 +342,9 @@ def _prepare_artifact_retrieval(context, action: Any) -> bool:
         consumer_tool_call_id_hash=hashed_identity("tool_call_id", tool_call_id),
     )
     context.register_artifact_retrieval_plan(tool_call_id, plan)
+    diagnostic["status"] = "planned"
+    diagnostic["reason_code"] = "declared_artifact_matched"
+    _RETRIEVAL_PLAN_DIAGNOSTICS[tool_call_id] = diagnostic
     return True
 
 
@@ -229,8 +387,55 @@ def _retrieval_result_fields(value: Any) -> dict[str, Any] | None:
     return visit(value)
 
 
+def _build_artifact_retrieval_receipt(
+    plan: ArtifactRetrievalPlan,
+    action_result: Any,
+    fields: dict[str, Any] | None,
+) -> ArtifactRetrievalReceipt:
+    if fields is None:
+        raise ValueError("artifact_retrieval_receipt_missing")
+    source_hash = _canonical_sha256(fields.get("content_sha256"))
+    chunk_hash = _canonical_sha256(fields.get("chunk_sha256"))
+    if source_hash is None or chunk_hash is None:
+        raise ValueError("artifact_retrieval_checksum_missing")
+    if (
+        fields.get("artifact_ref") != plan.artifact_ref
+        or fields.get("total_bytes") != plan.artifact_byte_count
+    ):
+        raise ValueError("artifact_retrieval_source_mismatch")
+    content = fields.get("content")
+    content_type = fields.get("type", "text")
+    chunk = (
+        base64.b64decode(content, validate=True)
+        if content_type == "base64" and isinstance(content, str)
+        else content.encode("utf-8")
+        if content_type == "text" and isinstance(content, str)
+        else None
+    )
+    if chunk is None:
+        raise ValueError("artifact_retrieval_chunk_missing")
+    actual_chunk_hash = f"sha256:{hashlib.sha256(chunk).hexdigest()}"
+    if len(chunk) != fields.get("returned_bytes") or actual_chunk_hash != chunk_hash:
+        raise ValueError("artifact_retrieval_chunk_mismatch")
+    return ArtifactRetrievalReceipt(
+        plan=plan,
+        returned_offset=fields.get("offset"),
+        next_offset=fields.get("next_offset"),
+        returned_byte_count=fields.get("returned_bytes"),
+        chunk_checksum=chunk_hash,
+        source_content_hash=source_hash,
+        result_content_hash=canonical_json_hash(action_result.content),
+        complete=fields.get("complete"),
+    )
+
+
 def _record_turn_and_retrieval(
-    context, action: Any, action_result: Any, *, retrieval_fields: dict[str, Any] | None = None
+    context,
+    action: Any,
+    action_result: Any,
+    *,
+    retrieval_fields: dict[str, Any] | None = None,
+    retrieval_receipt: ArtifactRetrievalReceipt | None = None,
 ) -> None:
     if context is None:
         return
@@ -238,6 +443,14 @@ def _record_turn_and_retrieval(
         metadata = dict(getattr(action_result, "metadata", None) or {})
     except Exception:
         metadata = {}
+    planning = _RETRIEVAL_PLAN_DIAGNOSTICS.pop(
+        getattr(action, "tool_call_id", None), None
+    )
+    if planning is not None and (
+        planning.get("status") == "planned"
+        or getattr(action, "action_name", None) == "read_output_artifact"
+    ):
+        metadata["artifact_retrieval_planning"] = planning
     try:
         turn = context.record_tool_turn(action.tool_call_id)
         metadata["turn_economics"] = turn.to_redacted_dict()
@@ -246,41 +459,13 @@ def _record_turn_and_retrieval(
             "status": "unavailable",
             "reason_code": "turn_economics_record_failed",
         }
-    plan = getattr(context, "_artifact_retrieval_plans", {}).get(action.tool_call_id)
+    plan = context.get_artifact_retrieval_plan(action.tool_call_id)
     if plan is not None:
         try:
-            fields = retrieval_fields or _retrieval_result_fields(action_result.content)
-            if fields is None:
-                raise ValueError("artifact_retrieval_receipt_missing")
-            source_hash = _canonical_sha256(fields.get("content_sha256"))
-            chunk_hash = _canonical_sha256(fields.get("chunk_sha256"))
-            if source_hash is None or chunk_hash is None:
-                raise ValueError("artifact_retrieval_checksum_missing")
-            if fields.get("artifact_ref") != plan.artifact_ref or fields.get("total_bytes") != plan.artifact_byte_count:
-                raise ValueError("artifact_retrieval_source_mismatch")
-            content = fields.get("content")
-            content_type = fields.get("type", "text")
-            chunk = (
-                base64.b64decode(content, validate=True)
-                if content_type == "base64" and isinstance(content, str)
-                else content.encode("utf-8")
-                if content_type == "text" and isinstance(content, str)
-                else None
-            )
-            if chunk is None:
-                raise ValueError("artifact_retrieval_chunk_missing")
-            actual_chunk_hash = f"sha256:{hashlib.sha256(chunk).hexdigest()}"
-            if len(chunk) != fields.get("returned_bytes") or actual_chunk_hash != chunk_hash:
-                raise ValueError("artifact_retrieval_chunk_mismatch")
-            receipt = ArtifactRetrievalReceipt(
-                plan=plan,
-                returned_offset=fields.get("offset"),
-                next_offset=fields.get("next_offset"),
-                returned_byte_count=fields.get("returned_bytes"),
-                chunk_checksum=chunk_hash,
-                source_content_hash=source_hash,
-                result_content_hash=canonical_json_hash(action_result.content),
-                complete=fields.get("complete"),
+            receipt = retrieval_receipt or _build_artifact_retrieval_receipt(
+                plan,
+                action_result,
+                retrieval_fields or _retrieval_result_fields(action_result.content),
             )
             context.record_artifact_retrieval(action.tool_call_id, receipt)
             metadata["artifact_retrieval"] = receipt.to_redacted_dict()
@@ -302,7 +487,7 @@ def _artifact_root(context) -> Path:
     return Path(tempfile.gettempdir()) / "aworld-tool-output" / namespace
 
 
-def _observe_unbounded_tool_output(action: Any, action_result: Any) -> None:
+def _observe_unbounded_tool_output(context, action: Any, action_result: Any) -> None:
     """Attach byte economics in legacy/off mode without changing Tool content."""
     raw = _raw_bytes(action_result.content)
     owner_tool = str(
@@ -328,6 +513,36 @@ def _observe_unbounded_tool_output(action: Any, action_result: Any) -> None:
         "context_artifact_role": None,
         "upstream_artifacts": [receipt.to_dict() for receipt in upstream],
     }
+    tool_call_id = getattr(action, "tool_call_id", None)
+    if context is not None and isinstance(tool_call_id, str) and tool_call_id:
+        try:
+            context.record_tool_output(
+                ToolOutputRecord(
+                    tool_call_id=tool_call_id,
+                    policy_version="off-v1",
+                    raw_byte_count=len(raw),
+                    raw_checksum=f"sha256:{hashlib.sha256(raw).hexdigest()}",
+                    inline_payload=freeze_json(action_result.content),
+                    inline_tokens=estimate_canonical_json_tokens(
+                        raw.decode("utf-8", errors="replace")
+                    ).value
+                    or 0,
+                    offloaded_tokens=0,
+                    artifact=None,
+                    reason_code=(
+                        "upstream_artifact_observed"
+                        if upstream
+                        else "unbounded_inline_output_observed"
+                    ),
+                    upstream_artifacts=upstream,
+                ),
+                artifact_path=None,
+            )
+        except Exception:
+            metadata["tool_output_record"] = {
+                "status": "unavailable",
+                "reason_code": "tool_output_observation_record_failed",
+            }
     action_result.metadata = metadata
 
 
@@ -379,8 +594,6 @@ def _bounded_inline(
     upstream = upstream_artifacts[0] if upstream_artifacts else None
     primary_artifact_ref = upstream.ref if upstream is not None else context_artifact_ref
     artifact_fields: dict[str, Any] = {"artifact_ref": primary_artifact_ref}
-    if context_artifact_ref and context_artifact_ref != primary_artifact_ref:
-        artifact_fields["context_artifact_ref"] = context_artifact_ref
     if upstream is not None:
         artifact_fields["artifact_retrieval"] = {
             "tool": upstream.owner_tool,
@@ -483,9 +696,25 @@ def enforce_tool_output_boundary(
         tool_call_id = action.tool_call_id
         action_result = results[index]
         retrieval_fields = _retrieval_result_fields(action_result.content)
+        retrieval_plan = (
+            context.get_artifact_retrieval_plan(tool_call_id)
+            if context is not None
+            else None
+        )
+        retrieval_receipt = None
+        if retrieval_plan is not None:
+            try:
+                retrieval_receipt = _build_artifact_retrieval_receipt(
+                    retrieval_plan, action_result, retrieval_fields
+                )
+            except Exception:
+                # Invalid retrieval output remains subject to the ordinary
+                # bounded/offloaded Tool policy and receives an unavailable
+                # receipt below. It is never promoted to model-visible data.
+                retrieval_receipt = None
         if tool_call_id not in plans:
             try:
-                _observe_unbounded_tool_output(action, action_result)
+                _observe_unbounded_tool_output(context, action, action_result)
             except Exception:
                 try:
                     metadata = dict(getattr(action_result, "metadata", None) or {})
@@ -497,7 +726,11 @@ def enforce_tool_output_boundary(
                 }
                 action_result.metadata = metadata
             _record_turn_and_retrieval(
-                context, action, action_result, retrieval_fields=retrieval_fields
+                context,
+                action,
+                action_result,
+                retrieval_fields=retrieval_fields,
+                retrieval_receipt=retrieval_receipt,
             )
             continue
         plan = plans[tool_call_id]
@@ -516,7 +749,17 @@ def enforce_tool_output_boundary(
         ).value or 0
         artifact = None
         artifact_path = None
-        if (
+        explicitly_retrieved_inline = bool(
+            retrieval_receipt is not None
+            and retrieval_receipt.returned_byte_count
+            <= _MAX_MODEL_VISIBLE_RETRIEVAL_BYTES
+        )
+        if explicitly_retrieved_inline:
+            try:
+                inline = freeze_json(action_result.content)
+            except TypeError:
+                inline = raw.decode("utf-8", errors="replace")
+        elif (
             raw_tokens <= plan.policy.max_inline_tokens
             and not plan.artifact_required
         ):
@@ -538,13 +781,35 @@ def enforce_tool_output_boundary(
                 context_artifact_ref=artifact.ref if artifact is not None else None,
                 upstream_artifacts=upstream_artifacts,
             )
-        record = bind_tool_output(
-            plan,
-            raw_bytes=raw,
-            inline_payload=inline,
-            artifact=artifact,
-            upstream_artifacts=upstream_artifacts,
-        )
+        if explicitly_retrieved_inline:
+            source = retrieval_receipt.plan
+            retrieval_source = UpstreamToolArtifactReceipt(
+                ref=source.artifact_ref,
+                content_hash=source.artifact_content_hash,
+                byte_count=source.artifact_byte_count,
+                owner_tool=source.owner_tool,
+                retrieval_action=source.retrieval_action,
+            )
+            record = ToolOutputRecord(
+                tool_call_id=tool_call_id,
+                policy_version=f"{plan.policy.policy_version}:retrieval-inline-v1",
+                raw_byte_count=len(raw),
+                raw_checksum=f"sha256:{hashlib.sha256(raw).hexdigest()}",
+                inline_payload=freeze_json(inline),
+                inline_tokens=raw_tokens,
+                offloaded_tokens=0,
+                artifact=None,
+                reason_code="artifact_retrieval_inline",
+                upstream_artifacts=(retrieval_source,),
+            )
+        else:
+            record = bind_tool_output(
+                plan,
+                raw_bytes=raw,
+                inline_payload=inline,
+                artifact=artifact,
+                upstream_artifacts=upstream_artifacts,
+            )
         action_result.content = thaw_json(record.inline_payload)
         metadata = dict(getattr(action_result, "metadata", None) or {})
         primary_artifact_ref = (
@@ -588,7 +853,11 @@ def enforce_tool_output_boundary(
             }
             action_result.metadata = metadata
         _record_turn_and_retrieval(
-            context, action, action_result, retrieval_fields=retrieval_fields
+            context,
+            action,
+            action_result,
+            retrieval_fields=retrieval_fields,
+            retrieval_receipt=retrieval_receipt,
         )
     return step_result
 

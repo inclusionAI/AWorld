@@ -26,7 +26,27 @@ def _normalize_reasoning_details(value: Any) -> Any:
     if not isinstance(value, list):
         return None
 
-    normalized = [item for item in value if isinstance(item, dict)]
+    normalized = []
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        # Plain-text chain-of-thought is observability data, not provider
+        # continuation state. Replaying it grows one indivisible assistant
+        # message without improving causal Tool-call continuity. Opaque or
+        # signed provider state remains byte-for-byte intact.
+        if item.get("type") == "reasoning.text" and isinstance(item.get("text"), str):
+            continuation_fields = (
+                "data",
+                "id",
+                "signature",
+                "encrypted_content",
+            )
+            if not any(
+                item.get(field) not in (None, "", [], {})
+                for field in continuation_fields
+            ):
+                continue
+        normalized.append(item)
     return normalized or None
 
 
@@ -39,7 +59,11 @@ def _normalize_optional_extra_content(value: Any) -> Any:
 
 
 def _normalize_content_part(item: Any) -> dict[str, str]:
-    if isinstance(item, dict) and item.get("type") == "text" and isinstance(item.get("text"), str):
+    if (
+        isinstance(item, dict)
+        and item.get("type") == "text"
+        and isinstance(item.get("text"), str)
+    ):
         return item
     return {"type": "text", "text": str(item)}
 
@@ -47,7 +71,8 @@ def _normalize_content_part(item: Any) -> dict[str, str]:
 def _normalize_assistant_content(value: Any, *, has_tool_calls: bool) -> Any:
     def drop_empty_text_parts(parts: list[dict[str, str]]) -> list[dict[str, str]]:
         return [
-            part for part in parts
+            part
+            for part in parts
             if not (part.get("type") == "text" and part.get("text") == "")
         ]
 
@@ -73,7 +98,9 @@ def _normalize_tool_content(value: Any) -> list[dict[str, str]]:
         except (TypeError, json.JSONDecodeError):
             decoded = value
         if isinstance(decoded, list):
-            return [_normalize_content_part(item) for item in decoded] or [{"type": "text", "text": ""}]
+            return [_normalize_content_part(item) for item in decoded] or [
+                {"type": "text", "text": ""}
+            ]
         if isinstance(decoded, dict):
             return [_normalize_content_part(json.dumps(decoded, ensure_ascii=False))]
         return [_normalize_content_part(decoded)]
@@ -104,7 +131,9 @@ def _normalize_tool_calls(value: Any) -> Any:
     if not isinstance(value, list):
         return None
 
-    normalized_tool_calls = normalize_tool_calls_for_replay([tool_call for tool_call in value if isinstance(tool_call, dict)])
+    normalized_tool_calls = normalize_tool_calls_for_replay(
+        [tool_call for tool_call in value if isinstance(tool_call, dict)]
+    )
     if not normalized_tool_calls:
         return None
 
@@ -129,7 +158,9 @@ def sanitize_openai_messages(messages: list[dict[str, Any]]) -> list[dict[str, A
 
         if sanitized_message.get("role") == "assistant":
             if "tool_calls" in sanitized_message:
-                sanitized_message["tool_calls"] = _normalize_tool_calls(sanitized_message.get("tool_calls"))
+                sanitized_message["tool_calls"] = _normalize_tool_calls(
+                    sanitized_message.get("tool_calls")
+                )
             sanitized_message["content"] = _normalize_assistant_content(
                 sanitized_message.get("content"),
                 has_tool_calls=bool(sanitized_message.get("tool_calls")),
@@ -140,7 +171,9 @@ def sanitize_openai_messages(messages: list[dict[str, Any]]) -> list[dict[str, A
                     sanitized_message.get("reasoning_details")
                 )
         elif sanitized_message.get("role") == "tool":
-            sanitized_message["content"] = _normalize_tool_content(sanitized_message.get("content"))
+            sanitized_message["content"] = _normalize_tool_content(
+                sanitized_message.get("content")
+            )
 
         sanitized_messages.append(sanitized_message)
 

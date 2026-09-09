@@ -191,8 +191,21 @@ class AmniContext(Context):
         pass
 
 
-    async def snapshot(self):
-        return await get_context_manager().save_context(self)
+    async def snapshot(self, *, checkpoint_only: bool = False):
+        """Persist a restorable Amni context snapshot.
+
+        Adaptive Context checkpoints are intra-task recovery points. Their
+        WorkingState already contains the bounded continuation capsule and
+        verified Tool ledger, so repeating conversation persistence and a full
+        workspace refresh at every compaction adds latency without improving
+        recoverability. Keep the historical full-snapshot behavior as the
+        default and expose the existing checkpoint repository as a lightweight
+        path for those intra-task boundaries.
+        """
+        manager = get_context_manager()
+        if checkpoint_only:
+            return await manager.save_context_checkpoint(self)
+        return await manager.save_context(self)
 
     @trace.func_span(span_name="ApplicationContext#consolidation")
     async def consolidation(self):

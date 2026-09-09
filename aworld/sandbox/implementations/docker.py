@@ -6,10 +6,13 @@ import asyncio
 import copy
 import hashlib
 import json
+import posixpath
 import re
 import shutil
 import subprocess
 import sys
+import tempfile
+import time
 import uuid
 from pathlib import Path, PurePosixPath
 from typing import Any, Dict, List, Optional
@@ -121,6 +124,7 @@ class DockerSandbox(Sandbox):
         self.tracked_artifact_paths = resolved_tracked_paths
         self._checkpoint_lock = asyncio.Lock()
         self._checkpoint_files: set[Path] = set()
+        self._checkpoint_images: set[str] = set()
         self._last_artifact_fingerprint: str | None = None
         resolved_checkpoint_directory = None
         if checkpoint_directory:
@@ -236,6 +240,65 @@ class DockerSandbox(Sandbox):
     def _docker_run(self, command: list[str], **kwargs: Any) -> subprocess.CompletedProcess:
         return subprocess.run(command, check=False, **kwargs)
 
+    def _effective_checkpoint_paths(
+        self, actions: List[Dict[str, Any]]
+    ) -> tuple[list[str], bool]:
+        """Return the narrowest safe transaction scope and whether it is opaque.
+
+        Declared filesystem tools expose the affected paths, so snapshot those
+        paths only. Shell commands remain opaque by design and retain the whole
+        configured artifact scope; this protects against implicit side effects
+        without executable- or benchmark-specific rules.
+        """
+        if any(
+            str(self._action_value(action, "action_name", "") or "")
+            in _OPAQUE_SHELL_ACTIONS
+            for action in actions
+        ):
+            return list(self.tracked_artifact_paths), True
+
+        parameter_names = {
+            "create_directory": ("path",),
+            "edit_file": ("path",),
+            "move_file": ("source", "destination"),
+            "upload_file": ("target_path",),
+            "write_file": ("path",),
+            "write_file_base64": ("path",),
+        }
+        selected: list[str] = []
+        unresolved = False
+        for action in actions:
+            action_name = str(self._action_value(action, "action_name", "") or "")
+            if action_name not in _MUTATING_FILE_ACTIONS:
+                continue
+            params = self._action_value(action, "params", {}) or {}
+            if not isinstance(params, dict):
+                unresolved = True
+                continue
+            for name in parameter_names.get(action_name, ()):
+                raw_path = params.get(name)
+                if not isinstance(raw_path, str) or not raw_path:
+                    unresolved = True
+                    continue
+                candidate = (
+                    raw_path
+                    if PurePosixPath(raw_path).is_absolute()
+                    else posixpath.join(self.container_workdir, raw_path)
+                )
+                candidate = posixpath.normpath(candidate)
+                if any(
+                    candidate == tracked
+                    or candidate.startswith(tracked.rstrip("/") + "/")
+                    for tracked in self.tracked_artifact_paths
+                ):
+                    if candidate not in selected:
+                        selected.append(candidate)
+                else:
+                    unresolved = True
+        if unresolved or not selected:
+            return list(self.tracked_artifact_paths), True
+        return selected, False
+
     @staticmethod
     def _sha256_path(path: Path) -> str:
         digest = hashlib.sha256()
@@ -244,8 +307,11 @@ class DockerSandbox(Sandbox):
                 digest.update(chunk)
         return digest.hexdigest()
 
-    def _artifact_fingerprint_sync(self) -> str | None:
-        if not self.destructive_checkpoint or not self.tracked_artifact_paths:
+    def _artifact_fingerprint_sync(
+        self, paths: Optional[List[str]] = None
+    ) -> str | None:
+        effective_paths = paths or self.tracked_artifact_paths
+        if not self.destructive_checkpoint or not effective_paths:
             return None
         program = (
             'for target do if [ -e "$target" ]; then '
@@ -263,7 +329,7 @@ class DockerSandbox(Sandbox):
                 "-c",
                 program,
                 "aworld-artifact-fingerprint",
-                *self.tracked_artifact_paths,
+                *effective_paths,
             ],
             capture_output=True,
             timeout=120,
@@ -275,14 +341,17 @@ class DockerSandbox(Sandbox):
             output = output.encode()
         return hashlib.sha256(output).hexdigest()
 
-    def _artifact_paths_sync(self) -> frozenset[str] | None:
+    def _artifact_paths_sync(
+        self, paths: Optional[List[str]] = None
+    ) -> frozenset[str] | None:
         """List tracked paths with NUL framing for loss detection.
 
         Content identity remains owned by ``_artifact_fingerprint_sync``.  This
         inventory is used only to detect that a previously present path vanished;
         paths are never exposed in model-visible receipts.
         """
-        if not self.destructive_checkpoint or not self.tracked_artifact_paths:
+        effective_paths = paths or self.tracked_artifact_paths
+        if not self.destructive_checkpoint or not effective_paths:
             return None
         program = (
             'for target do if [ -e "$target" ] || [ -L "$target" ]; then '
@@ -298,7 +367,7 @@ class DockerSandbox(Sandbox):
                 "-c",
                 program,
                 "aworld-artifact-inventory",
-                *self.tracked_artifact_paths,
+                *effective_paths,
             ],
             capture_output=True,
             timeout=120,
@@ -314,13 +383,89 @@ class DockerSandbox(Sandbox):
             if item
         )
 
-    def _create_checkpoint_sync(self) -> dict[str, Any]:
+    def _tracked_paths_overlap_mounts_sync(self, paths: List[str]) -> bool:
+        inspected = self._docker_run(
+            [
+                self.docker_binary,
+                "inspect",
+                "--format",
+                "{{json .Mounts}}",
+                self.container,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        if inspected.returncode != 0:
+            return True
+        try:
+            mounts = json.loads((inspected.stdout or "").strip() or "[]")
+        except (TypeError, json.JSONDecodeError):
+            return True
+        destinations = [
+            posixpath.normpath(str(item.get("Destination")))
+            for item in mounts
+            if isinstance(item, dict) and item.get("Destination")
+        ]
+        return any(
+            path == mount
+            or path.startswith(mount.rstrip("/") + "/")
+            or mount.startswith(path.rstrip("/") + "/")
+            for path in paths
+            for mount in destinations
+        )
+
+    def _create_image_checkpoint_sync(
+        self, checkpoint_id: str, paths: List[str]
+    ) -> dict[str, Any]:
+        committed = self._docker_run(
+            [self.docker_binary, "commit", "--no-pause", self.container],
+            capture_output=True,
+            text=True,
+            timeout=600,
+        )
+        if committed.returncode != 0:
+            detail = str(committed.stderr or "")[:500]
+            raise RuntimeError(f"Docker image checkpoint failed: {detail}")
+        output = str(committed.stdout or "")
+        identities = re.findall(r"sha256:[0-9a-fA-F]{64}", output)
+        image_id = identities[-1].lower() if identities else output.strip()
+        if not re.fullmatch(r"sha256:[0-9a-f]{64}", image_id):
+            raise RuntimeError("Docker image checkpoint returned no image identity")
+        self._checkpoint_images.add(image_id)
+        existing: list[str] = []
+        for path in paths:
+            found = self._docker_run(
+                [self.docker_binary, "exec", self.container, "test", "-e", path],
+                capture_output=True,
+                timeout=30,
+            )
+            if found.returncode == 0:
+                existing.append(path)
+        return {
+            "id": checkpoint_id,
+            "backend": "docker_image",
+            "image_id": image_id,
+            "sha256": image_id.removeprefix("sha256:"),
+            "existing_paths": tuple(existing),
+            "tracked_paths": tuple(paths),
+        }
+
+    def _create_checkpoint_sync(
+        self,
+        paths: Optional[List[str]] = None,
+        *,
+        prefer_image: bool = False,
+    ) -> dict[str, Any]:
         if self.checkpoint_directory is None:
             raise RuntimeError("checkpoint directory is not configured")
+        effective_paths = list(paths or self.tracked_artifact_paths)
         checkpoint_id = uuid.uuid4().hex
+        if prefer_image and not self._tracked_paths_overlap_mounts_sync(effective_paths):
+            return self._create_image_checkpoint_sync(checkpoint_id, effective_paths)
         archive = self.checkpoint_directory / f"{checkpoint_id}.tar"
         existing: list[str] = []
-        for path in self.tracked_artifact_paths:
+        for path in effective_paths:
             found = self._docker_run(
                 [self.docker_binary, "exec", self.container, "test", "-e", path],
                 capture_output=True,
@@ -335,7 +480,7 @@ class DockerSandbox(Sandbox):
                 command,
                 stdout=stream,
                 stderr=subprocess.PIPE,
-                timeout=300,
+                timeout=600,
             )
         if snapshot.returncode != 0:
             archive.unlink(missing_ok=True)
@@ -344,15 +489,14 @@ class DockerSandbox(Sandbox):
         self._checkpoint_files.add(archive)
         return {
             "id": checkpoint_id,
+            "backend": "archive",
             "archive": archive,
             "sha256": self._sha256_path(archive),
             "existing_paths": tuple(f"/{path}" for path in existing),
+            "tracked_paths": tuple(effective_paths),
         }
 
-    def _restore_checkpoint_sync(self, checkpoint: dict[str, Any]) -> None:
-        archive = Path(checkpoint["archive"])
-        if self._sha256_path(archive) != checkpoint["sha256"]:
-            raise RuntimeError("Docker checkpoint checksum mismatch")
+    def _clear_checkpoint_paths_sync(self, tracked_paths: List[str]) -> None:
         cleanup_program = (
             'for target do if [ -d "$target" ]; then '
             'find "$target" -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +; '
@@ -367,7 +511,7 @@ class DockerSandbox(Sandbox):
                 "-c",
                 cleanup_program,
                 "aworld-checkpoint-rollback",
-                *self.tracked_artifact_paths,
+                *tracked_paths,
             ],
             capture_output=True,
             timeout=120,
@@ -379,6 +523,82 @@ class DockerSandbox(Sandbox):
             raise RuntimeError(
                 f"Unable to clear tracked paths before rollback: {str(detail)[:500]}"
             )
+
+    def _restore_image_checkpoint_sync(self, checkpoint: dict[str, Any]) -> None:
+        image_id = str(checkpoint["image_id"])
+        tracked_paths = list(checkpoint.get("tracked_paths") or ())
+        helper = f"aworld-checkpoint-{uuid.uuid4().hex[:12]}"
+        created = self._docker_run(
+            [self.docker_binary, "create", "--name", helper, image_id],
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+        if created.returncode != 0:
+            raise RuntimeError(
+                f"Unable to create Docker rollback helper: {str(created.stderr or '')[:500]}"
+            )
+        try:
+            self._clear_checkpoint_paths_sync(tracked_paths)
+            existing_paths = set(checkpoint.get("existing_paths") or ())
+            with tempfile.TemporaryDirectory(
+                prefix="aworld-checkpoint-", dir=str(self.checkpoint_directory)
+            ) as temporary:
+                temporary_root = Path(temporary)
+                for index, path in enumerate(tracked_paths):
+                    if path not in existing_paths:
+                        continue
+                    local_path = temporary_root / f"item-{index}"
+                    copied_out = self._docker_run(
+                        [self.docker_binary, "cp", f"{helper}:{path}", str(local_path)],
+                        capture_output=True,
+                        timeout=600,
+                    )
+                    if copied_out.returncode != 0:
+                        raise RuntimeError(
+                            f"Unable to read Docker image checkpoint path: {path}"
+                        )
+                    is_directory = local_path.is_dir()
+                    parent = path if is_directory else (posixpath.dirname(path) or "/")
+                    parent_created = self._docker_run(
+                        [self.docker_binary, "exec", self.container, "mkdir", "-p", parent],
+                        capture_output=True,
+                        timeout=60,
+                    )
+                    if parent_created.returncode != 0:
+                        raise RuntimeError(f"Unable to create rollback parent: {parent}")
+                    copied_back = self._docker_run(
+                        [
+                            self.docker_binary,
+                            "cp",
+                            f"{local_path}/." if is_directory else str(local_path),
+                            f"{self.container}:{path}",
+                        ],
+                        capture_output=True,
+                        timeout=600,
+                    )
+                    if copied_back.returncode != 0:
+                        raise RuntimeError(
+                            f"Unable to restore Docker checkpoint path: {path}"
+                        )
+        finally:
+            self._docker_run(
+                [self.docker_binary, "rm", "-f", helper],
+                capture_output=True,
+                timeout=60,
+            )
+
+    def _restore_checkpoint_sync(self, checkpoint: dict[str, Any]) -> None:
+        if checkpoint.get("backend") == "docker_image":
+            self._restore_image_checkpoint_sync(checkpoint)
+            return
+        archive = Path(checkpoint["archive"])
+        if self._sha256_path(archive) != checkpoint["sha256"]:
+            raise RuntimeError("Docker checkpoint checksum mismatch")
+        tracked_paths = list(
+            checkpoint.get("tracked_paths") or self.tracked_artifact_paths
+        )
+        self._clear_checkpoint_paths_sync(tracked_paths)
         with archive.open("rb") as stream:
             restored = self._docker_run(
                 [self.docker_binary, "exec", "-i", self.container, "tar", "-C", "/", "-xf", "-"],
@@ -393,7 +613,7 @@ class DockerSandbox(Sandbox):
             raise RuntimeError(f"Unable to restore Docker checkpoint: {str(detail)[:500]}")
         existing_paths = set(checkpoint.get("existing_paths") or ())
         missing_paths = [
-            path for path in self.tracked_artifact_paths if path not in existing_paths
+            path for path in tracked_paths if path not in existing_paths
         ]
         if missing_paths:
             removed = self._docker_run(
@@ -415,6 +635,16 @@ class DockerSandbox(Sandbox):
 
     def _discard_checkpoint(self, checkpoint: dict[str, Any] | None) -> None:
         if not checkpoint:
+            return
+        if checkpoint.get("backend") == "docker_image":
+            image_id = str(checkpoint.get("image_id") or "")
+            if image_id:
+                self._docker_run(
+                    [self.docker_binary, "image", "rm", "-f", image_id],
+                    capture_output=True,
+                    timeout=120,
+                )
+                self._checkpoint_images.discard(image_id)
             return
         archive = Path(checkpoint["archive"])
         archive.unlink(missing_ok=True)
@@ -522,15 +752,25 @@ class DockerSandbox(Sandbox):
                 actions, task_id, session_id, context, event_message
             )
         async with self._checkpoint_lock:
-            before = await asyncio.to_thread(self._artifact_fingerprint_sync)
-            before_paths = await asyncio.to_thread(self._artifact_paths_sync)
+            transaction_started_at = time.monotonic()
             declared_mutating = any(self._is_mutating_action(action) for action in actions)
             transactional = any(self._requires_transaction(action) for action in actions)
-            checkpoint = (
-                await asyncio.to_thread(self._create_checkpoint_sync)
-                if transactional
-                else None
+            checkpoint_paths, opaque_transaction = self._effective_checkpoint_paths(actions)
+            before = await asyncio.to_thread(
+                self._artifact_fingerprint_sync, checkpoint_paths
             )
+            before_paths = await asyncio.to_thread(
+                self._artifact_paths_sync, checkpoint_paths
+            )
+            checkpoint_started_at = time.monotonic()
+            checkpoint = None
+            if transactional:
+                checkpoint = await asyncio.to_thread(
+                    self._create_checkpoint_sync,
+                    checkpoint_paths,
+                    prefer_image=opaque_transaction,
+                )
+            checkpoint_duration_seconds = time.monotonic() - checkpoint_started_at
             rolled_back = False
             rollback_attempted = False
             rollback_reason = None
@@ -543,10 +783,10 @@ class DockerSandbox(Sandbox):
                     results = []
                 tool_failed = self._results_failed(results)
                 observed_after = await asyncio.to_thread(
-                    self._artifact_fingerprint_sync
+                    self._artifact_fingerprint_sync, checkpoint_paths
                 )
                 observed_after_paths = await asyncio.to_thread(
-                    self._artifact_paths_sync
+                    self._artifact_paths_sync, checkpoint_paths
                 )
                 removed_paths = (
                     frozenset(
@@ -576,7 +816,9 @@ class DockerSandbox(Sandbox):
                     rollback_reason = "unexpected_implicit_artifact_loss"
                     self._mark_unexpected_rollback(results)
                 after = (
-                    await asyncio.to_thread(self._artifact_fingerprint_sync)
+                    await asyncio.to_thread(
+                        self._artifact_fingerprint_sync, checkpoint_paths
+                    )
                     if rolled_back
                     else observed_after
                 )
@@ -621,6 +863,12 @@ class DockerSandbox(Sandbox):
                     "checkpoint_created": checkpoint is not None,
                     "checkpoint_id": checkpoint.get("id") if checkpoint else None,
                     "checkpoint_sha256": checkpoint.get("sha256") if checkpoint else None,
+                    "checkpoint_backend": checkpoint.get("backend") if checkpoint else None,
+                    "checkpoint_path_count": len(checkpoint_paths),
+                    "checkpoint_duration_seconds": checkpoint_duration_seconds,
+                    "transaction_wall_seconds": (
+                        time.monotonic() - transaction_started_at
+                    ),
                     "rollback_performed": rolled_back,
                     "rollback_reason": rollback_reason,
                     "rollback_skipped_reason": rollback_skipped_reason,
@@ -636,7 +884,9 @@ class DockerSandbox(Sandbox):
                     rolled_back = True
                 if checkpoint is not None:
                     after = (
-                        await asyncio.to_thread(self._artifact_fingerprint_sync)
+                        await asyncio.to_thread(
+                            self._artifact_fingerprint_sync, checkpoint_paths
+                        )
                         if rolled_back
                         else None
                     )
@@ -659,6 +909,12 @@ class DockerSandbox(Sandbox):
                         "checkpoint_created": True,
                         "checkpoint_id": checkpoint.get("id"),
                         "checkpoint_sha256": checkpoint.get("sha256"),
+                        "checkpoint_backend": checkpoint.get("backend"),
+                        "checkpoint_path_count": len(checkpoint_paths),
+                        "checkpoint_duration_seconds": checkpoint_duration_seconds,
+                        "transaction_wall_seconds": (
+                            time.monotonic() - transaction_started_at
+                        ),
                         "rollback_performed": rolled_back,
                         "rollback_reason": "tool_exception" if rolled_back else None,
                         "rollback_skipped_reason": None,
@@ -739,6 +995,13 @@ class DockerSandbox(Sandbox):
             for archive in tuple(self._checkpoint_files):
                 archive.unlink(missing_ok=True)
                 self._checkpoint_files.discard(archive)
+            for image_id in tuple(self._checkpoint_images):
+                self._docker_run(
+                    [self.docker_binary, "image", "rm", "-f", image_id],
+                    capture_output=True,
+                    timeout=120,
+                )
+                self._checkpoint_images.discard(image_id)
 
     async def run_validation(
         self,

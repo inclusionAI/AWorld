@@ -293,6 +293,61 @@ def append_llm_call_mutation(
     )
 
 
+def append_llm_call_fork(
+    *,
+    context: Any,
+    event_type: str,
+    parent_stream_id: str,
+    parent_record_checksum: str,
+    path: Path | None = None,
+    max_record_bytes: int = DEFAULT_MAX_RECORD_BYTES,
+) -> Path | None:
+    """Start an isolated stream from an immutable parent stream tip.
+
+    Transport copies used to seed every new stream with a complete snapshot of
+    all prior provider calls.  Since each call already contains its request
+    transcript, that made long-running journals grow quadratically.  A fork is
+    the journal equivalent of an Amni checkpoint reference: the child retains
+    an exact causal base without copying it into the append-only log again.
+    """
+    destination = path or configured_journal_path()
+    if destination is None:
+        return None
+    if not event_type:
+        raise ValueError("LLM call journal event_type must not be empty")
+    if not isinstance(parent_stream_id, str) or not parent_stream_id:
+        raise ValueError("LLM call journal parent stream id is invalid")
+    if not isinstance(parent_record_checksum, str) or not parent_record_checksum:
+        raise ValueError("LLM call journal parent checksum is invalid")
+    if parent_stream_id == _context_stream_id(context):
+        raise ValueError("LLM call journal stream cannot fork from itself")
+    identities: dict[str, Any] = {}
+    for name in ("task_id", "session_id", "trace_id"):
+        try:
+            value = getattr(context, name, None)
+        except Exception:
+            value = None
+        if value is not None:
+            identities[name] = str(value)
+    payload = {
+        "schema_version": SCHEMA_VERSION,
+        "record_type": RECORD_TYPE,
+        "event_type": event_type,
+        "recorded_at_epoch_ns": time.time_ns(),
+        "context": identities,
+        "stream_id": _context_stream_id(context),
+        "operation": "fork",
+        "parent_stream_id": parent_stream_id,
+        "parent_record_checksum": parent_record_checksum,
+    }
+    return _append_payload(
+        destination=destination,
+        payload=payload,
+        max_record_bytes=max_record_bytes,
+        context=context,
+    )
+
+
 def _append_payload(
     *,
     destination: Path,
@@ -368,24 +423,41 @@ class LLMCallJournalRecovery:
     @property
     def merged_llm_calls(self) -> tuple[dict[str, Any], ...]:
         """Merge isolated stream tips by stable provider-attempt identity."""
+        # Forked streams intentionally share their inherited immutable calls.
+        # De-duplicate those logical mutation versions before sorting and only
+        # JSON-normalize the final winners.  Deep-copying every inherited call
+        # here would reintroduce quadratic memory at recovery/finalization.
+        timed_by_version: dict[
+            tuple[int, str | None, str | None, str],
+            tuple[int, str, int, dict[str, Any]],
+        ] = {}
+        for stream in self.streams:
+            for index, (call, timestamp) in enumerate(
+                zip(stream.llm_calls, stream.call_recorded_at_epoch_ns)
+            ):
+                request_id = call.get("request_id")
+                call_id = call.get("call_id")
+                request_id = (
+                    request_id
+                    if isinstance(request_id, str) and request_id
+                    else None
+                )
+                call_id = call_id if isinstance(call_id, str) and call_id else None
+                fallback = (
+                    ""
+                    if request_id is not None or call_id is not None
+                    else _checksum({"call": call})
+                )
+                version_key = (timestamp, request_id, call_id, fallback)
+                candidate = (timestamp, stream.stream_id, index, call)
+                previous = timed_by_version.get(version_key)
+                if previous is None or candidate[:3] < previous[:3]:
+                    timed_by_version[version_key] = candidate
+
         merged: list[dict[str, Any]] = []
         request_positions: dict[str, int] = {}
         unresolved_call_positions: dict[str, int] = {}
-        timed_calls = sorted(
-            [
-                (
-                    timestamp,
-                    stream.stream_id,
-                    index,
-                    call,
-                )
-                for stream in self.streams
-                for index, (call, timestamp) in enumerate(
-                    zip(stream.llm_calls, stream.call_recorded_at_epoch_ns)
-                )
-            ],
-            key=lambda entry: entry[:3],
-        )
+        timed_calls = sorted(timed_by_version.values(), key=lambda entry: entry[:3])
         for _, _, _, call in timed_calls:
             request_id = call.get("request_id")
             call_id = call.get("call_id")
@@ -395,28 +467,28 @@ class LLMCallJournalRecovery:
             call_id = call_id if isinstance(call_id, str) and call_id else None
             if request_id is not None and request_id in request_positions:
                 position = request_positions[request_id]
-                merged[position] = _json_value(call)
+                merged[position] = call
             elif (
                 request_id is not None
                 and call_id is not None
                 and call_id in unresolved_call_positions
             ):
                 position = unresolved_call_positions.pop(call_id)
-                merged[position] = _json_value(call)
+                merged[position] = call
                 request_positions[request_id] = position
             elif request_id is not None:
                 position = len(merged)
-                merged.append(_json_value(call))
+                merged.append(call)
                 request_positions[request_id] = position
             elif call_id is not None and call_id in unresolved_call_positions:
                 position = unresolved_call_positions[call_id]
-                merged[position] = _json_value(call)
+                merged[position] = call
             else:
                 position = len(merged)
-                merged.append(_json_value(call))
+                merged.append(call)
                 if call_id is not None:
                     unresolved_call_positions[call_id] = position
-        return tuple(merged)
+        return tuple(_json_value(call) for call in merged)
 
     def to_evidence(self) -> dict[str, Any]:
         return {
@@ -446,6 +518,11 @@ def read_llm_call_journal(path: Path) -> LLMCallJournalRecovery:
     stream_previous_checksum: dict[str, str | None] = {}
     stream_events: dict[str, str | None] = {}
     stream_times: dict[str, int | None] = {}
+    # Immutable tuples share call objects across fork tips.  This retains exact
+    # historical bases without multiplying the large request payloads in RAM.
+    record_states: dict[
+        tuple[str, str], tuple[tuple[dict[str, Any], ...], tuple[int, ...]]
+    ] = {}
     latest_calls: tuple[dict[str, Any], ...] = ()
     latest_event_type = None
     latest_recorded_at = None
@@ -532,6 +609,24 @@ def read_llm_call_journal(path: Path) -> LLMCallJournalRecovery:
                         raise ValueError("journal snapshot call timestamps are invalid")
                     else:
                         next_call_times = list(snapshot_call_times)
+                elif operation == "fork":
+                    parent_stream_id = record.get("parent_stream_id")
+                    parent_record_checksum = record.get("parent_record_checksum")
+                    if (
+                        not isinstance(parent_stream_id, str)
+                        or not parent_stream_id
+                        or parent_stream_id == stream_id
+                        or not isinstance(parent_record_checksum, str)
+                        or not parent_record_checksum
+                    ):
+                        raise ValueError("journal fork reference is invalid")
+                    parent_tip = record_states.get(
+                        (parent_stream_id, parent_record_checksum)
+                    )
+                    if parent_tip is None:
+                        raise ValueError("journal fork parent tip is unavailable")
+                    next_state = list(parent_tip[0])
+                    next_call_times = list(parent_tip[1])
                 elif operation == "append":
                     mutation_index = record.get("index")
                     call = record.get("llm_call")
@@ -583,6 +678,10 @@ def read_llm_call_journal(path: Path) -> LLMCallJournalRecovery:
                 stream_previous_checksum[stream_id] = checksum
             states[stream_id] = next_state
             state_call_times[stream_id] = next_call_times
+            record_states[(stream_id, checksum)] = (
+                tuple(next_state),
+                tuple(next_call_times),
+            )
             stream_valid[stream_id] = stream_valid.get(stream_id, 0) + 1
             stream_events[stream_id] = record.get("event_type")
             stream_times[stream_id] = record.get("recorded_at_epoch_ns")

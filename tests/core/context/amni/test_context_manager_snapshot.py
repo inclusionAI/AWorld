@@ -3,6 +3,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from aworld.core.context.amni import ApplicationContext
 from aworld.core.context.amni.contexts import ContextManager
 from aworld.core.context.amni.state import TaskInput
 
@@ -73,3 +74,24 @@ async def test_checkpoint_wrapper_does_not_detach_persistence(monkeypatch):
 
     assert result is checkpoint
     persisted.assert_awaited_once_with(context, reason="adaptive")
+
+
+@pytest.mark.asyncio
+async def test_application_context_lightweight_snapshot_reuses_checkpoint_repository(
+    monkeypatch,
+):
+    checkpoint = SimpleNamespace(id="adaptive-checkpoint")
+    manager = SimpleNamespace(
+        save_context=AsyncMock(),
+        save_context_checkpoint=AsyncMock(return_value=checkpoint),
+    )
+    monkeypatch.setattr(
+        "aworld.core.context.amni.get_context_manager", lambda: manager
+    )
+    context = object.__new__(ApplicationContext)
+
+    result = await context.snapshot(checkpoint_only=True)
+
+    assert result is checkpoint
+    manager.save_context_checkpoint.assert_awaited_once_with(context)
+    manager.save_context.assert_not_awaited()

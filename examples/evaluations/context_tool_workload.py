@@ -31,7 +31,12 @@ if str(SANDBOX_EXAMPLES) not in sys.path:
 from docker_terminal_bench import _load_variant  # noqa: E402
 from terminal_bench_context_eval import (  # noqa: E402
     collect_context_metrics,
+    finalized_capture_allows_independent_verifier,
+    provider_attempts_exhausted,
+    recover_inflight_capture,
+    run_model_preflight,
     summarize_results,
+    wait_for_local_capacity,
 )
 from aworld.evaluations.normalized_cost import NormalizedCostPolicy  # noqa: E402
 
@@ -133,6 +138,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output-dir", required=True, type=Path)
     parser.add_argument("--image", default="python:3.12-slim")
     parser.add_argument("--max-steps", type=int, default=8)
+    parser.add_argument("--agent-timeout-sec", type=float, default=14400)
+    parser.add_argument("--model-preflight-timeout-sec", type=float, default=120)
+    parser.add_argument("--llm-max-attempts", type=int, default=3)
+    parser.add_argument("--llm-retry-delay-sec", type=float, default=10.0)
+    parser.add_argument("--minimum-host-available-memory-mb", type=int, default=2048)
+    parser.add_argument("--resource-wait-timeout-sec", type=float, default=900)
     parser.add_argument("--dry-run", action="store_true")
     return parser.parse_args()
 
@@ -147,6 +158,10 @@ def execute_job(
     output_dir: Path,
     image: str,
     max_steps: int,
+    model_seed: int,
+    agent_timeout_sec: float,
+    llm_max_attempts: int,
+    llm_retry_delay_sec: float,
 ) -> dict:
     run_dir = output_dir / "runs" / case["case_id"] / variant_name / f"repeat-{repetition:02d}"
     run_dir.mkdir(parents=True, exist_ok=True)
@@ -188,20 +203,75 @@ def execute_job(
             str(variant_path),
             "--max-steps",
             str(max_steps),
+            "--model-seed",
+            str(model_seed),
+            "--llm-max-attempts",
+            str(llm_max_attempts),
+            "--llm-retry-delay-sec",
+            str(llm_retry_delay_sec),
         ]
         environment = os.environ.copy()
         environment["PYTHONPATH"] = str(REPO_ROOT) + os.pathsep + environment.get("PYTHONPATH", "")
-        agent = subprocess.run(
-            command,
-            capture_output=True,
-            text=True,
-            check=False,
-            timeout=960,
-            env=environment,
-        )
+        started_at = time.time()
+        try:
+            agent = subprocess.run(
+                command,
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=agent_timeout_sec,
+                env=environment,
+            )
+        except subprocess.TimeoutExpired as exc:
+            stdout = exc.stdout.decode() if isinstance(exc.stdout, bytes) else exc.stdout or ""
+            stderr = exc.stderr.decode() if isinstance(exc.stderr, bytes) else exc.stderr or ""
+            (run_dir / "agent.stdout.log").write_text(stdout, encoding="utf-8")
+            (run_dir / "agent.stderr.log").write_text(stderr, encoding="utf-8")
+            recovery = recover_inflight_capture(run_dir)
+            result = {
+                "schema_version": "aworld.context-eval-result/v1",
+                "task": case["case_id"],
+                "workload_kind": case["workload_kind"],
+                "variant": variant_name,
+                "repetition": repetition,
+                "model_seed": model_seed,
+                "agent_exit_code": None,
+                "verifier_exit_code": None,
+                "reward": None,
+                "failure": {
+                    "stage": "agent",
+                    "reason_code": "agent_timeout",
+                    "timeout_sec": agent_timeout_sec,
+                },
+                "capture_recovery": recovery,
+                "case_checksum": case["checksum"],
+                "agent_execution": {
+                    "started_at_epoch": started_at,
+                    "finished_at_epoch": time.time(),
+                    "wall_time_seconds": time.time() - started_at,
+                    "configured_max_steps": max_steps,
+                },
+                "context_metrics": collect_context_metrics(run_dir),
+            }
+            write_json(run_dir / "result.json", result)
+            return result
         (run_dir / "agent.stdout.log").write_text(agent.stdout or "", encoding="utf-8")
         (run_dir / "agent.stderr.log").write_text(agent.stderr or "", encoding="utf-8")
-        verifier = verify_case(workspace, case["expected"])
+        recovery = recover_inflight_capture(run_dir)
+        verifier_allowed = bool(
+            agent.returncode == 0
+            and finalized_capture_allows_independent_verifier(recovery)
+            and not provider_attempts_exhausted(recovery)
+        )
+        verifier = (
+            verify_case(workspace, case["expected"])
+            if verifier_allowed
+            else {
+                "schema_version": "aworld.local-tool-verifier/v1",
+                "reward": None,
+                "errors": ["upstream_agent_or_capture_unavailable"],
+            }
+        )
         write_json(run_dir / "verifier.json", verifier)
         result = {
             "schema_version": "aworld.context-eval-result/v1",
@@ -209,10 +279,34 @@ def execute_job(
             "workload_kind": case["workload_kind"],
             "variant": variant_name,
             "repetition": repetition,
+            "model_seed": model_seed,
             "agent_exit_code": agent.returncode,
-            "verifier_exit_code": 0,
-            "reward": verifier["reward"],
+            "verifier_exit_code": 0 if verifier_allowed else None,
+            "reward": verifier["reward"] if verifier_allowed else None,
+            "failure": (
+                None
+                if verifier_allowed
+                else {
+                    "stage": (
+                        "provider"
+                        if provider_attempts_exhausted(recovery)
+                        else "agent"
+                    ),
+                    "reason_code": (
+                        "provider_attempts_exhausted"
+                        if provider_attempts_exhausted(recovery)
+                        else "agent_or_capture_incomplete"
+                    ),
+                }
+            ),
+            "capture_recovery": recovery,
             "case_checksum": case["checksum"],
+            "agent_execution": {
+                "started_at_epoch": started_at,
+                "finished_at_epoch": time.time(),
+                "wall_time_seconds": time.time() - started_at,
+                "configured_max_steps": max_steps,
+            },
             "context_metrics": collect_context_metrics(run_dir),
         }
         write_json(run_dir / "result.json", result)
@@ -230,6 +324,8 @@ def main() -> None:
     args = parse_args()
     if args.repeat < 1:
         raise ValueError("--repeat must be positive")
+    if args.llm_max_attempts < 1:
+        raise ValueError("--llm-max-attempts must be positive")
     cases = [load_case(path) for path in args.case_dir]
     variants = [
         (_load_variant(path)["name"], path.resolve(), _load_variant(path))
@@ -266,6 +362,7 @@ def main() -> None:
         "image": args.image,
         "repeat": args.repeat,
         "seed": args.seed,
+        "model_seeds": [args.seed + index for index in range(args.repeat)],
         "job_order": [
             {"case_id": case["case_id"], "variant": name, "repetition": repetition}
             for case, name, _, repetition in jobs
@@ -278,11 +375,41 @@ def main() -> None:
         ],
         "anti_overfitting": "Variants cannot contain case ids, prompts, expected values, or verifier logic.",
         "normalized_cost_policy": NormalizedCostPolicy().to_dict(),
+        "agent_timeout_sec_override": args.agent_timeout_sec,
+        "llm_transport_retry": {
+            "max_attempts": args.llm_max_attempts,
+            "base_delay_seconds": args.llm_retry_delay_sec,
+            "variant_invariant": True,
+        },
+        "resource_policy": {
+            "execution": "strictly_serial",
+            "maximum_active_aworld_eval_containers": 1,
+            "minimum_host_available_memory_mb": args.minimum_host_available_memory_mb,
+            "wait_timeout_seconds": args.resource_wait_timeout_sec,
+        },
         "created_at_epoch": time.time(),
     }
     write_json(output_dir / "experiment_manifest.json", manifest)
     if args.dry_run:
         print(json.dumps(manifest, ensure_ascii=False, indent=2))
+        return
+    preflight = run_model_preflight(
+        output_dir,
+        timeout_sec=args.model_preflight_timeout_sec,
+        model_seed=args.seed,
+    )
+    manifest["model_preflight"] = preflight
+    write_json(output_dir / "experiment_manifest.json", manifest)
+    if (
+        preflight.get("status") != "passed"
+        or preflight.get("tool_call_probe_complete") is not True
+    ):
+        write_json(output_dir / "results.json", [])
+        print(json.dumps({
+            "runs": 0,
+            "output_dir": str(output_dir),
+            "status": "provider_preflight_failed",
+        }, ensure_ascii=False))
         return
     docker = shutil.which("docker")
     if not docker:
@@ -292,8 +419,14 @@ def main() -> None:
         pull = subprocess.run([docker, "pull", args.image], capture_output=True, text=True)
         if pull.returncode != 0:
             raise RuntimeError(pull.stderr.strip() or f"cannot pull {args.image}")
-    results = [
-        execute_job(
+    results = []
+    for case, name, path, repetition in jobs:
+        capacity = wait_for_local_capacity(
+            docker=docker,
+            minimum_available_memory_mb=args.minimum_host_available_memory_mb,
+            timeout_sec=args.resource_wait_timeout_sec,
+        )
+        result = execute_job(
             docker=docker,
             case=case,
             variant_name=name,
@@ -302,9 +435,22 @@ def main() -> None:
             output_dir=output_dir,
             image=args.image,
             max_steps=args.max_steps,
+            model_seed=args.seed + repetition - 1,
+            agent_timeout_sec=args.agent_timeout_sec,
+            llm_max_attempts=args.llm_max_attempts,
+            llm_retry_delay_sec=args.llm_retry_delay_sec,
         )
-        for case, name, path, repetition in jobs
-    ]
+        result["resource_admission"] = capacity
+        write_json(
+            output_dir
+            / "runs"
+            / case["case_id"]
+            / name
+            / f"repeat-{repetition:02d}"
+            / "result.json",
+            result,
+        )
+        results.append(result)
     write_json(output_dir / "results.json", results)
     write_json(output_dir / "summary.json", summarize_results(results, variants[0][0]))
     print(json.dumps({"runs": len(results), "output_dir": str(output_dir)}, ensure_ascii=False))

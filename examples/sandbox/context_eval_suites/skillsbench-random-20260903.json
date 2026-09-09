@@ -1,0 +1,66 @@
+{
+  "schema_version": "aworld.context-eval-suite/v1",
+  "name": "skillsbench-random-20260903",
+  "dataset": {
+    "dataset_id": "skillsbench_official_prebuilt_1_1",
+    "sample_count": 87,
+    "sha256": "56c849d5d8088edaa57620410c26e864f2f8541c310d50f6408c19b373ebeffd"
+  },
+  "selection_policy": {
+    "algorithm": "python random.Random(seed).sample(sorted archive task ids, candidate_pool_size)",
+    "seed": 20260903,
+    "candidate_pool_size": 5,
+    "evaluation_prefix_size": 3,
+    "frozen_before_complete_reward_observation": true,
+    "outcome_blind": true,
+    "ground_truth_not_used_for_selection": true,
+    "case_specific_prompting_forbidden": true,
+    "purpose": "Cross-workload Context Management acceptance, not SkillsBench score tuning."
+  },
+  "candidate_pool": [
+    {
+      "task_id": "pdf-excel-diff",
+      "selected_for_initial_evaluation": true
+    },
+    {
+      "task_id": "glm-lake-mendota",
+      "selected_for_initial_evaluation": true
+    },
+    {
+      "task_id": "energy-ac-optimal-power-flow",
+      "selected_for_initial_evaluation": true
+    },
+    {
+      "task_id": "tictoc-unnecessary-abort-detection",
+      "selected_for_initial_evaluation": false
+    },
+    {
+      "task_id": "fix-druid-loophole-cve",
+      "selected_for_initial_evaluation": false
+    }
+  ],
+  "tasks": [
+    "pdf-excel-diff",
+    "glm-lake-mendota",
+    "energy-ac-optimal-power-flow"
+  ],
+  "ablation_plan": "examples/sandbox/context_eval_ablations/systematic-context-v1.json",
+  "confirmatory_variants": [
+    "ablation-00-observe",
+    "ablation-60-completion"
+  ],
+  "repeat": 3,
+  "seed": 20260903,
+  "max_steps": 120,
+  "minimum_complete_pair_requirement": 9,
+  "registry_rewrite": {
+    "source": "agentservice-lingguang-registry-vpc.cn-hongkong.cr.aliyuncs.com",
+    "destination": "agentservice-lingguang-registry.cn-hongkong.cr.aliyuncs.com",
+    "digest_must_be_preserved": true
+  },
+  "timeouts_sec": {
+    "build": 1800,
+    "agent": 14400,
+    "verifier": 7200
+  }
+}
