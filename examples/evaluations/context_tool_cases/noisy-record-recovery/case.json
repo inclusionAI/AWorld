@@ -1,0 +1,6 @@
+{
+  "schema_version": "aworld.local-tool-case/v1",
+  "case_id": "noisy-record-recovery",
+  "workload_kind": "tool_research",
+  "verifier_id": "exact-json-v1"
+}

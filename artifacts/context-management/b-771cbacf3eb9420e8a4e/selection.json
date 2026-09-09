@@ -1,0 +1,1074 @@
+{
+  "batch_id": "b-771cbacf3eb9420e8a4e",
+  "series": [
+    {
+      "key": "series-1",
+      "harness": "aworld",
+      "model": "matrixllm.aisearch_duet_dsv4_flash",
+      "label": "aworld · matrixllm.aisearch_duet_dsv4_flash",
+      "rank": 1,
+      "task_count": 89,
+      "evaluated_count": 89,
+      "positive_count": 40,
+      "full_score_count": 40,
+      "failed_count": 0,
+      "no_reward_count": 0,
+      "reward_sum": 40.0,
+      "duration_ms": 69475000
+    },
+    {
+      "key": "series-2",
+      "harness": "aworld",
+      "model": "matrixllm.aisearch_duet_glm52",
+      "label": "aworld · matrixllm.aisearch_duet_glm52",
+      "rank": 2,
+      "task_count": 89,
+      "evaluated_count": 89,
+      "positive_count": 37,
+      "full_score_count": 37,
+      "failed_count": 0,
+      "no_reward_count": 0,
+      "reward_sum": 37.0,
+      "duration_ms": 114032000
+    }
+  ],
+  "selection_policy": {
+    "both_zero": "all tasks where both model rewards are exactly 0",
+    "split": "all tasks where one model reward is 0 and the other is 1",
+    "both_one": "deterministic random sample of 3 tasks, seed=batch_id"
+  },
+  "counts": {
+    "both_zero": 44,
+    "split": 13,
+    "both_one": 32,
+    "other": 0
+  },
+  "selected": {
+    "both_zero": [
+      {
+        "task_name": "adaptive-rejection-sampler",
+        "rewards": {
+          "series-1": 0.0,
+          "series-2": 0.0
+        },
+        "runs": {
+          "series-1": "r-8831a39cb94d4a6e97ce",
+          "series-2": "r-e420ad8df36e4cd199df"
+        },
+        "status": {
+          "series-1": "COMPLETED",
+          "series-2": "COMPLETED"
+        },
+        "failure_reason": "aworld · matrixllm.aisearch_duet_dsv4_flash: 任务执行结束，Verifier 判定 Reward 0；aworld · matrixllm.aisearch_duet_glm52: 任务执行结束，Verifier 判定 Reward 0",
+        "note": "当前 Batch 内全部为 0 分"
+      },
+      {
+        "task_name": "build-pov-ray",
+        "rewards": {
+          "series-1": 0.0,
+          "series-2": 0.0
+        },
+        "runs": {
+          "series-1": "r-1d43615292d74700aa76",
+          "series-2": "r-b6815d52e0f34ff5aba1"
+        },
+        "status": {
+          "series-1": "COMPLETED",
+          "series-2": "COMPLETED"
+        },
+        "failure_reason": "aworld · matrixllm.aisearch_duet_dsv4_flash: 任务执行结束，Verifier 判定 Reward 0；aworld · matrixllm.aisearch_duet_glm52: 任务执行结束，Verifier 判定 Reward 0",
+        "note": "当前 Batch 内全部为 0 分"
+      },
+      {
+        "task_name": "caffe-cifar-10",
+        "rewards": {
+          "series-1": 0.0,
+          "series-2": 0.0
+        },
+        "runs": {
+          "series-1": "r-175fa82ed9cc474db355",
+          "series-2": "r-4c4538022bd340d9957a"
+        },
+        "status": {
+          "series-1": "COMPLETED",
+          "series-2": "COMPLETED"
+        },
+        "failure_reason": "aworld · matrixllm.aisearch_duet_dsv4_flash: 任务执行结束，Verifier 判定 Reward 0；aworld · matrixllm.aisearch_duet_glm52: 任务执行结束，Verifier 判定 Reward 0",
+        "note": "当前 Batch 内全部为 0 分"
+      },
+      {
+        "task_name": "cancel-async-tasks",
+        "rewards": {
+          "series-1": 0.0,
+          "series-2": 0.0
+        },
+        "runs": {
+          "series-1": "r-45e3d9341c9548d9beb7",
+          "series-2": "r-2b54168975b04f6c8829"
+        },
+        "status": {
+          "series-1": "COMPLETED",
+          "series-2": "COMPLETED"
+        },
+        "failure_reason": "aworld · matrixllm.aisearch_duet_dsv4_flash: 任务执行结束，Verifier 判定 Reward 0；aworld · matrixllm.aisearch_duet_glm52: 任务执行结束，Verifier 判定 Reward 0",
+        "note": "当前 Batch 内全部为 0 分"
+      },
+      {
+        "task_name": "circuit-fibsqrt",
+        "rewards": {
+          "series-1": 0.0,
+          "series-2": 0.0
+        },
+        "runs": {
+          "series-1": "r-a8455be4ff4e477ab82c",
+          "series-2": "r-e329c6e456dd4d76abc9"
+        },
+        "status": {
+          "series-1": "COMPLETED",
+          "series-2": "COMPLETED"
+        },
+        "failure_reason": "aworld · matrixllm.aisearch_duet_dsv4_flash: 任务执行结束，Verifier 判定 Reward 0；aworld · matrixllm.aisearch_duet_glm52: 任务执行结束，Verifier 判定 Reward 0",
+        "note": "当前 Batch 内全部为 0 分"
+      },
+      {
+        "task_name": "compile-compcert",
+        "rewards": {
+          "series-1": 0.0,
+          "series-2": 0.0
+        },
+        "runs": {
+          "series-1": "r-5359c0b5cdc04e86a168",
+          "series-2": "r-dcd8dcc09b9747aeae5b"
+        },
+        "status": {
+          "series-1": "COMPLETED",
+          "series-2": "COMPLETED"
+        },
+        "failure_reason": "aworld · matrixllm.aisearch_duet_dsv4_flash: 任务执行结束，Verifier 判定 Reward 0；aworld · matrixllm.aisearch_duet_glm52: 任务执行结束，Verifier 判定 Reward 0",
+        "note": "当前 Batch 内全部为 0 分"
+      },
+      {
+        "task_name": "configure-git-webserver",
+        "rewards": {
+          "series-1": 0.0,
+          "series-2": 0.0
+        },
+        "runs": {
+          "series-1": "r-2cee99b33cd3418082c9",
+          "series-2": "r-74beaccfefb141ceb394"
+        },
+        "status": {
+          "series-1": "COMPLETED",
+          "series-2": "COMPLETED"
+        },
+        "failure_reason": "aworld · matrixllm.aisearch_duet_dsv4_flash: 任务执行结束，Verifier 判定 Reward 0；aworld · matrixllm.aisearch_duet_glm52: 任务执行结束，Verifier 判定 Reward 0",
+        "note": "当前 Batch 内全部为 0 分"
+      },
+      {
+        "task_name": "crack-7z-hash",
+        "rewards": {
+          "series-1": 0.0,
+          "series-2": 0.0
+        },
+        "runs": {
+          "series-1": "r-76015a4f21064e1f96f1",
+          "series-2": "r-d06f472ba0834cbc88c7"
+        },
+        "status": {
+          "series-1": "COMPLETED",
+          "series-2": "COMPLETED"
+        },
+        "failure_reason": "aworld · matrixllm.aisearch_duet_dsv4_flash: 任务执行结束，Verifier 判定 Reward 0；aworld · matrixllm.aisearch_duet_glm52: 任务执行结束，Verifier 判定 Reward 0",
+        "note": "当前 Batch 内全部为 0 分"
+      },
+      {
+        "task_name": "dna-assembly",
+        "rewards": {
+          "series-1": 0.0,
+          "series-2": 0.0
+        },
+        "runs": {
+          "series-1": "r-94d16d3097a6420f9f87",
+          "series-2": "r-248fb1d0250741eb85f4"
+        },
+        "status": {
+          "series-1": "COMPLETED",
+          "series-2": "COMPLETED"
+        },
+        "failure_reason": "aworld · matrixllm.aisearch_duet_dsv4_flash: 任务执行结束，Verifier 判定 Reward 0；aworld · matrixllm.aisearch_duet_glm52: 任务执行结束，Verifier 判定 Reward 0",
+        "note": "当前 Batch 内全部为 0 分"
+      },
+      {
+        "task_name": "dna-insert",
+        "rewards": {
+          "series-1": 0.0,
+          "series-2": 0.0
+        },
+        "runs": {
+          "series-1": "r-9a9fedd116134cd7ba54",
+          "series-2": "r-e091acb5097f49f9aa01"
+        },
+        "status": {
+          "series-1": "COMPLETED",
+          "series-2": "COMPLETED"
+        },
+        "failure_reason": "aworld · matrixllm.aisearch_duet_dsv4_flash: 任务执行结束，Verifier 判定 Reward 0；aworld · matrixllm.aisearch_duet_glm52: 任务执行结束，Verifier 判定 Reward 0",
+        "note": "当前 Batch 内全部为 0 分"
+      },
+      {
+        "task_name": "extract-elf",
+        "rewards": {
+          "series-1": 0.0,
+          "series-2": 0.0
+        },
+        "runs": {
+          "series-1": "r-0774f4cd94294c45b140",
+          "series-2": "r-edb523c89dd4427ea9dc"
+        },
+        "status": {
+          "series-1": "COMPLETED",
+          "series-2": "COMPLETED"
+        },
+        "failure_reason": "aworld · matrixllm.aisearch_duet_dsv4_flash: 任务执行结束，Verifier 判定 Reward 0；aworld · matrixllm.aisearch_duet_glm52: 任务执行结束，Verifier 判定 Reward 0",
+        "note": "当前 Batch 内全部为 0 分"
+      },
+      {
+        "task_name": "extract-moves-from-video",
+        "rewards": {
+          "series-1": 0.0,
+          "series-2": 0.0
+        },
+        "runs": {
+          "series-1": "r-7895a81ee9c34fffa744",
+          "series-2": "r-d1dd85a7246d4f0a8282"
+        },
+        "status": {
+          "series-1": "COMPLETED",
+          "series-2": "COMPLETED"
+        },
+        "failure_reason": "aworld · matrixllm.aisearch_duet_dsv4_flash: 任务执行结束，Verifier 判定 Reward 0；aworld · matrixllm.aisearch_duet_glm52: 任务执行结束，Verifier 判定 Reward 0",
+        "note": "当前 Batch 内全部为 0 分"
+      },
+      {
+        "task_name": "feal-linear-cryptanalysis",
+        "rewards": {
+          "series-1": 0.0,
+          "series-2": 0.0
+        },
+        "runs": {
+          "series-1": "r-5a31a6fa76024664b3e7",
+          "series-2": "r-eea8bb7a072344f0a25b"
+        },
+        "status": {
+          "series-1": "COMPLETED",
+          "series-2": "COMPLETED"
+        },
+        "failure_reason": "aworld · matrixllm.aisearch_duet_dsv4_flash: 任务执行结束，Verifier 判定 Reward 0；aworld · matrixllm.aisearch_duet_glm52: 任务执行结束，Verifier 判定 Reward 0",
+        "note": "当前 Batch 内全部为 0 分"
+      },
+      {
+        "task_name": "filter-js-from-html",
+        "rewards": {
+          "series-1": 0.0,
+          "series-2": 0.0
+        },
+        "runs": {
+          "series-1": "r-2f9814b86b7b4c6f94ec",
+          "series-2": "r-287bd979ad05448c87e8"
+        },
+        "status": {
+          "series-1": "COMPLETED",
+          "series-2": "COMPLETED"
+        },
+        "failure_reason": "aworld · matrixllm.aisearch_duet_dsv4_flash: 任务执行结束，Verifier 判定 Reward 0；aworld · matrixllm.aisearch_duet_glm52: 任务执行结束，Verifier 判定 Reward 0",
+        "note": "当前 Batch 内全部为 0 分"
+      },
+      {
+        "task_name": "financial-document-processor",
+        "rewards": {
+          "series-1": 0.0,
+          "series-2": 0.0
+        },
+        "runs": {
+          "series-1": "r-ba0df58469784a03975c",
+          "series-2": "r-d51e670839774759a9b8"
+        },
+        "status": {
+          "series-1": "COMPLETED",
+          "series-2": "COMPLETED"
+        },
+        "failure_reason": "aworld · matrixllm.aisearch_duet_dsv4_flash: 任务执行结束，Verifier 判定 Reward 0；aworld · matrixllm.aisearch_duet_glm52: 任务执行结束，Verifier 判定 Reward 0",
+        "note": "当前 Batch 内全部为 0 分"
+      },
+      {
+        "task_name": "gcode-to-text",
+        "rewards": {
+          "series-1": 0.0,
+          "series-2": 0.0
+        },
+        "runs": {
+          "series-1": "r-f08c175479504fa785ba",
+          "series-2": "r-29d7e1ff21b64d1db86a"
+        },
+        "status": {
+          "series-1": "COMPLETED",
+          "series-2": "COMPLETED"
+        },
+        "failure_reason": "aworld · matrixllm.aisearch_duet_dsv4_flash: 任务执行结束，Verifier 判定 Reward 0；aworld · matrixllm.aisearch_duet_glm52: 任务执行结束，Verifier 判定 Reward 0",
+        "note": "当前 Batch 内全部为 0 分"
+      },
+      {
+        "task_name": "git-leak-recovery",
+        "rewards": {
+          "series-1": 0.0,
+          "series-2": 0.0
+        },
+        "runs": {
+          "series-1": "r-389c076706904f10abb0",
+          "series-2": "r-2d120c9c15e24d2ba948"
+        },
+        "status": {
+          "series-1": "COMPLETED",
+          "series-2": "COMPLETED"
+        },
+        "failure_reason": "aworld · matrixllm.aisearch_duet_dsv4_flash: 任务执行结束，Verifier 判定 Reward 0；aworld · matrixllm.aisearch_duet_glm52: 任务执行结束，Verifier 判定 Reward 0",
+        "note": "当前 Batch 内全部为 0 分"
+      },
+      {
+        "task_name": "gpt2-codegolf",
+        "rewards": {
+          "series-1": 0.0,
+          "series-2": 0.0
+        },
+        "runs": {
+          "series-1": "r-334befac3c6f415ba832",
+          "series-2": "r-832c294c617e4b40bb44"
+        },
+        "status": {
+          "series-1": "COMPLETED",
+          "series-2": "COMPLETED"
+        },
+        "failure_reason": "aworld · matrixllm.aisearch_duet_dsv4_flash: 任务执行结束，Verifier 判定 Reward 0；aworld · matrixllm.aisearch_duet_glm52: 任务执行结束，Verifier 判定 Reward 0",
+        "note": "当前 Batch 内全部为 0 分"
+      },
+      {
+        "task_name": "make-doom-for-mips",
+        "rewards": {
+          "series-1": 0.0,
+          "series-2": 0.0
+        },
+        "runs": {
+          "series-1": "r-761bcab2fec74a91a8a9",
+          "series-2": "r-923f0e73d1954fe29cfd"
+        },
+        "status": {
+          "series-1": "COMPLETED",
+          "series-2": "COMPLETED"
+        },
+        "failure_reason": "aworld · matrixllm.aisearch_duet_dsv4_flash: 任务执行结束，Verifier 判定 Reward 0；aworld · matrixllm.aisearch_duet_glm52: 任务执行结束，Verifier 判定 Reward 0",
+        "note": "当前 Batch 内全部为 0 分"
+      },
+      {
+        "task_name": "make-mips-interpreter",
+        "rewards": {
+          "series-1": 0.0,
+          "series-2": 0.0
+        },
+        "runs": {
+          "series-1": "r-245c2b42f9bb46f6a84b",
+          "series-2": "r-cdde951ff9c74556a594"
+        },
+        "status": {
+          "series-1": "COMPLETED",
+          "series-2": "COMPLETED"
+        },
+        "failure_reason": "aworld · matrixllm.aisearch_duet_dsv4_flash: 任务执行结束，Verifier 判定 Reward 0；aworld · matrixllm.aisearch_duet_glm52: 任务执行结束，Verifier 判定 Reward 0",
+        "note": "当前 Batch 内全部为 0 分"
+      },
+      {
+        "task_name": "merge-diff-arc-agi-task",
+        "rewards": {
+          "series-1": 0.0,
+          "series-2": 0.0
+        },
+        "runs": {
+          "series-1": "r-9584582356b54d69b480",
+          "series-2": "r-302f0ea436b547b3a6d5"
+        },
+        "status": {
+          "series-1": "COMPLETED",
+          "series-2": "COMPLETED"
+        },
+        "failure_reason": "aworld · matrixllm.aisearch_duet_dsv4_flash: 任务执行结束，Verifier 判定 Reward 0；aworld · matrixllm.aisearch_duet_glm52: 任务执行结束，Verifier 判定 Reward 0",
+        "note": "当前 Batch 内全部为 0 分"
+      },
+      {
+        "task_name": "model-extraction-relu-logits",
+        "rewards": {
+          "series-1": 0.0,
+          "series-2": 0.0
+        },
+        "runs": {
+          "series-1": "r-3f7c5f3680b44e25b1bf",
+          "series-2": "r-ef555643893041d98865"
+        },
+        "status": {
+          "series-1": "COMPLETED",
+          "series-2": "COMPLETED"
+        },
+        "failure_reason": "aworld · matrixllm.aisearch_duet_dsv4_flash: 任务执行结束，Verifier 判定 Reward 0；aworld · matrixllm.aisearch_duet_glm52: 任务执行结束，Verifier 判定 Reward 0",
+        "note": "当前 Batch 内全部为 0 分"
+      },
+      {
+        "task_name": "mteb-leaderboard",
+        "rewards": {
+          "series-1": 0.0,
+          "series-2": 0.0
+        },
+        "runs": {
+          "series-1": "r-a61b429bd9a3473fa360",
+          "series-2": "r-fea05542fb7b4a6da292"
+        },
+        "status": {
+          "series-1": "COMPLETED",
+          "series-2": "COMPLETED"
+        },
+        "failure_reason": "aworld · matrixllm.aisearch_duet_dsv4_flash: 任务执行结束，Verifier 判定 Reward 0；aworld · matrixllm.aisearch_duet_glm52: 任务执行结束，Verifier 判定 Reward 0",
+        "note": "当前 Batch 内全部为 0 分"
+      },
+      {
+        "task_name": "overfull-hbox",
+        "rewards": {
+          "series-1": 0.0,
+          "series-2": 0.0
+        },
+        "runs": {
+          "series-1": "r-08cfa7e82e3c4bcb8e06",
+          "series-2": "r-5da1bb5a28e64ec2bb90"
+        },
+        "status": {
+          "series-1": "COMPLETED",
+          "series-2": "COMPLETED"
+        },
+        "failure_reason": "aworld · matrixllm.aisearch_duet_dsv4_flash: 任务执行结束，Verifier 判定 Reward 0；aworld · matrixllm.aisearch_duet_glm52: 任务执行结束，Verifier 判定 Reward 0",
+        "note": "当前 Batch 内全部为 0 分"
+      },
+      {
+        "task_name": "password-recovery",
+        "rewards": {
+          "series-1": 0.0,
+          "series-2": 0.0
+        },
+        "runs": {
+          "series-1": "r-e663485c2ecf4f9387ee",
+          "series-2": "r-f450905372cb427ea888"
+        },
+        "status": {
+          "series-1": "COMPLETED",
+          "series-2": "COMPLETED"
+        },
+        "failure_reason": "aworld · matrixllm.aisearch_duet_dsv4_flash: 任务执行结束，Verifier 判定 Reward 0；aworld · matrixllm.aisearch_duet_glm52: 任务执行结束，Verifier 判定 Reward 0",
+        "note": "当前 Batch 内全部为 0 分"
+      },
+      {
+        "task_name": "path-tracing",
+        "rewards": {
+          "series-1": 0.0,
+          "series-2": 0.0
+        },
+        "runs": {
+          "series-1": "r-bdea330cc6a541b3a2db",
+          "series-2": "r-e1db947d18244a4bb67d"
+        },
+        "status": {
+          "series-1": "COMPLETED",
+          "series-2": "COMPLETED"
+        },
+        "failure_reason": "aworld · matrixllm.aisearch_duet_dsv4_flash: 任务执行结束，Verifier 判定 Reward 0；aworld · matrixllm.aisearch_duet_glm52: 任务执行结束，Verifier 判定 Reward 0",
+        "note": "当前 Batch 内全部为 0 分"
+      },
+      {
+        "task_name": "path-tracing-reverse",
+        "rewards": {
+          "series-1": 0.0,
+          "series-2": 0.0
+        },
+        "runs": {
+          "series-1": "r-275ea4e87cc04547b8ef",
+          "series-2": "r-b9dd5bbc707649b7a7f2"
+        },
+        "status": {
+          "series-1": "COMPLETED",
+          "series-2": "COMPLETED"
+        },
+        "failure_reason": "aworld · matrixllm.aisearch_duet_dsv4_flash: 任务执行结束，Verifier 判定 Reward 0；aworld · matrixllm.aisearch_duet_glm52: 任务执行结束，Verifier 判定 Reward 0",
+        "note": "当前 Batch 内全部为 0 分"
+      },
+      {
+        "task_name": "polyglot-c-py",
+        "rewards": {
+          "series-1": 0.0,
+          "series-2": 0.0
+        },
+        "runs": {
+          "series-1": "r-64ea387eee534d64857a",
+          "series-2": "r-16d8c2e13d804f72b0d0"
+        },
+        "status": {
+          "series-1": "COMPLETED",
+          "series-2": "COMPLETED"
+        },
+        "failure_reason": "aworld · matrixllm.aisearch_duet_dsv4_flash: 任务执行结束，Verifier 判定 Reward 0；aworld · matrixllm.aisearch_duet_glm52: 任务执行结束，Verifier 判定 Reward 0",
+        "note": "当前 Batch 内全部为 0 分"
+      },
+      {
+        "task_name": "polyglot-rust-c",
+        "rewards": {
+          "series-1": 0.0,
+          "series-2": 0.0
+        },
+        "runs": {
+          "series-1": "r-52e00052da1e401c801a",
+          "series-2": "r-d3483afb7c4b4908b3d7"
+        },
+        "status": {
+          "series-1": "COMPLETED",
+          "series-2": "COMPLETED"
+        },
+        "failure_reason": "aworld · matrixllm.aisearch_duet_dsv4_flash: 任务执行结束，Verifier 判定 Reward 0；aworld · matrixllm.aisearch_duet_glm52: 任务执行结束，Verifier 判定 Reward 0",
+        "note": "当前 Batch 内全部为 0 分"
+      },
+      {
+        "task_name": "protein-assembly",
+        "rewards": {
+          "series-1": 0.0,
+          "series-2": 0.0
+        },
+        "runs": {
+          "series-1": "r-76c71a9ff4fa43b59219",
+          "series-2": "r-b62712d38bca48ad9478"
+        },
+        "status": {
+          "series-1": "COMPLETED",
+          "series-2": "COMPLETED"
+        },
+        "failure_reason": "aworld · matrixllm.aisearch_duet_dsv4_flash: 任务执行结束，Verifier 判定 Reward 0；aworld · matrixllm.aisearch_duet_glm52: 任务执行结束，Verifier 判定 Reward 0",
+        "note": "当前 Batch 内全部为 0 分"
+      },
+      {
+        "task_name": "qemu-alpine-ssh",
+        "rewards": {
+          "series-1": 0.0,
+          "series-2": 0.0
+        },
+        "runs": {
+          "series-1": "r-60929eff864b45e38422",
+          "series-2": "r-3abcd39c7ef848409371"
+        },
+        "status": {
+          "series-1": "COMPLETED",
+          "series-2": "COMPLETED"
+        },
+        "failure_reason": "aworld · matrixllm.aisearch_duet_dsv4_flash: 任务执行结束，Verifier 判定 Reward 0；aworld · matrixllm.aisearch_duet_glm52: 任务执行结束，Verifier 判定 Reward 0",
+        "note": "当前 Batch 内全部为 0 分"
+      },
+      {
+        "task_name": "qemu-startup",
+        "rewards": {
+          "series-1": 0.0,
+          "series-2": 0.0
+        },
+        "runs": {
+          "series-1": "r-ef558342120948ecab8b",
+          "series-2": "r-d082b2198685471ea1df"
+        },
+        "status": {
+          "series-1": "COMPLETED",
+          "series-2": "COMPLETED"
+        },
+        "failure_reason": "aworld · matrixllm.aisearch_duet_dsv4_flash: 任务执行结束，Verifier 判定 Reward 0；aworld · matrixllm.aisearch_duet_glm52: 任务执行结束，Verifier 判定 Reward 0",
+        "note": "当前 Batch 内全部为 0 分"
+      },
+      {
+        "task_name": "query-optimize",
+        "rewards": {
+          "series-1": 0.0,
+          "series-2": 0.0
+        },
+        "runs": {
+          "series-1": "r-bc2465cfe4ff4f7e9637",
+          "series-2": "r-82f2d9319168465d8422"
+        },
+        "status": {
+          "series-1": "COMPLETED",
+          "series-2": "COMPLETED"
+        },
+        "failure_reason": "aworld · matrixllm.aisearch_duet_dsv4_flash: 任务执行结束，Verifier 判定 Reward 0；aworld · matrixllm.aisearch_duet_glm52: 任务执行结束，Verifier 判定 Reward 0",
+        "note": "当前 Batch 内全部为 0 分"
+      },
+      {
+        "task_name": "raman-fitting",
+        "rewards": {
+          "series-1": 0.0,
+          "series-2": 0.0
+        },
+        "runs": {
+          "series-1": "r-926b56fd48564ed199c7",
+          "series-2": "r-d97831cc4c894734aa7f"
+        },
+        "status": {
+          "series-1": "COMPLETED",
+          "series-2": "COMPLETED"
+        },
+        "failure_reason": "aworld · matrixllm.aisearch_duet_dsv4_flash: 任务执行结束，Verifier 判定 Reward 0；aworld · matrixllm.aisearch_duet_glm52: 任务执行结束，Verifier 判定 Reward 0",
+        "note": "当前 Batch 内全部为 0 分"
+      },
+      {
+        "task_name": "regex-chess",
+        "rewards": {
+          "series-1": 0.0,
+          "series-2": 0.0
+        },
+        "runs": {
+          "series-1": "r-4d233bb672cf45d58581",
+          "series-2": "r-aaedb3649d7b461eb227"
+        },
+        "status": {
+          "series-1": "COMPLETED",
+          "series-2": "COMPLETED"
+        },
+        "failure_reason": "aworld · matrixllm.aisearch_duet_dsv4_flash: 任务执行结束，Verifier 判定 Reward 0；aworld · matrixllm.aisearch_duet_glm52: 任务执行结束，Verifier 判定 Reward 0",
+        "note": "当前 Batch 内全部为 0 分"
+      },
+      {
+        "task_name": "regex-log",
+        "rewards": {
+          "series-1": 0.0,
+          "series-2": 0.0
+        },
+        "runs": {
+          "series-1": "r-ccebd6972f354907be1c",
+          "series-2": "r-88eacc5c574446aea636"
+        },
+        "status": {
+          "series-1": "COMPLETED",
+          "series-2": "COMPLETED"
+        },
+        "failure_reason": "aworld · matrixllm.aisearch_duet_dsv4_flash: 任务执行结束，Verifier 判定 Reward 0；aworld · matrixllm.aisearch_duet_glm52: 任务执行结束，Verifier 判定 Reward 0",
+        "note": "当前 Batch 内全部为 0 分"
+      },
+      {
+        "task_name": "schemelike-metacircular-eval",
+        "rewards": {
+          "series-1": 0.0,
+          "series-2": 0.0
+        },
+        "runs": {
+          "series-1": "r-0bac716c2e2b40bf8b04",
+          "series-2": "r-c8ce9b2e0c4246dfb69c"
+        },
+        "status": {
+          "series-1": "COMPLETED",
+          "series-2": "COMPLETED"
+        },
+        "failure_reason": "aworld · matrixllm.aisearch_duet_dsv4_flash: 任务执行结束，Verifier 判定 Reward 0；aworld · matrixllm.aisearch_duet_glm52: 任务执行结束，Verifier 判定 Reward 0",
+        "note": "当前 Batch 内全部为 0 分"
+      },
+      {
+        "task_name": "sparql-university",
+        "rewards": {
+          "series-1": 0.0,
+          "series-2": 0.0
+        },
+        "runs": {
+          "series-1": "r-3acc88ed9f064b74b196",
+          "series-2": "r-dcb280089955411bbe00"
+        },
+        "status": {
+          "series-1": "COMPLETED",
+          "series-2": "COMPLETED"
+        },
+        "failure_reason": "aworld · matrixllm.aisearch_duet_dsv4_flash: 任务执行结束，Verifier 判定 Reward 0；aworld · matrixllm.aisearch_duet_glm52: 任务执行结束，Verifier 判定 Reward 0",
+        "note": "当前 Batch 内全部为 0 分"
+      },
+      {
+        "task_name": "sqlite-with-gcov",
+        "rewards": {
+          "series-1": 0.0,
+          "series-2": 0.0
+        },
+        "runs": {
+          "series-1": "r-cd38cc9511f84516859c",
+          "series-2": "r-3493f11a975342729dca"
+        },
+        "status": {
+          "series-1": "COMPLETED",
+          "series-2": "COMPLETED"
+        },
+        "failure_reason": "aworld · matrixllm.aisearch_duet_dsv4_flash: 任务执行结束，Verifier 判定 Reward 0；aworld · matrixllm.aisearch_duet_glm52: 任务执行结束，Verifier 判定 Reward 0",
+        "note": "当前 Batch 内全部为 0 分"
+      },
+      {
+        "task_name": "torch-pipeline-parallelism",
+        "rewards": {
+          "series-1": 0.0,
+          "series-2": 0.0
+        },
+        "runs": {
+          "series-1": "r-bdec1c54bf904dd2b564",
+          "series-2": "r-5b1c9130844d4894baab"
+        },
+        "status": {
+          "series-1": "COMPLETED",
+          "series-2": "COMPLETED"
+        },
+        "failure_reason": "aworld · matrixllm.aisearch_duet_dsv4_flash: 任务执行结束，Verifier 判定 Reward 0；aworld · matrixllm.aisearch_duet_glm52: 任务执行结束，Verifier 判定 Reward 0",
+        "note": "当前 Batch 内全部为 0 分"
+      },
+      {
+        "task_name": "torch-tensor-parallelism",
+        "rewards": {
+          "series-1": 0.0,
+          "series-2": 0.0
+        },
+        "runs": {
+          "series-1": "r-8c72a830051d47c3a451",
+          "series-2": "r-9e3c28085086445cab72"
+        },
+        "status": {
+          "series-1": "COMPLETED",
+          "series-2": "COMPLETED"
+        },
+        "failure_reason": "aworld · matrixllm.aisearch_duet_dsv4_flash: 任务执行结束，Verifier 判定 Reward 0；aworld · matrixllm.aisearch_duet_glm52: 任务执行结束，Verifier 判定 Reward 0",
+        "note": "当前 Batch 内全部为 0 分"
+      },
+      {
+        "task_name": "video-processing",
+        "rewards": {
+          "series-1": 0.0,
+          "series-2": 0.0
+        },
+        "runs": {
+          "series-1": "r-01d37f94f79c42c89960",
+          "series-2": "r-294fc1f8add64fbfb026"
+        },
+        "status": {
+          "series-1": "COMPLETED",
+          "series-2": "COMPLETED"
+        },
+        "failure_reason": "aworld · matrixllm.aisearch_duet_dsv4_flash: 任务执行结束，Verifier 判定 Reward 0；aworld · matrixllm.aisearch_duet_glm52: 任务执行结束，Verifier 判定 Reward 0",
+        "note": "当前 Batch 内全部为 0 分"
+      },
+      {
+        "task_name": "winning-avg-corewars",
+        "rewards": {
+          "series-1": 0.0,
+          "series-2": 0.0
+        },
+        "runs": {
+          "series-1": "r-20a263c5ccfe4800b757",
+          "series-2": "r-eb978b48f37344cfadb5"
+        },
+        "status": {
+          "series-1": "COMPLETED",
+          "series-2": "COMPLETED"
+        },
+        "failure_reason": "aworld · matrixllm.aisearch_duet_dsv4_flash: 任务执行结束，Verifier 判定 Reward 0；aworld · matrixllm.aisearch_duet_glm52: 任务执行结束，Verifier 判定 Reward 0",
+        "note": "当前 Batch 内全部为 0 分"
+      },
+      {
+        "task_name": "write-compressor",
+        "rewards": {
+          "series-1": 0.0,
+          "series-2": 0.0
+        },
+        "runs": {
+          "series-1": "r-c03890f52d814e96888d",
+          "series-2": "r-73a4c6cb421b44a3b101"
+        },
+        "status": {
+          "series-1": "COMPLETED",
+          "series-2": "COMPLETED"
+        },
+        "failure_reason": "aworld · matrixllm.aisearch_duet_dsv4_flash: 任务执行结束，Verifier 判定 Reward 0；aworld · matrixllm.aisearch_duet_glm52: 任务执行结束，Verifier 判定 Reward 0",
+        "note": "当前 Batch 内全部为 0 分"
+      }
+    ],
+    "split": [
+      {
+        "task_name": "break-filter-js-from-html",
+        "rewards": {
+          "series-1": 0.0,
+          "series-2": 1.0
+        },
+        "runs": {
+          "series-1": "r-3e224032fc3b420ea444",
+          "series-2": "r-4697b0558a67414fa594"
+        },
+        "status": {
+          "series-1": "COMPLETED",
+          "series-2": "COMPLETED"
+        },
+        "failure_reason": "aworld · matrixllm.aisearch_duet_dsv4_flash: 任务执行结束，Verifier 判定 Reward 0",
+        "note": "不同 Harness / Model 结果不一致"
+      },
+      {
+        "task_name": "chess-best-move",
+        "rewards": {
+          "series-1": 0.0,
+          "series-2": 1.0
+        },
+        "runs": {
+          "series-1": "r-48cd2a56654f4c58bcca",
+          "series-2": "r-1d05278f967f44dc8ad5"
+        },
+        "status": {
+          "series-1": "COMPLETED",
+          "series-2": "COMPLETED"
+        },
+        "failure_reason": "aworld · matrixllm.aisearch_duet_dsv4_flash: 任务执行结束，Verifier 判定 Reward 0",
+        "note": "不同 Harness / Model 结果不一致"
+      },
+      {
+        "task_name": "db-wal-recovery",
+        "rewards": {
+          "series-1": 1.0,
+          "series-2": 0.0
+        },
+        "runs": {
+          "series-1": "r-429265a899f942619ee9",
+          "series-2": "r-f89678f114ec4ffc8669"
+        },
+        "status": {
+          "series-1": "COMPLETED",
+          "series-2": "COMPLETED"
+        },
+        "failure_reason": "aworld · matrixllm.aisearch_duet_glm52: 任务执行结束，Verifier 判定 Reward 0",
+        "note": "不同 Harness / Model 结果不一致"
+      },
+      {
+        "task_name": "feal-differential-cryptanalysis",
+        "rewards": {
+          "series-1": 0.0,
+          "series-2": 1.0
+        },
+        "runs": {
+          "series-1": "r-d88a4ab184524275b3f3",
+          "series-2": "r-706b3baeddce4c65a991"
+        },
+        "status": {
+          "series-1": "COMPLETED",
+          "series-2": "COMPLETED"
+        },
+        "failure_reason": "aworld · matrixllm.aisearch_duet_dsv4_flash: 任务执行结束，Verifier 判定 Reward 0",
+        "note": "不同 Harness / Model 结果不一致"
+      },
+      {
+        "task_name": "large-scale-text-editing",
+        "rewards": {
+          "series-1": 1.0,
+          "series-2": 0.0
+        },
+        "runs": {
+          "series-1": "r-aee85b22c77d420999d1",
+          "series-2": "r-1ded4aaf84b14679a7ce"
+        },
+        "status": {
+          "series-1": "COMPLETED",
+          "series-2": "COMPLETED"
+        },
+        "failure_reason": "aworld · matrixllm.aisearch_duet_glm52: 任务执行结束，Verifier 判定 Reward 0",
+        "note": "不同 Harness / Model 结果不一致"
+      },
+      {
+        "task_name": "largest-eigenval",
+        "rewards": {
+          "series-1": 0.0,
+          "series-2": 1.0
+        },
+        "runs": {
+          "series-1": "r-4e4c0c83bc294c88b3cb",
+          "series-2": "r-27d997b661204c16a455"
+        },
+        "status": {
+          "series-1": "COMPLETED",
+          "series-2": "COMPLETED"
+        },
+        "failure_reason": "aworld · matrixllm.aisearch_duet_dsv4_flash: 任务执行结束，Verifier 判定 Reward 0",
+        "note": "不同 Harness / Model 结果不一致"
+      },
+      {
+        "task_name": "llm-inference-batching-scheduler",
+        "rewards": {
+          "series-1": 1.0,
+          "series-2": 0.0
+        },
+        "runs": {
+          "series-1": "r-e5cbab419c9a4a05a661",
+          "series-2": "r-f8b955c422c1425d9469"
+        },
+        "status": {
+          "series-1": "COMPLETED",
+          "series-2": "COMPLETED"
+        },
+        "failure_reason": "aworld · matrixllm.aisearch_duet_glm52: 任务执行结束，Verifier 判定 Reward 0",
+        "note": "不同 Harness / Model 结果不一致"
+      },
+      {
+        "task_name": "mteb-retrieve",
+        "rewards": {
+          "series-1": 1.0,
+          "series-2": 0.0
+        },
+        "runs": {
+          "series-1": "r-79549e4fc6534bb6a1f6",
+          "series-2": "r-95d5a1b5b234489d982d"
+        },
+        "status": {
+          "series-1": "COMPLETED",
+          "series-2": "COMPLETED"
+        },
+        "failure_reason": "aworld · matrixllm.aisearch_duet_glm52: 任务执行结束，Verifier 判定 Reward 0",
+        "note": "不同 Harness / Model 结果不一致"
+      },
+      {
+        "task_name": "pytorch-model-recovery",
+        "rewards": {
+          "series-1": 1.0,
+          "series-2": 0.0
+        },
+        "runs": {
+          "series-1": "r-661adae045114c3394a1",
+          "series-2": "r-84659f4a03174582b120"
+        },
+        "status": {
+          "series-1": "COMPLETED",
+          "series-2": "COMPLETED"
+        },
+        "failure_reason": "aworld · matrixllm.aisearch_duet_glm52: 任务执行结束，Verifier 判定 Reward 0",
+        "note": "不同 Harness / Model 结果不一致"
+      },
+      {
+        "task_name": "rstan-to-pystan",
+        "rewards": {
+          "series-1": 0.0,
+          "series-2": 1.0
+        },
+        "runs": {
+          "series-1": "r-efb6beca47434952b140",
+          "series-2": "r-b6ece8c20d4e485aae77"
+        },
+        "status": {
+          "series-1": "COMPLETED",
+          "series-2": "COMPLETED"
+        },
+        "failure_reason": "aworld · matrixllm.aisearch_duet_dsv4_flash: 任务执行结束，Verifier 判定 Reward 0",
+        "note": "不同 Harness / Model 结果不一致"
+      },
+      {
+        "task_name": "sam-cell-seg",
+        "rewards": {
+          "series-1": 1.0,
+          "series-2": 0.0
+        },
+        "runs": {
+          "series-1": "r-85ff8d5999c1441f828a",
+          "series-2": "r-8e52a2c19b8b46a69a31"
+        },
+        "status": {
+          "series-1": "COMPLETED",
+          "series-2": "COMPLETED"
+        },
+        "failure_reason": "aworld · matrixllm.aisearch_duet_glm52: 任务执行结束，Verifier 判定 Reward 0",
+        "note": "不同 Harness / Model 结果不一致"
+      },
+      {
+        "task_name": "sanitize-git-repo",
+        "rewards": {
+          "series-1": 1.0,
+          "series-2": 0.0
+        },
+        "runs": {
+          "series-1": "r-b4baa5d0f9e64a9a91bc",
+          "series-2": "r-cb6f6b7b92254eb6bdfd"
+        },
+        "status": {
+          "series-1": "COMPLETED",
+          "series-2": "COMPLETED"
+        },
+        "failure_reason": "aworld · matrixllm.aisearch_duet_glm52: 任务执行结束，Verifier 判定 Reward 0",
+        "note": "不同 Harness / Model 结果不一致"
+      },
+      {
+        "task_name": "train-fasttext",
+        "rewards": {
+          "series-1": 1.0,
+          "series-2": 0.0
+        },
+        "runs": {
+          "series-1": "r-50889948504b477fbf69",
+          "series-2": "r-505f6e83536148d6ba9e"
+        },
+        "status": {
+          "series-1": "COMPLETED",
+          "series-2": "COMPLETED"
+        },
+        "failure_reason": "aworld · matrixllm.aisearch_duet_glm52: 任务执行结束，Verifier 判定 Reward 0",
+        "note": "不同 Harness / Model 结果不一致"
+      }
+    ],
+    "both_one_sample": [
+      {
+        "task_name": "fix-ocaml-gc",
+        "rewards": {
+          "series-1": 1.0,
+          "series-2": 1.0
+        },
+        "runs": {
+          "series-1": "r-0f789c63010a42c9b69c",
+          "series-2": "r-8df3c48043f8490d9471"
+        },
+        "status": {
+          "series-1": "COMPLETED",
+          "series-2": "COMPLETED"
+        },
+        "failure_reason": null,
+        "note": "当前 Batch 内全部满分"
+      },
+      {
+        "task_name": "portfolio-optimization",
+        "rewards": {
+          "series-1": 1.0,
+          "series-2": 1.0
+        },
+        "runs": {
+          "series-1": "r-e8f845718eb34ec6ac0b",
+          "series-2": "r-2e353ac0e1bd4e0583b8"
+        },
+        "status": {
+          "series-1": "COMPLETED",
+          "series-2": "COMPLETED"
+        },
+        "failure_reason": null,
+        "note": "当前 Batch 内全部满分"
+      },
+      {
+        "task_name": "prove-plus-comm",
+        "rewards": {
+          "series-1": 1.0,
+          "series-2": 1.0
+        },
+        "runs": {
+          "series-1": "r-8bbe91ee64f34996a6d6",
+          "series-2": "r-375fa155204742798239"
+        },
+        "status": {
+          "series-1": "COMPLETED",
+          "series-2": "COMPLETED"
+        },
+        "failure_reason": null,
+        "note": "当前 Batch 内全部满分"
+      }
+    ]
+  }
+}

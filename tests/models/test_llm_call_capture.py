@@ -7,8 +7,9 @@ import pytest
 
 from aworld.config import ConfigDict
 from aworld.core.context.base import Context
+from aworld.core.context.compiler import canonical_json_hash
 from aworld.core.task import Task, TaskResponse
-from aworld.models.llm import LLMModel
+from aworld.models.llm import AWORLD_CONTEXT_CALL_ID_KWARG, LLMModel
 from aworld.models.model_response import ModelResponse
 from aworld.core.llm_provider import LLMProviderBase
 from aworld.runners.event_runner import TaskEventRunner
@@ -114,6 +115,27 @@ class RecordingLLMProvider(LLMProviderBase):
         )
 
 
+def test_turn_economics_storage_failure_does_not_block_provider(monkeypatch):
+    provider = RecordingLLMProvider()
+    model = LLMModel(custom_provider=provider)
+    context = Context(task_id="turn-economics-fail-open")
+    monkeypatch.setattr(
+        context,
+        "record_model_turn",
+        lambda request_id, messages: (_ for _ in ()).throw(RuntimeError("storage")),
+    )
+
+    model.completion([{"role": "user", "content": "go"}], context=context)
+
+    assert len(provider.seen_requests) == 1
+    call = context.get_llm_calls()[0]
+    assert call["status"] == "success"
+    assert call["turn_economics"] == {
+        "status": "unavailable",
+        "reason_code": "turn_economics_record_failed",
+    }
+
+
 class TerminalMarkerStreamProvider(RecordingLLMProvider):
     def stream_completion(self, messages, **kwargs):
         self.seen_requests.append(messages)
@@ -142,7 +164,6 @@ class TerminalMarkerStreamProvider(RecordingLLMProvider):
             message={"role": "assistant", "content": ""},
             finish_reason="stop",
         )
-
     async def astream_completion(self, messages, **kwargs):
         self.seen_requests.append(messages)
         yield ModelResponse(
@@ -171,6 +192,21 @@ class TerminalMarkerStreamProvider(RecordingLLMProvider):
             message={"role": "assistant", "content": ""},
             finish_reason="stop",
         )
+
+
+class ToolChoiceProvider(RecordingLLMProvider):
+    def _build_response(self):
+        response = super()._build_response()
+        response.message = {
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [{
+                "id": "chosen-tool-call",
+                "type": "function",
+                "function": {"name": "generic_tool", "arguments": "{}"},
+            }],
+        }
+        return response
 
 
 @pytest.mark.asyncio
@@ -207,6 +243,19 @@ async def test_acompletion_appends_llm_call_with_final_messages_and_usage(monkey
     assert llm_call["provider_name"] == "custom"
     assert llm_call["model"] == "mock-model"
     assert llm_call["request"]["messages"] == final_messages
+    assert llm_call["context_observe"]["request"]["content_hash"] == (
+        canonical_json_hash(
+            {
+                "messages": final_messages,
+                "tools": None,
+                "params": {
+                    "temperature": 0.0,
+                    "max_tokens": None,
+                    "stop": None,
+                },
+            }
+        )
+    )
     assert llm_call["usage_normalized"] == {
         "prompt_tokens": 11,
         "completion_tokens": 7,
@@ -219,6 +268,23 @@ async def test_acompletion_appends_llm_call_with_final_messages_and_usage(monkey
         "prompt_tokens_details": {"cached_tokens": 5},
         "cache_hit_tokens": 5,
     }
+    assert llm_call["turn_economics"]["turn_kind"] == "model"
+    assert llm_call["turn_economics"]["cause"] == "initial_input"
+
+
+@pytest.mark.asyncio
+async def test_llm_response_tool_choice_is_bound_to_the_following_tool_turn():
+    provider = ToolChoiceProvider()
+    llm_model = LLMModel(custom_provider=provider)
+    context = Context(task_id="typed-tool-choice")
+
+    await llm_model.acompletion(
+        [{"role": "user", "content": "choose a tool"}], context=context
+    )
+    tool_turn = context.record_tool_turn("chosen-tool-call")
+
+    assert tool_turn.cause.value == "model_choice"
+    assert tool_turn.parent_turn_id_hash is not None
 
 
 @pytest.mark.asyncio
@@ -289,6 +355,45 @@ def test_completion_records_effective_request_model_when_overridden():
     assert llm_call["model"] == "request-override"
 
 
+def test_model_boundary_capture_merges_agent_compiler_snapshot():
+    provider = RecordingLLMProvider()
+    llm_model = LLMModel(custom_provider=provider)
+    context = Context(task_id="task-merged-capture")
+    context.agent_info.current_agent_id = "solver"
+    compiled_messages = [{"role": "user", "content": "compiled"}]
+    provider_messages = [{"role": "user", "content": "provider-bound"}]
+    context.context_info["llm_calls"] = [
+        {
+            "call_id": "compiler-call",
+            "agent_id": "solver",
+            "request": {"messages": compiled_messages},
+            "assembly_observability": {"stable_prefix_hash": "prefix-1"},
+        }
+    ]
+
+    llm_model.completion(
+        provider_messages,
+        context=context,
+        **{AWORLD_CONTEXT_CALL_ID_KWARG: "compiler-call"},
+    )
+
+    llm_calls = context.context_info["llm_calls"]
+    assert len(llm_calls) == 1
+    assert llm_calls[0]["call_id"] == "compiler-call"
+    assert llm_calls[0]["capture_stage"] == "model_boundary"
+    assert llm_calls[0]["capture_fidelity"] == "model_boundary"
+    assert llm_calls[0]["request_projection"] == "aworld.standard.model_boundary.v1"
+    assert llm_calls[0]["provider_prepared_request_match"] is None
+    assert llm_calls[0]["compiler_request"] == {"messages": compiled_messages}
+    assert llm_calls[0]["request"]["messages"] == provider_messages
+    assert llm_calls[0]["request_trace_match"] is False
+    assert (
+        llm_calls[0]["request_trace_match_scope"]
+        == "aworld.standard.model_boundary.v1"
+    )
+    assert llm_calls[0]["assembly_observability"]["stable_prefix_hash"] == "prefix-1"
+
+
 @pytest.mark.asyncio
 async def test_merge_context_appends_only_child_local_llm_calls():
     parent = Context(task_id="parent-task")
@@ -317,6 +422,101 @@ def test_merge_context_from_deep_copy_appends_only_new_llm_calls():
     assert parent.context_info.get("llm_calls") == [
         {"request_id": "parent-call"},
         {"request_id": "child-call"},
+    ]
+
+
+def test_preserved_llm_call_merge_baseline_survives_transport_copy():
+    parent = Context(task_id="parent-task")
+    parent.context_info["llm_calls"] = [{"request_id": "parent-call"}]
+
+    child = parent.deep_copy()
+    child.append_llm_call({"request_id": "child-call"})
+
+    transported = child.deep_copy(preserve_merge_baseline=True)
+    parent.merge_context(transported)
+
+    assert parent.context_info.get("llm_calls") == [
+        {"request_id": "parent-call"},
+        {"request_id": "child-call"},
+    ]
+
+
+def test_merge_context_consumes_llm_call_delta_once():
+    parent = Context(task_id="parent-task")
+    child = parent.deep_copy()
+    child.append_llm_call({"request_id": "child-call"})
+
+    parent.merge_context(child)
+    parent.merge_context(child)
+
+    assert parent.context_info.get("llm_calls") == [
+        {"request_id": "child-call"},
+    ]
+
+
+def test_merge_context_reconciles_duplicate_call_with_latest_snapshot():
+    parent = Context(task_id="parent-task")
+    parent.context_info["llm_calls"] = [
+        {
+            "call_id": "stable-call",
+            "request_id": "request-1",
+            "status": "started",
+        }
+    ]
+    child = Context(task_id="parent-task")
+    child.context_info["llm_calls"] = [
+        {
+            "call_id": "stable-call",
+            "request_id": "request-1",
+            "status": "success",
+            "provider_invoked": True,
+        }
+    ]
+
+    parent.merge_context(child)
+
+    assert parent.context_info.get("llm_calls") == [
+        {
+            "call_id": "stable-call",
+            "request_id": "request-1",
+            "status": "success",
+            "provider_invoked": True,
+        }
+    ]
+
+
+def test_merge_context_preserves_distinct_provider_retry_attempts():
+    parent = Context(task_id="parent-task")
+    parent.context_info["llm_calls"] = [
+        {"call_id": "stable-call", "request_id": "request-1", "status": "failed"}
+    ]
+    child = Context(task_id="parent-task")
+    child.context_info["llm_calls"] = [
+        {"call_id": "stable-call", "request_id": "request-2", "status": "success"}
+    ]
+
+    parent.merge_context(child)
+
+    assert [call["request_id"] for call in parent.get_llm_calls()] == [
+        "request-1",
+        "request-2",
+    ]
+
+
+def test_merge_context_reconciles_first_bound_attempt_with_unbound_placeholder():
+    parent = Context(task_id="parent-task")
+    parent.context_info["llm_calls"] = [
+        {"call_id": "stable-call", "status": "started"}
+    ]
+    child = Context(task_id="parent-task")
+    child.context_info["llm_calls"] = [
+        {"call_id": "stable-call", "request_id": "request-1", "status": "success"}
+    ]
+
+    parent.merge_context(child)
+
+    assert parent.get_llm_calls() == [
+        {"call_id": "stable-call", "request_id": "request-1", "status": "success"}
     ]
 
 
@@ -439,8 +639,9 @@ async def test_task_response_and_trajectory_payload_include_llm_calls(monkeypatc
         def to_dict(self):
             return {"step": 1}
 
-    async def fake_get_task_trajectory(task_id):
+    async def fake_get_task_trajectory(task_id, **kwargs):
         assert task_id == task.id
+        assert kwargs == {"strict": True}
         return [FakeTrajectoryStep()]
 
     monkeypatch.setattr(context, "get_task_trajectory", fake_get_task_trajectory)

@@ -1,10 +1,18 @@
 # coding: utf-8
 
-from dataclasses import dataclass, field
-from typing import Any, Dict
+from __future__ import annotations
 
-from aworld.core.context.amni.prompt.assembly import PromptAssemblyPlan
+from dataclasses import dataclass, field
+from typing import TYPE_CHECKING, Any, Dict
+
 from aworld.utils.serialized_util import to_serializable
+
+if TYPE_CHECKING:
+    from aworld.core.context.amni.prompt.assembly import PromptAssemblyPlan
+else:
+    # Keep runtime annotation introspection valid without importing the Amni
+    # package (which depends back on LLMModel during module initialization).
+    PromptAssemblyPlan = Any
 
 PROMPT_CACHE_CAPABLE_PROVIDERS = {"openai", "anthropic"}
 

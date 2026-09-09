@@ -335,6 +335,7 @@ class DefaultMemoryHandler(DefaultHandler):
                 token_threshold=getattr(agent.memory_config, "tool_result_length_threshold", 30000),
                 preview_chars=getattr(agent.memory_config, "tool_result_preview_chars", 2000),
                 force=bool(tool_result_metadata.get("offload") is True),
+                result_metadata=tool_result_metadata,
             )
             if compaction.applied:
                 tool_content = compaction.content

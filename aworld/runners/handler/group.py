@@ -12,6 +12,7 @@ from aworld.core.common import ActionModel, TaskItem, Observation, ActionResult
 from aworld.core.context.base import Context
 from aworld.core.event.base import Message, Constants, TopicType, GroupMessage, MemoryEventMessage, MemoryEventType
 from aworld.core.task import TaskResponse
+from aworld.core.trajectory_update_registry import TrajectoryRegistryState
 from aworld.events.util import send_message_with_future, send_message
 from aworld.logs.util import logger
 from aworld.output.base import StepOutput
@@ -398,6 +399,29 @@ class DefaultGroupHandler(GroupHandler):
 
         return results
 
+    async def _import_finalized_child_trajectory(self, context: Context, response: TaskResponse):
+        """Import a separately persisted child snapshot exactly once per response.
+
+        A drained entry in the root registry is authoritative evidence that the
+        child snapshot is already visible to this context, whether the child
+        wrote it directly or this handler imported a remote snapshot.
+        """
+        registry = getattr(context, "trajectory_update_registry", None)
+        if registry is not None and registry.state(response.id) is TrajectoryRegistryState.DRAINED:
+            return
+
+        outcome = await context.add_task_trajectory(
+            response.id,
+            response.trajectory,
+            finalized_import=True,
+        )
+        if not outcome.succeeded:
+            logger.warning(
+                "Finalized child trajectory import was not acknowledged: child_task_id={} error={}",
+                response.id,
+                outcome.error,
+            )
+
     async def process_agent_task_parallel(self, agent_tasks, input_message):
         """Process agent async tasks in parallel with per-agent batch control
 
@@ -459,6 +483,7 @@ class DefaultGroupHandler(GroupHandler):
 
             root_agent_set.add(root_agent_id)
             self.context.merge_sub_context(res.context)
+            await self._import_finalized_child_trajectory(input_message.context, res)
             msg = Message(
                 category=Constants.AGENT,
                 payload=[ActionModel(policy_info=res.answer, agent_name=root_agent_id)],
@@ -478,7 +503,6 @@ class DefaultGroupHandler(GroupHandler):
                         event.category == Constants.AGENT or event.category == Constants.TASK):
                     finish_group_messages.append(event)
                     event.headers["sub_task_id"] = res.id
-                    await input_message.context.add_task_trajectory(res.id, res.trajectory)
             await state_manager.finish_sub_group(group_id, node_id, finish_group_messages)
 
         for agent_id in root_agent_set:

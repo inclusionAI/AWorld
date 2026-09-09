@@ -243,6 +243,7 @@ setup(
             "config/*.tiktoken",
             "cmd/web/webui/public/trace_ui.html",
             "cmd/web/webui/dist/**",
+            "sandbox/tool_servers/docker/src/*.py",
         ],
         "examples": [
             "**/mcp.json",

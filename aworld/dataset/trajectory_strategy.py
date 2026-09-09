@@ -258,16 +258,25 @@ class DefaultTrajectoryStrategy(TrajectoryStrategy):
 
         agent_id = getattr(message, "receiver", None)
         if agent_id is not None:
-            valid_calls = [call for call in valid_calls if call.get("agent_id") == agent_id]
-            if not valid_calls:
+            agent_matches = [call for call in valid_calls if call.get("agent_id") == agent_id]
+            if agent_matches:
+                valid_calls = agent_matches
+            elif any(call.get("agent_id") is not None for call in valid_calls):
                 return None
 
         message_timestamp = getattr(message, "timestamp", None)
         if isinstance(message_timestamp, (int, float)):
-            prior_calls = [
+            timestamped_calls = [
                 call for call in valid_calls
                 if (call.get("finished_at") or call.get("started_at")) is not None
-                and (call.get("finished_at") or call.get("started_at")) <= message_timestamp
+            ]
+            if not timestamped_calls:
+                # Legacy/compiler-only snapshots do not carry timestamps. They
+                # remain a better truth source than memory reconstruction.
+                return valid_calls[-1]
+            prior_calls = [
+                call for call in timestamped_calls
+                if (call.get("finished_at") or call.get("started_at")) <= message_timestamp
             ]
             if prior_calls:
                 return max(prior_calls, key=lambda call: call.get("finished_at") or call.get("started_at") or 0)

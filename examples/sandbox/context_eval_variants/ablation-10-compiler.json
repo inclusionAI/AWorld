@@ -1,0 +1,28 @@
+{
+  "schema_version": "aworld.context-eval-variant/v1",
+  "name": "ablation-10-compiler",
+  "agent_memory_config": {
+    "tool_result_offload": false
+  },
+  "context_compiler": {
+    "mode": "enforce",
+    "compiler_version": "v1",
+    "policy_version": "v1",
+    "universal_final": true,
+    "require_proven_semantics_for_enforce": true,
+    "scoped_instructions": "nested",
+    "progressive_skills": false,
+    "progressive_tools": false,
+    "task_catalog_policy": "per_call",
+    "checkpoint_policy": "explicit",
+    "destructive_sandbox_checkpoint": false,
+    "artifact_offload": false,
+    "context_inspector": true,
+    "trace_level": "decisions",
+    "completion_contract": "off"
+  },
+  "docker_output_policy": {
+    "max_inline_output_bytes": 1048576,
+    "output_head_bytes": 524288
+  }
+}

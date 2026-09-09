@@ -22,6 +22,10 @@ import aworld
 from aworld.config.conf import ToolConfig, load_config, ConfigDict
 from aworld.core.common import Observation, ActionModel, ActionResult, CallbackItem, CallbackResult, CallbackActionType
 from aworld.core.context.base import Context
+from aworld.core.context.tool_output_runtime import (
+    enforce_tool_output_boundary,
+    prepare_tool_output_plans,
+)
 from aworld.core.event.base import Message, AgentMessage, Constants, MemoryEventMessage, MemoryEventType
 from aworld.core.factory import Factory
 from aworld.core.tool.action import ToolAction
@@ -35,6 +39,10 @@ from aworld.output.base import StepOutput
 from aworld.runners.hook.hooks import HookPoint
 from aworld.runners.hook.utils import run_hooks
 from aworld.runners.post_tool_progress import arm_post_tool_progress_watchdog
+from aworld.core.tool_action_journal import (
+    append_tool_action_event,
+    tool_action_batch_id,
+)
 from aworld.utils.common import convert_to_snake, sync_exec
 
 AgentInput = TypeVar("AgentInput")
@@ -42,6 +50,28 @@ ToolInput = TypeVar("ToolInput")
 
 # Forward declaration of action_executor to fix NameError
 action_executor = None
+
+
+def _journal_model_visible_tool_observation(context, actions, observation) -> None:
+    """Persist the exact bounded ActionResults that can enter model history."""
+    if context is None:
+        return
+    try:
+        results = getattr(observation, "action_result", None) or []
+        append_tool_action_event(
+            context=context,
+            event_type="tool_observation_recorded",
+            actions=actions,
+            results=results,
+            status="completed",
+            batch_id=tool_action_batch_id(actions),
+            metadata={"source": "model_visible_observation"},
+        )
+    except Exception as exc:
+        logger.warning(
+            "Tool observation journal append failed open; "
+            f"error_type={type(exc).__name__}"
+        )
 
 
 async def maybe_await(result: Any) -> Any:
@@ -534,6 +564,7 @@ class Tool(BaseTool[Observation, List[ActionModel]]):
             _enforce_runtime_tool_call_budget(self.name(), action, message)
 
             self.pre_step(action, **kwargs)
+            tool_output_plans = prepare_tool_output_plans(message.context, action)
             res = self.do_step(action, message=message, **kwargs)
 
             # Execute POST_TOOL_CALL hooks and check for updated_output
@@ -545,6 +576,20 @@ class Tool(BaseTool[Observation, List[ActionModel]]):
             )
 
             _apply_hook_headers_to_message(message, post_hook_events)
+            info = res[4] if len(res) > 4 and isinstance(res[4], dict) else {}
+            ensure_action_results(
+                res[0],
+                action,
+                success=res[1] > 0,
+                default_content=res[0].content,
+                error=info.get("error"),
+            )
+            res = enforce_tool_output_boundary(
+                res, action, message.context, tool_output_plans
+            )
+            _journal_model_visible_tool_observation(
+                message.context, action, res[0]
+            )
 
             final_res = self.post_step(res, action,message=message, **kwargs)
             if isinstance(final_res, Message):
@@ -610,7 +655,7 @@ class Tool(BaseTool[Observation, List[ActionModel]]):
         else:
             feedback_tool_result = True
         if feedback_tool_result:
-            arm_post_tool_progress_watchdog(
+            watchdog_state = arm_post_tool_progress_watchdog(
                 context,
                 tool_name=self.name(),
                 agent_id=action[0].agent_name,
@@ -623,7 +668,12 @@ class Tool(BaseTool[Observation, List[ActionModel]]):
                                 sender=self.name(),
                                 receiver=action[0].agent_name,
                                 session_id=context.session_id,
-                                headers={"context": context})
+                                headers={
+                                    "context": context,
+                                    "post_tool_continuation_token": watchdog_state.get(
+                                        "continuation_token"
+                                    ) if isinstance(watchdog_state, dict) else None,
+                                })
         else:
             return AgentMessage(payload=step_res,
                                 sender=action[0].agent_name,
@@ -701,8 +751,9 @@ class Tool(BaseTool[Observation, List[ActionModel]]):
 
     def _update_headers(self, message: Message, input_message: Message):
         headers = input_message.headers.copy()
+        headers.update(message.headers or {})
         headers['context'] = message.context
-        headers['level'] = headers.get('level', 0) + 1
+        headers['level'] = input_message.headers.get('level', 0) + 1
         message.headers = headers
 
 
@@ -820,6 +871,7 @@ class AsyncTool(AsyncBaseTool[Observation, List[ActionModel]]):
             _enforce_runtime_tool_call_budget(self.name(), action, message)
 
             await self.pre_step(action, message=message,**kwargs)
+            tool_output_plans = prepare_tool_output_plans(message.context, action)
             res = await self.do_step(action, message=message, **kwargs)
 
             # Execute POST_TOOL_CALL hooks and check for updated_output
@@ -832,6 +884,20 @@ class AsyncTool(AsyncBaseTool[Observation, List[ActionModel]]):
             )
 
             _apply_hook_headers_to_message(message, post_hook_events)
+            info = res[4] if len(res) > 4 and isinstance(res[4], dict) else {}
+            ensure_action_results(
+                res[0],
+                action,
+                success=res[1] > 0,
+                default_content=res[0].content,
+                error=info.get("error"),
+            )
+            res = enforce_tool_output_boundary(
+                res, action, message.context, tool_output_plans
+            )
+            _journal_model_visible_tool_observation(
+                message.context, action, res[0]
+            )
 
             final_res = await self.post_step(res, action, message=message,**kwargs)
             await self._internal_process(res, action, message, tool_id_mapping=tool_id_mapping, **kwargs)
@@ -901,7 +967,7 @@ class AsyncTool(AsyncBaseTool[Observation, List[ActionModel]]):
         else:
             feedback_tool_result = True
         if feedback_tool_result:
-            arm_post_tool_progress_watchdog(
+            watchdog_state = arm_post_tool_progress_watchdog(
                 context,
                 tool_name=self.name(),
                 agent_id=action[0].agent_name,
@@ -914,7 +980,12 @@ class AsyncTool(AsyncBaseTool[Observation, List[ActionModel]]):
                                 sender=self.name(),
                                 receiver=action[0].agent_name,
                                 session_id=context.session_id,
-                                headers={"context": context})
+                                headers={
+                                    "context": context,
+                                    "post_tool_continuation_token": watchdog_state.get(
+                                        "continuation_token"
+                                    ) if isinstance(watchdog_state, dict) else None,
+                                })
         else:
             result = AgentMessage(payload=step_res,
                                 sender=action[0].agent_name,
@@ -1019,8 +1090,9 @@ class AsyncTool(AsyncBaseTool[Observation, List[ActionModel]]):
 
     def _update_headers(self, message: Message, input_message: Message):
         headers = input_message.headers.copy()
+        headers.update(message.headers or {})
         headers['context'] = message.context
-        headers['level'] = headers.get('level', 0) + 1
+        headers['level'] = input_message.headers.get('level', 0) + 1
         message.headers = headers
 
     async def run_hooks(self, message: Message, hook_point: str, hook_from: str, payload: Any = None) -> List[Message]:

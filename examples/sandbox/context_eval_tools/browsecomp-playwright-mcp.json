@@ -1,0 +1,24 @@
+{
+  "mcpServers": {
+    "ms-playwright": {
+      "type": "stdio",
+      "command": "npx",
+      "args": [
+        "--yes",
+        "@playwright/mcp@0.0.37",
+        "--browser",
+        "chrome",
+        "--headless",
+        "--isolated",
+        "--image-responses",
+        "omit",
+        "--timeout-action",
+        "15000"
+      ],
+      "env": {
+        "PLAYWRIGHT_TIMEOUT": "120000",
+        "SESSION_REQUEST_CONNECT_TIMEOUT": "120"
+      }
+    }
+  }
+}

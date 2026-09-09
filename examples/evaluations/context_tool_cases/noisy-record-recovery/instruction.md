@@ -1,0 +1,1 @@
+Run `sh /workspace/emit_records.sh` exactly once and inspect its output using the available tools. Recover the authoritative `account_id`, `region`, and integer `retention_days`. Write only those three fields to `/workspace/result.json` as a JSON object, then read the file back to verify it. Do not guess values from non-authoritative diagnostic lines.
