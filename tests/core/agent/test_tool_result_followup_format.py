@@ -24,7 +24,11 @@ from aworld.memory.models import (
 )
 from aworld.models.model_response import ModelResponse
 from aworld.runners.post_tool_progress import arm_post_tool_progress_watchdog
-from aworld.core.context.compiler import ADAPTIVE_WORK_STATE_PREFIX, TurnCauseCode
+from aworld.core.context.compiler import (
+    ADAPTIVE_WORK_STATE_PREFIX,
+    CandidateRequestNotEnforceable,
+    TurnCauseCode,
+)
 from aworld.core.tool.base import AsyncTool
 
 
@@ -953,6 +957,76 @@ async def test_invoke_model_reports_empty_response_failure_only_once(
     ]
     assert len(failure_payloads) == 1
     assert failure_payloads[0].startswith("Failed to call llm model after 1 attempts:")
+
+
+@pytest.mark.asyncio
+async def test_invoke_model_does_not_retry_context_compiler_contract_failure(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    class MinimalAgent(Agent):
+        async def _filter_tools(self, context=None):
+            return None
+
+    agent = MinimalAgent(
+        name="Aworld",
+        conf=AgentConfig(
+            llm_provider="openai",
+            llm_model_name="fake-model",
+            llm_api_key="fake-key",
+        ),
+    )
+    agent.llm_max_attempts = 3
+    agent.llm_retry_delay = 0
+    calls = 0
+    saved_attempts: list[int] = []
+    sent_payloads: list[str] = []
+    scheduled_retries = []
+
+    async def fake_acall_llm_model(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        raise CandidateRequestNotEnforceable("compiler_failed")
+
+    async def fake_save_failed_request_context(**kwargs):
+        saved_attempts.append(kwargs["attempt"])
+
+    async def fake_send_message(msg):
+        payload = getattr(msg, "payload", None)
+        sent_payloads.append(str(getattr(payload, "data", payload)))
+
+    def capture_schedule(*args, **kwargs):
+        scheduled_retries.append((args, kwargs))
+
+    monkeypatch.setattr(llm_agent_module, "acall_llm_model", fake_acall_llm_model)
+    monkeypatch.setattr(llm_agent_module, "send_message", fake_send_message)
+    monkeypatch.setattr(
+        agent, "_save_failed_request_context", fake_save_failed_request_context
+    )
+
+    context = Context(task_id="compiler-failure", session=Session(session_id="sess"))
+    context.set_task(Task(id="compiler-failure", name="compiler-failure"))
+    monkeypatch.setattr(context, "schedule_turn_cause", capture_schedule)
+    message = Message(
+        category=Constants.AGENT,
+        sender="user",
+        receiver=agent.name(),
+        headers={"context": context},
+    )
+
+    with pytest.raises(CandidateRequestNotEnforceable):
+        await agent.invoke_model(
+            messages=[{"role": "user", "content": "hello"}],
+            message=message,
+            stream=False,
+        )
+
+    assert calls == 1
+    assert saved_attempts == [1]
+    assert sent_payloads == [
+        "Failed to prepare llm request: "
+        "candidate_request_not_enforceable: compiler_failed"
+    ]
+    assert scheduled_retries == []
 
 
 @pytest.mark.asyncio

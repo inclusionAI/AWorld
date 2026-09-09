@@ -57,6 +57,7 @@ from aworld.core.context.compiler import (
     CandidateCompilePolicy,
     CandidateCompilation,
     CandidateRequestNotEnforceable,
+    ContextBudgetError,
     ContextCallShape,
     ContextCompilerMode,
     ContextEntryPoint,
@@ -1407,10 +1408,15 @@ class LLMModel:
                 f"error_fingerprint={canonical_json_hash({'type': type(exc).__name__, 'detail': str(exc)})}"
             )
             if mode is ContextCompilerMode.ENFORCE:
+                reason_code = (
+                    exc.code
+                    if isinstance(exc, ContextBudgetError)
+                    else "compiler_failed"
+                )
                 block(
-                    CandidateRequestNotEnforceable("compiler_failed"),
+                    CandidateRequestNotEnforceable(reason_code),
                     fail_metadata(
-                        status="blocked", error_code="candidate_compilation_failed"
+                        status="blocked", error_code=reason_code
                     ),
                 )
             return (

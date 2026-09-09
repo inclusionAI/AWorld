@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import datetime
 import math
 from typing import Iterable
@@ -115,6 +116,138 @@ def _atomic_group(item: ContextItem) -> AtomicGroupRef | None:
         group_id=group_id,
         selection_priority=group_priority,
     )
+
+
+_SEGMENTABLE_MESSAGE_ROLES = frozenset({"system", "user", "developer"})
+_SEGMENTABLE_MESSAGE_FIELDS = frozenset({"role", "content", "name"})
+
+
+def _message_with_content(item: ContextItem, content: str) -> dict:
+    if not isinstance(item.payload, FrozenMap):
+        raise TypeError("message payload must be an object")
+    payload = dict(item.payload.items())
+    payload["content"] = content
+    return payload
+
+
+def _largest_fitting_prefix(item: ContextItem, content: str, limit: int) -> int:
+    """Return the largest non-empty prefix whose exact estimator fits."""
+    low = 1
+    high = len(content)
+    fitting = 0
+    while low <= high:
+        middle = (low + high) // 2
+        estimate = estimate_canonical_json_tokens(
+            _message_with_content(item, content[:middle])
+        ).value
+        if estimate is not None and estimate <= limit:
+            fitting = middle
+            low = middle + 1
+        else:
+            high = middle - 1
+    return fitting
+
+
+def _preferred_text_boundary(content: str, maximum: int) -> int:
+    """Prefer a nearby paragraph, line, or word boundary without tiny chunks."""
+    minimum = max(1, maximum // 2)
+    for separator in ("\n\n", "\n", " "):
+        boundary = content.rfind(separator, minimum, maximum)
+        if boundary >= minimum:
+            return boundary + len(separator)
+    return maximum
+
+
+def _segment_required_text_message(
+    item: ContextItem,
+    *,
+    max_item_tokens: int,
+) -> tuple[ContextItem, ...]:
+    """Split an oversized required text message without dropping any content.
+
+    The final budget planner intentionally never rewrites candidates. This
+    model-boundary adapter therefore normalizes only plain, required chat
+    messages before they become budget candidates. Tool-coupled messages and
+    messages with provider-specific fields remain untouched.
+    """
+    payload = item.payload
+    if (
+        not item.required
+        or not isinstance(payload, FrozenMap)
+        or set(payload) - _SEGMENTABLE_MESSAGE_FIELDS
+        or payload.get("role") not in _SEGMENTABLE_MESSAGE_ROLES
+        or not isinstance(payload.get("content"), str)
+    ):
+        return (item,)
+    limit = min(
+        max_item_tokens,
+        item.token_limit if item.token_limit is not None else max_item_tokens,
+    )
+    if limit <= 0:
+        return (item,)
+    estimate = estimate_canonical_json_tokens(payload).value
+    if estimate is None or estimate <= limit:
+        return (item,)
+
+    remaining = payload["content"]
+    chunks: list[str] = []
+    while remaining:
+        maximum = _largest_fitting_prefix(item, remaining, limit)
+        if maximum == 0:
+            # Preserve the original item so the planner raises its typed error.
+            return (item,)
+        boundary = _preferred_text_boundary(remaining, maximum)
+        chunks.append(remaining[:boundary])
+        remaining = remaining[boundary:]
+
+    if len(chunks) < 2:
+        return (item,)
+    source_ref = (
+        dict(item.source.ref.items())
+        if isinstance(item.source.ref, FrozenMap)
+        else {}
+    )
+    return tuple(
+        replace(
+            item,
+            id=f"{item.id}:segment:{index}",
+            payload=_message_with_content(item, chunk),
+            source=replace(
+                item.source,
+                ref={
+                    **source_ref,
+                    "segmented_from_item_id": item.id,
+                    "segmented_from_content_hash": item.content_hash,
+                    "segment_index": index,
+                    "segment_count": len(chunks),
+                },
+            ),
+            content_hash=None,
+        )
+        for index, chunk in enumerate(chunks)
+    )
+
+
+def _segment_oversized_required_messages(
+    items: tuple[ContextItem, ...],
+    *,
+    policy: FinalCompilePolicy,
+) -> tuple[ContextItem, ...]:
+    replacement_ids = {replacement.item_id for replacement in policy.replacements}
+    segmented: list[ContextItem] = []
+    for item in items:
+        # Reducer receipts are hash-bound to the original item. Let the reducer
+        # run instead of invalidating that contract with derived segment ids.
+        if item.id in replacement_ids:
+            segmented.append(item)
+            continue
+        segmented.extend(
+            _segment_required_text_message(
+                item,
+                max_item_tokens=policy.input_budget.max_item_tokens,
+            )
+        )
+    return tuple(segmented)
 
 
 def _bind_final_collection(
@@ -305,6 +438,10 @@ def compile_model_boundary_context(
             collection=AttributionCollection.TOOLS,
             task_epoch=task_epoch,
         ),
+    )
+    message_items = _segment_oversized_required_messages(
+        message_items,
+        policy=policy,
     )
     tool_item_by_visible_id: dict[str, ContextItem] = {}
     for item in tool_items:

@@ -33,6 +33,7 @@ from aworld.core.common import (
 from aworld.core.context.amni.prompt.assembly import DefaultPromptAssemblyProvider
 from aworld.core.context.base import Context
 from aworld.core.context.compiler.frozen_json import canonical_json_hash
+from aworld.core.context.compiler import CandidateRequestNotEnforceable
 from aworld.core.context.compiler.turn_economics import TurnCauseCode
 from aworld.core.context.compiler.parity import (
     ContextEntryPoint,
@@ -3587,6 +3588,33 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                     logger.warn(
                         f"❌[attempt {attempt}/{self.llm_max_attempts}] LLM call failed : {str(e)}"
                     )
+
+                    # Rollout contract failures occur before provider execution
+                    # and are deterministic for this exact request. Retrying or
+                    # switching stream modes cannot repair them.
+                    if isinstance(e, CandidateRequestNotEnforceable):
+                        await self._save_failed_request_context(
+                            messages=messages,
+                            tools=tools,
+                            error=str(e),
+                            attempt=attempt,
+                            context=message.context,
+                        )
+                        await send_message(
+                            Message(
+                                category=Constants.OUTPUT,
+                                payload=Output(
+                                    data=f"Failed to prepare llm request: {e}"
+                                ),
+                                sender=self.id(),
+                                session_id=message.context.session_id
+                                if message.context
+                                else "",
+                                headers={"context": message.context},
+                            )
+                        )
+                        failure_output_sent = True
+                        raise
 
                     # Check if this is a context length error - don't retry for these
                     if "Please reduce the length of the messages" in str(e):
