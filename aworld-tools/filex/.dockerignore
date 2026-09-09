@@ -1,0 +1,5 @@
+*
+!bin/**
+!config/**
+!src/**
+!.ci-models/**

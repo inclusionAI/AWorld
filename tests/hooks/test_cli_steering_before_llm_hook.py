@@ -113,6 +113,7 @@ class _DummyContext:
         self.user_id = task_input.user_id
         self.session_id = task_input.session_id
         self.workspace_path = None
+        self.context_info = {}
         self._config = SimpleNamespace(debug_mode=False)
 
     def get_config(self):
@@ -163,6 +164,8 @@ async def test_local_executor_reattaches_steering_after_post_build_context_repla
 
     assert captured["hook_context_steering"] is coordinator
     assert task.context._aworld_cli_steering is coordinator
+    assert task.context.execution_scope == "cli_interactive"
+    assert task.context.context_info["execution_scope"] == "cli_interactive"
 
 
 @pytest.mark.asyncio

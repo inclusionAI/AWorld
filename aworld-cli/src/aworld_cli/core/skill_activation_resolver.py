@@ -7,6 +7,7 @@ from typing import Any
 from aworld.plugins.discovery import discover_plugins
 from aworld.skills.compat_provider import build_compat_provider
 from aworld.skills.plugin_provider import PluginSkillProvider
+from aworld.skills.release import is_self_evolve_release_visible
 from aworld.skills.registry import SkillRegistry as FrameworkSkillRegistry
 
 
@@ -78,6 +79,8 @@ class SkillActivationResolver:
         compatibility_patterns = tuple(request.compatibility_skill_patterns)
 
         for descriptor in registry.list_descriptors():
+            if not is_self_evolve_release_visible(descriptor.metadata):
+                continue
             if (
                 descriptor.provider_id in compatibility_provider_ids
                 and compatibility_patterns

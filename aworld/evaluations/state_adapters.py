@@ -61,6 +61,14 @@ class TrajectoryLogStateAdapter:
         }
         if extracted_path is not None:
             metadata["extracted_path"] = str(extracted_path)
+        raw_evidence_blocks = len(extracted.get("evidence") or [])
+        bundle_metadata = _evidence_bundle_metadata(extracted.get("evidence_bundle_path"))
+        bundle_evidence_blocks = (
+            bundle_metadata["entry_count"]
+            if bundle_metadata["valid"]
+            else 0
+        )
+        evidence_blocks = raw_evidence_blocks + bundle_evidence_blocks
         return RolloutState(
             case_id=str(getattr(case, "case_id", record.case_id)),
             status="success" if is_finished and final_answer else "failed",
@@ -73,7 +81,10 @@ class TrajectoryLogStateAdapter:
             outcome={
                 "task_id": record.case_id,
                 "question": extracted.get("question"),
-                "evidence_blocks": len(extracted.get("evidence") or []),
+                "evidence_blocks": evidence_blocks,
+                "raw_evidence_blocks": raw_evidence_blocks,
+                "canonical_evidence_bundle_valid": bundle_metadata["valid"],
+                "canonical_evidence_bundle_entries": bundle_metadata["entry_count"],
                 "num_steps": extracted.get("num_steps", len(steps)),
                 "is_finished": is_finished,
                 "final_answer_len": len(final_answer),
@@ -91,6 +102,23 @@ class TrajectoryLogStateAdapter:
         path = out_dir / f"extracted_{record.case_id}.json"
         path.write_text(json.dumps(dict(extracted), ensure_ascii=False, indent=2), encoding="utf-8")
         return path
+
+
+def _evidence_bundle_metadata(value: object) -> dict[str, Any]:
+    if not isinstance(value, str) or not value.strip():
+        return {"valid": False, "entry_count": 0}
+    path = Path(value).expanduser()
+    try:
+        bundle = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {"valid": False, "entry_count": 0}
+    if not isinstance(bundle, Mapping):
+        return {"valid": False, "entry_count": 0}
+    entries = [entry for entry in bundle.get("entries") or [] if isinstance(entry, Mapping)]
+    return {
+        "valid": bool(bundle.get("valid")) and bool(entries),
+        "entry_count": len(entries),
+    }
 
 
 @dataclass(frozen=True)

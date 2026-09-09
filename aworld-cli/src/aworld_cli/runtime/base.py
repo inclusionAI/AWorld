@@ -3,6 +3,7 @@ Base runtime for CLI protocols.
 Provides common functionality for both local and remote runtimes.
 """
 from collections import defaultdict
+import os
 from pathlib import Path
 from typing import List, Optional, Any
 from aworld.logs.util import logger
@@ -57,6 +58,7 @@ class BaseCliRuntime:
         self._plugin_hooks = {}
         self._plugin_contexts = {}
         self._plugin_state_store = None
+        self._runtime_skill_registry = None
         from .hud_snapshot import HudSnapshotStore
 
         self._hud_snapshot_store = HudSnapshotStore()
@@ -74,6 +76,7 @@ class BaseCliRuntime:
 
         # Initialize plugin runtime surfaces needed by the CLI session loop.
         self._initialize_plugin_framework()
+        await self._drain_pending_self_evolve_jobs()
 
         # Load agents (implemented by subclasses)
         agents = await self._load_agents()
@@ -109,6 +112,7 @@ class BaseCliRuntime:
                     available_agents=agents,
                     executor_instance=executor
                 )
+                await self._drain_pending_self_evolve_jobs()
                 
                 # Handle session result
                 if result is False:
@@ -261,6 +265,52 @@ class BaseCliRuntime:
                 self.cli._handle_runtime_plugin_capability_refresh(previous_capabilities, self)
             except Exception as exc:
                 logger.warning(f"Failed to refresh CLI prompt session after plugin refresh: {exc}")
+
+    def refresh_skill_registry(self, candidate: Any = None) -> dict[str, Any]:
+        from aworld_cli.core.runtime_skill_registry import (
+            build_runtime_skill_registry_view,
+        )
+        from aworld_cli.core.skill_registry import reset_skill_registry
+
+        reset_skill_registry()
+        skill_paths = getattr(self, "runtime_skill_paths", None)
+        view = build_runtime_skill_registry_view(skill_paths=skill_paths, cwd=Path.cwd())
+        self._runtime_skill_registry = view
+        skills = view.get_all_skills()
+        return {
+            "status": "refreshed",
+            "runtime_skill_count": len(skills),
+            "source_paths": list(getattr(view, "source_paths", ())),
+        }
+
+    async def _drain_pending_self_evolve_jobs(self, *, max_jobs: int | None = None) -> int:
+        if os.environ.get("AWORLD_SELF_EVOLVE_AUTO_DRAIN", "1").lower() in {
+            "0",
+            "false",
+            "no",
+            "off",
+        }:
+            return 0
+        if max_jobs is None:
+            try:
+                from aworld.config.conf import SelfEvolveConfig
+
+                max_jobs = SelfEvolveConfig().max_background_jobs
+            except Exception:
+                max_jobs = 1
+        try:
+            from aworld.self_evolve.scheduler import (
+                drain_pending_self_evolve_jobs_async,
+            )
+
+            return await drain_pending_self_evolve_jobs_async(
+                workspace_root=Path.cwd(),
+                max_jobs=max_jobs,
+                runtime_registry_refresher=self.refresh_skill_registry,
+            )
+        except Exception as exc:
+            logger.warning(f"Failed to drain pending self-evolve jobs: {exc}")
+            return 0
 
     def get_plugin_hooks(self, hook_point: str) -> list[Any]:
         normalized = (hook_point or "").strip().lower()

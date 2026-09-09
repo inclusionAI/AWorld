@@ -10,10 +10,10 @@ docs = "docs"
 black_keys = ["Index", "docs_zh", "DESIGN_SYSTEM"]
 black_values = ["index.md"]
 file_priority = {"Get Start": ["Overview", "Quick Start", "Core Capabilities", "Parallel Tasks", "Streaming Response", "Hitl"],
-                 "Agents": ["Build Agent", "Build Multi-Agent System(Mas)", "Build Workflow", "Custom Agent", "Context", "Runtime", "Memory", "Trace", "Parallel Subagents"],
+                 "Agents": ["Build Agent", "Build Multi-Agent System(Mas)", "Build Workflow", "Custom Agent", "Context", "Self Evolve", "Runtime", "Memory", "Trace", "Parallel Subagents"],
                  "Runtime": ["Overview", "Custom Runner", "Hooks", "Ralph Runner"],
                  "AWorld CLI": ["Overview", "Installation", "Configuration", "Commands", "Hooks", "Plugins", "Recipes"],
-                 "Commands": ["Overview", "Memory", "Cron", "Plugins", "Gateway", "Parallel Tasks"],
+                 "Commands": ["Overview", "Memory", "Cron", "Plugins", "Evaluator", "Optimize", "Gateway", "Parallel Tasks"],
                  "Hooks": ["Overview", "Examples"],
                  "Plugins": ["Overview", "Plugin Sdk", "Goal Session"],
                  "Recipes": ["Overview", "Deep Search", "Mini App Build", "Video Creation"],
@@ -164,6 +164,7 @@ if __name__ == '__main__':
         "copyright": "\u00A9 Copyright 2025 inclusionAI AWorld Team.",
         "extra_css": ["css/aworld.css"],
         "extra_javascript": [
+            "js/mermaid.js",
             "js/hide-home-edit.js",
             "js/aworld-enhancements.js",
             "js/github-stars.js",
@@ -181,6 +182,10 @@ if __name__ == '__main__':
     }
 
     index_content = [
+        "---",
+        "hide:",
+        "  - navigation",
+        "---",
         "# Welcome to AWorld's Documentation",
         "Use the sections below to navigate the current English user documentation.",
     ]
@@ -190,7 +195,7 @@ if __name__ == '__main__':
             if entry:
                 index_content.append(f"- [{k}]({entry})")
 
-    index_text = "\n\n".join(index_content) + "\n"
+    index_text = "\n".join(index_content[:4]) + "\n\n" + "\n\n".join(index_content[4:]) + "\n"
     with open("index.md", 'w') as index_file:
         index_file.write(index_text)
     with open(os.path.join(docs, "index.md"), 'w') as index_file:

@@ -6,6 +6,7 @@ from pathlib import Path
 from aworld.plugins.discovery import discover_plugins
 from aworld.skills.compat_provider import build_compat_provider
 from aworld.skills.plugin_provider import PluginSkillProvider
+from aworld.skills.release import is_self_evolve_release_visible
 from aworld.skills.registry import SkillRegistry as FrameworkSkillRegistry
 
 from aworld_cli.core.installed_skill_manager import InstalledSkillManager
@@ -21,6 +22,8 @@ class RuntimeSkillRegistryView:
     def get_all_skills(self) -> dict[str, dict[str, object]]:
         skills: dict[str, dict[str, object]] = {}
         for descriptor in self.registry.list_descriptors():
+            if not is_self_evolve_release_visible(descriptor.metadata):
+                continue
             if descriptor.skill_name in skills:
                 continue
             skills[descriptor.skill_name] = self.registry.build_skill_config(

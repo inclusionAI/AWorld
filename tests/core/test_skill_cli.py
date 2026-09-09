@@ -1,4 +1,5 @@
 import sys
+import json
 from io import StringIO
 from pathlib import Path
 from types import SimpleNamespace
@@ -24,7 +25,9 @@ from aworld_cli.executors.continuous import ContinuousExecutor
 from aworld_cli.models import AgentInfo
 from aworld_cli.plugin_capabilities.commands import register_plugin_commands
 from aworld_cli.plugin_capabilities.state import PluginStateStore
+from aworld_cli.runtime.cli import _apply_runtime_skill_paths_to_swarm
 from aworld_cli.top_level_commands import register_builtin_top_level_commands
+from aworld_cli.top_level_commands.run_cmd import RunTopLevelCommand
 from aworld.plugins.discovery import discover_plugins
 
 
@@ -46,6 +49,27 @@ def _get_builtin_goal_plugin_root() -> Path:
         / "builtin_plugins"
         / "goal_session"
     )
+
+
+def test_explicit_runtime_skill_paths_reach_task_time_resolver() -> None:
+    conf = SimpleNamespace(
+        ext={
+            "skill_resolver_inputs": {
+                "compatibility_sources": ["/existing/skills"],
+            }
+        }
+    )
+    swarm = SimpleNamespace(_communicate_agent=SimpleNamespace(conf=conf))
+
+    _apply_runtime_skill_paths_to_swarm(
+        swarm,
+        ("/candidate/skills", "/existing/skills"),
+    )
+
+    assert conf.ext["skill_resolver_inputs"]["compatibility_sources"] == [
+        "/existing/skills",
+        "/candidate/skills",
+    ]
 
 
 def test_skill_install_and_list_cli(
@@ -295,6 +319,60 @@ def test_skill_list_cli_shows_disabled_runtime_skill_state(
     assert "youtube_search | enabled=False" in list_output
 
 
+def test_skill_remove_cli_removes_runtime_skill_directory(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.delenv("SKILLS_DIR", raising=False)
+    runtime_source = tmp_path / "runtime-skills"
+    _write_skill(runtime_source, "web-content-grounding")
+    monkeypatch.setenv("SKILLS_PATH", str(runtime_source))
+
+    monkeypatch.setattr(
+        sys, "argv", ["aworld-cli", "skill", "remove", "web-content-grounding"]
+    )
+    main_module.main()
+
+    remove_output = capsys.readouterr().out
+
+    assert "Runtime skill 'web-content-grounding' removed successfully" in remove_output
+    assert (runtime_source / "web-content-grounding").exists() is False
+
+
+def test_skill_remove_cli_prefers_installed_package_over_runtime_skill(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.delenv("SKILLS_DIR", raising=False)
+    runtime_source = tmp_path / "runtime-skills"
+    _write_skill(runtime_source, "web-content-grounding")
+    monkeypatch.setenv("SKILLS_PATH", str(runtime_source))
+
+    source = tmp_path / "source-skills"
+    _write_skill(source, "web-content-grounding")
+    InstalledSkillManager().install(
+        source=source,
+        mode="copy",
+        scope="global",
+        install_id="web-content-grounding",
+    )
+
+    monkeypatch.setattr(
+        sys, "argv", ["aworld-cli", "skill", "remove", "web-content-grounding"]
+    )
+    main_module.main()
+
+    remove_output = capsys.readouterr().out
+
+    assert "Skill package 'web-content-grounding' removed successfully" in remove_output
+    assert (runtime_source / "web-content-grounding").exists() is True
+    assert InstalledSkillManager().list_installs() == []
+
+
 def test_skill_install_creates_plugin_managed_skill_record(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -364,6 +442,53 @@ def test_main_accepts_repeated_skill_flag() -> None:
     assert parsed.skill == ["browser-use", "code-review"]
 
 
+def test_main_accepts_evolve_modes() -> None:
+    parser = main_module.build_parser()
+
+    assert parser.parse_args(["--evolve"]).evolve == "shadow"
+    assert parser.parse_args(["--evolve=online"]).evolve == "online"
+    assert parser.parse_args(["--evolve", "off"]).evolve == "off"
+    parsed = parser.parse_args(
+        [
+            "--evolve=online",
+            "--judge-agent",
+            "agent.md",
+            "--judge-model-profile",
+            "judge",
+        ]
+    )
+    assert parsed.evolve == "online"
+    assert parsed.judge_agent == "agent.md"
+    assert parsed.judge_model_profile == "judge"
+
+
+def test_cli_evolve_mode_maps_to_self_evolve_config() -> None:
+    shadow = main_module._self_evolve_config_from_cli_mode("shadow")
+    online = main_module._self_evolve_config_from_cli_mode("online")
+    off = main_module._self_evolve_config_from_cli_mode("off")
+
+    assert shadow.mode == "shadow"
+    assert shadow.apply_policy == "proposal"
+    assert online.mode == "online"
+    assert online.apply_policy == "auto_verified"
+    assert off.mode == "off"
+    assert off.apply_policy == "proposal"
+
+
+def test_cli_evolve_mode_maps_judge_agent_to_config() -> None:
+    config = main_module._self_evolve_config_from_cli_mode(
+        "online",
+        judge_agent="agent.md",
+        judge_model_profile="judge",
+    )
+
+    assert config.mode == "online"
+    assert config.apply_policy == "auto_verified"
+    assert config.judge_config.mode == "agent_md"
+    assert config.judge_config.agent_path == "agent.md"
+    assert config.judge_config.model_profile == "judge"
+
+
 def test_skill_command_is_registered_via_plugin_registry() -> None:
     registry = TopLevelCommandRegistry()
 
@@ -425,6 +550,54 @@ async def test_run_direct_mode_passes_requested_skill_names(
 
 
 @pytest.mark.asyncio
+async def test_run_direct_mode_passes_self_evolve_config_to_runtime(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+
+    class DummyRuntime:
+        def __init__(self, *args, **kwargs) -> None:
+            self._scheduler = None
+            captured["self_evolve_config"] = kwargs.get("self_evolve_config")
+
+        async def _load_agents(self):
+            return [SimpleNamespace(name="Aworld")]
+
+        def _bind_scheduler_default_agent(self, agent_name: str) -> None:
+            pass
+
+        async def _create_executor(self, _agent):
+            return SimpleNamespace(console=None)
+
+        def _restore_executor_session(self, executor, current_agent_name=None):
+            return None
+
+    class DummyContinuousExecutor:
+        def __init__(self, agent_executor, console=None) -> None:
+            pass
+
+        async def run_continuous(self, **kwargs) -> None:
+            return None
+
+    monkeypatch.setattr(main_module, "CliRuntime", DummyRuntime)
+    monkeypatch.setattr(main_module, "ContinuousExecutor", DummyContinuousExecutor)
+    monkeypatch.setattr(
+        "aworld.core.scheduler.get_scheduler",
+        lambda: SimpleNamespace(),
+    )
+
+    await main_module._run_direct_mode(
+        prompt="use browser",
+        agent_name="Aworld",
+        self_evolve_config=main_module._self_evolve_config_from_cli_mode("online"),
+    )
+
+    config = captured["self_evolve_config"]
+    assert config.mode == "online"
+    assert config.apply_policy == "auto_verified"
+
+
+@pytest.mark.asyncio
 async def test_run_direct_mode_binds_runtime_to_executor(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -472,6 +645,265 @@ async def test_run_direct_mode_binds_runtime_to_executor(
     )
 
     assert captured["runtime_on_executor"] is not None
+
+
+@pytest.mark.asyncio
+async def test_run_direct_mode_returns_replayable_trajectory_summary(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class DummyRuntime:
+        def __init__(self, *args, **kwargs) -> None:
+            self._scheduler = None
+
+        async def _load_agents(self):
+            return [SimpleNamespace(name="Aworld")]
+
+        def _bind_scheduler_default_agent(self, agent_name: str) -> None:
+            pass
+
+        async def _create_executor(self, _agent):
+            return SimpleNamespace(console=None)
+
+        def _restore_executor_session(self, executor, current_agent_name=None):
+            return None
+
+    class DummyContinuousExecutor:
+        def __init__(self, agent_executor, console=None) -> None:
+            self.agent_executor = agent_executor
+            self.console = console
+
+        async def run_continuous(self, **kwargs) -> dict:
+            return {
+                "total_runs": 1,
+                "successful_runs": 1,
+                "total_cost": 0.0,
+                "results": [
+                    {
+                        "iteration": 1,
+                        "response": "Replay completed.",
+                        "completed": True,
+                        "success": True,
+                    }
+                ],
+            }
+
+    monkeypatch.setattr(main_module, "CliRuntime", DummyRuntime)
+    monkeypatch.setattr(main_module, "ContinuousExecutor", DummyContinuousExecutor)
+    monkeypatch.setattr(
+        "aworld.core.scheduler.get_scheduler",
+        lambda: SimpleNamespace(),
+    )
+
+    summary = await main_module._run_direct_mode(
+        prompt="Replay this task",
+        agent_name="Aworld",
+    )
+
+    trajectory = main_module._trajectory_from_direct_run_summary(
+        summary,
+        prompt="Replay this task",
+        agent_name="Aworld",
+    )
+
+    assert trajectory == [
+        {
+            "meta": {"step": 1, "agent_id": "Aworld", "pre_agent": "runner"},
+            "state": {"input": {"content": "Replay this task"}},
+            "action": {
+                "content": "Replay completed.",
+                "is_agent_finished": "True",
+                "tool_calls": [],
+            },
+            "reward": {"status": "ok"},
+        }
+    ]
+
+
+def test_run_top_level_command_emits_machine_readable_trajectory(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    async def fake_run_direct_mode(**kwargs):
+        return {
+            "results": [
+                {
+                    "iteration": 1,
+                    "response": "Replay completed.",
+                    "completed": True,
+                    "success": True,
+                }
+            ]
+        }
+
+    monkeypatch.setattr(
+        "aworld_cli.top_level_commands.run_cmd.bootstrap_runtime",
+        lambda **kwargs: None,
+    )
+    monkeypatch.setattr(
+        main_module,
+        "_resolve_agent_dirs",
+        lambda agent_dirs: [],
+    )
+    monkeypatch.setattr(main_module, "_run_direct_mode", fake_run_direct_mode)
+
+    args = SimpleNamespace(
+        task="Replay this task",
+        agent="Aworld",
+        skill=None,
+        max_runs=1,
+        max_cost=None,
+        max_duration=None,
+        completion_signal=None,
+        completion_threshold=3,
+        non_interactive=True,
+        session_id=None,
+        remote_backend=None,
+        agent_dir=None,
+        agent_file=None,
+        skill_path=["/tmp/candidate-skills"],
+        env_file=".env",
+        emit_trajectory=True,
+    )
+    context = SimpleNamespace(argv=["aworld-cli", "run", "--emit-trajectory"])
+
+    assert RunTopLevelCommand().run(args, context) == 0
+
+    payload = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
+    assert payload["trajectory"][0]["action"]["content"] == "Replay completed."
+    assert payload["trajectory"][0]["state"]["input"]["content"] == "Replay this task"
+
+
+def test_run_top_level_command_dispatches_global_evolve_mode(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured = {}
+
+    async def fake_run_direct_mode(**kwargs):
+        captured.update(kwargs)
+        return {"results": []}
+
+    monkeypatch.setattr(
+        "aworld_cli.top_level_commands.run_cmd.bootstrap_runtime",
+        lambda **kwargs: None,
+    )
+    monkeypatch.setattr(main_module, "_resolve_agent_dirs", lambda agent_dirs: [])
+    monkeypatch.setattr(main_module, "_run_direct_mode", fake_run_direct_mode)
+
+    args = SimpleNamespace(
+        task="Replay this task",
+        agent="Aworld",
+        skill=None,
+        max_runs=1,
+        max_cost=None,
+        max_duration=None,
+        completion_signal=None,
+        completion_threshold=3,
+        non_interactive=True,
+        session_id=None,
+        remote_backend=None,
+        agent_dir=None,
+        agent_file=None,
+        skill_path=["/tmp/candidate-skills"],
+        env_file=".env",
+        emit_trajectory=False,
+    )
+    context = SimpleNamespace(
+        argv=[
+            "aworld-cli",
+            "--evolve=online",
+            "--judge-agent",
+            "agent.md",
+            "--judge-model-profile",
+            "judge",
+            "run",
+            "--task",
+            "Replay this task",
+        ]
+    )
+
+    assert RunTopLevelCommand().run(args, context) == 0
+
+    config = captured["self_evolve_config"]
+    assert config.mode == "online"
+    assert config.apply_policy == "auto_verified"
+    assert config.judge_config.mode == "agent_md"
+    assert config.judge_config.agent_path == "agent.md"
+    assert config.judge_config.model_profile == "judge"
+    assert captured["skill_paths"] == ["/tmp/candidate-skills"]
+
+
+def test_run_top_level_command_prefers_task_response_trajectory(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    full_trajectory = [
+        {
+            "id": "step-1",
+            "meta": {"step": 1, "agent_id": "Aworld", "pre_agent": "runner"},
+            "state": {
+                "input": {"content": "Replay this task"},
+                "messages": [{"role": "assistant", "content": "tool evidence"}],
+            },
+            "action": {
+                "content": "Replay completed.",
+                "is_agent_finished": "True",
+                "tool_calls": [{"name": "browser", "arguments": {"url": "https://example.com"}}],
+            },
+            "reward": {"status": "ok"},
+        }
+    ]
+
+    async def fake_run_direct_mode(**kwargs):
+        return {
+            "results": [
+                {
+                    "iteration": 1,
+                    "response": "Synthetic fallback should not be used.",
+                    "completed": True,
+                    "success": True,
+                    "trajectory": full_trajectory,
+                    "trajectory_capture_mode": "task_response",
+                }
+            ]
+        }
+
+    monkeypatch.setattr(
+        "aworld_cli.top_level_commands.run_cmd.bootstrap_runtime",
+        lambda **kwargs: None,
+    )
+    monkeypatch.setattr(
+        main_module,
+        "_resolve_agent_dirs",
+        lambda agent_dirs: [],
+    )
+    monkeypatch.setattr(main_module, "_run_direct_mode", fake_run_direct_mode)
+
+    args = SimpleNamespace(
+        task="Replay this task",
+        agent="Aworld",
+        skill=None,
+        max_runs=1,
+        max_cost=None,
+        max_duration=None,
+        completion_signal=None,
+        completion_threshold=3,
+        non_interactive=True,
+        session_id=None,
+        remote_backend=None,
+        agent_dir=None,
+        agent_file=None,
+        skill_path=None,
+        env_file=".env",
+        emit_trajectory=True,
+    )
+    context = SimpleNamespace(argv=["aworld-cli", "run", "--emit-trajectory"])
+
+    assert RunTopLevelCommand().run(args, context) == 0
+
+    payload = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
+    assert payload["trajectory_capture_mode"] == "task_response"
+    assert payload["trajectory"] == full_trajectory
+    assert payload["trajectory"][0]["action"]["tool_calls"][0]["name"] == "browser"
 
 
 @pytest.mark.asyncio

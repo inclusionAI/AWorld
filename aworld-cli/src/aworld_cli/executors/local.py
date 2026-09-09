@@ -833,6 +833,8 @@ class LocalAgentExecutor(BaseAgentExecutor):
         context = await build_context(task_input, self.swarm, workspace)
 
         # Set workspace_path for hook system (CLI working directory)
+        context.execution_scope = "cli_interactive"
+        context.context_info["execution_scope"] = "cli_interactive"
         context.workspace_path = os.getcwd()
         runtime = getattr(self, "_base_runtime", None)
         if runtime is not None and getattr(runtime, "_steering", None) is not None:
@@ -944,6 +946,7 @@ class LocalAgentExecutor(BaseAgentExecutor):
             if not self.console:
                 from .._globals import console as global_console
                 self.console = global_console
+            self.last_task_response = None
 
             # 2. Parse message - handle both string and tuple format
             if isinstance(message, tuple):
@@ -1659,6 +1662,7 @@ class LocalAgentExecutor(BaseAgentExecutor):
 
                 final_task_response = outputs.response() if hasattr(outputs, "response") else None
                 if isinstance(final_task_response, TaskResponse):
+                    self.last_task_response = final_task_response
                     final_answer = _coerce_final_answer(final_task_response.answer)
                     if hook_system_message and hook_system_message not in final_answer:
                         final_answer = f"{hook_system_message}\n{final_answer}".strip()
@@ -1718,6 +1722,8 @@ class LocalAgentExecutor(BaseAgentExecutor):
                                 task_response = final_result[task.id]
                                 if self.console:
                                     self.console.print(f"[dim]📋 TaskResponse type: {type(task_response)}[/dim]")
+                                if isinstance(task_response, TaskResponse):
+                                    self.last_task_response = task_response
                                 
                                 # Try different ways to get the answer
                                 if hasattr(task_response, 'answer'):

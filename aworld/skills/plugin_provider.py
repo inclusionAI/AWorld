@@ -6,6 +6,7 @@ from typing import Any
 from aworld.skills.execution_assets import build_execution_assets_config
 from aworld.skills.models import SkillContent, SkillDescriptor
 from aworld.skills.providers import SkillProvider, read_front_matter_lines
+from aworld.skills.release import extract_self_evolve_metadata
 from aworld.utils.skill_loader import (
     evaluate_skill_requirements,
     extract_front_matter,
@@ -81,6 +82,7 @@ class PluginSkillProvider(SkillProvider):
                 str(front_matter.get("active", "False")).lower() == "true",
             )
             metadata.setdefault("tool_list", dict(tool_list))
+            metadata.setdefault("self_evolve", extract_self_evolve_metadata(front_matter))
             declared_assets = (
                 metadata.get("execution_assets")
                 if "execution_assets" in metadata

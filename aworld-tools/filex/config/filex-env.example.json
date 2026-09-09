@@ -1,0 +1,14 @@
+{
+  "filex_parse_provider": "",
+  "gateway_vllm": {
+    "base_url": "",
+    "model_name": "",
+    "api_key": ""
+  },
+  "media_parse_backend": "local",
+  "media_parse_options": {
+    "model": "base",
+    "device": "auto",
+    "compute_type": "default"
+  }
+}

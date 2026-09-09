@@ -3,13 +3,18 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import hashlib
 import json
 import math
 import inspect
 import os
 import re
+import stat
 import tempfile
+import threading
+import time
 import uuid
+from contextvars import ContextVar
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from pathlib import Path
@@ -40,6 +45,7 @@ from aworld.evaluations.report import (
     EvaluatorReport,
 )
 from aworld.runners.evaluate_runner import EvaluateRunner
+from aworld.logs.util import logger
 
 
 JudgeCallable = Callable[[dict[str, Any], dict[str, Any]], Mapping[str, Any] | Awaitable[Mapping[str, Any]]]
@@ -57,6 +63,34 @@ _IMAGE_SUFFIX_TO_MIME = {
     ".bmp": "image/bmp",
     ".svg": "image/svg+xml",
 }
+_DEFAULT_JUDGE_ARTIFACT_READ_ROUNDS = 2
+_MAX_JUDGE_ARTIFACT_READ_ROUNDS = 4
+_MAX_JUDGE_ARTIFACT_READ_REQUESTS = 8
+_DEFAULT_JUDGE_ARTIFACT_READ_CHARS = 4000
+_MAX_JUDGE_ARTIFACT_READ_CHARS = 20000
+_DEFAULT_JUDGE_ARTIFACT_READ_TOTAL_CHARS = 80000
+_MAX_JUDGE_ARTIFACT_READ_TOTAL_CHARS = 160000
+_MAX_JUDGE_INTEGRITY_BOUND_ARTIFACT_BYTES = 4 * 1024 * 1024
+_PRIVATE_ARTIFACT_SESSION_FORMAT = "aworld.evaluation.private_artifact_session"
+_PRIVATE_ARTIFACT_SESSION_VERSION = 1
+_PRIVATE_ARTIFACT_SESSION_ID_PATTERN = re.compile(r"^[0-9a-f]{32}$")
+_PRIVATE_ARTIFACT_SESSION_CLEANUPS: dict[str, Callable[[], None]] = {}
+_PRIVATE_ARTIFACT_SESSION_CLEANUPS_LOCK = threading.Lock()
+_PRIVATE_ARTIFACT_SESSION_SCOPE: ContextVar[list[str] | None] = (
+    ContextVar(
+        "evaluation_private_artifact_session_scope",
+        default=None,
+    )
+)
+
+
+@dataclass(frozen=True)
+class _ArtifactReadPolicy:
+    max_rounds: int = _DEFAULT_JUDGE_ARTIFACT_READ_ROUNDS
+    max_requests_per_round: int = _MAX_JUDGE_ARTIFACT_READ_REQUESTS
+    default_chars_per_read: int = _DEFAULT_JUDGE_ARTIFACT_READ_CHARS
+    max_chars_per_read: int = _MAX_JUDGE_ARTIFACT_READ_CHARS
+    max_total_chars: int = _DEFAULT_JUDGE_ARTIFACT_READ_TOTAL_CHARS
 
 @dataclass(frozen=True)
 class EvalCaseDef:
@@ -287,6 +321,15 @@ class GatePolicyDef:
 class JudgeExecution:
     backend_id: str
     payload: dict[str, Any]
+    diagnostics: tuple[dict[str, Any], ...] = tuple()
+
+
+class JudgeTimeoutError(asyncio.TimeoutError):
+    """A judge call timeout with bounded, content-free call diagnostics."""
+
+    def __init__(self, message: str, *, diagnostics: tuple[dict[str, Any], ...]) -> None:
+        super().__init__(message)
+        self.judge_diagnostics = diagnostics
 
 
 class _RuntimeCompositionJudgeOutput(BaseModel):
@@ -324,6 +367,7 @@ class AgentJudgeBackend:
     executor: JudgeExecutor | None = None
     prompt_builder: Callable[[dict[str, Any], dict[str, Any], "EvalSuiteDef"], JudgePrompt] | None = None
     timeout_seconds: float | None = None
+    model_config: Any | None = None
 
     @classmethod
     def from_agent_markdown(
@@ -333,6 +377,7 @@ class AgentJudgeBackend:
         backend_id: str | None = None,
         prompt_builder: Callable[[dict[str, Any], dict[str, Any], "EvalSuiteDef"], JudgePrompt] | None = None,
         timeout_seconds: float | None = None,
+        model_config: Any | None = None,
     ) -> "AgentJudgeBackend":
         agent_markdown_path = Path(path).expanduser()
         resolved_backend_id = backend_id or agent_markdown_path.stem
@@ -352,42 +397,266 @@ class AgentJudgeBackend:
             executor=_executor,
             prompt_builder=prompt_builder,
             timeout_seconds=timeout_seconds,
+            model_config=model_config,
+        )
+
+    @classmethod
+    def from_agent_markdown_as_instructions(
+        cls,
+        path: str | Path,
+        *,
+        backend_id: str | None = None,
+        prompt_builder: Callable[[dict[str, Any], dict[str, Any], "EvalSuiteDef"], JudgePrompt] | None = None,
+        timeout_seconds: float | None = None,
+        system_prompt_prefix: str | None = None,
+        model_config: Any | None = None,
+    ) -> "AgentJudgeBackend":
+        agent_markdown_path = Path(path).expanduser()
+        resolved_backend_id = backend_id or agent_markdown_path.stem
+        system_prompt = _agent_markdown_instruction_prompt(agent_markdown_path)
+        if system_prompt_prefix:
+            system_prompt = f"{system_prompt_prefix.rstrip()}\n\n{system_prompt}"
+        return cls(
+            backend_id=resolved_backend_id,
+            system_prompt=system_prompt,
+            executor=None,
+            prompt_builder=prompt_builder,
+            timeout_seconds=timeout_seconds,
+            model_config=model_config,
         )
 
     def is_available(self) -> bool:
         if self.executor is not None:
             return True
+        if self.model_config is not None:
+            model_name = getattr(self.model_config, "llm_model_name", None)
+            api_key = getattr(self.model_config, "llm_api_key", None)
+            provider = getattr(self.model_config, "llm_provider", None) or "openai"
+            if not api_key:
+                api_key = os.getenv("LLM_API_KEY")
+            if not api_key and provider:
+                api_key = os.getenv(f"{str(provider).strip().upper()}_API_KEY")
+            return bool(model_name and api_key)
         model_name = os.getenv("LLM_MODEL_NAME")
         api_key = os.getenv("LLM_API_KEY") or os.getenv("OPENAI_API_KEY")
         return bool(model_name and api_key)
 
     async def execute(self, case_input: dict[str, Any], target: dict[str, Any], suite: "EvalSuiteDef") -> JudgeExecution:
-        if not self.is_available():
-            raise RuntimeError(f"judge backend '{self.backend_id}' is not available")
-        prompt_builder = self.prompt_builder or _build_default_judge_prompt
-        prompt = prompt_builder(case_input, target, suite)
-        executor = self.executor or _default_agent_judge_executor
-        async def _run_executor():
-            result = executor(prompt, self.system_prompt)
+        owned_session_ids: list[str] = []
+        scope_token = _PRIVATE_ARTIFACT_SESSION_SCOPE.set(
+            owned_session_ids
+        )
+        prompt: JudgePrompt | None = None
+        try:
+            if not self.is_available():
+                raise RuntimeError(
+                    f"judge backend '{self.backend_id}' is not available"
+                )
+            prompt_builder = (
+                self.prompt_builder or _build_default_judge_prompt
+            )
+            prompt = prompt_builder(case_input, target, suite)
+            return await self._execute_prompt(prompt, suite)
+        finally:
+            try:
+                if prompt is not None:
+                    _cleanup_prompt_private_artifact_session(prompt)
+                for session_id in reversed(tuple(owned_session_ids)):
+                    cleanup_evaluation_private_artifact_session(session_id)
+            finally:
+                _PRIVATE_ARTIFACT_SESSION_SCOPE.reset(scope_token)
+
+    async def _execute_prompt(
+        self,
+        prompt: JudgePrompt,
+        suite: "EvalSuiteDef",
+    ) -> JudgeExecution:
+        executor = self.executor
+        diagnostics: list[dict[str, Any]] = []
+        suite_id = str(getattr(suite, "suite_id", "unknown") or "unknown")
+
+        async def _run_executor(current_prompt: JudgePrompt):
+            if executor is None:
+                result = _default_agent_judge_executor(
+                    current_prompt,
+                    self.system_prompt,
+                    model_config=self.model_config,
+                )
+            else:
+                result = executor(current_prompt, self.system_prompt)
             if inspect.isawaitable(result):
                 return await result
             return result
 
-        if self.timeout_seconds is not None:
-            task = asyncio.create_task(_run_executor())
+        async def _run_with_timeout(
+            current_prompt: JudgePrompt,
+            *,
+            phase: str,
+            round_index: int,
+            read_results: list[dict[str, Any]] | None = None,
+        ):
+            diagnostic = _judge_call_diagnostic(
+                prompt=current_prompt,
+                system_prompt=self.system_prompt,
+                phase=phase,
+                round_index=round_index,
+                timeout_seconds=self.timeout_seconds,
+                read_results=read_results or [],
+            )
+            started_at = time.monotonic()
+            logger.info(
+                "evaluation.judge.call.start "
+                f"backend_id={self.backend_id} suite_id={suite_id} "
+                f"phase={phase} round_index={round_index} "
+                f"prompt_chars={diagnostic['prompt_chars']} "
+                f"estimated_input_tokens={diagnostic['estimated_input_tokens']} "
+                f"artifact_read_count={diagnostic['artifact_read_count']}"
+            )
             try:
-                response = await asyncio.wait_for(task, timeout=self.timeout_seconds)
-            except Exception:
-                task.cancel()
+                if self.timeout_seconds is None:
+                    result = await _run_executor(current_prompt)
+                else:
+                    task = asyncio.create_task(_run_executor(current_prompt))
+                    try:
+                        result = await asyncio.wait_for(task, timeout=self.timeout_seconds)
+                    except Exception:
+                        task.cancel()
+                        try:
+                            await task
+                        except BaseException:
+                            pass
+                        raise
+            except asyncio.TimeoutError as exc:
+                diagnostic.update(
+                    {
+                        "status": "timed_out",
+                        "latency_ms": _elapsed_monotonic_ms(started_at),
+                        "error_type": "TimeoutError",
+                    }
+                )
+                diagnostics.append(diagnostic)
+                logger.info(
+                    "evaluation.judge.call.end "
+                    f"backend_id={self.backend_id} suite_id={suite_id} "
+                    f"phase={phase} round_index={round_index} status=timed_out "
+                    f"latency_ms={diagnostic['latency_ms']:.3f}"
+                )
+                timeout_text = (
+                    f" after {self.timeout_seconds:g}s"
+                    if self.timeout_seconds is not None
+                    else ""
+                )
+                raise JudgeTimeoutError(
+                    f"judge call timed out during {phase}{timeout_text}",
+                    diagnostics=tuple(dict(item) for item in diagnostics),
+                ) from exc
+            except Exception as exc:
+                diagnostic.update(
+                    {
+                        "status": "failed",
+                        "latency_ms": _elapsed_monotonic_ms(started_at),
+                        "error_type": type(exc).__name__,
+                    }
+                )
+                diagnostics.append(diagnostic)
+                logger.info(
+                    "evaluation.judge.call.end "
+                    f"backend_id={self.backend_id} suite_id={suite_id} "
+                    f"phase={phase} round_index={round_index} status=failed "
+                    f"latency_ms={diagnostic['latency_ms']:.3f} "
+                    f"error_type={type(exc).__name__}"
+                )
                 try:
-                    await task
-                except BaseException:
+                    setattr(exc, "judge_diagnostics", tuple(dict(item) for item in diagnostics))
+                except (AttributeError, TypeError):
                     pass
                 raise
-        else:
-            response = await _run_executor()
-        payload = _coerce_judge_payload(response)
-        return JudgeExecution(backend_id=self.backend_id, payload=payload)
+            diagnostic.update(
+                {
+                    "status": "succeeded",
+                    "latency_ms": _elapsed_monotonic_ms(started_at),
+                    "artifact_request_count": len(_extract_artifact_read_requests(result)),
+                }
+            )
+            diagnostics.append(diagnostic)
+            logger.info(
+                "evaluation.judge.call.end "
+                f"backend_id={self.backend_id} suite_id={suite_id} "
+                f"phase={phase} round_index={round_index} status=succeeded "
+                f"latency_ms={diagnostic['latency_ms']:.3f} "
+                f"artifact_request_count={diagnostic['artifact_request_count']}"
+            )
+            return result
+
+        response = await _run_with_timeout(
+            prompt,
+            phase="initial_judge",
+            round_index=0,
+        )
+        artifact_read_policy = _artifact_read_policy(prompt)
+        artifact_read_history: list[dict[str, Any]] = []
+        prompt_for_reads = prompt
+        for read_round in range(1, artifact_read_policy.max_rounds + 1):
+            read_requests = _extract_artifact_read_requests(response)
+            if not read_requests:
+                break
+            read_results = _resolve_artifact_read_requests(
+                prompt_for_reads,
+                read_requests,
+                policy=artifact_read_policy,
+                prior_results=artifact_read_history,
+            )
+            artifact_read_history.extend(read_results)
+            prompt_for_reads = _append_artifact_read_results_to_prompt(
+                prompt_for_reads,
+                read_results,
+                policy=artifact_read_policy,
+            )
+            response = await _run_with_timeout(
+                prompt_for_reads,
+                phase=f"artifact_read_round_{read_round}",
+                round_index=read_round,
+                read_results=read_results,
+            )
+        pending_requests = _extract_artifact_read_requests(response)
+        if pending_requests:
+            unread_indexed_content = _requests_need_unread_projection(
+                prompt_for_reads,
+                pending_requests,
+                prior_results=artifact_read_history,
+                policy=artifact_read_policy,
+            )
+            exhausted_result = {
+                "status": "denied",
+                "reason": "read_round_budget_exhausted",
+                "request_count": len(pending_requests),
+                "max_rounds": artifact_read_policy.max_rounds,
+                "unread_indexed_content": unread_indexed_content,
+                "read_budget_used_chars": _artifact_read_chars(artifact_read_history),
+                "read_budget_remaining_chars": max(
+                    0,
+                    artifact_read_policy.max_total_chars
+                    - _artifact_read_chars(artifact_read_history),
+                ),
+            }
+            prompt_for_reads = _append_artifact_read_results_to_prompt(
+                prompt_for_reads,
+                [exhausted_result],
+                policy=artifact_read_policy,
+                finalize=True,
+            )
+            response = await _run_with_timeout(
+                prompt_for_reads,
+                phase="artifact_read_finalize",
+                round_index=artifact_read_policy.max_rounds + 1,
+                read_results=[exhausted_result],
+            )
+        payload = _coerce_judge_payload(response, judge_schema=getattr(suite, "judge_schema", None))
+        return JudgeExecution(
+            backend_id=self.backend_id,
+            payload=payload,
+            diagnostics=tuple(dict(item) for item in diagnostics),
+        )
 
     async def judge(self, case_input: dict[str, Any], target: dict[str, Any], suite: "EvalSuiteDef") -> dict[str, Any]:
         execution = await self.execute(case_input, target, suite)
@@ -414,6 +683,25 @@ def _normalize_markdown_tool_list(value: Any) -> dict[str, Any]:
         if isinstance(parsed, Mapping):
             return dict(parsed)
     return {}
+
+
+def _agent_markdown_instruction_prompt(agent_markdown_path: Path) -> str:
+    from aworld.utils.skill_loader import extract_front_matter
+
+    lines = agent_markdown_path.read_text(encoding="utf-8").splitlines()
+    frontmatter, body_start = extract_front_matter(lines)
+    body = "\n".join(lines[body_start:]).strip()
+    name = _frontmatter_scalar(frontmatter.get("name"), agent_markdown_path.stem)
+    description = _frontmatter_scalar(
+        frontmatter.get("description", frontmatter.get("desc")),
+        "Trajectory evaluation judge",
+    )
+    header = (
+        f"Judge instructions loaded from {agent_markdown_path}\n"
+        f"Name: {name}\n"
+        f"Description: {description}\n\n"
+    )
+    return f"{header}{body}".strip()
 
 
 def _materialize_agent_markdown_as_skill(
@@ -1254,6 +1542,7 @@ async def run_evaluation_flow(flow: EvaluationFlowDef) -> EvaluatorReport:
         case_metrics: dict[str, Any] = {}
         case_metric_details: dict[str, Any] = {}
         case_backend_id = None
+        case_judge_diagnostics: list[dict[str, Any]] = []
         if case_result.score_rows:
             cases_with_metrics += 1
         for score_row in case_result.score_rows.values():
@@ -1284,6 +1573,11 @@ async def run_evaluation_flow(flow: EvaluationFlowDef) -> EvaluatorReport:
             metric_result = score_row.metric_results.get("score", {})
             judge_payload = dict(metric_result.get("metadata", {}))
             report_backend_id = report_backend_id or judge_payload.pop("_judge_backend", None)
+            raw_diagnostics = judge_payload.pop("_judge_diagnostics", None)
+            if isinstance(raw_diagnostics, list):
+                case_judge_diagnostics = [
+                    dict(item) for item in raw_diagnostics if isinstance(item, Mapping)
+                ]
         if judge_payload:
             cases_with_judge += 1
         results.append(
@@ -1293,6 +1587,7 @@ async def run_evaluation_flow(flow: EvaluationFlowDef) -> EvaluatorReport:
                 metrics=case_metrics,
                 judge=judge_payload,
                 judge_backend={"backend_id": case_backend_id} if case_backend_id is not None else None,
+                judge_diagnostics=case_judge_diagnostics,
                 state_summary=_build_state_summary(case_result.output),
                 artifacts=_build_state_artifacts(case_result.output),
                 metadata=_build_state_metadata(case_result.output),
@@ -1575,49 +1870,834 @@ def _build_app_evaluator_judge_prompt(
     return prompt
 
 
-def _extract_json_object(text: str) -> dict[str, Any]:
+def _extract_json_objects(text: str) -> list[dict[str, Any]]:
     stripped = text.strip()
     try:
         loaded = json.loads(stripped)
         if isinstance(loaded, dict):
-            return loaded
+            return [loaded]
     except json.JSONDecodeError:
         pass
 
-    matches = re.findall(r"\{.*\}", stripped, re.DOTALL)
-    for candidate in matches:
+    decoder = json.JSONDecoder()
+    objects: list[dict[str, Any]] = []
+    for match in re.finditer(r"\{", stripped):
         try:
-            loaded = json.loads(candidate)
-            if isinstance(loaded, dict):
-                return loaded
+            loaded, _ = decoder.raw_decode(stripped[match.start():])
         except json.JSONDecodeError:
             continue
-    raise ValueError("judge response does not contain a valid JSON object")
+        if isinstance(loaded, dict):
+            objects.append(loaded)
+    return objects
 
 
-def _coerce_judge_payload(response: Mapping[str, Any] | str) -> dict[str, Any]:
-    if isinstance(response, str):
-        response = _extract_json_object(response)
-    else:
-        response = dict(response)
-
-    if "results" in response:
-        results = response.get("results") or []
+def _candidate_judge_payload(value: Mapping[str, Any]) -> dict[str, Any]:
+    if "results" in value:
+        results = value.get("results") or []
         if not results:
             raise ValueError("judge response results array is empty")
         return dict(results[0])
-    return dict(response)
+    return dict(value)
 
 
-async def _default_agent_judge_executor(prompt: JudgePrompt, system_prompt: str) -> str:
+def _extract_json_object(
+    text: str,
+    *,
+    judge_schema: JudgeSchemaDef | None = None,
+) -> dict[str, Any]:
+    candidates = _extract_json_objects(text)
+    if judge_schema is not None and judge_schema.json_schema():
+        for candidate in candidates:
+            try:
+                return judge_schema.validate_payload(_candidate_judge_payload(candidate))
+            except Exception:
+                continue
+        if candidates:
+            raise ValueError("no JSON object matches judge schema")
+
+    for candidate in candidates:
+        if "results" in candidate:
+            return candidate
+    for candidate in candidates:
+        if "score" in candidate and "verdict" in candidate:
+            return candidate
+    for candidate in candidates:
+        if "score" in candidate and "rank" in candidate:
+            return candidate
+    if candidates:
+        return candidates[0]
+    raise ValueError("judge response does not contain a valid JSON object")
+
+
+def _coerce_judge_payload(
+    response: Mapping[str, Any] | str,
+    *,
+    judge_schema: JudgeSchemaDef | None = None,
+) -> dict[str, Any]:
+    if isinstance(response, str):
+        response = _extract_json_object(response, judge_schema=judge_schema)
+    else:
+        response = dict(response)
+
+    return _candidate_judge_payload(response)
+
+
+def _extract_artifact_read_requests(response: Mapping[str, Any] | str) -> list[dict[str, Any]]:
+    candidates: list[dict[str, Any]]
+    if isinstance(response, str):
+        candidates = _extract_json_objects(response)
+    elif isinstance(response, Mapping):
+        candidates = [dict(response)]
+    else:
+        return []
+    for candidate in candidates:
+        requests = candidate.get("artifact_read_requests")
+        if isinstance(requests, list):
+            return [dict(item) for item in requests if isinstance(item, Mapping)]
+    return []
+
+
+def _prompt_text(prompt: JudgePrompt) -> str:
+    return prompt[0] if isinstance(prompt, tuple) else prompt
+
+
+def _judge_call_diagnostic(
+    *,
+    prompt: JudgePrompt,
+    system_prompt: str,
+    phase: str,
+    round_index: int,
+    timeout_seconds: float | None,
+    read_results: list[dict[str, Any]],
+) -> dict[str, Any]:
+    prompt_chars = len(_prompt_text(prompt))
+    system_prompt_chars = len(system_prompt)
+    input_chars = prompt_chars + system_prompt_chars
+    successful_reads = [result for result in read_results if result.get("status") == "ok"]
+    denied_reads = [result for result in read_results if result.get("status") == "denied"]
+    denial_reasons = list(
+        dict.fromkeys(
+            str(result.get("reason"))
+            for result in denied_reads
+            if result.get("reason")
+        )
+    )
+    denied_path_fingerprints = list(
+        dict.fromkeys(
+            str(result.get("requested_path_fingerprint"))
+            for result in denied_reads
+            if result.get("requested_path_fingerprint")
+        )
+    )
+    return {
+        "phase": phase,
+        "round_index": round_index,
+        "status": "running",
+        "prompt_chars": prompt_chars,
+        "system_prompt_chars": system_prompt_chars,
+        "input_chars": input_chars,
+        "estimated_input_tokens": (input_chars + 3) // 4,
+        "artifact_request_count": 0,
+        "artifact_read_result_count": len(read_results),
+        "artifact_read_count": len(successful_reads),
+        "artifact_read_denied_count": len(denied_reads),
+        "artifact_read_denial_reasons": denial_reasons,
+        "artifact_read_denied_path_fingerprints": denied_path_fingerprints,
+        "artifact_read_continuation_count": sum(
+            1 for result in successful_reads if result.get("continuation_applied")
+        ),
+        "artifact_read_budget_exhausted": any(
+            result.get("reason")
+            in {"read_char_budget_exhausted", "read_round_budget_exhausted"}
+            for result in denied_reads
+        ),
+        "artifact_read_projection_incomplete": any(
+            result.get("unread_indexed_content") is True
+            for result in denied_reads
+        ),
+        "artifact_read_chars": sum(
+            int(result.get("chars_returned") or 0)
+            for result in successful_reads
+        ),
+        "timeout_seconds": timeout_seconds,
+    }
+
+
+def _elapsed_monotonic_ms(started_at: float) -> float:
+    return (time.monotonic() - started_at) * 1000
+
+
+def register_evaluation_private_artifact_session(
+    session_id: str,
+    cleanup: Callable[[], None],
+) -> None:
+    if not _PRIVATE_ARTIFACT_SESSION_ID_PATTERN.fullmatch(session_id):
+        raise ValueError("invalid private artifact session id")
+    if not callable(cleanup):
+        raise TypeError("private artifact session cleanup must be callable")
+    with _PRIVATE_ARTIFACT_SESSION_CLEANUPS_LOCK:
+        if session_id in _PRIVATE_ARTIFACT_SESSION_CLEANUPS:
+            raise ValueError("private artifact session is already registered")
+        _PRIVATE_ARTIFACT_SESSION_CLEANUPS[session_id] = cleanup
+    owned_session_ids = _PRIVATE_ARTIFACT_SESSION_SCOPE.get()
+    if owned_session_ids is not None:
+        owned_session_ids.append(session_id)
+
+
+def cleanup_evaluation_private_artifact_session(session_id: str) -> bool:
+    if not _PRIVATE_ARTIFACT_SESSION_ID_PATTERN.fullmatch(session_id):
+        return False
+    with _PRIVATE_ARTIFACT_SESSION_CLEANUPS_LOCK:
+        cleanup = _PRIVATE_ARTIFACT_SESSION_CLEANUPS.pop(session_id, None)
+    if cleanup is None:
+        return False
+    try:
+        cleanup()
+    except Exception as exc:
+        logger.warning(
+            "evaluation.private_artifact_session.cleanup_failed "
+            f"session_id={session_id} error_type={type(exc).__name__}"
+        )
+        return False
+    return True
+
+
+def _private_artifact_session_id(prompt: JudgePrompt) -> str | None:
+    try:
+        payload = json.loads(_prompt_text(prompt))
+    except (TypeError, json.JSONDecodeError):
+        return None
+    if not isinstance(payload, Mapping):
+        return None
+    artifact_backed = payload.get("artifact_backed_evidence")
+    if not isinstance(artifact_backed, Mapping):
+        return None
+    session = artifact_backed.get("private_artifact_session")
+    if not isinstance(session, Mapping):
+        return None
+    if session.get("format") != _PRIVATE_ARTIFACT_SESSION_FORMAT:
+        return None
+    if session.get("version") != _PRIVATE_ARTIFACT_SESSION_VERSION:
+        return None
+    session_id = session.get("session_id")
+    if (
+        not isinstance(session_id, str)
+        or not _PRIVATE_ARTIFACT_SESSION_ID_PATTERN.fullmatch(session_id)
+    ):
+        return None
+    return session_id
+
+
+def _cleanup_prompt_private_artifact_session(prompt: JudgePrompt) -> None:
+    session_id = _private_artifact_session_id(prompt)
+    if session_id is None:
+        return
+    cleanup_evaluation_private_artifact_session(session_id)
+
+
+def _artifact_lookup_key(path_value: str) -> str:
+    expanded = Path(path_value).expanduser()
+    return os.path.abspath(os.path.normpath(str(expanded)))
+
+
+def _allowed_artifact_records(
+    prompt: JudgePrompt,
+) -> dict[str, dict[str, Any]]:
+    try:
+        payload = json.loads(_prompt_text(prompt))
+    except (TypeError, json.JSONDecodeError):
+        return {}
+    if not isinstance(payload, Mapping):
+        return {}
+    artifact_backed = payload.get("artifact_backed_evidence")
+    if not isinstance(artifact_backed, Mapping):
+        return {}
+    read_policy = artifact_backed.get("read_policy")
+    if isinstance(read_policy, Mapping):
+        if read_policy.get("read_only") is not True:
+            return {}
+        if read_policy.get("external_network_allowed") is True:
+            return {}
+        if read_policy.get("mutation_allowed") is True:
+            return {}
+    allowed: dict[str, dict[str, Any]] = {}
+    for artifact in artifact_backed.get("artifacts") or []:
+        if not isinstance(artifact, Mapping):
+            continue
+        if artifact.get("available") is False:
+            continue
+        path_value = artifact.get("path")
+        if not isinstance(path_value, str) or not path_value.strip():
+            continue
+        expanded = Path(path_value).expanduser()
+        allowed[_artifact_lookup_key(str(expanded))] = {
+            **dict(artifact),
+            "path": str(expanded),
+        }
+    return allowed
+
+
+def _allowed_artifact_paths(prompt: JudgePrompt) -> dict[str, str]:
+    return {
+        key: str(record["path"])
+        for key, record in _allowed_artifact_records(prompt).items()
+    }
+
+
+def _artifact_read_policy(prompt: JudgePrompt) -> _ArtifactReadPolicy:
+    try:
+        payload = json.loads(_prompt_text(prompt))
+    except (TypeError, json.JSONDecodeError):
+        payload = {}
+    artifact_backed = (
+        payload.get("artifact_backed_evidence")
+        if isinstance(payload, Mapping)
+        else None
+    )
+    configured = (
+        artifact_backed.get("read_policy")
+        if isinstance(artifact_backed, Mapping)
+        else None
+    )
+    if not isinstance(configured, Mapping):
+        configured = {}
+
+    max_chars_per_read = _bounded_int(
+        configured.get("max_chars_per_read"),
+        default=_MAX_JUDGE_ARTIFACT_READ_CHARS,
+        minimum=1,
+        maximum=_MAX_JUDGE_ARTIFACT_READ_CHARS,
+    )
+    return _ArtifactReadPolicy(
+        max_rounds=_bounded_int(
+            configured.get("max_rounds"),
+            default=_DEFAULT_JUDGE_ARTIFACT_READ_ROUNDS,
+            minimum=1,
+            maximum=_MAX_JUDGE_ARTIFACT_READ_ROUNDS,
+        ),
+        max_requests_per_round=_bounded_int(
+            configured.get("max_requests_per_round"),
+            default=_MAX_JUDGE_ARTIFACT_READ_REQUESTS,
+            minimum=1,
+            maximum=_MAX_JUDGE_ARTIFACT_READ_REQUESTS,
+        ),
+        default_chars_per_read=_bounded_int(
+            configured.get("default_chars_per_read"),
+            default=_DEFAULT_JUDGE_ARTIFACT_READ_CHARS,
+            minimum=1,
+            maximum=max_chars_per_read,
+        ),
+        max_chars_per_read=max_chars_per_read,
+        max_total_chars=_bounded_int(
+            configured.get("max_total_chars"),
+            default=_DEFAULT_JUDGE_ARTIFACT_READ_TOTAL_CHARS,
+            minimum=1,
+            maximum=_MAX_JUDGE_ARTIFACT_READ_TOTAL_CHARS,
+        ),
+    )
+
+
+def _artifact_read_chars(results: list[dict[str, Any]]) -> int:
+    return sum(
+        int(result.get("chars_returned") or 0)
+        for result in results
+        if result.get("status") == "ok"
+    )
+
+
+def _successful_artifact_ranges(
+    results: list[dict[str, Any]],
+) -> dict[str, list[tuple[int, int]]]:
+    ranges: dict[str, list[tuple[int, int]]] = {}
+    for result in results:
+        if result.get("status") != "ok":
+            continue
+        path_value = result.get("path")
+        if not isinstance(path_value, str) or not path_value.strip():
+            continue
+        try:
+            start = int(result.get("start") or 0)
+            end = int(result.get("end") or start)
+        except (TypeError, ValueError):
+            continue
+        if end <= start:
+            continue
+        resolved = _artifact_lookup_key(path_value)
+        ranges.setdefault(resolved, []).append((start, end))
+    return ranges
+
+
+def _ranges_overlap(
+    start: int,
+    end: int,
+    existing: list[tuple[int, int]],
+) -> bool:
+    return any(
+        start < existing_end and existing_start < end
+        for existing_start, existing_end in existing
+    )
+
+
+def _range_fully_covered(
+    start: int,
+    end: int,
+    existing: list[tuple[int, int]],
+) -> bool:
+    cursor = start
+    for existing_start, existing_end in sorted(existing):
+        if existing_end <= cursor:
+            continue
+        if existing_start > cursor:
+            return False
+        cursor = max(cursor, existing_end)
+        if cursor >= end:
+            return True
+    return cursor >= end
+
+
+def _requests_need_unread_projection(
+    prompt: JudgePrompt,
+    read_requests: list[dict[str, Any]],
+    *,
+    prior_results: list[dict[str, Any]],
+    policy: _ArtifactReadPolicy,
+) -> bool:
+    allowed_paths = _allowed_artifact_paths(prompt)
+    ranges = _successful_artifact_ranges(prior_results)
+    total_chars_by_path: dict[str, int] = {}
+    for result in prior_results:
+        if result.get("status") != "ok":
+            continue
+        path_value = result.get("path")
+        total_chars = result.get("total_chars")
+        if (
+            not isinstance(path_value, str)
+            or not path_value.strip()
+            or not isinstance(total_chars, int)
+        ):
+            continue
+        resolved = _artifact_lookup_key(path_value)
+        total_chars_by_path[resolved] = max(
+            total_chars,
+            total_chars_by_path.get(resolved, 0),
+        )
+
+    for request in read_requests[: policy.max_requests_per_round]:
+        path_value = request.get("path")
+        if not isinstance(path_value, str) or not path_value.strip():
+            continue
+        resolved = _artifact_lookup_key(path_value)
+        canonical_allowed = allowed_paths.get(resolved)
+        if canonical_allowed is None:
+            continue
+        existing = ranges.get(resolved, [])
+        known_total = total_chars_by_path.get(resolved)
+        if known_total is None:
+            try:
+                if Path(canonical_allowed).stat().st_size > 0:
+                    return True
+            except OSError:
+                continue
+            continue
+
+        requested_start = _bounded_int(
+            request.get("start"),
+            default=0,
+            minimum=0,
+            maximum=10_000_000,
+        )
+        if "start" not in request and existing:
+            requested_start = max(end for _, end in existing)
+        requested_chars = _bounded_int(
+            request.get("max_chars"),
+            default=policy.default_chars_per_read,
+            minimum=1,
+            maximum=policy.max_chars_per_read,
+        )
+        requested_end = min(known_total, requested_start + requested_chars)
+        if requested_start >= known_total:
+            continue
+        if not _range_fully_covered(
+            requested_start,
+            requested_end,
+            existing,
+        ):
+            return True
+    return False
+
+
+def _read_text_window(
+    path: Path,
+    *,
+    start: int,
+    max_chars: int,
+) -> tuple[str, int]:
+    """Read one character range without retaining the complete artifact in memory."""
+
+    chunks: list[str] = []
+    total_chars = 0
+    window_end = start + max_chars
+    with path.open("r", encoding="utf-8", errors="replace") as handle:
+        while True:
+            chunk = handle.read(64 * 1024)
+            if not chunk:
+                break
+            chunk_start = total_chars
+            chunk_end = chunk_start + len(chunk)
+            if chunk_end > start and chunk_start < window_end:
+                local_start = max(0, start - chunk_start)
+                local_end = min(len(chunk), window_end - chunk_start)
+                chunks.append(chunk[local_start:local_end])
+            total_chars = chunk_end
+    return "".join(chunks), total_chars
+
+
+class _ArtifactIntegrityError(RuntimeError):
+    def __init__(self, reason: str) -> None:
+        super().__init__(reason)
+        self.reason = reason
+
+
+def _read_integrity_bound_text_window(
+    path: Path,
+    *,
+    start: int,
+    max_chars: int,
+    integrity: Mapping[str, Any],
+) -> tuple[str, int]:
+    if integrity.get("required") is not True:
+        raise _ArtifactIntegrityError("artifact_integrity_contract_invalid")
+    if integrity.get("algorithm") != "sha256":
+        raise _ArtifactIntegrityError("artifact_integrity_contract_invalid")
+    fingerprint = integrity.get("fingerprint")
+    if not isinstance(fingerprint, str) or not fingerprint.startswith("sha256:"):
+        raise _ArtifactIntegrityError("artifact_integrity_contract_invalid")
+    digest = fingerprint.removeprefix("sha256:")
+    if len(digest) != 64 or any(
+        character not in "0123456789abcdef" for character in digest
+    ):
+        raise _ArtifactIntegrityError("artifact_integrity_contract_invalid")
+    expected_size = integrity.get("size_bytes")
+    if (
+        not isinstance(expected_size, int)
+        or isinstance(expected_size, bool)
+        or expected_size < 0
+    ):
+        raise _ArtifactIntegrityError("artifact_integrity_contract_invalid")
+    max_bytes = _bounded_int(
+        integrity.get("max_bytes"),
+        default=_MAX_JUDGE_INTEGRITY_BOUND_ARTIFACT_BYTES,
+        minimum=1,
+        maximum=_MAX_JUDGE_INTEGRITY_BOUND_ARTIFACT_BYTES,
+    )
+    expected_mode = integrity.get("mode")
+    if (
+        not isinstance(expected_mode, int)
+        or isinstance(expected_mode, bool)
+        or expected_mode < 0
+    ):
+        raise _ArtifactIntegrityError("artifact_integrity_contract_invalid")
+    try:
+        path_stat_before = os.lstat(path)
+    except FileNotFoundError as exc:
+        raise _ArtifactIntegrityError("artifact_missing") from exc
+    except OSError as exc:
+        raise _ArtifactIntegrityError("artifact_unreadable") from exc
+    if not stat.S_ISREG(path_stat_before.st_mode):
+        raise _ArtifactIntegrityError("artifact_not_regular_file")
+    if stat.S_IMODE(path_stat_before.st_mode) != expected_mode:
+        raise _ArtifactIntegrityError("artifact_integrity_mismatch")
+    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    descriptor: int | None = None
+    try:
+        descriptor = os.open(path, flags)
+        file_stat_before = os.fstat(descriptor)
+        if not stat.S_ISREG(file_stat_before.st_mode):
+            raise _ArtifactIntegrityError("artifact_not_regular_file")
+        if (
+            file_stat_before.st_size > max_bytes
+            or file_stat_before.st_size != expected_size
+        ):
+            raise _ArtifactIntegrityError("artifact_integrity_mismatch")
+        with os.fdopen(descriptor, "rb", closefd=False) as stream:
+            content = stream.read(max_bytes + 1)
+        file_stat_after = os.fstat(descriptor)
+    except _ArtifactIntegrityError:
+        raise
+    except OSError as exc:
+        raise _ArtifactIntegrityError("artifact_unreadable") from exc
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+    try:
+        path_stat_after = os.lstat(path)
+    except OSError as exc:
+        raise _ArtifactIntegrityError("artifact_changed_during_read") from exc
+    identities = (
+        (path_stat_before.st_dev, path_stat_before.st_ino),
+        (file_stat_before.st_dev, file_stat_before.st_ino),
+        (file_stat_after.st_dev, file_stat_after.st_ino),
+        (path_stat_after.st_dev, path_stat_after.st_ino),
+    )
+    if (
+        len(set(identities)) != 1
+        or file_stat_before.st_size != file_stat_after.st_size
+        or file_stat_before.st_mtime_ns != file_stat_after.st_mtime_ns
+    ):
+        raise _ArtifactIntegrityError("artifact_changed_during_read")
+    if len(content) != expected_size:
+        raise _ArtifactIntegrityError("artifact_integrity_mismatch")
+    if "sha256:" + hashlib.sha256(content).hexdigest() != fingerprint:
+        raise _ArtifactIntegrityError("artifact_integrity_mismatch")
+    text = content.decode("utf-8", errors="replace")
+    return text[start : start + max_chars], len(text)
+
+
+def _resolve_artifact_read_requests(
+    prompt: JudgePrompt,
+    read_requests: list[dict[str, Any]],
+    *,
+    policy: _ArtifactReadPolicy | None = None,
+    prior_results: list[dict[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
+    policy = policy or _artifact_read_policy(prompt)
+    prior_results = list(prior_results or [])
+    allowed_records = _allowed_artifact_records(prompt)
+    prior_ranges = _successful_artifact_ranges(prior_results)
+    used_chars = _artifact_read_chars(prior_results)
+    results: list[dict[str, Any]] = []
+    for index, request in enumerate(read_requests[: policy.max_requests_per_round]):
+        path_value = request.get("path")
+        result: dict[str, Any] = {
+            "request_index": index,
+            "path": str(path_value or ""),
+        }
+        if not isinstance(path_value, str) or not path_value.strip():
+            result.update({"status": "denied", "reason": "missing_path"})
+            results.append(result)
+            continue
+        resolved_requested = _artifact_lookup_key(path_value)
+        allowed_record = allowed_records.get(resolved_requested)
+        if allowed_record is None:
+            result.update(
+                {
+                    "status": "denied",
+                    "reason": "path_not_in_artifact_index",
+                    "artifact_index_present": bool(allowed_records),
+                    "allowed_path_count": len(allowed_records),
+                    "requested_path_fingerprint": hashlib.sha256(
+                        resolved_requested.encode("utf-8")
+                    ).hexdigest()[:16],
+                }
+            )
+            results.append(result)
+            continue
+        canonical_allowed = str(allowed_record["path"])
+        existing_ranges = prior_ranges.get(resolved_requested, [])
+        requested_start = _bounded_int(
+            request.get("start"),
+            default=0,
+            minimum=0,
+            maximum=10_000_000,
+        )
+        continuation_applied = "start" not in request and bool(existing_ranges)
+        start = (
+            max(end for _, end in existing_ranges)
+            if continuation_applied
+            else requested_start
+        )
+        max_chars = _bounded_int(
+            request.get("max_chars"),
+            default=policy.default_chars_per_read,
+            minimum=1,
+            maximum=policy.max_chars_per_read,
+        )
+        remaining_chars = max(0, policy.max_total_chars - used_chars)
+        if remaining_chars <= 0:
+            result.update(
+                {
+                    "status": "denied",
+                    "reason": "read_char_budget_exhausted",
+                    "unread_indexed_content": _requests_need_unread_projection(
+                        prompt,
+                        [request],
+                        prior_results=prior_results + results,
+                        policy=policy,
+                    ),
+                    "read_budget_used_chars": used_chars,
+                    "read_budget_remaining_chars": 0,
+                }
+            )
+            results.append(result)
+            continue
+        max_chars = min(max_chars, remaining_chars)
+        if _ranges_overlap(start, start + max_chars, existing_ranges):
+            result.update(
+                {
+                    "status": "denied",
+                    "reason": "overlapping_read_range",
+                    "start": start,
+                    "suggested_next_start": max(end for _, end in existing_ranges),
+                    "read_budget_used_chars": used_chars,
+                    "read_budget_remaining_chars": remaining_chars,
+                }
+            )
+            results.append(result)
+            continue
+        try:
+            integrity = allowed_record.get("integrity")
+            if isinstance(integrity, Mapping):
+                content, total_chars = _read_integrity_bound_text_window(
+                    Path(canonical_allowed),
+                    start=start,
+                    max_chars=max_chars,
+                    integrity=integrity,
+                )
+            else:
+                content, total_chars = _read_text_window(
+                    Path(canonical_allowed),
+                    start=start,
+                    max_chars=max_chars,
+                )
+        except _ArtifactIntegrityError as exc:
+            result.update({"status": "denied", "reason": exc.reason})
+            results.append(result)
+            continue
+        except OSError as exc:
+            result.update({"status": "error", "reason": exc.__class__.__name__, "message": str(exc)})
+            results.append(result)
+            continue
+        end = start + len(content)
+        chars_returned = len(content)
+        used_chars += chars_returned
+        if chars_returned:
+            prior_ranges.setdefault(resolved_requested, []).append((start, end))
+        result.update(
+            {
+                "status": "ok",
+                "start": start,
+                "end": end,
+                "chars_returned": chars_returned,
+                "total_chars": total_chars,
+                "truncated": end < total_chars,
+                "eof": end >= total_chars,
+                "content": content,
+                "read_budget_used_chars": used_chars,
+                "read_budget_remaining_chars": max(
+                    0,
+                    policy.max_total_chars - used_chars,
+                ),
+            }
+        )
+        if continuation_applied:
+            result["continuation_applied"] = True
+            result["requested_start"] = requested_start
+        if end < total_chars:
+            result["next_start"] = end
+        if max_chars < _bounded_int(
+            request.get("max_chars"),
+            default=policy.default_chars_per_read,
+            minimum=1,
+            maximum=policy.max_chars_per_read,
+        ):
+            result["budget_limited"] = True
+        results.append(result)
+    if len(read_requests) > policy.max_requests_per_round:
+        results.append(
+            {
+                "status": "denied",
+                "reason": "too_many_requests",
+                "request_count": len(read_requests),
+                "max_requests": policy.max_requests_per_round,
+            }
+        )
+    return results
+
+
+def _bounded_int(value: Any, *, default: int, minimum: int, maximum: int) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        parsed = default
+    return max(minimum, min(maximum, parsed))
+
+
+def _append_artifact_read_results_to_prompt(
+    prompt: JudgePrompt,
+    read_results: list[dict[str, Any]],
+    *,
+    policy: _ArtifactReadPolicy | None = None,
+    finalize: bool = False,
+) -> JudgePrompt:
+    policy = policy or _artifact_read_policy(prompt)
+    text = _prompt_text(prompt)
+    try:
+        payload = json.loads(text)
+    except (TypeError, json.JSONDecodeError):
+        payload = {"original_prompt": text}
+    if not isinstance(payload, dict):
+        payload = {"original_prompt": text}
+    existing_results = payload.get("artifact_read_results")
+    if not isinstance(existing_results, list):
+        existing_results = []
+    payload["artifact_read_results"] = [
+        *[dict(item) for item in existing_results if isinstance(item, Mapping)],
+        *read_results,
+    ]
+    if finalize:
+        payload["artifact_read_followup_instruction"] = (
+            "The bounded artifact-read round budget is exhausted. Return the final "
+            "single JSON object matching required_output_schema now; do not emit more "
+            "artifact_read_requests. If missing support is present in an indexed artifact "
+            "but could not be projected within the read budget, emit a framework-owned "
+            "projection_compacted evidence repair constraint. If the indexed evidence "
+            "does not contain the support, emit a candidate-owned support_incomplete constraint."
+        )
+    else:
+        payload["artifact_read_followup_instruction"] = (
+            "Use artifact_read_results as read-only evidence. Return the final single "
+            "JSON object matching required_output_schema when sufficient. If a truncated "
+            "result still contains necessary unread evidence, you may request the same "
+            "artifact again at its next_start (or omit start to continue automatically). "
+            "Do not request an overlapping range. The framework enforces "
+            f"{policy.max_rounds} read rounds and {policy.max_total_chars} total returned characters."
+        )
+    updated = json.dumps(payload, ensure_ascii=False, indent=2)
+    if isinstance(prompt, tuple):
+        return updated, prompt[1]
+    return updated
+
+
+async def _default_agent_judge_executor(
+    prompt: JudgePrompt,
+    system_prompt: str,
+    *,
+    model_config: Any | None = None,
+) -> str:
     from aworld.agents.llm_agent import Agent
     from aworld.config.conf import AgentConfig
     from aworld.core.common import Observation
     from aworld.core.context.base import Context
     from aworld.utils.run_util import exec_agent
 
-    api_key = os.getenv("LLM_API_KEY") or os.getenv("OPENAI_API_KEY")
-    model_name = os.getenv("LLM_MODEL_NAME")
+    if model_config is not None:
+        provider = getattr(model_config, "llm_provider", None) or "openai"
+        api_key = getattr(model_config, "llm_api_key", None)
+        if not api_key:
+            api_key = os.getenv("LLM_API_KEY")
+        if not api_key and provider:
+            api_key = os.getenv(f"{str(provider).strip().upper()}_API_KEY")
+        model_name = getattr(model_config, "llm_model_name", None)
+        base_url = getattr(model_config, "llm_base_url", None)
+        temperature = getattr(model_config, "llm_temperature", 0.1)
+    else:
+        provider = os.getenv("LLM_PROVIDER", "openai")
+        api_key = os.getenv("LLM_API_KEY") or os.getenv("OPENAI_API_KEY")
+        model_name = os.getenv("LLM_MODEL_NAME")
+        base_url = os.getenv("LLM_BASE_URL")
+        temperature = float(os.getenv("LLM_TEMPERATURE", "0.1"))
     if not api_key or not model_name:
         raise RuntimeError("LLM_MODEL_NAME and LLM_API_KEY/OPENAI_API_KEY are required for agent judge backend")
 
@@ -1631,10 +2711,10 @@ async def _default_agent_judge_executor(prompt: JudgePrompt, system_prompt: str)
     agent = Agent(
         name="evaluation_judge",
         conf=AgentConfig(
-            llm_provider=os.getenv("LLM_PROVIDER", "openai"),
+            llm_provider=provider,
             llm_model_name=model_name,
-            llm_temperature=float(os.getenv("LLM_TEMPERATURE", "0.1")),
-            llm_base_url=os.getenv("LLM_BASE_URL"),
+            llm_temperature=temperature,
+            llm_base_url=base_url,
             llm_api_key=api_key,
         ),
         system_prompt=system_prompt,

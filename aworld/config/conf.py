@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Callable, Union, Iterable, Literal, Type
 
 import yaml
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 def load_config(file_name: str, dir_name: str = None) -> Dict[str, Any]:
@@ -233,6 +233,144 @@ class MetaLearningConfig(BaseConfig):
     )
 
 
+class SelfEvolveJudgeConfig(BaseConfig):
+    """Judge selection for framework-owned self-evolve evaluation."""
+
+    mode: Literal["trajectory", "agent_md", "custom_agent", "backend_ref", "disabled"] = "trajectory"
+    agent_path: Optional[str] = None
+    agent_id: Optional[str] = None
+    backend_ref: Optional[str] = None
+    model_profile: Optional[str] = None
+
+
+class SelfEvolveConfig(BaseConfig):
+    """Disabled-by-default self-evolve configuration for harness optimization."""
+
+    mode: Literal["off", "offline", "shadow", "online"] = "off"
+    apply_policy: Literal["proposal", "auto_verified"] = "proposal"
+    inferred_new_skill_policy: Literal[
+        "disabled", "draft_only", "auto_verified"
+    ] = "auto_verified"
+    # ``max_run_tokens`` remains readable for existing configs.  New callers
+    # should use the explicit total-run ceiling below.
+    max_run_tokens: int = 500000
+    total_run_token_budget: Optional[int] = None
+    per_attempt_replay_token_limit: Optional[int] = None
+    max_run_cost_usd: Optional[float] = None
+    max_run_wall_seconds: Optional[float] = None
+    candidate_generation_tokens_per_unit: Optional[int] = None
+    candidate_generation_cost_usd_per_unit: Optional[float] = None
+    candidate_generation_wall_seconds_per_unit: Optional[float] = None
+    candidate_screening_tokens_per_unit: Optional[int] = None
+    candidate_screening_cost_usd_per_unit: Optional[float] = None
+    candidate_screening_wall_seconds_per_unit: Optional[float] = None
+    replay_tokens_per_unit: Optional[int] = None
+    replay_cost_usd_per_unit: Optional[float] = None
+    replay_wall_seconds_per_unit: Optional[float] = None
+    evaluation_tokens_per_unit: Optional[int] = None
+    evaluation_cost_usd_per_unit: Optional[float] = None
+    evaluation_wall_seconds_per_unit: Optional[float] = None
+    deprecated_config_mappings: tuple[str, ...] = ()
+    min_eval_cases: int = 30
+    judge_repetitions: int = 3
+    judge_timeout_seconds: int = 300
+    cooldown_seconds: int = 0
+    max_iterations: int = 1
+    max_improvement_cycles: int = 3
+    min_improvement: float = 0.0
+    max_background_jobs: int = 1
+    auto_apply_target_types: tuple[str, ...] = ("skill",)
+    target_types: tuple[str, ...] = (
+        "skill",
+        "prompt-section",
+        "tool-description",
+        "config",
+        "workspace-artifact",
+    )
+    eval_sources: tuple[str, ...] = (
+        "current_trajectory",
+        "trajectory_log",
+        "session",
+        "jsonl",
+        "batch_config",
+    )
+    regression_benchmarks: tuple[str, ...] = ()
+    require_deterministic_signal_for_verified: bool = True
+    requires_post_apply_reevaluation: bool = True
+    judge_config: SelfEvolveJudgeConfig = Field(default_factory=SelfEvolveJudgeConfig)
+    replay_enabled: bool = True
+    replay_timeout_seconds: int = 600
+    replay_max_steps: Optional[int] = 1
+    replay_candidate_limit: int = 2
+    baseline_replay_repetitions: int = 1
+    candidate_replay_repetitions: int = 1
+    replay_stability_margin: float = 0.0
+
+    @model_validator(mode="after")
+    def validate_apply_policy(self) -> "SelfEvolveConfig":
+        if self.mode == "online" and self.apply_policy != "auto_verified":
+            raise ValueError("online self-evolve requires apply_policy='auto_verified'")
+        if self.apply_policy == "auto_verified" and not self.requires_post_apply_reevaluation:
+            raise ValueError("auto_verified self-evolve requires post-apply re-evaluation")
+        if self.replay_candidate_limit <= 0:
+            raise ValueError("replay_candidate_limit must be positive")
+        if self.baseline_replay_repetitions <= 0:
+            raise ValueError("baseline_replay_repetitions must be positive")
+        if self.candidate_replay_repetitions <= 0:
+            raise ValueError("candidate_replay_repetitions must be positive")
+        if self.judge_timeout_seconds <= 0:
+            raise ValueError("judge_timeout_seconds must be positive")
+        if self.replay_timeout_seconds <= 0:
+            raise ValueError("replay_timeout_seconds must be positive")
+        if self.replay_stability_margin < 0:
+            raise ValueError("replay_stability_margin must be non-negative")
+        if self.max_improvement_cycles <= 0:
+            raise ValueError("max_improvement_cycles must be positive")
+        for field_name in (
+            "max_run_tokens",
+            "total_run_token_budget",
+            "per_attempt_replay_token_limit",
+            "candidate_generation_tokens_per_unit",
+            "candidate_screening_tokens_per_unit",
+            "replay_tokens_per_unit",
+            "evaluation_tokens_per_unit",
+        ):
+            value = getattr(self, field_name)
+            if value is not None and value <= 0:
+                raise ValueError(f"{field_name} must be positive")
+        for field_name in ("max_run_cost_usd", "max_run_wall_seconds"):
+            value = getattr(self, field_name)
+            if value is not None and value <= 0:
+                raise ValueError(f"{field_name} must be positive")
+        for field_name in (
+            "candidate_generation_cost_usd_per_unit",
+            "candidate_generation_wall_seconds_per_unit",
+            "candidate_screening_cost_usd_per_unit",
+            "candidate_screening_wall_seconds_per_unit",
+            "replay_cost_usd_per_unit",
+            "replay_wall_seconds_per_unit",
+            "evaluation_cost_usd_per_unit",
+            "evaluation_wall_seconds_per_unit",
+        ):
+            value = getattr(self, field_name)
+            if value is not None and value < 0:
+                raise ValueError(f"{field_name} must be non-negative")
+        deprecated_mappings = list(self.deprecated_config_mappings)
+        if self.total_run_token_budget is None:
+            self.total_run_token_budget = self.max_run_tokens
+            deprecated_mappings.append(
+                "max_run_tokens_to_total_run_token_budget"
+            )
+        if self.per_attempt_replay_token_limit is None:
+            self.per_attempt_replay_token_limit = self.max_run_tokens
+            deprecated_mappings.append(
+                "max_run_tokens_to_per_attempt_replay_token_limit"
+            )
+        self.deprecated_config_mappings = tuple(
+            dict.fromkeys(deprecated_mappings)
+        )
+        return self
+
 class SummaryPromptConfig(BaseConfig):
     """Configuration for summary prompt templates."""
 
@@ -381,6 +519,7 @@ class AgentConfig(BaseConfig):
     # None means no limit (all parallel), positive integer limits batch size
     concurrent_batch_size: Optional[int] = None
     meta_learning_config: MetaLearningConfig = MetaLearningConfig()
+    self_evolve_config: SelfEvolveConfig = Field(default_factory=SelfEvolveConfig)
     ext: dict = {}
 
     def __init__(self, **kwargs):

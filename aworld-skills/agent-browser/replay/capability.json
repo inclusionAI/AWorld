@@ -1,0 +1,17 @@
+{
+  "schema_version": "aworld.skill.replay_capability.v1",
+  "capability_id": "agent-browser-replay",
+  "protocol": "aworld.replay.subprocess.v1",
+  "entrypoint": "replay/compiler.py",
+  "handles": [
+    "conversation_context",
+    "http_resource",
+    "local_endpoint",
+    "local_file",
+    "stateful_tool"
+  ],
+  "runtime_files": [
+    "replay/runtime.py"
+  ],
+  "concurrency_mode": "isolated"
+}

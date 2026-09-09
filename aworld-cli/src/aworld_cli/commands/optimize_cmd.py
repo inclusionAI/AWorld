@@ -1,0 +1,216 @@
+"""
+/optimize command - Run framework self-evolve optimization from chat.
+"""
+from __future__ import annotations
+
+import argparse
+import asyncio
+import shlex
+
+from aworld_cli.core.command_system import Command, CommandContext, register_command
+from aworld_cli.top_level_commands.optimize_cmd import (
+    drain_pending_self_evolve_jobs,
+    render_optimize_summary,
+    run_optimize_cli,
+)
+
+
+def _usage() -> str:
+    return """Usage:
+  /optimize --from-source <file-or-directory> [--source-manifest <path>] [--ingestion-only]
+  /optimize --from-source <file-or-directory> --source-ingestor <registered-name> --target <target>
+  /optimize --frozen-ingestion-id <id> --semantic-evidence-approval <approval.json> --semantic-qualification-report <report.json> --apply auto_verified
+  /optimize --from-trajectory <trajectory.log> --apply proposal [--target <target>]
+  /optimize --from-trajectory <trajectory.log> --apply auto_verified --new-skill-policy auto_verified --judge-agent <agent.md>
+  /optimize --from-trajectory <multi-task-trajectory.log> --include-prior-runs --apply proposal
+  /optimize --from-trajectory-set <trajectory-set.json> --apply auto_verified --judge-agent <agent.md>
+  /optimize --from-trajectory-set <trajectory-set.json> --include-prior-runs --apply proposal
+  /optimize --from-run <run-id-or-path> --rerun-evaluator --apply auto_verified --judge-agent <agent.md>
+  /optimize --resume-campaign <campaign-id>
+  /optimize --target skill:<name> --dataset <eval.jsonl> --apply proposal
+  /optimize --drain-pending
+
+Examples:
+  /optimize --from-source ~/Documents/domain-data --ingestion-only
+  /optimize --frozen-ingestion-id <id> --semantic-evidence-approval ./approval.json --semantic-qualification-report ./qualification.json --apply auto_verified
+  /optimize --from-trajectory ~/Documents/task.log --apply proposal
+  /optimize --from-trajectory ~/Documents/task.log --apply auto_verified --judge-agent ~/Documents/agent.md
+  /optimize --from-trajectory-set ./trajectory-set.json --apply auto_verified --judge-agent ~/Documents/agent.md
+  /optimize --from-run cli-123456789012 --rerun-evaluator --apply auto_verified --judge-agent ~/Documents/agent.md
+  /optimize --target skill:media_comprehension --dataset ./eval.jsonl --apply proposal
+"""
+
+
+def _build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(prog="/optimize", add_help=False)
+    parser.add_argument("--agent")
+    parser.add_argument("--task")
+    parser.add_argument("--target")
+    parser.add_argument("--dataset")
+    parser.add_argument("--from-session", dest="from_session")
+    parser.add_argument("--from-trajectory", dest="from_trajectory")
+    parser.add_argument("--from-source", dest="from_source")
+    parser.add_argument(
+        "--frozen-ingestion-id",
+        dest="frozen_ingestion_id",
+    )
+    parser.add_argument("--source-ingestor", default="auto", dest="source_ingestor")
+    parser.add_argument("--source-manifest", dest="source_manifest")
+    parser.add_argument(
+        "--ingestion-model-profile",
+        dest="ingestion_model_profile",
+    )
+    parser.add_argument(
+        "--semantic-evidence-approval",
+        dest="semantic_evidence_approval",
+    )
+    parser.add_argument(
+        "--semantic-qualification-report",
+        dest="semantic_qualification_report",
+    )
+    parser.add_argument("--ingestion-only", action="store_true", dest="ingestion_only")
+    parser.add_argument("--from-trajectory-set", dest="from_trajectory_set")
+    parser.add_argument("--include-prior-runs", action="store_true", dest="include_prior_runs")
+    parser.add_argument("--from-run", dest="from_run")
+    parser.add_argument("--rerun-evaluator", action="store_true", dest="rerun_evaluator")
+    parser.add_argument("--batch-config", dest="batch_config")
+    parser.add_argument("--iterations", type=int)
+    parser.add_argument("--apply")
+    parser.add_argument("--max-improvement-cycles", type=int, default=3, dest="max_improvement_cycles")
+    parser.add_argument("--resume-campaign", dest="resume_campaign")
+    parser.add_argument(
+        "--new-skill-policy",
+        choices=("disabled", "draft_only", "auto_verified"),
+        default="auto_verified",
+        dest="new_skill_policy",
+    )
+    parser.add_argument("--judge-agent", dest="judge_agent")
+    parser.add_argument("--judge-agent-name", dest="judge_agent_name")
+    parser.add_argument("--judge-backend-ref", dest="judge_backend_ref")
+    parser.add_argument("--judge-model-profile", dest="judge_model_profile")
+    parser.add_argument("--replay-timeout", type=int, dest="replay_timeout_seconds")
+    parser.add_argument("--replay-max-runs", type=int, dest="replay_max_steps")
+    parser.add_argument("--judge-repetitions", type=int, dest="judge_repetitions")
+    parser.add_argument("--judge-timeout", type=int, dest="judge_timeout_seconds")
+    parser.add_argument("--baseline-replay-repetitions", type=int, dest="baseline_replay_repetitions")
+    parser.add_argument("--candidate-replay-repetitions", type=int, dest="candidate_replay_repetitions")
+    parser.add_argument("--drain-pending", action="store_true", dest="drain_pending")
+    parser.add_argument("--help", action="store_true")
+    return parser
+
+
+@register_command
+class OptimizeCommand(Command):
+    @property
+    def name(self) -> str:
+        return "optimize"
+
+    @property
+    def description(self) -> str:
+        return "Run self-evolve optimization"
+
+    @property
+    def command_type(self) -> str:
+        return "tool"
+
+    @property
+    def completion_items(self) -> dict[str, str]:
+        return {
+            "/optimize --from-source": "Normalize a file or directory before self-evolve",
+            "/optimize --from-trajectory": "Run self-evolve from one or more AWorld trajectory log records",
+            "/optimize --from-trajectory-set": "Run self-evolve from an advanced explicit trajectory-set file",
+            "/optimize --apply auto_verified": "Run verified replay/evaluation before applying",
+            "/optimize --drain-pending": "Drain pending post-run self-evolve jobs",
+        }
+
+    async def execute(self, context: CommandContext) -> str:
+        raw_args = (context.user_args or "").strip()
+        if not raw_args:
+            return _usage()
+
+        try:
+            parts = shlex.split(raw_args)
+        except ValueError as exc:
+            return f"Optimize error: {exc}\n\n{_usage()}"
+
+        if not parts or parts[0] in {"help", "--help", "-h"}:
+            return _usage()
+
+        parser = _build_parser()
+        try:
+            args = parser.parse_args(parts)
+        except SystemExit:
+            return _usage()
+
+        if args.help:
+            return _usage()
+
+        if args.drain_pending:
+            runtime_registry_refresher = _runtime_registry_refresher(context.runtime)
+            drain_kwargs = {"workspace_root": context.cwd}
+            if runtime_registry_refresher is not None:
+                drain_kwargs["runtime_registry_refresher"] = runtime_registry_refresher
+            drained = await asyncio.to_thread(
+                drain_pending_self_evolve_jobs,
+                **drain_kwargs,
+            )
+            return f"Drained pending self-evolve jobs: {drained}"
+
+        if args.resume_campaign and args.apply not in {None, "auto_verified"}:
+            return "Optimize error: --resume-campaign requires --apply auto_verified"
+
+        try:
+            runtime_registry_refresher = _runtime_registry_refresher(context.runtime)
+            report = await asyncio.to_thread(
+                run_optimize_cli,
+                agent=args.agent,
+                task=args.task,
+                target=args.target,
+                dataset=args.dataset,
+                from_session=args.from_session,
+                from_trajectory=args.from_trajectory,
+                from_source=args.from_source,
+                frozen_ingestion_id=args.frozen_ingestion_id,
+                source_ingestor=args.source_ingestor,
+                source_manifest=args.source_manifest,
+                ingestion_model_profile=args.ingestion_model_profile,
+                semantic_evidence_approval=(
+                    args.semantic_evidence_approval
+                ),
+                semantic_qualification_report=(
+                    args.semantic_qualification_report
+                ),
+                ingestion_only=args.ingestion_only,
+                from_trajectory_set=args.from_trajectory_set,
+                include_prior_runs=args.include_prior_runs,
+                from_run=args.from_run,
+                rerun_evaluator=args.rerun_evaluator,
+                batch_config=args.batch_config,
+                iterations=args.iterations,
+                max_improvement_cycles=args.max_improvement_cycles,
+                resume_campaign=args.resume_campaign,
+                apply=args.apply or ("auto_verified" if args.resume_campaign else "proposal"),
+                new_skill_policy=args.new_skill_policy,
+                infer_target=args.target is None,
+                workspace_root=context.cwd,
+                judge_agent=args.judge_agent,
+                judge_agent_name=args.judge_agent_name,
+                judge_backend_ref=args.judge_backend_ref,
+                judge_model_profile=args.judge_model_profile,
+                judge_repetitions=args.judge_repetitions,
+                judge_timeout_seconds=args.judge_timeout_seconds,
+                replay_timeout_seconds=args.replay_timeout_seconds,
+                replay_max_steps=args.replay_max_steps,
+                baseline_replay_repetitions=args.baseline_replay_repetitions,
+                candidate_replay_repetitions=args.candidate_replay_repetitions,
+                runtime_registry_refresher=runtime_registry_refresher,
+            )
+        except (FileNotFoundError, ValueError, KeyError, NotImplementedError) as exc:
+            return f"Optimize error: {exc}"
+
+        return render_optimize_summary(report)
+
+
+def _runtime_registry_refresher(runtime):
+    refresher = getattr(runtime, "refresh_skill_registry", None)
+    return refresher if callable(refresher) else None

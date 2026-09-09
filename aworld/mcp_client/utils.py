@@ -21,6 +21,43 @@ from aworld.tools import get_function_tools
 MCP_SERVERS_CONFIG = {}
 
 _OBSERVATION_HINT_TOOL_NAMES = {"execute_command", "mcp_execute_command"}
+_STDIO_INHERIT_ENV_PREFIXES_VARIABLE = (
+    "AWORLD_MCP_STDIO_INHERIT_ENV_PREFIXES"
+)
+
+
+def _stdio_server_environment(server_config: Dict[str, Any]) -> Dict[str, str]:
+    """Resolve an additive, explicitly allowlisted stdio MCP environment.
+
+    MCP ``env`` mappings retain their existing explicit-only behavior. Runtime
+    owners may additionally opt in to process-local values by setting a
+    comma-separated prefix allowlist. This keeps task-scoped bindings available
+    to child tool servers without exposing the rest of the host environment.
+    """
+
+    explicit = server_config.get("env", {})
+    environment = {
+        str(key): str(value)
+        for key, value in explicit.items()
+    } if isinstance(explicit, dict) else {}
+    configured_prefixes = os.environ.get(
+        _STDIO_INHERIT_ENV_PREFIXES_VARIABLE,
+        "",
+    )
+    prefixes = tuple(
+        item.strip()
+        for item in configured_prefixes.split(",")
+        if item.strip()
+    )
+    if not prefixes:
+        return environment
+    inherited = {
+        key: value
+        for key, value in os.environ.items()
+        if key.startswith(prefixes)
+    }
+    # Explicit server configuration remains authoritative on conflicts.
+    return {**inherited, **environment}
 
 
 def _stringify_tool_argument(value: Any, *, max_length: int = 120) -> str:
@@ -585,7 +622,7 @@ async def mcp_tool_desc_transform_v2(
                         "params": {
                             "command": server_config["command"],
                             "args": server_config.get("args", []),
-                            "env": server_config.get("env", {}),
+                            "env": _stdio_server_environment(server_config),
                             "cwd": server_config.get("cwd"),
                             "encoding": server_config.get("encoding", "utf-8"),
                             "encoding_error_handler": server_config.get(
@@ -785,7 +822,7 @@ async def mcp_tool_desc_transform_v2_reuse(
                         "params": {
                             "command": server_config["command"],
                             "args": server_config.get("args", []),
-                            "env": server_config.get("env", {}),
+                            "env": _stdio_server_environment(server_config),
                             "cwd": server_config.get("cwd"),
                             "encoding": server_config.get("encoding", "utf-8"),
                             "encoding_error_handler": server_config.get(
@@ -1069,7 +1106,7 @@ async def mcp_tool_desc_transform(
                         "params": {
                             "command": server_config["command"],
                             "args": server_config.get("args", []),
-                            "env": server_config.get("env", {}),
+                            "env": _stdio_server_environment(server_config),
                             "cwd": server_config.get("cwd"),
                             "encoding": server_config.get("encoding", "utf-8"),
                             "encoding_error_handler": server_config.get(
@@ -1328,7 +1365,7 @@ async def get_server_instance(
             params = {
                 "command": command,
                 "args": server_config.get("args", []),
-                "env": server_config.get("env", {}),
+                "env": _stdio_server_environment(server_config),
                 "cwd": server_config.get("cwd"),
                 "encoding": server_config.get("encoding", "utf-8"),
                 "encoding_error_handler": server_config.get(

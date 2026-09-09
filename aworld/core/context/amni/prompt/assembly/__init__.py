@@ -7,6 +7,13 @@ from .provider import (
 from .hashing import compute_stable_prefix_hash
 from .state import PromptAssemblyRuntimeState
 from .context_adapter import PromptSectionContextAdapter, adapt_prompt_sections
+from .budget import (
+    BudgetedPromptAssemblyPlan,
+    BudgetedPromptAssemblyProvider,
+    BudgetedPromptSection,
+    PromptBudgetExceededError,
+    PromptBudgetPolicy,
+)
 
 __all__ = [
     "PromptAssemblyPlan",
@@ -19,4 +26,9 @@ __all__ = [
     "PromptAssemblyRuntimeState",
     "PromptSectionContextAdapter",
     "adapt_prompt_sections",
+    "PromptBudgetPolicy",
+    "PromptBudgetExceededError",
+    "BudgetedPromptSection",
+    "BudgetedPromptAssemblyPlan",
+    "BudgetedPromptAssemblyProvider",
 ]

@@ -11,9 +11,20 @@ _MAX_SUMMARY_KEYS = 8
 _MAX_STRING_FIELD_TOKENS = 256
 _MAX_STRING_FIELD_CHARS = 4096
 _MAX_MULTILINE_STRING_FIELD_CHARS = 1200
-_PRESERVE_SEMANTIC_STRING_FIELDS = {"directive", "instruction", "request", "query", "goal", "task"}
+_PRESERVE_SEMANTIC_STRING_FIELDS = {
+    "code",
+    "command",
+    "directive",
+    "goal",
+    "instruction",
+    "query",
+    "request",
+    "script",
+    "task",
+}
 _SEMANTIC_STRING_FIELD_TOKEN_THRESHOLD = 1024
 _SEMANTIC_STRING_FIELD_CHAR_THRESHOLD = 8192
+REPLAY_COMPACTED_ARGUMENT_FAILURE = "replay_compacted_argument_unavailable"
 
 
 def _canonical_json(value: Any) -> str:
@@ -288,21 +299,65 @@ def parse_compacted_replay_arguments(arguments: Any) -> dict[str, Any] | None:
     return None
 
 
+def _find_compacted_string_field(
+    value: Any,
+    *,
+    path: tuple[str, ...] = (),
+) -> tuple[tuple[str, ...], dict[str, Any]] | None:
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except (TypeError, json.JSONDecodeError):
+            return None
+
+    if isinstance(value, dict):
+        if value.get("_aworld_replay") == "compacted_string_field":
+            return path, value
+        for key, item in value.items():
+            result = _find_compacted_string_field(
+                item,
+                path=(*path, str(key)),
+            )
+            if result is not None:
+                return result
+    if isinstance(value, list):
+        for index, item in enumerate(value):
+            result = _find_compacted_string_field(
+                item,
+                path=(*path, str(index)),
+            )
+            if result is not None:
+                return result
+    return None
+
+
 def compacted_replay_execution_error(
     arguments: Any,
     *,
     tool_name: str | None = None,
 ) -> str | None:
     payload = parse_compacted_replay_arguments(arguments)
-    if not payload:
+    if payload:
+        target_tool = tool_name or payload.get("tool_name") or "unknown"
+        schema = payload.get("argument_schema") or "unknown"
+        reason = payload.get("sanitized_reason") or "unknown"
+        return (
+            f"Tool call arguments for {target_tool} were compacted for replay and cannot be executed directly "
+            f"(reason={reason}, schema={schema}). Please regenerate the full tool call arguments."
+        )
+
+    compacted_string_field = _find_compacted_string_field(arguments)
+    if compacted_string_field is None:
         return None
 
-    target_tool = tool_name or payload.get("tool_name") or "unknown"
-    schema = payload.get("argument_schema") or "unknown"
-    reason = payload.get("sanitized_reason") or "unknown"
+    path, field_payload = compacted_string_field
+    target_tool = tool_name or field_payload.get("tool_name") or "unknown"
+    field_hint = field_payload.get("field_hint") or ".".join(path) or "unknown"
+    reason = field_payload.get("sanitized_reason") or "unknown"
     return (
-        f"Tool call arguments for {target_tool} were compacted for replay and cannot be executed directly "
-        f"(reason={reason}, schema={schema}). Please regenerate the full tool call arguments."
+        f"Tool call argument field '{field_hint}' for {target_tool} contains a compacted string field "
+        f"and cannot be executed directly (reason={reason}). Please regenerate the smallest "
+        "schema-valid tool call arguments or read the saved artifact instead."
     )
 
 
