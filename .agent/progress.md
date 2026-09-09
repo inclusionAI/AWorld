@@ -707,3 +707,7 @@ receipt yet, and no externally bound rollback/canary receipt. Focused regression
 - Merged `origin/main` at `b4d24300`, integrating Adaptive Context while preserving self-evolve LLM usage truth, runtime
   tool budgets, task-response capture, and evaluator compatibility. Conflict-focused tests pass 117/117, Context tests
   pass 230/230, and the combined self-evolve/evaluator suite passes 2905 with 5 skips.
+- The first post-merge acceptance run (`campaign-587521eb03e0d21501f5`) failed closed before generation because the
+  candidate-generation sanitizer wrapped a reviewed OpenAI provider in an unrecognized exact type. Added a narrowly
+  allowlisted transparent-proxy registration: the sanitizer gains no capability of its own and resolves only through an
+  exact delegate that already passes the reviewed provider registry. Focused regression tests pass 47/47.

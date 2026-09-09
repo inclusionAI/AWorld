@@ -8,9 +8,14 @@ from aworld.config.conf import ModelConfig
 from aworld.core.agent.base import AgentFactory
 from aworld.core.context.base import Context
 from aworld.core.context.amni.local import LocalIsolatedApplicationContext
+from aworld.core.context.compiler import (
+    ReviewedProviderLoweringRegistry,
+    reviewed_provider_lowerings,
+)
 from aworld.core.common import TaskStatusValue
 from aworld.core.task import TaskResponse
 from aworld.models.model_response import ModelResponse
+from aworld.models.openai_provider import OPENAI_CONTEXT_LOWERING, OpenAIProvider
 from aworld.runner import Runners
 from aworld.self_evolve.runtime import SelfEvolveCandidateTaskRunner
 from aworld.self_evolve.candidate_generation import (
@@ -31,6 +36,27 @@ def test_candidate_generation_agent_registers_with_aworld_runtime() -> None:
     )
 
     assert AgentFactory.agent_instance(agent.id()) is agent
+
+
+def test_candidate_generation_sanitizer_preserves_reviewed_provider_lowering() -> None:
+    provider = object.__new__(OpenAIProvider)
+
+    capability = reviewed_provider_lowerings.resolve(
+        _SanitizingProvider(provider), "openai"
+    )
+
+    assert capability == OPENAI_CONTEXT_LOWERING
+
+
+def test_arbitrary_provider_proxy_cannot_register_for_lowering() -> None:
+    class UnreviewedProxy:
+        pass
+
+    with pytest.raises(ValueError, match="not framework-reviewed"):
+        ReviewedProviderLoweringRegistry().register_proxy(
+            UnreviewedProxy,
+            delegate_attribute="_delegate",
+        )
 
 
 def test_candidate_generation_default_output_budget_scales_with_model_window() -> None:

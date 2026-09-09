@@ -11,6 +11,7 @@ from aworld.core.common import TaskStatusValue
 from aworld.core.context.amni.local import LocalIsolatedApplicationContext
 from aworld.core.context.amni.prompt.assembly.budget import PromptBudgetPolicy
 from aworld.core.context.base import Context
+from aworld.core.context.compiler import reviewed_provider_lowerings
 from aworld.core.task import Task
 from aworld.logs.util import logger
 from aworld.models.model_response import ModelResponse
@@ -169,6 +170,12 @@ class _SanitizingProvider:
                 stage="model_provider",
                 error_type=type(exc).__name__,
             ) from None
+
+
+reviewed_provider_lowerings.register_proxy(
+    _SanitizingProvider,
+    delegate_attribute="_delegate",
+)
 
 
 class CandidateGenerationAgent(PromptBudgetedAgent):
