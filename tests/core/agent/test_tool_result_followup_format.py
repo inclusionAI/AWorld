@@ -7,18 +7,25 @@ from aworld.agents.llm_agent import Agent
 from aworld.utils.task_grounding import extract_required_anchors
 from aworld.config.conf import AgentMemoryConfig
 from aworld.config.conf import AgentConfig
-from aworld.core.common import ActionModel, ActionResult
+from aworld.core.common import ActionModel, ActionResult, Observation
 from aworld.core.context.base import Context
 from aworld.core.context.session import Session
-from aworld.core.event.base import Constants, Message
+from aworld.core.event.base import AgentMessage, Constants, Message
 from aworld.core.exceptions import AWorldRuntimeException
 from aworld.core.memory import MemoryConfig
 from aworld.core.task import Task
 from aworld.memory.db.filesystem import FileSystemMemoryStore
 from aworld.memory.main import MemoryFactory
-from aworld.memory.models import MemoryAIMessage, MemoryHumanMessage, MemoryToolMessage, MessageMetadata
+from aworld.memory.models import (
+    MemoryAIMessage,
+    MemoryHumanMessage,
+    MemoryToolMessage,
+    MessageMetadata,
+)
 from aworld.models.model_response import ModelResponse
-from aworld.utils.task_grounding import extract_required_anchors
+from aworld.runners.post_tool_progress import arm_post_tool_progress_watchdog
+from aworld.core.context.compiler import ADAPTIVE_WORK_STATE_PREFIX, TurnCauseCode
+from aworld.core.tool.base import AsyncTool
 
 
 @pytest.mark.asyncio
@@ -32,18 +39,20 @@ async def test_cron_tool_results_are_reframed_with_confirmed_next_run():
         ),
     )
 
-    aggregated = await agent._tools_aggregate_func([
-        ActionResult(
-            tool_name="cron",
-            content={
-                "success": True,
-                "job_id": "job-123",
-                "next_run": "2026-04-14T17:17:00+08:00",
-                "next_run_display": "2026年4月14日（星期二）17:17",
-                "message": "Created task '喝水提醒' (ID: job-123)",
-            },
-        )
-    ])
+    aggregated = await agent._tools_aggregate_func(
+        [
+            ActionResult(
+                tool_name="cron",
+                content={
+                    "success": True,
+                    "job_id": "job-123",
+                    "next_run": "2026-04-14T17:17:00+08:00",
+                    "next_run_display": "2026年4月14日（星期二）17:17",
+                    "message": "Created task '喝水提醒' (ID: job-123)",
+                },
+            )
+        ]
+    )
 
     policy_info = aggregated[0].policy_info
     assert "next_run=2026-04-14T17:17:00+08:00" in policy_info
@@ -64,15 +73,17 @@ async def test_failed_cron_tool_results_block_false_success_claims():
         ),
     )
 
-    aggregated = await agent._tools_aggregate_func([
-        ActionResult(
-            tool_name="cron",
-            content={
-                "success": False,
-                "error": "One-time schedule is already in the past",
-            },
-        )
-    ])
+    aggregated = await agent._tools_aggregate_func(
+        [
+            ActionResult(
+                tool_name="cron",
+                content={
+                    "success": False,
+                    "error": "One-time schedule is already in the past",
+                },
+            )
+        ]
+    )
 
     policy_info = aggregated[0].policy_info
     assert "Cron returned an error" in policy_info
@@ -90,19 +101,259 @@ async def test_large_tool_results_are_compacted_for_followup():
         ),
     )
 
-    aggregated = await agent._tools_aggregate_func([
-        ActionResult(
-            tool_name="terminal",
-            action_name="exec",
-            content="HEADER\n" + ("A" * 9000) + "\nFOOTER",
-        )
-    ])
+    aggregated = await agent._tools_aggregate_func(
+        [
+            ActionResult(
+                tool_name="terminal",
+                action_name="exec",
+                content="HEADER\n" + ("A" * 9000) + "\nFOOTER",
+            )
+        ]
+    )
 
     policy_info = aggregated[0].policy_info
     assert "Tool output compacted for context reuse." in policy_info
     assert "HEADER" in policy_info
     assert "FOOTER" in policy_info
     assert "Original size:" in policy_info
+
+
+def test_current_tool_turn_repairs_event_driven_memory_read_after_write_gap():
+    agent = Agent(
+        name="Aworld",
+        conf=AgentConfig(
+            llm_provider="openai",
+            llm_model_name="fake-model",
+            llm_api_key="fake-key",
+            context_compiler={"checkpoint_policy": "explicit"},
+        ),
+    )
+    context = Context(task_id="tool-turn-read-after-write")
+    action = ActionModel(
+        tool_name="docker",
+        action_name="run_code",
+        tool_call_id="call-current",
+        agent_name=agent.id(),
+        params={"code": "inspect-current-state"},
+    )
+    observation = Observation(
+        action_result=[
+            ActionResult(
+                tool_name="docker",
+                action_name="run_code",
+                tool_call_id="call-current",
+                content="verified-current-result",
+                success=True,
+            )
+        ]
+    )
+    watchdog = arm_post_tool_progress_watchdog(
+        context,
+        tool_name="docker",
+        agent_id=agent.id(),
+        actions=[action],
+        followup_observation=observation,
+    )
+    message = Message(
+        category=Constants.AGENT,
+        payload=observation,
+        headers={
+            "context": context,
+            "post_tool_continuation_token": watchdog["continuation_token"],
+        },
+    )
+
+    repaired = agent._restore_current_tool_turn(
+        [{"role": "system", "content": "policy"}],
+        observation=observation,
+        message=message,
+    )
+
+    assert [item["role"] for item in repaired[-2:]] == ["assistant", "tool"]
+    assert repaired[-2]["tool_calls"][0]["id"] == "call-current"
+    assert (
+        "inspect-current-state"
+        in repaired[-2]["tool_calls"][0]["function"]["arguments"]
+    )
+    assert repaired[-1]["tool_call_id"] == "call-current"
+    assert repaired[-1]["content"] == "verified-current-result"
+    assert (
+        context.context_info["post_tool_progress_metrics"][
+            "current_tool_turn_repaired_count"
+        ]
+        == 1
+    )
+
+
+def test_current_tool_turn_does_not_duplicate_complete_memory_group():
+    agent = Agent(
+        name="Aworld",
+        conf=AgentConfig(
+            llm_provider="openai",
+            llm_model_name="fake-model",
+            llm_api_key="fake-key",
+            context_compiler={"checkpoint_policy": "explicit"},
+        ),
+    )
+    context = Context(task_id="tool-turn-complete")
+    action = ActionModel(
+        tool_name="docker",
+        action_name="run_code",
+        tool_call_id="call-complete",
+        agent_name=agent.id(),
+        params={"code": "status"},
+    )
+    observation = Observation(
+        action_result=[
+            ActionResult(
+                tool_name="docker",
+                action_name="run_code",
+                tool_call_id="call-complete",
+                content="ok",
+                success=True,
+            )
+        ]
+    )
+    watchdog = arm_post_tool_progress_watchdog(
+        context,
+        tool_name="docker",
+        agent_id=agent.id(),
+        actions=[action],
+        followup_observation=observation,
+    )
+    message = Message(
+        category=Constants.AGENT,
+        payload=observation,
+        headers={
+            "context": context,
+            "post_tool_continuation_token": watchdog["continuation_token"],
+        },
+    )
+    complete = [
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "call-complete",
+                    "type": "function",
+                    "function": {"name": "run_code", "arguments": "{}"},
+                }
+            ],
+        },
+        {"role": "tool", "tool_call_id": "call-complete", "content": "ok"},
+    ]
+
+    assert (
+        agent._restore_current_tool_turn(
+            complete,
+            observation=observation,
+            message=message,
+        )
+        == complete
+    )
+
+
+def test_adaptive_current_tool_turn_carries_working_state_across_transport_copy():
+    agent = Agent(
+        name="Aworld",
+        conf=AgentConfig(
+            llm_provider="openai",
+            llm_model_name="fake-model",
+            llm_api_key="fake-key",
+        ),
+    )
+    agent.llm._context_checkpoint_policy = "adaptive"
+    context = Context(task_id="adaptive-current-turn-work-state")
+    action = ActionModel(
+        tool_name="docker",
+        action_name="run_code",
+        tool_call_id="call-state",
+        agent_name=agent.id(),
+        params={"code": "produce-artifact"},
+    )
+    observation = Observation(
+        action_result=[
+            ActionResult(
+                tool_name="docker",
+                action_name="run_code",
+                tool_call_id="call-state",
+                content="artifact-ready",
+                success=True,
+                metadata={
+                    "context_management": {
+                        "artifact_changed": True,
+                        "artifact_fingerprint_after": "artifact-v3",
+                    }
+                },
+            )
+        ]
+    )
+    watchdog = arm_post_tool_progress_watchdog(
+        context,
+        tool_name="docker",
+        agent_id=agent.id(),
+        actions=[action],
+        followup_observation=observation,
+    )
+    # A transport copy may not expose the same mutable ContextState, but the
+    # continuation token remains bound to the immutable Tool turn and ledger.
+    copied = context.deep_copy()
+    message = Message(
+        category=Constants.AGENT,
+        payload=observation,
+        headers={
+            "context": copied,
+            "post_tool_continuation_token": watchdog["continuation_token"],
+        },
+    )
+
+    restored = agent._restore_current_tool_turn(
+        [
+            {"role": "system", "content": "policy"},
+            {"role": "user", "content": "task"},
+        ],
+        observation=observation,
+        message=message,
+    )
+
+    work_messages = [
+        item
+        for item in restored
+        if isinstance(item.get("content"), str)
+        and item["content"].startswith(ADAPTIVE_WORK_STATE_PREFIX)
+    ]
+    assert len(work_messages) == 1
+    assert "artifact-v3" in work_messages[0]["content"]
+    assert "produce-artifact" in work_messages[0]["content"]
+    assistant_index = next(
+        index for index, item in enumerate(restored) if item["role"] == "assistant"
+    )
+    assert [
+        restored[assistant_index]["role"],
+        restored[assistant_index + 1]["role"],
+    ] == ["assistant", "tool"]
+    assert restored[-1] == work_messages[0]
+
+
+def test_async_tool_header_update_preserves_continuation_token():
+    context = Context(task_id="tool-header-continuation")
+    input_message = Message(headers={"context": context, "level": 7, "parent": "kept"})
+    output_message = AgentMessage(
+        headers={
+            "context": context,
+            "post_tool_continuation_token": "continuation-token",
+        }
+    )
+
+    AsyncTool._update_headers(SimpleNamespace(), output_message, input_message)
+
+    assert output_message.headers["post_tool_continuation_token"] == (
+        "continuation-token"
+    )
+    assert output_message.headers["parent"] == "kept"
+    assert output_message.headers["level"] == 8
+    assert output_message.headers["context"] is context
 
 
 def test_aworld_result_validation_does_not_block_on_soft_missing_source_anchor():
@@ -274,7 +525,10 @@ bash: /Users/manwu/Documents/workspace/aworld/examples/skill_agent/skills/x-scra
 
     assert "http://[::1" not in anchors
     assert "http://[::1]:9222" not in anchors
-    assert "/Users/manwu/Documents/workspace/aworld/examples/skill_agent/skills/x-scraper/scrape_x_home.sh" not in anchors
+    assert (
+        "/Users/manwu/Documents/workspace/aworld/examples/skill_agent/skills/x-scraper/scrape_x_home.sh"
+        not in anchors
+    )
     assert "/Users/manwu/Documents/workspace/aworld/x_ai_daily_raw.json" not in anchors
     assert "/Gemini、Claude、GPT、模型训练、AI" not in anchors
 
@@ -381,7 +635,9 @@ def test_aworld_result_validation_recovery_brief_uses_goal_conflict_language():
 
 
 @pytest.mark.asyncio
-async def test_aworld_result_validation_does_not_use_human_request_as_evidence(tmp_path):
+async def test_aworld_result_validation_does_not_use_human_request_as_evidence(
+    tmp_path,
+):
     import aworld.memory.main as memory_main
 
     class DummyContext:
@@ -393,9 +649,13 @@ async def test_aworld_result_validation_does_not_use_human_request_as_evidence(t
             return AgentMemoryConfig()
 
         def get_task(self):
-            return SimpleNamespace(id="test_task", session_id="test_session", user_id="user")
+            return SimpleNamespace(
+                id="test_task", session_id="test_session", user_id="user"
+            )
 
-    authoritative_request = '请找到标题为“只应存在于人类请求里的目标短语”的帖子，并保存到 Obsidian。'
+    authoritative_request = (
+        "请找到标题为“只应存在于人类请求里的目标短语”的帖子，并保存到 Obsidian。"
+    )
     agent = Agent(
         name="Aworld",
         conf=AgentConfig(
@@ -439,7 +699,9 @@ async def test_aworld_result_validation_does_not_use_human_request_as_evidence(t
 
 
 @pytest.mark.asyncio
-async def test_aworld_result_validation_ignores_ai_rephrasing_and_uses_tool_output_only(tmp_path):
+async def test_aworld_result_validation_ignores_ai_rephrasing_and_uses_tool_output_only(
+    tmp_path,
+):
     import aworld.memory.main as memory_main
 
     class DummyContext:
@@ -451,9 +713,13 @@ async def test_aworld_result_validation_ignores_ai_rephrasing_and_uses_tool_outp
             return AgentMemoryConfig()
 
         def get_task(self):
-            return SimpleNamespace(id="test_task", session_id="test_session", user_id="user")
+            return SimpleNamespace(
+                id="test_task", session_id="test_session", user_id="user"
+            )
 
-    authoritative_request = "查找标题为“AI 编程的下一个瓶颈，不是代码，是理解”的帖子并保存。"
+    authoritative_request = (
+        "查找标题为“AI 编程的下一个瓶颈，不是代码，是理解”的帖子并保存。"
+    )
     tool_wrapper = {
         "success": True,
         "message": (
@@ -594,7 +860,42 @@ async def test_aworld_result_validation_retry_uses_recovery_brief():
 
 
 @pytest.mark.asyncio
-async def test_invoke_model_reports_empty_response_failure_only_once(monkeypatch: pytest.MonkeyPatch):
+async def test_aworld_result_validation_retry_types_the_followup_model_turn():
+    agent = Agent(
+        name="Aworld",
+        conf=AgentConfig(
+            llm_provider="openai",
+            llm_model_name="fake-model",
+            llm_api_key="fake-key",
+        ),
+    )
+    context = Context(task_id="validation-repair")
+    message = SimpleNamespace(context=context)
+    observation = SimpleNamespace(from_agent_name=None)
+    captured = {}
+
+    async def _capture_followup(*args, **kwargs):
+        captured["turn"] = context.record_model_turn("validation-repair-request", [])
+        return [ActionModel(agent_name=agent.id(), policy_info="continue")]
+
+    agent.async_policy = _capture_followup
+    await agent._retry_for_result_validation(
+        validation_feedback="Result validation mismatch: evidence is missing.",
+        observation=observation,
+        info={},
+        message=message,
+        kwargs={},
+    )
+
+    assert captured["turn"].cause.value == "validation_repair"
+    assert captured["turn"].cause_supported is True
+    assert captured["turn"].evidence_hash.startswith("sha256:")
+
+
+@pytest.mark.asyncio
+async def test_invoke_model_reports_empty_response_failure_only_once(
+    monkeypatch: pytest.MonkeyPatch,
+):
     class MinimalAgent(Agent):
         async def _filter_tools(self, context=None):
             return None
@@ -625,7 +926,9 @@ async def test_invoke_model_reports_empty_response_failure_only_once(monkeypatch
 
     monkeypatch.setattr(llm_agent_module, "acall_llm_model", fake_acall_llm_model)
     monkeypatch.setattr(llm_agent_module, "send_message", fake_send_message)
-    monkeypatch.setattr(agent, "_save_failed_request_context", noop_save_failed_request_context)
+    monkeypatch.setattr(
+        agent, "_save_failed_request_context", noop_save_failed_request_context
+    )
 
     context = Context(task_id="task-1", session=Session(session_id="sess-1"))
     context.set_task(Task(id="task-1", name="test-task"))
@@ -644,8 +947,67 @@ async def test_invoke_model_reports_empty_response_failure_only_once(monkeypatch
         )
 
     failure_payloads = [
-        payload for payload in sent_payloads
+        payload
+        for payload in sent_payloads
         if payload.startswith("Failed to call llm model")
     ]
     assert len(failure_payloads) == 1
     assert failure_payloads[0].startswith("Failed to call llm model after 1 attempts:")
+
+
+@pytest.mark.asyncio
+async def test_invoke_model_types_second_provider_attempt_as_framework_retry(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    class MinimalAgent(Agent):
+        async def _filter_tools(self, context=None):
+            return None
+
+    agent = MinimalAgent(
+        name="Aworld",
+        conf=AgentConfig(
+            llm_provider="openai",
+            llm_model_name="fake-model",
+            llm_api_key="fake-key",
+        ),
+    )
+    agent.llm_max_attempts = 2
+    agent.llm_retry_delay = 0
+    calls = 0
+
+    async def fake_acall_llm_model(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise RuntimeError("transient provider failure")
+        return ModelResponse(id="resp-2", model="fake-model", content="recovered")
+
+    monkeypatch.setattr(llm_agent_module, "acall_llm_model", fake_acall_llm_model)
+    context = Context(task_id="retry-typed", session=Session(session_id="sess-retry"))
+    context.set_task(Task(id="retry-typed", name="retry-task"))
+    scheduled = []
+    original_schedule = context.schedule_turn_cause
+
+    def capture_schedule(cause, *, evidence_hash=None):
+        scheduled.append((cause, evidence_hash))
+        return original_schedule(cause, evidence_hash=evidence_hash)
+
+    monkeypatch.setattr(context, "schedule_turn_cause", capture_schedule)
+    message = Message(
+        category=Constants.AGENT,
+        sender="user",
+        receiver=agent.name(),
+        headers={"context": context},
+    )
+
+    response = await agent.invoke_model(
+        messages=[{"role": "user", "content": "hello"}],
+        message=message,
+        stream=False,
+    )
+
+    assert response.content == "recovered"
+    assert calls == 2
+    assert len(scheduled) == 1
+    assert scheduled[0][0] is TurnCauseCode.FRAMEWORK_RETRY
+    assert scheduled[0][1].startswith("sha256:")

@@ -1,0 +1,45 @@
+{
+  "schema_version": "aworld.context-ablation-suite/v1",
+  "name": "systematic-context-v1",
+  "variants": [
+    "../context_eval_variants/ablation-00-observe.json",
+    "../context_eval_variants/ablation-10-compiler.json",
+    "../context_eval_variants/ablation-20-tool-output.json",
+    "../context_eval_variants/ablation-30-progressive-tools.json",
+    "../context_eval_variants/ablation-40-progressive-skills.json",
+    "../context_eval_variants/ablation-50-adaptive.json",
+    "../context_eval_variants/ablation-60-completion.json"
+  ],
+  "contrasts": [
+    {
+      "baseline_variant": "ablation-00-observe",
+      "candidate_variant": "ablation-10-compiler",
+      "component": "final_compiler"
+    },
+    {
+      "baseline_variant": "ablation-10-compiler",
+      "candidate_variant": "ablation-20-tool-output",
+      "component": "tool_output"
+    },
+    {
+      "baseline_variant": "ablation-20-tool-output",
+      "candidate_variant": "ablation-30-progressive-tools",
+      "component": "progressive_tools"
+    },
+    {
+      "baseline_variant": "ablation-30-progressive-tools",
+      "candidate_variant": "ablation-40-progressive-skills",
+      "component": "progressive_skills"
+    },
+    {
+      "baseline_variant": "ablation-40-progressive-skills",
+      "candidate_variant": "ablation-50-adaptive",
+      "component": "adaptive_checkpoint"
+    },
+    {
+      "baseline_variant": "ablation-50-adaptive",
+      "candidate_variant": "ablation-60-completion",
+      "component": "completion_contract"
+    }
+  ]
+}

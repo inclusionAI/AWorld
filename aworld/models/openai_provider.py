@@ -1,11 +1,18 @@
 import json
+import hashlib
 import os
 import socket
 import traceback
+from dataclasses import dataclass
 from typing import Any, Dict, List, Generator, AsyncGenerator, Tuple, Optional
 
 import httpx
-from openai import OpenAI, AsyncOpenAI
+from openai import (
+    OpenAI,
+    AsyncOpenAI,
+    AzureOpenAI as AzureOpenAIClient,
+    AsyncAzureOpenAI as AsyncAzureOpenAIClient,
+)
 from openai import (
     APIError,
     APIConnectionError,
@@ -24,6 +31,26 @@ from openai import (
 
 from aworld.config.conf import ClientType
 from aworld.core.llm_provider import LLMProviderBase
+from aworld.core.context.compiler import (
+    AWORLD_PROVIDER_CANDIDATE_KWARG,
+    AWORLD_PROVIDER_OBSERVED_ATTRIBUTION_KWARG,
+    CandidateRequestNotEnforceable,
+    ProviderCandidateEnvelope,
+    ProviderObservedAttributionEnvelope,
+    ProviderObservedAttributionReceipt,
+    ProviderAttributionMismatch,
+    ProviderToolsLowering,
+    AttributionSerialization,
+    ProviderLoweringCapability,
+    ProviderLoweringReceipt,
+    ProviderRequestFidelity,
+    ProviderRequestSnapshot,
+    RequestCaptureStage,
+    SerializedPrefixEvidence,
+    build_cache_identity,
+    build_provider_attribution_receipt,
+    canonical_json_bytes,
+)
 from aworld.logs.util import logger, log_llm_record
 from aworld.models.llm_http_handler import LLMHTTPHandler
 from aworld.models.openai_message_sanitizer import sanitize_openai_messages
@@ -31,11 +58,38 @@ from aworld.models.model_response import ModelResponse, LLMResponseError
 from aworld.models.prompt_cache import OpenAIPromptAssemblyLowerer
 
 
-class OpenAIProvider(LLMProviderBase):
-    """OpenAI provider implementation.
-    """
+@dataclass(frozen=True, slots=True)
+class _PreparedOpenAIRequest:
+    params: Dict[str, Any]
+    serialized_body: bytes | None = None
+    context: Any = None
+    request_id: str | None = None
+    cache_identity: Any = None
+    attempt_tracking_ready: bool = False
+    attempt_tracking_fail_open: bool = False
 
-    def _build_tcp_keepalive_socket_options(self) -> Optional[List[Tuple[int, int, int]]]:
+
+OPENAI_CONTEXT_LOWERING = ProviderLoweringCapability(
+    provider_name="openai",
+    adapter_identity="aworld.provider.openai.chat_completions",
+    adapter_version="v2",
+    request_projection="openai.chat.completions.params.v1",
+)
+
+AZURE_OPENAI_CONTEXT_LOWERING = ProviderLoweringCapability(
+    provider_name="azure_openai",
+    adapter_identity="aworld.provider.azure_openai.chat_completions",
+    adapter_version="v1",
+    request_projection="azure_openai.chat.completions.params.v1",
+)
+
+
+class OpenAIProvider(LLMProviderBase):
+    """OpenAI provider implementation."""
+
+    def _build_tcp_keepalive_socket_options(
+        self,
+    ) -> Optional[List[Tuple[int, int, int]]]:
         """Build TCP keepalive socket options for httpx transports."""
         if not self.kwargs.get("tcp_keepalive", True):
             return None
@@ -74,7 +128,7 @@ class OpenAIProvider(LLMProviderBase):
 
     def _init_provider(self):
         """Initialize OpenAI provider.
-        
+
         Returns:
             OpenAI provider instance.
         """
@@ -85,7 +139,8 @@ class OpenAIProvider(LLMProviderBase):
             api_key = os.getenv(env_var, "")
             if not api_key:
                 raise ValueError(
-                    f"OpenAI API key not found, please set {env_var} environment variable or provide it in the parameters")
+                    f"OpenAI API key not found, please set {env_var} environment variable or provide it in the parameters"
+                )
         base_url = self.base_url
         if not base_url:
             base_url = os.getenv("OPENAI_ENDPOINT", "https://api.openai.com/v1")
@@ -97,13 +152,15 @@ class OpenAIProvider(LLMProviderBase):
                 base_url=base_url,
                 api_key=api_key,
                 model_name=self.model_name,
-                max_retries=self.kwargs.get("max_retries", 3)
+                max_retries=self.kwargs.get("max_retries", 3),
             )
             self.is_http_provider = True
             return self.http_provider
         else:
             timeout = self.kwargs.get("timeout", 600)
-            http_client = self.kwargs.get("http_client") or self._build_httpx_client(timeout=timeout)
+            http_client = self.kwargs.get("http_client") or self._build_httpx_client(
+                timeout=timeout
+            )
             return OpenAI(
                 api_key=api_key,
                 base_url=base_url,
@@ -118,6 +175,9 @@ class OpenAIProvider(LLMProviderBase):
         Returns:
             Async OpenAI provider instance.
         """
+        # Async-only configurations do not call ``_init_provider``. Keep this
+        # transport invariant initialized on both construction paths.
+        self.is_http_provider = False
         # Get API key
         api_key = self.api_key
         if not api_key:
@@ -125,13 +185,16 @@ class OpenAIProvider(LLMProviderBase):
             api_key = os.getenv(env_var, "")
             if not api_key:
                 raise ValueError(
-                    f"OpenAI API key not found, please set {env_var} environment variable or provide it in the parameters")
+                    f"OpenAI API key not found, please set {env_var} environment variable or provide it in the parameters"
+                )
         base_url = self.base_url
         if not base_url:
             base_url = os.getenv("OPENAI_ENDPOINT", "https://api.openai.com/v1")
 
         timeout = self.kwargs.get("timeout", 7200)
-        http_client = self.kwargs.get("http_client") or self._build_async_httpx_client(timeout=timeout)
+        http_client = self.kwargs.get("http_client") or self._build_async_httpx_client(
+            timeout=timeout
+        )
         return AsyncOpenAI(
             api_key=api_key,
             base_url=base_url,
@@ -142,10 +205,387 @@ class OpenAIProvider(LLMProviderBase):
 
     @classmethod
     def supported_models(cls) -> list[str]:
-        return ["gpt-4o", "gpt-4", "gpt-3.5-turbo", "o3-mini", "gpt-4o-mini", "deepseek-chat", "deepseek-reasoner",
-                r"qwq-.*", r"qwen-.*"]
+        return [
+            "gpt-4o",
+            "gpt-4",
+            "gpt-3.5-turbo",
+            "o3-mini",
+            "gpt-4o-mini",
+            "deepseek-chat",
+            "deepseek-reasoner",
+            r"qwq-.*",
+            r"qwen-.*",
+        ]
 
-    def preprocess_messages(self, messages: List[Dict[str, str]], **kwargs) -> List[Dict[str, str]]:
+    def context_candidate_lowering_capability(
+        self,
+    ) -> ProviderLoweringCapability | None:
+        return OPENAI_CONTEXT_LOWERING
+
+    def context_model_boundary_messages(
+        self, messages: List[Dict[str, Any]]
+    ) -> List[Dict[str, Any]]:
+        """Run the reviewed structural normalizer before final compilation."""
+        return sanitize_openai_messages(messages)
+
+    def _prepare_chat_completion_request(
+        self,
+        *,
+        messages: List[Dict[str, str]],
+        temperature: float,
+        max_tokens: int | None,
+        stop: List[str] | None,
+        kwargs: Dict[str, Any],
+        stream: bool,
+    ) -> _PreparedOpenAIRequest:
+        """Lower one immutable candidate and commit its receipt before send."""
+        request_kwargs = dict(kwargs) if stream else kwargs
+        if stream:
+            request_kwargs["stream"] = True
+        envelope = request_kwargs.pop(AWORLD_PROVIDER_CANDIDATE_KWARG, None)
+        observed_envelope = request_kwargs.pop(
+            AWORLD_PROVIDER_OBSERVED_ATTRIBUTION_KWARG, None
+        )
+        observed_reason = None
+        if envelope is not None and observed_envelope is not None:
+            raise CandidateRequestNotEnforceable("provider_lowering_contract_invalid")
+        if observed_envelope is not None:
+            try:
+                if not isinstance(
+                    observed_envelope, ProviderObservedAttributionEnvelope
+                ):
+                    raise TypeError("invalid observed attribution envelope")
+                capability = self.context_candidate_lowering_capability()
+                if capability != observed_envelope.expected_lowering:
+                    raise ValueError("observed attribution adapter mismatch")
+                observed_payload = observed_envelope.observed_request.thaw()
+                current_payload = {
+                    "messages": messages,
+                    "tools": request_kwargs.get("tools"),
+                    "params": {
+                        "temperature": temperature,
+                        "max_tokens": max_tokens,
+                        "stop": stop,
+                    },
+                }
+                if observed_payload != current_payload:
+                    raise ValueError("observed request changed before provider")
+            except Exception:
+                observed_reason = "observed_model_boundary_mismatch"
+        if envelope is not None:
+            if not isinstance(envelope, ProviderCandidateEnvelope):
+                raise CandidateRequestNotEnforceable(
+                    "provider_lowering_contract_invalid"
+                )
+            capability = self.context_candidate_lowering_capability()
+            if capability != envelope.expected_lowering:
+                raise CandidateRequestNotEnforceable(
+                    "provider_lowering_contract_invalid"
+                )
+            if request_kwargs.get("prompt_assembly_plan") is not None:
+                raise CandidateRequestNotEnforceable(
+                    "provider_transform_after_candidate"
+                )
+            try:
+                payload = envelope.candidate_request.thaw()
+                if set(payload) != {"messages", "tools", "params"}:
+                    raise ValueError("unsupported model-boundary projection")
+                params = payload["params"]
+                if not isinstance(params, dict) or set(params) != {
+                    "temperature",
+                    "max_tokens",
+                    "stop",
+                }:
+                    raise ValueError("unsupported candidate parameter projection")
+                if not isinstance(payload["messages"], list):
+                    raise TypeError("candidate messages must be a list")
+                if payload["tools"] is not None and not isinstance(
+                    payload["tools"], list
+                ):
+                    raise TypeError("candidate tools must be a list or null")
+                messages = payload["messages"]
+                request_kwargs["tools"] = payload["tools"]
+                temperature = params["temperature"]
+                max_tokens = params["max_tokens"]
+                stop = params["stop"]
+            except Exception:
+                raise CandidateRequestNotEnforceable(
+                    "provider_candidate_schema_unsupported"
+                ) from None
+
+        try:
+            processed_messages = self.preprocess_messages(messages, **request_kwargs)
+            if envelope is not None and processed_messages != messages:
+                raise CandidateRequestNotEnforceable("provider_attribution_mismatch")
+            openai_params = self.get_openai_params(
+                processed_messages,
+                temperature,
+                max_tokens,
+                stop,
+                **request_kwargs,
+            )
+        except CandidateRequestNotEnforceable:
+            raise
+        except Exception:
+            if envelope is not None:
+                raise CandidateRequestNotEnforceable(
+                    "provider_request_lowering_failed"
+                ) from None
+            raise
+        if stream:
+            openai_params["stream"] = True
+
+        canonical_body = None
+        if (
+            envelope is not None
+            or observed_envelope is not None
+            or self.is_http_provider
+        ):
+            try:
+                canonical_body = canonical_json_bytes(openai_params)
+            except Exception:
+                if envelope is not None:
+                    raise CandidateRequestNotEnforceable(
+                        "provider_request_lowering_failed"
+                    ) from None
+                if self.is_http_provider:
+                    # HTTP transport owns these exact bytes; serialization is
+                    # execution, not optional observe instrumentation.
+                    raise
+                observed_reason = "provider_request_not_snapshotable"
+        serialized_body = None
+        serialized_evidence = None
+        cache_identity = None
+        if self.is_http_provider:
+            try:
+                if canonical_body is None:
+                    raise ValueError("HTTP request is not serializable")
+                serialized_body = canonical_body
+                if envelope is not None and envelope.cache_material is not None:
+                    material = envelope.cache_material
+                    sorted_keys = sorted(openai_params)
+                    message_index = sorted_keys.index("messages")
+                    preceding = b",".join(
+                        canonical_json_bytes(key)
+                        + b":"
+                        + canonical_json_bytes(openai_params[key])
+                        for key in sorted_keys[:message_index]
+                    )
+                    message_value_start = (
+                        1
+                        + len(preceding)
+                        + (1 if preceding else 0)
+                        + len(canonical_json_bytes("messages"))
+                        + 1
+                    )
+                    stable_messages = openai_params["messages"][
+                        : material.stable_message_count
+                    ]
+                    stable_array = canonical_json_bytes(stable_messages)
+                    stable_fragment = stable_array[:-1]
+                    if not serialized_body.startswith(
+                        stable_fragment, message_value_start
+                    ):
+                        raise ValueError("stable message prefix mismatch")
+                    serialized_prefix = serialized_body[
+                        : message_value_start + len(stable_fragment)
+                    ]
+                    serialized_evidence = SerializedPrefixEvidence.provider_wire(
+                        serialized_prefix=serialized_prefix,
+                        serialized_request=serialized_body,
+                        provider_name=capability.provider_name,
+                        adapter_identity=capability.adapter_identity,
+                        serialization_version="openai-canonical-json-v1",
+                        request_id=envelope.candidate_request.request_id,
+                    )
+                    cache_identity = build_cache_identity(
+                        inference_profile=material.inference_profile,
+                        policy_version=material.policy_version,
+                        tool_catalog_hash=material.tool_catalog_hash,
+                        skill_set_hash=material.skill_set_hash,
+                        serialized_prefix_evidence=serialized_evidence,
+                        provider_cache_namespace=material.provider_cache_namespace,
+                    )
+            except Exception:
+                if envelope is not None:
+                    raise CandidateRequestNotEnforceable(
+                        "provider_serialization_evidence_failed"
+                    ) from None
+                raise
+
+        try:
+            provider_request = ProviderRequestSnapshot(
+                request_id=request_kwargs.get("llm_request_id"),
+                provider_name=(
+                    self.context_candidate_lowering_capability().provider_name
+                    if self.context_candidate_lowering_capability() is not None
+                    else "openai"
+                ),
+                payload=openai_params,
+                capture_stage=RequestCaptureStage.PROVIDER_PREPARED,
+                fidelity=ProviderRequestFidelity.PROVIDER_PREPARED,
+                serialized_checksum=(
+                    "sha256:" + hashlib.sha256(serialized_body).hexdigest()
+                    if serialized_body is not None
+                    else None
+                ),
+            )
+        except Exception:
+            if envelope is not None:
+                raise CandidateRequestNotEnforceable(
+                    "provider_request_not_snapshotable"
+                ) from None
+            provider_request = None
+
+        if envelope is not None:
+            capability = self.context_candidate_lowering_capability()
+            try:
+                if provider_request is None:
+                    raise ValueError("provider request snapshot unavailable")
+                attribution = build_provider_attribution_receipt(
+                    plan=envelope.attribution_plan,
+                    provider_request=openai_params,
+                    serialization=(
+                        AttributionSerialization.HTTP_SERIALIZED_CANONICAL_JSON
+                        if serialized_body is not None
+                        else AttributionSerialization.PROVIDER_PREPARED_CANONICAL_JSON
+                    ),
+                    canonical_request_body=serialized_body,
+                    tools_lowering=ProviderToolsLowering.NULL_TO_ABSENT,
+                )
+                receipt = ProviderLoweringReceipt.from_envelope(
+                    envelope=envelope,
+                    provider_request=provider_request,
+                    lowering=capability,
+                    attribution=attribution,
+                    serialized_prefix_evidence=serialized_evidence,
+                    cache_identity=cache_identity,
+                )
+            except ProviderAttributionMismatch:
+                raise CandidateRequestNotEnforceable(
+                    "provider_attribution_mismatch"
+                ) from None
+            except Exception:
+                raise CandidateRequestNotEnforceable(
+                    "provider_request_not_snapshotable"
+                ) from None
+        observed_receipt = None
+        if (
+            observed_envelope is not None
+            and provider_request is not None
+            and observed_reason is None
+        ):
+            try:
+                capability = self.context_candidate_lowering_capability()
+                observed_attribution = build_provider_attribution_receipt(
+                    plan=observed_envelope.attribution_plan,
+                    provider_request=openai_params,
+                    serialization=(
+                        AttributionSerialization.HTTP_SERIALIZED_CANONICAL_JSON
+                        if serialized_body is not None
+                        else AttributionSerialization.PROVIDER_PREPARED_CANONICAL_JSON
+                    ),
+                    canonical_request_body=serialized_body,
+                    tools_lowering=ProviderToolsLowering.NULL_TO_ABSENT,
+                )
+                observed_receipt = ProviderObservedAttributionReceipt(
+                    envelope=observed_envelope,
+                    provider_request=provider_request,
+                    lowering=capability,
+                    attribution=observed_attribution,
+                )
+            except Exception:
+                observed_reason = "provider_attribution_mismatch"
+        attempt_tracking_ready = False
+        if provider_request is not None:
+            try:
+                if observed_envelope is not None:
+                    self.commit_provider_observed_attribution(
+                        context=request_kwargs.get("context"),
+                        request_id=provider_request.request_id,
+                        snapshot=provider_request,
+                        envelope=observed_envelope,
+                        receipt=observed_receipt,
+                        reason_code=(
+                            observed_reason if observed_receipt is None else None
+                        ),
+                    )
+                else:
+                    self.commit_provider_prepared_attempt(
+                        context=request_kwargs.get("context"),
+                        request_id=provider_request.request_id,
+                        snapshot=provider_request,
+                        envelope=envelope,
+                        receipt=(receipt if envelope is not None else None),
+                    )
+                attempt_tracking_ready = True
+            except Exception:
+                if envelope is not None:
+                    raise
+                if observed_envelope is not None:
+                    try:
+                        self.commit_provider_prepared_attempt(
+                            context=request_kwargs.get("context"),
+                            request_id=provider_request.request_id,
+                            snapshot=provider_request,
+                        )
+                        self.commit_provider_observation_unavailable(
+                            context=request_kwargs.get("context"),
+                            request_id=provider_request.request_id,
+                            envelope=observed_envelope,
+                            reason_code="provider_attribution_storage_failed",
+                            snapshot=provider_request,
+                        )
+                        attempt_tracking_ready = True
+                    except Exception:
+                        self.commit_provider_observation_unavailable(
+                            context=request_kwargs.get("context"),
+                            request_id=provider_request.request_id,
+                            envelope=observed_envelope,
+                            reason_code="provider_capture_storage_failed",
+                            snapshot=provider_request,
+                        )
+                logger.warning(
+                    "OpenAI provider prepared capture failed before send; continuing because Context enforcement is not active"
+                )
+        elif observed_envelope is not None:
+            self.commit_provider_observation_unavailable(
+                context=request_kwargs.get("context"),
+                request_id=request_kwargs.get("llm_request_id"),
+                envelope=observed_envelope,
+                reason_code=observed_reason or "provider_request_not_snapshotable",
+            )
+        return _PreparedOpenAIRequest(
+            params=openai_params,
+            serialized_body=serialized_body,
+            context=request_kwargs.get("context"),
+            request_id=(
+                provider_request.request_id
+                if provider_request is not None
+                else request_kwargs.get("llm_request_id")
+            ),
+            cache_identity=(receipt.cache_identity if envelope is not None else None),
+            attempt_tracking_ready=attempt_tracking_ready,
+            attempt_tracking_fail_open=(envelope is None),
+        )
+
+    def _mark_prepared_attempt(self, prepared: _PreparedOpenAIRequest) -> None:
+        if prepared.context is None or prepared.request_id is None:
+            return
+        if not prepared.attempt_tracking_ready and prepared.attempt_tracking_fail_open:
+            self.mark_provider_attempted_fail_open(
+                context=prepared.context, request_id=prepared.request_id
+            )
+            return
+        self.mark_provider_attempted(
+            context=prepared.context,
+            request_id=prepared.request_id,
+            cache_identity=prepared.cache_identity,
+        )
+
+    def preprocess_messages(
+        self, messages: List[Dict[str, str]], **kwargs
+    ) -> List[Dict[str, str]]:
         """Preprocess messages, use OpenAI format directly.
 
         Args:
@@ -164,16 +604,22 @@ class OpenAIProvider(LLMProviderBase):
 
         Returns:
             ModelResponse object.
-            
+
         Raises:
             LLMResponseError: When LLM response error occurs.
         """
-        if ((not isinstance(response, dict) and (not hasattr(response, 'choices') or not response.choices))
-                or (isinstance(response, dict) and not response.get("choices"))):
+        if (
+            not isinstance(response, dict)
+            and (not hasattr(response, "choices") or not response.choices)
+        ) or (isinstance(response, dict) and not response.get("choices")):
             error_msg = ""
-            if hasattr(response, 'error') and response.error and isinstance(response.error, dict):
-                error_msg = response.error.get('message', '')
-            elif hasattr(response, 'msg'):
+            if (
+                hasattr(response, "error")
+                and response.error
+                and isinstance(response.error, dict)
+            ):
+                error_msg = response.error.get("message", "")
+            elif hasattr(response, "msg"):
                 error_msg = response.msg
 
             logger.warning(f"API Error: {error_msg}, response is: {response}")
@@ -181,16 +627,21 @@ class OpenAIProvider(LLMProviderBase):
             raise LLMResponseError(
                 error_msg if error_msg else "Unknown error",
                 self.model_name or "unknown",
-                response
+                response,
             )
 
         try:
             resp = ModelResponse.from_openai_response(response)
             return resp
         except Exception as e:
-            logger.error(f"postprocess_response error: {e}, traceback is {traceback.format_exc()}")
-            raise LLMResponseError(f"postprocess_response error: {e}", self.model_name or "unknown", response)
-
+            logger.error(
+                f"postprocess_response error: {e}, traceback is {traceback.format_exc()}"
+            )
+            raise LLMResponseError(
+                f"postprocess_response error: {e}",
+                self.model_name or "unknown",
+                response,
+            )
 
     def postprocess_stream_response(self, chunk: Any) -> Tuple[ModelResponse, str]:
         """Process OpenAI streaming response chunk.
@@ -200,99 +651,161 @@ class OpenAIProvider(LLMProviderBase):
 
         Returns:
             ModelResponse object.
-            
+
         Raises:
             LLMResponseError: When LLM response error occurs.
         """
         # Check if chunk contains error
-        if hasattr(chunk, 'error') or (isinstance(chunk, dict) and chunk.get('error')):
-            error_msg = chunk.error if hasattr(chunk, 'error') else chunk.get('error', 'Unknown error')
-            raise LLMResponseError(
-                error_msg,
-                self.model_name or "unknown",
-                chunk
+        if hasattr(chunk, "error") or (isinstance(chunk, dict) and chunk.get("error")):
+            error_msg = (
+                chunk.error
+                if hasattr(chunk, "error")
+                else chunk.get("error", "Unknown error")
             )
+            raise LLMResponseError(error_msg, self.model_name or "unknown", chunk)
 
         chunk_choice = None
-        if hasattr(chunk, 'choices') and chunk.choices:
+        if hasattr(chunk, "choices") and chunk.choices:
             chunk_choice = chunk.choices[0]
         elif isinstance(chunk, dict) and chunk.get("choices") and chunk["choices"]:
             chunk_choice = chunk["choices"][0]
         if not chunk_choice:
             resp = ModelResponse.from_openai_stream_chunk(chunk)
-            has_usage = bool(resp and any(int(resp.usage.get(key, 0) or 0) > 0 for key in ("prompt_tokens", "completion_tokens", "total_tokens")))
-            if has_usage or (resp and resp.raw_usage) or (resp and resp.provider_request_id):
+            has_usage = bool(
+                resp
+                and any(
+                    int(resp.usage.get(key, 0) or 0) > 0
+                    for key in ("prompt_tokens", "completion_tokens", "total_tokens")
+                )
+            )
+            if (
+                has_usage
+                or (resp and resp.raw_usage)
+                or (resp and resp.provider_request_id)
+            ):
                 logger.debug("[stream] usage-only or metadata-only chunk received")
                 return resp, None
             logger.debug("[stream] skip chunk: choices is empty")
             return None, None
 
         try:
-            finish_reason = ModelResponse._get_item_from_openai_message(chunk_choice, "finish_reason")
+            finish_reason = ModelResponse._get_item_from_openai_message(
+                chunk_choice, "finish_reason"
+            )
 
             # process tool calls
-            if (hasattr(chunk_choice, 'delta') and chunk_choice.delta and chunk_choice.delta.tool_calls) or (
-                    isinstance(chunk_choice, dict) and chunk_choice.get("delta", {}).get("tool_calls")):
-                tool_calls = chunk_choice.delta.tool_calls if hasattr(chunk_choice, 'delta') else chunk_choice.get("delta", {}).get("tool_calls")
+            if (
+                hasattr(chunk_choice, "delta")
+                and chunk_choice.delta
+                and chunk_choice.delta.tool_calls
+            ) or (
+                isinstance(chunk_choice, dict)
+                and chunk_choice.get("delta", {}).get("tool_calls")
+            ):
+                tool_calls = (
+                    chunk_choice.delta.tool_calls
+                    if hasattr(chunk_choice, "delta")
+                    else chunk_choice.get("delta", {}).get("tool_calls")
+                )
 
                 for tool_call in tool_calls:
-                    index = tool_call.index if hasattr(tool_call, 'index') else tool_call["index"]
-                    func = tool_call.function if (hasattr(tool_call, 'function') and tool_call.function is not None) else None
+                    index = (
+                        tool_call.index
+                        if hasattr(tool_call, "index")
+                        else tool_call["index"]
+                    )
+                    func = (
+                        tool_call.function
+                        if (
+                            hasattr(tool_call, "function")
+                            and tool_call.function is not None
+                        )
+                        else None
+                    )
                     if isinstance(tool_call, dict):
                         func_name = tool_call.get("function", {}).get("name")
                         func_args = tool_call.get("function", {}).get("arguments")
                     else:
-                        func_name = func.name if func and hasattr(func, 'name') else None
-                        func_args = func.arguments if func and hasattr(func, 'arguments') else None
+                        func_name = (
+                            func.name if func and hasattr(func, "name") else None
+                        )
+                        func_args = (
+                            func.arguments
+                            if func and hasattr(func, "arguments")
+                            else None
+                        )
                     func_args = func_args or ""  # API may send None in early chunks
                     if index >= len(self.stream_tool_buffer):
-                        self.stream_tool_buffer.append({
-                            "id": tool_call.id if hasattr(tool_call, 'id') else tool_call.get("id"),
-                            "type": "function",
-                            "function": {
-                                "name": func_name,
-                                "arguments": func_args
-                            },
-                            "extra_content": tool_call.get("extra_content") if isinstance(tool_call, dict) else getattr(tool_call, "extra_content", None)
-                        })
+                        self.stream_tool_buffer.append(
+                            {
+                                "id": tool_call.id
+                                if hasattr(tool_call, "id")
+                                else tool_call.get("id"),
+                                "type": "function",
+                                "function": {"name": func_name, "arguments": func_args},
+                                "extra_content": tool_call.get("extra_content")
+                                if isinstance(tool_call, dict)
+                                else getattr(tool_call, "extra_content", None),
+                            }
+                        )
                     else:
-                        existing = self.stream_tool_buffer[index]["function"]["arguments"]
-                        self.stream_tool_buffer[index]["function"]["arguments"] = (existing or "") + func_args
+                        existing = self.stream_tool_buffer[index]["function"][
+                            "arguments"
+                        ]
+                        self.stream_tool_buffer[index]["function"]["arguments"] = (
+                            existing or ""
+                        ) + func_args
                 processed_chunk = chunk
-                if hasattr(processed_chunk, 'choices'):
+                if hasattr(processed_chunk, "choices"):
                     processed_chunk.choices[0].delta.tool_calls = None
                 else:
                     processed_chunk["choices"][0]["delta"]["tool_calls"] = None
                 resp = ModelResponse.from_openai_stream_chunk(processed_chunk)
                 # Skip this chunk only when there is no finish_reason; otherwise continue to return buffered tool_calls below
-                if (not resp.content and not resp.usage.get("total_tokens", 0)) and not finish_reason:
+                if (
+                    not resp.content and not resp.usage.get("total_tokens", 0)
+                ) and not finish_reason:
                     logger.debug("[stream] skip chunk: no content and no usage")
                     return None, None
             if finish_reason:
                 if self.stream_tool_buffer:
                     raw_usage = ModelResponse._extract_usage_payload(
-                        chunk.usage if hasattr(chunk, "usage") else chunk.get("usage") if isinstance(chunk, dict) else None
+                        chunk.usage
+                        if hasattr(chunk, "usage")
+                        else chunk.get("usage")
+                        if isinstance(chunk, dict)
+                        else None
                     )
                     # Extract content based on chunk type (dict vs object)
                     if isinstance(chunk, dict):
-                        content = chunk['choices'][0].get('delta', {}).get('content')
+                        content = chunk["choices"][0].get("delta", {}).get("content")
                     else:
                         delta = chunk.choices[0].delta
-                        content = delta.content if hasattr(delta, 'content') else None
+                        content = delta.content if hasattr(delta, "content") else None
 
                     tool_call_chunk = {
-                        "id": chunk.id if hasattr(chunk, 'id') else chunk.get("id"),
-                        "model": chunk.model if hasattr(chunk, 'model') else chunk.get("model"),
-                        "object": chunk.object if hasattr(chunk, 'object') else chunk.get("object"),
-                        "usage": chunk.usage if hasattr(chunk, 'usage') else chunk.get("usage"),
-                        "request_id": getattr(chunk, "request_id", None) if not isinstance(chunk, dict) else chunk.get("request_id"),
-                        "_request_id": getattr(chunk, "_request_id", None) if not isinstance(chunk, dict) else chunk.get("_request_id"),
+                        "id": chunk.id if hasattr(chunk, "id") else chunk.get("id"),
+                        "model": chunk.model
+                        if hasattr(chunk, "model")
+                        else chunk.get("model"),
+                        "object": chunk.object
+                        if hasattr(chunk, "object")
+                        else chunk.get("object"),
+                        "usage": chunk.usage
+                        if hasattr(chunk, "usage")
+                        else chunk.get("usage"),
+                        "request_id": getattr(chunk, "request_id", None)
+                        if not isinstance(chunk, dict)
+                        else chunk.get("request_id"),
+                        "_request_id": getattr(chunk, "_request_id", None)
+                        if not isinstance(chunk, dict)
+                        else chunk.get("_request_id"),
                         "choices": [
                             {
                                 "delta": {
                                     "role": "assistant",
                                     "content": content,
-                                    "tool_calls": self.stream_tool_buffer
+                                    "tool_calls": self.stream_tool_buffer,
                                 }
                             }
                         ],
@@ -300,27 +813,39 @@ class OpenAIProvider(LLMProviderBase):
                     }
                     self.stream_tool_buffer = []
                     chunk_resp = ModelResponse.from_openai_stream_chunk(tool_call_chunk)
-                    logger.debug(f"[stream] finished chunk: {chunk} \n chunk_resp: {chunk_resp}, finish_reason={finish_reason}")
+                    logger.debug(
+                        f"[stream] finished chunk: {chunk} \n chunk_resp: {chunk_resp}, finish_reason={finish_reason}"
+                    )
                     return chunk_resp, finish_reason
             resp = ModelResponse.from_openai_stream_chunk(chunk)
-            logger.debug(f"[stream] chunk: {chunk} \n resp: {resp}\nfinish_reason:{finish_reason}")
+            logger.debug(
+                f"[stream] chunk: {chunk} \n resp: {resp}\nfinish_reason:{finish_reason}"
+            )
             # Skip chunks with empty content and no tool_calls (unless finish_reason signals stream end)
             if (not resp.content and not resp.tool_calls) and not finish_reason:
                 logger.debug("[stream] skip chunk: empty content and no tool_calls")
                 return None, None
             return resp, finish_reason
         except Exception as e:
-            logger.error(f"postprocess_stream_response error: {e}, traceback is {traceback.format_exc()}")
-            raise LLMResponseError(f"postprocess_stream_response error: {e}", self.model_name or "unknown", chunk)
+            logger.error(
+                f"postprocess_stream_response error: {e}, traceback is {traceback.format_exc()}"
+            )
+            raise LLMResponseError(
+                f"postprocess_stream_response error: {e}",
+                self.model_name or "unknown",
+                chunk,
+            )
 
-    def completion(self,
-                   messages: List[Dict[str, str]],
-                   temperature: float = 0.0,
-                   max_tokens: int = None,
-                   stop: List[str] = None,
-                   **kwargs) -> ModelResponse:
+    def completion(
+        self,
+        messages: List[Dict[str, str]],
+        temperature: float = 0.0,
+        max_tokens: int = None,
+        stop: List[str] = None,
+        **kwargs,
+    ) -> ModelResponse:
         """Synchronously call OpenAI to generate response.
-        
+
         Args:
             messages: Message list.
             temperature: Temperature parameter.
@@ -330,49 +855,74 @@ class OpenAIProvider(LLMProviderBase):
 
         Returns:
             ModelResponse object.
-            
+
         Raises:
             LLMResponseError: When LLM response error occurs.
         """
         if not self.provider:
             raise RuntimeError(
-                "Sync provider not initialized. Make sure 'sync_enabled' parameter is set to True in initialization.")
-
-        processed_messages = self.preprocess_messages(messages, **kwargs)
+                "Sync provider not initialized. Make sure 'sync_enabled' parameter is set to True in initialization."
+            )
 
         try:
-            openai_params = self.get_openai_params(processed_messages, temperature, max_tokens, stop, **kwargs)
+            prepared_request = self._prepare_chat_completion_request(
+                messages=messages,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                stop=stop,
+                kwargs=kwargs,
+                stream=False,
+            )
+            openai_params = prepared_request.params
+            self._mark_prepared_attempt(prepared_request)
             if self.is_http_provider:
-                response = self.http_provider.sync_call(openai_params)
+                response = self.http_provider.sync_call(
+                    openai_params,
+                    serialized_body=prepared_request.serialized_body,
+                )
             else:
                 response = self.provider.chat.completions.create(**openai_params)
             logger.debug(f"LLM raw response: {response}")
 
-            if (hasattr(response, 'code') and response.code != 0) or (
-                    isinstance(response, dict) and response.get("code", 0) != 0):
-                error_msg = getattr(response, 'msg', 'Unknown error')
+            if (hasattr(response, "code") and response.code != 0) or (
+                isinstance(response, dict) and response.get("code", 0) != 0
+            ):
+                error_msg = getattr(response, "msg", "Unknown error")
                 logger.warn(f"API Error: {error_msg}")
-                raise LLMResponseError(error_msg, kwargs.get("model_name", self.model_name or "unknown"), response)
+                raise LLMResponseError(
+                    error_msg,
+                    kwargs.get("model_name", self.model_name or "unknown"),
+                    response,
+                )
 
             if not response:
-                raise LLMResponseError("Empty response", kwargs.get("model_name", self.model_name or "unknown"))
+                raise LLMResponseError(
+                    "Empty response",
+                    kwargs.get("model_name", self.model_name or "unknown"),
+                )
 
             resp = self.postprocess_response(response)
             return resp
         except Exception as e:
+            if isinstance(e, CandidateRequestNotEnforceable):
+                raise
             if isinstance(e, LLMResponseError):
                 raise e
             logger.warn(f"Error in OpenAI completion: {e}")
-            raise LLMResponseError(str(e), kwargs.get("model_name", self.model_name or "unknown"))
+            raise LLMResponseError(
+                str(e), kwargs.get("model_name", self.model_name or "unknown")
+            )
 
-    def stream_completion(self,
-                          messages: List[Dict[str, str]],
-                          temperature: float = 0.0,
-                          max_tokens: int = None,
-                          stop: List[str] = None,
-                          **kwargs) -> Generator[ModelResponse, None, None]:
+    def stream_completion(
+        self,
+        messages: List[Dict[str, str]],
+        temperature: float = 0.0,
+        max_tokens: int = None,
+        stop: List[str] = None,
+        **kwargs,
+    ) -> Generator[ModelResponse, None, None]:
         """Synchronously call OpenAI to generate streaming response.
-        
+
         Args:
             messages: Message list.
             temperature: Temperature parameter.
@@ -382,28 +932,33 @@ class OpenAIProvider(LLMProviderBase):
 
         Returns:
             Generator yielding ModelResponse chunks.
-            
+
         Raises:
             LLMResponseError: When LLM response error occurs.
         """
         if not self.provider:
             raise RuntimeError(
-                "Sync provider not initialized. Make sure 'sync_enabled' parameter is set to True in initialization.")
+                "Sync provider not initialized. Make sure 'sync_enabled' parameter is set to True in initialization."
+            )
 
-        processed_messages = self.preprocess_messages(messages, **kwargs)
-        usage={
-            "completion_tokens": 0,
-            "prompt_tokens": 0,
-            "total_tokens": 0
-        }
+        usage = {"completion_tokens": 0, "prompt_tokens": 0, "total_tokens": 0}
 
         try:
-            stream_kwargs = dict(kwargs)
-            stream_kwargs["stream"] = True
-            openai_params = self.get_openai_params(processed_messages, temperature, max_tokens, stop, **stream_kwargs)
-            openai_params["stream"] = True
+            prepared_request = self._prepare_chat_completion_request(
+                messages=messages,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                stop=stop,
+                kwargs=kwargs,
+                stream=True,
+            )
+            openai_params = prepared_request.params
+            self._mark_prepared_attempt(prepared_request)
             if self.is_http_provider:
-                response_stream = self.http_provider.sync_stream_call(openai_params)
+                response_stream = self.http_provider.sync_stream_call(
+                    openai_params,
+                    serialized_body=prepared_request.serialized_body,
+                )
             else:
                 response_stream = self.provider.chat.completions.create(**openai_params)
 
@@ -417,27 +972,34 @@ class OpenAIProvider(LLMProviderBase):
                     yield resp
                     if finish_reason:
                         yield ModelResponse(
-                            id = resp.id,
-                            model = resp.model,
+                            id=resp.id,
+                            model=resp.model,
                             finish_reason=finish_reason,
                             usage=usage,
                             raw_usage=resp.raw_usage,
-                            provider_request_id=resp.provider_request_id)
+                            provider_request_id=resp.provider_request_id,
+                        )
 
         except Exception as e:
+            if isinstance(e, CandidateRequestNotEnforceable):
+                raise
             if isinstance(e, LLMResponseError):
                 raise e
             logger.warn(f"Error in stream_completion: {e}")
-            raise LLMResponseError(str(e), kwargs.get("model_name", self.model_name or "unknown"))
+            raise LLMResponseError(
+                str(e), kwargs.get("model_name", self.model_name or "unknown")
+            )
 
-    async def astream_completion(self,
-                                 messages: List[Dict[str, str]],
-                                 temperature: float = 0.0,
-                                 max_tokens: int = None,
-                                 stop: List[str] = None,
-                                 **kwargs) -> AsyncGenerator[ModelResponse, None]:
+    async def astream_completion(
+        self,
+        messages: List[Dict[str, str]],
+        temperature: float = 0.0,
+        max_tokens: int = None,
+        stop: List[str] = None,
+        **kwargs,
+    ) -> AsyncGenerator[ModelResponse, None]:
         """Asynchronously call OpenAI to generate streaming response.
-        
+
         Args:
             messages: Message list.
             temperature: Temperature parameter.
@@ -447,30 +1009,35 @@ class OpenAIProvider(LLMProviderBase):
 
         Returns:
             AsyncGenerator yielding ModelResponse chunks.
-            
+
         Raises:
             LLMResponseError: When LLM response error occurs.
         """
         if not self.async_provider:
             raise RuntimeError(
-                "Async provider not initialized. Make sure 'async_enabled' parameter is set to True in initialization.")
+                "Async provider not initialized. Make sure 'async_enabled' parameter is set to True in initialization."
+            )
 
-        processed_messages = self.preprocess_messages(messages, **kwargs)
-        usage = {
-            "completion_tokens": 0,
-            "prompt_tokens": 0,
-            "total_tokens": 0
-        }
+        usage = {"completion_tokens": 0, "prompt_tokens": 0, "total_tokens": 0}
 
         try:
-            stream_kwargs = dict(kwargs)
-            stream_kwargs["stream"] = True
-            openai_params = self.get_openai_params(processed_messages, temperature, max_tokens, stop, **stream_kwargs)
-            openai_params["stream"] = True
+            prepared_request = self._prepare_chat_completion_request(
+                messages=messages,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                stop=stop,
+                kwargs=kwargs,
+                stream=True,
+            )
+            openai_params = prepared_request.params
             logger.debug(f"openai_params: {openai_params}")
+            self._mark_prepared_attempt(prepared_request)
 
             if self.is_http_provider:
-                async for chunk in self.http_provider.async_stream_call(openai_params):
+                async for chunk in self.http_provider.async_stream_call(
+                    openai_params,
+                    serialized_body=prepared_request.serialized_body,
+                ):
                     logger.debug(f"LLM raw stream chunk: {chunk}")
                     if not chunk:
                         continue
@@ -485,9 +1052,12 @@ class OpenAIProvider(LLMProviderBase):
                                 finish_reason=finish_reason,
                                 usage=usage,
                                 raw_usage=resp.raw_usage,
-                                provider_request_id=resp.provider_request_id)
+                                provider_request_id=resp.provider_request_id,
+                            )
             else:
-                response_stream = await self.async_provider.chat.completions.create(**openai_params)
+                response_stream = await self.async_provider.chat.completions.create(
+                    **openai_params
+                )
                 async for chunk in response_stream:
                     if not chunk:
                         continue
@@ -504,22 +1074,29 @@ class OpenAIProvider(LLMProviderBase):
                                 finish_reason=finish_reason,
                                 usage=usage,
                                 raw_usage=resp.raw_usage,
-                                provider_request_id=resp.provider_request_id)
+                                provider_request_id=resp.provider_request_id,
+                            )
 
         except Exception as e:
+            if isinstance(e, CandidateRequestNotEnforceable):
+                raise
             if isinstance(e, LLMResponseError):
                 raise e
             logger.warn(f"Error in astream_completion: {e} {traceback.format_exc()}")
-            raise LLMResponseError(str(e), kwargs.get("model_name", self.model_name or "unknown"))
+            raise LLMResponseError(
+                str(e), kwargs.get("model_name", self.model_name or "unknown")
+            )
 
-    async def acompletion(self,
-                          messages: List[Dict[str, str]],
-                          temperature: float = 0.0,
-                          max_tokens: int = None,
-                          stop: List[str] = None,
-                          **kwargs) -> ModelResponse:
+    async def acompletion(
+        self,
+        messages: List[Dict[str, str]],
+        temperature: float = 0.0,
+        max_tokens: int = None,
+        stop: List[str] = None,
+        **kwargs,
+    ) -> ModelResponse:
         """Asynchronously call OpenAI to generate response.
-        
+
         Args:
             messages: Message list.
             temperature: Temperature parameter.
@@ -529,49 +1106,79 @@ class OpenAIProvider(LLMProviderBase):
 
         Returns:
             ModelResponse object.
-            
+
         Raises:
             LLMResponseError: When LLM response error occurs.
         """
         if not self.async_provider:
             raise RuntimeError(
-                "Async provider not initialized. Make sure 'async_enabled' parameter is set to True in initialization.")
+                "Async provider not initialized. Make sure 'async_enabled' parameter is set to True in initialization."
+            )
 
-        processed_messages = self.preprocess_messages(messages, **kwargs)
         try:
-            openai_params = self.get_openai_params(processed_messages, temperature, max_tokens, stop, **kwargs)
-            logger.debug(f"openai_params: {json.dumps(openai_params)}")
+            prepared_request = self._prepare_chat_completion_request(
+                messages=messages,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                stop=stop,
+                kwargs=kwargs,
+                stream=False,
+            )
+            openai_params = prepared_request.params
+            logger.debug(f"openai_params keys: {tuple(openai_params)}")
+            self._mark_prepared_attempt(prepared_request)
             if self.is_http_provider:
-                response = await self.http_provider.async_call(openai_params)
+                response = await self.http_provider.async_call(
+                    openai_params,
+                    serialized_body=prepared_request.serialized_body,
+                )
             else:
-                response = await self.async_provider.chat.completions.create(**openai_params)
+                response = await self.async_provider.chat.completions.create(
+                    **openai_params
+                )
             logger.debug(f"LLM raw response: {response}")
 
-            if (hasattr(response, 'code') and response.code != 0) or (
-                    isinstance(response, dict) and response.get("code", 0) != 0):
-                error_msg = getattr(response, 'msg', 'Unknown error')
+            if (hasattr(response, "code") and response.code != 0) or (
+                isinstance(response, dict) and response.get("code", 0) != 0
+            ):
+                error_msg = getattr(response, "msg", "Unknown error")
                 logger.warn(f"API Error: {error_msg}")
-                raise LLMResponseError(error_msg, kwargs.get("model_name", self.model_name or "unknown"), response)
+                raise LLMResponseError(
+                    error_msg,
+                    kwargs.get("model_name", self.model_name or "unknown"),
+                    response,
+                )
 
             if not response:
-                raise LLMResponseError("Empty response", kwargs.get("model_name", self.model_name or "unknown"))
+                raise LLMResponseError(
+                    "Empty response",
+                    kwargs.get("model_name", self.model_name or "unknown"),
+                )
 
             resp = self.postprocess_response(response)
             return resp
         except Exception as e:
+            if isinstance(e, CandidateRequestNotEnforceable):
+                raise
             if isinstance(e, LLMResponseError):
                 raise e
             logger.warn(f"Error in acompletion: {e}\n")
-            raise LLMResponseError(str(e), kwargs.get("model_name", self.model_name or "unknown"))
+            raise LLMResponseError(
+                str(e), kwargs.get("model_name", self.model_name or "unknown")
+            )
 
-    def get_openai_params(self,
-                          messages: List[Dict[str, str]],
-                          temperature: float = 0.0,
-                          max_tokens: int = None,
-                          stop: List[str] = None,
-                          **kwargs) -> Dict[str, Any]:
+    def get_openai_params(
+        self,
+        messages: List[Dict[str, str]],
+        temperature: float = 0.0,
+        max_tokens: int = None,
+        stop: List[str] = None,
+        **kwargs,
+    ) -> Dict[str, Any]:
         prompt_assembly_plan = kwargs.pop("prompt_assembly_plan", None)
-        provider_native_prompt_cache = bool(kwargs.pop("provider_native_prompt_cache", False))
+        provider_native_prompt_cache = bool(
+            kwargs.pop("provider_native_prompt_cache", False)
+        )
         lowered_request_kwargs = {}
         if prompt_assembly_plan is not None:
             lowered = OpenAIPromptAssemblyLowerer().lower(
@@ -583,19 +1190,43 @@ class OpenAIProvider(LLMProviderBase):
             lowered_request_kwargs = lowered.request_kwargs
 
         model_name = kwargs.get("model_name", self.model_name or "")
-        openai_params = {
-            "model": model_name,
-            "messages": messages
-        }
+        openai_params = {"model": model_name, "messages": messages}
 
         supported_params = [
-            "temperature", "max_tokens", "stop",
-            "max_completion_tokens", "meta_data", "modalities", "n", "parallel_tool_calls",
-            "prediction", "reasoning_effort", "service_tier", "stream_options", "web_search_options",
-            "frequency_penalty", "logit_bias", "logprobs", "top_logprobs",
-            "presence_penalty", "response_format", "seed", "stream", "top_p",
-            "user", "function_call", "functions", "tools", "tool_choice", "metadata",
-            "prompt_cache_key", "safety_identifier", "store", "verbosity", "extra_body", "model"
+            "temperature",
+            "max_tokens",
+            "stop",
+            "max_completion_tokens",
+            "meta_data",
+            "modalities",
+            "n",
+            "parallel_tool_calls",
+            "prediction",
+            "reasoning_effort",
+            "service_tier",
+            "stream_options",
+            "web_search_options",
+            "frequency_penalty",
+            "logit_bias",
+            "logprobs",
+            "top_logprobs",
+            "presence_penalty",
+            "response_format",
+            "seed",
+            "stream",
+            "top_p",
+            "user",
+            "function_call",
+            "functions",
+            "tools",
+            "tool_choice",
+            "metadata",
+            "prompt_cache_key",
+            "safety_identifier",
+            "store",
+            "verbosity",
+            "extra_body",
+            "model",
         ]
 
         llm_params = dict(self.kwargs.get("params", {}))
@@ -603,11 +1234,9 @@ class OpenAIProvider(LLMProviderBase):
         llm_params.update(lowered_request_kwargs)
         llm_params.pop("response_parse_args", None)
         llm_params.pop("context", None)
-        llm_params.update({
-            "temperature": temperature,
-            "max_tokens": max_tokens,
-            "stop": stop
-        })
+        llm_params.update(
+            {"temperature": temperature, "max_tokens": max_tokens, "stop": stop}
+        )
         if llm_params.get("stream"):
             stream_options = llm_params.get("stream_options")
             if stream_options is None:
@@ -618,20 +1247,28 @@ class OpenAIProvider(LLMProviderBase):
                 llm_params["stream_options"] = merged_stream_options
         else:
             llm_params.pop("stream_options", None)
-        log_llm_record("OPENAI_PARAMS", model_name, llm_params, {"request_id": llm_params.pop("llm_request_id", None)})
+        llm_request_id = llm_params.pop("llm_request_id", None)
+        try:
+            log_llm_record(
+                "OPENAI_PARAMS", model_name, llm_params, {"request_id": llm_request_id}
+            )
+        except Exception:
+            # Request logging is not part of provider execution semantics and
+            # must not reject opaque SDK-native values accepted by the SDK.
+            pass
 
         for param in llm_params:
             if param not in supported_params:
-                logger.warning(f"Using unsupported openai parameter may cause exception: {param}")
+                logger.warning(
+                    f"Using unsupported openai parameter may cause exception: {param}"
+                )
             if llm_params[param] is not None:
                 openai_params[param] = llm_params[param]
         return openai_params
 
-    def speech_to_text(self,
-                       audio_file: str,
-                       language: str = None,
-                       prompt: str = None,
-                       **kwargs) -> ModelResponse:
+    def speech_to_text(
+        self, audio_file: str, language: str = None, prompt: str = None, **kwargs
+    ) -> ModelResponse:
         """Convert speech to text.
 
         Uses OpenAI's speech-to-text API to convert audio files to text.
@@ -653,14 +1290,15 @@ class OpenAIProvider(LLMProviderBase):
         """
         if not self.provider:
             raise RuntimeError(
-                "Sync provider not initialized. Make sure 'sync_enabled' parameter is set to True in initialization.")
+                "Sync provider not initialized. Make sure 'sync_enabled' parameter is set to True in initialization."
+            )
 
         try:
             # Prepare parameters
             transcription_params = {
                 "model": kwargs.get("model", "whisper-1"),
                 "response_format": kwargs.get("response_format", "text"),
-                "temperature": kwargs.get("temperature", 0)
+                "temperature": kwargs.get("temperature", 0),
             }
 
             # Add optional parameters
@@ -673,38 +1311,36 @@ class OpenAIProvider(LLMProviderBase):
             if isinstance(audio_file, str):
                 with open(audio_file, "rb") as file:
                     transcription_response = self.provider.audio.transcriptions.create(
-                        file=file,
-                        **transcription_params
+                        file=file, **transcription_params
                     )
             else:
                 # If already a file object
                 transcription_response = self.provider.audio.transcriptions.create(
-                    file=audio_file,
-                    **transcription_params
+                    file=audio_file, **transcription_params
                 )
 
             # Create ModelResponse
             return ModelResponse(
-                id=f"stt-{hash(str(transcription_response)) & 0xffffffff:08x}",
+                id=f"stt-{hash(str(transcription_response)) & 0xFFFFFFFF:08x}",
                 model=transcription_params["model"],
-                content=transcription_response.text if hasattr(transcription_response, 'text') else str(
-                    transcription_response),
+                content=transcription_response.text
+                if hasattr(transcription_response, "text")
+                else str(transcription_response),
                 raw_response=transcription_response,
                 message={
                     "role": "assistant",
-                    "content": transcription_response.text if hasattr(transcription_response, 'text') else str(
-                        transcription_response)
-                }
+                    "content": transcription_response.text
+                    if hasattr(transcription_response, "text")
+                    else str(transcription_response),
+                },
             )
         except Exception as e:
             logger.warn(f"Speech-to-text error: {e}")
             raise LLMResponseError(str(e), kwargs.get("model", "whisper-1"))
 
-    async def aspeech_to_text(self,
-                              audio_file: str,
-                              language: str = None,
-                              prompt: str = None,
-                              **kwargs) -> ModelResponse:
+    async def aspeech_to_text(
+        self, audio_file: str, language: str = None, prompt: str = None, **kwargs
+    ) -> ModelResponse:
         """Asynchronously convert speech to text.
 
         Uses OpenAI's speech-to-text API to convert audio files to text.
@@ -726,14 +1362,15 @@ class OpenAIProvider(LLMProviderBase):
         """
         if not self.async_provider:
             raise RuntimeError(
-                "Async provider not initialized. Make sure 'async_enabled' parameter is set to True in initialization.")
+                "Async provider not initialized. Make sure 'async_enabled' parameter is set to True in initialization."
+            )
 
         try:
             # Prepare parameters
             transcription_params = {
                 "model": kwargs.get("model", "whisper-1"),
                 "response_format": kwargs.get("response_format", "text"),
-                "temperature": kwargs.get("temperature", 0)
+                "temperature": kwargs.get("temperature", 0),
             }
 
             # Add optional parameters
@@ -745,29 +1382,33 @@ class OpenAIProvider(LLMProviderBase):
             # Open file (if path is provided)
             if isinstance(audio_file, str):
                 with open(audio_file, "rb") as file:
-                    transcription_response = await self.async_provider.audio.transcriptions.create(
-                        file=file,
-                        **transcription_params
+                    transcription_response = (
+                        await self.async_provider.audio.transcriptions.create(
+                            file=file, **transcription_params
+                        )
                     )
             else:
                 # If already a file object
-                transcription_response = await self.async_provider.audio.transcriptions.create(
-                    file=audio_file,
-                    **transcription_params
+                transcription_response = (
+                    await self.async_provider.audio.transcriptions.create(
+                        file=audio_file, **transcription_params
+                    )
                 )
 
             # Create ModelResponse
             return ModelResponse(
-                id=f"stt-{hash(str(transcription_response)) & 0xffffffff:08x}",
+                id=f"stt-{hash(str(transcription_response)) & 0xFFFFFFFF:08x}",
                 model=transcription_params["model"],
-                content=transcription_response.text if hasattr(transcription_response, 'text') else str(
-                    transcription_response),
+                content=transcription_response.text
+                if hasattr(transcription_response, "text")
+                else str(transcription_response),
                 raw_response=transcription_response,
                 message={
                     "role": "assistant",
-                    "content": transcription_response.text if hasattr(transcription_response, 'text') else str(
-                        transcription_response)
-                }
+                    "content": transcription_response.text
+                    if hasattr(transcription_response, "text")
+                    else str(transcription_response),
+                },
             )
         except Exception as e:
             logger.warn(f"Async speech-to-text error: {e}")
@@ -775,8 +1416,51 @@ class OpenAIProvider(LLMProviderBase):
 
 
 class AzureOpenAIProvider(OpenAIProvider):
-    """Azure OpenAI provider implementation.
-    """
+    """Azure OpenAI provider implementation."""
+
+    def context_candidate_lowering_capability(
+        self,
+    ) -> ProviderLoweringCapability | None:
+        return AZURE_OPENAI_CONTEXT_LOWERING
+
+    def _azure_client_kwargs(self, *, async_client: bool) -> dict[str, Any]:
+        api_key = self.api_key or os.getenv("AZURE_OPENAI_API_KEY", "")
+        if not api_key:
+            raise ValueError(
+                "Azure OpenAI API key not found, please set "
+                "AZURE_OPENAI_API_KEY or provide it in the parameters"
+            )
+        azure_endpoint = self.base_url or os.getenv("AZURE_OPENAI_ENDPOINT", "")
+        if not azure_endpoint:
+            raise ValueError(
+                "Azure OpenAI endpoint not found, please set "
+                "AZURE_OPENAI_ENDPOINT or provide it in the parameters"
+            )
+        api_version = self.kwargs.get("api_version") or os.getenv(
+            "AZURE_OPENAI_API_VERSION", "2025-01-01-preview"
+        )
+        timeout = self.kwargs.get("timeout", 7200 if async_client else 600)
+        http_client = self.kwargs.get(
+            "async_http_client" if async_client else "http_client"
+        )
+        if http_client is None:
+            http_client = (
+                self._build_async_httpx_client(timeout=timeout)
+                if async_client
+                else self._build_httpx_client(timeout=timeout)
+            )
+        client_kwargs = {
+            "api_key": api_key,
+            "api_version": api_version,
+            "azure_endpoint": azure_endpoint,
+            "timeout": timeout,
+            "max_retries": self.kwargs.get("max_retries", 3),
+            "http_client": http_client,
+        }
+        azure_deployment = self.kwargs.get("azure_deployment")
+        if azure_deployment:
+            client_kwargs["azure_deployment"] = azure_deployment
+        return client_kwargs
 
     def _init_provider(self):
         """Initialize Azure OpenAI provider.
@@ -784,32 +1468,10 @@ class AzureOpenAIProvider(OpenAIProvider):
         Returns:
             Azure OpenAI provider instance.
         """
-        from langchain_openai import AzureChatOpenAI
+        self.is_http_provider = False
+        return AzureOpenAIClient(**self._azure_client_kwargs(async_client=False))
 
-        # Get API key
-        api_key = self.api_key
-        if not api_key:
-            env_var = "AZURE_OPENAI_API_KEY"
-            api_key = os.getenv(env_var, "")
-            if not api_key:
-                raise ValueError(
-                    f"Azure OpenAI API key not found, please set {env_var} environment variable or provide it in the parameters")
-
-        # Get API version
-        api_version = self.kwargs.get("api_version", "") or os.getenv("AZURE_OPENAI_API_VERSION", "2025-01-01-preview")
-
-        # Get endpoint
-        azure_endpoint = self.base_url
-        if not azure_endpoint:
-            azure_endpoint = os.getenv("AZURE_OPENAI_ENDPOINT", "")
-            if not azure_endpoint:
-                raise ValueError(
-                    "Azure OpenAI endpoint not found, please set AZURE_OPENAI_ENDPOINT environment variable or provide it in the parameters")
-
-        return AzureChatOpenAI(
-            model=self.model_name or "gpt-4o",
-            temperature=self.kwargs.get("temperature", 0.0),
-            api_version=api_version,
-            azure_endpoint=azure_endpoint,
-            api_key=api_key
-        )
+    def _init_async_provider(self):
+        """Initialize the reviewed Azure async Chat Completions SDK boundary."""
+        self.is_http_provider = False
+        return AsyncAzureOpenAIClient(**self._azure_client_kwargs(async_client=True))

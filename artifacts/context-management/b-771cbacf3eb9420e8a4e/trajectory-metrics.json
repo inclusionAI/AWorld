@@ -1,0 +1,6214 @@
+{
+  "batch_id": "b-771cbacf3eb9420e8a4e",
+  "source": "dashboard Raw trajectory (run-detail harbor.trajectory)",
+  "trajectory_count": 92,
+  "method_notes": {
+    "observation_residency_char_turns": "Proxy: each observation character multiplied by the number of later agent turns; estimates full-history replay pressure, not provider token billing.",
+    "tool_error_signals": "Heuristic: explicit success=false, nonzero return code, or common error strings; pipelines may mask exit codes and text can include discussed errors.",
+    "exact_duplicate_commands": "Exact command-string repetitions beyond the first occurrence."
+  },
+  "overall": {
+    "count": 92,
+    "reward_mean": 0.18478260869565216,
+    "unknown_agent_version_count": 92,
+    "no_token_metrics_count": 92,
+    "steps": {
+      "mean": 18.42,
+      "median": 2.0,
+      "p90": 53.9,
+      "max": 128
+    },
+    "agent_steps": {
+      "mean": 17.42,
+      "median": 1.0,
+      "p90": 52.9,
+      "max": 127
+    },
+    "tool_calls": {
+      "mean": 15.73,
+      "median": 0.0,
+      "p90": 63.3,
+      "max": 122
+    },
+    "tool_error_signals": {
+      "mean": 1.66,
+      "median": 0.0,
+      "p90": 5.0,
+      "max": 19
+    },
+    "observation_chars": {
+      "mean": 71507.28,
+      "median": 0.0,
+      "p90": 217180.5,
+      "max": 874949
+    },
+    "max_observation_chars": {
+      "mean": 9134.98,
+      "median": 0.0,
+      "p90": 19310.7,
+      "max": 309403
+    },
+    "large_observations_gt_8k": {
+      "mean": 2.01,
+      "median": 0.0,
+      "p90": 7.9,
+      "max": 36
+    },
+    "observation_residency_char_turns": {
+      "mean": 2864869.82,
+      "median": 0.0,
+      "p90": 8328519.4,
+      "max": 46826810
+    },
+    "empty_agent_messages": {
+      "mean": 2.23,
+      "median": 0.0,
+      "p90": 2.9,
+      "max": 54
+    },
+    "exact_duplicate_commands": {
+      "mean": 2.16,
+      "median": 0.0,
+      "p90": 5.0,
+      "max": 58
+    },
+    "runtime_install_commands": {
+      "mean": 0.2,
+      "median": 0.0,
+      "p90": 0.0,
+      "max": 5
+    },
+    "output_control_commands": {
+      "mean": 3.5,
+      "median": 0.0,
+      "p90": 9.0,
+      "max": 68
+    },
+    "elapsed_seconds_from_step_timestamps": {
+      "mean": 1055.55,
+      "median": 663.56,
+      "p90": 2308.63,
+      "max": 3699.77
+    },
+    "runs_with_any_tool_error_signal": 32,
+    "runs_with_duplicate_commands": 26,
+    "runs_with_runtime_installs": 7,
+    "runs_with_large_observations": 25,
+    "runs_with_empty_agent_messages": 21
+  },
+  "by_category": {
+    "both-one-sample": {
+      "count": 6,
+      "reward_mean": 1.0,
+      "unknown_agent_version_count": 6,
+      "no_token_metrics_count": 6,
+      "steps": {
+        "mean": 41.5,
+        "median": 35.5,
+        "p90": 81.5,
+        "max": 91
+      },
+      "agent_steps": {
+        "mean": 40.5,
+        "median": 34.5,
+        "p90": 80.5,
+        "max": 90
+      },
+      "tool_calls": {
+        "mean": 41.33,
+        "median": 38.0,
+        "p90": 80.5,
+        "max": 86
+      },
+      "tool_error_signals": {
+        "mean": 7,
+        "median": 2.5,
+        "p90": 18.5,
+        "max": 19
+      },
+      "observation_chars": {
+        "mean": 140002.5,
+        "median": 101944.5,
+        "p90": 312394.5,
+        "max": 393645
+      },
+      "max_observation_chars": {
+        "mean": 17916.17,
+        "median": 10446.5,
+        "p90": 41705.5,
+        "max": 64418
+      },
+      "large_observations_gt_8k": {
+        "mean": 4.33,
+        "median": 1.0,
+        "p90": 12.0,
+        "max": 16
+      },
+      "observation_residency_char_turns": {
+        "mean": 6344033.17,
+        "median": 3744235.0,
+        "p90": 15270824.5,
+        "max": 21376032
+      },
+      "empty_agent_messages": {
+        "mean": 7.83,
+        "median": 0.0,
+        "p90": 23.5,
+        "max": 46
+      },
+      "exact_duplicate_commands": {
+        "mean": 6.67,
+        "median": 3.0,
+        "p90": 16.5,
+        "max": 26
+      },
+      "runtime_install_commands": {
+        "mean": 0,
+        "median": 0.0,
+        "p90": 0.0,
+        "max": 0
+      },
+      "output_control_commands": {
+        "mean": 8.33,
+        "median": 0.5,
+        "p90": 24.5,
+        "max": 40
+      },
+      "elapsed_seconds_from_step_timestamps": {
+        "mean": 1315.09,
+        "median": 1188.04,
+        "p90": 2641.3,
+        "max": 2896.95
+      },
+      "runs_with_any_tool_error_signal": 4,
+      "runs_with_duplicate_commands": 5,
+      "runs_with_runtime_installs": 0,
+      "runs_with_large_observations": 3,
+      "runs_with_empty_agent_messages": 2
+    },
+    "both-zero": {
+      "count": 70,
+      "reward_mean": 0.0,
+      "unknown_agent_version_count": 70,
+      "no_token_metrics_count": 70,
+      "steps": {
+        "mean": 10.59,
+        "median": 2.0,
+        "p90": 30.5,
+        "max": 128
+      },
+      "agent_steps": {
+        "mean": 9.59,
+        "median": 1.0,
+        "p90": 29.5,
+        "max": 127
+      },
+      "tool_calls": {
+        "mean": 8.19,
+        "median": 0.0,
+        "p90": 25.3,
+        "max": 122
+      },
+      "tool_error_signals": {
+        "mean": 0.91,
+        "median": 0.0,
+        "p90": 3.0,
+        "max": 16
+      },
+      "observation_chars": {
+        "mean": 33156.74,
+        "median": 0.0,
+        "p90": 75862.3,
+        "max": 580250
+      },
+      "max_observation_chars": {
+        "mean": 3224.56,
+        "median": 0.0,
+        "p90": 11425.4,
+        "max": 43101
+      },
+      "large_observations_gt_8k": {
+        "mean": 0.69,
+        "median": 0.0,
+        "p90": 2.0,
+        "max": 11
+      },
+      "observation_residency_char_turns": {
+        "mean": 1256094.23,
+        "median": 0.0,
+        "p90": 1060061.7,
+        "max": 37705702
+      },
+      "empty_agent_messages": {
+        "mean": 0.46,
+        "median": 0.0,
+        "p90": 0.1,
+        "max": 22
+      },
+      "exact_duplicate_commands": {
+        "mean": 1.2,
+        "median": 0.0,
+        "p90": 1.0,
+        "max": 58
+      },
+      "runtime_install_commands": {
+        "mean": 0.06,
+        "median": 0.0,
+        "p90": 0.0,
+        "max": 2
+      },
+      "output_control_commands": {
+        "mean": 2,
+        "median": 0.0,
+        "p90": 1.0,
+        "max": 50
+      },
+      "elapsed_seconds_from_step_timestamps": {
+        "mean": 892.12,
+        "median": 663.56,
+        "p90": 1958.59,
+        "max": 2649.02
+      },
+      "runs_with_any_tool_error_signal": 14,
+      "runs_with_duplicate_commands": 8,
+      "runs_with_runtime_installs": 3,
+      "runs_with_large_observations": 12,
+      "runs_with_empty_agent_messages": 7
+    },
+    "split-reward": {
+      "count": 16,
+      "reward_mean": 0.6875,
+      "unknown_agent_version_count": 16,
+      "no_token_metrics_count": 16,
+      "steps": {
+        "mean": 44.06,
+        "median": 31.5,
+        "p90": 90.5,
+        "max": 127
+      },
+      "agent_steps": {
+        "mean": 43.06,
+        "median": 30.5,
+        "p90": 89.5,
+        "max": 126
+      },
+      "tool_calls": {
+        "mean": 39.12,
+        "median": 28.5,
+        "p90": 84.0,
+        "max": 122
+      },
+      "tool_error_signals": {
+        "mean": 2.94,
+        "median": 2.0,
+        "p90": 7.0,
+        "max": 7
+      },
+      "observation_chars": {
+        "mean": 213605.19,
+        "median": 106023.5,
+        "p90": 618263.5,
+        "max": 874949
+      },
+      "max_observation_chars": {
+        "mean": 31700.12,
+        "median": 12434.5,
+        "p90": 26102.0,
+        "max": 309403
+      },
+      "large_observations_gt_8k": {
+        "mean": 6.94,
+        "median": 3.0,
+        "p90": 17.0,
+        "max": 36
+      },
+      "observation_residency_char_turns": {
+        "mean": 8598576.75,
+        "median": 2249242.0,
+        "p90": 25433826.5,
+        "max": 46826810
+      },
+      "empty_agent_messages": {
+        "mean": 7.88,
+        "median": 2.0,
+        "p90": 20.0,
+        "max": 54
+      },
+      "exact_duplicate_commands": {
+        "mean": 4.69,
+        "median": 4.0,
+        "p90": 12.0,
+        "max": 15
+      },
+      "runtime_install_commands": {
+        "mean": 0.88,
+        "median": 0.0,
+        "p90": 3.0,
+        "max": 5
+      },
+      "output_control_commands": {
+        "mean": 8.25,
+        "median": 2.0,
+        "p90": 15.0,
+        "max": 68
+      },
+      "elapsed_seconds_from_step_timestamps": {
+        "mean": 1121.66,
+        "median": 746.58,
+        "p90": 2250.86,
+        "max": 3699.77
+      },
+      "runs_with_any_tool_error_signal": 14,
+      "runs_with_duplicate_commands": 13,
+      "runs_with_runtime_installs": 4,
+      "runs_with_large_observations": 10,
+      "runs_with_empty_agent_messages": 12
+    }
+  },
+  "by_model": {
+    "matrixllm.aisearch_duet_dsv4_flash": {
+      "count": 51,
+      "reward_mean": 0.19607843137254902,
+      "unknown_agent_version_count": 51,
+      "no_token_metrics_count": 51,
+      "steps": {
+        "mean": 23.29,
+        "median": 2,
+        "p90": 72,
+        "max": 128
+      },
+      "agent_steps": {
+        "mean": 22.29,
+        "median": 1,
+        "p90": 71,
+        "max": 127
+      },
+      "tool_calls": {
+        "mean": 19.94,
+        "median": 0,
+        "p90": 66,
+        "max": 122
+      },
+      "tool_error_signals": {
+        "mean": 1.92,
+        "median": 0,
+        "p90": 5,
+        "max": 18
+      },
+      "observation_chars": {
+        "mean": 74740.12,
+        "median": 0,
+        "p90": 218064,
+        "max": 666994
+      },
+      "max_observation_chars": {
+        "mean": 5661.63,
+        "median": 0,
+        "p90": 18846,
+        "max": 43101
+      },
+      "large_observations_gt_8k": {
+        "mean": 1.75,
+        "median": 0,
+        "p90": 8,
+        "max": 21
+      },
+      "observation_residency_char_turns": {
+        "mean": 3377921.12,
+        "median": 0,
+        "p90": 9165617,
+        "max": 46826810
+      },
+      "empty_agent_messages": {
+        "mean": 0.31,
+        "median": 0,
+        "p90": 1,
+        "max": 3
+      },
+      "exact_duplicate_commands": {
+        "mean": 3.14,
+        "median": 0,
+        "p90": 7,
+        "max": 58
+      },
+      "runtime_install_commands": {
+        "mean": 0.1,
+        "median": 0,
+        "p90": 0,
+        "max": 3
+      },
+      "output_control_commands": {
+        "mean": 4.73,
+        "median": 0,
+        "p90": 17,
+        "max": 68
+      },
+      "elapsed_seconds_from_step_timestamps": {
+        "mean": 940.1,
+        "median": 663.56,
+        "p90": 2202.25,
+        "max": 2896.95
+      },
+      "runs_with_any_tool_error_signal": 21,
+      "runs_with_duplicate_commands": 17,
+      "runs_with_runtime_installs": 3,
+      "runs_with_large_observations": 15,
+      "runs_with_empty_agent_messages": 9
+    },
+    "matrixllm.aisearch_duet_glm52": {
+      "count": 41,
+      "reward_mean": 0.17073170731707318,
+      "unknown_agent_version_count": 41,
+      "no_token_metrics_count": 41,
+      "steps": {
+        "mean": 12.37,
+        "median": 2,
+        "p90": 41,
+        "max": 100
+      },
+      "agent_steps": {
+        "mean": 11.37,
+        "median": 1,
+        "p90": 40,
+        "max": 99
+      },
+      "tool_calls": {
+        "mean": 10.49,
+        "median": 0,
+        "p90": 37,
+        "max": 91
+      },
+      "tool_error_signals": {
+        "mean": 1.34,
+        "median": 0,
+        "p90": 7,
+        "max": 19
+      },
+      "observation_chars": {
+        "mean": 67485.95,
+        "median": 0,
+        "p90": 172380,
+        "max": 874949
+      },
+      "max_observation_chars": {
+        "mean": 13455.49,
+        "median": 0,
+        "p90": 21739,
+        "max": 309403
+      },
+      "large_observations_gt_8k": {
+        "mean": 2.34,
+        "median": 0,
+        "p90": 7,
+        "max": 36
+      },
+      "observation_residency_char_turns": {
+        "mean": 2226684.05,
+        "median": 0,
+        "p90": 5157427,
+        "max": 31693993
+      },
+      "empty_agent_messages": {
+        "mean": 4.61,
+        "median": 0,
+        "p90": 20,
+        "max": 54
+      },
+      "exact_duplicate_commands": {
+        "mean": 0.95,
+        "median": 0,
+        "p90": 4,
+        "max": 11
+      },
+      "runtime_install_commands": {
+        "mean": 0.32,
+        "median": 0,
+        "p90": 0,
+        "max": 5
+      },
+      "output_control_commands": {
+        "mean": 1.98,
+        "median": 0,
+        "p90": 4,
+        "max": 50
+      },
+      "elapsed_seconds_from_step_timestamps": {
+        "mean": 1253.48,
+        "median": 677.0,
+        "p90": 2570.01,
+        "max": 3699.77
+      },
+      "runs_with_any_tool_error_signal": 11,
+      "runs_with_duplicate_commands": 9,
+      "runs_with_runtime_installs": 4,
+      "runs_with_large_observations": 10,
+      "runs_with_empty_agent_messages": 12
+    }
+  },
+  "by_category_and_model": {
+    "both-one-sample": {
+      "matrixllm.aisearch_duet_dsv4_flash": {
+        "count": 3,
+        "reward_mean": 1.0,
+        "unknown_agent_version_count": 3,
+        "no_token_metrics_count": 3,
+        "steps": {
+          "mean": 54,
+          "median": 63,
+          "p90": 85.4,
+          "max": 91
+        },
+        "agent_steps": {
+          "mean": 53,
+          "median": 62,
+          "p90": 84.4,
+          "max": 90
+        },
+        "tool_calls": {
+          "mean": 52.67,
+          "median": 66,
+          "p90": 82.0,
+          "max": 86
+        },
+        "tool_error_signals": {
+          "mean": 7.33,
+          "median": 4,
+          "p90": 15.2,
+          "max": 18
+        },
+        "observation_chars": {
+          "mean": 135485.33,
+          "median": 168160,
+          "p90": 218547.2,
+          "max": 231144
+        },
+        "max_observation_chars": {
+          "mean": 9143,
+          "median": 6651,
+          "p90": 16524.6,
+          "max": 18993
+        },
+        "large_observations_gt_8k": {
+          "mean": 2.67,
+          "median": 0,
+          "p90": 6.4,
+          "max": 8
+        },
+        "observation_residency_char_turns": {
+          "mean": 5503276,
+          "median": 7320901,
+          "p90": 8796673.8,
+          "max": 9165617
+        },
+        "empty_agent_messages": {
+          "mean": 0,
+          "median": 0,
+          "p90": 0.0,
+          "max": 0
+        },
+        "exact_duplicate_commands": {
+          "mean": 11.33,
+          "median": 7,
+          "p90": 22.2,
+          "max": 26
+        },
+        "runtime_install_commands": {
+          "mean": 0,
+          "median": 0,
+          "p90": 0.0,
+          "max": 0
+        },
+        "output_control_commands": {
+          "mean": 13.67,
+          "median": 1,
+          "p90": 32.2,
+          "max": 40
+        },
+        "elapsed_seconds_from_step_timestamps": {
+          "mean": 1690.73,
+          "median": 2146.6,
+          "p90": 2746.88,
+          "max": 2896.95
+        },
+        "runs_with_any_tool_error_signal": 2,
+        "runs_with_duplicate_commands": 3,
+        "runs_with_runtime_installs": 0,
+        "runs_with_large_observations": 1,
+        "runs_with_empty_agent_messages": 0
+      },
+      "matrixllm.aisearch_duet_glm52": {
+        "count": 3,
+        "reward_mean": 1.0,
+        "unknown_agent_version_count": 3,
+        "no_token_metrics_count": 3,
+        "steps": {
+          "mean": 29,
+          "median": 8,
+          "p90": 59.2,
+          "max": 72
+        },
+        "agent_steps": {
+          "mean": 28,
+          "median": 7,
+          "p90": 58.2,
+          "max": 71
+        },
+        "tool_calls": {
+          "mean": 30,
+          "median": 10,
+          "p90": 62.0,
+          "max": 75
+        },
+        "tool_error_signals": {
+          "mean": 6.67,
+          "median": 1,
+          "p90": 15.4,
+          "max": 19
+        },
+        "observation_chars": {
+          "mean": 144519.67,
+          "median": 35729,
+          "p90": 322061.8,
+          "max": 393645
+        },
+        "max_observation_chars": {
+          "mean": 26689.33,
+          "median": 14242,
+          "p90": 54382.8,
+          "max": 64418
+        },
+        "large_observations_gt_8k": {
+          "mean": 6,
+          "median": 2,
+          "p90": 13.2,
+          "max": 16
+        },
+        "observation_residency_char_turns": {
+          "mean": 7184790.33,
+          "median": 167569,
+          "p90": 17134339.4,
+          "max": 21376032
+        },
+        "empty_agent_messages": {
+          "mean": 15.67,
+          "median": 1,
+          "p90": 37.0,
+          "max": 46
+        },
+        "exact_duplicate_commands": {
+          "mean": 2,
+          "median": 1,
+          "p90": 4.2,
+          "max": 5
+        },
+        "runtime_install_commands": {
+          "mean": 0,
+          "median": 0,
+          "p90": 0.0,
+          "max": 0
+        },
+        "output_control_commands": {
+          "mean": 3,
+          "median": 0,
+          "p90": 7.2,
+          "max": 9
+        },
+        "elapsed_seconds_from_step_timestamps": {
+          "mean": 939.46,
+          "median": 229.48,
+          "p90": 1954.42,
+          "max": 2385.66
+        },
+        "runs_with_any_tool_error_signal": 2,
+        "runs_with_duplicate_commands": 2,
+        "runs_with_runtime_installs": 0,
+        "runs_with_large_observations": 2,
+        "runs_with_empty_agent_messages": 2
+      }
+    },
+    "both-zero": {
+      "matrixllm.aisearch_duet_dsv4_flash": {
+        "count": 39,
+        "reward_mean": 0.0,
+        "unknown_agent_version_count": 39,
+        "no_token_metrics_count": 39,
+        "steps": {
+          "mean": 15.38,
+          "median": 2,
+          "p90": 51.6,
+          "max": 128
+        },
+        "agent_steps": {
+          "mean": 14.38,
+          "median": 1,
+          "p90": 50.6,
+          "max": 127
+        },
+        "tool_calls": {
+          "mean": 12.31,
+          "median": 0,
+          "p90": 46.4,
+          "max": 122
+        },
+        "tool_error_signals": {
+          "mean": 1.36,
+          "median": 0,
+          "p90": 4.0,
+          "max": 16
+        },
+        "observation_chars": {
+          "mean": 47542.59,
+          "median": 0,
+          "p90": 154650.0,
+          "max": 580250
+        },
+        "max_observation_chars": {
+          "mean": 3905.38,
+          "median": 0,
+          "p90": 10873.6,
+          "max": 43101
+        },
+        "large_observations_gt_8k": {
+          "mean": 0.79,
+          "median": 0,
+          "p90": 2.2,
+          "max": 11
+        },
+        "observation_residency_char_turns": {
+          "mean": 2017580.26,
+          "median": 0,
+          "p90": 3977977.2,
+          "max": 37705702
+        },
+        "empty_agent_messages": {
+          "mean": 0.18,
+          "median": 0,
+          "p90": 0.2,
+          "max": 3
+        },
+        "exact_duplicate_commands": {
+          "mean": 2.08,
+          "median": 0,
+          "p90": 2.0,
+          "max": 58
+        },
+        "runtime_install_commands": {
+          "mean": 0.05,
+          "median": 0,
+          "p90": 0.0,
+          "max": 1
+        },
+        "output_control_commands": {
+          "mean": 2.31,
+          "median": 0,
+          "p90": 2.4,
+          "max": 29
+        },
+        "elapsed_seconds_from_step_timestamps": {
+          "mean": 835.35,
+          "median": 663.56,
+          "p90": 1640.8,
+          "max": 2274.84
+        },
+        "runs_with_any_tool_error_signal": 11,
+        "runs_with_duplicate_commands": 7,
+        "runs_with_runtime_installs": 2,
+        "runs_with_large_observations": 8,
+        "runs_with_empty_agent_messages": 4
+      },
+      "matrixllm.aisearch_duet_glm52": {
+        "count": 31,
+        "reward_mean": 0.0,
+        "unknown_agent_version_count": 31,
+        "no_token_metrics_count": 31,
+        "steps": {
+          "mean": 4.55,
+          "median": 2,
+          "p90": 9,
+          "max": 51
+        },
+        "agent_steps": {
+          "mean": 3.55,
+          "median": 1,
+          "p90": 8,
+          "max": 50
+        },
+        "tool_calls": {
+          "mean": 3,
+          "median": 0,
+          "p90": 7,
+          "max": 66
+        },
+        "tool_error_signals": {
+          "mean": 0.35,
+          "median": 0,
+          "p90": 0,
+          "max": 8
+        },
+        "observation_chars": {
+          "mean": 15058.42,
+          "median": 0,
+          "p90": 32479,
+          "max": 335852
+        },
+        "max_observation_chars": {
+          "mean": 2368.03,
+          "median": 0,
+          "p90": 11282,
+          "max": 28093
+        },
+        "large_observations_gt_8k": {
+          "mean": 0.55,
+          "median": 0,
+          "p90": 2,
+          "max": 11
+        },
+        "observation_residency_char_turns": {
+          "mean": 298095.68,
+          "median": 0,
+          "p90": 127366,
+          "max": 8440477
+        },
+        "empty_agent_messages": {
+          "mean": 0.81,
+          "median": 0,
+          "p90": 0,
+          "max": 22
+        },
+        "exact_duplicate_commands": {
+          "mean": 0.1,
+          "median": 0,
+          "p90": 0,
+          "max": 3
+        },
+        "runtime_install_commands": {
+          "mean": 0.06,
+          "median": 0,
+          "p90": 0,
+          "max": 2
+        },
+        "output_control_commands": {
+          "mean": 1.61,
+          "median": 0,
+          "p90": 0,
+          "max": 50
+        },
+        "elapsed_seconds_from_step_timestamps": {
+          "mean": 1062.42,
+          "median": 677.0,
+          "p90": 2113.62,
+          "max": 2649.02
+        },
+        "runs_with_any_tool_error_signal": 3,
+        "runs_with_duplicate_commands": 1,
+        "runs_with_runtime_installs": 1,
+        "runs_with_large_observations": 4,
+        "runs_with_empty_agent_messages": 3
+      }
+    },
+    "split-reward": {
+      "matrixllm.aisearch_duet_dsv4_flash": {
+        "count": 9,
+        "reward_mean": 0.7777777777777778,
+        "unknown_agent_version_count": 9,
+        "no_token_metrics_count": 9,
+        "steps": {
+          "mean": 47.33,
+          "median": 30,
+          "p90": 90.2,
+          "max": 127
+        },
+        "agent_steps": {
+          "mean": 46.33,
+          "median": 29,
+          "p90": 89.2,
+          "max": 126
+        },
+        "tool_calls": {
+          "mean": 42.11,
+          "median": 26,
+          "p90": 86.0,
+          "max": 122
+        },
+        "tool_error_signals": {
+          "mean": 2.56,
+          "median": 3,
+          "p90": 5.0,
+          "max": 5
+        },
+        "observation_chars": {
+          "mean": 172347.67,
+          "median": 78869,
+          "p90": 380251.6,
+          "max": 666994
+        },
+        "max_observation_chars": {
+          "mean": 12111.56,
+          "median": 9261,
+          "p90": 21378.6,
+          "max": 22077
+        },
+        "large_observations_gt_8k": {
+          "mean": 5.56,
+          "median": 2,
+          "p90": 14.6,
+          "max": 21
+        },
+        "observation_residency_char_turns": {
+          "mean": 8564279.89,
+          "median": 1223356,
+          "p90": 22091356.4,
+          "max": 46826810
+        },
+        "empty_agent_messages": {
+          "mean": 1,
+          "median": 1,
+          "p90": 2.2,
+          "max": 3
+        },
+        "exact_duplicate_commands": {
+          "mean": 5,
+          "median": 4,
+          "p90": 13.4,
+          "max": 15
+        },
+        "runtime_install_commands": {
+          "mean": 0.33,
+          "median": 0,
+          "p90": 0.6,
+          "max": 3
+        },
+        "output_control_commands": {
+          "mean": 12.22,
+          "median": 2,
+          "p90": 27.2,
+          "max": 68
+        },
+        "elapsed_seconds_from_step_timestamps": {
+          "mean": 829.55,
+          "median": 522.59,
+          "p90": 1465.53,
+          "max": 2226.1
+        },
+        "runs_with_any_tool_error_signal": 8,
+        "runs_with_duplicate_commands": 7,
+        "runs_with_runtime_installs": 1,
+        "runs_with_large_observations": 6,
+        "runs_with_empty_agent_messages": 5
+      },
+      "matrixllm.aisearch_duet_glm52": {
+        "count": 7,
+        "reward_mean": 0.5714285714285714,
+        "unknown_agent_version_count": 7,
+        "no_token_metrics_count": 7,
+        "steps": {
+          "mean": 39.86,
+          "median": 33,
+          "p90": 69.4,
+          "max": 100
+        },
+        "agent_steps": {
+          "mean": 38.86,
+          "median": 32,
+          "p90": 68.4,
+          "max": 99
+        },
+        "tool_calls": {
+          "mean": 35.29,
+          "median": 31,
+          "p90": 61.6,
+          "max": 91
+        },
+        "tool_error_signals": {
+          "mean": 3.43,
+          "median": 1,
+          "p90": 7.0,
+          "max": 7
+        },
+        "observation_chars": {
+          "mean": 266650.57,
+          "median": 148265,
+          "p90": 691699.4,
+          "max": 874949
+        },
+        "max_observation_chars": {
+          "mean": 56885.43,
+          "median": 15608,
+          "p90": 141837.4,
+          "max": 309403
+        },
+        "large_observations_gt_8k": {
+          "mean": 8.71,
+          "median": 6,
+          "p90": 21.6,
+          "max": 36
+        },
+        "observation_residency_char_turns": {
+          "mean": 8642672.71,
+          "median": 3275128,
+          "p90": 24181793.2,
+          "max": 31693993
+        },
+        "empty_agent_messages": {
+          "mean": 16.71,
+          "median": 10,
+          "p90": 33.6,
+          "max": 54
+        },
+        "exact_duplicate_commands": {
+          "mean": 4.29,
+          "median": 4,
+          "p90": 8.0,
+          "max": 11
+        },
+        "runtime_install_commands": {
+          "mean": 1.57,
+          "median": 0,
+          "p90": 3.8,
+          "max": 5
+        },
+        "output_control_commands": {
+          "mean": 3.14,
+          "median": 2,
+          "p90": 6.6,
+          "max": 9
+        },
+        "elapsed_seconds_from_step_timestamps": {
+          "mean": 1497.23,
+          "median": 1701.01,
+          "p90": 2845.28,
+          "max": 3699.77
+        },
+        "runs_with_any_tool_error_signal": 6,
+        "runs_with_duplicate_commands": 6,
+        "runs_with_runtime_installs": 3,
+        "runs_with_large_observations": 4,
+        "runs_with_empty_agent_messages": 7
+      }
+    }
+  },
+  "pair_analysis": {
+    "both_zero": {
+      "task_count": 44,
+      "complete_pair_count": 31,
+      "pairs": [
+        {
+          "task_name": "adaptive-rejection-sampler",
+          "rewards": {
+            "series-1": 0.0,
+            "series-2": 0.0
+          },
+          "run_ids": {
+            "series-1": "r-8831a39cb94d4a6e97ce",
+            "series-2": "r-e420ad8df36e4cd199df"
+          },
+          "available": {
+            "series-1": true,
+            "series-2": true
+          },
+          "complete_pair": true,
+          "series_metrics": {
+            "series-1": {
+              "steps": 2,
+              "tool_calls": 0,
+              "tool_error_signals": 0,
+              "observation_chars": 0,
+              "observation_residency_char_turns": 0,
+              "empty_agent_messages": 0,
+              "exact_duplicate_commands": 0,
+              "runtime_install_commands": 0
+            },
+            "series-2": {
+              "steps": 2,
+              "tool_calls": 0,
+              "tool_error_signals": 0,
+              "observation_chars": 0,
+              "observation_residency_char_turns": 0,
+              "empty_agent_messages": 0,
+              "exact_duplicate_commands": 0,
+              "runtime_install_commands": 0
+            }
+          }
+        },
+        {
+          "task_name": "build-pov-ray",
+          "rewards": {
+            "series-1": 0.0,
+            "series-2": 0.0
+          },
+          "run_ids": {
+            "series-1": "r-1d43615292d74700aa76",
+            "series-2": "r-b6815d52e0f34ff5aba1"
+          },
+          "available": {
+            "series-1": true,
+            "series-2": true
+          },
+          "complete_pair": true,
+          "series_metrics": {
+            "series-1": {
+              "steps": 2,
+              "tool_calls": 0,
+              "tool_error_signals": 0,
+              "observation_chars": 0,
+              "observation_residency_char_turns": 0,
+              "empty_agent_messages": 0,
+              "exact_duplicate_commands": 0,
+              "runtime_install_commands": 0
+            },
+            "series-2": {
+              "steps": 2,
+              "tool_calls": 0,
+              "tool_error_signals": 0,
+              "observation_chars": 0,
+              "observation_residency_char_turns": 0,
+              "empty_agent_messages": 0,
+              "exact_duplicate_commands": 0,
+              "runtime_install_commands": 0
+            }
+          }
+        },
+        {
+          "task_name": "caffe-cifar-10",
+          "rewards": {
+            "series-1": 0.0,
+            "series-2": 0.0
+          },
+          "run_ids": {
+            "series-1": "r-175fa82ed9cc474db355",
+            "series-2": "r-4c4538022bd340d9957a"
+          },
+          "available": {
+            "series-1": true,
+            "series-2": true
+          },
+          "complete_pair": true,
+          "series_metrics": {
+            "series-1": {
+              "steps": 2,
+              "tool_calls": 0,
+              "tool_error_signals": 0,
+              "observation_chars": 0,
+              "observation_residency_char_turns": 0,
+              "empty_agent_messages": 0,
+              "exact_duplicate_commands": 0,
+              "runtime_install_commands": 0
+            },
+            "series-2": {
+              "steps": 2,
+              "tool_calls": 0,
+              "tool_error_signals": 0,
+              "observation_chars": 0,
+              "observation_residency_char_turns": 0,
+              "empty_agent_messages": 0,
+              "exact_duplicate_commands": 0,
+              "runtime_install_commands": 0
+            }
+          }
+        },
+        {
+          "task_name": "cancel-async-tasks",
+          "rewards": {
+            "series-1": 0.0,
+            "series-2": 0.0
+          },
+          "run_ids": {
+            "series-1": "r-45e3d9341c9548d9beb7",
+            "series-2": "r-2b54168975b04f6c8829"
+          },
+          "available": {
+            "series-1": true,
+            "series-2": true
+          },
+          "complete_pair": true,
+          "series_metrics": {
+            "series-1": {
+              "steps": 18,
+              "tool_calls": 16,
+              "tool_error_signals": 10,
+              "observation_chars": 75744,
+              "observation_residency_char_turns": 679035,
+              "empty_agent_messages": 0,
+              "exact_duplicate_commands": 1,
+              "runtime_install_commands": 0
+            },
+            "series-2": {
+              "steps": 9,
+              "tool_calls": 7,
+              "tool_error_signals": 1,
+              "observation_chars": 32479,
+              "observation_residency_char_turns": 127366,
+              "empty_agent_messages": 0,
+              "exact_duplicate_commands": 0,
+              "runtime_install_commands": 0
+            }
+          }
+        },
+        {
+          "task_name": "circuit-fibsqrt",
+          "rewards": {
+            "series-1": 0.0,
+            "series-2": 0.0
+          },
+          "run_ids": {
+            "series-1": "r-a8455be4ff4e477ab82c",
+            "series-2": "r-e329c6e456dd4d76abc9"
+          },
+          "available": {
+            "series-1": true,
+            "series-2": false
+          },
+          "complete_pair": false
+        },
+        {
+          "task_name": "compile-compcert",
+          "rewards": {
+            "series-1": 0.0,
+            "series-2": 0.0
+          },
+          "run_ids": {
+            "series-1": "r-5359c0b5cdc04e86a168",
+            "series-2": "r-dcd8dcc09b9747aeae5b"
+          },
+          "available": {
+            "series-1": true,
+            "series-2": true
+          },
+          "complete_pair": true,
+          "series_metrics": {
+            "series-1": {
+              "steps": 2,
+              "tool_calls": 0,
+              "tool_error_signals": 0,
+              "observation_chars": 0,
+              "observation_residency_char_turns": 0,
+              "empty_agent_messages": 0,
+              "exact_duplicate_commands": 0,
+              "runtime_install_commands": 0
+            },
+            "series-2": {
+              "steps": 2,
+              "tool_calls": 0,
+              "tool_error_signals": 0,
+              "observation_chars": 0,
+              "observation_residency_char_turns": 0,
+              "empty_agent_messages": 0,
+              "exact_duplicate_commands": 0,
+              "runtime_install_commands": 0
+            }
+          }
+        },
+        {
+          "task_name": "configure-git-webserver",
+          "rewards": {
+            "series-1": 0.0,
+            "series-2": 0.0
+          },
+          "run_ids": {
+            "series-1": "r-2cee99b33cd3418082c9",
+            "series-2": "r-74beaccfefb141ceb394"
+          },
+          "available": {
+            "series-1": true,
+            "series-2": true
+          },
+          "complete_pair": true,
+          "series_metrics": {
+            "series-1": {
+              "steps": 2,
+              "tool_calls": 0,
+              "tool_error_signals": 0,
+              "observation_chars": 0,
+              "observation_residency_char_turns": 0,
+              "empty_agent_messages": 0,
+              "exact_duplicate_commands": 0,
+              "runtime_install_commands": 0
+            },
+            "series-2": {
+              "steps": 2,
+              "tool_calls": 0,
+              "tool_error_signals": 0,
+              "observation_chars": 0,
+              "observation_residency_char_turns": 0,
+              "empty_agent_messages": 0,
+              "exact_duplicate_commands": 0,
+              "runtime_install_commands": 0
+            }
+          }
+        },
+        {
+          "task_name": "crack-7z-hash",
+          "rewards": {
+            "series-1": 0.0,
+            "series-2": 0.0
+          },
+          "run_ids": {
+            "series-1": "r-76015a4f21064e1f96f1",
+            "series-2": "r-d06f472ba0834cbc88c7"
+          },
+          "available": {
+            "series-1": true,
+            "series-2": true
+          },
+          "complete_pair": true,
+          "series_metrics": {
+            "series-1": {
+              "steps": 2,
+              "tool_calls": 0,
+              "tool_error_signals": 0,
+              "observation_chars": 0,
+              "observation_residency_char_turns": 0,
+              "empty_agent_messages": 0,
+              "exact_duplicate_commands": 0,
+              "runtime_install_commands": 0
+            },
+            "series-2": {
+              "steps": 2,
+              "tool_calls": 0,
+              "tool_error_signals": 0,
+              "observation_chars": 0,
+              "observation_residency_char_turns": 0,
+              "empty_agent_messages": 0,
+              "exact_duplicate_commands": 0,
+              "runtime_install_commands": 0
+            }
+          }
+        },
+        {
+          "task_name": "dna-assembly",
+          "rewards": {
+            "series-1": 0.0,
+            "series-2": 0.0
+          },
+          "run_ids": {
+            "series-1": "r-94d16d3097a6420f9f87",
+            "series-2": "r-248fb1d0250741eb85f4"
+          },
+          "available": {
+            "series-1": true,
+            "series-2": true
+          },
+          "complete_pair": true,
+          "series_metrics": {
+            "series-1": {
+              "steps": 2,
+              "tool_calls": 0,
+              "tool_error_signals": 0,
+              "observation_chars": 0,
+              "observation_residency_char_turns": 0,
+              "empty_agent_messages": 0,
+              "exact_duplicate_commands": 0,
+              "runtime_install_commands": 0
+            },
+            "series-2": {
+              "steps": 2,
+              "tool_calls": 0,
+              "tool_error_signals": 0,
+              "observation_chars": 0,
+              "observation_residency_char_turns": 0,
+              "empty_agent_messages": 0,
+              "exact_duplicate_commands": 0,
+              "runtime_install_commands": 0
+            }
+          }
+        },
+        {
+          "task_name": "dna-insert",
+          "rewards": {
+            "series-1": 0.0,
+            "series-2": 0.0
+          },
+          "run_ids": {
+            "series-1": "r-9a9fedd116134cd7ba54",
+            "series-2": "r-e091acb5097f49f9aa01"
+          },
+          "available": {
+            "series-1": true,
+            "series-2": true
+          },
+          "complete_pair": true,
+          "series_metrics": {
+            "series-1": {
+              "steps": 2,
+              "tool_calls": 0,
+              "tool_error_signals": 0,
+              "observation_chars": 0,
+              "observation_residency_char_turns": 0,
+              "empty_agent_messages": 0,
+              "exact_duplicate_commands": 0,
+              "runtime_install_commands": 0
+            },
+            "series-2": {
+              "steps": 2,
+              "tool_calls": 0,
+              "tool_error_signals": 0,
+              "observation_chars": 0,
+              "observation_residency_char_turns": 0,
+              "empty_agent_messages": 0,
+              "exact_duplicate_commands": 0,
+              "runtime_install_commands": 0
+            }
+          }
+        },
+        {
+          "task_name": "extract-elf",
+          "rewards": {
+            "series-1": 0.0,
+            "series-2": 0.0
+          },
+          "run_ids": {
+            "series-1": "r-0774f4cd94294c45b140",
+            "series-2": "r-edb523c89dd4427ea9dc"
+          },
+          "available": {
+            "series-1": true,
+            "series-2": false
+          },
+          "complete_pair": false
+        },
+        {
+          "task_name": "extract-moves-from-video",
+          "rewards": {
+            "series-1": 0.0,
+            "series-2": 0.0
+          },
+          "run_ids": {
+            "series-1": "r-7895a81ee9c34fffa744",
+            "series-2": "r-d1dd85a7246d4f0a8282"
+          },
+          "available": {
+            "series-1": true,
+            "series-2": true
+          },
+          "complete_pair": true,
+          "series_metrics": {
+            "series-1": {
+              "steps": 2,
+              "tool_calls": 0,
+              "tool_error_signals": 0,
+              "observation_chars": 0,
+              "observation_residency_char_turns": 0,
+              "empty_agent_messages": 0,
+              "exact_duplicate_commands": 0,
+              "runtime_install_commands": 0
+            },
+            "series-2": {
+              "steps": 2,
+              "tool_calls": 0,
+              "tool_error_signals": 0,
+              "observation_chars": 0,
+              "observation_residency_char_turns": 0,
+              "empty_agent_messages": 0,
+              "exact_duplicate_commands": 0,
+              "runtime_install_commands": 0
+            }
+          }
+        },
+        {
+          "task_name": "feal-linear-cryptanalysis",
+          "rewards": {
+            "series-1": 0.0,
+            "series-2": 0.0
+          },
+          "run_ids": {
+            "series-1": "r-5a31a6fa76024664b3e7",
+            "series-2": "r-eea8bb7a072344f0a25b"
+          },
+          "available": {
+            "series-1": true,
+            "series-2": false
+          },
+          "complete_pair": false
+        },
+        {
+          "task_name": "filter-js-from-html",
+          "rewards": {
+            "series-1": 0.0,
+            "series-2": 0.0
+          },
+          "run_ids": {
+            "series-1": "r-2f9814b86b7b4c6f94ec",
+            "series-2": "r-287bd979ad05448c87e8"
+          },
+          "available": {
+            "series-1": true,
+            "series-2": true
+          },
+          "complete_pair": true,
+          "series_metrics": {
+            "series-1": {
+              "steps": 72,
+              "tool_calls": 65,
+              "tool_error_signals": 3,
+              "observation_chars": 343998,
+              "observation_residency_char_turns": 16771639,
+              "empty_agent_messages": 0,
+              "exact_duplicate_commands": 15,
+              "runtime_install_commands": 0
+            },
+            "series-2": {
+              "steps": 9,
+              "tool_calls": 7,
+              "tool_error_signals": 2,
+              "observation_chars": 52350,
+              "observation_residency_char_turns": 230501,
+              "empty_agent_messages": 1,
+              "exact_duplicate_commands": 0,
+              "runtime_install_commands": 0
+            }
+          }
+        },
+        {
+          "task_name": "financial-document-processor",
+          "rewards": {
+            "series-1": 0.0,
+            "series-2": 0.0
+          },
+          "run_ids": {
+            "series-1": "r-ba0df58469784a03975c",
+            "series-2": "r-d51e670839774759a9b8"
+          },
+          "available": {
+            "series-1": true,
+            "series-2": true
+          },
+          "complete_pair": true,
+          "series_metrics": {
+            "series-1": {
+              "steps": 2,
+              "tool_calls": 0,
+              "tool_error_signals": 0,
+              "observation_chars": 0,
+              "observation_residency_char_turns": 0,
+              "empty_agent_messages": 0,
+              "exact_duplicate_commands": 0,
+              "runtime_install_commands": 0
+            },
+            "series-2": {
+              "steps": 2,
+              "tool_calls": 0,
+              "tool_error_signals": 0,
+              "observation_chars": 0,
+              "observation_residency_char_turns": 0,
+              "empty_agent_messages": 0,
+              "exact_duplicate_commands": 0,
+              "runtime_install_commands": 0
+            }
+          }
+        },
+        {
+          "task_name": "gcode-to-text",
+          "rewards": {
+            "series-1": 0.0,
+            "series-2": 0.0
+          },
+          "run_ids": {
+            "series-1": "r-f08c175479504fa785ba",
+            "series-2": "r-29d7e1ff21b64d1db86a"
+          },
+          "available": {
+            "series-1": false,
+            "series-2": false
+          },
+          "complete_pair": false
+        },
+        {
+          "task_name": "git-leak-recovery",
+          "rewards": {
+            "series-1": 0.0,
+            "series-2": 0.0
+          },
+          "run_ids": {
+            "series-1": "r-389c076706904f10abb0",
+            "series-2": "r-2d120c9c15e24d2ba948"
+          },
+          "available": {
+            "series-1": true,
+            "series-2": true
+          },
+          "complete_pair": true,
+          "series_metrics": {
+            "series-1": {
+              "steps": 2,
+              "tool_calls": 0,
+              "tool_error_signals": 0,
+              "observation_chars": 0,
+              "observation_residency_char_turns": 0,
+              "empty_agent_messages": 0,
+              "exact_duplicate_commands": 0,
+              "runtime_install_commands": 0
+            },
+            "series-2": {
+              "steps": 2,
+              "tool_calls": 0,
+              "tool_error_signals": 0,
+              "observation_chars": 0,
+              "observation_residency_char_turns": 0,
+              "empty_agent_messages": 0,
+              "exact_duplicate_commands": 0,
+              "runtime_install_commands": 0
+            }
+          }
+        },
+        {
+          "task_name": "gpt2-codegolf",
+          "rewards": {
+            "series-1": 0.0,
+            "series-2": 0.0
+          },
+          "run_ids": {
+            "series-1": "r-334befac3c6f415ba832",
+            "series-2": "r-832c294c617e4b40bb44"
+          },
+          "available": {
+            "series-1": true,
+            "series-2": true
+          },
+          "complete_pair": true,
+          "series_metrics": {
+            "series-1": {
+              "steps": 2,
+              "tool_calls": 0,
+              "tool_error_signals": 0,
+              "observation_chars": 0,
+              "observation_residency_char_turns": 0,
+              "empty_agent_messages": 0,
+              "exact_duplicate_commands": 0,
+              "runtime_install_commands": 0
+            },
+            "series-2": {
+              "steps": 2,
+              "tool_calls": 0,
+              "tool_error_signals": 0,
+              "observation_chars": 0,
+              "observation_residency_char_turns": 0,
+              "empty_agent_messages": 0,
+              "exact_duplicate_commands": 0,
+              "runtime_install_commands": 0
+            }
+          }
+        },
+        {
+          "task_name": "make-doom-for-mips",
+          "rewards": {
+            "series-1": 0.0,
+            "series-2": 0.0
+          },
+          "run_ids": {
+            "series-1": "r-761bcab2fec74a91a8a9",
+            "series-2": "r-923f0e73d1954fe29cfd"
+          },
+          "available": {
+            "series-1": false,
+            "series-2": false
+          },
+          "complete_pair": false
+        },
+        {
+          "task_name": "make-mips-interpreter",
+          "rewards": {
+            "series-1": 0.0,
+            "series-2": 0.0
+          },
+          "run_ids": {
+            "series-1": "r-245c2b42f9bb46f6a84b",
+            "series-2": "r-cdde951ff9c74556a594"
+          },
+          "available": {
+            "series-1": false,
+            "series-2": false
+          },
+          "complete_pair": false
+        },
+        {
+          "task_name": "merge-diff-arc-agi-task",
+          "rewards": {
+            "series-1": 0.0,
+            "series-2": 0.0
+          },
+          "run_ids": {
+            "series-1": "r-9584582356b54d69b480",
+            "series-2": "r-302f0ea436b547b3a6d5"
+          },
+          "available": {
+            "series-1": true,
+            "series-2": true
+          },
+          "complete_pair": true,
+          "series_metrics": {
+            "series-1": {
+              "steps": 2,
+              "tool_calls": 0,
+              "tool_error_signals": 0,
+              "observation_chars": 0,
+              "observation_residency_char_turns": 0,
+              "empty_agent_messages": 0,
+              "exact_duplicate_commands": 0,
+              "runtime_install_commands": 0
+            },
+            "series-2": {
+              "steps": 2,
+              "tool_calls": 0,
+              "tool_error_signals": 0,
+              "observation_chars": 0,
+              "observation_residency_char_turns": 0,
+              "empty_agent_messages": 0,
+              "exact_duplicate_commands": 0,
+              "runtime_install_commands": 0
+            }
+          }
+        },
+        {
+          "task_name": "model-extraction-relu-logits",
+          "rewards": {
+            "series-1": 0.0,
+            "series-2": 0.0
+          },
+          "run_ids": {
+            "series-1": "r-3f7c5f3680b44e25b1bf",
+            "series-2": "r-ef555643893041d98865"
+          },
+          "available": {
+            "series-1": true,
+            "series-2": true
+          },
+          "complete_pair": true,
+          "series_metrics": {
+            "series-1": {
+              "steps": 23,
+              "tool_calls": 16,
+              "tool_error_signals": 1,
+              "observation_chars": 46366,
+              "observation_residency_char_turns": 645248,
+              "empty_agent_messages": 1,
+              "exact_duplicate_commands": 2,
+              "runtime_install_commands": 0
+            },
+            "series-2": {
+              "steps": 18,
+              "tool_calls": 13,
+              "tool_error_signals": 0,
+              "observation_chars": 46130,
+              "observation_residency_char_turns": 442622,
+              "empty_agent_messages": 2,
+              "exact_duplicate_commands": 3,
+              "runtime_install_commands": 0
+            }
+          }
+        },
+        {
+          "task_name": "mteb-leaderboard",
+          "rewards": {
+            "series-1": 0.0,
+            "series-2": 0.0
+          },
+          "run_ids": {
+            "series-1": "r-a61b429bd9a3473fa360",
+            "series-2": "r-fea05542fb7b4a6da292"
+          },
+          "available": {
+            "series-1": true,
+            "series-2": true
+          },
+          "complete_pair": true,
+          "series_metrics": {
+            "series-1": {
+              "steps": 54,
+              "tool_calls": 48,
+              "tool_error_signals": 3,
+              "observation_chars": 143632,
+              "observation_residency_char_turns": 3840042,
+              "empty_agent_messages": 0,
+              "exact_duplicate_commands": 2,
+              "runtime_install_commands": 0
+            },
+            "series-2": {
+              "steps": 51,
+              "tool_calls": 66,
+              "tool_error_signals": 8,
+              "observation_chars": 335852,
+              "observation_residency_char_turns": 8440477,
+              "empty_agent_messages": 22,
+              "exact_duplicate_commands": 0,
+              "runtime_install_commands": 2
+            }
+          }
+        },
+        {
+          "task_name": "overfull-hbox",
+          "rewards": {
+            "series-1": 0.0,
+            "series-2": 0.0
+          },
+          "run_ids": {
+            "series-1": "r-08cfa7e82e3c4bcb8e06",
+            "series-2": "r-5da1bb5a28e64ec2bb90"
+          },
+          "available": {
+            "series-1": true,
+            "series-2": true
+          },
+          "complete_pair": true,
+          "series_metrics": {
+            "series-1": {
+              "steps": 2,
+              "tool_calls": 0,
+              "tool_error_signals": 0,
+              "observation_chars": 0,
+              "observation_residency_char_turns": 0,
+              "empty_agent_messages": 0,
+              "exact_duplicate_commands": 0,
+              "runtime_install_commands": 0
+            },
+            "series-2": {
+              "steps": 2,
+              "tool_calls": 0,
+              "tool_error_signals": 0,
+              "observation_chars": 0,
+              "observation_residency_char_turns": 0,
+              "empty_agent_messages": 0,
+              "exact_duplicate_commands": 0,
+              "runtime_install_commands": 0
+            }
+          }
+        },
+        {
+          "task_name": "password-recovery",
+          "rewards": {
+            "series-1": 0.0,
+            "series-2": 0.0
+          },
+          "run_ids": {
+            "series-1": "r-e663485c2ecf4f9387ee",
+            "series-2": "r-f450905372cb427ea888"
+          },
+          "available": {
+            "series-1": true,
+            "series-2": true
+          },
+          "complete_pair": true,
+          "series_metrics": {
+            "series-1": {
+              "steps": 2,
+              "tool_calls": 0,
+              "tool_error_signals": 0,
+              "observation_chars": 0,
+              "observation_residency_char_turns": 0,
+              "empty_agent_messages": 0,
+              "exact_duplicate_commands": 0,
+              "runtime_install_commands": 0
+            },
+            "series-2": {
+              "steps": 2,
+              "tool_calls": 0,
+              "tool_error_signals": 0,
+              "observation_chars": 0,
+              "observation_residency_char_turns": 0,
+              "empty_agent_messages": 0,
+              "exact_duplicate_commands": 0,
+              "runtime_install_commands": 0
+            }
+          }
+        },
+        {
+          "task_name": "path-tracing",
+          "rewards": {
+            "series-1": 0.0,
+            "series-2": 0.0
+          },
+          "run_ids": {
+            "series-1": "r-bdea330cc6a541b3a2db",
+            "series-2": "r-e1db947d18244a4bb67d"
+          },
+          "available": {
+            "series-1": false,
+            "series-2": false
+          },
+          "complete_pair": false
+        },
+        {
+          "task_name": "path-tracing-reverse",
+          "rewards": {
+            "series-1": 0.0,
+            "series-2": 0.0
+          },
+          "run_ids": {
+            "series-1": "r-275ea4e87cc04547b8ef",
+            "series-2": "r-b9dd5bbc707649b7a7f2"
+          },
+          "available": {
+            "series-1": true,
+            "series-2": true
+          },
+          "complete_pair": true,
+          "series_metrics": {
+            "series-1": {
+              "steps": 2,
+              "tool_calls": 0,
+              "tool_error_signals": 0,
+              "observation_chars": 0,
+              "observation_residency_char_turns": 0,
+              "empty_agent_messages": 0,
+              "exact_duplicate_commands": 0,
+              "runtime_install_commands": 0
+            },
+            "series-2": {
+              "steps": 2,
+              "tool_calls": 0,
+              "tool_error_signals": 0,
+              "observation_chars": 0,
+              "observation_residency_char_turns": 0,
+              "empty_agent_messages": 0,
+              "exact_duplicate_commands": 0,
+              "runtime_install_commands": 0
+            }
+          }
+        },
+        {
+          "task_name": "polyglot-c-py",
+          "rewards": {
+            "series-1": 0.0,
+            "series-2": 0.0
+          },
+          "run_ids": {
+            "series-1": "r-64ea387eee534d64857a",
+            "series-2": "r-16d8c2e13d804f72b0d0"
+          },
+          "available": {
+            "series-1": true,
+            "series-2": true
+          },
+          "complete_pair": true,
+          "series_metrics": {
+            "series-1": {
+              "steps": 2,
+              "tool_calls": 0,
+              "tool_error_signals": 0,
+              "observation_chars": 0,
+              "observation_residency_char_turns": 0,
+              "empty_agent_messages": 0,
+              "exact_duplicate_commands": 0,
+              "runtime_install_commands": 0
+            },
+            "series-2": {
+              "steps": 2,
+              "tool_calls": 0,
+              "tool_error_signals": 0,
+              "observation_chars": 0,
+              "observation_residency_char_turns": 0,
+              "empty_agent_messages": 0,
+              "exact_duplicate_commands": 0,
+              "runtime_install_commands": 0
+            }
+          }
+        },
+        {
+          "task_name": "polyglot-rust-c",
+          "rewards": {
+            "series-1": 0.0,
+            "series-2": 0.0
+          },
+          "run_ids": {
+            "series-1": "r-52e00052da1e401c801a",
+            "series-2": "r-d3483afb7c4b4908b3d7"
+          },
+          "available": {
+            "series-1": true,
+            "series-2": true
+          },
+          "complete_pair": true,
+          "series_metrics": {
+            "series-1": {
+              "steps": 2,
+              "tool_calls": 0,
+              "tool_error_signals": 0,
+              "observation_chars": 0,
+              "observation_residency_char_turns": 0,
+              "empty_agent_messages": 0,
+              "exact_duplicate_commands": 0,
+              "runtime_install_commands": 0
+            },
+            "series-2": {
+              "steps": 2,
+              "tool_calls": 0,
+              "tool_error_signals": 0,
+              "observation_chars": 0,
+              "observation_residency_char_turns": 0,
+              "empty_agent_messages": 0,
+              "exact_duplicate_commands": 0,
+              "runtime_install_commands": 0
+            }
+          }
+        },
+        {
+          "task_name": "protein-assembly",
+          "rewards": {
+            "series-1": 0.0,
+            "series-2": 0.0
+          },
+          "run_ids": {
+            "series-1": "r-76c71a9ff4fa43b59219",
+            "series-2": "r-b62712d38bca48ad9478"
+          },
+          "available": {
+            "series-1": true,
+            "series-2": false
+          },
+          "complete_pair": false
+        },
+        {
+          "task_name": "qemu-alpine-ssh",
+          "rewards": {
+            "series-1": 0.0,
+            "series-2": 0.0
+          },
+          "run_ids": {
+            "series-1": "r-60929eff864b45e38422",
+            "series-2": "r-3abcd39c7ef848409371"
+          },
+          "available": {
+            "series-1": true,
+            "series-2": true
+          },
+          "complete_pair": true,
+          "series_metrics": {
+            "series-1": {
+              "steps": 2,
+              "tool_calls": 0,
+              "tool_error_signals": 0,
+              "observation_chars": 0,
+              "observation_residency_char_turns": 0,
+              "empty_agent_messages": 0,
+              "exact_duplicate_commands": 0,
+              "runtime_install_commands": 0
+            },
+            "series-2": {
+              "steps": 2,
+              "tool_calls": 0,
+              "tool_error_signals": 0,
+              "observation_chars": 0,
+              "observation_residency_char_turns": 0,
+              "empty_agent_messages": 0,
+              "exact_duplicate_commands": 0,
+              "runtime_install_commands": 0
+            }
+          }
+        },
+        {
+          "task_name": "qemu-startup",
+          "rewards": {
+            "series-1": 0.0,
+            "series-2": 0.0
+          },
+          "run_ids": {
+            "series-1": "r-ef558342120948ecab8b",
+            "series-2": "r-d082b2198685471ea1df"
+          },
+          "available": {
+            "series-1": true,
+            "series-2": true
+          },
+          "complete_pair": true,
+          "series_metrics": {
+            "series-1": {
+              "steps": 2,
+              "tool_calls": 0,
+              "tool_error_signals": 0,
+              "observation_chars": 0,
+              "observation_residency_char_turns": 0,
+              "empty_agent_messages": 0,
+              "exact_duplicate_commands": 0,
+              "runtime_install_commands": 0
+            },
+            "series-2": {
+              "steps": 2,
+              "tool_calls": 0,
+              "tool_error_signals": 0,
+              "observation_chars": 0,
+              "observation_residency_char_turns": 0,
+              "empty_agent_messages": 0,
+              "exact_duplicate_commands": 0,
+              "runtime_install_commands": 0
+            }
+          }
+        },
+        {
+          "task_name": "query-optimize",
+          "rewards": {
+            "series-1": 0.0,
+            "series-2": 0.0
+          },
+          "run_ids": {
+            "series-1": "r-bc2465cfe4ff4f7e9637",
+            "series-2": "r-82f2d9319168465d8422"
+          },
+          "available": {
+            "series-1": true,
+            "series-2": true
+          },
+          "complete_pair": true,
+          "series_metrics": {
+            "series-1": {
+              "steps": 2,
+              "tool_calls": 0,
+              "tool_error_signals": 0,
+              "observation_chars": 0,
+              "observation_residency_char_turns": 0,
+              "empty_agent_messages": 0,
+              "exact_duplicate_commands": 0,
+              "runtime_install_commands": 0
+            },
+            "series-2": {
+              "steps": 2,
+              "tool_calls": 0,
+              "tool_error_signals": 0,
+              "observation_chars": 0,
+              "observation_residency_char_turns": 0,
+              "empty_agent_messages": 0,
+              "exact_duplicate_commands": 0,
+              "runtime_install_commands": 0
+            }
+          }
+        },
+        {
+          "task_name": "raman-fitting",
+          "rewards": {
+            "series-1": 0.0,
+            "series-2": 0.0
+          },
+          "run_ids": {
+            "series-1": "r-926b56fd48564ed199c7",
+            "series-2": "r-d97831cc4c894734aa7f"
+          },
+          "available": {
+            "series-1": true,
+            "series-2": false
+          },
+          "complete_pair": false
+        },
+        {
+          "task_name": "regex-chess",
+          "rewards": {
+            "series-1": 0.0,
+            "series-2": 0.0
+          },
+          "run_ids": {
+            "series-1": "r-4d233bb672cf45d58581",
+            "series-2": "r-aaedb3649d7b461eb227"
+          },
+          "available": {
+            "series-1": true,
+            "series-2": false
+          },
+          "complete_pair": false
+        },
+        {
+          "task_name": "regex-log",
+          "rewards": {
+            "series-1": 0.0,
+            "series-2": 0.0
+          },
+          "run_ids": {
+            "series-1": "r-ccebd6972f354907be1c",
+            "series-2": "r-88eacc5c574446aea636"
+          },
+          "available": {
+            "series-1": true,
+            "series-2": true
+          },
+          "complete_pair": true,
+          "series_metrics": {
+            "series-1": {
+              "steps": 2,
+              "tool_calls": 0,
+              "tool_error_signals": 0,
+              "observation_chars": 0,
+              "observation_residency_char_turns": 0,
+              "empty_agent_messages": 0,
+              "exact_duplicate_commands": 0,
+              "runtime_install_commands": 0
+            },
+            "series-2": {
+              "steps": 2,
+              "tool_calls": 0,
+              "tool_error_signals": 0,
+              "observation_chars": 0,
+              "observation_residency_char_turns": 0,
+              "empty_agent_messages": 0,
+              "exact_duplicate_commands": 0,
+              "runtime_install_commands": 0
+            }
+          }
+        },
+        {
+          "task_name": "schemelike-metacircular-eval",
+          "rewards": {
+            "series-1": 0.0,
+            "series-2": 0.0
+          },
+          "run_ids": {
+            "series-1": "r-0bac716c2e2b40bf8b04",
+            "series-2": "r-c8ce9b2e0c4246dfb69c"
+          },
+          "available": {
+            "series-1": false,
+            "series-2": false
+          },
+          "complete_pair": false
+        },
+        {
+          "task_name": "sparql-university",
+          "rewards": {
+            "series-1": 0.0,
+            "series-2": 0.0
+          },
+          "run_ids": {
+            "series-1": "r-3acc88ed9f064b74b196",
+            "series-2": "r-dcb280089955411bbe00"
+          },
+          "available": {
+            "series-1": true,
+            "series-2": true
+          },
+          "complete_pair": true,
+          "series_metrics": {
+            "series-1": {
+              "steps": 2,
+              "tool_calls": 0,
+              "tool_error_signals": 0,
+              "observation_chars": 0,
+              "observation_residency_char_turns": 0,
+              "empty_agent_messages": 0,
+              "exact_duplicate_commands": 0,
+              "runtime_install_commands": 0
+            },
+            "series-2": {
+              "steps": 2,
+              "tool_calls": 0,
+              "tool_error_signals": 0,
+              "observation_chars": 0,
+              "observation_residency_char_turns": 0,
+              "empty_agent_messages": 0,
+              "exact_duplicate_commands": 0,
+              "runtime_install_commands": 0
+            }
+          }
+        },
+        {
+          "task_name": "sqlite-with-gcov",
+          "rewards": {
+            "series-1": 0.0,
+            "series-2": 0.0
+          },
+          "run_ids": {
+            "series-1": "r-cd38cc9511f84516859c",
+            "series-2": "r-3493f11a975342729dca"
+          },
+          "available": {
+            "series-1": true,
+            "series-2": true
+          },
+          "complete_pair": true,
+          "series_metrics": {
+            "series-1": {
+              "steps": 2,
+              "tool_calls": 0,
+              "tool_error_signals": 0,
+              "observation_chars": 0,
+              "observation_residency_char_turns": 0,
+              "empty_agent_messages": 0,
+              "exact_duplicate_commands": 0,
+              "runtime_install_commands": 0
+            },
+            "series-2": {
+              "steps": 2,
+              "tool_calls": 0,
+              "tool_error_signals": 0,
+              "observation_chars": 0,
+              "observation_residency_char_turns": 0,
+              "empty_agent_messages": 0,
+              "exact_duplicate_commands": 0,
+              "runtime_install_commands": 0
+            }
+          }
+        },
+        {
+          "task_name": "torch-pipeline-parallelism",
+          "rewards": {
+            "series-1": 0.0,
+            "series-2": 0.0
+          },
+          "run_ids": {
+            "series-1": "r-bdec1c54bf904dd2b564",
+            "series-2": "r-5b1c9130844d4894baab"
+          },
+          "available": {
+            "series-1": true,
+            "series-2": true
+          },
+          "complete_pair": true,
+          "series_metrics": {
+            "series-1": {
+              "steps": 2,
+              "tool_calls": 0,
+              "tool_error_signals": 0,
+              "observation_chars": 0,
+              "observation_residency_char_turns": 0,
+              "empty_agent_messages": 0,
+              "exact_duplicate_commands": 0,
+              "runtime_install_commands": 0
+            },
+            "series-2": {
+              "steps": 2,
+              "tool_calls": 0,
+              "tool_error_signals": 0,
+              "observation_chars": 0,
+              "observation_residency_char_turns": 0,
+              "empty_agent_messages": 0,
+              "exact_duplicate_commands": 0,
+              "runtime_install_commands": 0
+            }
+          }
+        },
+        {
+          "task_name": "torch-tensor-parallelism",
+          "rewards": {
+            "series-1": 0.0,
+            "series-2": 0.0
+          },
+          "run_ids": {
+            "series-1": "r-8c72a830051d47c3a451",
+            "series-2": "r-9e3c28085086445cab72"
+          },
+          "available": {
+            "series-1": true,
+            "series-2": true
+          },
+          "complete_pair": true,
+          "series_metrics": {
+            "series-1": {
+              "steps": 2,
+              "tool_calls": 0,
+              "tool_error_signals": 0,
+              "observation_chars": 0,
+              "observation_residency_char_turns": 0,
+              "empty_agent_messages": 0,
+              "exact_duplicate_commands": 0,
+              "runtime_install_commands": 0
+            },
+            "series-2": {
+              "steps": 2,
+              "tool_calls": 0,
+              "tool_error_signals": 0,
+              "observation_chars": 0,
+              "observation_residency_char_turns": 0,
+              "empty_agent_messages": 0,
+              "exact_duplicate_commands": 0,
+              "runtime_install_commands": 0
+            }
+          }
+        },
+        {
+          "task_name": "video-processing",
+          "rewards": {
+            "series-1": 0.0,
+            "series-2": 0.0
+          },
+          "run_ids": {
+            "series-1": "r-01d37f94f79c42c89960",
+            "series-2": "r-294fc1f8add64fbfb026"
+          },
+          "available": {
+            "series-1": true,
+            "series-2": false
+          },
+          "complete_pair": false
+        },
+        {
+          "task_name": "winning-avg-corewars",
+          "rewards": {
+            "series-1": 0.0,
+            "series-2": 0.0
+          },
+          "run_ids": {
+            "series-1": "r-20a263c5ccfe4800b757",
+            "series-2": "r-eb978b48f37344cfadb5"
+          },
+          "available": {
+            "series-1": true,
+            "series-2": false
+          },
+          "complete_pair": false
+        },
+        {
+          "task_name": "write-compressor",
+          "rewards": {
+            "series-1": 0.0,
+            "series-2": 0.0
+          },
+          "run_ids": {
+            "series-1": "r-c03890f52d814e96888d",
+            "series-2": "r-73a4c6cb421b44a3b101"
+          },
+          "available": {
+            "series-1": true,
+            "series-2": true
+          },
+          "complete_pair": true,
+          "series_metrics": {
+            "series-1": {
+              "steps": 2,
+              "tool_calls": 0,
+              "tool_error_signals": 0,
+              "observation_chars": 0,
+              "observation_residency_char_turns": 0,
+              "empty_agent_messages": 0,
+              "exact_duplicate_commands": 0,
+              "runtime_install_commands": 0
+            },
+            "series-2": {
+              "steps": 2,
+              "tool_calls": 0,
+              "tool_error_signals": 0,
+              "observation_chars": 0,
+              "observation_residency_char_turns": 0,
+              "empty_agent_messages": 0,
+              "exact_duplicate_commands": 0,
+              "runtime_install_commands": 0
+            }
+          }
+        }
+      ]
+    },
+    "split": {
+      "task_count": 13,
+      "complete_pair_count": 5,
+      "pairs": [
+        {
+          "task_name": "break-filter-js-from-html",
+          "rewards": {
+            "series-1": 0.0,
+            "series-2": 1.0
+          },
+          "run_ids": {
+            "series-1": "r-3e224032fc3b420ea444",
+            "series-2": "r-4697b0558a67414fa594"
+          },
+          "available": {
+            "series-1": true,
+            "series-2": true
+          },
+          "complete_pair": true,
+          "series_metrics": {
+            "series-1": {
+              "steps": 27,
+              "tool_calls": 17,
+              "tool_error_signals": 1,
+              "observation_chars": 78869,
+              "observation_residency_char_turns": 1223356,
+              "empty_agent_messages": 2,
+              "exact_duplicate_commands": 0,
+              "runtime_install_commands": 0
+            },
+            "series-2": {
+              "steps": 27,
+              "tool_calls": 20,
+              "tool_error_signals": 1,
+              "observation_chars": 33644,
+              "observation_residency_char_turns": 568712,
+              "empty_agent_messages": 5,
+              "exact_duplicate_commands": 5,
+              "runtime_install_commands": 0
+            }
+          },
+          "winner_series": "series-2",
+          "loser_series": "series-1",
+          "winner_minus_loser": {
+            "steps": 0,
+            "tool_calls": 3,
+            "tool_error_signals": 0,
+            "observation_chars": -45225,
+            "observation_residency_char_turns": -654644,
+            "empty_agent_messages": 3,
+            "exact_duplicate_commands": 5,
+            "runtime_install_commands": 0
+          }
+        },
+        {
+          "task_name": "chess-best-move",
+          "rewards": {
+            "series-1": 0.0,
+            "series-2": 1.0
+          },
+          "run_ids": {
+            "series-1": "r-48cd2a56654f4c58bcca",
+            "series-2": "r-1d05278f967f44dc8ad5"
+          },
+          "available": {
+            "series-1": false,
+            "series-2": true
+          },
+          "complete_pair": false
+        },
+        {
+          "task_name": "db-wal-recovery",
+          "rewards": {
+            "series-1": 1.0,
+            "series-2": 0.0
+          },
+          "run_ids": {
+            "series-1": "r-429265a899f942619ee9",
+            "series-2": "r-f89678f114ec4ffc8669"
+          },
+          "available": {
+            "series-1": true,
+            "series-2": false
+          },
+          "complete_pair": false
+        },
+        {
+          "task_name": "feal-differential-cryptanalysis",
+          "rewards": {
+            "series-1": 0.0,
+            "series-2": 1.0
+          },
+          "run_ids": {
+            "series-1": "r-d88a4ab184524275b3f3",
+            "series-2": "r-706b3baeddce4c65a991"
+          },
+          "available": {
+            "series-1": true,
+            "series-2": true
+          },
+          "complete_pair": true,
+          "series_metrics": {
+            "series-1": {
+              "steps": 11,
+              "tool_calls": 6,
+              "tool_error_signals": 0,
+              "observation_chars": 14114,
+              "observation_residency_char_turns": 78568,
+              "empty_agent_messages": 1,
+              "exact_duplicate_commands": 1,
+              "runtime_install_commands": 0
+            },
+            "series-2": {
+              "steps": 7,
+              "tool_calls": 5,
+              "tool_error_signals": 0,
+              "observation_chars": 17616,
+              "observation_residency_char_turns": 56071,
+              "empty_agent_messages": 1,
+              "exact_duplicate_commands": 0,
+              "runtime_install_commands": 0
+            }
+          },
+          "winner_series": "series-2",
+          "loser_series": "series-1",
+          "winner_minus_loser": {
+            "steps": -4,
+            "tool_calls": -1,
+            "tool_error_signals": 0,
+            "observation_chars": 3502,
+            "observation_residency_char_turns": -22497,
+            "empty_agent_messages": 0,
+            "exact_duplicate_commands": -1,
+            "runtime_install_commands": 0
+          }
+        },
+        {
+          "task_name": "large-scale-text-editing",
+          "rewards": {
+            "series-1": 1.0,
+            "series-2": 0.0
+          },
+          "run_ids": {
+            "series-1": "r-aee85b22c77d420999d1",
+            "series-2": "r-1ded4aaf84b14679a7ce"
+          },
+          "available": {
+            "series-1": true,
+            "series-2": false
+          },
+          "complete_pair": false
+        },
+        {
+          "task_name": "largest-eigenval",
+          "rewards": {
+            "series-1": 0.0,
+            "series-2": 1.0
+          },
+          "run_ids": {
+            "series-1": "r-4e4c0c83bc294c88b3cb",
+            "series-2": "r-27d997b661204c16a455"
+          },
+          "available": {
+            "series-1": false,
+            "series-2": false
+          },
+          "complete_pair": false
+        },
+        {
+          "task_name": "llm-inference-batching-scheduler",
+          "rewards": {
+            "series-1": 1.0,
+            "series-2": 0.0
+          },
+          "run_ids": {
+            "series-1": "r-e5cbab419c9a4a05a661",
+            "series-2": "r-f8b955c422c1425d9469"
+          },
+          "available": {
+            "series-1": true,
+            "series-2": false
+          },
+          "complete_pair": false
+        },
+        {
+          "task_name": "mteb-retrieve",
+          "rewards": {
+            "series-1": 1.0,
+            "series-2": 0.0
+          },
+          "run_ids": {
+            "series-1": "r-79549e4fc6534bb6a1f6",
+            "series-2": "r-95d5a1b5b234489d982d"
+          },
+          "available": {
+            "series-1": true,
+            "series-2": true
+          },
+          "complete_pair": true,
+          "series_metrics": {
+            "series-1": {
+              "steps": 25,
+              "tool_calls": 26,
+              "tool_error_signals": 4,
+              "observation_chars": 46802,
+              "observation_residency_char_turns": 558235,
+              "empty_agent_messages": 2,
+              "exact_duplicate_commands": 0,
+              "runtime_install_commands": 0
+            },
+            "series-2": {
+              "steps": 22,
+              "tool_calls": 21,
+              "tool_error_signals": 7,
+              "observation_chars": 50167,
+              "observation_residency_char_turns": 573718,
+              "empty_agent_messages": 7,
+              "exact_duplicate_commands": 3,
+              "runtime_install_commands": 0
+            }
+          },
+          "winner_series": "series-1",
+          "loser_series": "series-2",
+          "winner_minus_loser": {
+            "steps": 3,
+            "tool_calls": 5,
+            "tool_error_signals": -3,
+            "observation_chars": -3365,
+            "observation_residency_char_turns": -15483,
+            "empty_agent_messages": -5,
+            "exact_duplicate_commands": -3,
+            "runtime_install_commands": 0
+          }
+        },
+        {
+          "task_name": "pytorch-model-recovery",
+          "rewards": {
+            "series-1": 1.0,
+            "series-2": 0.0
+          },
+          "run_ids": {
+            "series-1": "r-661adae045114c3394a1",
+            "series-2": "r-84659f4a03174582b120"
+          },
+          "available": {
+            "series-1": true,
+            "series-2": false
+          },
+          "complete_pair": false
+        },
+        {
+          "task_name": "rstan-to-pystan",
+          "rewards": {
+            "series-1": 0.0,
+            "series-2": 1.0
+          },
+          "run_ids": {
+            "series-1": "r-efb6beca47434952b140",
+            "series-2": "r-b6ece8c20d4e485aae77"
+          },
+          "available": {
+            "series-1": false,
+            "series-2": true
+          },
+          "complete_pair": false
+        },
+        {
+          "task_name": "sam-cell-seg",
+          "rewards": {
+            "series-1": 1.0,
+            "series-2": 0.0
+          },
+          "run_ids": {
+            "series-1": "r-85ff8d5999c1441f828a",
+            "series-2": "r-8e52a2c19b8b46a69a31"
+          },
+          "available": {
+            "series-1": true,
+            "series-2": true
+          },
+          "complete_pair": true,
+          "series_metrics": {
+            "series-1": {
+              "steps": 53,
+              "tool_calls": 47,
+              "tool_error_signals": 5,
+              "observation_chars": 209229,
+              "observation_residency_char_turns": 6853356,
+              "empty_agent_messages": 1,
+              "exact_duplicate_commands": 4,
+              "runtime_install_commands": 3
+            },
+            "series-2": {
+              "steps": 100,
+              "tool_calls": 91,
+              "tool_error_signals": 7,
+              "observation_chars": 569533,
+              "observation_residency_char_turns": 31693993,
+              "empty_agent_messages": 54,
+              "exact_duplicate_commands": 11,
+              "runtime_install_commands": 5
+            }
+          },
+          "winner_series": "series-1",
+          "loser_series": "series-2",
+          "winner_minus_loser": {
+            "steps": -47,
+            "tool_calls": -44,
+            "tool_error_signals": -2,
+            "observation_chars": -360304,
+            "observation_residency_char_turns": -24840637,
+            "empty_agent_messages": -53,
+            "exact_duplicate_commands": -7,
+            "runtime_install_commands": -2
+          }
+        },
+        {
+          "task_name": "sanitize-git-repo",
+          "rewards": {
+            "series-1": 1.0,
+            "series-2": 0.0
+          },
+          "run_ids": {
+            "series-1": "r-b4baa5d0f9e64a9a91bc",
+            "series-2": "r-cb6f6b7b92254eb6bdfd"
+          },
+          "available": {
+            "series-1": true,
+            "series-2": true
+          },
+          "complete_pair": true,
+          "series_metrics": {
+            "series-1": {
+              "steps": 127,
+              "tool_calls": 122,
+              "tool_error_signals": 1,
+              "observation_chars": 666994,
+              "observation_residency_char_turns": 46826810,
+              "empty_agent_messages": 3,
+              "exact_duplicate_commands": 13,
+              "runtime_install_commands": 0
+            },
+            "series-2": {
+              "steps": 33,
+              "tool_calls": 31,
+              "tool_error_signals": 1,
+              "observation_chars": 874949,
+              "observation_residency_char_turns": 19173660,
+              "empty_agent_messages": 20,
+              "exact_duplicate_commands": 1,
+              "runtime_install_commands": 0
+            }
+          },
+          "winner_series": "series-1",
+          "loser_series": "series-2",
+          "winner_minus_loser": {
+            "steps": 94,
+            "tool_calls": 91,
+            "tool_error_signals": 0,
+            "observation_chars": -207955,
+            "observation_residency_char_turns": 27653150,
+            "empty_agent_messages": -17,
+            "exact_duplicate_commands": 12,
+            "runtime_install_commands": 0
+          }
+        },
+        {
+          "task_name": "train-fasttext",
+          "rewards": {
+            "series-1": 1.0,
+            "series-2": 0.0
+          },
+          "run_ids": {
+            "series-1": "r-50889948504b477fbf69",
+            "series-2": "r-505f6e83536148d6ba9e"
+          },
+          "available": {
+            "series-1": false,
+            "series-2": false
+          },
+          "complete_pair": false
+        }
+      ]
+    },
+    "both_one_sample": {
+      "task_count": 3,
+      "complete_pair_count": 3,
+      "pairs": [
+        {
+          "task_name": "fix-ocaml-gc",
+          "rewards": {
+            "series-1": 1.0,
+            "series-2": 1.0
+          },
+          "run_ids": {
+            "series-1": "r-0f789c63010a42c9b69c",
+            "series-2": "r-8df3c48043f8490d9471"
+          },
+          "available": {
+            "series-1": true,
+            "series-2": true
+          },
+          "complete_pair": true,
+          "series_metrics": {
+            "series-1": {
+              "steps": 91,
+              "tool_calls": 86,
+              "tool_error_signals": 18,
+              "observation_chars": 168160,
+              "observation_residency_char_turns": 9165617,
+              "empty_agent_messages": 0,
+              "exact_duplicate_commands": 7,
+              "runtime_install_commands": 0
+            },
+            "series-2": {
+              "steps": 72,
+              "tool_calls": 75,
+              "tool_error_signals": 19,
+              "observation_chars": 393645,
+              "observation_residency_char_turns": 21376032,
+              "empty_agent_messages": 46,
+              "exact_duplicate_commands": 5,
+              "runtime_install_commands": 0
+            }
+          }
+        },
+        {
+          "task_name": "portfolio-optimization",
+          "rewards": {
+            "series-1": 1.0,
+            "series-2": 1.0
+          },
+          "run_ids": {
+            "series-1": "r-e8f845718eb34ec6ac0b",
+            "series-2": "r-2e353ac0e1bd4e0583b8"
+          },
+          "available": {
+            "series-1": true,
+            "series-2": true
+          },
+          "complete_pair": true,
+          "series_metrics": {
+            "series-1": {
+              "steps": 63,
+              "tool_calls": 66,
+              "tool_error_signals": 4,
+              "observation_chars": 231144,
+              "observation_residency_char_turns": 7320901,
+              "empty_agent_messages": 0,
+              "exact_duplicate_commands": 26,
+              "runtime_install_commands": 0
+            },
+            "series-2": {
+              "steps": 8,
+              "tool_calls": 10,
+              "tool_error_signals": 1,
+              "observation_chars": 35729,
+              "observation_residency_char_turns": 167569,
+              "empty_agent_messages": 0,
+              "exact_duplicate_commands": 1,
+              "runtime_install_commands": 0
+            }
+          }
+        },
+        {
+          "task_name": "prove-plus-comm",
+          "rewards": {
+            "series-1": 1.0,
+            "series-2": 1.0
+          },
+          "run_ids": {
+            "series-1": "r-8bbe91ee64f34996a6d6",
+            "series-2": "r-375fa155204742798239"
+          },
+          "available": {
+            "series-1": true,
+            "series-2": true
+          },
+          "complete_pair": true,
+          "series_metrics": {
+            "series-1": {
+              "steps": 8,
+              "tool_calls": 6,
+              "tool_error_signals": 0,
+              "observation_chars": 7152,
+              "observation_residency_char_turns": 23310,
+              "empty_agent_messages": 0,
+              "exact_duplicate_commands": 1,
+              "runtime_install_commands": 0
+            },
+            "series-2": {
+              "steps": 7,
+              "tool_calls": 5,
+              "tool_error_signals": 0,
+              "observation_chars": 4185,
+              "observation_residency_char_turns": 10770,
+              "empty_agent_messages": 1,
+              "exact_duplicate_commands": 0,
+              "runtime_install_commands": 0
+            }
+          }
+        }
+      ]
+    }
+  },
+  "split_complete_pair_winner_minus_loser": {
+    "steps": {
+      "mean": 9.2,
+      "median": 0,
+      "values": [
+        0,
+        -4,
+        3,
+        -47,
+        94
+      ]
+    },
+    "tool_calls": {
+      "mean": 10.8,
+      "median": 3,
+      "values": [
+        3,
+        -1,
+        5,
+        -44,
+        91
+      ]
+    },
+    "tool_error_signals": {
+      "mean": -1,
+      "median": 0,
+      "values": [
+        0,
+        0,
+        -3,
+        -2,
+        0
+      ]
+    },
+    "observation_chars": {
+      "mean": -122669.4,
+      "median": -45225,
+      "values": [
+        -45225,
+        3502,
+        -3365,
+        -360304,
+        -207955
+      ]
+    },
+    "observation_residency_char_turns": {
+      "mean": 423977.8,
+      "median": -22497,
+      "values": [
+        -654644,
+        -22497,
+        -15483,
+        -24840637,
+        27653150
+      ]
+    },
+    "empty_agent_messages": {
+      "mean": -14.4,
+      "median": -5,
+      "values": [
+        3,
+        0,
+        -5,
+        -53,
+        -17
+      ]
+    },
+    "exact_duplicate_commands": {
+      "mean": 1.2,
+      "median": -1,
+      "values": [
+        5,
+        -1,
+        -3,
+        -7,
+        12
+      ]
+    },
+    "runtime_install_commands": {
+      "mean": -0.4,
+      "median": 0,
+      "values": [
+        0,
+        0,
+        0,
+        -2,
+        0
+      ]
+    }
+  },
+  "runs": [
+    {
+      "run_id": "r-0f789c63010a42c9b69c",
+      "category": "both-one-sample",
+      "task_name": "fix-ocaml-gc",
+      "series": "series-1",
+      "reward": 1.0,
+      "model": "matrixllm.aisearch_duet_dsv4_flash",
+      "agent_version": "unknown",
+      "schema_version": "ATIF-v1.7",
+      "steps": 91,
+      "agent_steps": 90,
+      "tool_calls": 86,
+      "tool_results": 86,
+      "tool_error_signals": 18,
+      "observation_chars": 168160,
+      "max_observation_chars": 6651,
+      "large_observations_gt_8k": 0,
+      "observation_residency_char_turns": 9165617,
+      "agent_message_chars": 93482,
+      "final_message_chars": 1768,
+      "empty_agent_messages": 0,
+      "exact_duplicate_commands": 7,
+      "runtime_install_commands": 0,
+      "output_control_commands": 40,
+      "elapsed_seconds_from_step_timestamps": 2896.947475,
+      "reported_final_metric_keys": [
+        "total_steps"
+      ],
+      "capture_placeholder": false
+    },
+    {
+      "run_id": "r-2e353ac0e1bd4e0583b8",
+      "category": "both-one-sample",
+      "task_name": "portfolio-optimization",
+      "series": "series-2",
+      "reward": 1.0,
+      "model": "matrixllm.aisearch_duet_glm52",
+      "agent_version": "unknown",
+      "schema_version": "ATIF-v1.7",
+      "steps": 8,
+      "agent_steps": 7,
+      "tool_calls": 10,
+      "tool_results": 10,
+      "tool_error_signals": 1,
+      "observation_chars": 35729,
+      "max_observation_chars": 14242,
+      "large_observations_gt_8k": 2,
+      "observation_residency_char_turns": 167569,
+      "agent_message_chars": 2276,
+      "final_message_chars": 1449,
+      "empty_agent_messages": 0,
+      "exact_duplicate_commands": 1,
+      "runtime_install_commands": 0,
+      "output_control_commands": 0,
+      "elapsed_seconds_from_step_timestamps": 203.242233,
+      "reported_final_metric_keys": [
+        "total_steps"
+      ],
+      "capture_placeholder": false
+    },
+    {
+      "run_id": "r-375fa155204742798239",
+      "category": "both-one-sample",
+      "task_name": "prove-plus-comm",
+      "series": "series-2",
+      "reward": 1.0,
+      "model": "matrixllm.aisearch_duet_glm52",
+      "agent_version": "unknown",
+      "schema_version": "ATIF-v1.7",
+      "steps": 7,
+      "agent_steps": 6,
+      "tool_calls": 5,
+      "tool_results": 5,
+      "tool_error_signals": 0,
+      "observation_chars": 4185,
+      "max_observation_chars": 1408,
+      "large_observations_gt_8k": 0,
+      "observation_residency_char_turns": 10770,
+      "agent_message_chars": 2390,
+      "final_message_chars": 1372,
+      "empty_agent_messages": 1,
+      "exact_duplicate_commands": 0,
+      "runtime_install_commands": 0,
+      "output_control_commands": 0,
+      "elapsed_seconds_from_step_timestamps": 229.477226,
+      "reported_final_metric_keys": [
+        "total_steps"
+      ],
+      "capture_placeholder": false
+    },
+    {
+      "run_id": "r-8bbe91ee64f34996a6d6",
+      "category": "both-one-sample",
+      "task_name": "prove-plus-comm",
+      "series": "series-1",
+      "reward": 1.0,
+      "model": "matrixllm.aisearch_duet_dsv4_flash",
+      "agent_version": "unknown",
+      "schema_version": "ATIF-v1.7",
+      "steps": 8,
+      "agent_steps": 7,
+      "tool_calls": 6,
+      "tool_results": 6,
+      "tool_error_signals": 0,
+      "observation_chars": 7152,
+      "max_observation_chars": 1785,
+      "large_observations_gt_8k": 0,
+      "observation_residency_char_turns": 23310,
+      "agent_message_chars": 2786,
+      "final_message_chars": 1136,
+      "empty_agent_messages": 0,
+      "exact_duplicate_commands": 1,
+      "runtime_install_commands": 0,
+      "output_control_commands": 0,
+      "elapsed_seconds_from_step_timestamps": 28.631306,
+      "reported_final_metric_keys": [
+        "total_steps"
+      ],
+      "capture_placeholder": false
+    },
+    {
+      "run_id": "r-8df3c48043f8490d9471",
+      "category": "both-one-sample",
+      "task_name": "fix-ocaml-gc",
+      "series": "series-2",
+      "reward": 1.0,
+      "model": "matrixllm.aisearch_duet_glm52",
+      "agent_version": "unknown",
+      "schema_version": "ATIF-v1.7",
+      "steps": 72,
+      "agent_steps": 71,
+      "tool_calls": 75,
+      "tool_results": 75,
+      "tool_error_signals": 19,
+      "observation_chars": 393645,
+      "max_observation_chars": 64418,
+      "large_observations_gt_8k": 16,
+      "observation_residency_char_turns": 21376032,
+      "agent_message_chars": 6222,
+      "final_message_chars": 1693,
+      "empty_agent_messages": 46,
+      "exact_duplicate_commands": 5,
+      "runtime_install_commands": 0,
+      "output_control_commands": 9,
+      "elapsed_seconds_from_step_timestamps": 2385.661617,
+      "reported_final_metric_keys": [
+        "total_steps"
+      ],
+      "capture_placeholder": false
+    },
+    {
+      "run_id": "r-e8f845718eb34ec6ac0b",
+      "category": "both-one-sample",
+      "task_name": "portfolio-optimization",
+      "series": "series-1",
+      "reward": 1.0,
+      "model": "matrixllm.aisearch_duet_dsv4_flash",
+      "agent_version": "unknown",
+      "schema_version": "ATIF-v1.7",
+      "steps": 63,
+      "agent_steps": 62,
+      "tool_calls": 66,
+      "tool_results": 66,
+      "tool_error_signals": 4,
+      "observation_chars": 231144,
+      "max_observation_chars": 18993,
+      "large_observations_gt_8k": 8,
+      "observation_residency_char_turns": 7320901,
+      "agent_message_chars": 88760,
+      "final_message_chars": 1559,
+      "empty_agent_messages": 0,
+      "exact_duplicate_commands": 26,
+      "runtime_install_commands": 0,
+      "output_control_commands": 1,
+      "elapsed_seconds_from_step_timestamps": 2146.598431,
+      "reported_final_metric_keys": [
+        "total_steps"
+      ],
+      "capture_placeholder": false
+    },
+    {
+      "run_id": "r-01d37f94f79c42c89960",
+      "category": "both-zero",
+      "task_name": "video-processing",
+      "series": "series-1",
+      "reward": 0.0,
+      "model": "matrixllm.aisearch_duet_dsv4_flash",
+      "agent_version": "unknown",
+      "schema_version": "ATIF-v1.7",
+      "steps": 128,
+      "agent_steps": 127,
+      "tool_calls": 122,
+      "tool_results": 122,
+      "tool_error_signals": 4,
+      "observation_chars": 580250,
+      "max_observation_chars": 15553,
+      "large_observations_gt_8k": 9,
+      "observation_residency_char_turns": 37705702,
+      "agent_message_chars": 148262,
+      "final_message_chars": 1989,
+      "empty_agent_messages": 3,
+      "exact_duplicate_commands": 58,
+      "runtime_install_commands": 1,
+      "output_control_commands": 8,
+      "elapsed_seconds_from_step_timestamps": 1626.854465,
+      "reported_final_metric_keys": [
+        "total_steps"
+      ],
+      "capture_placeholder": false
+    },
+    {
+      "run_id": "r-0774f4cd94294c45b140",
+      "category": "both-zero",
+      "task_name": "extract-elf",
+      "series": "series-1",
+      "reward": 0.0,
+      "model": "matrixllm.aisearch_duet_dsv4_flash",
+      "agent_version": "unknown",
+      "schema_version": "ATIF-v1.7",
+      "steps": 29,
+      "agent_steps": 28,
+      "tool_calls": 24,
+      "tool_results": 24,
+      "tool_error_signals": 2,
+      "observation_chars": 62118,
+      "max_observation_chars": 5880,
+      "large_observations_gt_8k": 0,
+      "observation_residency_char_turns": 976653,
+      "agent_message_chars": 49545,
+      "final_message_chars": 1264,
+      "empty_agent_messages": 0,
+      "exact_duplicate_commands": 0,
+      "runtime_install_commands": 0,
+      "output_control_commands": 1,
+      "elapsed_seconds_from_step_timestamps": 252.21463,
+      "reported_final_metric_keys": [
+        "total_steps"
+      ],
+      "capture_placeholder": false
+    },
+    {
+      "run_id": "r-08cfa7e82e3c4bcb8e06",
+      "category": "both-zero",
+      "task_name": "overfull-hbox",
+      "series": "series-1",
+      "reward": 0.0,
+      "model": "matrixllm.aisearch_duet_dsv4_flash",
+      "agent_version": "unknown",
+      "schema_version": "ATIF-v1.7",
+      "steps": 2,
+      "agent_steps": 1,
+      "tool_calls": 0,
+      "tool_results": 0,
+      "tool_error_signals": 0,
+      "observation_chars": 0,
+      "max_observation_chars": 0,
+      "large_observations_gt_8k": 0,
+      "observation_residency_char_turns": 0,
+      "agent_message_chars": 46,
+      "final_message_chars": 46,
+      "empty_agent_messages": 0,
+      "exact_duplicate_commands": 0,
+      "runtime_install_commands": 0,
+      "output_control_commands": 0,
+      "elapsed_seconds_from_step_timestamps": null,
+      "reported_final_metric_keys": [
+        "total_steps"
+      ],
+      "capture_placeholder": true
+    },
+    {
+      "run_id": "r-16d8c2e13d804f72b0d0",
+      "category": "both-zero",
+      "task_name": "polyglot-c-py",
+      "series": "series-2",
+      "reward": 0.0,
+      "model": "matrixllm.aisearch_duet_glm52",
+      "agent_version": "unknown",
+      "schema_version": "ATIF-v1.7",
+      "steps": 2,
+      "agent_steps": 1,
+      "tool_calls": 0,
+      "tool_results": 0,
+      "tool_error_signals": 0,
+      "observation_chars": 0,
+      "max_observation_chars": 0,
+      "large_observations_gt_8k": 0,
+      "observation_residency_char_turns": 0,
+      "agent_message_chars": 46,
+      "final_message_chars": 46,
+      "empty_agent_messages": 0,
+      "exact_duplicate_commands": 0,
+      "runtime_install_commands": 0,
+      "output_control_commands": 0,
+      "elapsed_seconds_from_step_timestamps": null,
+      "reported_final_metric_keys": [
+        "total_steps"
+      ],
+      "capture_placeholder": true
+    },
+    {
+      "run_id": "r-175fa82ed9cc474db355",
+      "category": "both-zero",
+      "task_name": "caffe-cifar-10",
+      "series": "series-1",
+      "reward": 0.0,
+      "model": "matrixllm.aisearch_duet_dsv4_flash",
+      "agent_version": "unknown",
+      "schema_version": "ATIF-v1.7",
+      "steps": 2,
+      "agent_steps": 1,
+      "tool_calls": 0,
+      "tool_results": 0,
+      "tool_error_signals": 0,
+      "observation_chars": 0,
+      "max_observation_chars": 0,
+      "large_observations_gt_8k": 0,
+      "observation_residency_char_turns": 0,
+      "agent_message_chars": 46,
+      "final_message_chars": 46,
+      "empty_agent_messages": 0,
+      "exact_duplicate_commands": 0,
+      "runtime_install_commands": 0,
+      "output_control_commands": 0,
+      "elapsed_seconds_from_step_timestamps": null,
+      "reported_final_metric_keys": [
+        "total_steps"
+      ],
+      "capture_placeholder": true
+    },
+    {
+      "run_id": "r-1d43615292d74700aa76",
+      "category": "both-zero",
+      "task_name": "build-pov-ray",
+      "series": "series-1",
+      "reward": 0.0,
+      "model": "matrixllm.aisearch_duet_dsv4_flash",
+      "agent_version": "unknown",
+      "schema_version": "ATIF-v1.7",
+      "steps": 2,
+      "agent_steps": 1,
+      "tool_calls": 0,
+      "tool_results": 0,
+      "tool_error_signals": 0,
+      "observation_chars": 0,
+      "max_observation_chars": 0,
+      "large_observations_gt_8k": 0,
+      "observation_residency_char_turns": 0,
+      "agent_message_chars": 46,
+      "final_message_chars": 46,
+      "empty_agent_messages": 0,
+      "exact_duplicate_commands": 0,
+      "runtime_install_commands": 0,
+      "output_control_commands": 0,
+      "elapsed_seconds_from_step_timestamps": null,
+      "reported_final_metric_keys": [
+        "total_steps"
+      ],
+      "capture_placeholder": true
+    },
+    {
+      "run_id": "r-20a263c5ccfe4800b757",
+      "category": "both-zero",
+      "task_name": "winning-avg-corewars",
+      "series": "series-1",
+      "reward": 0.0,
+      "model": "matrixllm.aisearch_duet_dsv4_flash",
+      "agent_version": "unknown",
+      "schema_version": "ATIF-v1.7",
+      "steps": 44,
+      "agent_steps": 43,
+      "tool_calls": 37,
+      "tool_results": 37,
+      "tool_error_signals": 1,
+      "observation_chars": 76927,
+      "max_observation_chars": 5966,
+      "large_observations_gt_8k": 0,
+      "observation_residency_char_turns": 1810740,
+      "agent_message_chars": 177059,
+      "final_message_chars": 10038,
+      "empty_agent_messages": 2,
+      "exact_duplicate_commands": 1,
+      "runtime_install_commands": 0,
+      "output_control_commands": 29,
+      "elapsed_seconds_from_step_timestamps": 831.074075,
+      "reported_final_metric_keys": [
+        "total_steps"
+      ],
+      "capture_placeholder": false
+    },
+    {
+      "run_id": "r-248fb1d0250741eb85f4",
+      "category": "both-zero",
+      "task_name": "dna-assembly",
+      "series": "series-2",
+      "reward": 0.0,
+      "model": "matrixllm.aisearch_duet_glm52",
+      "agent_version": "unknown",
+      "schema_version": "ATIF-v1.7",
+      "steps": 2,
+      "agent_steps": 1,
+      "tool_calls": 0,
+      "tool_results": 0,
+      "tool_error_signals": 0,
+      "observation_chars": 0,
+      "max_observation_chars": 0,
+      "large_observations_gt_8k": 0,
+      "observation_residency_char_turns": 0,
+      "agent_message_chars": 46,
+      "final_message_chars": 46,
+      "empty_agent_messages": 0,
+      "exact_duplicate_commands": 0,
+      "runtime_install_commands": 0,
+      "output_control_commands": 0,
+      "elapsed_seconds_from_step_timestamps": null,
+      "reported_final_metric_keys": [
+        "total_steps"
+      ],
+      "capture_placeholder": true
+    },
+    {
+      "run_id": "r-275ea4e87cc04547b8ef",
+      "category": "both-zero",
+      "task_name": "path-tracing-reverse",
+      "series": "series-1",
+      "reward": 0.0,
+      "model": "matrixllm.aisearch_duet_dsv4_flash",
+      "agent_version": "unknown",
+      "schema_version": "ATIF-v1.7",
+      "steps": 2,
+      "agent_steps": 1,
+      "tool_calls": 0,
+      "tool_results": 0,
+      "tool_error_signals": 0,
+      "observation_chars": 0,
+      "max_observation_chars": 0,
+      "large_observations_gt_8k": 0,
+      "observation_residency_char_turns": 0,
+      "agent_message_chars": 46,
+      "final_message_chars": 46,
+      "empty_agent_messages": 0,
+      "exact_duplicate_commands": 0,
+      "runtime_install_commands": 0,
+      "output_control_commands": 0,
+      "elapsed_seconds_from_step_timestamps": null,
+      "reported_final_metric_keys": [
+        "total_steps"
+      ],
+      "capture_placeholder": true
+    },
+    {
+      "run_id": "r-287bd979ad05448c87e8",
+      "category": "both-zero",
+      "task_name": "filter-js-from-html",
+      "series": "series-2",
+      "reward": 0.0,
+      "model": "matrixllm.aisearch_duet_glm52",
+      "agent_version": "unknown",
+      "schema_version": "ATIF-v1.7",
+      "steps": 9,
+      "agent_steps": 8,
+      "tool_calls": 7,
+      "tool_results": 7,
+      "tool_error_signals": 2,
+      "observation_chars": 52350,
+      "max_observation_chars": 19870,
+      "large_observations_gt_8k": 2,
+      "observation_residency_char_turns": 230501,
+      "agent_message_chars": 2559,
+      "final_message_chars": 1799,
+      "empty_agent_messages": 1,
+      "exact_duplicate_commands": 0,
+      "runtime_install_commands": 0,
+      "output_control_commands": 0,
+      "elapsed_seconds_from_step_timestamps": 489.658221,
+      "reported_final_metric_keys": [
+        "total_steps"
+      ],
+      "capture_placeholder": false
+    },
+    {
+      "run_id": "r-2b54168975b04f6c8829",
+      "category": "both-zero",
+      "task_name": "cancel-async-tasks",
+      "series": "series-2",
+      "reward": 0.0,
+      "model": "matrixllm.aisearch_duet_glm52",
+      "agent_version": "unknown",
+      "schema_version": "ATIF-v1.7",
+      "steps": 9,
+      "agent_steps": 8,
+      "tool_calls": 7,
+      "tool_results": 7,
+      "tool_error_signals": 1,
+      "observation_chars": 32479,
+      "max_observation_chars": 11282,
+      "large_observations_gt_8k": 2,
+      "observation_residency_char_turns": 127366,
+      "agent_message_chars": 2831,
+      "final_message_chars": 1604,
+      "empty_agent_messages": 0,
+      "exact_duplicate_commands": 0,
+      "runtime_install_commands": 0,
+      "output_control_commands": 0,
+      "elapsed_seconds_from_step_timestamps": 246.674613,
+      "reported_final_metric_keys": [
+        "total_steps"
+      ],
+      "capture_placeholder": false
+    },
+    {
+      "run_id": "r-2cee99b33cd3418082c9",
+      "category": "both-zero",
+      "task_name": "configure-git-webserver",
+      "series": "series-1",
+      "reward": 0.0,
+      "model": "matrixllm.aisearch_duet_dsv4_flash",
+      "agent_version": "unknown",
+      "schema_version": "ATIF-v1.7",
+      "steps": 2,
+      "agent_steps": 1,
+      "tool_calls": 0,
+      "tool_results": 0,
+      "tool_error_signals": 0,
+      "observation_chars": 0,
+      "max_observation_chars": 0,
+      "large_observations_gt_8k": 0,
+      "observation_residency_char_turns": 0,
+      "agent_message_chars": 46,
+      "final_message_chars": 46,
+      "empty_agent_messages": 0,
+      "exact_duplicate_commands": 0,
+      "runtime_install_commands": 0,
+      "output_control_commands": 0,
+      "elapsed_seconds_from_step_timestamps": null,
+      "reported_final_metric_keys": [
+        "total_steps"
+      ],
+      "capture_placeholder": true
+    },
+    {
+      "run_id": "r-2d120c9c15e24d2ba948",
+      "category": "both-zero",
+      "task_name": "git-leak-recovery",
+      "series": "series-2",
+      "reward": 0.0,
+      "model": "matrixllm.aisearch_duet_glm52",
+      "agent_version": "unknown",
+      "schema_version": "ATIF-v1.7",
+      "steps": 2,
+      "agent_steps": 1,
+      "tool_calls": 0,
+      "tool_results": 0,
+      "tool_error_signals": 0,
+      "observation_chars": 0,
+      "max_observation_chars": 0,
+      "large_observations_gt_8k": 0,
+      "observation_residency_char_turns": 0,
+      "agent_message_chars": 46,
+      "final_message_chars": 46,
+      "empty_agent_messages": 0,
+      "exact_duplicate_commands": 0,
+      "runtime_install_commands": 0,
+      "output_control_commands": 0,
+      "elapsed_seconds_from_step_timestamps": null,
+      "reported_final_metric_keys": [
+        "total_steps"
+      ],
+      "capture_placeholder": true
+    },
+    {
+      "run_id": "r-2f9814b86b7b4c6f94ec",
+      "category": "both-zero",
+      "task_name": "filter-js-from-html",
+      "series": "series-1",
+      "reward": 0.0,
+      "model": "matrixllm.aisearch_duet_dsv4_flash",
+      "agent_version": "unknown",
+      "schema_version": "ATIF-v1.7",
+      "steps": 72,
+      "agent_steps": 71,
+      "tool_calls": 65,
+      "tool_results": 65,
+      "tool_error_signals": 3,
+      "observation_chars": 343998,
+      "max_observation_chars": 43101,
+      "large_observations_gt_8k": 11,
+      "observation_residency_char_turns": 16771639,
+      "agent_message_chars": 35792,
+      "final_message_chars": 1883,
+      "empty_agent_messages": 0,
+      "exact_duplicate_commands": 15,
+      "runtime_install_commands": 0,
+      "output_control_commands": 1,
+      "elapsed_seconds_from_step_timestamps": 476.775954,
+      "reported_final_metric_keys": [
+        "total_steps"
+      ],
+      "capture_placeholder": false
+    },
+    {
+      "run_id": "r-302f0ea436b547b3a6d5",
+      "category": "both-zero",
+      "task_name": "merge-diff-arc-agi-task",
+      "series": "series-2",
+      "reward": 0.0,
+      "model": "matrixllm.aisearch_duet_glm52",
+      "agent_version": "unknown",
+      "schema_version": "ATIF-v1.7",
+      "steps": 2,
+      "agent_steps": 1,
+      "tool_calls": 0,
+      "tool_results": 0,
+      "tool_error_signals": 0,
+      "observation_chars": 0,
+      "max_observation_chars": 0,
+      "large_observations_gt_8k": 0,
+      "observation_residency_char_turns": 0,
+      "agent_message_chars": 46,
+      "final_message_chars": 46,
+      "empty_agent_messages": 0,
+      "exact_duplicate_commands": 0,
+      "runtime_install_commands": 0,
+      "output_control_commands": 0,
+      "elapsed_seconds_from_step_timestamps": null,
+      "reported_final_metric_keys": [
+        "total_steps"
+      ],
+      "capture_placeholder": true
+    },
+    {
+      "run_id": "r-334befac3c6f415ba832",
+      "category": "both-zero",
+      "task_name": "gpt2-codegolf",
+      "series": "series-1",
+      "reward": 0.0,
+      "model": "matrixllm.aisearch_duet_dsv4_flash",
+      "agent_version": "unknown",
+      "schema_version": "ATIF-v1.7",
+      "steps": 2,
+      "agent_steps": 1,
+      "tool_calls": 0,
+      "tool_results": 0,
+      "tool_error_signals": 0,
+      "observation_chars": 0,
+      "max_observation_chars": 0,
+      "large_observations_gt_8k": 0,
+      "observation_residency_char_turns": 0,
+      "agent_message_chars": 46,
+      "final_message_chars": 46,
+      "empty_agent_messages": 0,
+      "exact_duplicate_commands": 0,
+      "runtime_install_commands": 0,
+      "output_control_commands": 0,
+      "elapsed_seconds_from_step_timestamps": null,
+      "reported_final_metric_keys": [
+        "total_steps"
+      ],
+      "capture_placeholder": true
+    },
+    {
+      "run_id": "r-3493f11a975342729dca",
+      "category": "both-zero",
+      "task_name": "sqlite-with-gcov",
+      "series": "series-2",
+      "reward": 0.0,
+      "model": "matrixllm.aisearch_duet_glm52",
+      "agent_version": "unknown",
+      "schema_version": "ATIF-v1.7",
+      "steps": 2,
+      "agent_steps": 1,
+      "tool_calls": 0,
+      "tool_results": 0,
+      "tool_error_signals": 0,
+      "observation_chars": 0,
+      "max_observation_chars": 0,
+      "large_observations_gt_8k": 0,
+      "observation_residency_char_turns": 0,
+      "agent_message_chars": 46,
+      "final_message_chars": 46,
+      "empty_agent_messages": 0,
+      "exact_duplicate_commands": 0,
+      "runtime_install_commands": 0,
+      "output_control_commands": 0,
+      "elapsed_seconds_from_step_timestamps": null,
+      "reported_final_metric_keys": [
+        "total_steps"
+      ],
+      "capture_placeholder": true
+    },
+    {
+      "run_id": "r-389c076706904f10abb0",
+      "category": "both-zero",
+      "task_name": "git-leak-recovery",
+      "series": "series-1",
+      "reward": 0.0,
+      "model": "matrixllm.aisearch_duet_dsv4_flash",
+      "agent_version": "unknown",
+      "schema_version": "ATIF-v1.7",
+      "steps": 2,
+      "agent_steps": 1,
+      "tool_calls": 0,
+      "tool_results": 0,
+      "tool_error_signals": 0,
+      "observation_chars": 0,
+      "max_observation_chars": 0,
+      "large_observations_gt_8k": 0,
+      "observation_residency_char_turns": 0,
+      "agent_message_chars": 46,
+      "final_message_chars": 46,
+      "empty_agent_messages": 0,
+      "exact_duplicate_commands": 0,
+      "runtime_install_commands": 0,
+      "output_control_commands": 0,
+      "elapsed_seconds_from_step_timestamps": null,
+      "reported_final_metric_keys": [
+        "total_steps"
+      ],
+      "capture_placeholder": true
+    },
+    {
+      "run_id": "r-3abcd39c7ef848409371",
+      "category": "both-zero",
+      "task_name": "qemu-alpine-ssh",
+      "series": "series-2",
+      "reward": 0.0,
+      "model": "matrixllm.aisearch_duet_glm52",
+      "agent_version": "unknown",
+      "schema_version": "ATIF-v1.7",
+      "steps": 2,
+      "agent_steps": 1,
+      "tool_calls": 0,
+      "tool_results": 0,
+      "tool_error_signals": 0,
+      "observation_chars": 0,
+      "max_observation_chars": 0,
+      "large_observations_gt_8k": 0,
+      "observation_residency_char_turns": 0,
+      "agent_message_chars": 46,
+      "final_message_chars": 46,
+      "empty_agent_messages": 0,
+      "exact_duplicate_commands": 0,
+      "runtime_install_commands": 0,
+      "output_control_commands": 0,
+      "elapsed_seconds_from_step_timestamps": null,
+      "reported_final_metric_keys": [
+        "total_steps"
+      ],
+      "capture_placeholder": true
+    },
+    {
+      "run_id": "r-3acc88ed9f064b74b196",
+      "category": "both-zero",
+      "task_name": "sparql-university",
+      "series": "series-1",
+      "reward": 0.0,
+      "model": "matrixllm.aisearch_duet_dsv4_flash",
+      "agent_version": "unknown",
+      "schema_version": "ATIF-v1.7",
+      "steps": 2,
+      "agent_steps": 1,
+      "tool_calls": 0,
+      "tool_results": 0,
+      "tool_error_signals": 0,
+      "observation_chars": 0,
+      "max_observation_chars": 0,
+      "large_observations_gt_8k": 0,
+      "observation_residency_char_turns": 0,
+      "agent_message_chars": 46,
+      "final_message_chars": 46,
+      "empty_agent_messages": 0,
+      "exact_duplicate_commands": 0,
+      "runtime_install_commands": 0,
+      "output_control_commands": 0,
+      "elapsed_seconds_from_step_timestamps": null,
+      "reported_final_metric_keys": [
+        "total_steps"
+      ],
+      "capture_placeholder": true
+    },
+    {
+      "run_id": "r-3f7c5f3680b44e25b1bf",
+      "category": "both-zero",
+      "task_name": "model-extraction-relu-logits",
+      "series": "series-1",
+      "reward": 0.0,
+      "model": "matrixllm.aisearch_duet_dsv4_flash",
+      "agent_version": "unknown",
+      "schema_version": "ATIF-v1.7",
+      "steps": 23,
+      "agent_steps": 22,
+      "tool_calls": 16,
+      "tool_results": 16,
+      "tool_error_signals": 1,
+      "observation_chars": 46366,
+      "max_observation_chars": 8644,
+      "large_observations_gt_8k": 1,
+      "observation_residency_char_turns": 645248,
+      "agent_message_chars": 24667,
+      "final_message_chars": 1125,
+      "empty_agent_messages": 1,
+      "exact_duplicate_commands": 2,
+      "runtime_install_commands": 0,
+      "output_control_commands": 0,
+      "elapsed_seconds_from_step_timestamps": 710.163158,
+      "reported_final_metric_keys": [
+        "total_steps"
+      ],
+      "capture_placeholder": false
+    },
+    {
+      "run_id": "r-45e3d9341c9548d9beb7",
+      "category": "both-zero",
+      "task_name": "cancel-async-tasks",
+      "series": "series-1",
+      "reward": 0.0,
+      "model": "matrixllm.aisearch_duet_dsv4_flash",
+      "agent_version": "unknown",
+      "schema_version": "ATIF-v1.7",
+      "steps": 18,
+      "agent_steps": 17,
+      "tool_calls": 16,
+      "tool_results": 16,
+      "tool_error_signals": 10,
+      "observation_chars": 75744,
+      "max_observation_chars": 10061,
+      "large_observations_gt_8k": 3,
+      "observation_residency_char_turns": 679035,
+      "agent_message_chars": 9487,
+      "final_message_chars": 2403,
+      "empty_agent_messages": 0,
+      "exact_duplicate_commands": 1,
+      "runtime_install_commands": 0,
+      "output_control_commands": 0,
+      "elapsed_seconds_from_step_timestamps": 126.237636,
+      "reported_final_metric_keys": [
+        "total_steps"
+      ],
+      "capture_placeholder": false
+    },
+    {
+      "run_id": "r-4c4538022bd340d9957a",
+      "category": "both-zero",
+      "task_name": "caffe-cifar-10",
+      "series": "series-2",
+      "reward": 0.0,
+      "model": "matrixllm.aisearch_duet_glm52",
+      "agent_version": "unknown",
+      "schema_version": "ATIF-v1.7",
+      "steps": 2,
+      "agent_steps": 1,
+      "tool_calls": 0,
+      "tool_results": 0,
+      "tool_error_signals": 0,
+      "observation_chars": 0,
+      "max_observation_chars": 0,
+      "large_observations_gt_8k": 0,
+      "observation_residency_char_turns": 0,
+      "agent_message_chars": 46,
+      "final_message_chars": 46,
+      "empty_agent_messages": 0,
+      "exact_duplicate_commands": 0,
+      "runtime_install_commands": 0,
+      "output_control_commands": 0,
+      "elapsed_seconds_from_step_timestamps": null,
+      "reported_final_metric_keys": [
+        "total_steps"
+      ],
+      "capture_placeholder": true
+    },
+    {
+      "run_id": "r-4d233bb672cf45d58581",
+      "category": "both-zero",
+      "task_name": "regex-chess",
+      "series": "series-1",
+      "reward": 0.0,
+      "model": "matrixllm.aisearch_duet_dsv4_flash",
+      "agent_version": "unknown",
+      "schema_version": "ATIF-v1.7",
+      "steps": 8,
+      "agent_steps": 7,
+      "tool_calls": 3,
+      "tool_results": 3,
+      "tool_error_signals": 2,
+      "observation_chars": 12105,
+      "max_observation_chars": 5595,
+      "large_observations_gt_8k": 0,
+      "observation_residency_char_turns": 62403,
+      "agent_message_chars": 41130,
+      "final_message_chars": 10038,
+      "empty_agent_messages": 1,
+      "exact_duplicate_commands": 0,
+      "runtime_install_commands": 0,
+      "output_control_commands": 1,
+      "elapsed_seconds_from_step_timestamps": 164.792983,
+      "reported_final_metric_keys": [
+        "total_steps"
+      ],
+      "capture_placeholder": false
+    },
+    {
+      "run_id": "r-52e00052da1e401c801a",
+      "category": "both-zero",
+      "task_name": "polyglot-rust-c",
+      "series": "series-1",
+      "reward": 0.0,
+      "model": "matrixllm.aisearch_duet_dsv4_flash",
+      "agent_version": "unknown",
+      "schema_version": "ATIF-v1.7",
+      "steps": 2,
+      "agent_steps": 1,
+      "tool_calls": 0,
+      "tool_results": 0,
+      "tool_error_signals": 0,
+      "observation_chars": 0,
+      "max_observation_chars": 0,
+      "large_observations_gt_8k": 0,
+      "observation_residency_char_turns": 0,
+      "agent_message_chars": 46,
+      "final_message_chars": 46,
+      "empty_agent_messages": 0,
+      "exact_duplicate_commands": 0,
+      "runtime_install_commands": 0,
+      "output_control_commands": 0,
+      "elapsed_seconds_from_step_timestamps": null,
+      "reported_final_metric_keys": [
+        "total_steps"
+      ],
+      "capture_placeholder": true
+    },
+    {
+      "run_id": "r-5359c0b5cdc04e86a168",
+      "category": "both-zero",
+      "task_name": "compile-compcert",
+      "series": "series-1",
+      "reward": 0.0,
+      "model": "matrixllm.aisearch_duet_dsv4_flash",
+      "agent_version": "unknown",
+      "schema_version": "ATIF-v1.7",
+      "steps": 2,
+      "agent_steps": 1,
+      "tool_calls": 0,
+      "tool_results": 0,
+      "tool_error_signals": 0,
+      "observation_chars": 0,
+      "max_observation_chars": 0,
+      "large_observations_gt_8k": 0,
+      "observation_residency_char_turns": 0,
+      "agent_message_chars": 46,
+      "final_message_chars": 46,
+      "empty_agent_messages": 0,
+      "exact_duplicate_commands": 0,
+      "runtime_install_commands": 0,
+      "output_control_commands": 0,
+      "elapsed_seconds_from_step_timestamps": null,
+      "reported_final_metric_keys": [
+        "total_steps"
+      ],
+      "capture_placeholder": true
+    },
+    {
+      "run_id": "r-5a31a6fa76024664b3e7",
+      "category": "both-zero",
+      "task_name": "feal-linear-cryptanalysis",
+      "series": "series-1",
+      "reward": 0.0,
+      "model": "matrixllm.aisearch_duet_dsv4_flash",
+      "agent_version": "unknown",
+      "schema_version": "ATIF-v1.7",
+      "steps": 14,
+      "agent_steps": 13,
+      "tool_calls": 11,
+      "tool_results": 11,
+      "tool_error_signals": 0,
+      "observation_chars": 40592,
+      "max_observation_chars": 10413,
+      "large_observations_gt_8k": 1,
+      "observation_residency_char_turns": 351060,
+      "agent_message_chars": 61231,
+      "final_message_chars": 10038,
+      "empty_agent_messages": 0,
+      "exact_duplicate_commands": 0,
+      "runtime_install_commands": 0,
+      "output_control_commands": 0,
+      "elapsed_seconds_from_step_timestamps": 2274.835344,
+      "reported_final_metric_keys": [
+        "total_steps"
+      ],
+      "capture_placeholder": false
+    },
+    {
+      "run_id": "r-5b1c9130844d4894baab",
+      "category": "both-zero",
+      "task_name": "torch-pipeline-parallelism",
+      "series": "series-2",
+      "reward": 0.0,
+      "model": "matrixllm.aisearch_duet_glm52",
+      "agent_version": "unknown",
+      "schema_version": "ATIF-v1.7",
+      "steps": 2,
+      "agent_steps": 1,
+      "tool_calls": 0,
+      "tool_results": 0,
+      "tool_error_signals": 0,
+      "observation_chars": 0,
+      "max_observation_chars": 0,
+      "large_observations_gt_8k": 0,
+      "observation_residency_char_turns": 0,
+      "agent_message_chars": 46,
+      "final_message_chars": 46,
+      "empty_agent_messages": 0,
+      "exact_duplicate_commands": 0,
+      "runtime_install_commands": 0,
+      "output_control_commands": 0,
+      "elapsed_seconds_from_step_timestamps": null,
+      "reported_final_metric_keys": [
+        "total_steps"
+      ],
+      "capture_placeholder": true
+    },
+    {
+      "run_id": "r-5da1bb5a28e64ec2bb90",
+      "category": "both-zero",
+      "task_name": "overfull-hbox",
+      "series": "series-2",
+      "reward": 0.0,
+      "model": "matrixllm.aisearch_duet_glm52",
+      "agent_version": "unknown",
+      "schema_version": "ATIF-v1.7",
+      "steps": 2,
+      "agent_steps": 1,
+      "tool_calls": 0,
+      "tool_results": 0,
+      "tool_error_signals": 0,
+      "observation_chars": 0,
+      "max_observation_chars": 0,
+      "large_observations_gt_8k": 0,
+      "observation_residency_char_turns": 0,
+      "agent_message_chars": 46,
+      "final_message_chars": 46,
+      "empty_agent_messages": 0,
+      "exact_duplicate_commands": 0,
+      "runtime_install_commands": 0,
+      "output_control_commands": 0,
+      "elapsed_seconds_from_step_timestamps": null,
+      "reported_final_metric_keys": [
+        "total_steps"
+      ],
+      "capture_placeholder": true
+    },
+    {
+      "run_id": "r-60929eff864b45e38422",
+      "category": "both-zero",
+      "task_name": "qemu-alpine-ssh",
+      "series": "series-1",
+      "reward": 0.0,
+      "model": "matrixllm.aisearch_duet_dsv4_flash",
+      "agent_version": "unknown",
+      "schema_version": "ATIF-v1.7",
+      "steps": 2,
+      "agent_steps": 1,
+      "tool_calls": 0,
+      "tool_results": 0,
+      "tool_error_signals": 0,
+      "observation_chars": 0,
+      "max_observation_chars": 0,
+      "large_observations_gt_8k": 0,
+      "observation_residency_char_turns": 0,
+      "agent_message_chars": 46,
+      "final_message_chars": 46,
+      "empty_agent_messages": 0,
+      "exact_duplicate_commands": 0,
+      "runtime_install_commands": 0,
+      "output_control_commands": 0,
+      "elapsed_seconds_from_step_timestamps": null,
+      "reported_final_metric_keys": [
+        "total_steps"
+      ],
+      "capture_placeholder": true
+    },
+    {
+      "run_id": "r-64ea387eee534d64857a",
+      "category": "both-zero",
+      "task_name": "polyglot-c-py",
+      "series": "series-1",
+      "reward": 0.0,
+      "model": "matrixllm.aisearch_duet_dsv4_flash",
+      "agent_version": "unknown",
+      "schema_version": "ATIF-v1.7",
+      "steps": 2,
+      "agent_steps": 1,
+      "tool_calls": 0,
+      "tool_results": 0,
+      "tool_error_signals": 0,
+      "observation_chars": 0,
+      "max_observation_chars": 0,
+      "large_observations_gt_8k": 0,
+      "observation_residency_char_turns": 0,
+      "agent_message_chars": 46,
+      "final_message_chars": 46,
+      "empty_agent_messages": 0,
+      "exact_duplicate_commands": 0,
+      "runtime_install_commands": 0,
+      "output_control_commands": 0,
+      "elapsed_seconds_from_step_timestamps": null,
+      "reported_final_metric_keys": [
+        "total_steps"
+      ],
+      "capture_placeholder": true
+    },
+    {
+      "run_id": "r-73a4c6cb421b44a3b101",
+      "category": "both-zero",
+      "task_name": "write-compressor",
+      "series": "series-2",
+      "reward": 0.0,
+      "model": "matrixllm.aisearch_duet_glm52",
+      "agent_version": "unknown",
+      "schema_version": "ATIF-v1.7",
+      "steps": 2,
+      "agent_steps": 1,
+      "tool_calls": 0,
+      "tool_results": 0,
+      "tool_error_signals": 0,
+      "observation_chars": 0,
+      "max_observation_chars": 0,
+      "large_observations_gt_8k": 0,
+      "observation_residency_char_turns": 0,
+      "agent_message_chars": 46,
+      "final_message_chars": 46,
+      "empty_agent_messages": 0,
+      "exact_duplicate_commands": 0,
+      "runtime_install_commands": 0,
+      "output_control_commands": 0,
+      "elapsed_seconds_from_step_timestamps": null,
+      "reported_final_metric_keys": [
+        "total_steps"
+      ],
+      "capture_placeholder": true
+    },
+    {
+      "run_id": "r-74beaccfefb141ceb394",
+      "category": "both-zero",
+      "task_name": "configure-git-webserver",
+      "series": "series-2",
+      "reward": 0.0,
+      "model": "matrixllm.aisearch_duet_glm52",
+      "agent_version": "unknown",
+      "schema_version": "ATIF-v1.7",
+      "steps": 2,
+      "agent_steps": 1,
+      "tool_calls": 0,
+      "tool_results": 0,
+      "tool_error_signals": 0,
+      "observation_chars": 0,
+      "max_observation_chars": 0,
+      "large_observations_gt_8k": 0,
+      "observation_residency_char_turns": 0,
+      "agent_message_chars": 46,
+      "final_message_chars": 46,
+      "empty_agent_messages": 0,
+      "exact_duplicate_commands": 0,
+      "runtime_install_commands": 0,
+      "output_control_commands": 0,
+      "elapsed_seconds_from_step_timestamps": null,
+      "reported_final_metric_keys": [
+        "total_steps"
+      ],
+      "capture_placeholder": true
+    },
+    {
+      "run_id": "r-76015a4f21064e1f96f1",
+      "category": "both-zero",
+      "task_name": "crack-7z-hash",
+      "series": "series-1",
+      "reward": 0.0,
+      "model": "matrixllm.aisearch_duet_dsv4_flash",
+      "agent_version": "unknown",
+      "schema_version": "ATIF-v1.7",
+      "steps": 2,
+      "agent_steps": 1,
+      "tool_calls": 0,
+      "tool_results": 0,
+      "tool_error_signals": 0,
+      "observation_chars": 0,
+      "max_observation_chars": 0,
+      "large_observations_gt_8k": 0,
+      "observation_residency_char_turns": 0,
+      "agent_message_chars": 46,
+      "final_message_chars": 46,
+      "empty_agent_messages": 0,
+      "exact_duplicate_commands": 0,
+      "runtime_install_commands": 0,
+      "output_control_commands": 0,
+      "elapsed_seconds_from_step_timestamps": null,
+      "reported_final_metric_keys": [
+        "total_steps"
+      ],
+      "capture_placeholder": true
+    },
+    {
+      "run_id": "r-76c71a9ff4fa43b59219",
+      "category": "both-zero",
+      "task_name": "protein-assembly",
+      "series": "series-1",
+      "reward": 0.0,
+      "model": "matrixllm.aisearch_duet_dsv4_flash",
+      "agent_version": "unknown",
+      "schema_version": "ATIF-v1.7",
+      "steps": 23,
+      "agent_steps": 22,
+      "tool_calls": 20,
+      "tool_results": 20,
+      "tool_error_signals": 7,
+      "observation_chars": 55643,
+      "max_observation_chars": 7019,
+      "large_observations_gt_8k": 0,
+      "observation_residency_char_turns": 675152,
+      "agent_message_chars": 60429,
+      "final_message_chars": 10038,
+      "empty_agent_messages": 0,
+      "exact_duplicate_commands": 0,
+      "runtime_install_commands": 0,
+      "output_control_commands": 0,
+      "elapsed_seconds_from_step_timestamps": 799.415277,
+      "reported_final_metric_keys": [
+        "total_steps"
+      ],
+      "capture_placeholder": false
+    },
+    {
+      "run_id": "r-7895a81ee9c34fffa744",
+      "category": "both-zero",
+      "task_name": "extract-moves-from-video",
+      "series": "series-1",
+      "reward": 0.0,
+      "model": "matrixllm.aisearch_duet_dsv4_flash",
+      "agent_version": "unknown",
+      "schema_version": "ATIF-v1.7",
+      "steps": 2,
+      "agent_steps": 1,
+      "tool_calls": 0,
+      "tool_results": 0,
+      "tool_error_signals": 0,
+      "observation_chars": 0,
+      "max_observation_chars": 0,
+      "large_observations_gt_8k": 0,
+      "observation_residency_char_turns": 0,
+      "agent_message_chars": 46,
+      "final_message_chars": 46,
+      "empty_agent_messages": 0,
+      "exact_duplicate_commands": 0,
+      "runtime_install_commands": 0,
+      "output_control_commands": 0,
+      "elapsed_seconds_from_step_timestamps": null,
+      "reported_final_metric_keys": [
+        "total_steps"
+      ],
+      "capture_placeholder": true
+    },
+    {
+      "run_id": "r-82f2d9319168465d8422",
+      "category": "both-zero",
+      "task_name": "query-optimize",
+      "series": "series-2",
+      "reward": 0.0,
+      "model": "matrixllm.aisearch_duet_glm52",
+      "agent_version": "unknown",
+      "schema_version": "ATIF-v1.7",
+      "steps": 2,
+      "agent_steps": 1,
+      "tool_calls": 0,
+      "tool_results": 0,
+      "tool_error_signals": 0,
+      "observation_chars": 0,
+      "max_observation_chars": 0,
+      "large_observations_gt_8k": 0,
+      "observation_residency_char_turns": 0,
+      "agent_message_chars": 46,
+      "final_message_chars": 46,
+      "empty_agent_messages": 0,
+      "exact_duplicate_commands": 0,
+      "runtime_install_commands": 0,
+      "output_control_commands": 0,
+      "elapsed_seconds_from_step_timestamps": null,
+      "reported_final_metric_keys": [
+        "total_steps"
+      ],
+      "capture_placeholder": true
+    },
+    {
+      "run_id": "r-832c294c617e4b40bb44",
+      "category": "both-zero",
+      "task_name": "gpt2-codegolf",
+      "series": "series-2",
+      "reward": 0.0,
+      "model": "matrixllm.aisearch_duet_glm52",
+      "agent_version": "unknown",
+      "schema_version": "ATIF-v1.7",
+      "steps": 2,
+      "agent_steps": 1,
+      "tool_calls": 0,
+      "tool_results": 0,
+      "tool_error_signals": 0,
+      "observation_chars": 0,
+      "max_observation_chars": 0,
+      "large_observations_gt_8k": 0,
+      "observation_residency_char_turns": 0,
+      "agent_message_chars": 46,
+      "final_message_chars": 46,
+      "empty_agent_messages": 0,
+      "exact_duplicate_commands": 0,
+      "runtime_install_commands": 0,
+      "output_control_commands": 0,
+      "elapsed_seconds_from_step_timestamps": null,
+      "reported_final_metric_keys": [
+        "total_steps"
+      ],
+      "capture_placeholder": true
+    },
+    {
+      "run_id": "r-8831a39cb94d4a6e97ce",
+      "category": "both-zero",
+      "task_name": "adaptive-rejection-sampler",
+      "series": "series-1",
+      "reward": 0.0,
+      "model": "matrixllm.aisearch_duet_dsv4_flash",
+      "agent_version": "unknown",
+      "schema_version": "ATIF-v1.7",
+      "steps": 2,
+      "agent_steps": 1,
+      "tool_calls": 0,
+      "tool_results": 0,
+      "tool_error_signals": 0,
+      "observation_chars": 0,
+      "max_observation_chars": 0,
+      "large_observations_gt_8k": 0,
+      "observation_residency_char_turns": 0,
+      "agent_message_chars": 46,
+      "final_message_chars": 46,
+      "empty_agent_messages": 0,
+      "exact_duplicate_commands": 0,
+      "runtime_install_commands": 0,
+      "output_control_commands": 0,
+      "elapsed_seconds_from_step_timestamps": null,
+      "reported_final_metric_keys": [
+        "total_steps"
+      ],
+      "capture_placeholder": true
+    },
+    {
+      "run_id": "r-88eacc5c574446aea636",
+      "category": "both-zero",
+      "task_name": "regex-log",
+      "series": "series-2",
+      "reward": 0.0,
+      "model": "matrixllm.aisearch_duet_glm52",
+      "agent_version": "unknown",
+      "schema_version": "ATIF-v1.7",
+      "steps": 2,
+      "agent_steps": 1,
+      "tool_calls": 0,
+      "tool_results": 0,
+      "tool_error_signals": 0,
+      "observation_chars": 0,
+      "max_observation_chars": 0,
+      "large_observations_gt_8k": 0,
+      "observation_residency_char_turns": 0,
+      "agent_message_chars": 46,
+      "final_message_chars": 46,
+      "empty_agent_messages": 0,
+      "exact_duplicate_commands": 0,
+      "runtime_install_commands": 0,
+      "output_control_commands": 0,
+      "elapsed_seconds_from_step_timestamps": null,
+      "reported_final_metric_keys": [
+        "total_steps"
+      ],
+      "capture_placeholder": true
+    },
+    {
+      "run_id": "r-8c72a830051d47c3a451",
+      "category": "both-zero",
+      "task_name": "torch-tensor-parallelism",
+      "series": "series-1",
+      "reward": 0.0,
+      "model": "matrixllm.aisearch_duet_dsv4_flash",
+      "agent_version": "unknown",
+      "schema_version": "ATIF-v1.7",
+      "steps": 2,
+      "agent_steps": 1,
+      "tool_calls": 0,
+      "tool_results": 0,
+      "tool_error_signals": 0,
+      "observation_chars": 0,
+      "max_observation_chars": 0,
+      "large_observations_gt_8k": 0,
+      "observation_residency_char_turns": 0,
+      "agent_message_chars": 46,
+      "final_message_chars": 46,
+      "empty_agent_messages": 0,
+      "exact_duplicate_commands": 0,
+      "runtime_install_commands": 0,
+      "output_control_commands": 0,
+      "elapsed_seconds_from_step_timestamps": null,
+      "reported_final_metric_keys": [
+        "total_steps"
+      ],
+      "capture_placeholder": true
+    },
+    {
+      "run_id": "r-926b56fd48564ed199c7",
+      "category": "both-zero",
+      "task_name": "raman-fitting",
+      "series": "series-1",
+      "reward": 0.0,
+      "model": "matrixllm.aisearch_duet_dsv4_flash",
+      "agent_version": "unknown",
+      "schema_version": "ATIF-v1.7",
+      "steps": 51,
+      "agent_steps": 50,
+      "tool_calls": 46,
+      "tool_results": 46,
+      "tool_error_signals": 16,
+      "observation_chars": 198722,
+      "max_observation_chars": 8516,
+      "large_observations_gt_8k": 1,
+      "observation_residency_char_turns": 4529718,
+      "agent_message_chars": 79583,
+      "final_message_chars": 10038,
+      "empty_agent_messages": 0,
+      "exact_duplicate_commands": 0,
+      "runtime_install_commands": 1,
+      "output_control_commands": 1,
+      "elapsed_seconds_from_step_timestamps": 616.962349,
+      "reported_final_metric_keys": [
+        "total_steps"
+      ],
+      "capture_placeholder": false
+    },
+    {
+      "run_id": "r-94d16d3097a6420f9f87",
+      "category": "both-zero",
+      "task_name": "dna-assembly",
+      "series": "series-1",
+      "reward": 0.0,
+      "model": "matrixllm.aisearch_duet_dsv4_flash",
+      "agent_version": "unknown",
+      "schema_version": "ATIF-v1.7",
+      "steps": 2,
+      "agent_steps": 1,
+      "tool_calls": 0,
+      "tool_results": 0,
+      "tool_error_signals": 0,
+      "observation_chars": 0,
+      "max_observation_chars": 0,
+      "large_observations_gt_8k": 0,
+      "observation_residency_char_turns": 0,
+      "agent_message_chars": 46,
+      "final_message_chars": 46,
+      "empty_agent_messages": 0,
+      "exact_duplicate_commands": 0,
+      "runtime_install_commands": 0,
+      "output_control_commands": 0,
+      "elapsed_seconds_from_step_timestamps": null,
+      "reported_final_metric_keys": [
+        "total_steps"
+      ],
+      "capture_placeholder": true
+    },
+    {
+      "run_id": "r-9584582356b54d69b480",
+      "category": "both-zero",
+      "task_name": "merge-diff-arc-agi-task",
+      "series": "series-1",
+      "reward": 0.0,
+      "model": "matrixllm.aisearch_duet_dsv4_flash",
+      "agent_version": "unknown",
+      "schema_version": "ATIF-v1.7",
+      "steps": 2,
+      "agent_steps": 1,
+      "tool_calls": 0,
+      "tool_results": 0,
+      "tool_error_signals": 0,
+      "observation_chars": 0,
+      "max_observation_chars": 0,
+      "large_observations_gt_8k": 0,
+      "observation_residency_char_turns": 0,
+      "agent_message_chars": 46,
+      "final_message_chars": 46,
+      "empty_agent_messages": 0,
+      "exact_duplicate_commands": 0,
+      "runtime_install_commands": 0,
+      "output_control_commands": 0,
+      "elapsed_seconds_from_step_timestamps": null,
+      "reported_final_metric_keys": [
+        "total_steps"
+      ],
+      "capture_placeholder": true
+    },
+    {
+      "run_id": "r-9a9fedd116134cd7ba54",
+      "category": "both-zero",
+      "task_name": "dna-insert",
+      "series": "series-1",
+      "reward": 0.0,
+      "model": "matrixllm.aisearch_duet_dsv4_flash",
+      "agent_version": "unknown",
+      "schema_version": "ATIF-v1.7",
+      "steps": 2,
+      "agent_steps": 1,
+      "tool_calls": 0,
+      "tool_results": 0,
+      "tool_error_signals": 0,
+      "observation_chars": 0,
+      "max_observation_chars": 0,
+      "large_observations_gt_8k": 0,
+      "observation_residency_char_turns": 0,
+      "agent_message_chars": 46,
+      "final_message_chars": 46,
+      "empty_agent_messages": 0,
+      "exact_duplicate_commands": 0,
+      "runtime_install_commands": 0,
+      "output_control_commands": 0,
+      "elapsed_seconds_from_step_timestamps": null,
+      "reported_final_metric_keys": [
+        "total_steps"
+      ],
+      "capture_placeholder": true
+    },
+    {
+      "run_id": "r-9e3c28085086445cab72",
+      "category": "both-zero",
+      "task_name": "torch-tensor-parallelism",
+      "series": "series-2",
+      "reward": 0.0,
+      "model": "matrixllm.aisearch_duet_glm52",
+      "agent_version": "unknown",
+      "schema_version": "ATIF-v1.7",
+      "steps": 2,
+      "agent_steps": 1,
+      "tool_calls": 0,
+      "tool_results": 0,
+      "tool_error_signals": 0,
+      "observation_chars": 0,
+      "max_observation_chars": 0,
+      "large_observations_gt_8k": 0,
+      "observation_residency_char_turns": 0,
+      "agent_message_chars": 46,
+      "final_message_chars": 46,
+      "empty_agent_messages": 0,
+      "exact_duplicate_commands": 0,
+      "runtime_install_commands": 0,
+      "output_control_commands": 0,
+      "elapsed_seconds_from_step_timestamps": null,
+      "reported_final_metric_keys": [
+        "total_steps"
+      ],
+      "capture_placeholder": true
+    },
+    {
+      "run_id": "r-a61b429bd9a3473fa360",
+      "category": "both-zero",
+      "task_name": "mteb-leaderboard",
+      "series": "series-1",
+      "reward": 0.0,
+      "model": "matrixllm.aisearch_duet_dsv4_flash",
+      "agent_version": "unknown",
+      "schema_version": "ATIF-v1.7",
+      "steps": 54,
+      "agent_steps": 53,
+      "tool_calls": 48,
+      "tool_results": 48,
+      "tool_error_signals": 3,
+      "observation_chars": 143632,
+      "max_observation_chars": 18846,
+      "large_observations_gt_8k": 2,
+      "observation_residency_char_turns": 3840042,
+      "agent_message_chars": 32718,
+      "final_message_chars": 1066,
+      "empty_agent_messages": 0,
+      "exact_duplicate_commands": 2,
+      "runtime_install_commands": 0,
+      "output_control_commands": 26,
+      "elapsed_seconds_from_step_timestamps": 502.518997,
+      "reported_final_metric_keys": [
+        "total_steps"
+      ],
+      "capture_placeholder": false
+    },
+    {
+      "run_id": "r-a8455be4ff4e477ab82c",
+      "category": "both-zero",
+      "task_name": "circuit-fibsqrt",
+      "series": "series-1",
+      "reward": 0.0,
+      "model": "matrixllm.aisearch_duet_dsv4_flash",
+      "agent_version": "unknown",
+      "schema_version": "ATIF-v1.7",
+      "steps": 82,
+      "agent_steps": 81,
+      "tool_calls": 72,
+      "tool_results": 72,
+      "tool_error_signals": 4,
+      "observation_chars": 218064,
+      "max_observation_chars": 12716,
+      "large_observations_gt_8k": 3,
+      "observation_residency_char_turns": 10638238,
+      "agent_message_chars": 281928,
+      "final_message_chars": 10038,
+      "empty_agent_messages": 0,
+      "exact_duplicate_commands": 2,
+      "runtime_install_commands": 0,
+      "output_control_commands": 23,
+      "elapsed_seconds_from_step_timestamps": 1642.353233,
+      "reported_final_metric_keys": [
+        "total_steps"
+      ],
+      "capture_placeholder": false
+    },
+    {
+      "run_id": "r-b6815d52e0f34ff5aba1",
+      "category": "both-zero",
+      "task_name": "build-pov-ray",
+      "series": "series-2",
+      "reward": 0.0,
+      "model": "matrixllm.aisearch_duet_glm52",
+      "agent_version": "unknown",
+      "schema_version": "ATIF-v1.7",
+      "steps": 2,
+      "agent_steps": 1,
+      "tool_calls": 0,
+      "tool_results": 0,
+      "tool_error_signals": 0,
+      "observation_chars": 0,
+      "max_observation_chars": 0,
+      "large_observations_gt_8k": 0,
+      "observation_residency_char_turns": 0,
+      "agent_message_chars": 46,
+      "final_message_chars": 46,
+      "empty_agent_messages": 0,
+      "exact_duplicate_commands": 0,
+      "runtime_install_commands": 0,
+      "output_control_commands": 0,
+      "elapsed_seconds_from_step_timestamps": null,
+      "reported_final_metric_keys": [
+        "total_steps"
+      ],
+      "capture_placeholder": true
+    },
+    {
+      "run_id": "r-b9dd5bbc707649b7a7f2",
+      "category": "both-zero",
+      "task_name": "path-tracing-reverse",
+      "series": "series-2",
+      "reward": 0.0,
+      "model": "matrixllm.aisearch_duet_glm52",
+      "agent_version": "unknown",
+      "schema_version": "ATIF-v1.7",
+      "steps": 2,
+      "agent_steps": 1,
+      "tool_calls": 0,
+      "tool_results": 0,
+      "tool_error_signals": 0,
+      "observation_chars": 0,
+      "max_observation_chars": 0,
+      "large_observations_gt_8k": 0,
+      "observation_residency_char_turns": 0,
+      "agent_message_chars": 46,
+      "final_message_chars": 46,
+      "empty_agent_messages": 0,
+      "exact_duplicate_commands": 0,
+      "runtime_install_commands": 0,
+      "output_control_commands": 0,
+      "elapsed_seconds_from_step_timestamps": null,
+      "reported_final_metric_keys": [
+        "total_steps"
+      ],
+      "capture_placeholder": true
+    },
+    {
+      "run_id": "r-ba0df58469784a03975c",
+      "category": "both-zero",
+      "task_name": "financial-document-processor",
+      "series": "series-1",
+      "reward": 0.0,
+      "model": "matrixllm.aisearch_duet_dsv4_flash",
+      "agent_version": "unknown",
+      "schema_version": "ATIF-v1.7",
+      "steps": 2,
+      "agent_steps": 1,
+      "tool_calls": 0,
+      "tool_results": 0,
+      "tool_error_signals": 0,
+      "observation_chars": 0,
+      "max_observation_chars": 0,
+      "large_observations_gt_8k": 0,
+      "observation_residency_char_turns": 0,
+      "agent_message_chars": 46,
+      "final_message_chars": 46,
+      "empty_agent_messages": 0,
+      "exact_duplicate_commands": 0,
+      "runtime_install_commands": 0,
+      "output_control_commands": 0,
+      "elapsed_seconds_from_step_timestamps": null,
+      "reported_final_metric_keys": [
+        "total_steps"
+      ],
+      "capture_placeholder": true
+    },
+    {
+      "run_id": "r-bc2465cfe4ff4f7e9637",
+      "category": "both-zero",
+      "task_name": "query-optimize",
+      "series": "series-1",
+      "reward": 0.0,
+      "model": "matrixllm.aisearch_duet_dsv4_flash",
+      "agent_version": "unknown",
+      "schema_version": "ATIF-v1.7",
+      "steps": 2,
+      "agent_steps": 1,
+      "tool_calls": 0,
+      "tool_results": 0,
+      "tool_error_signals": 0,
+      "observation_chars": 0,
+      "max_observation_chars": 0,
+      "large_observations_gt_8k": 0,
+      "observation_residency_char_turns": 0,
+      "agent_message_chars": 46,
+      "final_message_chars": 46,
+      "empty_agent_messages": 0,
+      "exact_duplicate_commands": 0,
+      "runtime_install_commands": 0,
+      "output_control_commands": 0,
+      "elapsed_seconds_from_step_timestamps": null,
+      "reported_final_metric_keys": [
+        "total_steps"
+      ],
+      "capture_placeholder": true
+    },
+    {
+      "run_id": "r-bdec1c54bf904dd2b564",
+      "category": "both-zero",
+      "task_name": "torch-pipeline-parallelism",
+      "series": "series-1",
+      "reward": 0.0,
+      "model": "matrixllm.aisearch_duet_dsv4_flash",
+      "agent_version": "unknown",
+      "schema_version": "ATIF-v1.7",
+      "steps": 2,
+      "agent_steps": 1,
+      "tool_calls": 0,
+      "tool_results": 0,
+      "tool_error_signals": 0,
+      "observation_chars": 0,
+      "max_observation_chars": 0,
+      "large_observations_gt_8k": 0,
+      "observation_residency_char_turns": 0,
+      "agent_message_chars": 46,
+      "final_message_chars": 46,
+      "empty_agent_messages": 0,
+      "exact_duplicate_commands": 0,
+      "runtime_install_commands": 0,
+      "output_control_commands": 0,
+      "elapsed_seconds_from_step_timestamps": null,
+      "reported_final_metric_keys": [
+        "total_steps"
+      ],
+      "capture_placeholder": true
+    },
+    {
+      "run_id": "r-c03890f52d814e96888d",
+      "category": "both-zero",
+      "task_name": "write-compressor",
+      "series": "series-1",
+      "reward": 0.0,
+      "model": "matrixllm.aisearch_duet_dsv4_flash",
+      "agent_version": "unknown",
+      "schema_version": "ATIF-v1.7",
+      "steps": 2,
+      "agent_steps": 1,
+      "tool_calls": 0,
+      "tool_results": 0,
+      "tool_error_signals": 0,
+      "observation_chars": 0,
+      "max_observation_chars": 0,
+      "large_observations_gt_8k": 0,
+      "observation_residency_char_turns": 0,
+      "agent_message_chars": 46,
+      "final_message_chars": 46,
+      "empty_agent_messages": 0,
+      "exact_duplicate_commands": 0,
+      "runtime_install_commands": 0,
+      "output_control_commands": 0,
+      "elapsed_seconds_from_step_timestamps": null,
+      "reported_final_metric_keys": [
+        "total_steps"
+      ],
+      "capture_placeholder": true
+    },
+    {
+      "run_id": "r-ccebd6972f354907be1c",
+      "category": "both-zero",
+      "task_name": "regex-log",
+      "series": "series-1",
+      "reward": 0.0,
+      "model": "matrixllm.aisearch_duet_dsv4_flash",
+      "agent_version": "unknown",
+      "schema_version": "ATIF-v1.7",
+      "steps": 2,
+      "agent_steps": 1,
+      "tool_calls": 0,
+      "tool_results": 0,
+      "tool_error_signals": 0,
+      "observation_chars": 0,
+      "max_observation_chars": 0,
+      "large_observations_gt_8k": 0,
+      "observation_residency_char_turns": 0,
+      "agent_message_chars": 46,
+      "final_message_chars": 46,
+      "empty_agent_messages": 0,
+      "exact_duplicate_commands": 0,
+      "runtime_install_commands": 0,
+      "output_control_commands": 0,
+      "elapsed_seconds_from_step_timestamps": null,
+      "reported_final_metric_keys": [
+        "total_steps"
+      ],
+      "capture_placeholder": true
+    },
+    {
+      "run_id": "r-cd38cc9511f84516859c",
+      "category": "both-zero",
+      "task_name": "sqlite-with-gcov",
+      "series": "series-1",
+      "reward": 0.0,
+      "model": "matrixllm.aisearch_duet_dsv4_flash",
+      "agent_version": "unknown",
+      "schema_version": "ATIF-v1.7",
+      "steps": 2,
+      "agent_steps": 1,
+      "tool_calls": 0,
+      "tool_results": 0,
+      "tool_error_signals": 0,
+      "observation_chars": 0,
+      "max_observation_chars": 0,
+      "large_observations_gt_8k": 0,
+      "observation_residency_char_turns": 0,
+      "agent_message_chars": 46,
+      "final_message_chars": 46,
+      "empty_agent_messages": 0,
+      "exact_duplicate_commands": 0,
+      "runtime_install_commands": 0,
+      "output_control_commands": 0,
+      "elapsed_seconds_from_step_timestamps": null,
+      "reported_final_metric_keys": [
+        "total_steps"
+      ],
+      "capture_placeholder": true
+    },
+    {
+      "run_id": "r-d06f472ba0834cbc88c7",
+      "category": "both-zero",
+      "task_name": "crack-7z-hash",
+      "series": "series-2",
+      "reward": 0.0,
+      "model": "matrixllm.aisearch_duet_glm52",
+      "agent_version": "unknown",
+      "schema_version": "ATIF-v1.7",
+      "steps": 2,
+      "agent_steps": 1,
+      "tool_calls": 0,
+      "tool_results": 0,
+      "tool_error_signals": 0,
+      "observation_chars": 0,
+      "max_observation_chars": 0,
+      "large_observations_gt_8k": 0,
+      "observation_residency_char_turns": 0,
+      "agent_message_chars": 46,
+      "final_message_chars": 46,
+      "empty_agent_messages": 0,
+      "exact_duplicate_commands": 0,
+      "runtime_install_commands": 0,
+      "output_control_commands": 0,
+      "elapsed_seconds_from_step_timestamps": null,
+      "reported_final_metric_keys": [
+        "total_steps"
+      ],
+      "capture_placeholder": true
+    },
+    {
+      "run_id": "r-d082b2198685471ea1df",
+      "category": "both-zero",
+      "task_name": "qemu-startup",
+      "series": "series-2",
+      "reward": 0.0,
+      "model": "matrixllm.aisearch_duet_glm52",
+      "agent_version": "unknown",
+      "schema_version": "ATIF-v1.7",
+      "steps": 2,
+      "agent_steps": 1,
+      "tool_calls": 0,
+      "tool_results": 0,
+      "tool_error_signals": 0,
+      "observation_chars": 0,
+      "max_observation_chars": 0,
+      "large_observations_gt_8k": 0,
+      "observation_residency_char_turns": 0,
+      "agent_message_chars": 46,
+      "final_message_chars": 46,
+      "empty_agent_messages": 0,
+      "exact_duplicate_commands": 0,
+      "runtime_install_commands": 0,
+      "output_control_commands": 0,
+      "elapsed_seconds_from_step_timestamps": null,
+      "reported_final_metric_keys": [
+        "total_steps"
+      ],
+      "capture_placeholder": true
+    },
+    {
+      "run_id": "r-d1dd85a7246d4f0a8282",
+      "category": "both-zero",
+      "task_name": "extract-moves-from-video",
+      "series": "series-2",
+      "reward": 0.0,
+      "model": "matrixllm.aisearch_duet_glm52",
+      "agent_version": "unknown",
+      "schema_version": "ATIF-v1.7",
+      "steps": 2,
+      "agent_steps": 1,
+      "tool_calls": 0,
+      "tool_results": 0,
+      "tool_error_signals": 0,
+      "observation_chars": 0,
+      "max_observation_chars": 0,
+      "large_observations_gt_8k": 0,
+      "observation_residency_char_turns": 0,
+      "agent_message_chars": 46,
+      "final_message_chars": 46,
+      "empty_agent_messages": 0,
+      "exact_duplicate_commands": 0,
+      "runtime_install_commands": 0,
+      "output_control_commands": 0,
+      "elapsed_seconds_from_step_timestamps": null,
+      "reported_final_metric_keys": [
+        "total_steps"
+      ],
+      "capture_placeholder": true
+    },
+    {
+      "run_id": "r-d3483afb7c4b4908b3d7",
+      "category": "both-zero",
+      "task_name": "polyglot-rust-c",
+      "series": "series-2",
+      "reward": 0.0,
+      "model": "matrixllm.aisearch_duet_glm52",
+      "agent_version": "unknown",
+      "schema_version": "ATIF-v1.7",
+      "steps": 2,
+      "agent_steps": 1,
+      "tool_calls": 0,
+      "tool_results": 0,
+      "tool_error_signals": 0,
+      "observation_chars": 0,
+      "max_observation_chars": 0,
+      "large_observations_gt_8k": 0,
+      "observation_residency_char_turns": 0,
+      "agent_message_chars": 46,
+      "final_message_chars": 46,
+      "empty_agent_messages": 0,
+      "exact_duplicate_commands": 0,
+      "runtime_install_commands": 0,
+      "output_control_commands": 0,
+      "elapsed_seconds_from_step_timestamps": null,
+      "reported_final_metric_keys": [
+        "total_steps"
+      ],
+      "capture_placeholder": true
+    },
+    {
+      "run_id": "r-d51e670839774759a9b8",
+      "category": "both-zero",
+      "task_name": "financial-document-processor",
+      "series": "series-2",
+      "reward": 0.0,
+      "model": "matrixllm.aisearch_duet_glm52",
+      "agent_version": "unknown",
+      "schema_version": "ATIF-v1.7",
+      "steps": 2,
+      "agent_steps": 1,
+      "tool_calls": 0,
+      "tool_results": 0,
+      "tool_error_signals": 0,
+      "observation_chars": 0,
+      "max_observation_chars": 0,
+      "large_observations_gt_8k": 0,
+      "observation_residency_char_turns": 0,
+      "agent_message_chars": 46,
+      "final_message_chars": 46,
+      "empty_agent_messages": 0,
+      "exact_duplicate_commands": 0,
+      "runtime_install_commands": 0,
+      "output_control_commands": 0,
+      "elapsed_seconds_from_step_timestamps": null,
+      "reported_final_metric_keys": [
+        "total_steps"
+      ],
+      "capture_placeholder": true
+    },
+    {
+      "run_id": "r-dcb280089955411bbe00",
+      "category": "both-zero",
+      "task_name": "sparql-university",
+      "series": "series-2",
+      "reward": 0.0,
+      "model": "matrixllm.aisearch_duet_glm52",
+      "agent_version": "unknown",
+      "schema_version": "ATIF-v1.7",
+      "steps": 2,
+      "agent_steps": 1,
+      "tool_calls": 0,
+      "tool_results": 0,
+      "tool_error_signals": 0,
+      "observation_chars": 0,
+      "max_observation_chars": 0,
+      "large_observations_gt_8k": 0,
+      "observation_residency_char_turns": 0,
+      "agent_message_chars": 46,
+      "final_message_chars": 46,
+      "empty_agent_messages": 0,
+      "exact_duplicate_commands": 0,
+      "runtime_install_commands": 0,
+      "output_control_commands": 0,
+      "elapsed_seconds_from_step_timestamps": null,
+      "reported_final_metric_keys": [
+        "total_steps"
+      ],
+      "capture_placeholder": true
+    },
+    {
+      "run_id": "r-dcd8dcc09b9747aeae5b",
+      "category": "both-zero",
+      "task_name": "compile-compcert",
+      "series": "series-2",
+      "reward": 0.0,
+      "model": "matrixllm.aisearch_duet_glm52",
+      "agent_version": "unknown",
+      "schema_version": "ATIF-v1.7",
+      "steps": 2,
+      "agent_steps": 1,
+      "tool_calls": 0,
+      "tool_results": 0,
+      "tool_error_signals": 0,
+      "observation_chars": 0,
+      "max_observation_chars": 0,
+      "large_observations_gt_8k": 0,
+      "observation_residency_char_turns": 0,
+      "agent_message_chars": 46,
+      "final_message_chars": 46,
+      "empty_agent_messages": 0,
+      "exact_duplicate_commands": 0,
+      "runtime_install_commands": 0,
+      "output_control_commands": 0,
+      "elapsed_seconds_from_step_timestamps": null,
+      "reported_final_metric_keys": [
+        "total_steps"
+      ],
+      "capture_placeholder": true
+    },
+    {
+      "run_id": "r-e091acb5097f49f9aa01",
+      "category": "both-zero",
+      "task_name": "dna-insert",
+      "series": "series-2",
+      "reward": 0.0,
+      "model": "matrixllm.aisearch_duet_glm52",
+      "agent_version": "unknown",
+      "schema_version": "ATIF-v1.7",
+      "steps": 2,
+      "agent_steps": 1,
+      "tool_calls": 0,
+      "tool_results": 0,
+      "tool_error_signals": 0,
+      "observation_chars": 0,
+      "max_observation_chars": 0,
+      "large_observations_gt_8k": 0,
+      "observation_residency_char_turns": 0,
+      "agent_message_chars": 46,
+      "final_message_chars": 46,
+      "empty_agent_messages": 0,
+      "exact_duplicate_commands": 0,
+      "runtime_install_commands": 0,
+      "output_control_commands": 0,
+      "elapsed_seconds_from_step_timestamps": null,
+      "reported_final_metric_keys": [
+        "total_steps"
+      ],
+      "capture_placeholder": true
+    },
+    {
+      "run_id": "r-e420ad8df36e4cd199df",
+      "category": "both-zero",
+      "task_name": "adaptive-rejection-sampler",
+      "series": "series-2",
+      "reward": 0.0,
+      "model": "matrixllm.aisearch_duet_glm52",
+      "agent_version": "unknown",
+      "schema_version": "ATIF-v1.7",
+      "steps": 2,
+      "agent_steps": 1,
+      "tool_calls": 0,
+      "tool_results": 0,
+      "tool_error_signals": 0,
+      "observation_chars": 0,
+      "max_observation_chars": 0,
+      "large_observations_gt_8k": 0,
+      "observation_residency_char_turns": 0,
+      "agent_message_chars": 46,
+      "final_message_chars": 46,
+      "empty_agent_messages": 0,
+      "exact_duplicate_commands": 0,
+      "runtime_install_commands": 0,
+      "output_control_commands": 0,
+      "elapsed_seconds_from_step_timestamps": null,
+      "reported_final_metric_keys": [
+        "total_steps"
+      ],
+      "capture_placeholder": true
+    },
+    {
+      "run_id": "r-e663485c2ecf4f9387ee",
+      "category": "both-zero",
+      "task_name": "password-recovery",
+      "series": "series-1",
+      "reward": 0.0,
+      "model": "matrixllm.aisearch_duet_dsv4_flash",
+      "agent_version": "unknown",
+      "schema_version": "ATIF-v1.7",
+      "steps": 2,
+      "agent_steps": 1,
+      "tool_calls": 0,
+      "tool_results": 0,
+      "tool_error_signals": 0,
+      "observation_chars": 0,
+      "max_observation_chars": 0,
+      "large_observations_gt_8k": 0,
+      "observation_residency_char_turns": 0,
+      "agent_message_chars": 46,
+      "final_message_chars": 46,
+      "empty_agent_messages": 0,
+      "exact_duplicate_commands": 0,
+      "runtime_install_commands": 0,
+      "output_control_commands": 0,
+      "elapsed_seconds_from_step_timestamps": null,
+      "reported_final_metric_keys": [
+        "total_steps"
+      ],
+      "capture_placeholder": true
+    },
+    {
+      "run_id": "r-ef555643893041d98865",
+      "category": "both-zero",
+      "task_name": "model-extraction-relu-logits",
+      "series": "series-2",
+      "reward": 0.0,
+      "model": "matrixllm.aisearch_duet_glm52",
+      "agent_version": "unknown",
+      "schema_version": "ATIF-v1.7",
+      "steps": 18,
+      "agent_steps": 17,
+      "tool_calls": 13,
+      "tool_results": 13,
+      "tool_error_signals": 0,
+      "observation_chars": 46130,
+      "max_observation_chars": 14164,
+      "large_observations_gt_8k": 2,
+      "observation_residency_char_turns": 442622,
+      "agent_message_chars": 7256,
+      "final_message_chars": 1095,
+      "empty_agent_messages": 2,
+      "exact_duplicate_commands": 3,
+      "runtime_install_commands": 0,
+      "output_control_commands": 0,
+      "elapsed_seconds_from_step_timestamps": 2649.019717,
+      "reported_final_metric_keys": [
+        "total_steps"
+      ],
+      "capture_placeholder": false
+    },
+    {
+      "run_id": "r-ef558342120948ecab8b",
+      "category": "both-zero",
+      "task_name": "qemu-startup",
+      "series": "series-1",
+      "reward": 0.0,
+      "model": "matrixllm.aisearch_duet_dsv4_flash",
+      "agent_version": "unknown",
+      "schema_version": "ATIF-v1.7",
+      "steps": 2,
+      "agent_steps": 1,
+      "tool_calls": 0,
+      "tool_results": 0,
+      "tool_error_signals": 0,
+      "observation_chars": 0,
+      "max_observation_chars": 0,
+      "large_observations_gt_8k": 0,
+      "observation_residency_char_turns": 0,
+      "agent_message_chars": 46,
+      "final_message_chars": 46,
+      "empty_agent_messages": 0,
+      "exact_duplicate_commands": 0,
+      "runtime_install_commands": 0,
+      "output_control_commands": 0,
+      "elapsed_seconds_from_step_timestamps": null,
+      "reported_final_metric_keys": [
+        "total_steps"
+      ],
+      "capture_placeholder": true
+    },
+    {
+      "run_id": "r-f450905372cb427ea888",
+      "category": "both-zero",
+      "task_name": "password-recovery",
+      "series": "series-2",
+      "reward": 0.0,
+      "model": "matrixllm.aisearch_duet_glm52",
+      "agent_version": "unknown",
+      "schema_version": "ATIF-v1.7",
+      "steps": 2,
+      "agent_steps": 1,
+      "tool_calls": 0,
+      "tool_results": 0,
+      "tool_error_signals": 0,
+      "observation_chars": 0,
+      "max_observation_chars": 0,
+      "large_observations_gt_8k": 0,
+      "observation_residency_char_turns": 0,
+      "agent_message_chars": 46,
+      "final_message_chars": 46,
+      "empty_agent_messages": 0,
+      "exact_duplicate_commands": 0,
+      "runtime_install_commands": 0,
+      "output_control_commands": 0,
+      "elapsed_seconds_from_step_timestamps": null,
+      "reported_final_metric_keys": [
+        "total_steps"
+      ],
+      "capture_placeholder": true
+    },
+    {
+      "run_id": "r-fea05542fb7b4a6da292",
+      "category": "both-zero",
+      "task_name": "mteb-leaderboard",
+      "series": "series-2",
+      "reward": 0.0,
+      "model": "matrixllm.aisearch_duet_glm52",
+      "agent_version": "unknown",
+      "schema_version": "ATIF-v1.7",
+      "steps": 51,
+      "agent_steps": 50,
+      "tool_calls": 66,
+      "tool_results": 66,
+      "tool_error_signals": 8,
+      "observation_chars": 335852,
+      "max_observation_chars": 28093,
+      "large_observations_gt_8k": 11,
+      "observation_residency_char_turns": 8440477,
+      "agent_message_chars": 5860,
+      "final_message_chars": 1180,
+      "empty_agent_messages": 22,
+      "exact_duplicate_commands": 0,
+      "runtime_install_commands": 2,
+      "output_control_commands": 50,
+      "elapsed_seconds_from_step_timestamps": 864.338477,
+      "reported_final_metric_keys": [
+        "total_steps"
+      ],
+      "capture_placeholder": false
+    },
+    {
+      "run_id": "r-1d05278f967f44dc8ad5",
+      "category": "split-reward",
+      "task_name": "chess-best-move",
+      "series": "series-2",
+      "reward": 1.0,
+      "model": "matrixllm.aisearch_duet_glm52",
+      "agent_version": "unknown",
+      "schema_version": "ATIF-v1.7",
+      "steps": 49,
+      "agent_steps": 48,
+      "tool_calls": 37,
+      "tool_results": 37,
+      "tool_error_signals": 1,
+      "observation_chars": 172380,
+      "max_observation_chars": 21739,
+      "large_observations_gt_8k": 7,
+      "observation_residency_char_turns": 5157427,
+      "agent_message_chars": 8679,
+      "final_message_chars": 201,
+      "empty_agent_messages": 10,
+      "exact_duplicate_commands": 4,
+      "runtime_install_commands": 3,
+      "output_control_commands": 4,
+      "elapsed_seconds_from_step_timestamps": 2275.616202,
+      "reported_final_metric_keys": [
+        "total_steps"
+      ],
+      "capture_placeholder": false
+    },
+    {
+      "run_id": "r-3e224032fc3b420ea444",
+      "category": "split-reward",
+      "task_name": "break-filter-js-from-html",
+      "series": "series-1",
+      "reward": 0.0,
+      "model": "matrixllm.aisearch_duet_dsv4_flash",
+      "agent_version": "unknown",
+      "schema_version": "ATIF-v1.7",
+      "steps": 27,
+      "agent_steps": 26,
+      "tool_calls": 17,
+      "tool_results": 17,
+      "tool_error_signals": 1,
+      "observation_chars": 78869,
+      "max_observation_chars": 9261,
+      "large_observations_gt_8k": 1,
+      "observation_residency_char_turns": 1223356,
+      "agent_message_chars": 120744,
+      "final_message_chars": 10038,
+      "empty_agent_messages": 2,
+      "exact_duplicate_commands": 0,
+      "runtime_install_commands": 0,
+      "output_control_commands": 0,
+      "elapsed_seconds_from_step_timestamps": 522.5898,
+      "reported_final_metric_keys": [
+        "total_steps"
+      ],
+      "capture_placeholder": false
+    },
+    {
+      "run_id": "r-429265a899f942619ee9",
+      "category": "split-reward",
+      "task_name": "db-wal-recovery",
+      "series": "series-1",
+      "reward": 1.0,
+      "model": "matrixllm.aisearch_duet_dsv4_flash",
+      "agent_version": "unknown",
+      "schema_version": "ATIF-v1.7",
+      "steps": 48,
+      "agent_steps": 47,
+      "tool_calls": 42,
+      "tool_results": 42,
+      "tool_error_signals": 3,
+      "observation_chars": 133178,
+      "max_observation_chars": 18359,
+      "large_observations_gt_8k": 4,
+      "observation_residency_char_turns": 4226237,
+      "agent_message_chars": 30377,
+      "final_message_chars": 1702,
+      "empty_agent_messages": 0,
+      "exact_duplicate_commands": 15,
+      "runtime_install_commands": 0,
+      "output_control_commands": 2,
+      "elapsed_seconds_from_step_timestamps": 309.3546,
+      "reported_final_metric_keys": [
+        "total_steps"
+      ],
+      "capture_placeholder": false
+    },
+    {
+      "run_id": "r-4697b0558a67414fa594",
+      "category": "split-reward",
+      "task_name": "break-filter-js-from-html",
+      "series": "series-2",
+      "reward": 1.0,
+      "model": "matrixllm.aisearch_duet_glm52",
+      "agent_version": "unknown",
+      "schema_version": "ATIF-v1.7",
+      "steps": 27,
+      "agent_steps": 26,
+      "tool_calls": 20,
+      "tool_results": 20,
+      "tool_error_signals": 1,
+      "observation_chars": 33644,
+      "max_observation_chars": 6202,
+      "large_observations_gt_8k": 0,
+      "observation_residency_char_turns": 568712,
+      "agent_message_chars": 9092,
+      "final_message_chars": 1302,
+      "empty_agent_messages": 5,
+      "exact_duplicate_commands": 5,
+      "runtime_install_commands": 0,
+      "output_control_commands": 1,
+      "elapsed_seconds_from_step_timestamps": 1701.010149,
+      "reported_final_metric_keys": [
+        "total_steps"
+      ],
+      "capture_placeholder": false
+    },
+    {
+      "run_id": "r-661adae045114c3394a1",
+      "category": "split-reward",
+      "task_name": "pytorch-model-recovery",
+      "series": "series-1",
+      "reward": 1.0,
+      "model": "matrixllm.aisearch_duet_dsv4_flash",
+      "agent_version": "unknown",
+      "schema_version": "ATIF-v1.7",
+      "steps": 24,
+      "agent_steps": 23,
+      "tool_calls": 18,
+      "tool_results": 18,
+      "tool_error_signals": 5,
+      "observation_chars": 56237,
+      "max_observation_chars": 8568,
+      "large_observations_gt_8k": 2,
+      "observation_residency_char_turns": 882441,
+      "agent_message_chars": 15542,
+      "final_message_chars": 1632,
+      "empty_agent_messages": 0,
+      "exact_duplicate_commands": 3,
+      "runtime_install_commands": 0,
+      "output_control_commands": 0,
+      "elapsed_seconds_from_step_timestamps": 2226.098179,
+      "reported_final_metric_keys": [
+        "total_steps"
+      ],
+      "capture_placeholder": false
+    },
+    {
+      "run_id": "r-706b3baeddce4c65a991",
+      "category": "split-reward",
+      "task_name": "feal-differential-cryptanalysis",
+      "series": "series-2",
+      "reward": 1.0,
+      "model": "matrixllm.aisearch_duet_glm52",
+      "agent_version": "unknown",
+      "schema_version": "ATIF-v1.7",
+      "steps": 7,
+      "agent_steps": 6,
+      "tool_calls": 5,
+      "tool_results": 5,
+      "tool_error_signals": 0,
+      "observation_chars": 17616,
+      "max_observation_chars": 7749,
+      "large_observations_gt_8k": 0,
+      "observation_residency_char_turns": 56071,
+      "agent_message_chars": 2916,
+      "final_message_chars": 1864,
+      "empty_agent_messages": 1,
+      "exact_duplicate_commands": 0,
+      "runtime_install_commands": 0,
+      "output_control_commands": 0,
+      "elapsed_seconds_from_step_timestamps": 403.27988,
+      "reported_final_metric_keys": [
+        "total_steps"
+      ],
+      "capture_placeholder": false
+    },
+    {
+      "run_id": "r-79549e4fc6534bb6a1f6",
+      "category": "split-reward",
+      "task_name": "mteb-retrieve",
+      "series": "series-1",
+      "reward": 1.0,
+      "model": "matrixllm.aisearch_duet_dsv4_flash",
+      "agent_version": "unknown",
+      "schema_version": "ATIF-v1.7",
+      "steps": 25,
+      "agent_steps": 24,
+      "tool_calls": 26,
+      "tool_results": 26,
+      "tool_error_signals": 4,
+      "observation_chars": 46802,
+      "max_observation_chars": 4839,
+      "large_observations_gt_8k": 0,
+      "observation_residency_char_turns": 558235,
+      "agent_message_chars": 7344,
+      "final_message_chars": 1483,
+      "empty_agent_messages": 2,
+      "exact_duplicate_commands": 0,
+      "runtime_install_commands": 0,
+      "output_control_commands": 17,
+      "elapsed_seconds_from_step_timestamps": 321.071523,
+      "reported_final_metric_keys": [
+        "total_steps"
+      ],
+      "capture_placeholder": false
+    },
+    {
+      "run_id": "r-85ff8d5999c1441f828a",
+      "category": "split-reward",
+      "task_name": "sam-cell-seg",
+      "series": "series-1",
+      "reward": 1.0,
+      "model": "matrixllm.aisearch_duet_dsv4_flash",
+      "agent_version": "unknown",
+      "schema_version": "ATIF-v1.7",
+      "steps": 53,
+      "agent_steps": 52,
+      "tool_calls": 47,
+      "tool_results": 47,
+      "tool_error_signals": 5,
+      "observation_chars": 209229,
+      "max_observation_chars": 22077,
+      "large_observations_gt_8k": 9,
+      "observation_residency_char_turns": 6853356,
+      "agent_message_chars": 45069,
+      "final_message_chars": 1761,
+      "empty_agent_messages": 1,
+      "exact_duplicate_commands": 4,
+      "runtime_install_commands": 3,
+      "output_control_commands": 10,
+      "elapsed_seconds_from_step_timestamps": 970.56572,
+      "reported_final_metric_keys": [
+        "total_steps"
+      ],
+      "capture_placeholder": false
+    },
+    {
+      "run_id": "r-8e52a2c19b8b46a69a31",
+      "category": "split-reward",
+      "task_name": "sam-cell-seg",
+      "series": "series-2",
+      "reward": 0.0,
+      "model": "matrixllm.aisearch_duet_glm52",
+      "agent_version": "unknown",
+      "schema_version": "ATIF-v1.7",
+      "steps": 100,
+      "agent_steps": 99,
+      "tool_calls": 91,
+      "tool_results": 91,
+      "tool_error_signals": 7,
+      "observation_chars": 569533,
+      "max_observation_chars": 30127,
+      "large_observations_gt_8k": 36,
+      "observation_residency_char_turns": 31693993,
+      "agent_message_chars": 15276,
+      "final_message_chars": 423,
+      "empty_agent_messages": 54,
+      "exact_duplicate_commands": 11,
+      "runtime_install_commands": 5,
+      "output_control_commands": 9,
+      "elapsed_seconds_from_step_timestamps": 3699.77442,
+      "reported_final_metric_keys": [
+        "total_steps"
+      ],
+      "capture_placeholder": false
+    },
+    {
+      "run_id": "r-95d5a1b5b234489d982d",
+      "category": "split-reward",
+      "task_name": "mteb-retrieve",
+      "series": "series-2",
+      "reward": 0.0,
+      "model": "matrixllm.aisearch_duet_glm52",
+      "agent_version": "unknown",
+      "schema_version": "ATIF-v1.7",
+      "steps": 22,
+      "agent_steps": 21,
+      "tool_calls": 21,
+      "tool_results": 21,
+      "tool_error_signals": 7,
+      "observation_chars": 50167,
+      "max_observation_chars": 7370,
+      "large_observations_gt_8k": 0,
+      "observation_residency_char_turns": 573718,
+      "agent_message_chars": 4079,
+      "final_message_chars": 1431,
+      "empty_agent_messages": 7,
+      "exact_duplicate_commands": 3,
+      "runtime_install_commands": 0,
+      "output_control_commands": 2,
+      "elapsed_seconds_from_step_timestamps": 416.771678,
+      "reported_final_metric_keys": [
+        "total_steps"
+      ],
+      "capture_placeholder": false
+    },
+    {
+      "run_id": "r-aee85b22c77d420999d1",
+      "category": "split-reward",
+      "task_name": "large-scale-text-editing",
+      "series": "series-1",
+      "reward": 1.0,
+      "model": "matrixllm.aisearch_duet_dsv4_flash",
+      "agent_version": "unknown",
+      "schema_version": "ATIF-v1.7",
+      "steps": 30,
+      "agent_steps": 29,
+      "tool_calls": 24,
+      "tool_results": 24,
+      "tool_error_signals": 3,
+      "observation_chars": 37140,
+      "max_observation_chars": 2228,
+      "large_observations_gt_8k": 0,
+      "observation_residency_char_turns": 522023,
+      "agent_message_chars": 21877,
+      "final_message_chars": 1445,
+      "empty_agent_messages": 0,
+      "exact_duplicate_commands": 4,
+      "runtime_install_commands": 0,
+      "output_control_commands": 0,
+      "elapsed_seconds_from_step_timestamps": 291.559472,
+      "reported_final_metric_keys": [
+        "total_steps"
+      ],
+      "capture_placeholder": false
+    },
+    {
+      "run_id": "r-b4baa5d0f9e64a9a91bc",
+      "category": "split-reward",
+      "task_name": "sanitize-git-repo",
+      "series": "series-1",
+      "reward": 1.0,
+      "model": "matrixllm.aisearch_duet_dsv4_flash",
+      "agent_version": "unknown",
+      "schema_version": "ATIF-v1.7",
+      "steps": 127,
+      "agent_steps": 126,
+      "tool_calls": 122,
+      "tool_results": 122,
+      "tool_error_signals": 1,
+      "observation_chars": 666994,
+      "max_observation_chars": 21204,
+      "large_observations_gt_8k": 21,
+      "observation_residency_char_turns": 46826810,
+      "agent_message_chars": 32990,
+      "final_message_chars": 2112,
+      "empty_agent_messages": 3,
+      "exact_duplicate_commands": 13,
+      "runtime_install_commands": 0,
+      "output_control_commands": 68,
+      "elapsed_seconds_from_step_timestamps": 1269.40072,
+      "reported_final_metric_keys": [
+        "total_steps"
+      ],
+      "capture_placeholder": false
+    },
+    {
+      "run_id": "r-b6ece8c20d4e485aae77",
+      "category": "split-reward",
+      "task_name": "rstan-to-pystan",
+      "series": "series-2",
+      "reward": 1.0,
+      "model": "matrixllm.aisearch_duet_glm52",
+      "agent_version": "unknown",
+      "schema_version": "ATIF-v1.7",
+      "steps": 41,
+      "agent_steps": 40,
+      "tool_calls": 42,
+      "tool_results": 42,
+      "tool_error_signals": 7,
+      "observation_chars": 148265,
+      "max_observation_chars": 15608,
+      "large_observations_gt_8k": 6,
+      "observation_residency_char_turns": 3275128,
+      "agent_message_chars": 5791,
+      "final_message_chars": 2301,
+      "empty_agent_messages": 20,
+      "exact_duplicate_commands": 6,
+      "runtime_install_commands": 3,
+      "output_control_commands": 5,
+      "elapsed_seconds_from_step_timestamps": 1753.608723,
+      "reported_final_metric_keys": [
+        "total_steps"
+      ],
+      "capture_placeholder": false
+    },
+    {
+      "run_id": "r-cb6f6b7b92254eb6bdfd",
+      "category": "split-reward",
+      "task_name": "sanitize-git-repo",
+      "series": "series-2",
+      "reward": 0.0,
+      "model": "matrixllm.aisearch_duet_glm52",
+      "agent_version": "unknown",
+      "schema_version": "ATIF-v1.7",
+      "steps": 33,
+      "agent_steps": 32,
+      "tool_calls": 31,
+      "tool_results": 31,
+      "tool_error_signals": 1,
+      "observation_chars": 874949,
+      "max_observation_chars": 309403,
+      "large_observations_gt_8k": 12,
+      "observation_residency_char_turns": 19173660,
+      "agent_message_chars": 5161,
+      "final_message_chars": 1812,
+      "empty_agent_messages": 20,
+      "exact_duplicate_commands": 1,
+      "runtime_install_commands": 0,
+      "output_control_commands": 1,
+      "elapsed_seconds_from_step_timestamps": 230.542202,
+      "reported_final_metric_keys": [
+        "total_steps"
+      ],
+      "capture_placeholder": false
+    },
+    {
+      "run_id": "r-d88a4ab184524275b3f3",
+      "category": "split-reward",
+      "task_name": "feal-differential-cryptanalysis",
+      "series": "series-1",
+      "reward": 0.0,
+      "model": "matrixllm.aisearch_duet_dsv4_flash",
+      "agent_version": "unknown",
+      "schema_version": "ATIF-v1.7",
+      "steps": 11,
+      "agent_steps": 10,
+      "tool_calls": 6,
+      "tool_results": 6,
+      "tool_error_signals": 0,
+      "observation_chars": 14114,
+      "max_observation_chars": 3122,
+      "large_observations_gt_8k": 0,
+      "observation_residency_char_turns": 78568,
+      "agent_message_chars": 41490,
+      "final_message_chars": 10038,
+      "empty_agent_messages": 1,
+      "exact_duplicate_commands": 1,
+      "runtime_install_commands": 0,
+      "output_control_commands": 0,
+      "elapsed_seconds_from_step_timestamps": 279.900485,
+      "reported_final_metric_keys": [
+        "total_steps"
+      ],
+      "capture_placeholder": false
+    },
+    {
+      "run_id": "r-e5cbab419c9a4a05a661",
+      "category": "split-reward",
+      "task_name": "llm-inference-batching-scheduler",
+      "series": "series-1",
+      "reward": 1.0,
+      "model": "matrixllm.aisearch_duet_dsv4_flash",
+      "agent_version": "unknown",
+      "schema_version": "ATIF-v1.7",
+      "steps": 81,
+      "agent_steps": 80,
+      "tool_calls": 77,
+      "tool_results": 77,
+      "tool_error_signals": 1,
+      "observation_chars": 308566,
+      "max_observation_chars": 19346,
+      "large_observations_gt_8k": 13,
+      "observation_residency_char_turns": 15907493,
+      "agent_message_chars": 137240,
+      "final_message_chars": 1994,
+      "empty_agent_messages": 0,
+      "exact_duplicate_commands": 5,
+      "runtime_install_commands": 0,
+      "output_control_commands": 13,
+      "elapsed_seconds_from_step_timestamps": 1275.389831,
+      "reported_final_metric_keys": [
+        "total_steps"
+      ],
+      "capture_placeholder": false
+    }
+  ],
+  "capture_quality": {
+    "raw_available": 92,
+    "placeholder_only_count": 54,
+    "detailed_count": 38,
+    "by_category": {
+      "both-one-sample": {
+        "raw_available": 6,
+        "placeholder_only": 0,
+        "detailed": 6
+      },
+      "both-zero": {
+        "raw_available": 70,
+        "placeholder_only": 54,
+        "detailed": 16
+      },
+      "split-reward": {
+        "raw_available": 16,
+        "placeholder_only": 0,
+        "detailed": 16
+      }
+    }
+  },
+  "detailed_trajectory_summary": {
+    "overall": {
+      "count": 38,
+      "reward_mean": 0.4473684210526316,
+      "steps": {
+        "mean": 41.76,
+        "median": 29.5,
+        "p90": 84.7,
+        "max": 128
+      },
+      "agent_steps": {
+        "mean": 40.76,
+        "median": 28.5,
+        "p90": 83.7,
+        "max": 127
+      },
+      "tool_calls": {
+        "mean": 38.08,
+        "median": 25.0,
+        "p90": 79.7,
+        "max": 122
+      },
+      "tool_error_signals": {
+        "mean": 4.03,
+        "median": 2.5,
+        "p90": 8.6,
+        "max": 19
+      },
+      "observation_chars": {
+        "mean": 173122.89,
+        "median": 76335.5,
+        "p90": 446411.4,
+        "max": 874949
+      },
+      "max_observation_chars": {
+        "mean": 22116.26,
+        "median": 10847.5,
+        "p90": 28703.2,
+        "max": 309403
+      },
+      "large_observations_gt_8k": {
+        "mean": 4.87,
+        "median": 2.0,
+        "p90": 12.3,
+        "max": 36
+      },
+      "observation_residency_char_turns": {
+        "mean": 6936000.61,
+        "median": 1100004.5,
+        "p90": 19834371.6,
+        "max": 46826810
+      },
+      "empty_agent_messages": {
+        "mean": 5.39,
+        "median": 1.0,
+        "p90": 20.0,
+        "max": 54
+      },
+      "exact_duplicate_commands": {
+        "mean": 5.24,
+        "median": 2.0,
+        "p90": 13.6,
+        "max": 58
+      },
+      "runtime_install_commands": {
+        "mean": 0.47,
+        "median": 0.0,
+        "p90": 2.3,
+        "max": 5
+      },
+      "output_control_commands": {
+        "mean": 8.47,
+        "median": 1.0,
+        "p90": 26.9,
+        "max": 68
+      },
+      "elapsed_seconds_from_step_timestamps": {
+        "mean": 1055.55,
+        "median": 663.56,
+        "p90": 2308.63,
+        "max": 3699.77
+      },
+      "runs_with_any_tool_error_signal": 32,
+      "runs_with_duplicate_commands": 26,
+      "runs_with_runtime_installs": 7,
+      "runs_with_large_observations": 25,
+      "runs_with_empty_agent_messages": 21
+    },
+    "by_category": {
+      "both-one-sample": {
+        "count": 6,
+        "reward_mean": 1.0,
+        "steps": {
+          "mean": 41.5,
+          "median": 35.5,
+          "p90": 81.5,
+          "max": 91
+        },
+        "agent_steps": {
+          "mean": 40.5,
+          "median": 34.5,
+          "p90": 80.5,
+          "max": 90
+        },
+        "tool_calls": {
+          "mean": 41.33,
+          "median": 38.0,
+          "p90": 80.5,
+          "max": 86
+        },
+        "tool_error_signals": {
+          "mean": 7,
+          "median": 2.5,
+          "p90": 18.5,
+          "max": 19
+        },
+        "observation_chars": {
+          "mean": 140002.5,
+          "median": 101944.5,
+          "p90": 312394.5,
+          "max": 393645
+        },
+        "max_observation_chars": {
+          "mean": 17916.17,
+          "median": 10446.5,
+          "p90": 41705.5,
+          "max": 64418
+        },
+        "large_observations_gt_8k": {
+          "mean": 4.33,
+          "median": 1.0,
+          "p90": 12.0,
+          "max": 16
+        },
+        "observation_residency_char_turns": {
+          "mean": 6344033.17,
+          "median": 3744235.0,
+          "p90": 15270824.5,
+          "max": 21376032
+        },
+        "empty_agent_messages": {
+          "mean": 7.83,
+          "median": 0.0,
+          "p90": 23.5,
+          "max": 46
+        },
+        "exact_duplicate_commands": {
+          "mean": 6.67,
+          "median": 3.0,
+          "p90": 16.5,
+          "max": 26
+        },
+        "runtime_install_commands": {
+          "mean": 0,
+          "median": 0.0,
+          "p90": 0.0,
+          "max": 0
+        },
+        "output_control_commands": {
+          "mean": 8.33,
+          "median": 0.5,
+          "p90": 24.5,
+          "max": 40
+        },
+        "elapsed_seconds_from_step_timestamps": {
+          "mean": 1315.09,
+          "median": 1188.04,
+          "p90": 2641.3,
+          "max": 2896.95
+        },
+        "runs_with_any_tool_error_signal": 4,
+        "runs_with_duplicate_commands": 5,
+        "runs_with_runtime_installs": 0,
+        "runs_with_large_observations": 3,
+        "runs_with_empty_agent_messages": 2
+      },
+      "both-zero": {
+        "count": 16,
+        "reward_mean": 0.0,
+        "steps": {
+          "mean": 39.56,
+          "median": 26.0,
+          "p90": 77.0,
+          "max": 128
+        },
+        "agent_steps": {
+          "mean": 38.56,
+          "median": 25.0,
+          "p90": 76.0,
+          "max": 127
+        },
+        "tool_calls": {
+          "mean": 35.81,
+          "median": 22.0,
+          "p90": 69.0,
+          "max": 122
+        },
+        "tool_error_signals": {
+          "mean": 4,
+          "median": 2.5,
+          "p90": 9.0,
+          "max": 16
+        },
+        "observation_chars": {
+          "mean": 145060.75,
+          "median": 68931.0,
+          "p90": 339925.0,
+          "max": 580250
+        },
+        "max_observation_chars": {
+          "mean": 14107.44,
+          "median": 10847.5,
+          "p90": 23981.5,
+          "max": 43101
+        },
+        "large_observations_gt_8k": {
+          "mean": 3,
+          "median": 2.0,
+          "p90": 10.0,
+          "max": 11
+        },
+        "observation_residency_char_turns": {
+          "mean": 5495412.25,
+          "median": 827844.0,
+          "p90": 13704938.5,
+          "max": 37705702
+        },
+        "empty_agent_messages": {
+          "mean": 2,
+          "median": 0.0,
+          "p90": 2.5,
+          "max": 22
+        },
+        "exact_duplicate_commands": {
+          "mean": 5.25,
+          "median": 0.5,
+          "p90": 9.0,
+          "max": 58
+        },
+        "runtime_install_commands": {
+          "mean": 0.25,
+          "median": 0.0,
+          "p90": 1.0,
+          "max": 2
+        },
+        "output_control_commands": {
+          "mean": 8.75,
+          "median": 1.0,
+          "p90": 27.5,
+          "max": 50
+        },
+        "elapsed_seconds_from_step_timestamps": {
+          "mean": 892.12,
+          "median": 663.56,
+          "p90": 1958.59,
+          "max": 2649.02
+        },
+        "runs_with_any_tool_error_signal": 14,
+        "runs_with_duplicate_commands": 8,
+        "runs_with_runtime_installs": 3,
+        "runs_with_large_observations": 12,
+        "runs_with_empty_agent_messages": 7
+      },
+      "split-reward": {
+        "count": 16,
+        "reward_mean": 0.6875,
+        "steps": {
+          "mean": 44.06,
+          "median": 31.5,
+          "p90": 90.5,
+          "max": 127
+        },
+        "agent_steps": {
+          "mean": 43.06,
+          "median": 30.5,
+          "p90": 89.5,
+          "max": 126
+        },
+        "tool_calls": {
+          "mean": 39.12,
+          "median": 28.5,
+          "p90": 84.0,
+          "max": 122
+        },
+        "tool_error_signals": {
+          "mean": 2.94,
+          "median": 2.0,
+          "p90": 7.0,
+          "max": 7
+        },
+        "observation_chars": {
+          "mean": 213605.19,
+          "median": 106023.5,
+          "p90": 618263.5,
+          "max": 874949
+        },
+        "max_observation_chars": {
+          "mean": 31700.12,
+          "median": 12434.5,
+          "p90": 26102.0,
+          "max": 309403
+        },
+        "large_observations_gt_8k": {
+          "mean": 6.94,
+          "median": 3.0,
+          "p90": 17.0,
+          "max": 36
+        },
+        "observation_residency_char_turns": {
+          "mean": 8598576.75,
+          "median": 2249242.0,
+          "p90": 25433826.5,
+          "max": 46826810
+        },
+        "empty_agent_messages": {
+          "mean": 7.88,
+          "median": 2.0,
+          "p90": 20.0,
+          "max": 54
+        },
+        "exact_duplicate_commands": {
+          "mean": 4.69,
+          "median": 4.0,
+          "p90": 12.0,
+          "max": 15
+        },
+        "runtime_install_commands": {
+          "mean": 0.88,
+          "median": 0.0,
+          "p90": 3.0,
+          "max": 5
+        },
+        "output_control_commands": {
+          "mean": 8.25,
+          "median": 2.0,
+          "p90": 15.0,
+          "max": 68
+        },
+        "elapsed_seconds_from_step_timestamps": {
+          "mean": 1121.66,
+          "median": 746.58,
+          "p90": 2250.86,
+          "max": 3699.77
+        },
+        "runs_with_any_tool_error_signal": 14,
+        "runs_with_duplicate_commands": 13,
+        "runs_with_runtime_installs": 4,
+        "runs_with_large_observations": 10,
+        "runs_with_empty_agent_messages": 12
+      }
+    }
+  }
+}

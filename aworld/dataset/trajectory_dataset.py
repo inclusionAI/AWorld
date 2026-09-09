@@ -1,3 +1,4 @@
+import asyncio
 import copy
 import json
 import os
@@ -5,7 +6,7 @@ import traceback
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Callable, Type, TYPE_CHECKING, Union
 
-from pydantic import Field
+from pydantic import Field, PrivateAttr
 
 from aworld.utils import import_package
 from aworld.core.agent.base import is_agent_by_name
@@ -18,6 +19,7 @@ from aworld.core.storage.inmemory_store import InmemoryStorage, InmemoryConfig
 from aworld.dataset.dataset import Dataset
 from aworld.dataset.types import TrajectoryItem
 from aworld.logs.util import logger
+from aworld.core.trajectory_update_registry import TrajectoryUpdateOutcome
 from aworld.runners.state_manager import RuntimeStateManager, EventRuntimeStateManager
 from aworld.utils.common import get_local_ip, new_instance
 from aworld.utils import import_package
@@ -40,6 +42,9 @@ class TrajectoryDataset(Dataset[TrajectoryItem]):
     storage: Optional[Storage[Any]] = Field(default=None, description="Storage for trajectory data")
     enable_storage: bool = Field(default=False, description="Whether to enable storage")
     strategy: Optional[Any] = Field(default=None, description="Trajectory generation strategy")
+    _trajectory_revisions: Dict[tuple[str, str], int] = PrivateAttr(default_factory=dict)
+    _trajectory_commit_locks: Dict[tuple[str, str], asyncio.Lock] = PrivateAttr(default_factory=dict)
+    _fenced_trajectory_tasks: set[str] = PrivateAttr(default_factory=set)
 
     def __init__(self, strategy: Optional[Any] = None, **data):
         super().__init__(**data)
@@ -115,6 +120,140 @@ class TrajectoryDataset(Dataset[TrajectoryItem]):
         except Exception as e:
             logger.error(f"Failed to append message to trajectory: {e}")
         return None
+
+    async def append_trajectory_tracked(
+        self,
+        message: Message,
+        *,
+        task_id: str,
+        logical_step_id: str,
+        revision: int,
+    ) -> TrajectoryUpdateOutcome:
+        """Build and persist one revision without swallowing correctness failures."""
+        if not self.strategy:
+            self.set_strategy(None)
+
+        item = await self.strategy.generate_item(
+            message,
+            state_manager=self.state_manager,
+            use_tools_in_prompt=getattr(self, 'use_tools_in_prompt', True),
+        )
+        if item is None:
+            return TrajectoryUpdateOutcome(
+                build_succeeded=False,
+                storage_acknowledged=False,
+                error="trajectory strategy returned no item",
+            )
+        if not self.storage:
+            return TrajectoryUpdateOutcome(
+                build_succeeded=True,
+                storage_acknowledged=False,
+                item=item,
+                error="trajectory storage is unavailable",
+            )
+
+        revision_key = (task_id, logical_step_id)
+        lock = self._trajectory_commit_locks.setdefault(revision_key, asyncio.Lock())
+        async with lock:
+            if task_id in self._fenced_trajectory_tasks:
+                return TrajectoryUpdateOutcome(
+                    build_succeeded=True,
+                    storage_acknowledged=False,
+                    item=item,
+                    error="trajectory task was fenced before storage commit",
+                )
+            current_revision = self._trajectory_revisions.get(revision_key, -1)
+            if revision < current_revision:
+                return TrajectoryUpdateOutcome(
+                    build_succeeded=True,
+                    storage_acknowledged=True,
+                    persisted=False,
+                    superseded=True,
+                    item=item,
+                )
+
+            block_id = _trajectory_block_id(task_id)
+            data = Data(
+                id=logical_step_id,
+                block_id=block_id,
+                value=item,
+                meta_info={"trajectory_revision": revision},
+            )
+            acknowledged = await self.storage.create_datas(
+                [data], block_id=block_id, overwrite=True
+            )
+            if not acknowledged:
+                return TrajectoryUpdateOutcome(
+                    build_succeeded=True,
+                    storage_acknowledged=False,
+                    item=item,
+                    error="trajectory storage did not acknowledge write",
+                )
+            self._trajectory_revisions[revision_key] = revision
+            return TrajectoryUpdateOutcome(
+                build_succeeded=True,
+                storage_acknowledged=True,
+                persisted=True,
+                item=item,
+            )
+
+    def fence_task_updates(self, task_id: str) -> None:
+        """Prevent any not-yet-committed tracked update from mutating storage."""
+        self._fenced_trajectory_tasks.add(task_id)
+
+    async def save_task_trajectory_batch_tracked(
+        self,
+        task_id: str,
+        trajectory_steps: Union[List[TrajectoryItem], List[Dict[str, Any]]],
+        *,
+        revision: int,
+    ) -> TrajectoryUpdateOutcome:
+        """Persist an imported batch under the same revision/fence contract."""
+        if not self.storage:
+            return TrajectoryUpdateOutcome(False, False, error="trajectory storage is unavailable")
+
+        persisted = False
+        for index, step in enumerate(trajectory_steps):
+            try:
+                item = step if isinstance(step, TrajectoryItem) else TrajectoryItem.model_validate(step)
+            except Exception as exc:
+                return TrajectoryUpdateOutcome(
+                    False, False, error=f"invalid trajectory batch item: {exc}"
+                )
+            logical_step_id = str(item.id or f"batch-item-{index}")
+            revision_key = (task_id, logical_step_id)
+            lock = self._trajectory_commit_locks.setdefault(revision_key, asyncio.Lock())
+            async with lock:
+                if task_id in self._fenced_trajectory_tasks:
+                    return TrajectoryUpdateOutcome(
+                        True, False, persisted=persisted, error="trajectory task was fenced"
+                    )
+                current_revision = self._trajectory_revisions.get(revision_key, -1)
+                if revision < current_revision:
+                    continue
+                block_id = _trajectory_block_id(task_id)
+                acknowledged = await self.storage.create_data(
+                    Data(
+                        id=logical_step_id,
+                        block_id=block_id,
+                        value=item,
+                        meta_info={"trajectory_revision": revision},
+                    ),
+                    block_id=block_id,
+                    overwrite=True,
+                )
+                if not acknowledged:
+                    return TrajectoryUpdateOutcome(
+                        True, False, persisted=persisted, item=item,
+                        error="trajectory storage did not acknowledge batch write",
+                    )
+                self._trajectory_revisions[revision_key] = revision
+                persisted = True
+        return TrajectoryUpdateOutcome(
+            build_succeeded=True,
+            storage_acknowledged=True,
+            persisted=persisted,
+        )
 
     async def message_to_trajectory_item(self, message: Message) -> Optional[TrajectoryItem]:
         """Build a TrajectoryItem from a message using the configured strategy."""
@@ -294,11 +433,14 @@ class TrajectoryDataset(Dataset[TrajectoryItem]):
             except Exception as e:
                 logger.error(f"Failed to save task trajectory: {str(e)}")
 
-    async def get_task_trajectory(self, task_id: str) -> List[TrajectoryItem]:
+    async def get_task_trajectory(self, task_id: str, *, strict: bool = False) -> List[TrajectoryItem]:
         """Get task trajectory data from storage.
 
         Args:
             task_id: The task id.
+            strict: Re-raise storage/read failures instead of preserving the
+                legacy empty-list fallback. Finalization uses strict reads so a
+                storage failure cannot be reported as an empty successful read.
 
         Returns:
             List[Dict[str, Any]]: The list of trajectory steps.
@@ -312,6 +454,8 @@ class TrajectoryDataset(Dataset[TrajectoryItem]):
                 out: List[TrajectoryItem] = []
                 for item in data_items:
                     if not hasattr(item, "value"):
+                        if strict:
+                            raise TypeError("trajectory storage item has no value")
                         continue
                     v = item.value
                     if isinstance(v, TrajectoryItem):
@@ -320,11 +464,19 @@ class TrajectoryDataset(Dataset[TrajectoryItem]):
                         try:
                             out.append(TrajectoryItem.model_validate(v))
                         except Exception:
+                            if strict:
+                                raise
                             continue
+                    elif strict:
+                        raise TypeError(
+                            f"unsupported trajectory storage value: {type(v).__name__}"
+                        )
                 return out
             return []
         except Exception as e:
             logger.error(f"Failed to get task trajectory: {str(e)}")
+            if strict:
+                raise
             return []
 
     def to_json(self) -> List[Dict[str, Any]]:
@@ -498,4 +650,3 @@ async def generate_trajectory(
     except Exception as e:
         logger.error(f"Failed to save trajectories: {str(e)}.{traceback.format_exc()}")
         return None
-

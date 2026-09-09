@@ -25,6 +25,11 @@ def _build_plan():
     )
 
 
+def test_lowerer_annotations_resolve_without_runtime_amni_dependency():
+    hints = get_type_hints(OpenAIPromptAssemblyLowerer.lower)
+    assert hints["plan"] is Any
+
+
 def test_provider_native_cache_support_is_declared_by_helper():
     assert supports_provider_native_prompt_cache("anthropic") is True
     assert supports_provider_native_prompt_cache("openai") is True
@@ -127,3 +132,4 @@ def test_anthropic_provider_skips_native_cache_lowering_when_disabled():
     )
 
     assert "cache_control" not in params
+from typing import Any, get_type_hints

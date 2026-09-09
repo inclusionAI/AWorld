@@ -191,8 +191,21 @@ class AmniContext(Context):
         pass
 
 
-    async def snapshot(self):
-        await get_context_manager().save_context(self)
+    async def snapshot(self, *, checkpoint_only: bool = False):
+        """Persist a restorable Amni context snapshot.
+
+        Adaptive Context checkpoints are intra-task recovery points. Their
+        WorkingState already contains the bounded continuation capsule and
+        verified Tool ledger, so repeating conversation persistence and a full
+        workspace refresh at every compaction adds latency without improving
+        recoverability. Keep the historical full-snapshot behavior as the
+        default and expose the existing checkpoint repository as a lightweight
+        path for those intra-task boundaries.
+        """
+        manager = get_context_manager()
+        if checkpoint_only:
+            return await manager.save_context_checkpoint(self)
+        return await manager.save_context(self)
 
     @trace.func_span(span_name="ApplicationContext#consolidation")
     async def consolidation(self):
@@ -1033,6 +1046,15 @@ class ApplicationContext(AmniContext):
     @task_id.setter
     def task_id(self, task_id):
         if task_id is not None:
+            current_task_id = getattr(
+                getattr(getattr(self, "task_state", None), "task_input", None),
+                "task_id",
+                getattr(self, "_task_id", None),
+            )
+            self._fence_context_observations_for_task_transition(
+                current_task_id=current_task_id,
+                next_task_id=task_id,
+            )
             self._task_id = task_id
             self.task_state.task_input.task_id = task_id
 
@@ -1699,7 +1721,17 @@ class ApplicationContext(AmniContext):
         return new_context
 
     def to_dict(self) -> dict:
-        result = {}
+        result = {
+            "context_lifecycle": {
+                "session_id": self.context_lifecycle_state.session_id,
+                "session_epoch": self.context_lifecycle_state.session_epoch,
+                "task_epoch": self.context_lifecycle_state.task_epoch,
+                "turn_epoch": self.context_lifecycle_state.turn_epoch,
+                "branch_id": self.context_lifecycle_state.branch_id,
+                "checkpoint_revision": self.context_lifecycle_state.checkpoint_revision,
+            },
+            "progressive_state": self.export_progressive_state(),
+        }
 
         # Serialize task_state using safe serialization function
         if self.task_state:
@@ -1729,6 +1761,7 @@ class ApplicationContext(AmniContext):
 
     @classmethod
     def from_dict(cls, data: dict) -> 'ApplicationContext':
+        progressive_restore_attempted = False
         try:
             # Deserialize task_state
             task_state = None
@@ -1755,10 +1788,25 @@ class ApplicationContext(AmniContext):
                     logger.info(f"Workspace info preserved: {workspace_info}")
                     # workspace = WorkSpace.from_local_storages(...) # Need to implement based on specific situation
 
-            return cls(task_state=task_state, workspace=workspace)
+            context = cls(task_state=task_state, workspace=workspace)
+            lifecycle = data.get("context_lifecycle")
+            if isinstance(lifecycle, dict):
+                from aworld.core.context.compiler import ContextLifecycleState
+
+                context._context_lifecycle_state = ContextLifecycleState(**lifecycle)
+            progressive_state = data.get("progressive_state")
+            if progressive_state is not None:
+                progressive_restore_attempted = True
+                context.restore_progressive_state(progressive_state)
+            return context
 
         except Exception as e:
             logger.error(f"Failed to deserialize ApplicationContext: {e}")
+            if progressive_restore_attempted:
+                # Versioned sticky Skill/Tool state is correctness-critical.
+                # A malformed or tampered snapshot must not silently resume
+                # as an empty catalog in the same task epoch.
+                raise
             # Return a basic ApplicationContext
             return cls(task_state=ApplicationTaskContextState())
 
@@ -1781,14 +1829,14 @@ class ApplicationContext(AmniContext):
 
         self._initialized = True
 
-    async def add_task_trajectory(self, task_id: str, task_trajectory: List[Dict[str, Any]]):
+    async def add_task_trajectory(self, task_id: str, task_trajectory: List[Dict[str, Any]], **kwargs):
         """Add trajectory data for a task.
         Delegate to root context to centralize storage.
         """
         if self.root != self:
-            await self.root.add_task_trajectory(task_id, task_trajectory)
+            return await self.root.add_task_trajectory(task_id, task_trajectory, **kwargs)
         else:
-            await super().add_task_trajectory(task_id, task_trajectory)
+            return await super().add_task_trajectory(task_id, task_trajectory, **kwargs)
 
 
     async def update_task_trajectory(self, message: Any, task_id: str = None, **kwargs):
@@ -1796,18 +1844,18 @@ class ApplicationContext(AmniContext):
         Delegate to root context.
         """
         if self.root != self:
-            await self.root.update_task_trajectory(message, task_id, **kwargs)
+            return await self.root.update_task_trajectory(message, task_id, **kwargs)
         else:
-            await super().update_task_trajectory(message, task_id, **kwargs)
+            return await super().update_task_trajectory(message, task_id, **kwargs)
 
-    async def get_task_trajectory(self, task_id: str) -> List[TrajectoryItem]:
+    async def get_task_trajectory(self, task_id: str, **kwargs) -> List[TrajectoryItem]:
         """Get trajectory data for a task.
         Delegate to root context.
         """
         if self.root != self:
-            return await self.root.get_task_trajectory(task_id)
+            return await self.root.get_task_trajectory(task_id, **kwargs)
         else:
-            return await super().get_task_trajectory(task_id)
+            return await super().get_task_trajectory(task_id, **kwargs)
 
     def add_task_node(self, child_task_id: str, parent_task_id: str, caller_agent_info=None, **kwargs):
         """Record the relationship between child task and parent task.

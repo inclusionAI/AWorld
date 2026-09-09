@@ -20,6 +20,7 @@ class SandboxEnvType(Enum):
     LOCAL = 1
     K8S = 2
     SUPERCOMPUTER = 3
+    DOCKER = 4
 
 
 

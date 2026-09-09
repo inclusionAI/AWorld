@@ -9,6 +9,14 @@ from aworld.core.context import ApplicationContext
 from aworld.core.context.amni.state import ApplicationTaskContextState, TaskWorkingState, TaskInput, TaskOutput
 
 
+@pytest.fixture(autouse=True)
+def isolate_user_instruction_home(tmp_path, monkeypatch):
+    """Keep instruction-layer tests independent of the developer's real home."""
+    isolated_home = tmp_path / "home"
+    isolated_home.mkdir()
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: isolated_home))
+
+
 def create_test_context(working_dir=None):
     """Helper function to create ApplicationContext for testing"""
     task_input = TaskInput(session_id="test_session", task_id="test_task", content="Test task")

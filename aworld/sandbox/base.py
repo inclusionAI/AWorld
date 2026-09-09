@@ -12,6 +12,10 @@ from aworld.sandbox.api.setup import SandboxSetup
 from aworld.sandbox.models import SandboxStatus, SandboxEnvType, SandboxInfo
 from aworld.sandbox.run.mcp_servers import McpServers
 from aworld.sandbox.runtime import SandboxManager
+from aworld.core.tool_action_journal import (
+    append_tool_action_event,
+    tool_action_batch_id,
+)
 
 
 class BaseSandbox(SandboxSetup):
@@ -123,16 +127,56 @@ class BaseSandbox(SandboxSetup):
         task_id: str = None,
         session_id: str = None,
         context: Any = None,
+        event_message: Any = None,
     ) -> List[Any]:
         """Call a tool on MCP servers. Delegates to mcpservers.call_tool()."""
-        if hasattr(self, "mcpservers") and self.mcpservers is not None:
-            return await self.mcpservers.call_tool(
-                action_list=action_list,
-                task_id=task_id,
-                session_id=session_id,
-                context=context,
+        actions = action_list or []
+        batch_id = tool_action_batch_id(actions)
+
+        def journal(event_type: str, status: str, results=None, metadata=None) -> None:
+            if context is None:
+                return
+            try:
+                append_tool_action_event(
+                    context=context,
+                    event_type=event_type,
+                    actions=actions,
+                    results=results,
+                    status=status,
+                    batch_id=batch_id,
+                    metadata=metadata,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "Tool action journal append failed open; "
+                    f"event_type={event_type} error_type={type(exc).__name__}"
+                )
+
+        journal(
+            "sandbox_call_started",
+            "in_progress",
+            metadata={"sandbox_id": self.sandbox_id, "env_type": str(self.env_type)},
+        )
+        try:
+            if hasattr(self, "mcpservers") and self.mcpservers is not None:
+                results = await self.mcpservers.call_tool(
+                    action_list=actions,
+                    task_id=task_id,
+                    session_id=session_id,
+                    context=context,
+                    event_message=event_message,
+                )
+            else:
+                results = []
+        except BaseException as exc:
+            journal(
+                "sandbox_call_failed",
+                "failed",
+                metadata={"error_type": type(exc).__name__},
             )
-        return []
+            raise
+        journal("sandbox_call_completed", "completed", results=results or [])
+        return results
 
     def __del__(self):
         """Ensure resources are cleaned up when the object is garbage collected."""

@@ -87,6 +87,51 @@ sandbox = (Sandbox()
 sandbox = Sandbox(mcp_config={...})
 ```
 
+### Attaching to a local Docker container
+
+`DockerSandbox` is an attach-only implementation of the same Sandbox abstraction. The caller starts the container; AWorld starts a host-side stdio bridge and exposes terminal/filesystem tools whose operations execute inside that fixed container.
+
+```python
+from aworld.sandbox import DockerSandbox
+
+sandbox = DockerSandbox(
+    container="terminal-bench-task",
+    workdir="/workspace",                 # optional; image WORKDIR is auto-detected
+    allowed_directories=["/workspace"],  # filesystem namespace boundary
+)
+
+try:
+    result = await sandbox.terminal.run_code("pwd && make test")
+    source = await sandbox.file.read_file("/workspace/main.py")
+finally:
+    await sandbox.cleanup()
+```
+
+The container must already be running and reachable through the local Docker CLI. `cleanup()` closes only AWorld's MCP connections; it never stops or removes the container. Container build/run, benchmark test mounts, verifier execution, reward calculation, and final container removal remain the responsibility of the caller or benchmark harness.
+
+The same implementation is available through the factory:
+
+```python
+from aworld.sandbox import SandboxEnvType, create_sandbox
+
+sandbox = create_sandbox(
+    env_type=SandboxEnvType.DOCKER,
+    container="terminal-bench-task",
+    allowed_directories=["/workspace"],
+)
+```
+
+For a single attach-only Terminal Bench run that saves provider requests,
+`task_response.json`, `raw_trajectory.json`, Tool artifacts and AWorld logs, see
+`examples/sandbox/docker_terminal_bench.py`. For the reproducible dataset → image
+build → container → AWorld → independent verifier → cleanup workflow, use
+`examples/sandbox/terminal_bench_context_eval.py`. The latter accepts only
+Context/Tool-output variant fields so it cannot carry task prompts or answers.
+Generic legacy and bounded-context examples live under
+`examples/sandbox/context_eval_variants/`; use both with repeated
+`--variant-config` arguments and keep the generated randomized job order as part
+of the experiment manifest.
+
 ### Listing Tools
 ```python
 # Get all available tools
@@ -390,4 +435,3 @@ result = await Runners.run(
     agent=agent
 )
 ```
-

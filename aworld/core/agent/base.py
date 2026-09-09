@@ -12,20 +12,26 @@ from typing import Any, Dict, Generic, List, Tuple, TypeVar, Union, Optional
 from pydantic import BaseModel
 
 from aworld.config.conf import AgentConfig, ConfigDict, load_config, TaskRunMode
-from aworld.core.common import ActionModel
+from aworld.core.common import ActionModel, TaskItem
 from aworld.events import eventbus
 from aworld.core.event.base import Constants, Message, AgentMessage, TopicType
 from aworld.core.factory import Factory
+from aworld.core.context.step_budget import ElasticStepBudgetPolicy
 from aworld.events.util import send_message
 from aworld.logs.util import logger, digest_logger
 from aworld.output.base import StepOutput
 from aworld.sandbox import Sandbox
 from aworld.utils.common import convert_to_snake, replace_env_variables, sync_exec
-from aworld.mcp_client.utils import replace_mcp_servers_variables, extract_mcp_servers_from_config
+from aworld.mcp_client.utils import (
+    replace_mcp_servers_variables,
+    extract_mcp_servers_from_config,
+)
 
 # Context variable for task-safe context storage
 # This prevents race conditions when agent instances are reused across concurrent tasks
-_agent_context: contextvars.ContextVar[Optional['Context']] = contextvars.ContextVar('_agent_context', default=None)
+_agent_context: contextvars.ContextVar[Optional["Context"]] = contextvars.ContextVar(
+    "_agent_context", default=None
+)
 
 INPUT = TypeVar("INPUT")
 OUTPUT = TypeVar("OUTPUT")
@@ -39,7 +45,9 @@ def is_agent_by_name(name: str) -> bool:
 
 
 def is_agent(policy: ActionModel) -> bool:
-    return is_agent_by_name(policy.tool_name) or (not policy.tool_name and not policy.action_name)
+    return is_agent_by_name(policy.tool_name) or (
+        not policy.tool_name and not policy.action_name
+    )
 
 
 class AgentStatus:
@@ -140,22 +148,34 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
             # Logic:
             # - If mcp_servers parameter is explicitly provided (even []), use it
             # - Otherwise, fall back to sandbox.mcp_servers
-            agent_mcp_servers = mcp_servers if mcp_servers is not None else (sandbox.mcp_servers or [])
-            self.mcp_servers: List[str] = extract_mcp_servers_from_config(sandbox.mcp_config, agent_mcp_servers)
-            self.mcp_config: Dict[str, Any] = replace_env_variables(sandbox.mcp_config or {})
+            agent_mcp_servers = (
+                mcp_servers if mcp_servers is not None else (sandbox.mcp_servers or [])
+            )
+            self.mcp_servers: List[str] = extract_mcp_servers_from_config(
+                sandbox.mcp_config, agent_mcp_servers
+            )
+            self.mcp_config: Dict[str, Any] = replace_env_variables(
+                sandbox.mcp_config or {}
+            )
         else:
             self.mcp_config: Dict[str, Any] = replace_env_variables(mcp_config or {})
-            self.mcp_servers: List[str] = extract_mcp_servers_from_config(self.mcp_config, mcp_servers or [])
+            self.mcp_servers: List[str] = extract_mcp_servers_from_config(
+                self.mcp_config, mcp_servers or []
+            )
         self.skill_configs: Dict[str, Any] = self.conf.get("skill_configs", {})
         # derive mcp_servers from skill_configs if provided
         if self.skill_configs:
-            self.mcp_servers = replace_mcp_servers_variables(self.skill_configs, self.mcp_servers, [])
+            self.mcp_servers = replace_mcp_servers_variables(
+                self.skill_configs, self.mcp_servers, []
+            )
             from aworld.core.context.amni.tool.context_skill_tool import CONTEXT_SKILL
+
             self.tool_names.extend([CONTEXT_SKILL])
         ptc_tools = self.conf.get("ptc_tools", []) or kwargs.get("ptc_tools", [])
         if ptc_tools:
             self.ptc_tools = ptc_tools
             from aworld.experimental.ptc.ptc_tool import PTC_TOOL
+
             self.tool_names.extend([PTC_TOOL])
         else:
             self.ptc_tools = []
@@ -173,15 +193,72 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
         self.sandbox = sandbox
         if not self.sandbox and (self.mcp_servers or self.tool_names):
             self.sandbox = Sandbox(
-                mcp_servers=self.mcp_servers, mcp_config=self.mcp_config,
+                mcp_servers=self.mcp_servers,
+                mcp_config=self.mcp_config,
                 black_tool_actions=self.black_tool_actions,
-                skill_configs=self.skill_configs
+                skill_configs=self.skill_configs,
             )
         self.loop_step = 0
         self.max_loop_steps = kwargs.pop("max_loop_steps", 20)
+        explicit_elastic_budget = any(
+            key in kwargs
+            for key in (
+                "loop_step_extension_steps",
+                "max_extended_loop_steps",
+            )
+        )
+        llm_config = self.conf.get("llm_config") or {}
+        if isinstance(llm_config, BaseModel):
+            llm_config = llm_config.model_dump()
+        compiler_config = (
+            llm_config.get("context_compiler", {})
+            if isinstance(llm_config, dict)
+            else {}
+        )
+        if isinstance(compiler_config, BaseModel):
+            compiler_config = compiler_config.model_dump()
+        if not isinstance(compiler_config, dict):
+            compiler_config = {}
+        adaptive_budget_enabled = (
+            compiler_config.get("mode") == "enforce"
+            and compiler_config.get("elastic_step_budget") is True
+            and self.max_loop_steps > 0
+        )
+        default_extension_steps = (
+            compiler_config.get("step_budget_extension_steps", 0)
+            if adaptive_budget_enabled
+            else 0
+        )
+        default_hard_limit = (
+            compiler_config.get("step_budget_hard_limit", self.max_loop_steps)
+            if adaptive_budget_enabled
+            else self.max_loop_steps
+        )
+        default_progress_window = compiler_config.get(
+            "step_budget_recent_progress_window", 20
+        )
+        extension_steps = kwargs.pop(
+            "loop_step_extension_steps", default_extension_steps
+        )
+        hard_limit = kwargs.pop("max_extended_loop_steps", default_hard_limit)
+        progress_window = kwargs.pop(
+            "loop_step_progress_window", default_progress_window
+        )
+        self._elastic_step_budget_policy = None
+        if explicit_elastic_budget or (
+            adaptive_budget_enabled
+            and hard_limit > self.max_loop_steps
+            and extension_steps > 0
+        ):
+            self._elastic_step_budget_policy = ElasticStepBudgetPolicy(
+                soft_limit=self.max_loop_steps,
+                extension_steps=extension_steps,
+                hard_limit=hard_limit,
+                recent_progress_window_steps=progress_window,
+            )
 
     @staticmethod
-    def _get_current_context() -> Optional['Context']:
+    def _get_current_context() -> Optional["Context"]:
         """Get the current context for this async task (thread-safe).
 
         Returns the context stored in contextvars, which is unique per async task.
@@ -191,7 +268,7 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
         return _agent_context.get()
 
     @staticmethod
-    def _get_current_agent() -> Optional['BaseAgent']:
+    def _get_current_agent() -> Optional["BaseAgent"]:
         """Get the current agent for this async task (thread-safe).
 
         Returns the agent that is currently executing within the current context.
@@ -203,7 +280,7 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
         """
         try:
             ctx = _agent_context.get()
-            if ctx and hasattr(ctx, 'agent'):
+            if ctx and hasattr(ctx, "agent"):
                 return ctx.agent
             return None
         except LookupError:
@@ -237,13 +314,19 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
             self.loop_step = 0
         should_term = self.sync_should_terminate_loop(message)
         if should_term:
+            sync_exec(self._resolve_completion_at_loop_budget, message)
             self.postprocess_terminate_loop(message)
-            return AgentMessage(
-                payload=message.payload,
-                caller=message.sender,
+            return Message(
+                category=Constants.TASK,
+                payload=TaskItem(
+                    data=message.payload,
+                    msg="agent_loop_budget_exhausted",
+                    stop=True,
+                ),
                 sender=self.id(),
                 session_id=message.context.session_id,
-                headers=message.headers
+                headers=message.headers,
+                topic=TopicType.FINISHED,
             )
         observation = message.payload
         step_info = message.context.open_step(
@@ -280,13 +363,35 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
     async def async_run(self, message: Message, **kwargs) -> Message:
         # Store context in contextvars for task-safe access (prevents race conditions)
         # Capture token to ensure proper cleanup in finally block
+        execution_lock = None
+        lock_getter = getattr(message.context, "get_agent_execution_lock", None)
+        if callable(lock_getter):
+            execution_lock = lock_getter(self.id())
+            await execution_lock.acquire()
+        continuation_token = message.headers.get("post_tool_continuation_token")
+        if isinstance(continuation_token, str) and continuation_token:
+            claim_token = getattr(message.context, "claim_task_runtime_token", None)
+            if callable(claim_token) and not claim_token(self.id(), continuation_token):
+                logger.info(
+                    "Discard stale duplicate post-tool continuation for agent %s",
+                    self.id(),
+                )
+                if execution_lock is not None:
+                    execution_lock.release()
+                return None
         token = _agent_context.set(message.context)
         step_info: dict[str, Any] | None = None
         try:
             message.context.update_agent_step(self.id())
             task = message.context.get_task()
-            if task and task.conf and task.conf.get("run_mode") == TaskRunMode.INTERACTIVE:
-                agent = task.swarm.ordered_agents[0] if task.agent is None else task.agent
+            if (
+                task
+                and task.conf
+                and task.conf.get("run_mode") == TaskRunMode.INTERACTIVE
+            ):
+                agent = (
+                    task.swarm.ordered_agents[0] if task.agent is None else task.agent
+                )
                 message.context.new_trajectory_step(agent.id())
             caller = message.caller
             if caller and caller == self.id():
@@ -295,13 +400,19 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
                 self.loop_step = 0
             should_term = await self.should_terminate_loop(message)
             if should_term:
+                await self._resolve_completion_at_loop_budget(message)
                 self.postprocess_terminate_loop(message)
-                return AgentMessage(
-                    payload=message.payload,
-                    caller=message.sender,
+                return Message(
+                    category=Constants.TASK,
+                    payload=TaskItem(
+                        data=message.payload,
+                        msg="agent_loop_budget_exhausted",
+                        stop=True,
+                    ),
                     sender=self.id(),
                     session_id=message.context.session_id,
-                    headers=message.headers
+                    headers=message.headers,
+                    topic=TopicType.FINISHED,
                 )
             observation = message.payload
             if eventbus is not None:
@@ -329,12 +440,15 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
             await self.async_pre_run(message)
             result = await self.async_policy(observation, message=message, **kwargs)
             final_result = await self.async_post_run(result, observation, message)
-            if message.context and message.context.has_pending_background_tasks(self.id(), message.context.task_id):
+            if message.context and message.context.has_pending_background_tasks(
+                self.id(), message.context.task_id
+            ):
                 self._finished = False
             return final_result
         except Exception as e:
             await self._emit_failed_step_async(message, step_info)
             from aworld.core.context.amni import AmniContext
+
             duration = None
             if isinstance(message.context, AmniContext):
                 agent_start_times = message.context.get("agent_start_times") or {}
@@ -343,12 +457,18 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
                     if isinstance(start_time, (int, float)):
                         duration = round(time.time() - start_time, 2)
             if duration is None:
-                duration = round(time.time() - getattr(message.context, "_start", time.time()), 2)
-            digest_logger.info(f"agent_run|{self.id()}|{getattr(message.context, 'user', 'default')}|{message.context.session_id}|{message.context.task_id}|{duration}|failed")
+                duration = round(
+                    time.time() - getattr(message.context, "_start", time.time()), 2
+                )
+            digest_logger.info(
+                f"agent_run|{self.id()}|{getattr(message.context, 'user', 'default')}|{message.context.session_id}|{message.context.task_id}|{duration}|failed"
+            )
             raise e
         finally:
             # Reset context to prevent leakage in task reuse scenarios
             _agent_context.reset(token)
+            if execution_lock is not None:
+                execution_lock.release()
 
     def _build_failed_step_message(
         self,
@@ -380,18 +500,22 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
             headers={"context": message.context},
         )
 
-    def _emit_failed_step_sync(self, message: Message, step_info: dict[str, Any] | None) -> None:
+    def _emit_failed_step_sync(
+        self, message: Message, step_info: dict[str, Any] | None
+    ) -> None:
         failed_message = self._build_failed_step_message(message, step_info or {})
         if failed_message is not None:
             sync_exec(send_message, failed_message)
 
-    async def _emit_failed_step_async(self, message: Message, step_info: dict[str, Any] | None) -> None:
+    async def _emit_failed_step_async(
+        self, message: Message, step_info: dict[str, Any] | None
+    ) -> None:
         failed_message = self._build_failed_step_message(message, step_info or {})
         if failed_message is not None:
             await send_message(failed_message)
 
     def policy(
-            self, observation: INPUT, info: Dict[str, Any] = None, **kwargs
+        self, observation: INPUT, info: Dict[str, Any] = None, **kwargs
     ) -> OUTPUT:
         """The strategy of an agent can be to decide which tools to use in the environment, or to delegate tasks to other agents.
 
@@ -403,7 +527,7 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
 
     @abc.abstractmethod
     async def async_policy(
-            self, observation: INPUT, info: Dict[str, Any] = None, **kwargs
+        self, observation: INPUT, info: Dict[str, Any] = None, **kwargs
     ) -> OUTPUT:
         """The strategy of an agent can be to decide which tools to use in the environment, or to delegate tasks to other agents.
 
@@ -437,12 +561,13 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
         pass
 
     def post_run(
-            self, policy_result: OUTPUT, input: INPUT, message: Message = None
+        self, policy_result: OUTPUT, input: INPUT, message: Message = None
     ) -> Message:
         return sync_exec(self.async_post_run, policy_result, input, message)
 
     async def async_pre_run(self, message: Message):
         from aworld.core.context.amni import AmniContext
+
         if isinstance(message.context, AmniContext):
             message.context.put("start", self.id())
             agent_start_times = message.context.get("agent_start_times") or {}
@@ -458,12 +583,12 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
             from aworld.runners.hook.utils import run_hooks
 
             agent_started_payload = {
-                'event': 'agent_started',
-                'agent_id': self.id(),
-                'agent_name': self.name(),
-                'session_id': message.context.session_id,
-                'task_id': getattr(message.context, 'task_id', None),
-                'timestamp': time.time()
+                "event": "agent_started",
+                "agent_id": self.id(),
+                "agent_name": self.name(),
+                "session_id": message.context.session_id,
+                "task_id": getattr(message.context, "task_id", None),
+                "timestamp": time.time(),
             }
 
             async for _ in run_hooks(
@@ -471,22 +596,27 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
                 hook_point=HookPoint.AGENT_STARTED,
                 hook_from=self.id(),
                 payload=agent_started_payload,
-                workspace_path=getattr(message.context, 'workspace_path', None)
+                workspace_path=getattr(message.context, "workspace_path", None),
             ):
                 pass
         except Exception as e:
-            logger.warning(f"AGENT_STARTED hook execution failed for agent {self.id()}: {e}")
+            logger.warning(
+                f"AGENT_STARTED hook execution failed for agent {self.id()}: {e}"
+            )
 
     async def async_post_run(
-            self, policy_result: OUTPUT, input: INPUT, message: Message = None
+        self, policy_result: OUTPUT, input: INPUT, message: Message = None
     ) -> Message:
         if isinstance(policy_result, list):
             for action in policy_result:
                 # ActionModel agent_name
-                if hasattr(action, "agent_name") and not getattr(action, "agent_name", None):
+                if hasattr(action, "agent_name") and not getattr(
+                    action, "agent_name", None
+                ):
                     action.agent_name = self.id()
         if self._finished:
             from aworld.core.context.amni import AmniContext
+
             duration = None
             if isinstance(message.context, AmniContext):
                 agent_start_times = message.context.get("agent_start_times") or {}
@@ -495,8 +625,12 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
                     if isinstance(start_time, (int, float)):
                         duration = round(time.time() - start_time, 2)
             if duration is None:
-                duration = round(time.time() - getattr(message.context, "_start", time.time()), 2)
-            digest_logger.info(f"agent_run|{self.id()}|{getattr(message.context, 'user', 'default')}|{message.context.session_id}|{message.context.task_id}|{duration}|success")
+                duration = round(
+                    time.time() - getattr(message.context, "_start", time.time()), 2
+                )
+            digest_logger.info(
+                f"agent_run|{self.id()}|{getattr(message.context, 'user', 'default')}|{message.context.session_id}|{message.context.task_id}|{duration}|success"
+            )
 
             # Hooks V2: 触发 AGENT_STOPPED hook
             try:
@@ -504,14 +638,14 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
                 from aworld.runners.hook.utils import run_hooks
 
                 agent_stopped_payload = {
-                    'event': 'agent_stopped',
-                    'agent_id': self.id(),
-                    'agent_name': self.name(),
-                    'session_id': message.context.session_id,
-                    'task_id': getattr(message.context, 'task_id', None),
-                    'duration': duration,
-                    'status': 'success',
-                    'timestamp': time.time()
+                    "event": "agent_stopped",
+                    "agent_id": self.id(),
+                    "agent_name": self.name(),
+                    "session_id": message.context.session_id,
+                    "task_id": getattr(message.context, "task_id", None),
+                    "duration": duration,
+                    "status": "success",
+                    "timestamp": time.time(),
                 }
 
                 async for _ in run_hooks(
@@ -519,29 +653,125 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
                     hook_point=HookPoint.AGENT_STOPPED,
                     hook_from=self.id(),
                     payload=agent_stopped_payload,
-                    workspace_path=getattr(message.context, 'workspace_path', None)
+                    workspace_path=getattr(message.context, "workspace_path", None),
                 ):
                     pass
             except Exception as e:
-                logger.warning(f"AGENT_STOPPED hook execution failed for agent {self.id()}: {e}")
+                logger.warning(
+                    f"AGENT_STOPPED hook execution failed for agent {self.id()}: {e}"
+                )
 
-        return AgentMessage(payload=policy_result, sender=self.id(), headers=message.headers)
+        return AgentMessage(
+            payload=policy_result, sender=self.id(), headers=message.headers
+        )
 
     def sync_should_terminate_loop(self, message: Message) -> bool:
         return sync_exec(self.should_terminate_loop, message)
 
     async def should_terminate_loop(self, message: Message) -> bool:
-        return False
+        if self.max_loop_steps <= 0:
+            return False
+        context = getattr(message, "context", None)
+        get_agent_step = getattr(context, "get_agent_step", None)
+        if self._elastic_step_budget_policy is not None and callable(get_agent_step):
+            event_manager = getattr(context, "event_manager", None)
+            state_context = (
+                getattr(event_manager, "context", None)
+                if event_manager is not None
+                else None
+            )
+            if state_context is None:
+                state_context = context
+            progress_by_agent = state_context.context_info.get(
+                "context_semantic_progress"
+            )
+            progress = (
+                progress_by_agent.get(self.id(), {})
+                if isinstance(progress_by_agent, dict)
+                else {}
+            )
+            raw_goal_progress_count = progress.get("goal_progress_count", 0)
+            goal_progress_count = (
+                raw_goal_progress_count
+                if isinstance(raw_goal_progress_count, int)
+                and not isinstance(raw_goal_progress_count, bool)
+                and raw_goal_progress_count >= 0
+                else 0
+            )
+            raw_last_goal_step = (
+                progress.get("last_goal_progress_agent_step")
+                if isinstance(progress, dict)
+                else None
+            )
+            last_goal_step = (
+                raw_last_goal_step
+                if isinstance(raw_last_goal_step, int)
+                and not isinstance(raw_last_goal_step, bool)
+                and raw_last_goal_step >= 0
+                else None
+            )
+            decision = context.evaluate_agent_step_budget(
+                self.id(),
+                policy=self._elastic_step_budget_policy,
+                observed_goal_progress_count=goal_progress_count,
+                last_goal_progress_agent_step=last_goal_step,
+            )
+            state_context.context_info[f"agent_step_budget:{self.id()}"] = (
+                decision.to_dict()
+            )
+            if state_context is not context:
+                context.context_info[f"agent_step_budget:{self.id()}"] = (
+                    decision.to_dict()
+                )
+            return decision.terminate
+        if callable(get_agent_step):
+            return get_agent_step(self.id()) >= self.max_loop_steps
+        return self.loop_step >= self.max_loop_steps
+
+    async def _resolve_completion_at_loop_budget(self, message: Message) -> None:
+        context = getattr(message, "context", None)
+        if context is None:
+            return
+        exhaustion = {
+            "loop_step": self.loop_step,
+            "context_agent_step": (
+                context.get_agent_step(self.id())
+                if callable(getattr(context, "get_agent_step", None))
+                else None
+            ),
+            "max_loop_steps": self.max_loop_steps,
+        }
+        event_manager = getattr(context, "event_manager", None)
+        state_context = (
+            getattr(event_manager, "context", None)
+            if event_manager is not None
+            else None
+        )
+        if state_context is None:
+            state_context = context
+        elastic_budget = state_context.context_info.get(
+            f"agent_step_budget:{self.id()}"
+        )
+        if elastic_budget is not None:
+            exhaustion["elastic_budget"] = elastic_budget
+        context.context_info[f"agent_loop_budget_exhausted:{self.id()}"] = exhaustion
+        if state_context is not context:
+            state_context.context_info[f"agent_loop_budget_exhausted:{self.id()}"] = (
+                dict(exhaustion)
+            )
+        resolver = getattr(context, "resolve_completion_evidence", None)
+        if callable(resolver):
+            await resolver()
 
     def postprocess_terminate_loop(self, message: Message):
         self.loop_step = 0
 
     def _update_headers(self, input_message: Message) -> Dict[str, Any]:
         headers = input_message.headers.copy()
-        headers['context'] = input_message.context
-        headers['level'] = headers.get('level', 0) + 1
+        headers["context"] = input_message.context
+        headers["level"] = headers.get("level", 0) + 1
         if input_message.group_id:
-            headers['parent_group_id'] = input_message.group_id
+            headers["parent_group_id"] = input_message.group_id
         return headers
 
 
@@ -590,7 +820,7 @@ class AgentManager(Factory):
             return self._agent_instance[name]
         return None
 
-    def register(self, name: str, desc: str = '', conf_file_name: str = None, **kwargs):
+    def register(self, name: str, desc: str = "", conf_file_name: str = None, **kwargs):
         """Register a tool to tool factory.
 
         Args:
