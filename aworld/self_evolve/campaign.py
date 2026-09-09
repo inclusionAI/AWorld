@@ -46,8 +46,12 @@ CAMPAIGN_MEASUREMENT_LEDGER_SCHEMA_VERSION = (
 )
 DISPOSITION_SCHEMA_VERSION = "aworld.self_evolve.disposition.v1"
 PROGRESS_SCHEMA_VERSION = "aworld.self_evolve.progress.v1"
-DEFAULT_MAX_IMPROVEMENT_CYCLES = 3
-DEFAULT_RUN_TOKEN_BUDGET_PER_CYCLE = 500_000
+DEFAULT_MAX_IMPROVEMENT_CYCLES = 6
+# Verified campaigns routinely spend well over 500k tokens on an 11-case paired
+# replay plus judging.  Keep the default bounded by both cycle and campaign, but
+# give one evidence-producing cycle enough room to finish before cost tuning.
+DEFAULT_RUN_TOKEN_BUDGET_PER_CYCLE = 2_000_000
+DEFAULT_MAX_AUTHORITATIVE_CANDIDATES = 12
 DEFAULT_MAX_MEASUREMENT_RETRIES = 2
 DEFAULT_MAX_INFRASTRUCTURE_RETRIES = 2
 LEGACY_SINGLE_TURN_REPLAY_REPLACEMENT_STEPS = 24
@@ -1412,7 +1416,8 @@ class SelfImprovementCampaignController:
                     "max_improvement_cycles must cover required_stable_cycles"
                 )
             authoritative_limit = _positive_int(
-                persistent.get("max_full_evaluation_candidates") or 3,
+                persistent.get("max_full_evaluation_candidates")
+                or DEFAULT_MAX_AUTHORITATIVE_CANDIDATES,
                 "max_full_evaluation_candidates",
             )
             if contract.required_stable_cycles > authoritative_limit:
@@ -7124,7 +7129,7 @@ def _report_requests_paired_replay_continuation(
 ) -> bool:
     """Recognize the typed, safe continuation contract for progressive replay."""
 
-    return any(
+    attributed_continuation = any(
         isinstance(attribution, Mapping)
         and attribution.get("code") == "replay_total_timeout"
         and attribution.get("failure_class") == "measurement"
@@ -7143,6 +7148,28 @@ def _report_requests_paired_replay_continuation(
             report.get("rejection_attribution"),
             report.get("campaign_failure_attribution"),
         )
+    )
+    if attributed_continuation:
+        return True
+
+    # Report projection may retain an earlier, fully evaluated candidate as
+    # the top-level repair focus after a later focused-repair attempt times
+    # out.  The CLI attaches only a filesystem-revalidated checkpoint for that
+    # hidden attempt.  Re-parse its signed identity payload here and require a
+    # non-empty pending frontier before treating it as continuation work.
+    raw_checkpoint = report.get("paired_replay_resume_checkpoint")
+    if not isinstance(raw_checkpoint, Mapping):
+        return False
+    try:
+        checkpoint = PairedReplayResumeCheckpointV1.from_dict(raw_checkpoint)
+    except (TypeError, ValueError):
+        return False
+    return bool(
+        checkpoint.pending_case_ids
+        and report.get("measurement_pending_candidate_id")
+        == checkpoint.candidate_id
+        and report.get("measurement_pending_candidate_fingerprint")
+        == checkpoint.candidate_fingerprint
     )
 
 
@@ -7239,10 +7266,13 @@ def derive_self_improvement_disposition(
     campaign_attribution = report.get("campaign_failure_attribution")
     if _report_requests_paired_replay_continuation(report):
         typed_attribution = next(
-            item
-            for item in (attribution, campaign_attribution)
-            if isinstance(item, Mapping)
-            and item.get("code") == "replay_total_timeout"
+            (
+                item
+                for item in (attribution, campaign_attribution)
+                if isinstance(item, Mapping)
+                and item.get("code") == "replay_total_timeout"
+            ),
+            {},
         )
         return SelfImprovementDisposition(
             kind=SelfImprovementDispositionKind.COLLECT_MORE_EVIDENCE,
@@ -7928,7 +7958,8 @@ def _campaign_authoritative_candidate_limit(
     campaign: SelfImprovementCampaign,
 ) -> int:
     return _positive_int(
-        campaign.request.get("max_full_evaluation_candidates") or 3,
+        campaign.request.get("max_full_evaluation_candidates")
+        or DEFAULT_MAX_AUTHORITATIVE_CANDIDATES,
         "max_full_evaluation_candidates",
     )
 
@@ -8781,7 +8812,22 @@ def _interrupted_run_reservation(
 
 def _remaining_budget_request(campaign: SelfImprovementCampaign) -> dict[str, Any]:
     request = campaign.request
+    implicit_token_budget = (
+        request.get("total_run_token_budget") is None
+        and request.get("max_run_tokens") is None
+    )
     token_ceiling = request.get("_campaign_total_run_token_budget")
+    if (
+        token_ceiling is not None
+        and request.get("total_run_token_budget") is None
+        and request.get("max_run_tokens") is None
+        and campaign.repair_continuation_used
+    ):
+        # The default ceiling is derived from the configured mutation-cycle
+        # count. A bounded repair continuation adds one real mutation cycle,
+        # so it needs the same implicit per-cycle allowance as every configured
+        # cycle. Explicit operator ceilings remain immutable.
+        token_ceiling = int(token_ceiling) + DEFAULT_RUN_TOKEN_BUDGET_PER_CYCLE
     if token_ceiling is None:
         token_ceiling = request.get("total_run_token_budget")
     if token_ceiling is None:
@@ -8807,9 +8853,16 @@ def _remaining_budget_request(campaign: SelfImprovementCampaign) -> dict[str, An
     )
     payload: dict[str, Any] = {}
     if remaining_tokens is not None:
-        payload["total_run_token_budget"] = (
-            min(remaining_tokens, per_cycle_tokens)
+        cycle_ceiling = (
+            per_cycle_tokens
             if per_cycle_tokens is not None
+            else DEFAULT_RUN_TOKEN_BUDGET_PER_CYCLE
+            if implicit_token_budget
+            else None
+        )
+        payload["total_run_token_budget"] = (
+            min(remaining_tokens, cycle_ceiling)
+            if cycle_ceiling is not None
             else remaining_tokens
         )
     elif per_cycle_tokens is not None:

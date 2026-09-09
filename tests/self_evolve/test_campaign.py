@@ -24,6 +24,9 @@ from aworld.self_evolve.campaign import (
     self_improvement_progress,
 )
 from aworld.self_evolve.candidate_package import candidate_package_fingerprint
+from aworld.self_evolve.measurement_checkpoint import (
+    PairedReplayResumeCheckpointV1,
+)
 from aworld.self_evolve.replay import (
     CandidateReplayMemberResult,
     CandidateReplayRequest,
@@ -1211,6 +1214,45 @@ def test_cycle_authoritative_limit_continues_with_campaign_capacity() -> None:
     assert disposition.reason_code == "cycle_authoritative_frontier_reached"
 
 
+def test_nonselected_incomplete_replay_overrides_candidate_stall() -> None:
+    checkpoint = PairedReplayResumeCheckpointV1.create(
+        source_run_id="run-focused-repair",
+        candidate_id="candidate-focused-repair",
+        candidate_fingerprint="sha256:" + "a" * 64,
+        verified_candidate_package_fingerprint="sha256:" + "b" * 64,
+        pending_case_ids=("case-pending",),
+        completed_pair_case_ids=("case-complete",),
+        resumed_pair_case_ids=(),
+        protected_paths=(
+            "candidates/candidate-focused-repair.json",
+            "replay/candidate-focused-repair",
+            "replay/candidate-focused-repair/members/paired_replay_checkpoint.json",
+            "replay/candidate-focused-repair/request.json",
+        ),
+    )
+    report = _report(_event(code="score_improvement_below_minimum"))
+    report.update(
+        {
+            "paired_replay_resume_checkpoint": checkpoint.to_dict(),
+            "measurement_pending_candidate_id": checkpoint.candidate_id,
+            "measurement_pending_candidate_fingerprint": (
+                checkpoint.candidate_fingerprint
+            ),
+        }
+    )
+
+    disposition = derive_self_improvement_disposition(
+        report,
+        previous_progress=self_improvement_progress(report),
+    )
+
+    assert disposition.kind is (
+        SelfImprovementDispositionKind.COLLECT_MORE_EVIDENCE
+    )
+    assert disposition.reason_code == "replay_total_timeout"
+    assert disposition.stage == "candidate_replay"
+
+
 @pytest.mark.parametrize(
     ("campaign_overrides"),
     (
@@ -2354,7 +2396,7 @@ def test_campaign_grants_one_bounded_repair_for_new_terminal_counterexample(
         calls.append(request)
         run_id = f"{request['campaign_id']}-cycle-{request['campaign_cycle']:03d}"
         if request["campaign_cycle"] == 1:
-            report = _report(_event())
+            report = _report(_event(), tokens=450_000)
             report["gate_results"][0]["details"]["replay_counterexamples"] = [
                 {
                     "schema_version": "aworld.replay.counterexample.v1",
@@ -2405,12 +2447,82 @@ def test_campaign_grants_one_bounded_repair_for_new_terminal_counterexample(
     assert len(calls) == 2
     assert [call["campaign_cycle"] for call in calls] == [1, 2]
     assert [call["max_full_evaluation_candidates"] for call in calls] == [1, 1]
+    assert [call["total_run_token_budget"] for call in calls] == [
+        2_000_000,
+        2_000_000,
+    ]
     assert result["campaign_status"] == "complete"
     assert result["campaign_repair_continuation_used"] is True
     assert result["campaign_configured_max_cycles"] == 1
     assert result["campaign_max_cycles"] == 2
     assert result["campaign_authoritative_candidate_count"] == 2
     assert result["campaign_exhaustion_axes"] == []
+
+
+def test_bounded_repair_does_not_expand_explicit_campaign_token_budget(
+    tmp_path: Path,
+) -> None:
+    calls: list[dict] = []
+
+    def run_once(**request):
+        calls.append(request)
+        run_id = f"{request['campaign_id']}-cycle-{request['campaign_cycle']:03d}"
+        if request["campaign_cycle"] == 1:
+            report = _report(_event(), tokens=450_000)
+            report["gate_results"][0]["details"]["replay_counterexamples"] = [
+                {
+                    "schema_version": "aworld.replay.counterexample.v1",
+                    "sequence": 1,
+                    "failure_code": "tool_call_after_evidence_ready",
+                    "owner": "candidate",
+                    "stage": "task_rollout",
+                    "state_before": "evidence_ready",
+                    "trigger": "tool_call",
+                    "required_transition": "finalize_task_response",
+                }
+            ]
+            report["verification_funnel"] = {
+                "authoritative_candidate_count": 1,
+            }
+        else:
+            report = {
+                "run_id": run_id,
+                "status": "succeeded",
+                "budget": _budget(10),
+                "gate_results": [{"gate_name": "post_apply", "passed": True}],
+                "verification_funnel": {
+                    "authoritative_candidate_count": 1,
+                },
+            }
+        report["run_id"] = run_id
+        report_path = tmp_path / ".aworld" / "self_evolve" / run_id / "report.json"
+        report_path.parent.mkdir(parents=True)
+        report_path.write_text(json.dumps(report), encoding="utf-8")
+        return {
+            "run_id": run_id,
+            "status": report["status"],
+            "report_path": str(report_path),
+        }
+
+    result = run_self_improvement_campaign(
+        workspace_root=tmp_path,
+        request={
+            "from_trajectory": "trajectory.log",
+            "apply_policy": "verified_only",
+            "infer_target": True,
+            "max_full_evaluation_candidates": 1,
+            "total_run_token_budget": 500_000,
+        },
+        max_improvement_cycles=1,
+        run_once=run_once,
+    )
+
+    assert len(calls) == 2
+    assert [call["total_run_token_budget"] for call in calls] == [
+        500_000,
+        50_000,
+    ]
+    assert result["campaign_status"] == "complete"
 
 
 def test_campaign_grants_bounded_repair_at_authoritative_frontier(
@@ -4099,6 +4211,7 @@ def test_resume_recovers_discarded_screening_baseline_cache(
             "from_trajectory": "trajectory.log",
             "apply_policy": "verified_only",
             "infer_target": True,
+            "max_full_evaluation_candidates": 3,
         },
         max_cycles=1,
     )
@@ -6135,6 +6248,7 @@ def test_resume_restores_retryable_member_timeout_checkpoint(
             "from_trajectory": "trajectory.log",
             "apply_policy": "verified_only",
             "infer_target": True,
+            "max_full_evaluation_candidates": 3,
         },
         max_cycles=3,
     )
@@ -6368,8 +6482,8 @@ def test_campaign_applies_cumulative_default_budget_across_cycles(
 
     assert result["status"] == "succeeded"
     assert [call["total_run_token_budget"] for call in calls] == [
-        1_500_000,
-        1_499_990,
+        2_000_000,
+        2_000_000,
     ]
     assert all("max_run_tokens" not in call for call in calls)
 
@@ -6397,7 +6511,7 @@ def test_loading_legacy_active_campaign_migrates_default_hard_budget(
 
     migrated = controller.load(campaign.campaign_id)
 
-    assert migrated.request["_campaign_total_run_token_budget"] == 2_000_000
+    assert migrated.request["_campaign_total_run_token_budget"] == 8_000_000
     assert controller.store.read_campaign(campaign.campaign_id) == migrated
 
 
@@ -6767,9 +6881,9 @@ def test_campaign_archives_dead_incomplete_run_and_retries_same_cycle(
 
     assert advanced.status is SelfImprovementCampaignStatus.COMPLETE
     assert advanced.cycle_index == 1
-    assert advanced.cumulative_usage.tokens == 500_010
+    assert advanced.cumulative_usage.tokens == 2_000_010
     assert calls[0]["campaign_cycle"] == 1
-    assert calls[0]["total_run_token_budget"] == 1_000_000
+    assert calls[0]["total_run_token_budget"] == 2_000_000
     archive = Path(summary["interrupted_run_archive_path"])
     assert archive.name == f"{run_id}-attempt-001"
     assert (archive / "interruption.json").is_file()

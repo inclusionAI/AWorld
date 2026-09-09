@@ -236,6 +236,7 @@ async def test_aworld_trajectory_evaluator_backend_retries_transient_judge_parse
     assert summary.metrics["judge_success_count"] == 1
     assert summary.metrics["judge_failure_count"] == 1
     assert summary.metrics["judge_failures"][0]["type"] == "ValueError"
+    assert summary.metrics["judge_retryable_failure_count"] == 1
 
 
 @pytest.mark.asyncio

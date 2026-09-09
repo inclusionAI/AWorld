@@ -831,6 +831,48 @@ def test_runner_admits_safe_paired_replay_timeout_checkpoint(
     assert checkpoint.candidate_id == candidate.candidate_id
 
 
+def test_runner_recovers_nonselected_authoritative_replay_checkpoint(
+    tmp_path: Path,
+) -> None:
+    store, candidate = _paired_replay_fixture(tmp_path)
+    run_id = "run-paired-replay-checkpoint"
+    report = {
+        "candidate_ids": ["candidate-champion", candidate.candidate_id],
+        "selected_candidate_id": "candidate-champion",
+        "rejection_attribution": {
+            "code": "score_improvement_below_minimum",
+            "failure_class": "candidate",
+            "failure_owner": "candidate",
+            "failure_scope": "candidate",
+            "repairable": True,
+        },
+        "iterations": [
+            {
+                "candidate_id": "candidate-champion",
+                "lifecycle_stage": "authoritative_replay",
+                "status": "rejected",
+                "failed_gates": ["score_improvement"],
+            },
+            {
+                "candidate_id": candidate.candidate_id,
+                "lifecycle_stage": "authoritative_replay",
+                "status": "rejected",
+                "failed_gates": ["candidate_replay"],
+            },
+        ],
+    }
+
+    checkpoint = _paired_replay_pending_candidate_checkpoint(
+        store=store,
+        run_id=run_id,
+        report=report,
+    )
+
+    assert checkpoint is not None
+    assert checkpoint.candidate_id == candidate.candidate_id
+    assert checkpoint.pending_case_ids == ("case-pending",)
+
+
 def test_runner_admits_repairable_framework_member_timeout_checkpoint(
     tmp_path: Path,
 ) -> None:

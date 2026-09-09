@@ -339,7 +339,15 @@ class TraceReflectiveLLMMutator:
                     repaired_transport_completion_violation_count += 1
                 structural_edit_intent = _candidate_structural_edit_intent(
                     output,
-                    base_content=request.current_content,
+                    # Bind authorization to the same content snapshot used by
+                    # patch materialization.  Judge-stage focused repairs use
+                    # the parent candidate as their base; authorizing them
+                    # against the original target made every valid structural
+                    # repair appear unbound.
+                    base_content=_focused_repair_patch_base(
+                        request,
+                        candidate_index=index,
+                    ),
                     candidate_content=content,
                 )
             except ValueError as exc:

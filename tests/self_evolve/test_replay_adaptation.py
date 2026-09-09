@@ -8,6 +8,7 @@ from pathlib import Path
 
 import pytest
 
+import aworld.self_evolve.replay_adaptation as replay_adaptation
 from aworld.self_evolve.datasets import (
     EvalCase,
     SelfEvolveDataset,
@@ -1432,6 +1433,87 @@ def test_materialize_replay_workspace_replaces_dirty_destination(tmp_path: Path)
 
     assert (destination / "input.txt").read_text(encoding="utf-8") == "seed"
     assert not (destination / "dirty.txt").exists()
+
+
+def test_materialize_replay_workspace_verifies_immutable_seed_once(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    workspace = tmp_path / "source" / "demo"
+    workspace.mkdir(parents=True)
+    (workspace / "input.txt").write_text("seed", encoding="utf-8")
+    bundle = ReplayAdaptationCompiler().compile(
+        dataset=_dataset(f"Read {workspace}/input.txt"),
+        workspace_root=workspace,
+        artifact_root=tmp_path / "run" / "adaptation",
+    )
+    original_manifest = replay_adaptation._workspace_manifest
+    manifest_calls = 0
+
+    def counted_manifest(root: Path) -> dict[str, object]:
+        nonlocal manifest_calls
+        manifest_calls += 1
+        return original_manifest(root)
+
+    def fake_clone(seed: Path, target: Path) -> None:
+        del seed
+        target.mkdir()
+
+    replay_adaptation._verified_workspace_seed_fingerprint.cache_clear()
+    monkeypatch.setattr(replay_adaptation, "_workspace_manifest", counted_manifest)
+    monkeypatch.setattr(replay_adaptation, "_clone_or_copy_workspace", fake_clone)
+
+    materialize_replay_workspace(bundle, tmp_path / "baseline")
+    materialize_replay_workspace(bundle, tmp_path / "candidate")
+
+    assert manifest_calls == 1
+
+
+def test_darwin_workspace_materialization_uses_bounded_directory_clone(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seed = tmp_path / "seed"
+    seed.mkdir()
+    target = tmp_path / "rollout"
+    calls: list[tuple[list[str], int]] = []
+
+    def fake_run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        calls.append((command, int(kwargs["timeout"])))
+        target.mkdir()
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    monkeypatch.setattr(replay_adaptation.sys, "platform", "darwin")
+    monkeypatch.setattr(replay_adaptation.subprocess, "run", fake_run)
+
+    replay_adaptation._clone_or_copy_workspace(seed, target)
+
+    assert len(calls) == 1
+    command, timeout = calls[0]
+    assert command[:3] == [replay_adaptation.sys.executable, "-I", "-c"]
+    assert command[-2:] == [str(seed), str(target)]
+    assert timeout == replay_adaptation._WORKSPACE_CLONE_TIMEOUT_SECONDS
+
+
+def test_workspace_copy_fallback_is_bounded(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seed = tmp_path / "seed"
+    seed.mkdir()
+    target = tmp_path / "rollout"
+
+    def fake_run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        del command, kwargs
+        raise subprocess.TimeoutExpired(cmd="copy", timeout=300)
+
+    monkeypatch.setattr(replay_adaptation.sys, "platform", "other")
+    monkeypatch.setattr(replay_adaptation.subprocess, "run", fake_run)
+
+    with pytest.raises(ReplayAdaptationError, match="bounded materialization window"):
+        replay_adaptation._clone_or_copy_workspace(seed, target)
+
+    assert not target.exists()
 
 
 def test_absolute_workspace_symlink_is_rebased_into_each_rollout(

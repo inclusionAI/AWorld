@@ -2173,6 +2173,42 @@ async def test_agent_judge_backend_does_not_fallback_when_schema_matches_no_json
 
 
 @pytest.mark.asyncio
+async def test_agent_judge_backend_repairs_one_schema_invalid_response() -> None:
+    prompts: list[str] = []
+
+    async def fake_executor(prompt: str, system_prompt: str):
+        del system_prompt
+        prompts.append(prompt)
+        if len(prompts) == 1:
+            return '{"score": 3, "private_reasoning": "do not echo me"}'
+        return '{"decision": "accept", "confidence": 0.82}'
+
+    backend = AgentJudgeBackend(
+        backend_id="agent-backend",
+        system_prompt="judge",
+        executor=fake_executor,
+        prompt_builder=lambda case_input, target, suite: "judge this trajectory",
+    )
+
+    execution = await backend.execute(
+        case_input={"query": "evaluate"},
+        target={"answer": "done"},
+        suite=EvalSuiteDef(
+            suite_id="generic-json-judge",
+            judge_schema=JudgeSchemaDef(output_model=GenericJudgeOutput),
+        ),
+    )
+
+    assert execution.payload == {"decision": "accept", "confidence": 0.82}
+    assert [item["phase"] for item in execution.diagnostics] == [
+        "initial_judge",
+        "schema_repair",
+    ]
+    assert "required JSON schema" in prompts[1]
+    assert "do not echo me" not in prompts[1]
+
+
+@pytest.mark.asyncio
 async def test_builtin_app_evaluator_can_use_injected_judge_backend() -> None:
     class StubBackend:
         backend_id = "stub-agent"

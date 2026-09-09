@@ -59,6 +59,7 @@ _CLEANUP_QUARANTINE_DIR = ".artifact-retention-trash"
 _RETENTION_TRANSACTION_DIR = "artifact_retention_transactions"
 _RETENTION_TRANSACTION_SCHEMA = "aworld.self_evolve.artifact_retention_transaction.v1"
 _RETENTION_REPORT_SCHEMA = "aworld.self_evolve.artifact_retention.v2"
+_INLINE_QUARANTINE_DELETE_SECONDS = 1.0
 _SAFE_RUN_ID = re.compile(r"[a-zA-Z0-9][a-zA-Z0-9._-]{0,159}")
 _FD_CLEANUP_SUPPORTED = (
     all(hasattr(os, name) for name in ("O_DIRECTORY", "O_NOFOLLOW"))
@@ -1279,11 +1280,16 @@ def _remove_path(
             return False
         os.close(operation_fd)
         operation_fd = -1
-        _remove_tree_entry(trash_fd, operation_name)
-        _remove_empty_directory_at(
-            cleanup_root_fd,
-            _CLEANUP_QUARANTINE_DIR,
+        quarantine_removed = _remove_tree_entry(
+            trash_fd,
+            operation_name,
+            deadline=time.monotonic() + _INLINE_QUARANTINE_DELETE_SECONDS,
         )
+        if quarantine_removed:
+            _remove_empty_directory_at(
+                cleanup_root_fd,
+                _CLEANUP_QUARANTINE_DIR,
+            )
         if transaction is not None:
             transaction.record_removed(str(path))
         return True
@@ -1327,10 +1333,17 @@ def _recover_cleanup_quarantine(
                             transaction.record_intent(operation_path)
                         os.close(operation_fd)
                         operation_fd = -1
-                        _remove_tree_entry(quarantine_fd, operation_name)
-                        removed.append(operation_path)
-                        if transaction is not None:
-                            transaction.record_removed(operation_path)
+                        if _remove_tree_entry(
+                            quarantine_fd,
+                            operation_name,
+                            deadline=(
+                                time.monotonic()
+                                + _INLINE_QUARANTINE_DELETE_SECONDS
+                            ),
+                        ):
+                            removed.append(operation_path)
+                            if transaction is not None:
+                                transaction.record_removed(operation_path)
                     continue
                 if not _is_recoverable_quarantine_owner(
                     owner,
@@ -1346,10 +1359,14 @@ def _recover_cleanup_quarantine(
                 )
                 if transaction is not None:
                     transaction.record_intent(operation_path)
-                _remove_tree_entry(quarantine_fd, operation_name)
-                removed.append(operation_path)
-                if transaction is not None:
-                    transaction.record_removed(operation_path)
+                if _remove_tree_entry(
+                    quarantine_fd,
+                    operation_name,
+                    deadline=time.monotonic() + _INLINE_QUARANTINE_DELETE_SECONDS,
+                ):
+                    removed.append(operation_path)
+                    if transaction is not None:
+                        transaction.record_removed(operation_path)
             finally:
                 if operation_fd >= 0:
                     os.close(operation_fd)
@@ -1677,18 +1694,33 @@ def _open_bound_parent(
     return parent_fd, relative.parts[-1]
 
 
-def _remove_tree_entry(parent_fd: int, name: str) -> None:
+def _remove_tree_entry(
+    parent_fd: int,
+    name: str,
+    *,
+    deadline: float | None = None,
+) -> bool:
+    if deadline is not None and time.monotonic() >= deadline:
+        return False
     entry = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
     if not stat.S_ISDIR(entry.st_mode):
         os.unlink(name, dir_fd=parent_fd)
         os.fsync(parent_fd)
-        return
+        return True
     child_fd = _open_directory_at(parent_fd, name)
     try:
         for child_name in sorted(os.listdir(child_fd)):
-            _remove_tree_entry(child_fd, child_name)
+            if not _remove_tree_entry(
+                child_fd,
+                child_name,
+                deadline=deadline,
+            ):
+                return False
+        if deadline is not None and time.monotonic() >= deadline:
+            return False
         os.rmdir(name, dir_fd=parent_fd)
         os.fsync(parent_fd)
+        return True
     finally:
         os.close(child_fd)
 

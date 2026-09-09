@@ -465,11 +465,13 @@ def _validate_candidate_payload(
     has_content = isinstance(content, str)
     has_patch_intent = isinstance(patch_intent, Mapping)
     if has_content and has_patch_intent:
-        raise CandidateProtocolError(
-            "ambiguous_candidate_body",
-            "candidate must use exactly one of content or patch_intent",
-            field_path="content|patch_intent",
-        )
+        # Structured-output providers occasionally echo a complete content
+        # projection alongside the requested bounded patch intent.  The
+        # materializer already gives patch_intent precedence; normalize to that
+        # single representation here as well instead of spending the repair
+        # frontier on a harmless provider-shape ambiguity.  The patch still
+        # passes the full syntax and protected-reference validation below.
+        has_content = False
     if not has_content and not has_patch_intent and not has_package_file_delta:
         raise CandidateProtocolError(
             "missing_candidate_body",

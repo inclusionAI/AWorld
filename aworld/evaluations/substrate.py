@@ -651,10 +651,32 @@ class AgentJudgeBackend:
                 round_index=artifact_read_policy.max_rounds + 1,
                 read_results=[exhausted_result],
             )
-        payload = _coerce_judge_payload(
-            response,
-            judge_schema=getattr(suite, "judge_schema", None),
-        )
+        judge_schema = getattr(suite, "judge_schema", None)
+        try:
+            payload = _coerce_judge_payload(
+                response,
+                judge_schema=judge_schema,
+            )
+        except ValueError:
+            if judge_schema is None or not judge_schema.json_schema():
+                raise
+            repair_prompt = _judge_schema_repair_prompt(
+                prompt_for_reads,
+                judge_schema=judge_schema,
+            )
+            response = await _run_with_timeout(
+                repair_prompt,
+                phase="schema_repair",
+                round_index=(
+                    int(diagnostics[-1].get("round_index") or 0) + 1
+                    if diagnostics
+                    else 1
+                ),
+            )
+            payload = _coerce_judge_payload(
+                response,
+                judge_schema=judge_schema,
+            )
         payload = _attest_framework_projection_constraints(
             payload,
             diagnostics=diagnostics,
@@ -1896,6 +1918,30 @@ def _extract_json_objects(text: str) -> list[dict[str, Any]]:
         if isinstance(loaded, dict):
             objects.append(loaded)
     return objects
+
+
+def _judge_schema_repair_prompt(
+    prompt: JudgePrompt,
+    *,
+    judge_schema: JudgeSchemaDef,
+) -> JudgePrompt:
+    """Request one clean retry without reflecting the invalid judge response."""
+
+    schema_text = json.dumps(
+        judge_schema.json_schema(),
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+    instruction = (
+        "\n\nYour prior response to this evaluation request did not match the "
+        "required JSON schema. Re-evaluate the same supplied evidence. Return only "
+        "one compact JSON object, include every required field, and use enum values "
+        "exactly as declared. Do not include markdown or explanatory text. "
+        f"The required JSON schema is: {schema_text}"
+    )
+    if isinstance(prompt, tuple):
+        return (f"{prompt[0]}{instruction}", list(prompt[1]))
+    return f"{prompt}{instruction}"
 
 
 def _candidate_judge_payload(value: Mapping[str, Any]) -> dict[str, Any]:

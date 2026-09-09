@@ -242,7 +242,7 @@ class SelfEvolveConfig(BaseConfig):
     judge_timeout_seconds: int = 300
     cooldown_seconds: int = 0
     max_iterations: int = 1
-    max_improvement_cycles: int = 3
+    max_improvement_cycles: int = 6
     min_improvement: float = 0.0
     max_background_jobs: int = 1
     auto_apply_target_types: tuple[str, ...] = ("skill",)
@@ -274,8 +274,12 @@ class SelfEvolveConfig(BaseConfig):
     replay_max_steps: Optional[int] = None
     replay_candidate_limit: int = 2
     candidate_screening_max_cases: int = 3
-    max_generated_candidates: int = 6
-    max_full_evaluation_candidates: int = 3
+    # Leave enough implicit search width for multiple evidence-quality repairs
+    # after a near-pass.  Work is still metered in bounded 2M-token cycles and
+    # operators can explicitly lower any frontier; verified apply policies
+    # retain every release gate.
+    max_generated_candidates: int = 24
+    max_full_evaluation_candidates: int = 12
     max_score_tiebreak_candidates: int = 1
     baseline_replay_repetitions: int = 1
     candidate_replay_repetitions: int = 1

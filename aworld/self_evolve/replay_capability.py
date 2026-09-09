@@ -1091,7 +1091,7 @@ class SubprocessReplayCapabilityExecutor:
     def __init__(
         self,
         *,
-        timeout_seconds: float = 30.0,
+        timeout_seconds: float = 120.0,
         max_output_chars: int = 64_000,
     ) -> None:
         if timeout_seconds <= 0:

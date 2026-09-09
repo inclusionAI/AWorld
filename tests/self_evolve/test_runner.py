@@ -13939,7 +13939,7 @@ async def test_verified_runner_bounds_authoritative_candidates_across_iterations
         "screening_max_cases": 3,
         "repair_iteration_horizon": 11,
         "candidate_generation_batch_count": 2,
-        "max_generated_candidates": 6,
+        "max_generated_candidates": 24,
         "generated_candidate_slot_count": 2,
         "candidate_generation_attempt_slot_count": 3,
         "repair_reserved_slot_count": 1,

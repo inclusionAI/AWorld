@@ -280,3 +280,41 @@ def test_cli_judge_subprocess_failure_includes_bounded_process_diagnostics(
     reason = str(exc_info.value)
     assert "model profile not found or incomplete: missing-profile" in reason
     assert "unused output" in reason
+
+
+def test_cli_judge_subprocess_uses_evaluation_attempt_deadline_for_process(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured_timeout: list[float | None] = []
+
+    def fake_run(command, *, cwd, environment, timeout_seconds):
+        del cwd, environment
+        captured_timeout.append(timeout_seconds)
+        output_index = command.index("--output") + 1
+        Path(command[output_index]).write_text(
+            json.dumps({"summary": {}, "gate": {"status": "fail"}}),
+            encoding="utf-8",
+        )
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(
+        "aworld.self_evolve.evaluation._run_isolated_evaluator_process",
+        fake_run,
+    )
+
+    _run_evaluator_cli_subprocess(
+        runner_kwargs={
+            "input": str(tmp_path / "input.log"),
+            "kind": "trajectory",
+            "judge_agent_name": "judge",
+            "out_dir": str(tmp_path / "out"),
+            "output": str(tmp_path / "report.json"),
+            "judge_timeout_seconds": 10,
+            "_process_timeout_seconds": 120,
+        },
+        log_path=tmp_path / "logs",
+        workspace_root=tmp_path,
+    )
+
+    assert captured_timeout == [120.0]

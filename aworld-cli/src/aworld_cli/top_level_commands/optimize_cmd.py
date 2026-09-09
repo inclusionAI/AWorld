@@ -176,7 +176,7 @@ class OptimizeTopLevelCommand:
         parser.add_argument(
             "--max-improvement-cycles",
             type=int,
-            default=3,
+            default=6,
             dest="max_improvement_cycles",
             help="Maximum bounded cross-run self-improvement cycles for verified policies.",
         )
@@ -278,14 +278,14 @@ class OptimizeTopLevelCommand:
         parser.add_argument(
             "--max-generated-candidates",
             type=int,
-            default=6,
+            default=24,
             dest="max_generated_candidates",
             help="Maximum candidate-generation slots admitted by the verified funnel.",
         )
         parser.add_argument(
             "--max-full-evaluation-candidates",
             type=int,
-            default=3,
+            default=12,
             dest="max_full_evaluation_candidates",
             help="Maximum candidates admitted to authoritative full-dataset evaluation.",
         )
@@ -441,7 +441,7 @@ class OptimizeTopLevelCommand:
                 ),
                 iterations=getattr(args, "iterations", None),
                 max_improvement_cycles=getattr(
-                    args, "max_improvement_cycles", 3
+                    args, "max_improvement_cycles", 6
                 ),
                 total_run_token_budget=getattr(
                     args, "total_run_token_budget", None
@@ -475,10 +475,10 @@ class OptimizeTopLevelCommand:
                     args, "candidate_screening_max_cases", 3
                 ),
                 max_generated_candidates=getattr(
-                    args, "max_generated_candidates", 6
+                    args, "max_generated_candidates", 24
                 ),
                 max_full_evaluation_candidates=getattr(
-                    args, "max_full_evaluation_candidates", 3
+                    args, "max_full_evaluation_candidates", 12
                 ),
                 max_score_tiebreak_candidates=getattr(
                     args, "max_score_tiebreak_candidates", 1
@@ -856,8 +856,8 @@ def run_optimize_cli(
     baseline_replay_repetitions: int | None = None,
     candidate_replay_repetitions: int | None = None,
     candidate_screening_max_cases: int = 3,
-    max_generated_candidates: int = 6,
-    max_full_evaluation_candidates: int = 3,
+    max_generated_candidates: int = 24,
+    max_full_evaluation_candidates: int = 12,
     max_score_tiebreak_candidates: int = 1,
     runtime_registry_refresher: Callable[[Any], Any] | None = None,
     runtime_skill_activator: Callable[[Any], Any] | None = None,

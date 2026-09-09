@@ -103,6 +103,25 @@ def test_runtime_health_does_not_retry_mixed_timeout_and_non_timeout_blockers() 
     assert health.retryable_infrastructure_failure is False
 
 
+def test_runtime_health_retries_typed_judge_protocol_blocker() -> None:
+    health = assess_evaluation_runtime_health(
+        (
+            _summary(
+                evaluation_agent_signal=False,
+                judge_attempt_count=3,
+                judge_success_count=0,
+                judge_failure_count=3,
+                judge_timeout_count=1,
+                judge_retryable_failure_count=3,
+            ),
+        )
+    )
+
+    assert health.status is EvaluationRuntimeHealthStatus.UNHEALTHY
+    assert health.retryable_infrastructure_failure is True
+    assert health.retryable_blocked_summary_count == 1
+
+
 def test_runtime_health_keeps_partial_success_as_degraded_but_usable() -> None:
     health = assess_evaluation_runtime_health(
         (

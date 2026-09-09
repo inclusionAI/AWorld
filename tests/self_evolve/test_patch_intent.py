@@ -44,6 +44,53 @@ def test_apply_skill_patch_intent_normalizes_rendered_markdown_heading() -> None
     assert updated.count("## Guidance") == 1
 
 
+def test_replace_section_ignores_markdown_headings_inside_fenced_code() -> None:
+    content = (
+        "---\nname: demo\n---\n# Demo\n\n## Guidance\n\n"
+        "```bash\necho before\n# shell comment\necho after\n```\n\n"
+        "## Next\n\nKeep.\n"
+    )
+
+    updated = apply_skill_patch_intent(
+        content,
+        {
+            "operations": [
+                {
+                    "op": "replace_section",
+                    "heading": "Guidance",
+                    "content": "New bounded rule.\n",
+                }
+            ]
+        },
+    )
+
+    assert updated == (
+        "---\nname: demo\n---\n# Demo\n\n## Guidance\n\n"
+        "New bounded rule.\n## Next\n\nKeep.\n"
+    )
+
+
+def test_replace_section_does_not_match_heading_inside_fenced_code() -> None:
+    content = (
+        "---\nname: demo\n---\n# Demo\n\n## Example\n\n"
+        "~~~bash\n# Fake Heading\necho example\n~~~\n"
+    )
+
+    with pytest.raises(ValueError, match="section not found"):
+        apply_skill_patch_intent(
+            content,
+            {
+                "operations": [
+                    {
+                        "op": "replace_section",
+                        "heading": "Fake Heading",
+                        "content": "Replacement.\n",
+                    }
+                ]
+            },
+        )
+
+
 def test_apply_skill_patch_intent_appends_section_after_frontmatter() -> None:
     content = "---\nname: demo\n---\n# Demo\n"
 
@@ -79,6 +126,62 @@ def test_apply_skill_patch_intent_normalizes_appended_markdown_heading() -> None
 
     assert updated.count("## Runtime Guidance") == 1
     assert updated.endswith("## Runtime Guidance\n\nUse bounded evidence.\n")
+
+
+def test_append_section_upserts_existing_section_in_focused_repair() -> None:
+    content = (
+        "---\nname: demo\n---\n# Demo\n\n"
+        "## Runtime Guidance\n\nOld rule.\n\n"
+        "## Next\n\nKeep this section.\n"
+    )
+
+    updated = apply_skill_patch_intent(
+        content,
+        {
+            "operations": [
+                {
+                    "op": "append_section",
+                    "heading": "Runtime Guidance",
+                    "content": "Consolidated rule.\n",
+                }
+            ]
+        },
+    )
+
+    assert updated.count("## Runtime Guidance") == 1
+    assert "Old rule." not in updated
+    assert "Consolidated rule." in updated
+    assert "## Next\n\nKeep this section." in updated
+
+
+def test_replace_section_collapses_duplicate_focused_repair_sections() -> None:
+    content = (
+        "---\nname: demo\n---\n# Demo\n\n"
+        "## Evidence\n\nFirst stale rule.\n\n"
+        "## Unrelated\n\nPreserve me.\n\n"
+        "## Evidence\n\nSecond stale rule.\n\n"
+        "## Tail\n\nAlso preserve me.\n"
+    )
+
+    updated = apply_skill_patch_intent(
+        content,
+        {
+            "operations": [
+                {
+                    "op": "replace_section",
+                    "heading": "Evidence",
+                    "content": "One consolidated rule.\n",
+                }
+            ]
+        },
+    )
+
+    assert updated.count("## Evidence") == 1
+    assert "First stale rule." not in updated
+    assert "Second stale rule." not in updated
+    assert "One consolidated rule." in updated
+    assert "## Unrelated\n\nPreserve me." in updated
+    assert "## Tail\n\nAlso preserve me." in updated
 
 
 def test_apply_skill_patch_intent_rejects_protected_references() -> None:

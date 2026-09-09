@@ -27,6 +27,7 @@ class EvaluationRuntimeHealth:
     unhealthy_summary_count: int
     reason_codes: tuple[str, ...] = ()
     timeout_blocked_summary_count: int = 0
+    retryable_blocked_summary_count: int = 0
 
     @property
     def blocks_candidate_attribution(self) -> bool:
@@ -34,12 +35,12 @@ class EvaluationRuntimeHealth:
 
     @property
     def retryable_infrastructure_failure(self) -> bool:
-        """Whether timeouts explain every summary that blocks attribution."""
+        """Whether transient runtime failures explain every blocking summary."""
 
         return (
             self.status is EvaluationRuntimeHealthStatus.UNHEALTHY
             and self.unhealthy_summary_count > 0
-            and self.timeout_blocked_summary_count
+            and self.retryable_blocked_summary_count
             == self.unhealthy_summary_count
         )
 
@@ -53,6 +54,9 @@ class EvaluationRuntimeHealth:
             "judge_timeout_count": self.judge_timeout_count,
             "unhealthy_summary_count": self.unhealthy_summary_count,
             "timeout_blocked_summary_count": self.timeout_blocked_summary_count,
+            "retryable_blocked_summary_count": (
+                self.retryable_blocked_summary_count
+            ),
             "retryable_infrastructure_failure": (
                 self.retryable_infrastructure_failure
             ),
@@ -78,6 +82,7 @@ def assess_evaluation_runtime_health(
     timeouts = 0
     unhealthy_count = 0
     timeout_blocked_count = 0
+    retryable_blocked_count = 0
     observed = False
     reasons: set[str] = set()
     for summary in items:
@@ -90,6 +95,10 @@ def assess_evaluation_runtime_health(
         summary_successes = _metric_count(metrics, "judge_success_count")
         summary_failures = _metric_count(metrics, "judge_failure_count")
         summary_timeouts = _metric_count(metrics, "judge_timeout_count")
+        summary_retryable_failures = max(
+            summary_timeouts,
+            _metric_count(metrics, "judge_retryable_failure_count"),
+        )
         signal = metrics.get("evaluation_agent_signal")
         if (
             summary_attempts
@@ -122,6 +131,12 @@ def assess_evaluation_runtime_health(
                 and summary_timeouts >= summary_attempts
             ):
                 timeout_blocked_count += 1
+            if (
+                summary_attempts > 0
+                and summary_successes == 0
+                and summary_retryable_failures >= summary_attempts
+            ):
+                retryable_blocked_count += 1
 
     if unhealthy_count:
         status = EvaluationRuntimeHealthStatus.UNHEALTHY
@@ -146,6 +161,7 @@ def assess_evaluation_runtime_health(
         judge_timeout_count=timeouts,
         unhealthy_summary_count=unhealthy_count,
         timeout_blocked_summary_count=timeout_blocked_count,
+        retryable_blocked_summary_count=retryable_blocked_count,
         reason_codes=tuple(sorted(reasons)),
     )
 

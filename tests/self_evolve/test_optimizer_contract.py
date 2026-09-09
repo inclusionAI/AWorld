@@ -2953,9 +2953,10 @@ async def test_judged_target_repair_rejects_lost_parent_delta() -> None:
 
 @pytest.mark.asyncio
 async def test_judged_target_patch_repairs_complete_parent_content() -> None:
+    frontmatter = "---\nname: demo\ndescription: Demo skill.\n---\n\n"
     request = OptimizerRequest(
         target=_target(),
-        current_content="# Demo\n\nCurrent guidance.\n",
+        current_content=frontmatter + "# Demo\n\nCurrent guidance.\n",
         target_fingerprint="sha256:old",
         trace_packs=(_trace_pack(),),
         validation_feedback=(
@@ -2969,7 +2970,8 @@ async def test_judged_target_patch_repairs_complete_parent_content() -> None:
                     "repair_candidate_package": {
                         "candidate_id": "candidate-judged",
                         "content": (
-                            "# Demo\n\nVerified parent behavior.\n\n"
+                            frontmatter
+                            + "# Demo\n\nVerified parent behavior.\n\n"
                             "## Evidence\n\nOld evidence rule.\n"
                         ),
                         "files": [],
@@ -3002,6 +3004,10 @@ async def test_judged_target_patch_repairs_complete_parent_content() -> None:
     assert "Verified parent behavior." in result.candidates[0].content
     assert "Register every final artifact reference" in result.candidates[0].content
     assert "Current guidance." not in result.candidates[0].content
+    intent = result.candidates[0].structural_edit_intent
+    assert intent is not None
+    assert intent.actions[0].action == "replace_section"
+    assert intent.actions[0].section_path[-1] == "evidence"
 
 
 @pytest.mark.asyncio

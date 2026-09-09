@@ -568,6 +568,14 @@ class AWorldTrajectoryEvaluatorBackend:
                     )
             attempt_runner_kwargs = dict(runner_kwargs)
             attempt_runner_kwargs["judge_timeout_seconds"] = effective_timeout_seconds
+            if (
+                self.run_evaluator_source is None
+                and remaining_evaluation_seconds is not None
+            ):
+                attempt_runner_kwargs["_process_timeout_seconds"] = max(
+                    0.001,
+                    float(remaining_evaluation_seconds),
+                )
             logger.info(
                 "self_evolve.evaluator.attempt.start "
                 f"variant_id={request.variant_id} split={request.dataset_split} "
@@ -680,6 +688,9 @@ class AWorldTrajectoryEvaluatorBackend:
             metrics["judge_timeout_count"] = (
                 _nonnegative_metric_count(metrics.get("judge_timeout_count"))
                 + _judge_failure_timeout_count(failures)
+            )
+            metrics["judge_retryable_failure_count"] = (
+                _judge_retryable_failure_count(failures)
             )
             metrics["judge_repetitions"] = self.judge_repetitions
             if failures:
@@ -821,12 +832,18 @@ def _run_evaluator_cli_subprocess(
     environment = os.environ.copy()
     environment["AWORLD_LOG_PATH"] = str(log_path)
     environment["AWORLD_TRAJECTORY_LOG_DISABLED"] = "1"
+    process_deadline = runner_kwargs.get("_process_timeout_seconds")
     timeout = runner_kwargs.get("judge_timeout_seconds")
-    process_timeout = (
-        float(timeout) + 30.0
-        if isinstance(timeout, (int, float)) and not isinstance(timeout, bool)
-        else None
-    )
+    if isinstance(process_deadline, (int, float)) and not isinstance(
+        process_deadline, bool
+    ):
+        process_timeout = float(process_deadline)
+    else:
+        process_timeout = (
+            float(timeout) + 30.0
+            if isinstance(timeout, (int, float)) and not isinstance(timeout, bool)
+            else None
+        )
     try:
         completed = _run_isolated_evaluator_process(
             command,
@@ -2391,6 +2408,9 @@ def _failed_aworld_evaluator_metrics(
         "judge_success_count": 0,
         "judge_failure_count": len(failures),
         "judge_timeout_count": _judge_failure_timeout_count(failures),
+        "judge_retryable_failure_count": _judge_retryable_failure_count(
+            failures
+        ),
         "judge_repetitions": judge_repetitions,
         "judge_failures": list(failures),
     }
@@ -2420,6 +2440,27 @@ def _judge_failure_timeout_count(
         .casefold()
         in timeout_types
     )
+
+
+def _judge_retryable_failure_count(
+    failures: list[Mapping[str, Any]],
+) -> int:
+    """Count bounded transient judge failures eligible for campaign retry."""
+
+    retryable_protocol_markers = (
+        "judge response does not contain a valid json object",
+        "no json object matches judge schema",
+        "judge response results array is empty",
+    )
+    count = 0
+    for failure in failures:
+        if _judge_failure_timeout_count([failure]):
+            count += 1
+            continue
+        reason = str(failure.get("reason") or "").casefold()
+        if any(marker in reason for marker in retryable_protocol_markers):
+            count += 1
+    return count
 
 
 def _nonnegative_metric_count(value: Any) -> int:

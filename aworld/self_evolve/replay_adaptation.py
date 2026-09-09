@@ -11,6 +11,7 @@ import subprocess
 import sys
 import unicodedata
 from dataclasses import asdict, dataclass, field, replace
+from functools import lru_cache
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, Mapping, Protocol, Sequence
 
@@ -43,6 +44,21 @@ _IGNORED_DIRECTORY_NAMES = frozenset(
     }
 )
 _IGNORED_FILE_SUFFIXES = (".pyc", ".pyo")
+_WORKSPACE_CLONE_TIMEOUT_SECONDS = 120
+_WORKSPACE_COPY_TIMEOUT_SECONDS = 300
+_GIT_WORKSPACE_DISCOVERY_TIMEOUT_SECONDS = 60
+_DARWIN_DIRECTORY_CLONE_SCRIPT = """
+import ctypes
+import os
+import sys
+
+clonefile = ctypes.CDLL(None, use_errno=True).clonefile
+clonefile.argtypes = [ctypes.c_char_p, ctypes.c_char_p, ctypes.c_int]
+clonefile.restype = ctypes.c_int
+if clonefile(os.fsencode(sys.argv[1]), os.fsencode(sys.argv[2]), 0) != 0:
+    error_number = ctypes.get_errno()
+    raise OSError(error_number, os.strerror(error_number), sys.argv[1])
+"""
 _SENSITIVE_NAMES = frozenset(
     {
         ".env",
@@ -2246,11 +2262,7 @@ def materialize_replay_workspace(
         raise ReplayAdaptationError(
             "rollout workspace and replay seed cannot overlap"
         )
-    current_fingerprint = _json_fingerprint(_workspace_manifest(seed))
-    if current_fingerprint != bundle.workspace_seed_fingerprint:
-        raise ReplayAdaptationError(
-            "replay workspace seed changed after adaptation compilation"
-        )
+    _verify_workspace_seed_once(seed, bundle.workspace_seed_fingerprint)
     if target.is_symlink():
         target.unlink()
     elif target.exists():
@@ -2266,25 +2278,40 @@ def materialize_replay_workspace(
 def _clone_or_copy_workspace(seed: Path, target: Path) -> None:
     """Materialize a writable rollout using filesystem copy-on-write when available."""
 
-    clone_command: list[str] | None = None
+    clone_commands: list[list[str]] = []
     if sys.platform == "darwin":
-        clone_command = ["cp", "-cR", f"{seed}/.", str(target)]
+        # ``cp -cR`` traverses the hierarchy and copies metadata entry by entry.
+        # That can take minutes for a cloud-backed workspace even though APFS can
+        # clone the whole hierarchy atomically in well under a second.  Keep the
+        # syscall in a child so a stalled filesystem cannot bypass replay deadlines.
+        clone_commands.append(
+            [
+                sys.executable,
+                "-I",
+                "-c",
+                _DARWIN_DIRECTORY_CLONE_SCRIPT,
+                str(seed),
+                str(target),
+            ]
+        )
     elif sys.platform.startswith("linux"):
-        clone_command = [
-            "cp",
-            "--reflink=always",
-            "-a",
-            f"{seed}/.",
-            str(target),
-        ]
-    if clone_command is not None:
         target.mkdir(parents=True, exist_ok=False)
+        clone_commands.append(
+            [
+                "cp",
+                "--reflink=always",
+                "-a",
+                f"{seed}/.",
+                str(target),
+            ]
+        )
+    for clone_command in clone_commands:
         try:
             completed = subprocess.run(
                 clone_command,
                 text=True,
                 capture_output=True,
-                timeout=120,
+                timeout=_WORKSPACE_CLONE_TIMEOUT_SECONDS,
                 check=False,
             )
         except (OSError, subprocess.TimeoutExpired):
@@ -2292,7 +2319,62 @@ def _clone_or_copy_workspace(seed: Path, target: Path) -> None:
         if completed is not None and completed.returncode == 0:
             return
         shutil.rmtree(target, ignore_errors=True)
-    shutil.copytree(seed, target, symlinks=True)
+
+    target.mkdir(parents=True, exist_ok=False)
+    copy_command = (
+        ["cp", "-R", f"{seed}/.", str(target)]
+        if sys.platform == "darwin"
+        else ["cp", "-a", f"{seed}/.", str(target)]
+        if sys.platform.startswith("linux")
+        else [
+            sys.executable,
+            "-I",
+            "-c",
+            "import shutil,sys; shutil.copytree(sys.argv[1], sys.argv[2], "
+            "symlinks=True, dirs_exist_ok=True)",
+            str(seed),
+            str(target),
+        ]
+    )
+    try:
+        completed = subprocess.run(
+            copy_command,
+            text=True,
+            capture_output=True,
+            timeout=_WORKSPACE_COPY_TIMEOUT_SECONDS,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        shutil.rmtree(target, ignore_errors=True)
+        raise ReplayAdaptationError(
+            "replay workspace copy did not complete within the bounded materialization window"
+        ) from exc
+    if completed.returncode != 0:
+        detail = (completed.stderr or completed.stdout or "copy failed").strip()
+        shutil.rmtree(target, ignore_errors=True)
+        raise ReplayAdaptationError(
+            f"replay workspace copy failed: {detail[:500]}"
+        )
+
+
+@lru_cache(maxsize=64)
+def _verified_workspace_seed_fingerprint(
+    seed_path: str,
+    expected_fingerprint: str,
+) -> str:
+    seed = Path(seed_path)
+    current_fingerprint = _json_fingerprint(_workspace_manifest(seed))
+    if current_fingerprint != expected_fingerprint:
+        raise ReplayAdaptationError(
+            "replay workspace seed changed after adaptation compilation"
+        )
+    return current_fingerprint
+
+
+def _verify_workspace_seed_once(seed: Path, expected_fingerprint: str) -> None:
+    """Verify an immutable adaptation seed once per process and adaptation identity."""
+
+    _verified_workspace_seed_fingerprint(str(seed), expected_fingerprint)
 
 
 def _normalize_workspace_paths(text: str, *, workspace_root: Path) -> str:
@@ -2318,7 +2400,7 @@ def _git_tracked_workspace_paths(source: Path) -> tuple[Path, ...] | None:
             ["git", "-C", str(source), "rev-parse", "--show-toplevel"],
             check=False,
             capture_output=True,
-            timeout=5,
+            timeout=_GIT_WORKSPACE_DISCOVERY_TIMEOUT_SECONDS,
         )
     except (OSError, subprocess.SubprocessError):
         return None
@@ -2334,7 +2416,7 @@ def _git_tracked_workspace_paths(source: Path) -> tuple[Path, ...] | None:
             ["git", "-C", str(git_root), "ls-files", "--cached", "--full-name", "-z"],
             check=False,
             capture_output=True,
-            timeout=10,
+            timeout=_GIT_WORKSPACE_DISCOVERY_TIMEOUT_SECONDS,
         )
     except (OSError, subprocess.SubprocessError):
         return None

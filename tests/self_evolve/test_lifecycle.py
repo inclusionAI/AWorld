@@ -1048,6 +1048,42 @@ def test_cleanup_recovers_atomically_quarantined_artifacts(tmp_path: Path) -> No
     assert str(operation) in cleanup["removed_paths"]
 
 
+def test_cleanup_defers_large_quarantine_deletion_after_logical_removal(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    artifact_root = tmp_path / ".aworld" / "self_evolve"
+    run_dir = artifact_root / "run-terminal"
+    replay = run_dir / "replay"
+    _write_json(
+        run_dir / "run.json",
+        {"run_id": run_dir.name, "status": "rejected"},
+    )
+    _write_json(replay / "candidate" / "execution_request.json", {})
+    _write_text(replay / "candidate" / "workspace" / "source.py")
+    _touch_tree(run_dir, 1_000.0)
+    monkeypatch.setattr(lifecycle_module, "_INLINE_QUARANTINE_DELETE_SECONDS", 0.0)
+
+    cleanup = cleanup_self_evolve_artifacts(
+        tmp_path,
+        policy=SelfEvolveArtifactRetentionPolicy(keep_latest_runs=0),
+        now=10_000.0,
+    )
+
+    removed_paths = [Path(value) for value in cleanup["removed_paths"]]
+    assert removed_paths
+    assert all(not path.exists() for path in removed_paths)
+    quarantine = artifact_root / ".artifact-retention-trash"
+    operations = list(quarantine.iterdir())
+    assert operations
+    assert all((operation / "owner.json").is_file() for operation in operations)
+    assert any(
+        path.name == "source.py"
+        for operation in operations
+        for path in (operation / "artifact").rglob("*")
+    )
+
+
 def test_cleanup_does_not_recover_live_quarantine_operation(tmp_path: Path) -> None:
     artifact_root = tmp_path / ".aworld" / "self_evolve"
     operation = artifact_root / ".artifact-retention-trash" / "in-progress"

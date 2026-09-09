@@ -1328,6 +1328,49 @@ def _paired_replay_pending_candidate_checkpoint(
         )
         if checkpoint is not None:
             return checkpoint
+    # A later candidate can time out after an earlier candidate already
+    # produced a complete (but rejected) evaluation.  Report projection then
+    # keeps the earlier candidate as the selected repair focus and its
+    # candidate-owned attribution becomes the top-level attribution.  Recover
+    # the later attempt only when the authoritative iteration explicitly
+    # failed replay and its canonical on-disk checkpoint independently proves
+    # that pending work is safe to resume.
+    raw_iterations = report.get("iterations")
+    iterations = (
+        tuple(item for item in raw_iterations if isinstance(item, Mapping))
+        if isinstance(raw_iterations, list)
+        else ()
+    )
+    for iteration in reversed(iterations):
+        failed_gates = iteration.get("failed_gates")
+        candidate_id = iteration.get("candidate_id")
+        if not (
+            iteration.get("lifecycle_stage") == "authoritative_replay"
+            and iteration.get("status") == "rejected"
+            and isinstance(failed_gates, list)
+            and "candidate_replay" in failed_gates
+            and isinstance(candidate_id, str)
+            and candidate_id
+        ):
+            continue
+        request_path = (
+            store.run_path(run_id) / "replay" / candidate_id / "request.json"
+        )
+        try:
+            request = _load_json_mapping(request_path)
+        except (OSError, TypeError, ValueError, json.JSONDecodeError):
+            continue
+        fingerprint = request.get("verified_candidate_package_fingerprint")
+        if not isinstance(fingerprint, str) or not fingerprint:
+            continue
+        checkpoint = discover_paired_replay_resume_checkpoint(
+            store,
+            run_id=run_id,
+            candidate_id=candidate_id,
+            verified_candidate_package_fingerprint=fingerprint,
+        )
+        if checkpoint is not None and checkpoint.pending_case_ids:
+            return checkpoint
     member_timeout = any(
         isinstance(report.get(key), Mapping)
         and report[key].get("code") == "replay_member_phase_timeout"
@@ -2823,8 +2866,8 @@ def execute_cli_optimization(
     replay_max_steps: int | None = None,
     replay_candidate_limit: int = 2,
     candidate_screening_max_cases: int = 3,
-    max_generated_candidates: int = 6,
-    max_full_evaluation_candidates: int = 3,
+    max_generated_candidates: int = 24,
+    max_full_evaluation_candidates: int = 12,
     max_score_tiebreak_candidates: int = 1,
     baseline_replay_repetitions: int = 1,
     candidate_replay_repetitions: int = 1,
