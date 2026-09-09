@@ -1,4 +1,5 @@
 import json
+from dataclasses import replace
 from types import SimpleNamespace
 
 from pathlib import Path
@@ -1792,6 +1793,90 @@ async def test_goal_command_initializes_session_state_from_direct_start(tmp_path
         assert "1. pytest tests/api -q" in prompt
         assert "Completion promise: COMPLETE" in prompt
         assert "Only emit <promise>COMPLETE</promise>" in prompt
+    finally:
+        CommandRegistry.restore(snapshot)
+
+
+@pytest.mark.asyncio
+async def test_goal_command_imports_validated_self_evolve_campaign_handoff(tmp_path):
+    from aworld.self_evolve.campaign import (
+        SelfImprovementCampaignController,
+        SelfImprovementCampaignStatus,
+        SelfImprovementDisposition,
+        SelfImprovementDispositionKind,
+        SelfImprovementProgress,
+        build_goal_handoff,
+    )
+
+    workspace = tmp_path / "workspace"
+    controller = SelfImprovementCampaignController(workspace_root=workspace)
+    campaign = controller.create(
+        {
+            "from_trajectory": "trajectory.log",
+            "apply_policy": "auto_verified",
+            "infer_target": True,
+        }
+    )
+    run_id = f"{campaign.campaign_id}-cycle-001"
+    campaign = replace(
+        campaign,
+        status=SelfImprovementCampaignStatus.PAUSED,
+        cycle_index=1,
+        run_ids=(run_id,),
+        latest_report_path=str(
+            workspace / ".aworld" / "self_evolve" / run_id / "report.json"
+        ),
+        latest_progress=SelfImprovementProgress(
+            semantic_frontier_ids=("frontier-1",)
+        ),
+        latest_disposition=SelfImprovementDisposition(
+            kind=SelfImprovementDispositionKind.HANDOFF_GOAL,
+            reason_code="typed_framework_or_shared_blocker",
+            owner="framework",
+            stage="capability_compile",
+            scope="shared_run",
+        ),
+    )
+    report_path = controller.store.run_path(run_id) / "report.json"
+    report_path.parent.mkdir(parents=True)
+    report_path.write_text(
+        json.dumps({"run_id": run_id, "status": "rejected"}),
+        encoding="utf-8",
+    )
+    controller.store.write_campaign(campaign)
+    handoff = build_goal_handoff(campaign, {})
+    controller.store.write_campaign_goal_handoff(campaign.campaign_id, handoff)
+
+    plugin = discover_plugins([_get_builtin_goal_plugin_root()])[0]
+    snapshot = CommandRegistry.snapshot()
+    try:
+        CommandRegistry.clear()
+        register_plugin_commands([plugin])
+        command = CommandRegistry.get("goal")
+        runtime = _build_dummy_runtime(tmp_path)
+
+        prompt = await command.get_prompt(
+            CommandContext(
+                cwd=str(workspace),
+                user_args=f"--from-campaign {campaign.campaign_id} --max-turns 4",
+                runtime=runtime,
+                session_id="session-1",
+            )
+        )
+
+        state_path = runtime._resolve_plugin_state_path(
+            plugin_id="goal-session",
+            scope="session",
+            session_id="session-1",
+            workspace_path=str(workspace),
+        )
+        payload = runtime._plugin_state_store.handle(state_path).read()
+        assert payload["source"] == "self_evolve"
+        assert payload["campaign_id"] == campaign.campaign_id
+        assert payload["latest_run_id"] == run_id
+        assert payload["max_turns"] == 4
+        assert f"Self-improvement campaign: {campaign.campaign_id}" in prompt
+        assert f"aworld-cli optimize --resume-campaign {campaign.campaign_id}" in prompt
     finally:
         CommandRegistry.restore(snapshot)
 

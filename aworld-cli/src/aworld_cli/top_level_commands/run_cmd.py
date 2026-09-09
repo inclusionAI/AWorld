@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import json
 
 from aworld_cli.runtime_bootstrap import RuntimeBootstrapError, bootstrap_runtime
 
@@ -22,6 +23,59 @@ def _register_run_options(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--agent-dir", type=str, action="append")
     parser.add_argument("--agent-file", type=str, action="append")
     parser.add_argument("--skill-path", type=str, action="append")
+    parser.add_argument(
+        "--evolve",
+        nargs="?",
+        const="shadow",
+        choices=("off", "offline", "shadow", "online"),
+        default=None,
+    )
+    parser.add_argument("--judge-agent", type=str)
+    parser.add_argument("--judge-agent-name", type=str)
+    parser.add_argument("--judge-backend-ref", type=str)
+    parser.add_argument("--judge-model-profile", type=str)
+    parser.add_argument("--emit-trajectory", action="store_true")
+
+
+def _parse_global_evolve_options(argv) -> argparse.Namespace:
+    modes = {"off", "offline", "shadow", "online"}
+    tokens = list(argv)[1:]
+    result = argparse.Namespace(
+        evolve=None,
+        judge_agent=None,
+        judge_agent_name=None,
+        judge_backend_ref=None,
+        judge_model_profile=None,
+    )
+    for index, token in enumerate(tokens):
+        if token.startswith("--evolve="):
+            value = token.split("=", 1)[1].strip().lower()
+            result.evolve = value if value in modes else None
+            continue
+        if token == "--evolve":
+            next_token = tokens[index + 1].strip().lower() if index + 1 < len(tokens) else ""
+            result.evolve = next_token if next_token in modes else "shadow"
+            continue
+        if token in {"--judge-agent", "--judge-agent-name", "--judge-backend-ref", "--judge-model-profile"}:
+            value = tokens[index + 1] if index + 1 < len(tokens) else None
+            if token == "--judge-agent":
+                result.judge_agent = value
+            elif token == "--judge-agent-name":
+                result.judge_agent_name = value
+            elif token == "--judge-backend-ref":
+                result.judge_backend_ref = value
+            else:
+                result.judge_model_profile = value
+            continue
+        if token.startswith("--judge-agent="):
+            result.judge_agent = token.split("=", 1)[1]
+        elif token.startswith("--judge-agent-name="):
+            result.judge_agent_name = token.split("=", 1)[1]
+        elif token.startswith("--judge-backend-ref="):
+            result.judge_backend_ref = token.split("=", 1)[1]
+        elif token.startswith("--judge-model-profile="):
+            result.judge_model_profile = token.split("=", 1)[1]
+    return result
 
 
 class RunTopLevelCommand:
@@ -50,6 +104,7 @@ class RunTopLevelCommand:
         from aworld_cli.main import (
             _resolve_agent_dirs,
             _run_direct_mode,
+            _self_evolve_config_from_cli_mode,
             _show_banner,
             init_middlewares,
         )
@@ -66,15 +121,23 @@ class RunTopLevelCommand:
             return 1
 
         local_dirs = _resolve_agent_dirs(args.agent_dir)
+        args_evolve = getattr(args, "evolve", None)
+        global_evolve = _parse_global_evolve_options(context.argv)
+        evolve_mode = args_evolve if args_evolve is not None else global_evolve.evolve
+        judge_agent = getattr(args, "judge_agent", None) or global_evolve.judge_agent
+        judge_agent_name = getattr(args, "judge_agent_name", None) or global_evolve.judge_agent_name
+        judge_backend_ref = getattr(args, "judge_backend_ref", None) or global_evolve.judge_backend_ref
+        judge_model_profile = getattr(args, "judge_model_profile", None) or global_evolve.judge_model_profile
         agent_name = self._resolve_agent_name(args)
         if agent_name is None:
             return 1
 
-        succeeded = asyncio.run(
+        summary = asyncio.run(
             _run_direct_mode(
                 prompt=args.task,
                 agent_name=agent_name,
                 requested_skill_names=args.skill,
+                skill_paths=args.skill_path,
                 max_runs=args.max_runs,
                 max_cost=args.max_cost,
                 max_duration=args.max_duration,
@@ -85,9 +148,31 @@ class RunTopLevelCommand:
                 remote_backends=args.remote_backend,
                 local_dirs=local_dirs,
                 agent_files=args.agent_file,
+                self_evolve_config=_self_evolve_config_from_cli_mode(
+                    evolve_mode,
+                    judge_agent=judge_agent,
+                    judge_agent_name=judge_agent_name,
+                    judge_backend_ref=judge_backend_ref,
+                    judge_model_profile=judge_model_profile,
+                ),
             )
         )
-        return 0 if succeeded else 1
+        if summary is False:
+            return 1
+        if getattr(args, "emit_trajectory", False):
+            from aworld_cli.main import _trajectory_payload_from_direct_run_summary
+
+            print(
+                json.dumps(
+                    _trajectory_payload_from_direct_run_summary(
+                        summary,
+                        prompt=args.task,
+                        agent_name=agent_name,
+                    ),
+                    ensure_ascii=False,
+                )
+            )
+        return 0
 
     def _resolve_agent_name(self, args) -> str | None:
         agent_name = args.agent

@@ -399,6 +399,7 @@ class TrajectorySnapshot:
     record_checksum: str | None
     source: str
     line_number: int
+    evidence_bundle_path: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -490,6 +491,12 @@ def _legacy_snapshot(
         trajectory_ref=trajectory_ref,
         trajectory_checksum=trajectory_checksum,
         record_checksum=None,
+        evidence_bundle_path=(
+            str(payload["evidence_bundle_path"])
+            if isinstance(payload.get("evidence_bundle_path"), str)
+            and payload["evidence_bundle_path"].strip()
+            else None
+        ),
         source=source,
         line_number=line_number,
     )
@@ -510,6 +517,12 @@ def _v2_snapshot(envelope: TrajectoryEnvelope, *, source: str, line_number: int)
         trajectory_ref=envelope.build_result.trajectory_ref,
         trajectory_checksum=envelope.build_result.trajectory_checksum,
         record_checksum=payload["integrity"]["record_checksum"],
+        evidence_bundle_path=(
+            str(payload["evidence_bundle_path"])
+            if isinstance(payload.get("evidence_bundle_path"), str)
+            and payload["evidence_bundle_path"].strip()
+            else None
+        ),
         source=source,
         line_number=line_number,
     )

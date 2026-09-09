@@ -18,7 +18,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "aworld-cli" / "src"))
 from aworld_cli.core.command_system import CommandRegistry, CommandContext
 from aworld.plugins.discovery import discover_plugins
 from aworld_cli.plugin_capabilities.commands import register_plugin_commands
-from aworld_cli.commands import help_cmd, commit, review, diff, cron_cmd, plugins_cmd, evaluation_cmd
+from aworld_cli.commands import help_cmd, commit, review, diff, cron_cmd, plugins_cmd, evaluation_cmd, optimize_cmd
 from aworld_cli.console import AWorldCLI
 
 
@@ -27,7 +27,7 @@ class TestCommandRegistration:
 
     def test_commands_registered(self):
         """Verify all commands are registered."""
-        expected_commands = ['help', 'commit', 'review', 'diff', 'cron', 'plugins', 'evaluation']
+        expected_commands = ['help', 'commit', 'review', 'diff', 'cron', 'plugins', 'evaluation', 'optimize']
         for cmd_name in expected_commands:
             cmd = CommandRegistry.get(cmd_name)
             assert cmd is not None, f"Command /{cmd_name} not registered"
@@ -44,7 +44,7 @@ class TestCommandRegistration:
             cmd = CommandRegistry.get(cmd_name)
             assert cmd.command_type == 'prompt', f"/{cmd_name} should be prompt command"
 
-        for cmd_name in ['cron', 'plugins', 'evaluation']:
+        for cmd_name in ['cron', 'plugins', 'evaluation', 'optimize']:
             tool_cmd = CommandRegistry.get(cmd_name)
             assert tool_cmd.command_type == 'tool'
 
@@ -60,6 +60,7 @@ class TestCommandRegistration:
         assert 'cron' in command_names
         assert 'plugins' in command_names
         assert 'evaluation' in command_names
+        assert 'optimize' in command_names
 
 
 class TestHelpCommand:
@@ -81,6 +82,7 @@ class TestHelpCommand:
         assert '/diff' in result
         assert '/plugins' in result
         assert '/evaluation' in result
+        assert '/optimize' in result
 
     @pytest.mark.asyncio
     async def test_help_command_with_args(self):
@@ -717,6 +719,300 @@ class TestEvaluationCommand:
         assert "Report:" in result
 
 
+class TestOptimizeCommand:
+    """Test /optimize command direct execution."""
+
+    @pytest.mark.asyncio
+    async def test_optimize_without_args_shows_usage(self):
+        cmd = CommandRegistry.get("optimize")
+
+        result = await cmd.execute(CommandContext(cwd=os.getcwd(), user_args=""))
+
+        assert "Usage:" in result
+        assert "/optimize --from-trajectory" in result
+        assert "--apply auto_verified" in result
+
+    @pytest.mark.asyncio
+    async def test_optimize_delegates_to_top_level_runtime(self, monkeypatch, tmp_path):
+        cmd = CommandRegistry.get("optimize")
+        trajectory_path = tmp_path / "trajectory.log"
+        judge_path = tmp_path / "agent.md"
+        calls = {}
+
+        def fake_run_optimize_cli(**kwargs):
+            calls.update(kwargs)
+            return {
+                "status": "rejected",
+                "report_path": str(tmp_path / "report.json"),
+                "target_selection_path": str(tmp_path / "target_selection.json"),
+                "replay_path": str(tmp_path / "replay" / "cand-1"),
+                "selected_candidate_id": "cand-1",
+                "best_candidate_id": None,
+            }
+
+        monkeypatch.setattr(
+            "aworld_cli.commands.optimize_cmd.run_optimize_cli",
+            fake_run_optimize_cli,
+        )
+
+        result = await cmd.execute(
+            CommandContext(
+                cwd=str(tmp_path),
+                user_args=(
+                    f"--from-trajectory {trajectory_path} --apply auto_verified "
+                    "--new-skill-policy draft_only "
+                    f"--judge-agent {judge_path} --replay-timeout 600 "
+                    "--replay-max-runs 1 --judge-timeout 120"
+                ),
+            )
+        )
+
+        assert calls["workspace_root"] == str(tmp_path)
+        assert calls["target"] is None
+        assert calls["infer_target"] is True
+        assert calls["from_trajectory"] == str(trajectory_path)
+        assert calls["apply"] == "auto_verified"
+        assert calls["new_skill_policy"] == "draft_only"
+        assert calls["judge_agent"] == str(judge_path)
+        assert calls["judge_agent_name"] is None
+        assert calls["judge_backend_ref"] is None
+        assert calls["replay_timeout_seconds"] == 600
+        assert calls["replay_max_steps"] == 1
+        assert calls["judge_timeout_seconds"] == 120
+        assert calls["max_improvement_cycles"] == 3
+        assert "Status: rejected" in result
+        assert "Selected candidate: cand-1" in result
+
+    @pytest.mark.asyncio
+    async def test_optimize_defaults_source_ingestor_to_auto(self, monkeypatch, tmp_path):
+        cmd = CommandRegistry.get("optimize")
+        calls = {}
+
+        def fake_run_optimize_cli(**kwargs):
+            calls.update(kwargs)
+            return {
+                "status": "ingested",
+                "ingestion_report_path": str(tmp_path / "ingestion.json"),
+            }
+
+        monkeypatch.setattr(
+            "aworld_cli.commands.optimize_cmd.run_optimize_cli",
+            fake_run_optimize_cli,
+        )
+
+        result = await cmd.execute(
+            CommandContext(
+                cwd=str(tmp_path),
+                user_args=(
+                    "--from-source domain-data "
+                    "--source-manifest domain-data/aworld-source.yaml "
+                    "--semantic-evidence-approval approval.json "
+                    "--semantic-qualification-report qualification.json "
+                    "--ingestion-only"
+                ),
+            )
+        )
+
+        assert calls["from_source"] == "domain-data"
+        assert calls["source_ingestor"] == "auto"
+        assert calls["source_manifest"] == "domain-data/aworld-source.yaml"
+        assert calls["semantic_evidence_approval"] == "approval.json"
+        assert calls["semantic_qualification_report"] == (
+            "qualification.json"
+        )
+        assert calls["ingestion_only"] is True
+        assert "Status: ingested" in result
+
+    @pytest.mark.asyncio
+    async def test_optimize_forwards_frozen_ingestion_promotion(
+        self,
+        monkeypatch,
+        tmp_path,
+    ):
+        cmd = CommandRegistry.get("optimize")
+        calls = {}
+
+        def fake_run_optimize_cli(**kwargs):
+            calls.update(kwargs)
+            return {"status": "promoted"}
+
+        monkeypatch.setattr(
+            "aworld_cli.commands.optimize_cmd.run_optimize_cli",
+            fake_run_optimize_cli,
+        )
+
+        result = await cmd.execute(
+            CommandContext(
+                cwd=str(tmp_path),
+                user_args=(
+                    "--frozen-ingestion-id ingestion-semantic-v2 "
+                    "--semantic-evidence-approval approval.json "
+                    "--semantic-qualification-report qualification.json "
+                    "--apply auto_verified"
+                ),
+            )
+        )
+
+        assert calls["frozen_ingestion_id"] == "ingestion-semantic-v2"
+        assert calls["semantic_evidence_approval"] == "approval.json"
+        assert calls["semantic_qualification_report"] == (
+            "qualification.json"
+        )
+        assert "Status: promoted" in result
+
+    @pytest.mark.asyncio
+    async def test_optimize_allows_registered_ingestor_override(
+        self,
+        monkeypatch,
+        tmp_path,
+    ):
+        cmd = CommandRegistry.get("optimize")
+        calls = {}
+
+        def fake_run_optimize_cli(**kwargs):
+            calls.update(kwargs)
+            return {"status": "rejected"}
+
+        monkeypatch.setattr(
+            "aworld_cli.commands.optimize_cmd.run_optimize_cli",
+            fake_run_optimize_cli,
+        )
+
+        await cmd.execute(
+            CommandContext(
+                cwd=str(tmp_path),
+                user_args=(
+                    "--from-source domain-data "
+                    "--source-ingestor crm-export-v2 "
+                    "--target skill:crm"
+                ),
+            )
+        )
+
+        assert calls["source_ingestor"] == "crm-export-v2"
+
+    @pytest.mark.asyncio
+    async def test_optimize_rejects_proposal_campaign_resume(self, tmp_path):
+        cmd = CommandRegistry.get("optimize")
+
+        result = await cmd.execute(
+            CommandContext(
+                cwd=str(tmp_path),
+                user_args="--resume-campaign campaign-generic --apply proposal",
+            )
+        )
+
+        assert result == (
+            "Optimize error: --resume-campaign requires --apply auto_verified"
+        )
+
+    @pytest.mark.asyncio
+    async def test_optimize_forwards_trajectory_set(self, monkeypatch, tmp_path):
+        cmd = CommandRegistry.get("optimize")
+        set_path = tmp_path / "trajectory-set.json"
+        calls = {}
+
+        def fake_run_optimize_cli(**kwargs):
+            calls.update(kwargs)
+            return {"status": "rejected", "report_path": str(tmp_path / "report.json")}
+
+        monkeypatch.setattr(
+            "aworld_cli.commands.optimize_cmd.run_optimize_cli",
+            fake_run_optimize_cli,
+        )
+
+        result = await cmd.execute(
+            CommandContext(
+                cwd=str(tmp_path),
+                user_args=(
+                    f"--from-trajectory-set {set_path} "
+                    "--include-prior-runs --apply proposal"
+                ),
+            )
+        )
+
+        assert calls["workspace_root"] == str(tmp_path)
+        assert calls["from_trajectory_set"] == str(set_path)
+        assert calls["include_prior_runs"] is True
+        assert calls["from_trajectory"] is None
+        assert calls["infer_target"] is True
+        assert "Status: rejected" in result
+
+    @pytest.mark.asyncio
+    async def test_optimize_passes_runtime_skill_registry_refresher(self, monkeypatch, tmp_path):
+        cmd = CommandRegistry.get("optimize")
+        calls = {}
+
+        class FakeRuntime:
+            def refresh_skill_registry(self, candidate=None):
+                return {"status": "refreshed"}
+
+        def fake_run_optimize_cli(**kwargs):
+            calls.update(kwargs)
+            return {"status": "succeeded", "report_path": str(tmp_path / "report.json")}
+
+        monkeypatch.setattr(
+            "aworld_cli.commands.optimize_cmd.run_optimize_cli",
+            fake_run_optimize_cli,
+        )
+
+        await cmd.execute(
+            CommandContext(
+                cwd=str(tmp_path),
+                user_args="--from-trajectory trajectory.log --apply auto_verified",
+                runtime=FakeRuntime(),
+            )
+        )
+
+        assert calls["runtime_registry_refresher"] is not None
+        assert calls["runtime_registry_refresher"](None) == {"status": "refreshed"}
+
+    @pytest.mark.asyncio
+    async def test_optimize_drains_pending_jobs(self, monkeypatch, tmp_path):
+        cmd = CommandRegistry.get("optimize")
+        calls = {}
+
+        def fake_drain_pending_self_evolve_jobs(*, workspace_root):
+            calls["workspace_root"] = workspace_root
+            return 2
+
+        monkeypatch.setattr(
+            "aworld_cli.commands.optimize_cmd.drain_pending_self_evolve_jobs",
+            fake_drain_pending_self_evolve_jobs,
+        )
+
+        result = await cmd.execute(
+            CommandContext(cwd=str(tmp_path), user_args="--drain-pending")
+        )
+
+        assert calls["workspace_root"] == str(tmp_path)
+        assert result == "Drained pending self-evolve jobs: 2"
+
+    @pytest.mark.asyncio
+    async def test_optimize_reports_framework_argument_errors(self, monkeypatch, tmp_path):
+        cmd = CommandRegistry.get("optimize")
+
+        def fake_run_optimize_cli(**kwargs):
+            raise ValueError("use only one judge selector")
+
+        monkeypatch.setattr(
+            "aworld_cli.commands.optimize_cmd.run_optimize_cli",
+            fake_run_optimize_cli,
+        )
+
+        result = await cmd.execute(
+            CommandContext(
+                cwd=str(tmp_path),
+                user_args=(
+                    "--from-trajectory trajectory.log --apply auto_verified "
+                    "--judge-agent agent.md --judge-backend-ref judges:build"
+                ),
+            )
+        )
+
+        assert result == "Optimize error: use only one judge selector"
+
+
 class TestSlashCommandCompletion:
     """Test slash command completion sources."""
 
@@ -729,6 +1025,16 @@ class TestSlashCommandCompletion:
         assert "/evaluation --kind answer" in words
         assert "/evaluation --kind trajectory" in words
         assert meta["/evaluation"] == "Run evaluator flows"
+
+    def test_console_completion_entries_include_optimize_command(self):
+        cli = AWorldCLI()
+
+        words, meta = cli._build_completion_entries(agent_names=[])
+
+        assert "/optimize" in words
+        assert "/optimize --from-trajectory" in words
+        assert "/optimize --apply auto_verified" in words
+        assert meta["/optimize"] == "Run self-evolve optimization"
 
     def test_console_completion_entries_include_cron_subcommands(self):
         """Typing /cron should expose concrete cron subcommands in the completer source."""

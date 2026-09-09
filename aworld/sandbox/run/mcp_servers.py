@@ -11,6 +11,10 @@ from pathlib import Path
 
 from aworld.core.context.base import Context
 from aworld.logs.util import logger
+from aworld.memory.tool_call_compaction import (
+    REPLAY_COMPACTED_ARGUMENT_FAILURE,
+    compacted_replay_execution_error,
+)
 from aworld.sandbox.namespaces.base import (
     resolve_service_name_from_config,
     service_matches_logical_name,
@@ -902,6 +906,31 @@ class McpServers:
                 }
 
                 if not server_name or not tool_name:
+                    continue
+
+                replay_error = compacted_replay_execution_error(
+                    parameter,
+                    tool_name=f"{server_name}.{tool_name}",
+                )
+                if replay_error:
+                    logger.warning(
+                        f"Blocking replay-compacted sandbox MCP tool call: {replay_error}"
+                    )
+                    results.append(
+                        ActionResult(
+                            tool_name=server_name,
+                            action_name=tool_name,
+                            content=f"{REPLAY_COMPACTED_ARGUMENT_FAILURE}: {replay_error}",
+                            keep=True,
+                            is_done=True,
+                            success=False,
+                            error=REPLAY_COMPACTED_ARGUMENT_FAILURE,
+                            metadata={
+                                "failure_type": REPLAY_COMPACTED_ARGUMENT_FAILURE,
+                            },
+                            parameter=parameter,
+                        )
+                    )
                     continue
 
                 # Inject env_content parameter if needed (before other processing)

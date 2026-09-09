@@ -1,0 +1,1361 @@
+from __future__ import annotations
+
+import time
+from dataclasses import replace
+from pathlib import Path
+
+import pytest
+
+from aworld.self_evolve.evaluation import CandidateConfidenceDecision, ReplayCostEstimate
+from aworld.self_evolve.gates import (
+    BudgetGate,
+    CostLatencyRegressionGate,
+    EvidenceQualityGate,
+    ExternalCodeEvolutionGate,
+    GlobalRegressionBenchmarkGate,
+    HeldOutVerificationGate,
+    JudgeOnlySignalGate,
+    MalformedCandidateGate,
+    NewSkillPromotionGate,
+    NoopCandidateGate,
+    PromptSectionGate,
+    ProtectedPathGate,
+    RequiredVerificationGate,
+    ReplayAdaptationGate,
+    ScoreImprovementGate,
+    SkillMarkdownGate,
+    SkillReleaseFidelityGate,
+    StoppingConditionGate,
+    StoppingConditionState,
+    TokenLimitGate,
+    ToolDescriptionGate,
+    TrustProvenanceGate,
+)
+from aworld.self_evolve.replay_adaptation import (
+    ReplayAdaptationBundle,
+    ReplayCaseAdaptation,
+    ReplayDependency,
+)
+from aworld.self_evolve.provenance import TargetMutationIntent, TargetProvenance
+from aworld.self_evolve.types import CandidateVariant, EvaluationSummary, SelfEvolveTargetRef
+from aworld.self_evolve.patch_intent import apply_skill_patch_intent
+from aworld.skills.structure import (
+    MAX_SKILL_MARKDOWN_CHARS,
+    MAX_STRUCTURAL_ATOMS,
+    build_skill_structural_edit_intent,
+    validate_skill_markdown_structure,
+)
+from aworld.skills.structure_types import SkillStructuralEditIntent
+
+
+def _candidate(
+    content: str,
+    *,
+    path: str | None = "SKILL.md",
+    structural_edit_intent: SkillStructuralEditIntent | None = None,
+) -> CandidateVariant:
+    return CandidateVariant(
+        candidate_id="cand-1",
+        target=SelfEvolveTargetRef(target_type="skill", target_id="demo", path=path),
+        content=content,
+        rationale="test",
+        target_fingerprint="sha256:old",
+        structural_edit_intent=structural_edit_intent,
+    )
+
+
+def test_replay_adaptation_gate_requires_deterministic_ready_cases() -> None:
+    ready_case = ReplayCaseAdaptation(
+        case_id="task-ready",
+        adapted_task_input="task",
+        task_input_fingerprint="sha256:task",
+        dependencies=(),
+        bindings=(),
+        tool_names=(),
+        readiness="ready",
+    )
+    blocked_case = ReplayCaseAdaptation(
+        case_id="task-blocked",
+        adapted_task_input="task",
+        task_input_fingerprint="sha256:blocked-task",
+        dependencies=(
+            ReplayDependency(
+                kind="http_resource",
+                identifier="https://example.test/data",
+                status="runtime_required",
+                deterministic=False,
+            ),
+        ),
+        bindings=(),
+        tool_names=(),
+        readiness="runtime_required",
+    )
+    base = {
+        "schema_version": "test.v1",
+        "source_workspace_root": "/workspace",
+        "workspace_seed": "/seed",
+        "workspace_seed_fingerprint": "sha256:seed",
+        "manifest_path": "/manifest.json",
+        "environment_snapshot_path": "/environment.json",
+        "environment_fingerprint": "sha256:environment",
+        "adaptation_fingerprint": "sha256:adaptation",
+    }
+
+    passed = ReplayAdaptationGate().evaluate(
+        ReplayAdaptationBundle(cases=(ready_case,), ready=True, **base)
+    )
+    failed = ReplayAdaptationGate().evaluate(
+        ReplayAdaptationBundle(cases=(blocked_case,), ready=False, **base)
+    )
+
+    assert passed.passed is True
+    assert failed.passed is False
+    assert failed.gate_name == "replay_adaptation"
+    assert failed.details["readiness"] == "runtime_required"
+    assert failed.details["unresolved_dependency_count"] == 1
+
+
+def test_score_improvement_gate_requires_min_delta() -> None:
+    gate = ScoreImprovementGate(min_delta=0.1)
+
+    passed = gate.evaluate(
+        baseline=EvaluationSummary(variant_id="baseline", metrics={"score": 0.5}),
+        candidate=EvaluationSummary(variant_id="cand-1", metrics={"score": 0.7}),
+    )
+    failed = gate.evaluate(
+        baseline=EvaluationSummary(variant_id="baseline", metrics={"score": 0.5}),
+        candidate=EvaluationSummary(variant_id="cand-1", metrics={"score": 0.55}),
+    )
+
+    assert passed.passed is True
+    assert passed.details["delta"] == 0.2
+    assert failed.passed is False
+    assert failed.reason == "score improvement below minimum delta"
+
+
+def test_score_improvement_gate_rejects_inconclusive_baseline_judge_timeout() -> None:
+    gate = ScoreImprovementGate(min_delta=0.1)
+
+    result = gate.evaluate(
+        baseline=EvaluationSummary(
+            variant_id="baseline",
+            metrics={
+                "score": 0.0,
+                "judge_attempt_count": 3,
+                "judge_success_count": 0,
+                "judge_failure_count": 3,
+            },
+        ),
+        candidate=EvaluationSummary(
+            variant_id="cand-1",
+            metrics={
+                "score": 88.0,
+                "judge_attempt_count": 2,
+                "judge_success_count": 1,
+                "judge_failure_count": 1,
+            },
+        ),
+    )
+
+    assert result.passed is False
+    assert result.reason == "baseline judge failed completely; score improvement is inconclusive"
+    assert result.details["baseline_judge_success_count"] == 0
+
+
+def test_cost_latency_regression_gate_limits_regressions() -> None:
+    gate = CostLatencyRegressionGate(max_cost_regression_ratio=0.25, max_latency_regression_ratio=0.5)
+
+    passed = gate.evaluate(
+        baseline=EvaluationSummary(
+            variant_id="baseline",
+            metrics={"cost_usd": 1.0, "latency_ms": 100.0},
+        ),
+        candidate=EvaluationSummary(
+            variant_id="cand-1",
+            metrics={"cost_usd": 1.2, "latency_ms": 140.0},
+        ),
+    )
+    failed = gate.evaluate(
+        baseline=EvaluationSummary(
+            variant_id="baseline",
+            metrics={"cost_usd": 1.0, "latency_ms": 100.0},
+        ),
+        candidate=EvaluationSummary(
+            variant_id="cand-1",
+            metrics={"cost_usd": 1.5, "latency_ms": 140.0},
+        ),
+    )
+
+    assert passed.passed is True
+    assert failed.passed is False
+    assert failed.reason == "cost regression exceeds policy"
+
+
+def test_noop_and_skill_markdown_gates_reject_bad_candidates() -> None:
+    current = "---\nname: demo\n---\n# Demo\n\nOld guidance.\n"
+
+    assert NoopCandidateGate().evaluate(current_content=current, candidate=_candidate(current)).passed is False
+    assert SkillMarkdownGate().evaluate(_candidate("# Demo\n\nMissing frontmatter.\n")).passed is False
+    assert SkillMarkdownGate().evaluate(
+        _candidate("---\nname: demo\n---\n# Demo\n\nUpdated guidance.\n")
+    ).passed is True
+    assert MalformedCandidateGate().evaluate(_candidate("")).passed is False
+    assert MalformedCandidateGate().evaluate(_candidate("Updated guidance.")).passed is True
+
+
+def test_skill_markdown_gate_rejects_truncated_existing_section() -> None:
+    current = (
+        "---\nname: demo\n---\n# Demo\n\n"
+        "## Usage\n\nUse the normal workflow and preserve its output.\n\n"
+        "## Debugging\n\n"
+        "Inspect the browser session, capture the protocol trace, and compare "
+        "the final response with the saved artifact before retrying.\n\n"
+        "Record the observed failure class and the bounded recovery action.\n\n"
+        "## Safety\n\nDo not expose credentials.\n"
+    )
+    truncated = (
+        "---\nname: demo\n---\n# Demo\n\n"
+        "## Usage\n\nUse the normal workflow and preserve its output.\n\n"
+        "## Debugging\n\nShort replacement.\n\n"
+        "## Safety\n\nDo not expose credentials.\n"
+    )
+
+    result = SkillReleaseFidelityGate().evaluate(
+        _candidate(truncated),
+        current_content=current,
+    )
+
+    assert result.passed is False
+    assert result.details["code"] == "skill_section_content_truncated"
+    assert result.details["field_path"] == "sections[].content"
+
+
+def test_skill_markdown_gate_rejects_unclosed_and_accepts_repaired_fence() -> None:
+    unclosed = (
+        "---\nname: demo\n---\n# Demo\n\n"
+        "## Commands\n\n```bash\nagent-browser open https://example.test\n"
+    )
+    repaired = unclosed + "```\n"
+
+    failed = SkillMarkdownGate().evaluate(_candidate(unclosed))
+    passed = SkillMarkdownGate().evaluate(_candidate(repaired))
+
+    assert failed.passed is False
+    assert failed.details["code"] == "skill_code_fence_unclosed"
+    assert passed.passed is True
+
+
+def test_skill_markdown_gate_rejects_invalid_yaml_and_published_name_change() -> None:
+    invalid_yaml = "---\nname: [broken\n---\n# Demo\n"
+    current = "---\nname: demo\n---\n# Demo\n\nPublished guidance.\n"
+    renamed = "---\nname: other\n---\n# Demo\n\nPublished guidance.\n"
+
+    malformed = SkillMarkdownGate().evaluate(_candidate(invalid_yaml))
+    identity_change = SkillReleaseFidelityGate().evaluate(
+        _candidate(renamed),
+        current_content=current,
+    )
+
+    assert malformed.passed is False
+    assert malformed.details["code"] == "skill_frontmatter_invalid"
+    assert identity_change.passed is False
+    assert identity_change.details["code"] == (
+        "skill_frontmatter_identity_changed"
+    )
+
+
+def test_skill_markdown_gate_allows_bounded_rewrite_delete_and_new_section() -> None:
+    current = (
+        "---\nname: demo\n---\n# Demo\n\n"
+        "## Setup\n\nInstall the runtime and verify the local profile.\n\n"
+        "## Usage\n\nOpen the requested page and persist the result artifact.\n\n"
+        "## Legacy Note\n\nThis short compatibility note is now obsolete.\n\n"
+        "## Safety\n\nNever expose credentials or private browser state.\n"
+    )
+    candidate = (
+        "---\nname: demo\n---\n# Demo\n\n"
+        "## Setup\n\nVerify the local profile before starting the runtime.\n\n"
+        "## Usage\n\nPersist the result artifact after opening the requested page.\n\n"
+        "## Safety\n\nNever expose credentials or private browser state.\n\n"
+        "## Recovery\n\nRetry once with a bounded diagnostic artifact.\n"
+    )
+
+    result = SkillReleaseFidelityGate().evaluate(
+        _candidate(candidate),
+        current_content=current,
+    )
+    auto_verified_result = SkillReleaseFidelityGate().evaluate(
+        _candidate(candidate),
+        current_content=current,
+        require_exact_deletion_intent=True,
+    )
+
+    assert result.passed is True
+    assert result.details["added_section_count"] == 1
+    assert result.details["missing_section_count"] == 1
+    assert auto_verified_result.passed is False
+    assert auto_verified_result.details["code"] == (
+        "skill_existing_sections_deleted"
+    )
+
+
+def test_auto_verified_section_anchors_bind_duplicate_titles_to_parent_paths() -> None:
+    current = (
+        "---\nname: demo\n---\n# Demo\n\n"
+        "## A\n\n### Notes\n\nA-specific note.\n\n"
+        "## B\n\n### Notes\n\nB-specific note.\n"
+    )
+    candidate = (
+        "---\nname: demo\n---\n# Demo\n\n"
+        "## A\n\n### Notes\n\nA-specific note.\n\n"
+        "## B\n\nB guidance remains.\n"
+    )
+
+    result = SkillReleaseFidelityGate().evaluate(
+        _candidate(candidate),
+        current_content=current,
+        require_exact_deletion_intent=True,
+    )
+
+    assert result.passed is False
+    assert result.details["code"] == "skill_existing_sections_deleted"
+    assert result.details["missing_sections"] == ["notes"]
+
+
+def test_auto_verified_section_anchors_allow_reordered_duplicate_titles() -> None:
+    current = (
+        "---\nname: demo\n---\n# Demo\n\n"
+        "## A\n\n### Notes\n\nA-specific note.\n\n"
+        "## B\n\n### Notes\n\nB-specific note.\n"
+    )
+    candidate = (
+        "---\nname: demo\n---\n# Demo\n\n"
+        "## B\n\n### Notes\n\nB-specific note.\n\n"
+        "## A\n\n### Notes\n\nA-specific note.\n"
+    )
+
+    result = SkillReleaseFidelityGate().evaluate(
+        _candidate(candidate),
+        current_content=current,
+        require_exact_deletion_intent=True,
+    )
+
+    assert result.passed is True
+
+
+def test_auto_verified_section_anchors_allow_exact_content_move() -> None:
+    current = (
+        "---\nname: demo\n---\n# Demo\n\n"
+        "## A\n\nA guidance.\n\n"
+        "### Notes\n\nMove this exact note.\n\n"
+        "## B\n\nB guidance.\n"
+    )
+    candidate = (
+        "---\nname: demo\n---\n# Demo\n\n"
+        "## A\n\nA guidance remains.\n\n"
+        "## B\n\nB guidance.\n\n"
+        "### Notes\n\nMove this exact note.\n"
+    )
+
+    result = SkillReleaseFidelityGate().evaluate(
+        _candidate(candidate),
+        current_content=current,
+        require_exact_deletion_intent=True,
+    )
+
+    assert result.passed is True
+
+
+def test_auto_verified_section_anchors_preserve_identical_duplicate_multiset() -> None:
+    current = (
+        "---\nname: demo\n---\n# Demo\n\n"
+        "## Parent\n\n"
+        "### Notes\n\nIdentical note.\n\n"
+        "### Notes\n\nIdentical note.\n"
+    )
+    candidate = (
+        "---\nname: demo\n---\n# Demo\n\n"
+        "## Parent\n\n"
+        "### Notes\n\nIdentical note.\n"
+    )
+
+    result = SkillReleaseFidelityGate().evaluate(
+        _candidate(candidate),
+        current_content=current,
+        require_exact_deletion_intent=True,
+    )
+
+    assert result.passed is False
+    assert result.details["code"] == "skill_existing_sections_deleted"
+    assert result.details["missing_sections"] == ["notes"]
+
+
+def test_skill_markdown_gate_contextualizes_unicode_ellipsis() -> None:
+    current = (
+        "---\nname: demo\n---\n# Demo\n\n"
+        "## Debugging\n\nEvidence Quality requires bounded artifacts.\n"
+    )
+    truncated = (
+        "---\nname: demo\n---\n# Demo\n\n"
+        "## Debugging\n\nEvidence Q…\n"
+    )
+    ordinary = (
+        "---\nname: demo\n---\n# Demo\n\n"
+        "## FAQ…\n\nResults may vary…\n\nUse `prefix…` when documenting syntax.\n"
+    )
+    python_ellipsis = (
+        "---\nname: demo\n---\n# Demo\n\n"
+        "## Python Protocol\n\n```python\nclass Pending:\n    ...\n```\n"
+    )
+
+    failed = SkillReleaseFidelityGate().evaluate(
+        _candidate(truncated),
+        current_content=current,
+    )
+    ordinary_passed = SkillMarkdownGate().evaluate(_candidate(ordinary))
+    passed = SkillMarkdownGate().evaluate(_candidate(python_ellipsis))
+
+    assert failed.passed is False
+    assert failed.details["code"] == "skill_truncation_marker"
+    assert ordinary_passed.passed is True
+    assert passed.passed is True
+
+
+def test_skill_ellipsis_context_index_scales_for_large_distinct_prefix_sets() -> None:
+    original_lines = "\n".join(
+        f"base-{index:05d} complete"
+        for index in range(10_000)
+    )
+    candidate_lines = "\n".join(
+        f"miss-{index:05d}…"
+        for index in range(10_000)
+    )
+    original = (
+        "---\nname: demo\n---\n# Demo\n\n## Data\n\n"
+        f"{original_lines}\n"
+    )
+    candidate = (
+        "---\nname: demo\n---\n# Demo\n\n## Data\n\n"
+        f"{candidate_lines}\n"
+    )
+
+    started = time.perf_counter()
+    result = validate_skill_markdown_structure(
+        candidate,
+        original_content=original,
+    )
+    elapsed = time.perf_counter() - started
+
+    assert result.code != "skill_truncation_marker"
+    assert elapsed < 3.0
+
+
+def test_skill_structure_rejects_oversized_input_before_parsing() -> None:
+    oversized = (
+        "---\nname: demo\n---\n# Demo\n"
+        + "x" * MAX_SKILL_MARKDOWN_CHARS
+    )
+
+    result = validate_skill_markdown_structure(oversized)
+
+    assert result.passed is False
+    assert result.code == "skill_content_size_limit_exceeded"
+    assert result.details["max_chars"] == MAX_SKILL_MARKDOWN_CHARS
+
+
+def test_skill_structure_rejects_excess_structural_atoms_before_parsing() -> None:
+    excessive_lines = (
+        "---\nname: demo\n---\n# Demo\n"
+        + "x\n" * MAX_STRUCTURAL_ATOMS
+    )
+
+    result = validate_skill_markdown_structure(excessive_lines)
+
+    assert result.passed is False
+    assert result.code == "skill_structural_atom_limit_exceeded"
+    assert result.details["max_structural_atoms"] == MAX_STRUCTURAL_ATOMS
+
+
+def test_skill_release_fidelity_accepts_only_framework_anchored_patch_intent() -> None:
+    current = (
+        "---\nname: demo\n---\n# Demo\n\n"
+        "## Debugging\n\n"
+        "Inspect the browser session, capture the protocol trace, compare the "
+        "final response, preserve the result artifact, and record the bounded "
+        "recovery action before retrying.\n"
+    )
+    patch_intent = {
+        "operations": [
+            {
+                "op": "replace_section",
+                "heading": "Debugging",
+                "content": "Use the new bounded diagnostic workflow.",
+            }
+        ]
+    }
+    candidate = apply_skill_patch_intent(current, patch_intent)
+    intent = build_skill_structural_edit_intent(
+        original_content=current,
+        candidate_content=candidate,
+        patch_intent=patch_intent,
+    )
+
+    authorized = SkillReleaseFidelityGate().evaluate(
+        _candidate(candidate, structural_edit_intent=intent),
+        current_content=current,
+    )
+    forged = SkillReleaseFidelityGate().evaluate(
+        _candidate(
+            candidate,
+            structural_edit_intent=replace(
+                intent,
+                base_content_fingerprint="sha256:forged",
+            ),
+        ),
+        current_content=current,
+    )
+
+    assert authorized.passed is True
+    assert authorized.details["edit_mode"] == "patch_intent"
+    assert forged.passed is False
+    assert forged.details["code"] == "skill_section_content_truncated"
+
+
+def test_skill_release_fidelity_new_sections_do_not_offset_deleted_inventory() -> None:
+    substantive = (
+        "Preserve this published workflow, its command behavior, its artifact "
+        "contract, and its bounded recovery semantics across every retry."
+    )
+    current = (
+        "---\nname: demo\n---\n# Demo\n\n"
+        f"## Setup\n\n{substantive}\n\n"
+        f"## Usage\n\n{substantive}\n\n"
+        f"## Debugging\n\n{substantive}\n\n"
+        f"## Safety\n\n{substantive}\n"
+    )
+    candidate = (
+        "---\nname: demo\n---\n# Demo\n\n"
+        f"## Setup\n\n{substantive}\n\n"
+        "## New One\n\nReplacement material with enough length to look complete.\n\n"
+        "## New Two\n\nReplacement material with enough length to look complete.\n\n"
+        "## New Three\n\nReplacement material with enough length to look complete.\n"
+    )
+
+    result = SkillReleaseFidelityGate().evaluate(
+        _candidate(candidate),
+        current_content=current,
+    )
+
+    assert result.passed is False
+    assert result.details["code"] == "skill_existing_sections_deleted"
+    assert result.details["missing_section_count"] == 3
+
+
+def test_skill_release_fidelity_protects_each_command_fence_anchor() -> None:
+    original_commands = "\n".join(
+        f"agent-browser command-{index} --output artifact-{index}.json"
+        for index in range(14)
+    )
+    replacement_commands = "\n".join(
+        f"agent-browser replacement-{index} --output new-{index}.json"
+        for index in range(14)
+    )
+    current = (
+        "---\nname: demo\n---\n# Demo\n\n"
+        "## Usage\n\nUse the bounded workflow.\n\n"
+        "## Debugging\n\n```bash\n"
+        f"{original_commands}\n```\n\n"
+        "## Safety\n\nNever expose credentials.\n"
+    )
+    candidate = (
+        "---\nname: demo\n---\n# Demo\n\n"
+        "## Usage\n\nUse the bounded workflow.\n\n"
+        "## Evidence\n\n```bash\n"
+        f"{replacement_commands}\n```\n\n"
+        "## Safety\n\nNever expose credentials.\n"
+    )
+
+    result = SkillReleaseFidelityGate().evaluate(
+        _candidate(candidate),
+        current_content=current,
+    )
+
+    assert result.passed is False
+    assert result.details["code"] == "skill_fenced_block_deleted"
+    assert result.details["command_count"] == 14
+
+
+def test_skill_release_fidelity_allows_small_fence_delete_and_move() -> None:
+    commands = [
+        f"agent-browser command-{index} --output artifact-{index}.json"
+        for index in range(5)
+    ]
+    current = (
+        "---\nname: demo\n---\n# Demo\n\n"
+        "## Debugging\n\n```bash\n"
+        + "\n".join(commands)
+        + "\n```\n"
+    )
+    candidate = (
+        "---\nname: demo\n---\n# Demo\n\n"
+        "## Commands\n\n```bash\n"
+        + "\n".join(commands[:-1])
+        + "\n```\n"
+    )
+
+    result = SkillReleaseFidelityGate().evaluate(
+        _candidate(candidate),
+        current_content=current,
+    )
+
+    assert result.passed is True
+
+
+def test_skill_release_fidelity_rejects_untyped_edit_intent_bypass() -> None:
+    current = (
+        "---\nname: demo\n---\n# Demo\n\n"
+        "## Parent\n\nPublished parent guidance.\n\n"
+        "### Debugging\n\n```bash\n"
+        "agent-browser console\nagent-browser errors\n"
+        "agent-browser trace start\nagent-browser trace stop\n"
+        "```\n"
+    )
+    patch_intent = {
+        "operations": [
+            {
+                "op": "replace_section",
+                "heading": "Parent",
+                "content": "Replacement parent guidance.",
+            }
+        ]
+    }
+    candidate = apply_skill_patch_intent(current, patch_intent)
+    parent_intent = build_skill_structural_edit_intent(
+        original_content=current,
+        candidate_content=candidate,
+        patch_intent=patch_intent,
+    )
+    forged_mapping = {
+        "schema_version": "aworld.skill.edit_intent.v2",
+        "authority": "framework",
+        "authorization": "sha256:forged",
+        "reason": "candidate_protocol.patch_intent",
+        "base_content_fingerprint": "sha256:forged",
+        "candidate_content_fingerprint": "sha256:forged",
+        "actions": [],
+    }
+
+    result = validate_skill_markdown_structure(
+        candidate,
+        original_content=current,
+        edit_intent=forged_mapping,  # type: ignore[arg-type]
+    )
+    parent_result = SkillReleaseFidelityGate().evaluate(
+        _candidate(
+            candidate,
+            structural_edit_intent=parent_intent,
+        ),
+        current_content=current,
+    )
+
+    assert result.passed is False
+    assert parent_result.passed is False
+    assert result.code in {
+        "skill_fenced_block_deleted",
+        "skill_command_dense_section_deleted",
+    }
+    assert parent_result.details["code"] in {
+        "skill_fenced_block_deleted",
+        "skill_command_dense_section_deleted",
+    }
+
+
+def test_prompt_tool_token_and_external_code_candidate_gates() -> None:
+    assert PromptSectionGate().evaluate(_candidate("Follow these steps clearly.")).passed is True
+    assert PromptSectionGate().evaluate(_candidate("")).passed is False
+    assert ToolDescriptionGate().evaluate(_candidate("Use browser to inspect authenticated state.")).passed is True
+    assert ToolDescriptionGate().evaluate(_candidate("bad")).passed is False
+    assert TokenLimitGate(max_chars=12).evaluate(_candidate("short text")).passed is True
+    assert TokenLimitGate(max_chars=4).evaluate(_candidate("too long")).passed is False
+    assert ExternalCodeEvolutionGate().evaluate(_candidate("import darwinian_evolve")).passed is False
+
+
+def test_required_verification_gate_requires_all_commands_to_pass() -> None:
+    gate = RequiredVerificationGate()
+
+    passed = gate.evaluate(
+        EvaluationSummary(
+            variant_id="cand-1",
+            metrics={
+                "deterministic_signal": True,
+                "command_case_count": 2,
+                "command_pass_count": 2,
+            },
+        )
+    )
+    failed = gate.evaluate(
+        EvaluationSummary(
+            variant_id="cand-1",
+            metrics={
+                "deterministic_signal": True,
+                "command_case_count": 2,
+                "command_pass_count": 1,
+            },
+        )
+    )
+    missing = gate.evaluate(EvaluationSummary(variant_id="cand-1", metrics={}))
+
+    assert passed.passed is True
+    assert failed.passed is False
+    assert failed.reason == "required verification commands did not all pass"
+    assert missing.passed is False
+    assert missing.reason == "required deterministic verification command was not run"
+
+
+def test_evidence_quality_gate_rejects_compacted_tool_evidence() -> None:
+    summary = EvaluationSummary(
+        variant_id="cand-1",
+        metrics={
+            "score": 90.0,
+            "has_evidence": 1.0,
+            "evidence_compacted": True,
+            "evidence_block_count": 1,
+        },
+    )
+
+    result = EvidenceQualityGate().evaluate(summary)
+
+    assert result.passed is False
+    assert result.reason == "evaluation evidence is compacted or incomplete"
+    assert result.details["evidence_compacted"] is True
+
+
+def test_evidence_quality_gate_requires_evidence_blocks_for_verified_apply() -> None:
+    missing = EvidenceQualityGate().evaluate(
+        EvaluationSummary(
+            variant_id="cand-1",
+            metrics={"has_evidence": 0.0, "evidence_block_count": 0},
+        )
+    )
+    present = EvidenceQualityGate().evaluate(
+        EvaluationSummary(
+            variant_id="cand-1",
+            metrics={
+                "has_evidence": 1.0,
+                "evidence_block_count": 2,
+                "evidence_compacted": False,
+            },
+        )
+    )
+
+    assert missing.passed is False
+    assert missing.reason == "verified apply requires replay tool evidence"
+    assert present.passed is True
+
+
+def test_evidence_quality_gate_rejects_incomplete_or_truncated_evidence() -> None:
+    incomplete = EvidenceQualityGate().evaluate(
+        EvaluationSummary(
+            variant_id="cand-1",
+            metrics={
+                "has_evidence": 1.0,
+                "evidence_block_count": 1,
+                "evidence_incomplete": True,
+            },
+        )
+    )
+    truncated = EvidenceQualityGate().evaluate(
+        EvaluationSummary(
+            variant_id="cand-1",
+            metrics={
+                "has_evidence": 1.0,
+                "evidence_block_count": 1,
+                "evidence_preview": "... [truncated 1200 chars from tool evidence] ...",
+            },
+        )
+    )
+
+    assert incomplete.passed is False
+    assert incomplete.reason == "evaluation evidence is compacted or incomplete"
+    assert truncated.passed is False
+    assert truncated.reason == "evaluation evidence is compacted or incomplete"
+
+
+def test_evidence_quality_gate_accepts_artifact_first_evidence_strategy() -> None:
+    summary = EvaluationSummary(
+        variant_id="cand-1",
+        metrics={
+            "has_evidence": 1.0,
+            "evidence_block_count": 1,
+            "evidence_compacted": False,
+            "evidence_incomplete": False,
+            "evidence_strategy_passed": True,
+            "evidence_manifest_entry_count": 2,
+            "evidence_manifest_invalid_entry_count": 0,
+        },
+    )
+
+    result = EvidenceQualityGate().evaluate(summary)
+
+    assert result.passed is True
+    assert result.reason == "evaluation evidence is present via artifact-first manifest"
+    assert result.details["evidence_strategy_passed"] is True
+    assert result.details["evidence_manifest_entry_count"] == 2
+
+
+def test_evidence_quality_gate_accepts_valid_bundle_despite_raw_compaction() -> None:
+    summary = EvaluationSummary(
+        variant_id="cand-1",
+        metrics={
+            "has_evidence": 1.0,
+            "evidence_block_count": 4,
+            "evidence_compacted": True,
+            "evidence_incomplete": False,
+            "evidence_strategy_passed": True,
+            "evidence_manifest_entry_count": 2,
+            "evidence_manifest_invalid_entry_count": 0,
+            "evidence_bundle_valid": True,
+            "evidence_bundle_entry_count": 2,
+        },
+    )
+
+    result = EvidenceQualityGate().evaluate(summary)
+
+    assert result.passed is True
+    assert result.reason == "evaluation evidence is present via canonical evidence bundle"
+    assert result.details["evidence_compacted"] is True
+    assert result.details["evidence_incomplete"] is False
+    assert result.details["evidence_bundle_valid"] is True
+    assert result.details["evidence_bundle_entry_count"] == 2
+
+
+def test_evidence_quality_gate_rejects_incomplete_canonical_bundle() -> None:
+    result = EvidenceQualityGate().evaluate(
+        EvaluationSummary(
+            variant_id="cand-1",
+            metrics={
+                "has_evidence": 1.0,
+                "evidence_block_count": 1,
+                "evidence_compacted": True,
+                "evidence_incomplete": True,
+                "evidence_strategy_passed": True,
+                "evidence_manifest_entry_count": 1,
+                "evidence_manifest_invalid_entry_count": 0,
+                "evidence_bundle_valid": True,
+                "evidence_bundle_entry_count": 1,
+            },
+        )
+    )
+
+    assert result.passed is False
+    assert result.reason == "evaluation evidence is compacted or incomplete"
+    assert result.details["evidence_incomplete"] is True
+
+
+def test_evidence_quality_gate_rejects_unverifiable_artifact_manifest() -> None:
+    result = EvidenceQualityGate().evaluate(
+        EvaluationSummary(
+            variant_id="cand-1",
+            metrics={
+                "has_evidence": 1.0,
+                "evidence_block_count": 4,
+                "evidence_compacted": True,
+                "evidence_incomplete": True,
+                "evidence_strategy_passed": True,
+                "evidence_manifest_entry_count": 2,
+                "evidence_manifest_invalid_entry_count": 1,
+            },
+        )
+    )
+
+    assert result.passed is False
+    assert result.reason == "artifact-first evidence is not fully verifiable"
+    assert result.details["evidence_manifest_invalid_entry_count"] == 1
+    assert result.details["evidence_compacted"] is True
+    assert result.details["evidence_incomplete"] is True
+
+
+def test_protected_path_gate_blocks_product_and_app_evaluator_paths() -> None:
+    gate = ProtectedPathGate(workspace_root="/repo")
+
+    assert gate.evaluate(_candidate("x", path="/repo/aworld/core/runtime.py")).passed is False
+    assert gate.evaluate(_candidate("x", path="/repo/aworld-cli/src/main.py")).passed is False
+    assert gate.evaluate(_candidate("x", path="/repo/aworld-skills/app_evaluator/SKILL.md")).passed is False
+    assert gate.evaluate(_candidate("x", path="/repo/aworld-skills/self_evolve/SKILL.md")).passed is False
+    assert gate.evaluate(_candidate("x", path="/repo/generated/SKILL.md")).passed is True
+
+
+def test_budget_and_judge_only_gates_downgrade_or_reject() -> None:
+    budget_gate = BudgetGate()
+    budget = ReplayCostEstimate(
+        passed=False,
+        reason="estimated replay tokens exceed max_run_tokens",
+        baseline_replay_count=1,
+        candidate_replay_count=1,
+        total_replay_count=2,
+        verification_command_count=0,
+        judge_call_count=0,
+        estimated_tokens=10_000,
+    )
+
+    assert budget_gate.evaluate(budget).passed is False
+    assert budget_gate.evaluate(budget).reason == "estimated replay tokens exceed max_run_tokens"
+
+    unknown_budget = ReplayCostEstimate(
+        passed=True,
+        reason="within budget",
+        baseline_replay_count=1,
+        candidate_replay_count=1,
+        total_replay_count=2,
+        verification_command_count=0,
+        judge_call_count=0,
+        estimated_tokens=None,
+        token_ceiling=10_000,
+    )
+    unknown_result = budget_gate.evaluate(unknown_budget)
+    assert unknown_result.passed is False
+    assert unknown_result.reason == (
+        "estimated replay tokens are unknown under max_run_tokens"
+    )
+    assert unknown_result.details["estimate_known"] is False
+
+    judge_gate = JudgeOnlySignalGate()
+    decision = CandidateConfidenceDecision(
+        confidence="limited",
+        reason="verified confidence requires a deterministic signal",
+        selection_split="validation",
+        verification_split="held_out",
+        deterministic_signal_present=False,
+        held_out_case_count=3,
+    )
+
+    result = judge_gate.evaluate(decision)
+    assert result.passed is False
+    assert result.reason == "judge-only improvements remain limited confidence"
+
+
+def test_stopping_condition_gate_rejects_iteration_stall_duplicate_failure_and_cooldown() -> None:
+    gate = StoppingConditionGate(
+        max_iterations=3,
+        max_stalled_iterations=2,
+        max_repeated_gate_failures=2,
+    )
+
+    assert gate.evaluate(StoppingConditionState(iteration=3)).passed is False
+    assert gate.evaluate(StoppingConditionState(stalled_iterations=2)).reason == "stalled improvement limit reached"
+    assert gate.evaluate(StoppingConditionState(pending_duplicate=True)).reason == "duplicate pending proposal exists"
+    assert gate.evaluate(StoppingConditionState(cooldown_remaining_seconds=60)).reason == "target is in cooldown"
+    assert gate.evaluate(StoppingConditionState(repeated_gate_failures=2)).reason == "repeated gate failure limit reached"
+    assert gate.evaluate(StoppingConditionState(iteration=1)).passed is True
+
+
+def test_held_out_and_global_regression_gates_require_independent_verification() -> None:
+    held_out_gate = HeldOutVerificationGate(min_eval_cases=2)
+
+    limited = held_out_gate.evaluate(
+        CandidateConfidenceDecision(
+            confidence="limited",
+            reason="insufficient held-out eval cases for verified confidence",
+            selection_split="validation",
+            verification_split=None,
+            deterministic_signal_present=True,
+            held_out_case_count=1,
+        )
+    )
+    verified = held_out_gate.evaluate(
+        CandidateConfidenceDecision(
+            confidence="verified",
+            reason="held-out deterministic evaluation is sufficient",
+            selection_split="validation",
+            verification_split="held_out",
+            deterministic_signal_present=True,
+            held_out_case_count=2,
+        )
+    )
+
+    assert limited.passed is False
+    assert limited.reason == "candidate is not verified on sufficient held-out cases"
+    assert verified.passed is True
+
+    regression_gate = GlobalRegressionBenchmarkGate()
+    assert regression_gate.evaluate(
+        _candidate("x"),
+        EvaluationSummary(variant_id="cand-1", metrics={"global_regression_passed": False}),
+    ).passed is False
+    assert regression_gate.evaluate(
+        _candidate("x"),
+        EvaluationSummary(variant_id="cand-1", metrics={"global_regression_passed": True}),
+    ).passed is True
+    assert regression_gate.evaluate(
+        CandidateVariant(
+            candidate_id="cand-1",
+            target=SelfEvolveTargetRef(target_type="workspace-artifact", target_id="demo"),
+            content="x",
+            rationale="test",
+        ),
+        EvaluationSummary(variant_id="cand-1", metrics={}),
+    ).passed is True
+
+
+def test_held_out_gate_accepts_stable_single_case_replay_verification() -> None:
+    gate = HeldOutVerificationGate(min_eval_cases=30)
+
+    result = gate.evaluate(
+        CandidateConfidenceDecision(
+            confidence="verified",
+            reason="single-case replay verification is sufficient",
+            selection_split="validation",
+            verification_split="single_case_replay",
+            deterministic_signal_present=True,
+            held_out_case_count=0,
+            verification_mode="single_case_replay",
+            baseline_replay_count=2,
+            candidate_replay_count=3,
+        )
+    )
+
+    assert result.passed is True
+    assert result.reason == "candidate is verified by stable single-case replay"
+    assert result.details["verification_mode"] == "single_case_replay"
+    assert result.details["baseline_replay_count"] == 2
+    assert result.details["candidate_replay_count"] == 3
+
+
+def test_held_out_gate_accepts_trajectory_set_validation() -> None:
+    gate = HeldOutVerificationGate(min_eval_cases=30)
+
+    result = gate.evaluate(
+        CandidateConfidenceDecision(
+            confidence="verified",
+            reason="trajectory-set validation is sufficient",
+            selection_split="validation",
+            verification_split="trajectory_set_validation",
+            deterministic_signal_present=True,
+            held_out_case_count=1,
+            verification_mode="trajectory_set_validation",
+        )
+    )
+
+    assert result.passed is True
+    assert result.reason == "candidate is verified by trajectory-set validation"
+    assert result.details["verification_mode"] == "trajectory_set_validation"
+    assert result.details["held_out_case_count"] == 1
+
+
+def test_trust_provenance_gate_rejects_protected_generated_and_external_targets() -> None:
+    target = SelfEvolveTargetRef(target_type="skill", target_id="demo")
+    gate = TrustProvenanceGate()
+
+    protected = gate.evaluate(
+        TargetProvenance(
+            target=target,
+            source_kind="skill",
+            write_origin="repository",
+            trust_level="protected",
+            protected=True,
+            reason="read-only",
+        )
+    )
+    generated = gate.evaluate(
+        TargetProvenance(
+            target=SelfEvolveTargetRef(
+                target_type="workspace-artifact",
+                target_id="generated-artifact",
+            ),
+            source_kind="workspace_artifact",
+            write_origin="agent_generated_artifact",
+            trust_level="generated",
+            protected=False,
+            reason="generated artifact",
+        )
+    )
+    external = gate.evaluate(
+        TargetProvenance(
+            target=target,
+            source_kind="skill",
+            write_origin="external",
+            trust_level="external",
+            protected=False,
+            reason="external capability",
+        )
+    )
+    trusted = gate.evaluate(
+        TargetProvenance(
+            target=target,
+            source_kind="skill",
+            write_origin="repository",
+            trust_level="local",
+            protected=False,
+            reason="local skill",
+        )
+    )
+
+    assert protected.passed is False
+    assert protected.reason == "protected target provenance cannot be mutated"
+    assert generated.passed is False
+    assert generated.reason == "generated target requires explicit trust policy"
+    assert external.passed is False
+    assert external.reason == "external target requires explicit trust policy"
+    assert trusted.passed is True
+
+
+def test_trust_provenance_gate_fails_closed_for_unresolved_provenance() -> None:
+    result = TrustProvenanceGate().evaluate(
+        None,
+        unresolved_reason="target identity is incomplete",
+    )
+
+    assert result.gate_name == "trust_provenance"
+    assert result.passed is False
+    assert result.reason == "target provenance is unresolved"
+    assert result.details == {
+        "provenance_status": "unresolved",
+        "unresolved_reason": "target identity is incomplete",
+    }
+
+
+@pytest.mark.parametrize("unresolved_reason", ["", 0, False])
+def test_trust_provenance_gate_treats_every_supplied_reason_as_unresolved(
+    unresolved_reason,
+) -> None:
+    provenance = TargetProvenance(
+        target=SelfEvolveTargetRef("skill", "capability"),
+        source_kind="skill",
+        write_origin="repository",
+        trust_level="local",
+        protected=False,
+        reason="local capability",
+    )
+
+    result = TrustProvenanceGate().evaluate(
+        provenance,
+        unresolved_reason=unresolved_reason,
+    )
+
+    assert result.passed is False
+    assert result.reason == "target provenance is unresolved"
+    assert result.details["provenance_status"] == "unresolved"
+
+
+@pytest.mark.parametrize(
+    "provenance",
+    [
+        {},
+        {"target": {"target_type": "skill", "target_id": "capability"}},
+        object(),
+        "local",
+    ],
+)
+def test_trust_provenance_gate_fails_closed_for_untyped_provenance(provenance) -> None:
+    result = TrustProvenanceGate(
+        allow_generated=True,
+        allow_external=True,
+    ).evaluate(provenance)
+
+    assert result.passed is False
+    assert result.reason == "target provenance is invalid"
+    assert result.details == {
+        "provenance_status": "invalid",
+        "invalid_type": type(provenance).__name__,
+    }
+
+
+def test_trust_provenance_gate_fails_closed_when_reason_marks_resolution_unresolved() -> None:
+    provenance = TargetProvenance(
+        target=SelfEvolveTargetRef("skill", "capability"),
+        source_kind="skill",
+        write_origin="repository",
+        trust_level="local",
+        protected=False,
+        reason="local capability",
+    )
+
+    result = TrustProvenanceGate(
+        allow_generated=True,
+        allow_external=True,
+    ).evaluate(
+        provenance,
+        unresolved_reason="authoritative resolution disagrees with supplied claim",
+    )
+
+    assert result.passed is False
+    assert result.reason == "target provenance is unresolved"
+    assert result.details == {
+        "provenance_status": "unresolved",
+        "unresolved_reason": (
+            "authoritative resolution disagrees with supplied claim"
+        ),
+    }
+
+
+def test_trust_provenance_gate_requires_named_policy_for_generated_target() -> None:
+    target = SelfEvolveTargetRef(target_type="skill", target_id="generated")
+    provenance = TargetProvenance(
+        target=target,
+        source_kind="skill",
+        write_origin="target_inference",
+        trust_level="generated",
+        protected=False,
+        reason="inferred target is absent from inventory",
+    )
+
+    denied = TrustProvenanceGate().evaluate(provenance)
+    allowed = TrustProvenanceGate(allow_generated=True).evaluate(provenance)
+
+    assert denied.passed is False
+    assert allowed.passed is True
+
+
+def test_trust_provenance_gate_authorizes_generated_draft_scope_without_global_bypass() -> None:
+    target = SelfEvolveTargetRef("skill", "remote-recovery-1234567890")
+    provenance = TargetProvenance(
+        target=target,
+        source_kind="skill",
+        write_origin="target_inference",
+        trust_level="generated",
+        protected=False,
+        reason="validated capability gap",
+    )
+
+    result = TrustProvenanceGate().evaluate(
+        provenance,
+        target_intent=TargetMutationIntent.INFERRED_DRAFT_CREATION,
+    )
+
+    assert result.passed is True
+    assert result.details == {"authorized_scope": "draft_evolution"}
+
+
+@pytest.mark.parametrize(
+    ("policy", "apply_policy", "publication_allowed"),
+    (
+        ("draft_only", "auto_verified", False),
+        ("auto_verified", "proposal", False),
+        ("auto_verified", "auto_verified", True),
+    ),
+)
+def test_new_skill_promotion_gate_separates_draft_evolution_from_publication(
+    tmp_path: Path,
+    policy: str,
+    apply_policy: str,
+    publication_allowed: bool,
+) -> None:
+    target = SelfEvolveTargetRef(
+        "skill",
+        "remote-recovery-1234567890",
+        str(
+            tmp_path
+            / ".aworld"
+            / "self_evolve"
+            / "cli-test"
+            / "draft_target"
+            / "remote-recovery-1234567890"
+            / "SKILL.md"
+        ),
+    )
+    candidate = CandidateVariant(
+        candidate_id="cand-new-skill",
+        target=target,
+        content="---\nname: remote-recovery-1234567890\n---\n# Recovery\n",
+        rationale="trajectory-backed capability",
+    )
+    provenance = TargetProvenance(
+        target=target,
+        source_kind="skill",
+        write_origin="target_inference",
+        trust_level="generated",
+        protected=False,
+        reason="validated capability gap",
+    )
+
+    result = NewSkillPromotionGate().evaluate(
+        candidate,
+        target_intent="inferred_draft_creation",
+        policy=policy,
+        apply_policy=apply_policy,
+        workspace_root=tmp_path,
+        provenance=provenance,
+    )
+
+    assert result.passed is True
+    assert result.details["publication_allowed"] is publication_allowed
+
+
+def test_new_skill_promotion_gate_rejects_disabled_policy(tmp_path: Path) -> None:
+    target = SelfEvolveTargetRef(
+        "skill",
+        "remote-recovery-1234567890",
+        str(tmp_path / "draft" / "SKILL.md"),
+    )
+    candidate = CandidateVariant("cand", target, "# Draft", "test")
+    provenance = TargetProvenance(
+        target=target,
+        source_kind="skill",
+        write_origin="target_inference",
+        trust_level="generated",
+        protected=False,
+        reason="validated capability gap",
+    )
+
+    result = NewSkillPromotionGate().evaluate(
+        candidate,
+        target_intent="inferred_draft_creation",
+        policy="disabled",
+        apply_policy="proposal",
+        workspace_root=tmp_path,
+        provenance=provenance,
+    )
+
+    assert result.passed is False
+
+
+def test_trust_provenance_gate_requires_named_policy_for_external_target() -> None:
+    target = SelfEvolveTargetRef(target_type="skill", target_id="external-capability")
+    provenance = TargetProvenance(
+        target=target,
+        source_kind="skill",
+        write_origin="external",
+        trust_level="external",
+        protected=False,
+        reason="external capability",
+    )
+
+    denied = TrustProvenanceGate().evaluate(provenance)
+    allowed = TrustProvenanceGate(allow_external=True).evaluate(provenance)
+
+    assert denied.passed is False
+    assert allowed.passed is True
+
+
+@pytest.mark.parametrize(
+    ("source_kind", "write_origin", "trust_level"),
+    [
+        ("skill", "target_inference", "local"),
+        ("skill", "operator_selection", "generated"),
+        ("skill", "installed_skill", "external"),
+        ("workspace_artifact", "installed_skill", "local"),
+    ],
+)
+def test_trust_provenance_gate_fails_closed_for_malformed_enum_combinations(
+    source_kind: str,
+    write_origin: str,
+    trust_level: str,
+) -> None:
+    target = SelfEvolveTargetRef("skill", "capability")
+
+    result = TrustProvenanceGate(
+        allow_generated=True,
+        allow_external=True,
+    ).evaluate(
+        TargetProvenance(
+            target=target,
+            source_kind=source_kind,
+            write_origin=write_origin,
+            trust_level=trust_level,
+            protected=False,
+            reason="malformed combination",
+        )
+    )
+
+    assert result.passed is False
+    assert result.reason == "target provenance classification is not trusted"

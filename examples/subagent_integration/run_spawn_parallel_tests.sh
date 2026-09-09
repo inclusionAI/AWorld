@@ -185,7 +185,7 @@ main() {
         print_info "✓ All tests PASSED"
         echo ""
         print_info "Next steps:"
-        print_info "1. Read documentation: docs/features/parallel-subagent-spawning.md"
+        print_info "1. Read documentation: docs/Agents/Parallel Subagents.md"
         print_info "2. Check examples: parallel_spawn_example.py"
         print_info "3. Integrate into your project"
         exit 0
