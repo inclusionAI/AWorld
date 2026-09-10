@@ -329,6 +329,7 @@ async def test_evaluation_execution_runs_bounded_score_tiebreak() -> None:
     assert pair_calls == [
         "run-1",
         "run-1-score-tiebreak-1-candidate-1",
+        "run-1-held-out-candidate-1",
     ]
     score_gate = next(
         gate
@@ -336,6 +337,45 @@ async def test_evaluation_execution_runs_bounded_score_tiebreak() -> None:
         if gate.gate_name == "score_improvement"
     )
     assert score_gate.details["tiebreak_round"] == 1
+
+
+@pytest.mark.asyncio
+async def test_held_out_evidence_is_compared_to_fresh_held_out_baseline() -> None:
+    telemetry = SelfEvolveExecutionTelemetry()
+    evidence_pairs: list[tuple[str, str | None]] = []
+
+    async def evaluate_pair(_backend, **kwargs):
+        split = kwargs["dataset_split"]
+        return (
+            replace_split(
+                _summary("baseline", 70.0, execution_id=f"baseline-{split}"),
+                split,
+            ),
+            replace_split(
+                _summary("candidate-1", 82.0, execution_id=f"candidate-{split}"),
+                split,
+            ),
+        )
+
+    def evidence_gate(summary, *, baseline=None):
+        evidence_pairs.append(
+            (summary.dataset_split, baseline.dataset_split if baseline else None)
+        )
+        return None
+
+    request, policy = _request(apply_policy="verified_only")
+    runtime = replace(
+        _runtime(telemetry=telemetry, evaluate_pair=evaluate_pair),
+        evidence_quality_gate=evidence_gate,
+    )
+    result = await execute_candidate_evaluation(request, policy, runtime)
+
+    assert result.fresh_evaluation_completed is True
+    assert evidence_pairs == [
+        ("validation", "validation"),
+        ("validation", "validation"),
+        ("held_out", "held_out"),
+    ]
 
 
 @pytest.mark.asyncio

@@ -43,7 +43,6 @@ from aworld.self_evolve.controllers.run_telemetry import (
 )
 from aworld.self_evolve.evaluation import (
     EvaluationBackend,
-    EvaluationRequest,
     determine_candidate_confidence,
 )
 from aworld.self_evolve.evaluation_reporting import (
@@ -238,6 +237,7 @@ async def execute_candidate_evaluation(
     baseline_summary: EvaluationSummary | None = None
     candidate_summary: EvaluationSummary | None = None
     held_out_summary: EvaluationSummary | None = None
+    held_out_baseline_summary: EvaluationSummary | None = None
     regression_evidence: RegressionEvidence | None = None
     challenge_report: ChallengeReport | None = None
     score_tiebreak_budget_summaries: tuple[EvaluationSummary, ...] = ()
@@ -503,27 +503,43 @@ async def execute_candidate_evaluation(
                             },
                         )
                     else:
-                        held_out_summary = await runtime.evaluate_variant(
+                        (
+                            held_out_baseline_summary,
+                            held_out_summary,
+                        ) = await runtime.evaluate_pair(
                             backend,
-                            request=EvaluationRequest(
-                                variant_id=evaluation.candidate.candidate_id,
-                                candidate=evaluation.candidate,
-                                dataset=admission.evaluation_dataset,
-                                dataset_split="held_out",
-                                artifact_namespace=evaluation.run_id,
+                            dataset=admission.evaluation_dataset,
+                            candidate=evaluation.candidate,
+                            dataset_split="held_out",
+                            artifact_namespace=(
+                                f"{evaluation.run_id}-held-out-"
+                                f"{evaluation.candidate.candidate_id}"
                             ),
                             task_batch_executor=runtime.task_batch_executor,
+                            max_concurrency=runtime.max_concurrency,
                             execution_telemetry=runtime.execution_telemetry,
                         )
                         if replay.replay_result is not None:
+                            held_out_baseline_summary = (
+                                runtime.merge_replay_evidence(
+                                    held_out_baseline_summary,
+                                    replay.replay_result.baseline,
+                                )
+                            )
                             held_out_summary = runtime.merge_replay_evidence(
                                 held_out_summary,
                                 replay.replay_result.candidate,
                             )
+                        expected_judge_summary_count += 2
                     final_health_gate = EvaluationRuntimeHealthGate().evaluate(
                         (
                             baseline_summary,
                             candidate_summary,
+                            *(
+                                (held_out_baseline_summary,)
+                                if held_out_baseline_summary is not None
+                                else ()
+                            ),
                             held_out_summary,
                         )
                     )
@@ -550,7 +566,10 @@ async def execute_candidate_evaluation(
                             held_out_summary,
                         ):
                             held_out_evidence_gate = (
-                                runtime.evidence_quality_gate(held_out_summary)
+                                runtime.evidence_quality_gate(
+                                    held_out_summary,
+                                    baseline=held_out_baseline_summary,
+                                )
                             )
                             if held_out_evidence_gate is not None:
                                 evidence_quality_gates.append(

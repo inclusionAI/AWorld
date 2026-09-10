@@ -487,7 +487,10 @@ def plan_candidate_evaluation_admission(
             verified_apply
             and not can_reuse_single_case_replay_validation(evaluation_dataset)
         ):
-            evaluation_variants += 1
+            # Held-out verification is paired just like validation.  Reserving
+            # only the treatment arm made its evidence gate absolute and also
+            # understated the judge budget.
+            evaluation_variants += 2
         expected_judge_summary_count = 1 if baseline_is_cached else 2
         regression_evaluation_units = (
             sum(

@@ -723,3 +723,14 @@ receipt yet, and no externally bound rollback/canary receipt. Focused regression
   blocker. Candidate-only legacy/backend timeouts are now promoted to `candidate_screening_deadline_exceeded` before
   recovery attribution, suppressing the false framework handoff while preserving genuine unobserved-intervention checks.
   The complete self-evolve suite passes 2526 tests with 1 skipped.
+- Resuming that campaign exercised all twelve continuation slots. Candidate `llm-mutator-57dce205cb64` cleared the paired
+  score-confidence bound and improved the evaluator verdict, while later candidate `llm-mutator-036a478d5ef1` completed
+  11/11 replay and passed both validation and held-out judge verdicts. Both were nevertheless rejected because held-out
+  evidence was evaluated only for the candidate arm and therefore used an absolute zero-constraint gate, unlike the paired
+  validation gate. The campaign eventually exhausted on a later 10/11 candidate after one member wrote only an advisory
+  manifest pointing outside its current evidence namespace; that finalization failure was correctly candidate-owned.
+- Held-out verified evaluation is now paired: a fresh same-split baseline and candidate are evaluated together, replay
+  evidence is merged into both, runtime health covers both, and evidence quality rejects only new or worsened held-out
+  constraints. Budget admission now reserves both held-out arms and judge accounting includes both summaries. This keeps
+  `verified_only` fail-closed without requiring a candidate to erase every pre-existing dataset defect in one mutation.
+  The focused controller tests pass 16/16 and the complete self-evolve suite passes 2527 tests with 1 skipped.

@@ -363,15 +363,15 @@ def test_evaluation_planning_reserves_full_verified_workload() -> None:
     )
 
     assert result.terminal_result is None
-    assert result.evaluation_units == 20
+    assert result.evaluation_units == 22
     assert result.expected_judge_summary_count == 2
     assert result.evaluation_budget is not None
     assert result.evaluation_budget.allowed is True
     assert result.judge_budget is not None
     assert result.judge_budget.allowed is True
     assert budget.reservations == [
-        (BudgetStage.EVALUATION, "candidate-1-evaluation", 20),
-        (BudgetStage.JUDGE, "candidate-1-judge", 60),
+        (BudgetStage.EVALUATION, "candidate-1-evaluation", 22),
+        (BudgetStage.JUDGE, "candidate-1-judge", 66),
     ]
 
 
