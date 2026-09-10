@@ -47,6 +47,7 @@ from aworld.self_evolve.optimizers.base import (
     OptimizerRequest,
     OptimizerResult,
 )
+from aworld.self_evolve.patch_intent import apply_skill_patch_intent
 from aworld.self_evolve.failure_events import (
     FailureEventSource,
     FailureOwner,
@@ -348,6 +349,7 @@ from aworld.self_evolve.types import (
     SelfEvolveTargetRef,
     to_json_dict,
 )
+from aworld.skills.structure import build_skill_structural_edit_intent
 
 
 def test_replay_heartbeat_uses_frozen_measurement_member_deadline() -> None:
@@ -8312,6 +8314,52 @@ def test_iteration_validation_feedback_includes_baseline_comparison_metrics() ->
             "reason": "score improvement below minimum delta",
         }
     ]
+
+
+def test_iteration_validation_feedback_preserves_structural_edit_authorization() -> None:
+    current_content = "---\nname: demo\n---\n# Demo\n\n## Guidance\n\nOld.\n"
+    patch_intent = {
+        "operations": [
+            {
+                "op": "replace_section",
+                "heading": "Guidance",
+                "content": "New.\n",
+            }
+        ]
+    }
+    candidate_content = apply_skill_patch_intent(current_content, patch_intent)
+    structural_edit_intent = build_skill_structural_edit_intent(
+        original_content=current_content,
+        candidate_content=candidate_content,
+        patch_intent=patch_intent,
+    )
+    candidate = CandidateVariant(
+        candidate_id="cand-structural-repair",
+        target=SelfEvolveTargetRef(target_type="skill", target_id="demo"),
+        content=candidate_content,
+        rationale="bounded section replacement",
+        structural_edit_intent=structural_edit_intent,
+    )
+
+    feedback = _iteration_validation_feedback(
+        candidate=candidate,
+        baseline_summary=None,
+        candidate_summary=None,
+        held_out_summary=None,
+        failed_gates=[
+            GateResult(
+                gate_name="candidate_replay",
+                passed=False,
+                reason="runtime source needs repair",
+                details={"failure_class": "candidate", "repairable": True},
+            )
+        ],
+    )
+
+    package = feedback[0].metrics["repair_candidate_package"]
+    assert package["structural_edit_intent"] == to_json_dict(
+        structural_edit_intent
+    )
 
 
 def test_iteration_validation_feedback_preserves_nested_root_cause_and_repair_package() -> None:

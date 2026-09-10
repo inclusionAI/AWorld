@@ -68,7 +68,12 @@ from aworld.self_evolve.replay import (
     normalize_replay_members,
 )
 from aworld.self_evolve.sanitization import sanitize_source_text, sanitize_text
-from aworld.self_evolve.types import CandidateVariant, EvaluationSummary, GateResult
+from aworld.self_evolve.types import (
+    CandidateVariant,
+    EvaluationSummary,
+    GateResult,
+    to_json_dict,
+)
 
 _MAX_REPAIR_CANDIDATE_PACKAGE_CHARS = 64_000
 _MAX_REPAIR_CANDIDATE_FILE_CHARS = 32_000
@@ -835,12 +840,17 @@ def _repair_candidate_package_feedback(
             file_payload["content"] = content
             remaining_chars -= len(content)
         files.append(file_payload)
-    return {
+    package: dict[str, object] = {
         "candidate_id": sanitize_text(candidate.candidate_id, max_chars=160),
         "rationale": sanitize_text(candidate.rationale, max_chars=1_000),
         "content": target_content,
         "files": files,
     }
+    if candidate.structural_edit_intent is not None:
+        package["structural_edit_intent"] = to_json_dict(
+            candidate.structural_edit_intent
+        )
+    return package
 
 
 def _record_authoritative_replay_observations(

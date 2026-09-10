@@ -17,7 +17,8 @@ from aworld.self_evolve.recovery_trace import (
     validate_public_constraint_recovery_trace,
     validate_public_recovery_trace,
 )
-from aworld.self_evolve.types import EvaluationSummary
+from aworld.self_evolve.types import EvaluationSummary, to_json_dict
+from aworld.skills.structure_types import skill_structural_edit_intent_from_dict
 
 _MAX_TEXT_CHARS = 240
 _MAX_LIST_ITEMS = 3
@@ -397,6 +398,13 @@ def _repair_candidate_package_summary(value: Any) -> dict[str, Any] | None:
     }
     if bounded_target_content is not None:
         package["content"] = bounded_target_content
+    structural_edit_intent = skill_structural_edit_intent_from_dict(
+        value.get("structural_edit_intent")
+    )
+    if structural_edit_intent is not None:
+        package["structural_edit_intent"] = to_json_dict(
+            structural_edit_intent
+        )
     return package
 
 

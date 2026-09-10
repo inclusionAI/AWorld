@@ -12,6 +12,7 @@ from aworld.self_evolve.candidate_generation import (
 )
 from aworld.self_evolve.feedback import normalize_feedback_summary
 from aworld.self_evolve.evolution_context import compile_evolution_context
+from aworld.self_evolve.gates import SkillReleaseFidelityGate
 from aworld.self_evolve.lessons import LessonRecord
 from aworld.self_evolve.optimizers.base import (
     CandidateGenerationOutcomeKind,
@@ -37,7 +38,9 @@ from aworld.self_evolve.types import (
     DatasetRecipe,
     EvaluationSummary,
     SelfEvolveTargetRef,
+    to_json_dict,
 )
+from aworld.skills.structure import build_skill_structural_edit_intent
 
 
 def _target() -> SelfEvolveTargetRef:
@@ -3081,6 +3084,89 @@ async def test_source_focused_repair_deterministically_inherits_parent_content()
     assert "focused_parent_content" in result.diagnostics[
         "candidate_strategies"
     ][0]["materialization"]
+
+
+@pytest.mark.asyncio
+async def test_source_focused_repair_preserves_parent_structural_edit_authorization() -> None:
+    current_content = (
+        "---\nname: demo\n---\n# Demo\n\n## Example\n\nKeep this command.\n\n"
+        "```bash\nagent-browser snapshot\n```\n"
+    )
+    patch_intent = {
+        "operations": [
+            {
+                "op": "replace_section",
+                "heading": "Example",
+                "content": "Use the repaired runtime package.\n",
+            }
+        ]
+    }
+    parent_content = apply_skill_patch_intent(current_content, patch_intent)
+    parent_intent = build_skill_structural_edit_intent(
+        original_content=current_content,
+        candidate_content=parent_content,
+        patch_intent=patch_intent,
+    )
+    request = OptimizerRequest(
+        target=_target(),
+        current_content=current_content,
+        target_fingerprint="sha256:old",
+        trace_packs=(_trace_pack(),),
+        replay_requirements=(_replay_requirement(),),
+        validation_feedback=(
+            EvaluationSummary(
+                variant_id="candidate-source-parent",
+                metrics={
+                    "failed_gates": ["candidate_repair_conformance"],
+                    "failure_class": "candidate",
+                    "repairable": True,
+                    "repair_candidate_package": {
+                        "candidate_id": "candidate-source-parent",
+                        "content": parent_content,
+                        "files": [
+                            {
+                                "path": "replay/runtime.py",
+                                "operation": "upsert",
+                                "content": "def run():\n    return False\n",
+                            }
+                        ],
+                        "structural_edit_intent": to_json_dict(parent_intent),
+                    },
+                    "repair_conformance": {
+                        "focus_candidate_id": "candidate-source-parent",
+                        "required_branch_paths": ["replay/runtime.py"],
+                        "runtime_paths": ["replay/runtime.py"],
+                        "failure_codes": ["runtime_contract_failed"],
+                    },
+                },
+                dataset_split="validation",
+            ),
+        ),
+        max_candidates=1,
+    )
+
+    result = await TraceReflectiveLLMMutator(
+        mutate_text=lambda prompt: {
+            "files": [
+                {
+                    "path": "replay/runtime.py",
+                    "operation": "upsert",
+                    "content": "def run():\n    return True\n",
+                }
+            ],
+            "rationale": "Repair only the runtime source branch.",
+        }
+    ).propose(request)
+
+    assert len(result.candidates) == 1
+    candidate = result.candidates[0]
+    assert candidate.content == parent_content.rstrip()
+    assert candidate.structural_edit_intent == parent_intent
+    assert SkillReleaseFidelityGate().evaluate(
+        candidate,
+        current_content=current_content,
+        require_exact_deletion_intent=True,
+    ).passed
 
 
 @pytest.mark.asyncio

@@ -59,7 +59,10 @@ from aworld.skills.structure import (
     build_skill_structural_edit_intent,
     validate_skill_markdown_structure,
 )
-from aworld.skills.structure_types import SkillStructuralEditIntent
+from aworld.skills.structure_types import (
+    SkillStructuralEditIntent,
+    skill_structural_edit_intent_from_dict,
+)
 
 
 MutateTextCallable = Callable[[str], Any]
@@ -337,18 +340,28 @@ class TraceReflectiveLLMMutator:
                 if _violates_transport_completion_invariant(content):
                     content = _append_transport_completion_invariant(content)
                     repaired_transport_completion_violation_count += 1
-                structural_edit_intent = _candidate_structural_edit_intent(
-                    output,
-                    # Bind authorization to the same content snapshot used by
-                    # patch materialization.  Judge-stage focused repairs use
-                    # the parent candidate as their base; authorizing them
-                    # against the original target made every valid structural
-                    # repair appear unbound.
-                    base_content=_focused_repair_patch_base(
+                structural_edit_intent = (
+                    _focused_parent_structural_edit_intent(
                         request,
                         candidate_index=index,
-                    ),
-                    candidate_content=content,
+                    )
+                    if _focused_source_repair_parent_content_required(
+                        request,
+                        candidate_index=index,
+                    )
+                    else _candidate_structural_edit_intent(
+                        output,
+                        # Bind authorization to the same content snapshot used by
+                        # patch materialization. Judge-stage focused repairs use
+                        # the parent candidate as their base; authorizing them
+                        # against the original target made every valid structural
+                        # repair appear unbound.
+                        base_content=_focused_repair_patch_base(
+                            request,
+                            candidate_index=index,
+                        ),
+                        candidate_content=content,
+                    )
                 )
             except ValueError as exc:
                 filtered_invalid_patch_count += 1
@@ -3609,6 +3622,27 @@ def _focused_source_repair_parent_content_required(
         contract is not None
         and contract.required_branch_paths
         and "SKILL.md" not in contract.required_branch_paths
+    )
+
+
+def _focused_parent_structural_edit_intent(
+    request: OptimizerRequest,
+    *,
+    candidate_index: int,
+) -> SkillStructuralEditIntent | None:
+    """Carry the parent's content-addressed authorization across source repair."""
+
+    context = request.evolution_context or compile_evolution_context(request)
+    repair_focus = context.repair_focus_for_candidate(
+        candidate_index=candidate_index
+    )
+    if not isinstance(repair_focus, Mapping):
+        return None
+    package = repair_focus.get("repair_candidate_package")
+    if not isinstance(package, Mapping):
+        return None
+    return skill_structural_edit_intent_from_dict(
+        package.get("structural_edit_intent")
     )
 
 

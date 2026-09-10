@@ -734,3 +734,10 @@ receipt yet, and no externally bound rollback/canary receipt. Focused regression
   constraints. Budget admission now reserves both held-out arms and judge accounting includes both summaries. This keeps
   `verified_only` fail-closed without requiring a candidate to erase every pre-existing dataset defect in one mutation.
   The focused controller tests pass 16/16 and the complete self-evolve suite passes 2527 tests with 1 skipped.
+- The next fresh campaign exposed a cross-cycle repair-package defect: a valid patch-intent candidate could authorize a
+  bounded section replacement, fail later in replay compilation, and then lose its content-addressed structural edit
+  authorization when serialized into repair feedback. Focused source repair inherited the exact parent content but not
+  its authorization, so the unchanged parent was rejected as an unapproved fenced-block deletion. Repair packages now
+  preserve, normalize, persist, and restore the typed structural edit intent; source-only repairs carry that authorization
+  while retaining their strict producer-path boundary. Three focused regressions, 255 related tests, and the complete
+  2530-test self-evolve suite pass.

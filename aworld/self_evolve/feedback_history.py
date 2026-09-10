@@ -15,7 +15,8 @@ from aworld.self_evolve.sanitization import (
     sanitize_source_text,
     sanitize_text,
 )
-from aworld.self_evolve.types import EvaluationSummary, GateResult
+from aworld.self_evolve.types import EvaluationSummary, GateResult, to_json_dict
+from aworld.skills.structure_types import skill_structural_edit_intent_from_dict
 
 _MAX_REPAIR_CANDIDATE_PACKAGE_CHARS = 64_000
 _MAX_REPAIR_CANDIDATE_FILE_CHARS = 32_000
@@ -635,6 +636,13 @@ def _stored_repair_candidate_package(
     }
     if bounded_target_content is not None:
         package["content"] = bounded_target_content
+    structural_edit_intent = skill_structural_edit_intent_from_dict(
+        payload.get("structural_edit_intent")
+    )
+    if structural_edit_intent is not None:
+        package["structural_edit_intent"] = to_json_dict(
+            structural_edit_intent
+        )
     return package
 
 
