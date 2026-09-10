@@ -25,6 +25,37 @@ def test_default_retention_bounds_large_replay_workspace_history() -> None:
     assert policy.stale_run_retention_hours == 24
     assert policy.unreferenced_ingestion_retention_days == 7
     assert policy.prune_unselected_candidate_materializations is True
+    assert policy.max_cleanup_seconds == 5.0
+
+
+def test_cleanup_stops_at_global_time_budget(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    artifact_root = tmp_path / ".aworld" / "self_evolve"
+    for index in range(3):
+        run_dir = artifact_root / f"run-{index}"
+        _write_json(run_dir / "run.json", {"status": "rejected"})
+        _write_json(run_dir / "report.json", {"status": "rejected"})
+        _write_text(run_dir / "evidence" / "raw.txt")
+
+    clock = iter((0.0, 0.1, 0.2, 1.1, 1.2, 1.3, 1.4, 1.5))
+    monkeypatch.setattr(lifecycle_module.time, "monotonic", lambda: next(clock))
+    removed: list[Path] = []
+
+    def bounded_remove(path: Path, **kwargs: object) -> bool:
+        removed.append(path)
+        return True
+
+    monkeypatch.setattr(lifecycle_module, "_remove_path", bounded_remove)
+
+    result = cleanup_self_evolve_artifacts(
+        tmp_path,
+        policy=SelfEvolveArtifactRetentionPolicy(max_cleanup_seconds=1.0),
+    )
+
+    assert result["cleanup_budget_exhausted"] is True
+    assert len(removed) < 3
 
 
 def test_pending_measurement_work_protects_replay_runtime_seed(tmp_path: Path) -> None:

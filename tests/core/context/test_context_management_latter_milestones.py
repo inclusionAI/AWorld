@@ -467,3 +467,19 @@ async def test_completion_contract_runtime_resolver_and_merge_are_automatic():
     assessment = root.assess_completion_contract(agent_claimed_finished=True)
     assert calls == ["check"]
     assert assessment.status is CompletionStatus.SATISFIED
+
+
+def test_merge_context_accepts_mapping_transport_state():
+    parent = Context(task_id="mapping-transport")
+    child = Context(task_id="mapping-transport")
+    child.context_info = {
+        "transport_value": {"status": "preserved"},
+        "llm_calls": [],
+    }
+
+    parent.merge_context(child)
+
+    assert parent.context_info["transport_value"] == {"status": "preserved"}
+    assert parent.context_info["last_merge_info"]["merged_from_task_id"] == (
+        "mapping-transport"
+    )

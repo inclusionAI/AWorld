@@ -83,7 +83,7 @@ from aworld.self_evolve.types import CandidateVariant, GateResult
 
 
 _DEFAULT_AUTHORITATIVE_REPLAY_MAX_STEPS = 12
-_DEFAULT_AUTHORITATIVE_REPLAY_TOOL_CALL_LIMIT = 16
+_DEFAULT_AUTHORITATIVE_REPLAY_TOOL_CALL_LIMIT = 32
 _REPLAY_PROGRESS_HEARTBEAT_SECONDS = 30.0
 
 
@@ -368,7 +368,7 @@ class PairedReplayExecutionController:
             if request.max_tool_calls is not None
             else min(
                 _DEFAULT_AUTHORITATIVE_REPLAY_TOOL_CALL_LIMIT,
-                max(8, effective_max_steps * 2),
+                max(8, effective_max_steps * 3),
             )
         )
         baseline_replay_dir = find_reusable_baseline_replay_dir(

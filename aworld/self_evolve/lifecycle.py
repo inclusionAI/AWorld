@@ -27,6 +27,7 @@ class SelfEvolveArtifactRetentionPolicy:
     stale_run_retention_hours: int = 24
     unreferenced_ingestion_retention_days: int = 7
     prune_unselected_candidate_materializations: bool = True
+    max_cleanup_seconds: float = 5.0
 
 
 _TERMINAL_STATUSES = {"succeeded", "failed", "rejected"}
@@ -189,6 +190,13 @@ def cleanup_self_evolve_artifacts(
         raise ValueError("stale_run_retention_hours must be non-negative")
     if retention.unreferenced_ingestion_retention_days < 0:
         raise ValueError("unreferenced_ingestion_retention_days must be non-negative")
+    if (
+        isinstance(retention.max_cleanup_seconds, bool)
+        or not isinstance(retention.max_cleanup_seconds, (int, float))
+        or not math.isfinite(float(retention.max_cleanup_seconds))
+        or retention.max_cleanup_seconds <= 0
+    ):
+        raise ValueError("max_cleanup_seconds must be positive and finite")
 
     with _bound_artifact_root(
         workspace_root,
@@ -257,6 +265,7 @@ def _perform_bound_artifact_cleanup(
     cleanup_time: float,
     transaction: _RetentionTransaction | None,
 ) -> dict[str, Any]:
+    cleanup_deadline = time.monotonic() + float(retention.max_cleanup_seconds)
     cutoff = cleanup_time - (
         retention.raw_artifact_retention_days * 24 * 60 * 60
     )
@@ -271,6 +280,7 @@ def _perform_bound_artifact_cleanup(
         cleanup_root_fd=root_fd,
         stale_cutoff=stale_run_cutoff,
         transaction=transaction,
+        deadline=cleanup_deadline,
     )
     run_dirs = _run_dirs(root)
     run_ids = {path.name for path in run_dirs}
@@ -290,8 +300,12 @@ def _perform_bound_artifact_cleanup(
     compacted_run_ids: set[str] = set()
     archived_run_ids: set[str] = set()
     skipped_runs: list[dict[str, str]] = []
+    cleanup_budget_exhausted = False
 
     for run_dir in sorted(run_dirs, key=lambda path: path.name):
+        if time.monotonic() >= cleanup_deadline:
+            cleanup_budget_exhausted = True
+            break
         skip_reason = _cleanup_skip_reason(
             run_dir,
             stale_run_cutoff=stale_run_cutoff,
@@ -316,6 +330,9 @@ def _perform_bound_artifact_cleanup(
                 retention.prune_unselected_candidate_materializations
             ),
         ):
+            if time.monotonic() >= cleanup_deadline:
+                cleanup_budget_exhausted = True
+                break
             # Keep the report-linked repair-conformance evidence for the
             # bounded latest-run window. Capability-preflight diagnostics are
             # durable already; ordinary workspaces and candidate materialized
@@ -334,9 +351,12 @@ def _perform_bound_artifact_cleanup(
                 cleanup_root=root,
                 cleanup_root_fd=root_fd,
                 transaction=transaction,
+                deadline=cleanup_deadline,
             ):
                 removed_paths.append(str(path))
                 run_removed = True
+        if cleanup_budget_exhausted:
+            break
         if run_removed:
             compacted_run_ids.add(run_dir.name)
 
@@ -345,6 +365,9 @@ def _perform_bound_artifact_cleanup(
     ingestion_root = root / "ingestions"
     if ingestion_root.is_dir() and not ingestion_root.is_symlink():
         for ingestion_dir in sorted(ingestion_root.iterdir(), key=lambda path: path.name):
+            if time.monotonic() >= cleanup_deadline:
+                cleanup_budget_exhausted = True
+                break
             if (
                 not ingestion_dir.is_dir()
                 or ingestion_dir.is_symlink()
@@ -357,6 +380,7 @@ def _perform_bound_artifact_cleanup(
                 cleanup_root=root,
                 cleanup_root_fd=root_fd,
                 transaction=transaction,
+                deadline=cleanup_deadline,
             ):
                 removed_paths.append(str(ingestion_dir))
                 removed_ingestion_ids.append(ingestion_dir.name)
@@ -384,6 +408,7 @@ def _perform_bound_artifact_cleanup(
         "removed_ingestion_ids": removed_ingestion_ids,
         "protected_ingestion_ids": sorted(protected_ingestion_ids),
         "transaction_ids": transaction_ids,
+        "cleanup_budget_exhausted": cleanup_budget_exhausted,
     }
 
 
@@ -583,6 +608,7 @@ def _empty_cleanup(policy: SelfEvolveArtifactRetentionPolicy) -> dict[str, Any]:
         "removed_ingestion_ids": [],
         "protected_ingestion_ids": [],
         "transaction_ids": [],
+        "cleanup_budget_exhausted": False,
     }
 
 
@@ -1225,6 +1251,7 @@ def _remove_path(
     cleanup_root: Path,
     cleanup_root_fd: int,
     transaction: _RetentionTransaction | None,
+    deadline: float | None = None,
 ) -> bool:
     try:
         parent_fd, leaf = _open_bound_parent(
@@ -1280,10 +1307,13 @@ def _remove_path(
             return False
         os.close(operation_fd)
         operation_fd = -1
+        inline_deadline = time.monotonic() + _INLINE_QUARANTINE_DELETE_SECONDS
+        if deadline is not None:
+            inline_deadline = min(inline_deadline, deadline)
         quarantine_removed = _remove_tree_entry(
             trash_fd,
             operation_name,
-            deadline=time.monotonic() + _INLINE_QUARANTINE_DELETE_SECONDS,
+            deadline=inline_deadline,
         )
         if quarantine_removed:
             _remove_empty_directory_at(
@@ -1307,6 +1337,7 @@ def _recover_cleanup_quarantine(
     cleanup_root_fd: int,
     stale_cutoff: float,
     transaction: _RetentionTransaction | None,
+    deadline: float | None = None,
 ) -> list[str]:
     try:
         quarantine_fd = _open_directory_at(
@@ -1318,6 +1349,8 @@ def _recover_cleanup_quarantine(
     removed: list[str] = []
     try:
         for operation_name in sorted(os.listdir(quarantine_fd)):
+            if deadline is not None and time.monotonic() >= deadline:
+                break
             operation_fd = _open_directory_at(quarantine_fd, operation_name)
             try:
                 owner = _read_json_at(operation_fd, "owner.json")
@@ -1333,13 +1366,15 @@ def _recover_cleanup_quarantine(
                             transaction.record_intent(operation_path)
                         os.close(operation_fd)
                         operation_fd = -1
+                        inline_deadline = (
+                            time.monotonic() + _INLINE_QUARANTINE_DELETE_SECONDS
+                        )
+                        if deadline is not None:
+                            inline_deadline = min(inline_deadline, deadline)
                         if _remove_tree_entry(
                             quarantine_fd,
                             operation_name,
-                            deadline=(
-                                time.monotonic()
-                                + _INLINE_QUARANTINE_DELETE_SECONDS
-                            ),
+                            deadline=inline_deadline,
                         ):
                             removed.append(operation_path)
                             if transaction is not None:
@@ -1359,10 +1394,15 @@ def _recover_cleanup_quarantine(
                 )
                 if transaction is not None:
                     transaction.record_intent(operation_path)
+                inline_deadline = (
+                    time.monotonic() + _INLINE_QUARANTINE_DELETE_SECONDS
+                )
+                if deadline is not None:
+                    inline_deadline = min(inline_deadline, deadline)
                 if _remove_tree_entry(
                     quarantine_fd,
                     operation_name,
-                    deadline=time.monotonic() + _INLINE_QUARANTINE_DELETE_SECONDS,
+                    deadline=inline_deadline,
                 ):
                     removed.append(operation_path)
                     if transaction is not None:

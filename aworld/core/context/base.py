@@ -18,6 +18,7 @@ from typing import (
     TYPE_CHECKING,
     List,
     Literal,
+    Mapping,
     Optional,
 )
 
@@ -2245,8 +2246,15 @@ class Context:
                                 child_llm_calls
                             )
                 else:
-                    # If no local_dict method, directly update all states
-                    merged_state = other_context.context_info.to_dict()
+                    # Transport and deserialization boundaries may preserve
+                    # Context state as an ordinary mapping. Treat that as the
+                    # public payload instead of assuming ContextState's helper
+                    # is still present.
+                    merged_state = (
+                        dict(other_context.context_info)
+                        if isinstance(other_context.context_info, Mapping)
+                        else other_context.context_info.to_dict()
+                    )
                     child_llm_calls = merged_state.pop("llm_calls", None)
                     self.context_info.update(merged_state)
                     if isinstance(child_llm_calls, list):
@@ -2330,7 +2338,10 @@ class Context:
                 if hasattr(other_context, "_token_usage")
                 else {},
             }
-            self.context_info.set("last_merge_info", merge_info)
+            if hasattr(self.context_info, "set"):
+                self.context_info.set("last_merge_info", merge_info)
+            else:
+                self.context_info["last_merge_info"] = merge_info
         except Exception as e:
             logger.warning(f"Failed to record merge info: {e}")
 

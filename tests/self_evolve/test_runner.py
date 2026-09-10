@@ -17653,7 +17653,7 @@ async def test_runner_screens_population_on_representative_member_before_full_re
     assert replay_backend.calls == [
         ("candidate-1", ("task-a",), 90, 8),
         ("candidate-2", ("task-a",), 90, 8),
-        ("candidate-1", ("task-a", "task-b"), 600, 16),
+        ("candidate-1", ("task-a", "task-b"), 600, 32),
     ]
     report = json.loads(
         (tmp_path / ".aworld" / "self_evolve" / "run-population-screening" / "report.json").read_text(

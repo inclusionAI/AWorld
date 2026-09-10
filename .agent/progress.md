@@ -711,3 +711,8 @@ receipt yet, and no externally bound rollback/canary receipt. Focused regression
   candidate-generation sanitizer wrapped a reviewed OpenAI provider in an unrecognized exact type. Added a narrowly
   allowlisted transparent-proxy registration: the sanitizer gains no capability of its own and resolves only through an
   exact delegate that already passes the reviewed provider registry. Focused regression tests pass 47/47.
+- Post-fix campaign `campaign-32fe2371b2ac7718d0b8` crossed candidate generation and resumed eight completed paired
+  cases from an authoritative checkpoint. A later baseline exhausted the hard 16-call tool budget on its final evidence
+  write, transport Context merges rejected plain mapping state, and terminal retention synchronously walked historical
+  replay workspaces. Raised the bounded authoritative limit to 32, made merge mapping-compatible, and capped inline
+  terminal cleanup at five seconds while retaining recoverable quarantine transactions.
