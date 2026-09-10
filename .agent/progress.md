@@ -716,3 +716,10 @@ receipt yet, and no externally bound rollback/canary receipt. Focused regression
   write, transport Context merges rejected plain mapping state, and terminal retention synchronously walked historical
   replay workspaces. Raised the bounded authoritative limit to 32, made merge mapping-compatible, and capped inline
   terminal cleanup at five seconds while retaining recoverable quarantine transactions.
+- Acceptance campaign `campaign-971086b9a0a045947a14` completed two checkpointed 11-case authoritative candidates and
+  proved post-judge repair candidates now materialize. It then paused when a healthy screening baseline was followed by
+  a candidate backend `timeoutexpired`: the existing candidate-only screening-deadline attribution recognized only the
+  newer `replay_member_phase_timeout` shape, so an unobserved-activation fallback incorrectly created a shared framework
+  blocker. Candidate-only legacy/backend timeouts are now promoted to `candidate_screening_deadline_exceeded` before
+  recovery attribution, suppressing the false framework handoff while preserving genuine unobserved-intervention checks.
+  The complete self-evolve suite passes 2526 tests with 1 skipped.

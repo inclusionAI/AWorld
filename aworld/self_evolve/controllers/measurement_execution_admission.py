@@ -157,6 +157,11 @@ def _replay_gate_details(
         else None
     )
     screening_budget_censored = screening_censor_basis is not None
+    candidate_screening_deadline = (
+        _paired_candidate_screening_deadline_failure(normalized)
+        if bounded_screening
+        else None
+    )
     completion_failure = (
         None
         if screening_budget_censored
@@ -283,6 +288,7 @@ def _replay_gate_details(
             or candidate_system_failures
             or framework_blocker is not None
             or screening_budget_censored
+            or candidate_screening_deadline is not None
             or completion_failure is not None
             else (
                 _candidate_recovery_failure_event(recovery_trace)
@@ -326,6 +332,7 @@ def _replay_gate_details(
         intervention_observed is False
         and framework_blocker is None
         and not screening_budget_censored
+        and candidate_screening_deadline is None
         and completion_failure is None
     ):
         recovery_failure = _candidate_intervention_unobserved_failure_event(
@@ -382,11 +389,6 @@ def _replay_gate_details(
             for member in normalized.members
             if not member.succeeded
         ]
-    candidate_screening_deadline = (
-        _paired_candidate_screening_deadline_failure(normalized)
-        if bounded_screening
-        else None
-    )
     if candidate_screening_deadline is not None:
         deadline_event, deadline_case_ids = candidate_screening_deadline
         deadline_observations = tuple(
@@ -519,15 +521,23 @@ def _paired_candidate_screening_deadline_failure(
         if not member.baseline.succeeded:
             continue
         failure = member.candidate.failure
-        if (
-            member.candidate.status is not ReplayExecutionStatus.FAILED
-            or not isinstance(failure, ReplayFailureEvent)
-            or failure.code != "replay_member_phase_timeout"
-            or failure.diagnostics.get("phase") != "candidate"
+        member_phase_deadline = bool(
+            member.candidate.status is ReplayExecutionStatus.FAILED
+            and isinstance(failure, ReplayFailureEvent)
+            and failure.code == "replay_member_phase_timeout"
+            and failure.diagnostics.get("phase") == "candidate"
+        )
+        if not (
+            member_phase_deadline
+            or _variant_is_screening_timeout(member.candidate)
         ):
             continue
         affected_case_ids.append(member.case_id)
-        timeout = failure.diagnostics.get("timeout_seconds")
+        timeout = (
+            failure.diagnostics.get("timeout_seconds")
+            if isinstance(failure, ReplayFailureEvent)
+            else None
+        )
         if (
             isinstance(timeout, (int, float))
             and not isinstance(timeout, bool)

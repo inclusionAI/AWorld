@@ -8979,6 +8979,79 @@ def test_bounded_screening_promotes_candidate_only_deadline_to_candidate_repair(
     assert _screening_gate_has_invalid_control(gate) is False
 
 
+def test_bounded_screening_promotes_legacy_candidate_timeout_without_framework_handoff(
+    tmp_path: Path,
+) -> None:
+    request = CandidateReplayRequest(
+        run_id="run-legacy-candidate-timeout",
+        task_id="case-legacy-candidate-timeout",
+        workspace_root=str(tmp_path),
+        target=SelfEvolveTargetRef(target_type="skill", target_id="screening"),
+        candidate_id="candidate-legacy-timeout",
+        overlay_skill_root=str(tmp_path / "overlay"),
+        task_input="complete this task",
+        timeout_seconds=187,
+        max_steps=3,
+        max_tool_calls=8,
+    )
+    candidate_timeout = ReplayFailureEvent(
+        code="timeoutexpired",
+        owner=FailureOwner.TASK,
+        stage=FailureStage.TASK_ROLLOUT,
+        scope=FailureScope.MEMBER,
+        repairable=False,
+        category="legacy",
+        summary="candidate replay timed out",
+        diagnostics={"timeout_seconds": 187},
+    )
+    replay_result = _CandidateReplayResult(
+        request=request,
+        baseline=ReplayVariantResult(
+            variant_id="baseline",
+            status=ReplayExecutionStatus.SUCCEEDED,
+            trajectory=[{"step": 1}],
+            metrics={"task_success": 1.0},
+        ),
+        candidate=ReplayVariantResult(
+            variant_id="candidate-legacy-timeout",
+            status=ReplayExecutionStatus.FAILED,
+            trajectory=[{"step": 1}],
+            failure=candidate_timeout,
+        ),
+    )
+    dataset = SelfEvolveDataset(
+        cases=(
+            EvalCase(
+                case_id="case-legacy-candidate-timeout",
+                input="complete this task",
+            ),
+        ),
+        recipe=DatasetRecipe(
+            source={"kind": "trajectory_log"},
+            split_seed="legacy-candidate-timeout",
+            splits={"train": ["case-legacy-candidate-timeout"]},
+            trainable_case_ids=("case-legacy-candidate-timeout",),
+        ),
+    )
+
+    details = _replay_gate_details(
+        replay_result,
+        dataset=dataset,
+        candidate_requires_intervention_exposure=True,
+        bounded_screening=True,
+    )
+
+    assert details["code"] == "candidate_screening_deadline_exceeded"
+    assert details["failure_class"] == "candidate"
+    assert details["failure_owner"] == "candidate"
+    assert details["failure_scope"] == "candidate"
+    assert details["evaluator_skipped"] is True
+    assert not any(
+        event["code"] == "candidate_intervention_unobserved"
+        for event in details["causal_failure_events"]
+    )
+
+
 def test_campaign_measurement_retries_framework_owned_member_timeout() -> None:
     request = CandidateReplayRequest(
         run_id="campaign-timeout-cycle-002",
