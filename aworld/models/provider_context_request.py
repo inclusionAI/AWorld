@@ -47,6 +47,7 @@ class PreparedProviderContextRequest:
     request_id: str
     attempt_tracking_ready: bool
     metadata: dict[str, Any] | None = None
+    cache_plan: CachePlan | None = None
 
 
 def _standard_request(
@@ -272,6 +273,7 @@ def prepare_provider_context_request(
         request_id=snapshot.request_id,
         attempt_tracking_ready=tracking_ready,
         metadata=projection.metadata,
+        cache_plan=(envelope.cache_plan if envelope is not None else None),
     )
 
 
@@ -283,6 +285,7 @@ def mark_prepared_provider_attempt(
         provider.mark_provider_attempted(
             context=prepared.context,
             request_id=prepared.request_id,
+            cache_plan=prepared.cache_plan,
         )
     else:
         provider.mark_provider_attempted_fail_open(

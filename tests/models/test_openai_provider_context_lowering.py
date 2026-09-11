@@ -968,6 +968,7 @@ def test_context_lifecycle_checkpoint_is_frozen_into_cache_plan():
     ]
     assert cache_plan["cache_epoch"] == 1
     assert cache_plan["break_reasons"] == ["history_compaction"]
+    assert context.get_pending_cache_break_reasons() == ()
 
 
 def test_universal_final_enforce_lowers_verified_tool_result_boundary():

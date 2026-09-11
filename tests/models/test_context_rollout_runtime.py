@@ -16,6 +16,7 @@ from aworld.core.context.compiler import (
     CandidateRequestNotEnforceable,
     ContextCompilerMode,
     ContextObservationSidecar,
+    LifecycleAction,
     ProviderLoweringCapability,
     adapt_final_messages,
     canonical_json_hash,
@@ -670,6 +671,7 @@ async def test_anthropic_universal_cache_plan_lowers_native_boundary_all_paths()
     contexts = [Context(task_id=f"anthropic-cache-{index}") for index in range(4)]
     for context in contexts:
         context.trace_id = ""
+        context.advance_context_lifecycle(LifecycleAction.CHECKPOINT)
     messages = [
         {"role": "system", "content": "stable rules"},
         {"role": "user", "content": "dynamic request"},
@@ -700,6 +702,10 @@ async def test_anthropic_universal_cache_plan_lowers_native_boundary_all_paths()
         ]
         assert lowering["cache_lowering_status"] == "applied"
         assert lowering["cache_lowering_strategy"] == "anthropic_cache_control"
+        cache_plan = record["context_rollout"]["final_compile"]["cache_plan"]
+        assert cache_plan["cache_epoch"] == 1
+        assert cache_plan["break_reasons"] == ["history_compaction"]
+        assert context.get_pending_cache_break_reasons() == ()
 
 
 def test_unsupported_native_cache_provider_reports_evidence_without_blocking():

@@ -6,7 +6,11 @@ import traceback
 from typing import Any, Dict, List, Optional
 
 from aworld.core.agent.base import AgentFactory
-from aworld.core.context.amni.prompt.assembly import DefaultPromptAssemblyProvider
+from aworld.core.context.amni.prompt.assembly import (
+    AMNI_SYSTEM_SECTIONS_SCHEMA_VERSION,
+    DefaultPromptAssemblyProvider,
+    validated_amni_system_sections,
+)
 from aworld.memory.main import MemoryFactory
 from aworld.memory.models import MemorySystemMessage, MessageMetadata
 from ... import ApplicationContext
@@ -21,7 +25,10 @@ from ...prompt.neurons import (
     adapt_neuron_outputs,
 )
 from aworld.core.context.compiler import ContextObservationSidecar
-from aworld.agents.final_context_adapter import adapt_amni_folded_system_message
+from aworld.agents.final_context_adapter import (
+    adapt_amni_folded_system_message,
+    adapt_amni_system_sections,
+)
 from ...prompt.prompt_ext import ContextPromptTemplate
 from ...retrieval.reranker import RerankResult
 from ...retrieval.reranker.factory import RerankerFactory
@@ -364,17 +371,33 @@ class SystemPromptAugmentOp(BaseOp):
 
         provider = self._get_prompt_assembly_provider(context, agent_id)
         prompt_messages = self._build_system_prompt_messages(event.system_prompt, augment_prompts)
-        appended_prompt = self._assemble_system_prompt(
-            provider=provider,
+        plan = provider.build_plan(
             messages=prompt_messages,
+            tools=None,
             metadata={
-                "system_section_hints": self._build_system_section_hints(augment_prompts),
+                "system_section_hints": self._build_system_section_hints(
+                    event.system_prompt, augment_prompts
+                ),
             },
+        )
+        appended_prompt = self._system_prompt_text(
+            getattr(plan, "to_model_messages", lambda: prompt_messages)()
         )
 
         formatted_system_prompt = await ContextPromptTemplate(template=appended_prompt).async_format(
             context=context,
             task=user_query)
+        formatted_sections = await self._format_ordered_system_sections(
+            context=context,
+            task=user_query,
+            plan=plan,
+        )
+        if "\n\n".join(
+            section["content"] for section in formatted_sections
+        ) != formatted_system_prompt:
+            # Formatting that depends on cross-section structure cannot be
+            # split without changing the model-visible prompt.
+            formatted_sections = []
         try:
             source_identity = (
                 f"amni-folded://{agent_id}/task-{context.task_id}/"
@@ -395,6 +418,22 @@ class SystemPromptAugmentOp(BaseOp):
                     ),
                 )
             )
+            if formatted_sections:
+                section_source_identity = f"{source_identity}/ordered-sections"
+                context.publish_context_observation(
+                    ContextObservationSidecar.from_adapter_result(
+                        owner="amni.system_sections",
+                        namespace=agent_id,
+                        source_identity=section_source_identity,
+                        result=adapt_amni_system_sections(
+                            sections=formatted_sections,
+                            source_identity=section_source_identity,
+                            task_id=context.task_id,
+                            task_epoch=context.task_epoch,
+                            agent_id=agent_id,
+                        ),
+                    )
+                )
         except Exception as exc:
             logger.warning(
                 "Amni folded-system Context publication failed; "
@@ -406,6 +445,7 @@ class SystemPromptAugmentOp(BaseOp):
             content=formatted_system_prompt,
             agent_id=agent_id,
             agent_name=agent_name,
+            system_sections=formatted_sections,
         )
 
         return MemoryCommand(
@@ -501,6 +541,28 @@ class SystemPromptAugmentOp(BaseOp):
                             ),
                         )
                     )
+                    stored_sections = validated_amni_system_sections(
+                        content=restored_system.content,
+                        metadata=restored_system.metadata,
+                    )
+                    if stored_sections:
+                        section_source_identity = (
+                            f"{source_identity}/ordered-sections"
+                        )
+                        context.publish_context_observation(
+                            ContextObservationSidecar.from_adapter_result(
+                                owner="amni.system_sections",
+                                namespace=agent_id,
+                                source_identity=section_source_identity,
+                                result=adapt_amni_system_sections(
+                                    sections=stored_sections,
+                                    source_identity=section_source_identity,
+                                    task_id=context.task_id,
+                                    task_epoch=context.task_epoch,
+                                    agent_id=agent_id,
+                                ),
+                            )
+                        )
                 except Exception as exc:
                     logger.warning(
                         "Amni restored folded-system revalidation failed; "
@@ -512,7 +574,9 @@ class SystemPromptAugmentOp(BaseOp):
                                     context: ApplicationContext,
                                     content: str,
                                     agent_id: str,
-                                    agent_name: str = None) -> MemorySystemMessage:
+                                    agent_name: str = None,
+                                    system_sections: Optional[List[Dict[str, Any]]] = None,
+                                    ) -> MemorySystemMessage:
         session_id = context.get_task().session_id
         task_id = context.get_task().id
         user_id = context.get_task().user_id
@@ -525,6 +589,16 @@ class SystemPromptAugmentOp(BaseOp):
                 task_id=task_id,
                 agent_id=agent_id,
                 agent_name=agent_name or 'unknown',
+                ext_info=(
+                    {
+                        "aworld_context_system_sections": {
+                            "schema_version": AMNI_SYSTEM_SECTIONS_SCHEMA_VERSION,
+                            "sections": system_sections,
+                        }
+                    }
+                    if system_sections
+                    else {}
+                ),
             )
         )
 
@@ -561,11 +635,61 @@ class SystemPromptAugmentOp(BaseOp):
         return messages
 
     @staticmethod
-    def _build_system_section_hints(augment_prompts: Optional[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        hints = [{"name": "system_prompt", "stability": "stable"}]
+    def _build_system_section_hints(
+        system_prompt: Optional[str],
+        augment_prompts: Optional[Dict[str, Any]],
+    ) -> List[Dict[str, Any]]:
+        hints = []
+        if system_prompt:
+            hints.append({"name": "system_prompt", "stability": "stable"})
         for name in (augment_prompts or {}).keys():
             hints.append({"name": name})
         return hints
+
+    @classmethod
+    def _system_prompt_text(cls, messages: Any) -> str:
+        system_parts = []
+        for message in messages or []:
+            if isinstance(message, dict) and message.get("role") == "system":
+                content = cls._stringify_system_content(message.get("content"))
+                if content:
+                    system_parts.append(content)
+        return "\n\n".join(system_parts)
+
+    async def _format_ordered_system_sections(
+        self,
+        *,
+        context: ApplicationContext,
+        task: Any,
+        plan: Any,
+    ) -> List[Dict[str, Any]]:
+        sections = getattr(plan, "system_sections", None)
+        if not isinstance(sections, list) or not sections:
+            return []
+        formatted = []
+        for section in sections:
+            content = self._stringify_system_content(
+                getattr(section, "content", {}).get("content")
+                if isinstance(getattr(section, "content", None), dict)
+                else getattr(section, "content", None)
+            )
+            stability = getattr(section, "stability", None)
+            if not content or stability not in {"stable", "dynamic"}:
+                return []
+            rendered = await ContextPromptTemplate(template=content).async_format(
+                context=context,
+                task=task,
+            )
+            if not isinstance(rendered, str) or not rendered:
+                return []
+            formatted.append(
+                {
+                    "name": getattr(section, "name", None),
+                    "stability": stability,
+                    "content": rendered,
+                }
+            )
+        return formatted
 
     @staticmethod
     def _stringify_system_content(content: Any) -> str:
@@ -600,18 +724,8 @@ class SystemPromptAugmentOp(BaseOp):
             else getattr(plan, "messages", messages)
         )
 
-        system_parts = []
-        for message in assembled_messages or []:
-            if isinstance(message, dict) and message.get("role") == "system":
-                content = self._stringify_system_content(message.get("content"))
-                if content:
-                    system_parts.append(content)
+        assembled = self._system_prompt_text(assembled_messages)
+        if assembled:
+            return assembled
 
-        if not system_parts:
-            for message in messages:
-                if isinstance(message, dict) and message.get("role") == "system":
-                    content = self._stringify_system_content(message.get("content"))
-                if content:
-                    system_parts.append(content)
-
-        return "\n\n".join(system_parts)
+        return self._system_prompt_text(messages)

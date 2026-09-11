@@ -30,7 +30,10 @@ from aworld.core.common import (
     TaskItem,
     TaskStatusValue,
 )
-from aworld.core.context.amni.prompt.assembly import DefaultPromptAssemblyProvider
+from aworld.core.context.amni.prompt.assembly import (
+    DefaultPromptAssemblyProvider,
+    validated_amni_system_sections,
+)
 from aworld.core.context.base import Context
 from aworld.core.context.compiler.frozen_json import canonical_json_hash
 from aworld.core.context.compiler import CandidateRequestNotEnforceable
@@ -72,6 +75,7 @@ from aworld.memory.models import (
     MemoryItem,
     MemoryAIMessage,
     MemoryMessage,
+    MemorySystemMessage,
     MemoryToolMessage,
 )
 from aworld.memory.history_replay import causalize_memory_history
@@ -1335,7 +1339,11 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                                 f"tool_call_id={history.tool_call_id}, agent={self.id()}"
                             )
                     else:
-                        messages.append(history.to_openai_message())
+                        system_sections = self._amni_system_section_messages(history)
+                        if system_sections is not None:
+                            messages.extend(system_sections)
+                        else:
+                            messages.append(history.to_openai_message())
                         if isinstance(history, MemoryAIMessage) and history.tool_calls:
                             last_tool_calls.extend(
                                 [tool_call.id for tool_call in history.tool_calls]
@@ -1846,6 +1854,7 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             compact_message_history,
             estimate_canonical_json_tokens,
             evaluate_adaptive_checkpoint,
+            LifecycleAction,
             restore_adaptive_continuation,
         )
 
@@ -2120,11 +2129,28 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         checkpoint_context = (
             state_context if self._is_amni_context(state_context) else context
         )
-        checkpoint = (
-            await checkpoint_context.snapshot(checkpoint_only=True)
-            if self._is_amni_context(checkpoint_context)
-            else await checkpoint_context.snapshot()
-        )
+        if self._is_amni_context(checkpoint_context):
+            checkpoint = (
+                await checkpoint_context.snapshot(checkpoint_only=True)
+                if receipt is not None
+                else await checkpoint_context.snapshot(
+                    checkpoint_only=True,
+                    cache_boundary=False,
+                )
+            )
+        else:
+            checkpoint = (
+                await checkpoint_context.snapshot()
+                if receipt is not None
+                else await checkpoint_context.snapshot(cache_boundary=False)
+            )
+        # Both Context.snapshot() and Amni save_context_checkpoint() own the
+        # lifecycle transition so the persisted snapshot contains the exact
+        # epoch it creates.  A transport/deep-copy Context is not mutated by
+        # that root snapshot; mirror the same single boundary there only after
+        # persistence succeeds.
+        if receipt is not None and checkpoint_context is not context:
+            context.advance_context_lifecycle(LifecycleAction.CHECKPOINT)
         adaptive_state["last_checkpoint_id"] = getattr(checkpoint, "id", None)
         adaptive_state["checkpoint_snapshot_state"] = "captured"
         save_adaptive_state()
@@ -3317,6 +3343,24 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         except Exception as e:
             logger.warning(f"Failed to process messages in messages_transform: {e}")
             logger.debug(f"Process messages error details: {traceback.format_exc()}")
+        return messages
+
+    @staticmethod
+    def _amni_system_section_messages(
+        history: MemoryMessage,
+    ) -> List[Dict[str, Any]] | None:
+        """Expand only checksum-equivalent structured Amni system metadata."""
+        if not isinstance(history, MemorySystemMessage):
+            return None
+        sections = validated_amni_system_sections(
+            content=history.content,
+            metadata=history.metadata,
+        )
+        if sections is None:
+            return None
+        messages = []
+        for section in sections:
+            messages.append({"role": "system", "content": section["content"]})
         return messages
 
     def _process_messages(

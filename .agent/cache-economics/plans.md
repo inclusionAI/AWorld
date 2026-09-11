@@ -95,7 +95,7 @@ cache epoch with an immutable checkpoint; later turns append to that epoch.
   provider parity.
 - **Acceptance criteria:** Stable content stays byte-identical across turns while
   dynamic content never enters the stable prefix.
-- **Status:** pending
+- **Status:** complete
 
 #### Task 3.2: Compaction CacheEpoch and checkpoint
 - **Parallel:** no
@@ -107,7 +107,7 @@ cache epoch with an immutable checkpoint; later turns append to that epoch.
   preservation, CLI/adaptive parity.
 - **Acceptance criteria:** One explained cold rebuild per compaction and stable
   reuse afterward.
-- **Status:** pending
+- **Status:** complete
 
 ### Milestone 4: Verification and release evidence
 

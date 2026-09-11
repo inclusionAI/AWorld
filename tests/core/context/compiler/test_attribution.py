@@ -6,7 +6,10 @@ import hashlib
 
 import pytest
 
-from aworld.agents.final_context_adapter import adapt_agent_final_request
+from aworld.agents.final_context_adapter import (
+    adapt_agent_final_request,
+    adapt_amni_system_sections,
+)
 from aworld.core.context.compiler import (
     AdapterResult,
     AttributionCollection,
@@ -250,6 +253,87 @@ def test_final_plan_preserves_duplicate_occurrences_and_actual_residency():
     assert inspected["attribution"]["entry_count"] == 3
     assert inspected["attribution"]["plan_fingerprint"] == result.attribution_plan.fingerprint
     assert "rules" not in repr(inspected["attribution"])
+
+
+def test_amni_ordered_sections_preserve_stable_prefix_before_dynamic_context():
+    request_id = "amni-section-boundary"
+    messages = (
+        {"role": "system", "content": "stable base"},
+        {"role": "system", "content": "dynamic retrieval"},
+        {"role": "user", "content": "go"},
+    )
+    legacy = ProviderRequestSnapshot(
+        request_id=request_id,
+        provider_name="openai",
+        payload={"messages": messages, "tools": None, "params": {}},
+        capture_stage=RequestCaptureStage.MODEL_BOUNDARY,
+        fidelity=ProviderRequestFidelity.MODEL_BOUNDARY,
+    )
+    message_result, tool_result = adapt_agent_final_request(
+        messages=messages,
+        tools=(),
+        source_identity="model-final://agent/task-task/epoch-1",
+        task_id="task",
+        task_epoch=1,
+        agent_id="agent",
+        amni_folded_system=True,
+    )
+    binding = {
+        "request_id_hash": canonical_json_hash({"request_id": request_id}),
+        "task_epoch": 1,
+    }
+    observations = (
+        ContextObservationSidecar.from_adapter_result(
+            owner="model.final_messages",
+            namespace="agent",
+            source_identity="model-messages",
+            result=message_result,
+            collection=AttributionCollection.MESSAGES,
+            **binding,
+        ),
+        ContextObservationSidecar.from_adapter_result(
+            owner="model.final_tool_catalog",
+            namespace="agent",
+            source_identity="model-tools",
+            result=tool_result,
+            collection=AttributionCollection.TOOLS,
+            **binding,
+        ),
+        ContextObservationSidecar.from_adapter_result(
+            owner="amni.system_sections",
+            namespace="agent",
+            source_identity="amni-sections",
+            result=adapt_amni_system_sections(
+                sections=(
+                    {"name": "system_prompt", "stability": "stable", "content": "stable base"},
+                    {"name": "relevant_memory", "stability": "dynamic", "content": "dynamic retrieval"},
+                ),
+                source_identity="amni-sections",
+                task_id="task",
+                task_epoch=1,
+                agent_id="agent",
+            ),
+            task_epoch=1,
+        ),
+    )
+
+    result = compile_model_boundary_context(
+        legacy_request=legacy,
+        observations=observations,
+        inference_profile=_profile(),
+        policy=_policy(),
+        created_at=datetime.now(timezone.utc),
+        task_id="task",
+        session_id=None,
+        trace_id=None,
+        task_epoch=1,
+    )
+
+    assert [item.payload["content"] for item in result.stable_partition.stable_items] == [
+        "stable base"
+    ]
+    assert result.cache_plan.stable_message_count == 1
+    assert result.request_snapshot.thaw()["messages"] == list(messages)
 
 
 def test_audit_only_evidence_cannot_block_an_exact_emitted_request():

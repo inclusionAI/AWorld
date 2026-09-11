@@ -10,6 +10,7 @@ from typing import (
 from aworld.models.model_response import ModelResponse
 from aworld.core.context.base import Context
 from aworld.core.context.compiler import (
+    CachePlan,
     CandidateRequestNotEnforceable,
     ContextEntrypointParityReceipt,
     ProviderCandidateEnvelope,
@@ -205,6 +206,7 @@ class LLMProviderBase(abc.ABC):
         context: Context | None,
         request_id: str,
         cache_identity: Any = None,
+        cache_plan: CachePlan | None = None,
     ) -> None:
         """Commit attempted state at the immediate SDK/HTTP call boundary."""
         try:
@@ -229,6 +231,11 @@ class LLMProviderBase(abc.ABC):
             try:
                 if cache_identity is not None:
                     context.commit_provider_cache_identity(cache_identity)
+                elif cache_plan is not None:
+                    context.acknowledge_cache_plan_attempt(
+                        cache_epoch=cache_plan.cache_epoch,
+                        break_reasons=cache_plan.break_reasons,
+                    )
                 context.replace_llm_call(
                     index, updated, event_type="provider_request_attempted"
                 )
