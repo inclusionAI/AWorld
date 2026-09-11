@@ -120,7 +120,7 @@ cache epoch with an immutable checkpoint; later turns append to that epoch.
 - **Approach:** Replay frozen provider requests through exact-prefix simulation and
   validate all break identities.
 - **Acceptance criteria:** 100% trace match, zero unexplained breaks.
-- **Status:** pending
+- **Status:** complete
 
 #### Task 4.2: Frozen real-provider paired evaluation
 - **Parallel:** no

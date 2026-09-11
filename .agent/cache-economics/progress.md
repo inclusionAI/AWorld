@@ -4,9 +4,9 @@
 
 **Phase:** Milestone 4
 **Current milestone:** Verification and release evidence
-**Current task:** Build deterministic cache/replay evidence before frozen live pairs
-**Last action:** Completed stable/dynamic Amni sections and single-boundary cache
-epochs across adaptive and CLI compaction; 158 focused tests passed.
+**Current task:** Run frozen real-provider paired evaluation at concurrency one
+**Last action:** Deterministic replay reached 100% request trace match, 100% exact
+usage, and zero unexplained breaks; 81 focused replay/provider tests passed.
 
 ## Completed Milestones
 
@@ -20,7 +20,7 @@ epochs across adaptive and CLI compaction; 158 focused tests passed.
 
 | Task | Status | Notes |
 |---|---|---|
-| 4.1 Deterministic cache/replay suite | in_progress | Provider-bound request trace and cache-break replay fixture/runner next |
+| 4.1 Deterministic cache/replay suite | complete | Recomputes provider payload/usage and validates candidate/plan/lowering binding plus epoch transitions |
 | 4.2 Frozen real-provider paired evaluation | pending | Requires 4.1 green; GLM is one conformance target only |
 | 4.3 Final review and release decision | pending | Requires paired CI gates and rollback/canary evidence |
 
@@ -212,3 +212,18 @@ Milestone 1 review: APPROVE after fixes.
   evidence. No GLM/model/task-specific branch was introduced.
 - Validation: 158 focused tests passed; `git diff --check` passed. Verdict:
   APPROVE.
+
+### 2026-09-11 — Task 4.1 deterministic cache replay
+- Added a provider-neutral replay evaluator that recomputes provider request
+  hashes and usage receipts, verifies candidate-contract/CachePlan/lowering
+  bindings, simulates exact stable-prefix reuse, and rejects stale/unexplained
+  lifecycle breaks or epoch regressions.
+- Added a redacted portfolio CLI for one or more `provider_calls.json` files;
+  source paths, prompts, responses, endpoints, and credentials are not emitted.
+- A six-stage arbitrary-provider trace (cold/repeat/suffix/prefix/compaction/
+  append) achieved 100% trace match, 100% exact usage, and zero unexplained
+  breaks. A real AWorld OpenAI-compatible runtime record sequence passed the
+  same evaluator; Anthropic and unsupported-provider lowering remain covered by
+  the shared provider suite.
+- Validation: 81 replay/preflight/usage/provider tests passed; scoped Ruff and
+  `git diff --check` passed.
