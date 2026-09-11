@@ -110,6 +110,16 @@ class LLMProviderBase(abc.ABC):
                     raise ValueError("provider lowering capability mismatch")
                 if receipt.candidate_content_hash != envelope.candidate_request.content_hash:
                     raise ValueError("provider receipt is not bound to the candidate")
+                if envelope.cache_plan is not None:
+                    if (
+                        receipt.candidate_contract_hash
+                        != envelope.candidate_contract_hash
+                        or receipt.cache_plan_fingerprint
+                        != envelope.cache_plan.fingerprint
+                    ):
+                        raise ValueError(
+                            "provider receipt is not bound to the cache plan"
+                        )
             if context is None:
                 raise ValueError("provider prepared attempt requires Context")
             llm_calls = context.get_llm_calls()
@@ -131,6 +141,15 @@ class LLMProviderBase(abc.ABC):
                 candidate_evidence = rollout.get("candidate_snapshot")
                 if not isinstance(candidate_evidence, dict) or candidate_evidence.get("content_hash") != envelope.candidate_request.content_hash:
                     raise ValueError("persisted candidate evidence does not match envelope")
+                if envelope.cache_plan is not None and (
+                    candidate_evidence.get("candidate_contract_hash")
+                    != envelope.candidate_contract_hash
+                    or candidate_evidence.get("cache_plan_fingerprint")
+                    != envelope.cache_plan.fingerprint
+                ):
+                    raise ValueError(
+                        "persisted candidate evidence does not match cache plan"
+                    )
                 lowering_evidence = receipt.to_redacted_dict()
                 lowering_evidence["cache_continuity"] = (
                     context.preview_provider_cache_identity(receipt.cache_identity)

@@ -19,6 +19,7 @@ def test_context_cache_defaults_are_enabled():
     assert isinstance(model_config.context_cache, ContextCacheConfig)
     assert model_config.context_cache.enabled is True
     assert model_config.context_cache.allow_provider_native_cache is True
+    assert model_config.context_cache.provider_cache_namespace is None
 
 
 def test_adaptive_context_is_default_on_with_explicit_rollback_modes():

@@ -2,17 +2,30 @@
 
 ## Current Status
 
-**Phase:** Milestone 1
-**Current milestone:** Cache truth and provider conformance preflight
-**Current task:** Milestone 1 architectural review complete
-**Last action:** Fixed cross-provider input accounting after review and verified
-233 focused tests, scoped Ruff, and diff whitespace checks.
+**Phase:** Milestone 2
+**Current milestone:** Immutable CachePlan lowering
+**Current task:** Milestone 2 implementation complete; architectural review pending
+**Last action:** Wired lifecycle/policy inputs into an immutable CachePlan and
+verified provider-capability lowering with 171 focused tests.
 
 ## Completed Milestones
 
-None.
+- Milestone 1: Cache truth and provider conformance preflight.
 
-## Current Milestone: Cache truth and provider conformance preflight
+## Current Milestone: Immutable CachePlan lowering
+
+### Task Status
+
+| Task | Status | Notes |
+|---|---|---|
+| 2.1 Provider-neutral CachePlan | complete | Frozen by final compiler, candidate-contract bound, lifecycle/policy inputs carried, redacted inspector output |
+| 2.2 Provider adapter lowering | complete | OpenAI-compatible exact prefix/optional key, Anthropic cache-control, unsupported-provider evidence; explicit overrides preserved |
+
+### Review Feedback
+
+Milestone 2 architectural review is pending.
+
+## Completed Milestone Details: Cache truth and provider conformance preflight
 
 ### Task Status
 
@@ -94,9 +107,7 @@ Milestone 1 review: APPROVE after fixes.
   append-only epoch.
 
 ### Known Issues
-- Auto-derived provider cache hints are not frozen into enforce candidates.
 - Amni folded system content may collapse stable and dynamic sections.
-- CLI cache observability lacks exact-coverage and uncached-cost denominators.
 - Historical GLM release evidence has 451/468 exact calls; seven calls have
   cache-specific missing/conflicting data and ten have incomplete attempt truth.
 
@@ -150,3 +161,21 @@ Milestone 1 review: APPROVE after fixes.
   stripped while the unchanged OpenAI path and `test_model_response_usage.py`
   require it preserved.  This milestone does not alter that OpenAI path; all 233
   directly relevant tests remain green.
+
+### 2026-09-11 — Milestone 2 implementation
+- Added a provider-neutral immutable CachePlan to the universal final compiler.
+  It binds inference identity, stable prefix, Tool/Skill hashes, cache epoch,
+  lifecycle break reasons, optional routing namespace, and native-cache policy
+  to a candidate contract hash.
+- Removed the runtime's post-compile reconstruction of cache material. Provider
+  receipts must now bind the exact compiler-produced plan before any request is
+  attempted.
+- OpenAI-compatible adapters preserve exact prefixes without claiming cache
+  support, optionally lower an explicit namespace to `prompt_cache_key`, and
+  preserve caller override/opt-out. Anthropic lowers the stable boundary to
+  native `cache_control`; reviewed providers without native controls report
+  `unsupported` and retain request correctness.
+- Runtime Context checkpoint revision and pending invalidation reasons now enter
+  the frozen plan. Inspector output hashes routing namespaces.
+- Focused validation: 171 tests passed; compiler-file Ruff and diff whitespace
+  checks passed. Existing broad-file Ruff debt remains unrelated.

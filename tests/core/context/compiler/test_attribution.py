@@ -16,6 +16,7 @@ from aworld.core.context.compiler import (
     ProviderToolsLowering,
     Authority,
     BudgetAllocationTier,
+    CacheBreakReason,
     ContextEmissionKind,
     ContextInputBudget,
     ContextItem,
@@ -211,6 +212,10 @@ def test_final_plan_preserves_duplicate_occurrences_and_actual_residency():
             created_at=datetime.now(timezone.utc),
             task_id="task",
             task_epoch=1,
+            cache_epoch=3,
+            provider_cache_namespace="routing-scope",
+            cache_break_reasons=(CacheBreakReason.HISTORY_COMPACTION,),
+            native_cache_requested=False,
         ),
         policy=_policy(),
     )
@@ -226,6 +231,20 @@ def test_final_plan_preserves_duplicate_occurrences_and_actual_residency():
     assert "rules" not in repr(result.attribution_plan.to_redacted_dict())
     assert result.attribution_plan.fingerprint == canonical_json_hash(
         result.attribution_plan.fingerprint_payload()
+    )
+    assert result.cache_plan.candidate_content_hash == result.request_snapshot.content_hash
+    assert result.cache_plan.stable_message_count == 1
+    assert result.cache_plan.cache_epoch == 3
+    assert result.cache_plan.provider_cache_namespace == "routing-scope"
+    assert result.cache_plan.break_reasons == (
+        CacheBreakReason.HISTORY_COMPACTION,
+    )
+    assert result.cache_plan.native_cache_requested is False
+    assert result.candidate_contract_hash == canonical_json_hash(
+        {
+            "candidate_content_hash": result.request_snapshot.content_hash,
+            "cache_plan_fingerprint": result.cache_plan.fingerprint,
+        }
     )
     inspected = inspect_final_context(result)
     assert inspected["attribution"]["entry_count"] == 3

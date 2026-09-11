@@ -28,6 +28,7 @@ from .attribution import (
     ProviderRequestAttributionPlan,
 )
 from .models import (
+    CacheBreakReason,
     ContextItem,
     ContextKind,
     InferenceProfile,
@@ -391,6 +392,10 @@ def compile_model_boundary_context(
     session_id: str | None,
     trace_id: str | None,
     task_epoch: int | None,
+    cache_epoch: int = 0,
+    provider_cache_namespace: str | None = None,
+    cache_break_reasons: tuple[CacheBreakReason, ...] = (),
+    native_cache_requested: bool = True,
     resolution_target: ContextResolutionTarget | None = None,
 ) -> FinalCompileResult:
     """Reconcile exact finalized occurrences with owner-proven sidecars."""
@@ -650,6 +655,10 @@ def compile_model_boundary_context(
             task_id=task_id,
             session_id=session_id,
             task_epoch=task_epoch,
+            cache_epoch=cache_epoch,
+            provider_cache_namespace=provider_cache_namespace,
+            cache_break_reasons=cache_break_reasons,
+            native_cache_requested=native_cache_requested,
             tools_present=tools is not None,
             resolution_target=resolution_target if all_proven else None,
         ),

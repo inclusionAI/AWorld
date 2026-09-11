@@ -118,6 +118,9 @@ class BaseConfig(BaseModel):
 class ContextCacheConfig(BaseConfig):
     enabled: bool = True
     allow_provider_native_cache: bool = True
+    # Optional provider routing hint. Adapters may lower it only when their
+    # reviewed native API supports an explicit cache namespace/key.
+    provider_cache_namespace: Optional[str] = None
 
 
 class ContextCompilerRuntimeConfig(BaseConfig):

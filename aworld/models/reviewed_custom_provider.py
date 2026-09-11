@@ -109,7 +109,7 @@ class ReviewedCustomChatProvider(LLMProviderBase):
             stop=stop,
             kwargs=kwargs,
             stream=stream,
-            lower=lambda standard, request_kwargs, is_stream: self._lower(
+            lower=lambda standard, request_kwargs, is_stream, _cache_plan: self._lower(
                 self.model_name, standard, request_kwargs, is_stream
             ),
         )

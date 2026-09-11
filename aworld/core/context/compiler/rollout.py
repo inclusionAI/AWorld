@@ -10,6 +10,7 @@ from typing import Any
 
 from .frozen_json import FrozenMap, canonical_json_hash, freeze_json, thaw_json
 from .models import (
+    CacheBreakReason,
     ProviderRequestFidelity,
     ProviderRequestSnapshot,
     RequestCaptureStage,
@@ -23,7 +24,7 @@ from .final import (
     ReducerReplacement,
 )
 from .models import InferenceProfile
-from .cache import ProviderVerifiedCacheIdentity, SerializedPrefixEvidence
+from .cache import CachePlan, ProviderVerifiedCacheIdentity, SerializedPrefixEvidence
 from .scope import ContextResolutionTarget
 from .attribution import (
     ProviderAttributionSubject,
@@ -166,6 +167,10 @@ class CandidateCompileInput:
     session_id: str | None = None
     trace_id: str | None = None
     task_epoch: int | None = None
+    cache_epoch: int = 0
+    provider_cache_namespace: str | None = None
+    cache_break_reasons: tuple[CacheBreakReason, ...] = ()
+    native_cache_requested: bool = True
     resolution_target: ContextResolutionTarget | None = None
     reducer_replacements: tuple[ReducerReplacement, ...] = ()
 
@@ -194,6 +199,26 @@ class CandidateCompileInput:
             or self.task_epoch < 0
         ):
             raise ValueError("task_epoch must be a non-negative integer or None")
+        if (
+            isinstance(self.cache_epoch, bool)
+            or not isinstance(self.cache_epoch, int)
+            or self.cache_epoch < 0
+        ):
+            raise ValueError("cache_epoch must be a non-negative integer")
+        if self.provider_cache_namespace is not None and (
+            not isinstance(self.provider_cache_namespace, str)
+            or not self.provider_cache_namespace.strip()
+        ):
+            raise ValueError(
+                "provider_cache_namespace must be a non-empty string or None"
+            )
+        object.__setattr__(
+            self,
+            "cache_break_reasons",
+            tuple(CacheBreakReason(reason) for reason in self.cache_break_reasons),
+        )
+        if not isinstance(self.native_cache_requested, bool):
+            raise TypeError("native_cache_requested must be a boolean")
         if self.resolution_target is not None and not isinstance(
             self.resolution_target, ContextResolutionTarget
         ):
@@ -271,6 +296,7 @@ class ProviderCandidateEnvelope:
     expected_lowering: ProviderLoweringCapability
     attribution_plan: ProviderRequestAttributionPlan | None = None
     cache_material: ProviderCacheMaterial | None = None
+    cache_plan: CachePlan | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.candidate_request, ProviderRequestSnapshot):
@@ -307,6 +333,21 @@ class ProviderCandidateEnvelope:
                 != self.candidate_request.provider_name
             ):
                 raise ValueError("cache material provider does not match candidate")
+        if self.cache_plan is not None:
+            if not isinstance(self.cache_plan, CachePlan):
+                raise TypeError("cache_plan must be CachePlan or None")
+            if self.cache_material is not None:
+                raise ValueError("cache_plan and legacy cache_material are exclusive")
+            if (
+                self.cache_plan.candidate_content_hash
+                != self.candidate_request.content_hash
+            ):
+                raise ValueError("cache_plan does not match candidate")
+            if (
+                self.cache_plan.inference_profile.provider
+                != self.candidate_request.provider_name
+            ):
+                raise ValueError("cache_plan provider does not match candidate")
         if (
             self.candidate_request.capture_stage
             is not RequestCaptureStage.MODEL_BOUNDARY
@@ -314,6 +355,19 @@ class ProviderCandidateEnvelope:
             is not ProviderRequestFidelity.MODEL_BOUNDARY
         ):
             raise ValueError("candidate must be captured at the model boundary")
+
+    @property
+    def candidate_contract_hash(self) -> str:
+        return canonical_json_hash(
+            {
+                "candidate_content_hash": self.candidate_request.content_hash,
+                "cache_plan_fingerprint": (
+                    self.cache_plan.fingerprint
+                    if self.cache_plan is not None
+                    else None
+                ),
+            }
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -416,6 +470,10 @@ class ProviderLoweringReceipt:
     serialized_prefix_evidence: SerializedPrefixEvidence | None = None
     cache_identity: ProviderVerifiedCacheIdentity | None = None
     logical_stable_prefix_hash: str | None = None
+    candidate_contract_hash: str | None = None
+    cache_plan_fingerprint: str | None = None
+    cache_lowering_status: str | None = None
+    cache_lowering_strategy: str | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.candidate_content_hash, str) or not re.fullmatch(
@@ -472,6 +530,26 @@ class ProviderLoweringReceipt:
             raise ValueError("logical_stable_prefix_hash must be canonical or None")
         if self.cache_identity is not None and self.logical_stable_prefix_hash is None:
             raise ValueError("verified cache identity requires the logical prefix hash")
+        for name in ("candidate_contract_hash", "cache_plan_fingerprint"):
+            value = getattr(self, name)
+            if value is not None and not re.fullmatch(r"sha256:[0-9a-f]{64}", value):
+                raise ValueError(f"{name} must be canonical or None")
+        if (self.candidate_contract_hash is None) != (
+            self.cache_plan_fingerprint is None
+        ):
+            raise ValueError("candidate/cache-plan binding evidence must be atomic")
+        if self.cache_plan_fingerprint is not None:
+            for name in ("cache_lowering_status", "cache_lowering_strategy"):
+                value = getattr(self, name)
+                if not isinstance(value, str) or not re.fullmatch(
+                    r"[a-z][a-z0-9_]{0,127}", value
+                ):
+                    raise ValueError(f"{name} must be a stable code")
+        elif (
+            self.cache_lowering_status is not None
+            or self.cache_lowering_strategy is not None
+        ):
+            raise ValueError("cache lowering evidence requires a cache plan")
 
     @classmethod
     def from_envelope(
@@ -483,6 +561,8 @@ class ProviderLoweringReceipt:
         attribution: ProviderRequestAttributionReceipt,
         serialized_prefix_evidence: SerializedPrefixEvidence | None = None,
         cache_identity: ProviderVerifiedCacheIdentity | None = None,
+        cache_lowering_status: str | None = None,
+        cache_lowering_strategy: str | None = None,
     ) -> "ProviderLoweringReceipt":
         if not isinstance(envelope, ProviderCandidateEnvelope):
             raise TypeError("envelope must be a ProviderCandidateEnvelope")
@@ -502,10 +582,24 @@ class ProviderLoweringReceipt:
             serialized_prefix_evidence=serialized_prefix_evidence,
             cache_identity=cache_identity,
             logical_stable_prefix_hash=(
-                envelope.cache_material.logical_stable_prefix_hash
+                envelope.cache_plan.logical_stable_prefix_hash
+                if envelope.cache_plan is not None
+                else envelope.cache_material.logical_stable_prefix_hash
                 if envelope.cache_material is not None
                 else None
             ),
+            candidate_contract_hash=(
+                envelope.candidate_contract_hash
+                if envelope.cache_plan is not None
+                else None
+            ),
+            cache_plan_fingerprint=(
+                envelope.cache_plan.fingerprint
+                if envelope.cache_plan is not None
+                else None
+            ),
+            cache_lowering_status=cache_lowering_status,
+            cache_lowering_strategy=cache_lowering_strategy,
         )
 
     def to_redacted_dict(self) -> dict[str, Any]:
@@ -525,6 +619,11 @@ class ProviderLoweringReceipt:
         if self.cache_identity is not None:
             payload["cache_identity"] = self.cache_identity.to_redacted_dict()
             payload["logical_stable_prefix_hash"] = self.logical_stable_prefix_hash
+        if self.cache_plan_fingerprint is not None:
+            payload["candidate_contract_hash"] = self.candidate_contract_hash
+            payload["cache_plan_fingerprint"] = self.cache_plan_fingerprint
+            payload["cache_lowering_status"] = self.cache_lowering_status
+            payload["cache_lowering_strategy"] = self.cache_lowering_strategy
         return payload
 
 
@@ -569,6 +668,10 @@ def compile_context_candidate(
             session_id=compiler_input.session_id,
             trace_id=compiler_input.trace_id,
             task_epoch=compiler_input.task_epoch,
+            cache_epoch=compiler_input.cache_epoch,
+            provider_cache_namespace=compiler_input.provider_cache_namespace,
+            cache_break_reasons=compiler_input.cache_break_reasons,
+            native_cache_requested=compiler_input.native_cache_requested,
             resolution_target=compiler_input.resolution_target,
         )
         return CandidateCompilation(
