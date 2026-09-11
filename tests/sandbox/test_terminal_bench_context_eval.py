@@ -1998,6 +1998,64 @@ def test_model_preflight_runner_persists_redacted_receipt_logs(tmp_path, monkeyp
     assert json.loads(tmp_path.joinpath("model-preflight.json").read_text()) == receipt
 
 
+def test_cache_usage_preflight_parser_and_gate_require_exact_behavior():
+    harness = _load_example("terminal_bench_context_eval")
+    payload = {
+        "schema_version": "aworld.cache-conformance-preflight/v1",
+        "status": "passed",
+        "cache_capability_observed": True,
+        "exact_usage_coverage": 1.0,
+        "observation_count": 8,
+    }
+
+    assert harness.parse_cache_usage_preflight(json.dumps(payload)) == payload
+    assert harness.cache_usage_preflight_allows_benchmark(payload)
+    assert not harness.cache_usage_preflight_allows_benchmark(
+        {**payload, "exact_usage_coverage": 0.875}
+    )
+    assert not harness.cache_usage_preflight_allows_benchmark(
+        {**payload, "cache_capability_observed": False}
+    )
+
+
+def test_cache_usage_preflight_runner_persists_redacted_receipt_logs(
+    tmp_path, monkeypatch
+):
+    harness = _load_example("terminal_bench_context_eval")
+    payload = {
+        "schema_version": "aworld.cache-conformance-preflight/v1",
+        "status": "passed",
+        "cache_capability_observed": True,
+        "exact_usage_coverage": 1.0,
+        "observation_count": 8,
+    }
+    observed = {}
+
+    def fake_run(command, **kwargs):
+        observed["command"] = command
+        observed["timeout"] = kwargs["timeout"]
+        return subprocess.CompletedProcess(
+            command, 0, stdout=json.dumps(payload), stderr="diagnostic"
+        )
+
+    monkeypatch.setattr(harness, "run_command", fake_run)
+
+    receipt = harness.run_cache_usage_preflight(
+        tmp_path, timeout_sec=12.0, model_seed=7
+    )
+
+    assert receipt["status"] == "passed"
+    assert receipt["process_exit_code"] == 0
+    assert observed["timeout"] == 126.0
+    assert "cache_usage_preflight.py" in observed["command"][1]
+    assert tmp_path.joinpath("cache-usage-preflight.stderr.log").read_text() == (
+        "diagnostic"
+    )
+    assert json.loads(tmp_path.joinpath("cache-usage-preflight.json").read_text()) == (
+        receipt
+    )
+
+
 def test_recovery_does_not_claim_storage_failure_after_completed_model_call(tmp_path):
     harness = _load_example("terminal_bench_context_eval")
     from aworld.core.llm_call_journal import append_llm_call_snapshot

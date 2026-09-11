@@ -63,6 +63,7 @@ from aworld.evaluations.normalized_cost import (  # noqa: E402
     NormalizedCostReceipt,
     compute_normalized_cost,
 )
+from aworld.models.usage import reconcile_cache_usage_receipt  # noqa: E402
 
 
 _COST_BENEFIT_METRICS = (
@@ -2145,14 +2146,35 @@ def provider_attribution_pairing_status(
     }
 
 
+def authoritative_cache_usage_receipt(call: dict[str, Any]) -> dict[str, Any]:
+    """Recompute and verify provider-neutral cache truth for one captured call."""
+    return reconcile_cache_usage_receipt(
+        captured_receipt=call.get("cache_usage_receipt"),
+        raw_usage=call.get("usage_raw"),
+        normalized_usage=call.get("usage_normalized") or call.get("usage"),
+    ).to_dict()
+
+
 def authoritative_provider_metrics(calls: list[dict]) -> dict[str, int | float]:
-    """Recompute provider metrics from captured calls, never a stale summary."""
+    """Recompute provider metrics from captured calls, never a stale summary.
+
+    Cache totals are exact-only.  Coverage and fidelity counters make it
+    impossible for a missing provider cache field to masquerade as a cache miss.
+    """
     metrics: dict[str, int | float] = {
         "provider_call_count": len(calls),
         "provider_request_bytes": 0,
         "prompt_tokens": 0,
         "completion_tokens": 0,
         "cache_read_tokens": 0,
+        "cache_usage_exact_call_count": 0,
+        "cache_usage_exact_coverage": 0.0,
+        "cache_usage_exact_input_tokens": 0,
+        "uncached_input_tokens_exact": 0,
+        "cache_usage_bounded_call_count": 0,
+        "cache_usage_conflicting_call_count": 0,
+        "cache_usage_invalid_call_count": 0,
+        "cache_usage_unavailable_call_count": 0,
         "request_trace_match_count": 0,
         "request_trace_match_rate": 0.0,
         "provider_attribution_receipt_count": 0,
@@ -2171,26 +2193,36 @@ def authoritative_provider_metrics(calls: list[dict]) -> dict[str, int | float]:
             ).encode("utf-8")
         )
         usage = call.get("usage_normalized") or call.get("usage") or {}
-        raw_usage = call.get("usage_raw") or usage
-        prompt_details = raw_usage.get("prompt_tokens_details") or {}
         metrics["prompt_tokens"] += int(
             usage.get("prompt_tokens") or usage.get("input_tokens") or 0
         )
         metrics["completion_tokens"] += int(
             usage.get("completion_tokens") or usage.get("output_tokens") or 0
         )
-        metrics["cache_read_tokens"] += int(
-            raw_usage.get("cache_hit_tokens")
-            or raw_usage.get("cache_read_input_tokens")
-            or prompt_details.get("cached_tokens")
-            or 0
-        )
+        receipt = authoritative_cache_usage_receipt(call)
+        fidelity = receipt["fidelity"]
+        counter = f"cache_usage_{fidelity}_call_count"
+        if counter in metrics:
+            metrics[counter] += 1
+        if fidelity == "exact":
+            input_tokens = receipt["input_tokens"]
+            cache_read_tokens = receipt["cache_read_tokens"]
+            uncached_input_tokens = receipt["uncached_input_tokens"]
+            assert isinstance(input_tokens, int)
+            assert isinstance(cache_read_tokens, int)
+            assert isinstance(uncached_input_tokens, int)
+            metrics["cache_read_tokens"] += cache_read_tokens
+            metrics["cache_usage_exact_input_tokens"] += input_tokens
+            metrics["uncached_input_tokens_exact"] += uncached_input_tokens
         metrics["request_trace_match_count"] += int(
             call.get("request_trace_match") is True
         )
     if calls:
         metrics["request_trace_match_rate"] = metrics[
             "request_trace_match_count"
+        ] / len(calls)
+        metrics["cache_usage_exact_coverage"] = metrics[
+            "cache_usage_exact_call_count"
         ] / len(calls)
     attribution = provider_attribution_summary(calls)
     metrics["provider_attribution_receipt_count"] = attribution[
@@ -2210,21 +2242,6 @@ def authoritative_normalized_usage(
     if not calls:
         return None, "provider_calls_missing"
 
-    def exact_alias(mapping: Any, names: tuple[str, ...]) -> tuple[int | None, bool]:
-        if not isinstance(mapping, dict):
-            return None, False
-        present = [mapping[name] for name in names if name in mapping]
-        if not present:
-            return None, False
-        if any(
-            isinstance(value, bool) or not isinstance(value, int) or value < 0
-            for value in present
-        ):
-            return None, False
-        if len(set(present)) != 1:
-            return None, False
-        return present[0], True
-
     totals = {"input_tokens": 0, "cache_read_tokens": 0, "output_tokens": 0}
     for call in calls:
         if (
@@ -2234,56 +2251,44 @@ def authoritative_normalized_usage(
             or call.get("provider_attempt_status") != "attempted"
         ):
             return None, "provider_attempt_truth_incomplete"
-        normalized = call.get("usage_normalized")
-        raw = call.get("usage_raw")
-        input_tokens, input_ok = exact_alias(
-            normalized, ("prompt_tokens", "input_tokens")
-        )
-        output_tokens, output_ok = exact_alias(
-            normalized, ("completion_tokens", "output_tokens")
-        )
-        raw_input, raw_input_ok = exact_alias(raw, ("prompt_tokens", "input_tokens"))
-        raw_output, raw_output_ok = exact_alias(
-            raw, ("completion_tokens", "output_tokens")
-        )
-        if not (input_ok and output_ok and raw_input_ok and raw_output_ok):
-            return None, "provider_usage_missing_or_invalid"
-        if raw_input != input_tokens or raw_output != output_tokens:
-            return None, "provider_usage_conflict"
+        receipt = authoritative_cache_usage_receipt(call)
+        if receipt["fidelity"] != "exact":
+            reason = receipt.get("reason_code")
+            if reason == "provider_total_usage_conflict":
+                normalized = call.get("usage_normalized") or call.get("usage") or {}
+                raw = call.get("usage_raw") or {}
 
-        def cache_truth(mapping: dict[str, Any]) -> int | None:
-            prompt_details = mapping.get("prompt_tokens_details")
-            values = [
-                mapping[name]
-                for name in ("cache_hit_tokens", "cache_read_input_tokens")
-                if name in mapping
-            ]
-            if isinstance(prompt_details, dict) and "cached_tokens" in prompt_details:
-                values.append(prompt_details["cached_tokens"])
-            if (
-                not values
-                or any(
-                    isinstance(value, bool) or not isinstance(value, int) or value < 0
-                    for value in values
-                )
-                or len(set(values)) != 1
-            ):
-                return None
-            return values[0]
+                def token_value(mapping: Any, aliases: tuple[str, ...]) -> Any:
+                    if not isinstance(mapping, dict):
+                        return None
+                    return next(
+                        (mapping[name] for name in aliases if name in mapping),
+                        None,
+                    )
 
-        normalized_cache = cache_truth(normalized)
-        raw_cache = cache_truth(raw)
-        if normalized_cache is None or raw_cache is None:
-            return None, "provider_cache_usage_missing_or_conflicting"
-        if normalized_cache != raw_cache:
-            return None, "provider_cache_usage_conflicting_views"
-        cache_tokens = normalized_cache
-        if cache_tokens > input_tokens:
-            return None, "provider_cache_usage_exceeds_input"
-        for usage_mapping in (normalized, raw):
-            total_tokens, total_present = exact_alias(usage_mapping, ("total_tokens",))
-            if total_present and total_tokens != input_tokens + output_tokens:
-                return None, "provider_total_usage_conflict"
+                if token_value(normalized, ("prompt_tokens", "input_tokens")) != (
+                    token_value(raw, ("prompt_tokens", "input_tokens"))
+                ) or token_value(
+                    normalized, ("completion_tokens", "output_tokens")
+                ) != token_value(raw, ("completion_tokens", "output_tokens")):
+                    return None, "provider_usage_conflict"
+            if reason == "provider_token_usage_conflicting_views":
+                return None, "provider_usage_conflict"
+            if reason == "provider_cache_usage_conflicting_views":
+                return None, "provider_cache_usage_conflicting_views"
+            if reason == "provider_cache_usage_exceeds_input":
+                return None, "provider_cache_usage_exceeds_input"
+            if reason == "captured_cache_usage_receipt_mismatch":
+                return None, "provider_cache_usage_receipt_conflict"
+            if reason == "provider_cache_usage_missing":
+                return None, "provider_cache_usage_missing_or_conflicting"
+            return None, reason or "provider_usage_missing_or_invalid"
+        input_tokens = receipt["input_tokens"]
+        output_tokens = receipt["output_tokens"]
+        cache_tokens = receipt["cache_read_tokens"]
+        assert isinstance(input_tokens, int)
+        assert isinstance(output_tokens, int)
+        assert isinstance(cache_tokens, int)
         totals["input_tokens"] += input_tokens
         totals["cache_read_tokens"] += cache_tokens
         totals["output_tokens"] += output_tokens
@@ -2303,43 +2308,6 @@ def authoritative_normalized_usage_bounds(
     """
     if not calls:
         return None, "provider_calls_missing"
-
-    def exact_alias(mapping: Any, names: tuple[str, ...]) -> tuple[int | None, bool]:
-        if not isinstance(mapping, dict):
-            return None, False
-        present = [mapping[name] for name in names if name in mapping]
-        if (
-            not present
-            or any(
-                isinstance(value, bool) or not isinstance(value, int) or value < 0
-                for value in present
-            )
-            or len(set(present)) != 1
-        ):
-            return None, False
-        return present[0], True
-
-    def cache_truth(mapping: Any) -> int | None:
-        if not isinstance(mapping, dict):
-            return None
-        details = mapping.get("prompt_tokens_details")
-        values = [
-            mapping[name]
-            for name in ("cache_hit_tokens", "cache_read_input_tokens")
-            if name in mapping
-        ]
-        if isinstance(details, dict) and "cached_tokens" in details:
-            values.append(details["cached_tokens"])
-        if (
-            not values
-            or any(
-                isinstance(value, bool) or not isinstance(value, int) or value < 0
-                for value in values
-            )
-            or len(set(values)) != 1
-        ):
-            return None
-        return values[0]
 
     lower = {"input_tokens": 0, "cache_read_tokens": 0, "output_tokens": 0}
     upper = {"input_tokens": 0, "cache_read_tokens": 0, "output_tokens": 0}
@@ -2369,27 +2337,10 @@ def authoritative_normalized_usage_bounds(
             counts["provider_attempt_bounded_call_count"] += 1
             continue
 
-        normalized = call.get("usage_normalized")
-        raw = call.get("usage_raw")
-        input_tokens, input_ok = exact_alias(
-            normalized, ("prompt_tokens", "input_tokens")
-        )
-        output_tokens, output_ok = exact_alias(
-            normalized, ("completion_tokens", "output_tokens")
-        )
-        raw_input, raw_input_ok = exact_alias(raw, ("prompt_tokens", "input_tokens"))
-        raw_output, raw_output_ok = exact_alias(
-            raw, ("completion_tokens", "output_tokens")
-        )
-        exact_usage = bool(
-            input_ok
-            and output_ok
-            and raw_input_ok
-            and raw_output_ok
-            and input_tokens == raw_input
-            and output_tokens == raw_output
-        )
-        if not exact_usage:
+        receipt = authoritative_cache_usage_receipt(call)
+        input_tokens = receipt.get("input_tokens")
+        output_tokens = receipt.get("output_tokens")
+        if not isinstance(input_tokens, int) or not isinstance(output_tokens, int):
             upper["input_tokens"] += len(canonical_json_bytes(provider_request))
             response = call.get("response")
             if response is not None:
@@ -2397,25 +2348,26 @@ def authoritative_normalized_usage_bounds(
             counts["usage_bounded_call_count"] += 1
             continue
 
-        assert input_tokens is not None and output_tokens is not None
         lower["input_tokens"] += input_tokens
         upper["input_tokens"] += input_tokens
         lower["output_tokens"] += output_tokens
         upper["output_tokens"] += output_tokens
-        normalized_cache = cache_truth(normalized)
-        raw_cache = cache_truth(raw)
-        if (
-            normalized_cache is not None
-            and raw_cache is not None
-            and normalized_cache == raw_cache
-            and normalized_cache <= input_tokens
-        ):
-            lower["cache_read_tokens"] += normalized_cache
-            upper["cache_read_tokens"] += normalized_cache
+        cache_read_tokens = receipt.get("cache_read_tokens")
+        if receipt["fidelity"] == "exact" and isinstance(cache_read_tokens, int):
+            lower["cache_read_tokens"] += cache_read_tokens
+            upper["cache_read_tokens"] += cache_read_tokens
             counts["exact_call_count"] += 1
-        else:
+        elif (
+            receipt["fidelity"] == "bounded"
+            and receipt.get("reason_code") == "provider_cache_usage_missing"
+        ):
             # Cache makes the frozen policy cheaper.  All-cache is therefore
             # the safe lower endpoint and no-cache the safe upper endpoint.
+            lower["cache_read_tokens"] += input_tokens
+            counts["cache_bounded_call_count"] += 1
+        else:
+            # Captured/recomputed conflicts and invalid provider usage keep the
+            # known input/output totals but receive the widest cache bound.
             lower["cache_read_tokens"] += input_tokens
             counts["cache_bounded_call_count"] += 1
 
