@@ -122,6 +122,12 @@ def _replace_section(content: str, *, heading: str, body: str) -> str:
         "",
         *_body_lines(body, heading_title=heading_title),
     ]
+    replacement_heading_levels = _markdown_heading_levels(replacement)
+    replacement_peer_titles = {
+        replacement[index].lstrip("#").strip().lower()
+        for index, replacement_level in enumerate(replacement_heading_levels)
+        if replacement_level == level and index > 0
+    }
     # Focused repair candidates are patched on top of the previously judged
     # candidate.  A model can therefore encounter an already duplicated
     # section and legitimately ask to replace/consolidate it.  Replacing only
@@ -135,7 +141,13 @@ def _replace_section(content: str, *, heading: str, body: str) -> str:
         if heading_levels[duplicate_start] != level:
             continue
         title = lines[duplicate_start].lstrip("#").strip().lower()
-        if title != normalized_title:
+        # A focused consolidation may replace a contiguous group by putting
+        # its canonical peer sections in the replacement body.  Those peers
+        # supersede their old downstream copies just like another occurrence
+        # of the target heading.  Without this, every consolidation attempt
+        # appends the canonical group and retains the stale group, growing the
+        # Skill and making latency/evidence regressions worse.
+        if title != normalized_title and title not in replacement_peer_titles:
             continue
         duplicate_end = duplicate_start + 1
         while duplicate_end < len(lines):

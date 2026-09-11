@@ -1709,8 +1709,47 @@ class SelfImprovementCampaignController:
         report = self.store.read_report(actual_run_id)
         measurement_outcome = campaign_measurement_outcome_from_report(report)
         progress = self_improvement_progress(report)
+
+        # The runner reports the run-local authoritative slice.  Campaign
+        # disposition, however, must decide against the cumulative frontier.
+        # Project the post-run count before deriving the disposition so a
+        # local ``1/1`` boundary is not mistaken for global repair exhaustion
+        # while (for example) the Campaign still has its twelfth slot free.
+        report_authoritative_candidate_count = (
+            _report_authoritative_candidate_count(report)
+        )
+        pending_candidate_already_charged = (
+            _campaign_pending_candidate_was_authoritative(
+                self.store,
+                campaign=campaign,
+            )
+        )
+        cumulative_authoritative_candidates = (
+            campaign.cumulative_authoritative_candidates
+            + (
+                0
+                if pending_candidate_already_charged
+                else report_authoritative_candidate_count
+            )
+        )
+        disposition_report = dict(report)
+        disposition_report["campaign"] = {
+            **(
+                dict(report.get("campaign"))
+                if isinstance(report.get("campaign"), Mapping)
+                else {}
+            ),
+            "cycle": next_cycle,
+            "max_cycles": _campaign_effective_max_cycles(campaign),
+            "authoritative_candidate_count": (
+                cumulative_authoritative_candidates
+            ),
+            "max_authoritative_candidates": (
+                _campaign_effective_authoritative_candidate_limit(campaign)
+            ),
+        }
         disposition = derive_self_improvement_disposition(
-            report,
+            disposition_report,
             previous_progress=campaign.latest_progress,
         )
         contract_stable_cycle_count = campaign.contract_stable_cycle_count
@@ -1793,23 +1832,6 @@ class SelfImprovementCampaignController:
                     diagnostic_refs=disposition.diagnostic_refs,
                 )
         status = _status_for_disposition(disposition)
-        report_authoritative_candidate_count = (
-            _report_authoritative_candidate_count(report)
-        )
-        pending_candidate_already_charged = (
-            _campaign_pending_candidate_was_authoritative(
-                self.store,
-                campaign=campaign,
-            )
-        )
-        cumulative_authoritative_candidates = (
-            campaign.cumulative_authoritative_candidates
-            + (
-                0
-                if pending_candidate_already_charged
-                else report_authoritative_candidate_count
-            )
-        )
         paired_replay_continuation_requested = (
             _report_requests_paired_replay_continuation(report)
         )

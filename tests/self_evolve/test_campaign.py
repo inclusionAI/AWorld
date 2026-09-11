@@ -1214,6 +1214,78 @@ def test_cycle_authoritative_limit_continues_with_campaign_capacity() -> None:
     assert disposition.reason_code == "cycle_authoritative_frontier_reached"
 
 
+def test_controller_projects_cumulative_frontier_before_disposition(
+    tmp_path: Path,
+) -> None:
+    def run_once(**request):
+        run_id = f"{request['campaign_id']}-cycle-{request['campaign_cycle']:03d}"
+        event = _event(code="evidence_quality")
+        event["stage"] = "evaluation"
+        report = _report(event)
+        report.update(
+            {
+                "run_id": run_id,
+                "campaign_failure_attribution": {
+                    "code": "evidence_quality",
+                    "failure_class": "candidate",
+                    "failure_owner": "candidate",
+                    "failure_scope": "candidate",
+                    "primary_gate": "evidence_quality",
+                    "repairable": True,
+                    "generation_stop_reason": (
+                        "authoritative_candidate_limit_reached"
+                    ),
+                },
+                "verification_funnel": {
+                    "authoritative_candidate_attempt_count": 1,
+                    "authoritative_candidate_count": 1,
+                    "max_authoritative_candidates": 1,
+                    "generation_stop_reason": (
+                        "authoritative_candidate_limit_reached"
+                    ),
+                },
+            }
+        )
+        report_path = (
+            tmp_path / ".aworld" / "self_evolve" / run_id / "report.json"
+        )
+        report_path.parent.mkdir(parents=True)
+        report_path.write_text(json.dumps(report), encoding="utf-8")
+        return {
+            "run_id": run_id,
+            "status": "rejected",
+            "report_path": str(report_path),
+        }
+
+    controller = SelfImprovementCampaignController(
+        workspace_root=tmp_path,
+        run_once=run_once,
+    )
+    campaign = controller.create(
+        {
+            "from_trajectory": "trajectory.log",
+            "apply_policy": "verified_only",
+            "infer_target": True,
+            "max_full_evaluation_candidates": 12,
+        },
+        max_cycles=14,
+    )
+    campaign = campaign_module.replace(
+        campaign,
+        cumulative_authoritative_candidates=10,
+    )
+    controller.store.write_campaign(campaign)
+
+    advanced, _ = controller.advance_once(campaign)
+
+    assert advanced.cumulative_authoritative_candidates == 11
+    assert advanced.status is SelfImprovementCampaignStatus.ACTIVE
+    assert advanced.latest_disposition is not None
+    assert advanced.latest_disposition.reason_code == (
+        "cycle_authoritative_frontier_reached"
+    )
+
+
 def test_nonselected_incomplete_replay_overrides_candidate_stall() -> None:
     checkpoint = PairedReplayResumeCheckpointV1.create(
         source_run_id="run-focused-repair",

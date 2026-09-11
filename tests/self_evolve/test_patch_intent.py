@@ -184,6 +184,43 @@ def test_replace_section_collapses_duplicate_focused_repair_sections() -> None:
     assert "## Tail\n\nAlso preserve me." in updated
 
 
+def test_replace_section_consolidates_peer_sections_from_replacement_body() -> None:
+    content = (
+        "---\nname: demo\n---\n# Demo\n\n"
+        "## JSON output\n\nStale JSON rule.\n\n"
+        "## Debugging\n\nStale debug rule.\n\n"
+        "## Large responses\n\nFirst stale response rule.\n\n"
+        "## Debugging\n\nDuplicate debug rule.\n\n"
+        "## Large responses\n\nDuplicate response rule.\n\n"
+        "## Tail\n\nPreserve me.\n"
+    )
+
+    updated = apply_skill_patch_intent(
+        content,
+        {
+            "operations": [
+                {
+                    "op": "replace_section",
+                    "heading": "JSON output",
+                    "content": (
+                        "Canonical JSON rule.\n\n"
+                        "## Debugging\n\nCanonical debug rule.\n\n"
+                        "## Large responses\n\nCanonical response rule.\n"
+                    ),
+                }
+            ]
+        },
+    )
+
+    assert updated.count("## JSON output") == 1
+    assert updated.count("## Debugging") == 1
+    assert updated.count("## Large responses") == 1
+    assert "Stale" not in updated
+    assert "Duplicate" not in updated
+    assert "Canonical debug rule." in updated
+    assert "## Tail\n\nPreserve me." in updated
+
+
 def test_apply_skill_patch_intent_rejects_protected_references() -> None:
     with pytest.raises(ValueError, match="protected reference"):
         apply_skill_patch_intent(
