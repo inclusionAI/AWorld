@@ -56,6 +56,7 @@ from examples.sandbox.docker_terminal_bench import (  # noqa: E402
 
 RUNNER = Path(__file__).with_name("docker_terminal_bench.py")
 MODEL_PREFLIGHT = Path(__file__).with_name("model_preflight.py")
+CACHE_USAGE_PREFLIGHT = Path(__file__).with_name("cache_usage_preflight.py")
 _VERIFIER_ENV_EXPRESSION = re.compile(r"^\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-([^}]*))?\}$")
 
 
@@ -211,6 +212,22 @@ def parse_model_preflight(*streams: str) -> dict | None:
     return None
 
 
+def parse_cache_usage_preflight(*streams: str) -> dict | None:
+    for stream in streams:
+        for line in reversed(str(stream or "").splitlines()):
+            try:
+                value = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if (
+                isinstance(value, dict)
+                and value.get("schema_version")
+                == "aworld.cache-conformance-preflight/v1"
+            ):
+                return value
+    return None
+
+
 def model_preflight_allows_benchmark(receipt: dict) -> bool:
     """Require both transport reachability and a complete semantic response."""
     status = receipt.get("status")
@@ -222,6 +239,16 @@ def model_preflight_allows_benchmark(receipt: dict) -> bool:
         and receipt.get("semantic_probe_complete") is True
         and receipt.get("tool_call_probe_complete") is True
         and receipt.get("response_quality") == "complete"
+    )
+
+
+def cache_usage_preflight_allows_benchmark(receipt: dict) -> bool:
+    """Require exact accounting and observed prefix reuse/invalidation."""
+    return bool(
+        receipt.get("status") == "passed"
+        and receipt.get("cache_capability_observed") is True
+        and receipt.get("exact_usage_coverage") == 1.0
+        and receipt.get("observation_count", 0) > 0
     )
 
 
@@ -285,6 +312,53 @@ def run_model_preflight(
     }
     receipt["process_exit_code"] = returncode
     write_json(output_dir / "model-preflight.json", receipt)
+    return receipt
+
+
+def run_cache_usage_preflight(
+    output_dir: Path, *, timeout_sec: float, model_seed: int
+) -> dict:
+    """Run the provider-neutral cache behavior contract before cache claims."""
+    command = [
+        sys.executable,
+        str(CACHE_USAGE_PREFLIGHT),
+        "--timeout-sec",
+        str(timeout_sec),
+        "--model-seed",
+        str(model_seed),
+    ]
+    try:
+        # The probe performs eight sequential calls (four each for stream and
+        # non-stream).  Each call owns the configured timeout independently.
+        result = run_command(
+            command,
+            capture_output=True,
+            timeout=timeout_sec * 8 + 30,
+            env=os.environ.copy(),
+        )
+        stdout, stderr = result.stdout or "", result.stderr or ""
+        returncode = result.returncode
+    except subprocess.TimeoutExpired as exc:
+        stdout = timeout_output(exc, "stdout")
+        stderr = timeout_output(exc, "stderr")
+        returncode = None
+    (output_dir / "cache-usage-preflight.stdout.log").write_text(
+        stdout, encoding="utf-8"
+    )
+    (output_dir / "cache-usage-preflight.stderr.log").write_text(
+        stderr, encoding="utf-8"
+    )
+    receipt = parse_cache_usage_preflight(stderr, stdout) or {
+        "schema_version": "aworld.cache-conformance-preflight/v1",
+        "status": "failed",
+        "reason_code": (
+            "cache_preflight_timeout"
+            if returncode is None
+            else "cache_preflight_receipt_missing"
+        ),
+    }
+    receipt["process_exit_code"] = returncode
+    write_json(output_dir / "cache-usage-preflight.json", receipt)
     return receipt
 
 
@@ -679,6 +753,20 @@ def parse_args() -> argparse.Namespace:
         type=float,
         default=120,
         help="Fail-fast provider connectivity timeout before Docker image work starts.",
+    )
+    parser.add_argument(
+        "--require-cache-usage-preflight",
+        action="store_true",
+        help=(
+            "Require provider-neutral stream/non-stream cache conformance before "
+            "starting jobs whose conclusions include cache economics."
+        ),
+    )
+    parser.add_argument(
+        "--cache-usage-preflight-timeout-sec",
+        type=float,
+        default=180,
+        help="Per-call timeout for the optional cache usage conformance probe.",
     )
     parser.add_argument(
         "--minimum-host-available-memory-mb",
@@ -1926,6 +2014,10 @@ def main() -> None:
         ("--agent-timeout-sec", args.agent_timeout_sec),
         ("--verifier-timeout-sec", args.verifier_timeout_sec),
         ("--model-preflight-timeout-sec", args.model_preflight_timeout_sec),
+        (
+            "--cache-usage-preflight-timeout-sec",
+            args.cache_usage_preflight_timeout_sec,
+        ),
     ):
         if value is not None and (not math.isfinite(value) or value <= 0):
             raise ValueError(f"{option_name} must be positive")
@@ -2028,6 +2120,14 @@ def main() -> None:
         "image_build_plans": image_build_plans,
         "image_resolution": {"status": "not_attempted", "images": {}},
         "model_preflight": {"status": "not_attempted"},
+        "cache_usage_preflight": {
+            "schema_version": "aworld.cache-conformance-preflight/v1",
+            "status": (
+                "not_attempted"
+                if args.require_cache_usage_preflight
+                else "not_required"
+            ),
+        },
         "resource_policy": {
             "execution": "strictly_serial",
             "maximum_active_aworld_eval_containers": 1,
@@ -2060,6 +2160,20 @@ def main() -> None:
             "Model readiness preflight did not produce a complete semantic response; "
             "benchmark jobs were not started"
         )
+    if args.require_cache_usage_preflight:
+        experiment["cache_usage_preflight"] = run_cache_usage_preflight(
+            output_dir,
+            timeout_sec=args.cache_usage_preflight_timeout_sec,
+            model_seed=args.seed,
+        )
+        write_json(output_dir / "experiment_manifest.json", experiment)
+        if not cache_usage_preflight_allows_benchmark(
+            experiment["cache_usage_preflight"]
+        ):
+            raise RuntimeError(
+                "Cache usage preflight did not prove exact accounting and prefix "
+                "reuse/invalidation; benchmark jobs were not started"
+            )
 
     assert docker is not None
     images: dict[str, str] = {}

@@ -49,6 +49,7 @@ from aworld.models.kling_provider import KlingProvider
 from aworld.models.kling_avatar_provider import KlingAvatarProvider
 from aworld.models.volcano_seedance_provider import VolcanoSeedanceProvider
 from aworld.models.model_response import ModelResponse
+from aworld.models.usage import build_cache_usage_receipt
 from aworld.core.context.base import Context
 from aworld.core.context.compiler import (
     AWORLD_PROVIDER_CANDIDATE_KWARG,
@@ -1793,6 +1794,10 @@ class LLMModel:
                 updated["usage_raw"] = self._safe_copy(
                     getattr(response, "raw_usage", None) or usage_normalized
                 )
+                updated["cache_usage_receipt"] = build_cache_usage_receipt(
+                    raw_usage=updated["usage_raw"],
+                    normalized_usage=usage_normalized,
+                ).to_dict()
                 response_message = getattr(response, "message", None)
                 if isinstance(response_message, dict):
                     try:

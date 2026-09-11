@@ -15,7 +15,6 @@ import random
 import shutil
 import subprocess
 import sys
-import tempfile
 import time
 import uuid
 from pathlib import Path
@@ -30,10 +29,12 @@ if str(SANDBOX_EXAMPLES) not in sys.path:
 
 from docker_terminal_bench import _load_variant  # noqa: E402
 from terminal_bench_context_eval import (  # noqa: E402
+    cache_usage_preflight_allows_benchmark,
     collect_context_metrics,
     finalized_capture_allows_independent_verifier,
     provider_attempts_exhausted,
     recover_inflight_capture,
+    run_cache_usage_preflight,
     run_model_preflight,
     summarize_results,
     wait_for_local_capacity,
@@ -140,6 +141,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-steps", type=int, default=8)
     parser.add_argument("--agent-timeout-sec", type=float, default=14400)
     parser.add_argument("--model-preflight-timeout-sec", type=float, default=120)
+    parser.add_argument("--require-cache-usage-preflight", action="store_true")
+    parser.add_argument("--cache-usage-preflight-timeout-sec", type=float, default=180)
     parser.add_argument("--llm-max-attempts", type=int, default=3)
     parser.add_argument("--llm-retry-delay-sec", type=float, default=10.0)
     parser.add_argument("--minimum-host-available-memory-mb", type=int, default=2048)
@@ -326,6 +329,8 @@ def main() -> None:
         raise ValueError("--repeat must be positive")
     if args.llm_max_attempts < 1:
         raise ValueError("--llm-max-attempts must be positive")
+    if args.cache_usage_preflight_timeout_sec <= 0:
+        raise ValueError("--cache-usage-preflight-timeout-sec must be positive")
     cases = [load_case(path) for path in args.case_dir]
     variants = [
         (_load_variant(path)["name"], path.resolve(), _load_variant(path))
@@ -387,6 +392,14 @@ def main() -> None:
             "minimum_host_available_memory_mb": args.minimum_host_available_memory_mb,
             "wait_timeout_seconds": args.resource_wait_timeout_sec,
         },
+        "cache_usage_preflight": {
+            "schema_version": "aworld.cache-conformance-preflight/v1",
+            "status": (
+                "not_attempted"
+                if args.require_cache_usage_preflight
+                else "not_required"
+            ),
+        },
         "created_at_epoch": time.time(),
     }
     write_json(output_dir / "experiment_manifest.json", manifest)
@@ -411,6 +424,27 @@ def main() -> None:
             "status": "provider_preflight_failed",
         }, ensure_ascii=False))
         return
+    if args.require_cache_usage_preflight:
+        cache_preflight = run_cache_usage_preflight(
+            output_dir,
+            timeout_sec=args.cache_usage_preflight_timeout_sec,
+            model_seed=args.seed,
+        )
+        manifest["cache_usage_preflight"] = cache_preflight
+        write_json(output_dir / "experiment_manifest.json", manifest)
+        if not cache_usage_preflight_allows_benchmark(cache_preflight):
+            write_json(output_dir / "results.json", [])
+            print(
+                json.dumps(
+                    {
+                        "runs": 0,
+                        "output_dir": str(output_dir),
+                        "status": "cache_usage_preflight_failed",
+                    },
+                    ensure_ascii=False,
+                )
+            )
+            return
     docker = shutil.which("docker")
     if not docker:
         raise RuntimeError("Docker is required")

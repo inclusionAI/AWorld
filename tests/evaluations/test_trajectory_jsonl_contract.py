@@ -131,6 +131,21 @@ def _envelope(
         llm_calls=[{
             "request_id": "request-1",
             "request": {"messages": []},
+            "cache_usage_receipt": {
+                "schema_version": "aworld.cache-usage-receipt.v1",
+                "fidelity": "exact",
+                "reason_code": None,
+                "input_tokens": 10,
+                "output_tokens": 1,
+                "cache_read_tokens": 8,
+                "cache_write_tokens": None,
+                "cache_read_lower_bound": 8,
+                "cache_read_upper_bound": 8,
+                "uncached_input_tokens": 2,
+                "cache_read_ratio": 0.8,
+                "raw_cache_sources": ["prompt_tokens_details.cached_tokens"],
+                "normalized_cache_sources": ["cache_hit_tokens"],
+            },
             "context_rollout": {
                 "mode": "shadow",
                 "compiler_identity": "aworld.context.compiler.framework",
@@ -242,6 +257,8 @@ def test_v2_round_trip_uses_one_json_object_with_direct_structures_and_safe_sink
     assert rollout["compiler_identity"] == "aworld.context.compiler.framework"
     assert rollout["candidate_snapshot"]["content_hash"] == "sha256:candidate"
     assert rollout["external_action_count_observed"] is None
+    assert record.llm_calls[0]["cache_usage_receipt"]["fidelity"] == "exact"
+    assert record.llm_calls[0]["cache_usage_receipt"]["uncached_input_tokens"] == 2
 
 
 def test_real_enforce_blocked_record_round_trips_through_jsonl(tmp_path: Path) -> None:

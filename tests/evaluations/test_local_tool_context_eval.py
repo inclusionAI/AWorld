@@ -533,6 +533,70 @@ def test_normalized_usage_fails_closed_on_missing_or_conflicting_truth():
     )
 
 
+def test_provider_metrics_report_exact_cache_coverage_without_false_zero():
+    reporter = _load_reporter()
+    exact = {
+        "usage_normalized": {
+            "prompt_tokens": 10,
+            "completion_tokens": 2,
+            "cache_hit_tokens": 3,
+        },
+        "usage_raw": {
+            "prompt_tokens": 10,
+            "completion_tokens": 2,
+            "prompt_tokens_details": {"cached_tokens": 3},
+        },
+    }
+    missing = {
+        "usage_normalized": {"prompt_tokens": 20, "completion_tokens": 4},
+        "usage_raw": {"prompt_tokens": 20, "completion_tokens": 4},
+    }
+
+    metrics = reporter.authoritative_provider_metrics([exact, missing])
+
+    assert metrics["cache_usage_exact_call_count"] == 1
+    assert metrics["cache_usage_exact_coverage"] == 0.5
+    assert metrics["cache_usage_bounded_call_count"] == 1
+    assert metrics["cache_read_tokens"] == 3
+    assert metrics["cache_usage_exact_input_tokens"] == 10
+    assert metrics["uncached_input_tokens_exact"] == 7
+
+
+def test_captured_cache_receipt_mismatch_fails_closed():
+    reporter = _load_reporter()
+    call = {
+        "provider_invoked": True,
+        "provider_attempt_status": "attempted",
+        "status": "success",
+        "usage_normalized": {
+            "prompt_tokens": 10,
+            "completion_tokens": 2,
+            "cache_hit_tokens": 3,
+        },
+        "usage_raw": {
+            "prompt_tokens": 10,
+            "completion_tokens": 2,
+            "prompt_tokens_details": {"cached_tokens": 3},
+        },
+        "cache_usage_receipt": {
+            "schema_version": "aworld.cache-usage-receipt.v1",
+            "fidelity": "exact",
+            "input_tokens": 10,
+            "output_tokens": 2,
+            "cache_read_tokens": 9,
+        },
+    }
+
+    receipt = reporter.authoritative_cache_usage_receipt(call)
+
+    assert receipt["fidelity"] == "conflicting"
+    assert receipt["reason_code"] == "captured_cache_usage_receipt_mismatch"
+    assert reporter.authoritative_normalized_usage([call]) == (
+        None,
+        "provider_cache_usage_receipt_conflict",
+    )
+
+
 def _turn_receipt(reporter, kind, cause, identity, parent=None):
     return {
         "schema_version": "aworld.context.turn-economics.v1",
