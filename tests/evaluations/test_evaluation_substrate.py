@@ -4,6 +4,7 @@ import asyncio
 import base64
 import json
 from pathlib import Path
+from types import SimpleNamespace
 import pytest
 from pydantic import BaseModel, Field
 
@@ -51,6 +52,54 @@ class AliasJudgeOutput(BaseModel):
 class GenericJudgeOutput(BaseModel):
     decision: str
     confidence: float
+
+
+@pytest.mark.asyncio
+async def test_default_agent_judge_executor_uses_fresh_explicit_messages(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import aworld.models.llm as llm_module
+
+    captured: list[list[dict]] = []
+    model = object()
+
+    def fake_get_llm_model(**kwargs):
+        assert kwargs["model_name"] == "judge-model"
+        return model
+
+    async def fake_acall_llm_model(llm, *, messages, **kwargs):
+        assert llm is model
+        captured.append(messages)
+        return SimpleNamespace(content='{"score": 100}')
+
+    monkeypatch.setattr(llm_module, "get_llm_model", fake_get_llm_model)
+    monkeypatch.setattr(llm_module, "acall_llm_model", fake_acall_llm_model)
+    config = SimpleNamespace(
+        llm_provider="openai",
+        llm_api_key="test-key",
+        llm_model_name="judge-model",
+        llm_base_url="https://example.invalid/v1",
+        llm_temperature=0.1,
+    )
+
+    for prompt in ("first evaluation", "schema repair"):
+        result = await substrate_module._default_agent_judge_executor(
+            prompt,
+            "judge instructions",
+            model_config=config,
+        )
+        assert result == '{"score": 100}'
+
+    assert captured == [
+        [
+            {"role": "system", "content": "judge instructions"},
+            {"role": "user", "content": "first evaluation"},
+        ],
+        [
+            {"role": "system", "content": "judge instructions"},
+            {"role": "user", "content": "schema repair"},
+        ],
+    ]
 
 
 @pytest.fixture(autouse=True)

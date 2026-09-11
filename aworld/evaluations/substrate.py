@@ -2810,11 +2810,7 @@ async def _default_agent_judge_executor(
     *,
     model_config: Any | None = None,
 ) -> str:
-    from aworld.agents.llm_agent import Agent
-    from aworld.config.conf import AgentConfig
-    from aworld.core.common import Observation
-    from aworld.core.context.base import Context
-    from aworld.utils.run_util import exec_agent
+    from aworld.models.llm import acall_llm_model, get_llm_model
 
     if model_config is not None:
         provider = getattr(model_config, "llm_provider", None) or "openai"
@@ -2842,22 +2838,32 @@ async def _default_agent_judge_executor(
     else:
         prompt_text, image_urls = prompt, None
 
-    agent = Agent(
-        name="evaluation_judge",
-        conf=AgentConfig(
-            llm_provider=provider,
-            llm_model_name=model_name,
-            llm_temperature=temperature,
-            llm_base_url=base_url,
-            llm_api_key=api_key,
-        ),
-        system_prompt=system_prompt,
+    llm = get_llm_model(
+        llm_provider=provider,
+        model_name=model_name,
+        temperature=temperature,
+        base_url=base_url,
+        api_key=api_key,
     )
-    request: str | Observation = prompt_text
+    user_content: Any = prompt_text
     if image_urls:
-        request = Observation(content=prompt_text, images=image_urls)
-    response = await exec_agent(request, agent=agent, context=Context())
-    return str(response.answer)
+        user_content = [
+            {"type": "text", "text": prompt_text},
+            *(
+                {"type": "image_url", "image_url": {"url": image_url}}
+                for image_url in image_urls
+            ),
+        ]
+    response = await acall_llm_model(
+        llm,
+        messages=[
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_content},
+        ],
+        temperature=temperature,
+        stream=False,
+    )
+    return str(response.content)
 
 
 async def _runtime_adoption_assistant_step(*, user_turn, state, case, target) -> dict[str, Any]:

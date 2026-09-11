@@ -741,3 +741,17 @@ receipt yet, and no externally bound rollback/canary receipt. Focused regression
   preserve, normalize, persist, and restore the typed structural edit intent; source-only repairs carry that authorization
   while retaining their strict producer-path boundary. Three focused regressions, 255 related tests, and the complete
   2530-test self-evolve suite pass.
+- A persistent-terminal acceptance run then isolated a pre-existing agent-browser support defect before any authoritative
+  candidate could be measured: the runtime's response-index reader was semantically correct but split the typed
+  `index -> records -> record -> value` flow across branch assignments and a later loop, so the bounded AST proof could
+  not establish the final direct value projection. Every generated candidate consequently spent its repair frontier on
+  evaluation-support bootstrap and the campaign exhausted at `evaluation_support_composition_stalled`. The runtime now
+  uses explicit branch-local projections for both legacy list and canonical object sidecars. Its complete four-operation
+  proof passes, along with 198 capability/conformance/release tests and the full 2531-test self-evolve suite.
+- The following acceptance campaign reached 11/11 comparable replay and both validation judges, then failed runtime
+  health because held-out evaluation lost every model message after the first two nested judge tasks. The evaluator's
+  markdown-instructions backend was unnecessarily routing each stateless judge prompt through the stateful Agent runner;
+  under the enclosing task-local memory scope, later nested runs wrote memory in a different async context than they read,
+  producing provider requests with `messages: []`. The default judge executor now calls the configured LLM directly with
+  a fresh explicit system/user pair on every initial, artifact-read, and schema-repair round. A two-call regression proves
+  request isolation, and the combined self-evolve/evaluation suite passes 2610 tests with 1 skipped.
