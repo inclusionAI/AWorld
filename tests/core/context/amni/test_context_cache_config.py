@@ -1,3 +1,5 @@
+import pytest
+
 from aworld.agents.audio_agent import AudioAgent
 from aworld.agents.image_agent import ImageAgent
 from aworld.config.conf import AgentConfig, ModelConfig
@@ -6,6 +8,8 @@ from aworld.core.context.amni.config import (
     AmniConfigFactory,
     ContextCacheConfig,
 )
+from aworld.core.context.amni import ApplicationContext
+from aworld.core.context.compiler import CacheBreakReason, LifecycleAction
 
 
 def test_context_cache_defaults_are_enabled():
@@ -96,3 +100,37 @@ def test_media_agent_provider_normalization_preserves_context_cache_model():
     assert isinstance(image_config.llm_config.context_cache, ContextCacheConfig)
     assert image_config.llm_config.context_cache.enabled is False
     assert image_config.llm_config.context_cache.allow_provider_native_cache is False
+
+
+def test_amni_checkpoint_round_trip_preserves_cache_epoch_and_pending_breaks():
+    context = ApplicationContext.create(
+        session_id="cache-session",
+        task_id="cache-task",
+        task_content="work",
+    )
+    context.advance_context_lifecycle(LifecycleAction.CHECKPOINT)
+
+    restored = ApplicationContext.from_dict(context.to_dict())
+
+    assert restored.context_lifecycle_state.checkpoint_revision == 1
+    assert restored.get_pending_cache_break_reasons() == (
+        CacheBreakReason.HISTORY_COMPACTION,
+    )
+
+
+def test_amni_checkpoint_rejects_invalid_cache_lifecycle_evidence():
+    context = ApplicationContext.create(
+        session_id="cache-session",
+        task_id="cache-task",
+        task_content="work",
+    )
+    payload = context.to_dict()
+    payload["pending_cache_break_reasons"] = ["not-a-break-reason"]
+
+    with pytest.raises(ValueError):
+        ApplicationContext.from_dict(payload)
+
+    payload = context.to_dict()
+    payload.pop("context_lifecycle")
+    with pytest.raises(ValueError):
+        ApplicationContext.from_dict(payload)

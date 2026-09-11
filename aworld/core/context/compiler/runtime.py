@@ -281,6 +281,47 @@ def _bind_final_collection(
     return tuple(bound), True
 
 
+def _overlay_amni_system_section_semantics(
+    message_items: tuple[ContextItem, ...],
+    observations: tuple[ContextObservationSidecar, ...],
+    *,
+    task_epoch: int | None,
+) -> tuple[ContextItem, ...]:
+    """Apply owner-proved semantics to exact split Amni system occurrences."""
+    matches: list[tuple[ContextItem, ...]] = []
+    for sidecar in observations:
+        if sidecar.owner != "amni.system_sections" or sidecar.task_epoch != task_epoch:
+            continue
+        sections = sidecar.result.items
+        if not sections or len(sections) > len(message_items):
+            continue
+        if all(
+            section.occurrence == index
+            and section.kind is ContextKind.SYSTEM
+            and message_items[index].kind is ContextKind.SYSTEM
+            and section.payload == message_items[index].payload
+            for index, section in enumerate(sections)
+        ):
+            matches.append(sections)
+    if len(matches) != 1:
+        return message_items
+    overlaid = list(message_items)
+    for index, proof in enumerate(matches[0]):
+        current = overlaid[index]
+        overlaid[index] = replace(
+            current,
+            authority=proof.authority,
+            scope=proof.scope,
+            lifetime=proof.lifetime,
+            priority=proof.priority,
+            required=proof.required,
+            trust=proof.trust,
+            stability=proof.stability,
+            activation_reason=proof.activation_reason,
+        )
+    return tuple(overlaid)
+
+
 def build_observed_model_boundary_attribution_plan(
     *,
     observed_request: ProviderRequestSnapshot,
@@ -434,6 +475,12 @@ def compile_model_boundary_context(
         ),
         allow_trust_isolation=True,
     )
+    if messages_bound:
+        message_items = _overlay_amni_system_section_semantics(
+            message_items,
+            observations,
+            task_epoch=task_epoch,
+        )
     tool_items, tools_bound = _bind_final_collection(
         fallback_tool_items,
         _final_owner_sidecar(
@@ -528,6 +575,7 @@ def compile_model_boundary_context(
                     "model.final_tool_catalog",
                     "amni.folded_system",
                     "amni.restored_folded_system",
+                    "amni.system_sections",
                 }:
                 continue
             # Exact folded-system ownership covers the pre-fold neuron

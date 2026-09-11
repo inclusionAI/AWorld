@@ -2,28 +2,31 @@
 
 ## Current Status
 
-**Phase:** Milestone 2
-**Current milestone:** Immutable CachePlan lowering
-**Current task:** Milestone 2 implementation complete; architectural review pending
-**Last action:** Wired lifecycle/policy inputs into an immutable CachePlan and
-verified provider-capability lowering with 171 focused tests.
+**Phase:** Milestone 4
+**Current milestone:** Verification and release evidence
+**Current task:** Build deterministic cache/replay evidence before frozen live pairs
+**Last action:** Completed stable/dynamic Amni sections and single-boundary cache
+epochs across adaptive and CLI compaction; 158 focused tests passed.
 
 ## Completed Milestones
 
 - Milestone 1: Cache truth and provider conformance preflight.
+- Milestone 2: Immutable CachePlan lowering.
+- Milestone 3: Stable sections and cache epochs.
 
-## Current Milestone: Immutable CachePlan lowering
+## Current Milestone: Verification and release evidence
 
 ### Task Status
 
 | Task | Status | Notes |
 |---|---|---|
-| 2.1 Provider-neutral CachePlan | complete | Frozen by final compiler, candidate-contract bound, lifecycle/policy inputs carried, redacted inspector output |
-| 2.2 Provider adapter lowering | complete | OpenAI-compatible exact prefix/optional key, Anthropic cache-control, unsupported-provider evidence; explicit overrides preserved |
+| 4.1 Deterministic cache/replay suite | in_progress | Provider-bound request trace and cache-break replay fixture/runner next |
+| 4.2 Frozen real-provider paired evaluation | pending | Requires 4.1 green; GLM is one conformance target only |
+| 4.3 Final review and release decision | pending | Requires paired CI gates and rollback/canary evidence |
 
 ### Review Feedback
 
-Milestone 2 architectural review is pending.
+Milestones 2-3 architectural review: APPROVE after lifecycle fixes.
 
 ## Completed Milestone Details: Cache truth and provider conformance preflight
 
@@ -179,3 +182,33 @@ Milestone 1 review: APPROVE after fixes.
   the frozen plan. Inspector output hashes routing namespaces.
 - Focused validation: 171 tests passed; compiler-file Ruff and diff whitespace
   checks passed. Existing broad-file Ruff debt remains unrelated.
+
+### 2026-09-11 — Milestone 2 architectural review
+- Verified the core plan and compiler contain no provider/model-name branch.
+  OpenAI-compatible and Anthropic adapters lower the same immutable plan;
+  reviewed unsupported providers preserve correctness and report unsupported.
+- Provider attempts now consume pending invalidations from the exact attempted
+  plan even where provider-wire cache identity is unavailable. Stale-epoch
+  attempts cannot clear newer invalidations.
+- Focused provider/compiler validation was included in the Milestone 3 suite.
+  Verdict: APPROVE.
+
+### 2026-09-11 — Milestone 3 stable sections and cache epochs
+- Reused Amni prompt assembly ownership instead of adding another prompt path.
+  Ordered system sections are published only when independently formatted
+  sections reproduce the exact folded content. Unknown augment sources default
+  dynamic; stable sections retain owner-proved trust/scope/lifetime semantics.
+- Final compilation overlays those semantics only on one exact leading occurrence
+  match. The provider request remains unchanged while the stable prefix stops
+  before memory/task/retrieval sections.
+- Adaptive compaction persists bounded WorkingState and recent complete Tool
+  groups before snapshot. One real history rewrite creates one cache epoch;
+  recovery-only checkpoints preserve the current epoch, and later compacted
+  turns append until another justified rewrite.
+- Manual CLI `/compact` now creates the same provider-neutral lifecycle boundary
+  and restores that checkpoint once on the next task. Amni snapshots preserve
+  pending cache-break evidence and reject malformed lifecycle restoration.
+- OpenAI-compatible and Anthropic sync/async/stream paths consume the same epoch
+  evidence. No GLM/model/task-specific branch was introduced.
+- Validation: 158 focused tests passed; `git diff --check` passed. Verdict:
+  APPROVE.

@@ -34,6 +34,7 @@ from aworld.core.llm_provider import LLMProviderBase
 from aworld.core.context.compiler import (
     AWORLD_PROVIDER_CANDIDATE_KWARG,
     AWORLD_PROVIDER_OBSERVED_ATTRIBUTION_KWARG,
+    CachePlan,
     CandidateRequestNotEnforceable,
     ProviderCandidateEnvelope,
     ProviderObservedAttributionEnvelope,
@@ -65,6 +66,7 @@ class _PreparedOpenAIRequest:
     context: Any = None
     request_id: str | None = None
     cache_identity: Any = None
+    cache_plan: CachePlan | None = None
     attempt_tracking_ready: bool = False
     attempt_tracking_fail_open: bool = False
 
@@ -603,6 +605,7 @@ class OpenAIProvider(LLMProviderBase):
                 else request_kwargs.get("llm_request_id")
             ),
             cache_identity=(receipt.cache_identity if envelope is not None else None),
+            cache_plan=(envelope.cache_plan if envelope is not None else None),
             attempt_tracking_ready=attempt_tracking_ready,
             attempt_tracking_fail_open=(envelope is None),
         )
@@ -619,6 +622,7 @@ class OpenAIProvider(LLMProviderBase):
             context=prepared.context,
             request_id=prepared.request_id,
             cache_identity=prepared.cache_identity,
+            cache_plan=prepared.cache_plan,
         )
 
     def preprocess_messages(

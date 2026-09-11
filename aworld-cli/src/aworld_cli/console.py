@@ -3938,7 +3938,8 @@ class AWorldCLI:
                             compression_task = asyncio.create_task(
                                 run_context_optimization(
                                     agent_id=agent_id,
-                                    session_id=session_id
+                                    context=getattr(executor_instance, "context", None),
+                                    session_id=session_id,
                                 )
                             )
 
@@ -3949,6 +3950,25 @@ class AWorldCLI:
                             )
 
                             if ok:
+                                compacted_context = getattr(
+                                    executor_instance, "context", None
+                                )
+                                compacted_state = (
+                                    compacted_context.context_info.get(
+                                        "cli_context_compaction_state"
+                                    )
+                                    if compacted_context is not None
+                                    and hasattr(compacted_context, "context_info")
+                                    else None
+                                )
+                                if (
+                                    isinstance(compacted_state, dict)
+                                    and compacted_state.get(
+                                        "checkpoint_snapshot_state"
+                                    )
+                                    == "captured"
+                                ):
+                                    executor_instance._resume_context_checkpoint_once = True
                                 # If this is first compression (tokens_before == 0), show generation message
                                 if tokens_before == 0:
                                     self.console.print(

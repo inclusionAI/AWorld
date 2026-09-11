@@ -219,4 +219,68 @@ def adapt_amni_folded_system_message(
     return AdapterResult(items=(item,), diagnostics=())
 
 
-__all__ = ["adapt_agent_final_request", "adapt_amni_folded_system_message"]
+def adapt_amni_system_sections(
+    *,
+    sections: Sequence[dict[str, Any]],
+    source_identity: str,
+    task_id: str,
+    task_epoch: int,
+    agent_id: str,
+) -> AdapterResult:
+    """Capture exact ordered Amni system sections before model assembly."""
+    scope = ContextScope(
+        kinds=(ScopeKind.TASK, ScopeKind.AGENT),
+        task_id=task_id,
+        agent_id=agent_id,
+    )
+    items: list[ContextItem] = []
+    for occurrence, section in enumerate(sections):
+        if not isinstance(section, dict):
+            raise TypeError("Amni system sections must be objects")
+        content = section.get("content")
+        stability = section.get("stability")
+        if not isinstance(content, str) or not content:
+            raise ValueError("Amni system section content must be non-empty")
+        if stability not in {"stable", "dynamic"}:
+            raise ValueError("Amni system section stability must be explicit")
+        stable = stability == "stable"
+        items.append(
+            ContextItem(
+                id=f"{source_identity}:system-section:{occurrence}",
+                kind=ContextKind.SYSTEM,
+                payload={"role": "system", "content": content},
+                task_epoch=task_epoch,
+                authority=Authority.APPLICATION_AGENT,
+                scope=scope,
+                lifetime=Lifetime.TASK,
+                priority=occurrence,
+                required=True,
+                trust=Trust.TRUSTED if stable else Trust.USER_CONTROLLED,
+                stability=(
+                    Stability.SESSION_STABLE if stable else Stability.TURN_DYNAMIC
+                ),
+                token_limit=None,
+                reducer=None,
+                source=ContextSource(
+                    kind=SourceKind.AGENT,
+                    uri=source_identity,
+                    version="amni-system-sections-v1",
+                    ref={
+                        "amni_system_section": True,
+                        "occurrence": occurrence,
+                        "name": section.get("name"),
+                    },
+                ),
+                version="v1",
+                activation_reason="amni_ordered_system_section",
+                occurrence=occurrence,
+            )
+        )
+    return AdapterResult(items=tuple(items), diagnostics=())
+
+
+__all__ = [
+    "adapt_agent_final_request",
+    "adapt_amni_folded_system_message",
+    "adapt_amni_system_sections",
+]
