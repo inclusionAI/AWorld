@@ -1397,6 +1397,23 @@ def test_response_index_source_behavior_requires_bound_file_reader_dataflow(
     )
 
 
+def test_agent_browser_runtime_proves_recorded_response_index_dataflow() -> None:
+    runtime_path = (
+        Path(__file__).parents[2]
+        / "aworld-skills"
+        / "agent-browser"
+        / "replay"
+        / "runtime.py"
+    )
+
+    proof = replay_capability_module.recorded_response_index_source_behavior_proof(
+        runtime_path.read_text(encoding="utf-8")
+    )
+
+    assert proof["proven"] is True
+    assert proof["missing_operations"] == []
+
+
 def test_response_index_source_behavior_reports_unsupported_state_boundary() -> None:
     source = (
         "import json, os\n"

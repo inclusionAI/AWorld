@@ -3,8 +3,6 @@ import argparse
 import json
 import os
 import sys
-import time
-import traceback
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from urllib.parse import urlparse, parse_qs
 
@@ -112,17 +110,21 @@ class ReplayRuntime:
             with open(env_path, "r", encoding="utf-8") as index_file:
                 index_doc = json.load(index_file)
             if isinstance(index_doc, list):
-                records = index_doc
-            elif isinstance(index_doc, dict):
-                records = index_doc.get("records", [])
-            else:
-                records = []
-            projected_values = []
-            for record in records:
-                if isinstance(record, dict) and "value" in record:
-                    projected_values.append(record["value"])
-            if projected_values:
-                return projected_values
+                legacy_values = [
+                    record["value"]
+                    for record in index_doc
+                    if isinstance(record, dict) and "value" in record
+                ]
+                if legacy_values:
+                    return legacy_values
+            if isinstance(index_doc, dict):
+                projected_values = [
+                    record["value"]
+                    for record in index_doc.get("records", [])
+                    if isinstance(record, dict) and "value" in record
+                ]
+                if projected_values:
+                    return projected_values
         return None
 
     def build_payload(self):
