@@ -19,10 +19,11 @@ from .budget import (
     ContextInputBudget,
     plan_context_budget,
 )
-from .cache import StablePrefixPartition, partition_stable_prefix
+from .cache import CachePlan, StablePrefixPartition, partition_stable_prefix
 from .frozen_json import FrozenJSON, FrozenMap, canonical_json_hash, freeze_json
 from .models import (
     Authority,
+    CacheBreakReason,
     ContextItem,
     ContextKind,
     InferenceProfile,
@@ -228,6 +229,10 @@ class FinalCompileInput:
     task_id: str | None = None
     session_id: str | None = None
     task_epoch: int | None = None
+    cache_epoch: int = 0
+    provider_cache_namespace: str | None = None
+    cache_break_reasons: tuple[CacheBreakReason, ...] = ()
+    native_cache_requested: bool = True
     tools_present: bool = False
     resolution_target: ContextResolutionTarget | None = None
 
@@ -241,6 +246,21 @@ class FinalCompileInput:
         if not isinstance(params, FrozenMap):
             raise TypeError("provider_params must be a JSON object")
         object.__setattr__(self, "provider_params", params)
+        _non_negative_epoch("cache_epoch", self.cache_epoch)
+        if self.provider_cache_namespace is not None and (
+            not isinstance(self.provider_cache_namespace, str)
+            or not self.provider_cache_namespace.strip()
+        ):
+            raise ValueError(
+                "provider_cache_namespace must be a non-empty string or None"
+            )
+        object.__setattr__(
+            self,
+            "cache_break_reasons",
+            tuple(CacheBreakReason(reason) for reason in self.cache_break_reasons),
+        )
+        if not isinstance(self.native_cache_requested, bool):
+            raise TypeError("native_cache_requested must be a boolean")
         object.__setattr__(self, "candidates", tuple(self.candidates))
         if not all(
             isinstance(item, FinalCompileCandidate) for item in self.candidates
@@ -284,6 +304,7 @@ class FinalCompileResult:
     decisions: tuple[ResolutionDecision, ...]
     token_accounting: TokenAccounting
     stable_partition: StablePrefixPartition
+    cache_plan: CachePlan
     inference_profile: InferenceProfile
     input_budget: ContextInputBudget
     tool_catalog_hash: str
@@ -310,6 +331,10 @@ class FinalCompileResult:
             raise TypeError("token_accounting must be a TokenAccounting")
         if not isinstance(self.stable_partition, StablePrefixPartition):
             raise TypeError("stable_partition must be a StablePrefixPartition")
+        if not isinstance(self.cache_plan, CachePlan):
+            raise TypeError("cache_plan must be a CachePlan")
+        if self.cache_plan.candidate_content_hash != self.request_snapshot.content_hash:
+            raise ValueError("cache_plan must bind the candidate request")
         if not isinstance(self.inference_profile, InferenceProfile):
             raise TypeError("inference_profile must be an InferenceProfile")
         if not isinstance(self.input_budget, ContextInputBudget):
@@ -341,6 +366,15 @@ class FinalCompileResult:
             for code in self.blocker_codes
         ):
             raise ValueError("blocker_codes must contain stable reason codes")
+
+    @property
+    def candidate_contract_hash(self) -> str:
+        return canonical_json_hash(
+            {
+                "candidate_content_hash": self.request_snapshot.content_hash,
+                "cache_plan_fingerprint": self.cache_plan.fingerprint,
+            }
+        )
 
 
 class FinalCompileContractError(ValueError):
@@ -655,28 +689,52 @@ def compile_final_context(
         request_snapshot=request_snapshot,
         created_at=compiler_input.created_at,
     )
+    tool_catalog_hash = canonical_json_hash(
+        [
+            item.content_hash
+            for item in selected_items
+            if item.kind is ContextKind.TOOL_CATALOG
+        ]
+    )
+    skill_set_hash = canonical_json_hash(
+        [
+            item.content_hash
+            for item in selected_items
+            if item.kind is ContextKind.SKILL
+        ]
+    )
+    selected_by_id = {candidate.item.id: candidate for candidate in selected_candidates}
+    stable_messages_only = all(
+        selected_by_id[item.id].emission is ContextEmissionKind.MESSAGE
+        for item in partition.stable_items
+    )
+    stable_message_count = (
+        len(partition.stable_items) if stable_messages_only else 0
+    )
+    cache_plan = CachePlan(
+        candidate_content_hash=request_snapshot.content_hash,
+        inference_profile=compiler_input.inference_profile,
+        policy_version=policy.policy_version,
+        tool_catalog_hash=tool_catalog_hash,
+        skill_set_hash=skill_set_hash,
+        logical_stable_prefix_hash=partition.stable_prefix_hash,
+        stable_message_count=stable_message_count,
+        cache_epoch=compiler_input.cache_epoch,
+        provider_cache_namespace=compiler_input.provider_cache_namespace,
+        break_reasons=compiler_input.cache_break_reasons,
+        native_cache_requested=compiler_input.native_cache_requested,
+    )
     return FinalCompileResult(
         request_snapshot=request_snapshot,
         selected_items=selected_items,
         decisions=decisions,
         token_accounting=budget_plan.token_accounting,
         stable_partition=partition,
+        cache_plan=cache_plan,
         inference_profile=compiler_input.inference_profile,
         input_budget=policy.input_budget,
-        tool_catalog_hash=canonical_json_hash(
-            [
-                item.content_hash
-                for item in selected_items
-                if item.kind is ContextKind.TOOL_CATALOG
-            ]
-        ),
-        skill_set_hash=canonical_json_hash(
-            [
-                item.content_hash
-                for item in selected_items
-                if item.kind is ContextKind.SKILL
-            ]
-        ),
+        tool_catalog_hash=tool_catalog_hash,
+        skill_set_hash=skill_set_hash,
         trace=trace,
         attribution_plan=attribution_plan,
         compiler_identity=FINAL_COMPILER_IDENTITY,

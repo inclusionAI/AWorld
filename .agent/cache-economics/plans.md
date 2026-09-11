@@ -68,7 +68,7 @@ cache epoch with an immutable checkpoint; later turns append to that epoch.
 - **Tests:** deterministic serialization, immutable round-trip, break reasons,
   unknown-provider behavior.
 - **Acceptance criteria:** CachePlan is covered by candidate hash and attribution.
-- **Status:** pending
+- **Status:** complete
 
 #### Task 2.2: Provider adapter lowering
 - **Parallel:** no
@@ -79,7 +79,7 @@ cache epoch with an immutable checkpoint; later turns append to that epoch.
   request trace fidelity.
 - **Acceptance criteria:** Native hints reach supported providers and the sent
   candidate remains byte/semantic equivalent to the frozen snapshot.
-- **Status:** pending
+- **Status:** complete
 
 ### Milestone 3: Stable sections and cache epochs
 

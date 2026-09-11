@@ -6,6 +6,7 @@ from aworld.utils import import_package
 from aworld.logs.util import logger
 from aworld.core.llm_provider import LLMProviderBase
 from aworld.core.context.compiler import (
+    CachePlan,
     CandidateRequestNotEnforceable,
     ProviderLoweringCapability,
     ProviderToolsLowering,
@@ -174,17 +175,46 @@ class AnthropicProvider(LLMProviderBase):
             content = blocks
         return "message", {"role": role, "content": content}
 
+    @staticmethod
+    def _with_cache_control(message: dict[str, Any]) -> dict[str, Any]:
+        """Attach Anthropic's native marker to one stable boundary message."""
+        lowered = dict(message)
+        content = lowered.get("content")
+        if isinstance(content, str):
+            lowered["content"] = [
+                {
+                    "type": "text",
+                    "text": content,
+                    "cache_control": {"type": "ephemeral"},
+                }
+            ]
+            return lowered
+        if isinstance(content, list) and content:
+            blocks = [
+                dict(block) if isinstance(block, dict) else block
+                for block in content
+            ]
+            if not isinstance(blocks[-1], dict):
+                raise TypeError("Anthropic cache boundary content must be structured")
+            blocks[-1]["cache_control"] = {"type": "ephemeral"}
+            lowered["content"] = blocks
+            return lowered
+        raise TypeError("Anthropic cache boundary requires non-empty content")
+
     def _lower_context_request(
         self,
         standard: Dict[str, Any],
         request_kwargs: Dict[str, Any],
         stream: bool,
+        cache_plan: CachePlan | None,
     ) -> ProviderWireProjection:
         anthropic_messages = []
         system_parts = []
         message_occurrences = []
+        destinations = []
         for message in standard["messages"]:
             destination, projected = self._anthropic_message(message)
+            destinations.append(destination)
             message_occurrences.append(projected)
             if destination == "system":
                 system_parts.append(projected)
@@ -196,6 +226,7 @@ class AnthropicProvider(LLMProviderBase):
         )
         params = standard["params"]
         provider_kwargs = dict(request_kwargs)
+        explicit_native = provider_kwargs.pop("provider_native_prompt_cache", None)
         provider_kwargs.pop("context", None)
         provider_kwargs.pop("llm_request_id", None)
         if tools is None:
@@ -212,6 +243,52 @@ class AnthropicProvider(LLMProviderBase):
             params["stop"],
             **provider_kwargs,
         )
+        cache_lowering_status = "unsupported"
+        cache_lowering_strategy = "none"
+        if cache_plan is not None:
+            if not cache_plan.native_cache_requested or explicit_native is False:
+                cache_lowering_status = "disabled"
+                cache_lowering_strategy = "explicit_opt_out"
+            elif cache_plan.stable_message_count <= 0:
+                cache_lowering_status = "unavailable"
+                cache_lowering_strategy = "no_stable_message_prefix"
+            else:
+                boundary = cache_plan.stable_message_count - 1
+                if boundary >= len(message_occurrences):
+                    raise ValueError("cache plan stable boundary exceeds messages")
+                if destinations[boundary] == "system":
+                    if any(
+                        destination == "system"
+                        for destination in destinations[boundary + 1 :]
+                    ):
+                        cache_lowering_status = "unavailable"
+                        cache_lowering_strategy = "folded_system_boundary"
+                    else:
+                        system_text = payload.get("system")
+                        if not isinstance(system_text, str) or not system_text:
+                            raise TypeError("Anthropic system cache boundary is empty")
+                        payload["system"] = [
+                            {
+                                "type": "text",
+                                "text": system_text,
+                                "cache_control": {"type": "ephemeral"},
+                            }
+                        ]
+                        cache_lowering_status = "applied"
+                        cache_lowering_strategy = "anthropic_cache_control"
+                else:
+                    provider_message_index = sum(
+                        destination != "system"
+                        for destination in destinations[:boundary]
+                    )
+                    marked = self._with_cache_control(
+                        anthropic_messages[provider_message_index]
+                    )
+                    anthropic_messages[provider_message_index] = marked
+                    payload["messages"][provider_message_index] = marked
+                    message_occurrences[boundary] = marked
+                    cache_lowering_status = "applied"
+                    cache_lowering_strategy = "anthropic_cache_control"
         if tools is not None:
             payload["tools"] = tool_occurrences
         return ProviderWireProjection(
@@ -225,6 +302,8 @@ class AnthropicProvider(LLMProviderBase):
                 if tools is None
                 else ProviderToolsLowering.PRESERVE
             ),
+            cache_lowering_status=cache_lowering_status,
+            cache_lowering_strategy=cache_lowering_strategy,
         )
 
     def _prepare_context_request(

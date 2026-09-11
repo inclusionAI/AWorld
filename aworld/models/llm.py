@@ -73,7 +73,6 @@ from aworld.core.context.compiler import (
     ProviderCandidateEnvelope,
     ProviderAttributionSubject,
     ProviderObservedAttributionEnvelope,
-    ProviderCacheMaterial,
     ProviderLoweringCapability,
     ProviderRequestFidelity,
     RequestCaptureStage,
@@ -332,6 +331,11 @@ class LLMModel:
         """
         candidate_policy = kwargs.pop("context_candidate_policy", None)
         runtime_config = kwargs.pop("context_compiler", None)
+        self._context_cache_config = (
+            getattr(conf, "context_cache", None)
+            if conf is not None
+            else kwargs.get("context_cache")
+        )
         if runtime_config is None and conf_contains_key(conf, "context_compiler"):
             runtime_config = conf.context_compiler
         runtime_mode = (
@@ -927,6 +931,50 @@ class LLMModel:
             value = context.get_state("current_agent_id")
         return str(value) if value else f"task-agent-{context.task_id}"
 
+    def _context_cache_plan_options(
+        self, context: Context | None
+    ) -> tuple[str | None, bool]:
+        """Resolve provider-neutral cache intent from model and Context policy."""
+        def config_value(config: Any, name: str, default: Any) -> Any:
+            if isinstance(config, dict):
+                return config.get(name, default)
+            return getattr(config, name, default)
+
+        configs = []
+        model_cache = self._context_cache_config
+        if model_cache is not None:
+            configs.append(model_cache)
+        if context is not None and hasattr(context, "get_agent_context_config"):
+            agent_id = self._context_agent_identity(context)
+            for namespace in (agent_id, "default"):
+                if namespace is None:
+                    continue
+                try:
+                    agent_config = context.get_agent_context_config(namespace)
+                except Exception:
+                    continue
+                agent_cache = getattr(agent_config, "context_cache", None)
+                if agent_cache is not None:
+                    configs.append(agent_cache)
+                    break
+        native_requested = all(
+            bool(config_value(config, "enabled", True))
+            and bool(config_value(config, "allow_provider_native_cache", True))
+            for config in configs
+        )
+        namespaces = {
+            str(value)
+            for value in (
+                config_value(config, "provider_cache_namespace", None)
+                for config in configs
+            )
+            if value is not None and str(value).strip()
+        }
+        # Conflicting scopes must never be silently collapsed into one provider
+        # routing key. Native caching remains usable through exact-prefix modes.
+        provider_namespace = next(iter(namespaces)) if len(namespaces) == 1 else None
+        return provider_namespace, native_requested
+
     def _finalize_context_messages(
         self,
         *,
@@ -1252,6 +1300,19 @@ class LLMModel:
                 context.get_context_observations() if context is not None else ()
             )
             task_epoch = context.task_epoch if context is not None else None
+            cache_epoch = (
+                context.context_lifecycle_state.checkpoint_revision
+                if context is not None
+                else 0
+            )
+            cache_break_reasons = (
+                context.get_pending_cache_break_reasons()
+                if context is not None
+                else ()
+            )
+            provider_cache_namespace, native_cache_requested = (
+                self._context_cache_plan_options(context)
+            )
             agent_id = self._context_agent_identity(context)
             workspace_path = context.workspace_path if context is not None else None
             context_limit = (
@@ -1278,6 +1339,10 @@ class LLMModel:
                 session_id=context.session_id if context is not None else None,
                 trace_id=(context.trace_id or None) if context is not None else None,
                 task_epoch=task_epoch,
+                cache_epoch=cache_epoch,
+                provider_cache_namespace=provider_cache_namespace,
+                cache_break_reasons=cache_break_reasons,
+                native_cache_requested=native_cache_requested,
                 resolution_target=(
                     ContextResolutionTarget(
                         workspace_id=workspace_path,
@@ -1369,6 +1434,16 @@ class LLMModel:
                     "capture_stage": snapshot.capture_stage.value,
                     "fidelity": snapshot.fidelity.value,
                     "attribution_plan_fingerprint": attribution_plan.fingerprint,
+                    "cache_plan_fingerprint": (
+                        candidate.final_result.cache_plan.fingerprint
+                        if candidate.final_result is not None
+                        else None
+                    ),
+                    "candidate_contract_hash": (
+                        candidate.final_result.candidate_contract_hash
+                        if candidate.final_result is not None
+                        else None
+                    ),
                 },
                 "compiler_attribution_plan": attribution_plan.to_redacted_dict(),
                 "comparison": (
@@ -1449,36 +1524,17 @@ class LLMModel:
                     blocked,
                 )
             try:
-                cache_material = None
-                if candidate.final_result is not None:
-                    request_messages = snapshot.payload["messages"]
-                    stable_items = candidate.final_result.stable_partition.stable_items
-                    stable_message_count = len(stable_items)
-                    if (
-                        isinstance(request_messages, tuple)
-                        and stable_message_count <= len(request_messages)
-                        and all(
-                            item.payload == request_messages[index]
-                            for index, item in enumerate(stable_items)
-                        )
-                    ):
-                        cache_material = ProviderCacheMaterial(
-                            inference_profile=compiler_input.inference_profile,
-                            policy_version=candidate.final_result.policy_version,
-                            tool_catalog_hash=candidate.final_result.tool_catalog_hash,
-                            skill_set_hash=candidate.final_result.skill_set_hash,
-                            logical_stable_prefix_hash=(
-                                candidate.final_result.stable_partition.stable_prefix_hash
-                            ),
-                            stable_message_count=stable_message_count,
-                        )
                 envelope = ProviderCandidateEnvelope(
                     candidate_request=snapshot,
                     compiler_identity=candidate.compiler_identity,
                     compiler_version=candidate.compiler_version,
                     expected_lowering=capability,
                     attribution_plan=attribution_plan,
-                    cache_material=cache_material,
+                    cache_plan=(
+                        candidate.final_result.cache_plan
+                        if candidate.final_result is not None
+                        else None
+                    ),
                 )
             except Exception:
                 blocked = dict(metadata)

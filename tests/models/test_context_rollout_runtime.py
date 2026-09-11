@@ -658,6 +658,77 @@ async def test_exact_anthropic_provider_lowers_candidate_across_all_send_paths()
 
 
 @pytest.mark.asyncio
+async def test_anthropic_universal_cache_plan_lowers_native_boundary_all_paths():
+    provider, calls = _anthropic_without_transport()
+    model = LLMModel(
+        conf=ModelConfig(
+            context_compiler={"mode": "enforce", "universal_final": True}
+        ),
+        custom_provider=provider,
+    )
+    model.provider_name = "anthropic"
+    contexts = [Context(task_id=f"anthropic-cache-{index}") for index in range(4)]
+    for context in contexts:
+        context.trace_id = ""
+    messages = [
+        {"role": "system", "content": "stable rules"},
+        {"role": "user", "content": "dynamic request"},
+    ]
+
+    await model.acompletion(messages, context=contexts[0])
+    model.completion(messages, context=contexts[1])
+    list(model.stream_completion(messages, context=contexts[2]))
+    [chunk async for chunk in model.astream_completion(messages, context=contexts[3])]
+
+    assert len(calls) == 4
+    for call, context in zip(calls, contexts, strict=True):
+        assert call["system"] == [
+            {
+                "type": "text",
+                "text": "stable rules",
+                "cache_control": {"type": "ephemeral"},
+            }
+        ]
+        record = context.get_llm_calls()[0]
+        candidate = record["context_rollout"]["candidate_snapshot"]
+        lowering = record["context_rollout"]["provider_lowering"]
+        assert lowering["cache_plan_fingerprint"] == candidate[
+            "cache_plan_fingerprint"
+        ]
+        assert lowering["candidate_contract_hash"] == candidate[
+            "candidate_contract_hash"
+        ]
+        assert lowering["cache_lowering_status"] == "applied"
+        assert lowering["cache_lowering_strategy"] == "anthropic_cache_control"
+
+
+def test_unsupported_native_cache_provider_reports_evidence_without_blocking():
+    provider, calls = _ant_without_transport()
+    model = LLMModel(
+        conf=ModelConfig(
+            context_compiler={"mode": "enforce", "universal_final": True}
+        ),
+        custom_provider=provider,
+    )
+    model.provider_name = "ant"
+    context = Context(task_id="ant-cache-unsupported")
+    context.trace_id = ""
+
+    model.completion(
+        [
+            {"role": "system", "content": "stable rules"},
+            {"role": "user", "content": "go"},
+        ],
+        context=context,
+    )
+
+    assert len(calls) == 1
+    lowering = context.get_llm_calls()[0]["context_rollout"]["provider_lowering"]
+    assert lowering["cache_lowering_status"] == "unsupported"
+    assert lowering["cache_lowering_strategy"] == "none"
+
+
+@pytest.mark.asyncio
 async def test_exact_ant_provider_lowers_candidate_across_all_send_paths():
     provider, calls = _ant_without_transport()
     model = _model(mode="enforce", provider=provider, policy=_candidate_policy())

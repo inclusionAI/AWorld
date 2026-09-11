@@ -31,6 +31,7 @@ from aworld.core.context.compiler.lifecycle import (
     LifecycleAction,
     transition_context_lifecycle,
 )
+from aworld.core.context.compiler.models import CacheBreakReason
 from aworld.core.context.compiler.completion import (
     ArtifactEvidence,
     CompletionAssessment,
@@ -1270,6 +1271,12 @@ class Context:
 
     def get_context_reduction_receipts(self) -> tuple[ReductionReceipt, ...]:
         return tuple(self._context_reduction_receipts.values())
+
+    def get_pending_cache_break_reasons(self) -> tuple[CacheBreakReason, ...]:
+        """Return a deterministic snapshot of unconsumed cache invalidations."""
+        return tuple(
+            sorted(self._pending_cache_break_reasons, key=lambda item: item.value)
+        )
 
     def advance_context_lifecycle(
         self,
