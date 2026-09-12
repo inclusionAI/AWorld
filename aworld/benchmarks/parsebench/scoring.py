@@ -12,13 +12,15 @@ import hashlib
 import json
 import math
 import os
+import re
 import shutil
+import stat
 import subprocess
 import sys
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from enum import Enum
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from types import MappingProxyType
 from typing import Any
 
@@ -34,6 +36,25 @@ PARSEBENCH_SCORER_REPOSITORY = "https://github.com/run-llama/ParseBench.git"
 PARSEBENCH_SCORER_REVISION = SCORER_REVISION
 PARSEBENCH_SCORER_UV_LOCK_SHA256 = (
     "d18a4befdb2c1941f9a47d097aba8c45fbe15b9da8d0ea02424c629b8f6d76a2"
+)
+PARSEBENCH_SCORER_PYPROJECT_SHA256 = (
+    "1e684c3bf47d4fd2a72d35f16d298aa8183dd4fc7b7086b8e3bc1b2058685095"
+)
+PARSEBENCH_SCORER_SOURCE_MANIFEST_SHA256 = (
+    "f2e9bfd26bd509bb15a63a8e94c618169c16e93d00ecaf5ca5f928f49a711f53"
+)
+PARSEBENCH_SCORER_VENDORED_METADATA_SHA256 = (
+    "4ae6f99eb61da04f9995bab3ed4d94e2e8b9f299a7fd737607e8f6512049e21b"
+)
+PARSEBENCH_SCORER_BUNDLE_MANIFEST_FILENAME = (
+    "AWORLD_SCORER_BUNDLE_MANIFEST.json"
+)
+PARSEBENCH_SCORER_BUNDLE_MANIFEST_SCHEMA = (
+    "aworld.parsebench.scorer-bundle/v1"
+)
+PARSEBENCH_SCORER_BUNDLE_MANIFEST_SIZE = 32_520
+PARSEBENCH_SCORER_BUNDLE_MANIFEST_SHA256 = (
+    "6a3e317b5b10cdbbb684cc6a519e819af70bfe24646b1de871b2a9b95d7e800e"
 )
 PARSEBENCH_CASE_RESULT_SCHEMA = "aworld.parsebench.case-result/v1"
 PARSEBENCH_REPORT_SCHEMA = "aworld.parsebench.report/v1"
@@ -809,6 +830,9 @@ class ParseBenchVerifierResult:
 
     task_id: str
     case_results: tuple[ParseBenchCaseResult, ...]
+    scope_kind: str | None = None
+    selection_manifest_sha256: str | None = None
+    scope_publishable: bool | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.task_id, str) or not self.task_id.strip():
@@ -838,6 +862,24 @@ class ParseBenchVerifierResult:
                 )
             seen.add(key)
         object.__setattr__(self, "case_results", cases)
+        scope_fields = (
+            self.scope_kind,
+            self.selection_manifest_sha256,
+            self.scope_publishable,
+        )
+        if any(item is not None for item in scope_fields):
+            if (
+                self.scope_kind not in {"smoke", "official-full", "custom"}
+                or not isinstance(self.selection_manifest_sha256, str)
+                or re.fullmatch(r"sha256:[0-9a-f]{64}", self.selection_manifest_sha256)
+                is None
+                or not isinstance(self.scope_publishable, bool)
+            ):
+                raise ValueError("benchmark scope identity is invalid")
+            if self.scope_publishable and self.scope_kind != "official-full":
+                raise ValueError(
+                    "only official-full benchmark scope may be publishable"
+                )
 
     @classmethod
     def from_case_results(
@@ -845,8 +887,17 @@ class ParseBenchVerifierResult:
         *,
         task_id: str,
         case_results: Iterable[ParseBenchCaseResult],
+        scope_kind: str | None = None,
+        selection_manifest_sha256: str | None = None,
+        scope_publishable: bool | None = None,
     ) -> ParseBenchVerifierResult:
-        return cls(task_id=task_id, case_results=tuple(case_results))
+        return cls(
+            task_id=task_id,
+            case_results=tuple(case_results),
+            scope_kind=scope_kind,
+            selection_manifest_sha256=selection_manifest_sha256,
+            scope_publishable=scope_publishable,
+        )
 
     @property
     def dimension_results(self) -> tuple[ParseBenchDimensionResult, ...]:
@@ -965,9 +1016,24 @@ class ParseBenchVerifierResult:
         raw_task_id = payload.get("task_id")
         if not isinstance(raw_task_id, str):
             raise TypeError("ParseBench verifier result task_id must be a string")
+        raw_scope = payload.get("benchmark_scope")
+        scope: Mapping[str, Any] | None = None
+        if raw_scope is not None:
+            if not isinstance(raw_scope, Mapping) or set(raw_scope) != {
+                "kind",
+                "selection_manifest_sha256",
+                "publishable",
+            }:
+                raise TypeError("ParseBench verifier benchmark_scope is invalid")
+            scope = raw_scope
         result = cls.from_case_results(
             task_id=raw_task_id,
             case_results=(ParseBenchCaseResult.from_dict(case) for case in raw_cases),
+            scope_kind=None if scope is None else scope["kind"],
+            selection_manifest_sha256=(
+                None if scope is None else scope["selection_manifest_sha256"]
+            ),
+            scope_publishable=None if scope is None else scope["publishable"],
         )
         if result.to_dict() != dict(payload):
             raise ValueError(
@@ -976,7 +1042,7 @@ class ParseBenchVerifierResult:
         return result
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        payload = {
             "schema": PARSEBENCH_VERIFIER_RESULT_SCHEMA,
             "task_id": self.task_id,
             "dataset_id": PARSEBENCH_DATASET_ID,
@@ -989,6 +1055,13 @@ class ParseBenchVerifierResult:
             "diagnostics": list(self.diagnostics),
             "cases": [case.to_dict() for case in self.case_results],
         }
+        if self.scope_kind is not None:
+            payload["benchmark_scope"] = {
+                "kind": self.scope_kind,
+                "selection_manifest_sha256": self.selection_manifest_sha256,
+                "publishable": self.scope_publishable,
+            }
+        return payload
 
     def render_stdout_sentinel(self) -> str:
         """Render one canonical, bounded line for remote result recovery."""
@@ -1695,6 +1768,401 @@ def _sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _source_tree_manifest_sha256(source_root: Path) -> str:
+    """Hash the immutable source tree while excluding generated bytecode caches."""
+
+    entries: list[dict[str, object]] = []
+    try:
+        candidates = sorted(
+            source_root.rglob("*"),
+            key=lambda candidate: candidate.relative_to(source_root).as_posix(),
+        )
+        for candidate in candidates:
+            relative = candidate.relative_to(source_root)
+            if "__pycache__" in relative.parts:
+                continue
+            if candidate.is_symlink():
+                raise OfficialScorerValidationError(
+                    f"vendored scorer source contains a symlink: {relative.as_posix()}"
+                )
+            if candidate.is_dir():
+                continue
+            if not candidate.is_file():
+                raise OfficialScorerValidationError(
+                    "vendored scorer source contains a non-regular entry"
+                )
+            entries.append(
+                {
+                    "path": relative.as_posix(),
+                    "size": candidate.stat().st_size,
+                    "sha256": _sha256_file(candidate),
+                }
+            )
+    except OfficialScorerValidationError:
+        raise
+    except OSError as exc:
+        raise OfficialScorerValidationError(
+            f"could not attest vendored scorer source: {exc}"
+        ) from exc
+    manifest = json.dumps(
+        entries,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(manifest).hexdigest()
+
+
+def _reject_manifest_constant(value: str) -> None:
+    raise ValueError(f"non-finite JSON constant is forbidden: {value}")
+
+
+def _manifest_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError(f"duplicate JSON key: {key}")
+        result[key] = value
+    return result
+
+
+def _canonical_json_bytes(value: Any) -> bytes:
+    return json.dumps(
+        value,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+
+
+def _parse_vendored_bundle_manifest(raw: bytes) -> tuple[dict[str, Any], ...]:
+    try:
+        payload = json.loads(
+            raw.decode("utf-8"),
+            object_pairs_hook=_manifest_object,
+            parse_constant=_reject_manifest_constant,
+        )
+    except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
+        raise OfficialScorerValidationError(
+            "official scorer bundle manifest is not strict JSON"
+        ) from exc
+    if not isinstance(payload, Mapping):
+        raise OfficialScorerValidationError(
+            "official scorer bundle manifest root must be an object"
+        )
+    if _canonical_json_bytes(payload) != raw:
+        raise OfficialScorerValidationError(
+            "official scorer bundle manifest is not canonical JSON"
+        )
+    if set(payload) != {"schema_version", "scorer_revision", "files"}:
+        raise OfficialScorerValidationError(
+            "official scorer bundle manifest has unexpected fields"
+        )
+    if payload["schema_version"] != PARSEBENCH_SCORER_BUNDLE_MANIFEST_SCHEMA:
+        raise OfficialScorerValidationError(
+            "official scorer bundle manifest schema mismatch"
+        )
+    if payload["scorer_revision"] != PARSEBENCH_SCORER_REVISION:
+        raise OfficialScorerValidationError(
+            "official scorer bundle manifest revision mismatch"
+        )
+    files = payload["files"]
+    if not isinstance(files, list) or not files:
+        raise OfficialScorerValidationError(
+            "official scorer bundle manifest files must be a non-empty list"
+        )
+
+    entries: list[dict[str, Any]] = []
+    previous_path: str | None = None
+    for entry in files:
+        if not isinstance(entry, Mapping) or set(entry) != {
+            "path",
+            "size",
+            "sha256",
+        }:
+            raise OfficialScorerValidationError(
+                "official scorer bundle manifest contains an invalid file entry"
+            )
+        relative_path = entry["path"]
+        size = entry["size"]
+        sha256 = entry["sha256"]
+        if not isinstance(relative_path, str):
+            raise OfficialScorerValidationError(
+                "official scorer bundle manifest path must be a string"
+            )
+        pure_path = PurePosixPath(relative_path)
+        if (
+            not relative_path
+            or "\\" in relative_path
+            or pure_path.is_absolute()
+            or relative_path != pure_path.as_posix()
+            or any(part in {"", ".", ".."} for part in pure_path.parts)
+            or relative_path == PARSEBENCH_SCORER_BUNDLE_MANIFEST_FILENAME
+        ):
+            raise OfficialScorerValidationError(
+                "official scorer bundle manifest contains an unsafe path"
+            )
+        if relative_path not in {
+            "LICENSE",
+            "README.md",
+            "VENDORED.md",
+            "pyproject.toml",
+            "uv.lock",
+        } and not relative_path.startswith("src/parse_bench/"):
+            raise OfficialScorerValidationError(
+                "official scorer bundle manifest contains an unexpected path"
+            )
+        if previous_path is not None and relative_path <= previous_path:
+            raise OfficialScorerValidationError(
+                "official scorer bundle manifest paths are duplicate or unsorted"
+            )
+        if isinstance(size, bool) or not isinstance(size, int) or size < 0:
+            raise OfficialScorerValidationError(
+                "official scorer bundle manifest size must be a non-negative integer"
+            )
+        if not isinstance(sha256, str) or re.fullmatch(r"[0-9a-f]{64}", sha256) is None:
+            raise OfficialScorerValidationError(
+                "official scorer bundle manifest SHA256 must be lowercase hex"
+            )
+        entries.append(dict(entry))
+        previous_path = relative_path
+
+    required_paths = {
+        "VENDORED.md",
+        "pyproject.toml",
+        "uv.lock",
+        "src/parse_bench/__init__.py",
+    }
+    manifest_paths = {entry["path"] for entry in entries}
+    if not required_paths.issubset(manifest_paths):
+        raise OfficialScorerValidationError(
+            "official scorer bundle manifest is missing required files"
+        )
+    return tuple(entries)
+
+
+def _format_tree_difference(paths: set[str]) -> str:
+    rendered = ", ".join(sorted(paths)[:3])
+    if len(paths) > 3:
+        rendered += f", ... ({len(paths)} total)"
+    return rendered
+
+
+def _validate_vendored_bundle_tree(
+    checkout_path: Path,
+    entries: tuple[dict[str, Any], ...],
+) -> None:
+    expected_files = {entry["path"] for entry in entries}
+    expected_directories: set[str] = set()
+    for path in expected_files:
+        parent = PurePosixPath(path).parent
+        while parent.as_posix() != ".":
+            expected_directories.add(parent.as_posix())
+            parent = parent.parent
+
+    observed_files: set[str] = set()
+    observed_directories: set[str] = set()
+
+    def raise_walk_error(exc: OSError) -> None:
+        raise exc
+
+    try:
+        for current_raw, directory_names, file_names in os.walk(
+            checkout_path,
+            topdown=True,
+            followlinks=False,
+            onerror=raise_walk_error,
+        ):
+            current = Path(current_raw)
+            relative_current = current.relative_to(checkout_path)
+            directory_names.sort()
+            file_names.sort()
+            if relative_current == Path(".") and ".venv" in directory_names:
+                venv = checkout_path / ".venv"
+                mode = venv.lstat().st_mode
+                if stat.S_ISLNK(mode) or not stat.S_ISDIR(mode):
+                    raise OfficialScorerValidationError(
+                        "official scorer .venv must be a real directory"
+                )
+                directory_names.remove(".venv")
+
+            # The pinned scorer creates one empty cache directory even with
+            # bytecode disabled and redirected. Empty __pycache__ directories
+            # are not importable content; any entry inside remains an exact-
+            # tree violation and is rejected before the directory is pruned.
+            for name in tuple(directory_names):
+                if name != "__pycache__":
+                    continue
+                cache = current / name
+                cache_relative = cache.relative_to(checkout_path)
+                if not cache_relative.parts or cache_relative.parts[0] != "src":
+                    continue
+                cache_mode = cache.lstat().st_mode
+                if stat.S_ISLNK(cache_mode) or not stat.S_ISDIR(cache_mode):
+                    raise OfficialScorerValidationError(
+                        "official scorer bytecode cache is not a real directory"
+                    )
+                if any(cache.iterdir()):
+                    raise OfficialScorerValidationError(
+                        "official scorer bytecode cache contains unmanifested files"
+                    )
+                directory_names.remove(name)
+
+            for name in directory_names:
+                candidate = current / name
+                relative = candidate.relative_to(checkout_path).as_posix()
+                mode = candidate.lstat().st_mode
+                if stat.S_ISLNK(mode):
+                    raise OfficialScorerValidationError(
+                        f"official scorer bundle contains a directory symlink: {relative}"
+                    )
+                if not stat.S_ISDIR(mode):
+                    raise OfficialScorerValidationError(
+                        f"official scorer bundle contains a special entry: {relative}"
+                    )
+                observed_directories.add(relative)
+
+            for name in file_names:
+                candidate = current / name
+                relative = candidate.relative_to(checkout_path).as_posix()
+                mode = candidate.lstat().st_mode
+                if stat.S_ISLNK(mode):
+                    raise OfficialScorerValidationError(
+                        f"official scorer bundle contains a file symlink: {relative}"
+                    )
+                if not stat.S_ISREG(mode):
+                    raise OfficialScorerValidationError(
+                        f"official scorer bundle contains a special entry: {relative}"
+                    )
+                if relative != PARSEBENCH_SCORER_BUNDLE_MANIFEST_FILENAME:
+                    observed_files.add(relative)
+    except OfficialScorerValidationError:
+        raise
+    except OSError as exc:
+        raise OfficialScorerValidationError(
+            f"could not walk official scorer bundle: {exc}"
+        ) from exc
+
+    missing_files = expected_files - observed_files
+    extra_files = observed_files - expected_files
+    if missing_files:
+        raise OfficialScorerValidationError(
+            "official scorer bundle is missing manifested files: "
+            f"{_format_tree_difference(missing_files)}"
+        )
+    if extra_files:
+        raise OfficialScorerValidationError(
+            "official scorer bundle contains unmanifested files: "
+            f"{_format_tree_difference(extra_files)}"
+        )
+    missing_directories = expected_directories - observed_directories
+    extra_directories = observed_directories - expected_directories
+    if missing_directories:
+        raise OfficialScorerValidationError(
+            "official scorer bundle is missing manifested directories: "
+            f"{_format_tree_difference(missing_directories)}"
+        )
+    if extra_directories:
+        raise OfficialScorerValidationError(
+            "official scorer bundle contains unmanifested directories: "
+            f"{_format_tree_difference(extra_directories)}"
+        )
+
+    for entry in entries:
+        candidate = checkout_path.joinpath(*PurePosixPath(entry["path"]).parts)
+        try:
+            metadata = candidate.lstat()
+            if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISREG(metadata.st_mode):
+                raise OfficialScorerValidationError(
+                    f"official scorer manifested path is not a regular file: {entry['path']}"
+                )
+            if metadata.st_size != entry["size"]:
+                raise OfficialScorerValidationError(
+                    f"official scorer bundle file size mismatch: {entry['path']}"
+                )
+            if _sha256_file(candidate) != entry["sha256"]:
+                raise OfficialScorerValidationError(
+                    f"official scorer bundle file SHA256 mismatch: {entry['path']}"
+                )
+        except OfficialScorerValidationError:
+            raise
+        except OSError as exc:
+            raise OfficialScorerValidationError(
+                f"could not attest official scorer bundle file {entry['path']}: {exc}"
+            ) from exc
+
+
+def _validate_vendored_scorer_bundle(
+    checkout_path: Path,
+    source_root: Path,
+) -> None:
+    """Attest the exact Git-free scorer bundle shipped by the runtime image."""
+
+    manifest_path = checkout_path / PARSEBENCH_SCORER_BUNDLE_MANIFEST_FILENAME
+    try:
+        manifest_metadata = manifest_path.lstat()
+    except OSError as exc:
+        raise OfficialScorerValidationError(
+            "official scorer bundle manifest is missing"
+        ) from exc
+    if stat.S_ISLNK(manifest_metadata.st_mode) or not stat.S_ISREG(
+        manifest_metadata.st_mode
+    ):
+        raise OfficialScorerValidationError(
+            "official scorer bundle manifest is not a regular file"
+        )
+    if manifest_metadata.st_size != PARSEBENCH_SCORER_BUNDLE_MANIFEST_SIZE:
+        raise OfficialScorerValidationError(
+            "official scorer bundle manifest size mismatch"
+        )
+    try:
+        manifest_raw = manifest_path.read_bytes()
+    except OSError as exc:
+        raise OfficialScorerValidationError(
+            f"could not read official scorer bundle manifest: {exc}"
+        ) from exc
+    manifest_sha256 = hashlib.sha256(manifest_raw).hexdigest()
+    if manifest_sha256 != PARSEBENCH_SCORER_BUNDLE_MANIFEST_SHA256:
+        raise OfficialScorerValidationError(
+            "official scorer bundle manifest SHA256 mismatch"
+        )
+    manifest_entries = _parse_vendored_bundle_manifest(manifest_raw)
+    _validate_vendored_bundle_tree(checkout_path, manifest_entries)
+
+    evidence = (
+        (
+            checkout_path / "VENDORED.md",
+            PARSEBENCH_SCORER_VENDORED_METADATA_SHA256,
+            "vendored metadata",
+        ),
+        (
+            checkout_path / "pyproject.toml",
+            PARSEBENCH_SCORER_PYPROJECT_SHA256,
+            "pyproject.toml",
+        ),
+    )
+    for path, expected_sha256, description in evidence:
+        if not path.is_file() or path.is_symlink():
+            raise OfficialScorerValidationError(
+                f"official scorer {description} is missing or not a regular file"
+            )
+        try:
+            actual_sha256 = _sha256_file(path)
+        except OSError as exc:
+            raise OfficialScorerValidationError(
+                f"could not hash official scorer {description}: {exc}"
+            ) from exc
+        if actual_sha256 != expected_sha256:
+            raise OfficialScorerValidationError(
+                f"official scorer {description} SHA256 mismatch"
+            )
+    source_manifest = _source_tree_manifest_sha256(source_root)
+    if source_manifest != PARSEBENCH_SCORER_SOURCE_MANIFEST_SHA256:
+        raise OfficialScorerValidationError(
+            "official scorer vendored source manifest SHA256 mismatch"
+        )
+
+
 @dataclass(frozen=True, slots=True)
 class OfficialScorerEnvironment:
     """A validated process boundary for the pinned upstream scorer."""
@@ -1733,6 +2201,8 @@ class OfficialScorerEnvironment:
         environment["PYTHONPATH"] = str(self.source_root)
         environment["PYTHONNOUSERSITE"] = "1"
         environment["PYTHONSAFEPATH"] = "1"
+        environment["PYTHONDONTWRITEBYTECODE"] = "1"
+        environment["PYTHONPYCACHEPREFIX"] = "/tmp/aworld-parsebench-pycache"
         environment["PYTHON_DOTENV_DISABLED"] = "1"
         # The pinned scorer is deterministic by default; make the optional
         # chart LLM normalization setting explicit at the process boundary.
@@ -1783,53 +2253,73 @@ def validate_official_scorer(
 ) -> OfficialScorerEnvironment:
     """Validate an exact, clean official checkout and its Python environment."""
 
-    checkout_path = Path(checkout).expanduser().resolve()
-    source_root = (checkout_path / "src").resolve()
-    package_root = source_root / "parse_bench"
-    if not checkout_path.is_dir() or not (checkout_path / ".git").exists():
+    requested_checkout = Path(os.path.abspath(Path(checkout).expanduser()))
+    if requested_checkout.is_symlink():
         raise OfficialScorerValidationError(
-            f"not a ParseBench git checkout: {checkout_path}"
+            "official scorer checkout must not be a symlink"
         )
-    if not package_root.is_dir():
+    checkout_path = requested_checkout.resolve()
+    source_directory = checkout_path / "src"
+    source_root = source_directory.resolve()
+    package_root = source_root / "parse_bench"
+    if not checkout_path.is_dir():
+        raise OfficialScorerValidationError(
+            f"not a ParseBench scorer directory: {checkout_path}"
+        )
+    if (
+        source_directory.is_symlink()
+        or not source_root.is_relative_to(checkout_path)
+        or not package_root.is_dir()
+        or package_root.is_symlink()
+    ):
         raise OfficialScorerValidationError(
             f"official scorer package is missing: {package_root}"
         )
     resolved_python = _resolve_executable(python_executable)
 
-    revision_process = _completed_process(
-        ["git", "-C", str(checkout_path), "rev-parse", "--verify", "HEAD"],
-        timeout=_PROBE_TIMEOUT_SECONDS,
-    )
-    if revision_process.returncode != 0:
+    git_metadata = checkout_path / ".git"
+    if git_metadata.is_symlink():
         raise OfficialScorerValidationError(
-            "could not read official scorer git revision"
+            "official scorer Git metadata must not be a symlink"
         )
-    actual_revision = revision_process.stdout.strip()
-    if actual_revision != PARSEBENCH_SCORER_REVISION:
-        raise OfficialScorerValidationError(
-            f"official scorer revision mismatch: expected {PARSEBENCH_SCORER_REVISION}, "
-            f"found {actual_revision or '<empty>'}"
+    if git_metadata.exists():
+        revision_process = _completed_process(
+            ["git", "-C", str(checkout_path), "rev-parse", "--verify", "HEAD"],
+            timeout=_PROBE_TIMEOUT_SECONDS,
         )
+        if revision_process.returncode != 0:
+            raise OfficialScorerValidationError(
+                "could not read official scorer git revision"
+            )
+        actual_revision = revision_process.stdout.strip()
+        if actual_revision != PARSEBENCH_SCORER_REVISION:
+            raise OfficialScorerValidationError(
+                "official scorer revision mismatch: expected "
+                f"{PARSEBENCH_SCORER_REVISION}, "
+                f"found {actual_revision or '<empty>'}"
+            )
 
-    status_process = _completed_process(
-        [
-            "git",
-            "-C",
-            str(checkout_path),
-            "status",
-            "--porcelain=v1",
-            "--untracked-files=all",
-        ],
-        timeout=_PROBE_TIMEOUT_SECONDS,
-    )
-    if status_process.returncode != 0:
-        raise OfficialScorerValidationError(
-            "could not inspect official scorer checkout cleanliness"
+        status_process = _completed_process(
+            [
+                "git",
+                "-C",
+                str(checkout_path),
+                "status",
+                "--porcelain=v1",
+                "--untracked-files=all",
+            ],
+            timeout=_PROBE_TIMEOUT_SECONDS,
         )
-    if status_process.stdout.strip():
-        raise OfficialScorerValidationError(
-            "official scorer checkout has uncommitted files"
-        )
+        if status_process.returncode != 0:
+            raise OfficialScorerValidationError(
+                "could not inspect official scorer checkout cleanliness"
+            )
+        if status_process.stdout.strip():
+            raise OfficialScorerValidationError(
+                "official scorer checkout has uncommitted files"
+            )
+    else:
+        _validate_vendored_scorer_bundle(checkout_path, source_root)
 
     dotenv_path = checkout_path / ".env"
     if dotenv_path.exists() or dotenv_path.is_symlink():

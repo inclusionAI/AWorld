@@ -18,6 +18,10 @@ from aworld.benchmarks.parsebench.scoring import (
     PARSEBENCH_REPORT_SCHEMA,
     PARSEBENCH_REWARD_FILENAME,
     PARSEBENCH_REWARD_KEY,
+    PARSEBENCH_SCORER_BUNDLE_MANIFEST_FILENAME,
+    PARSEBENCH_SCORER_BUNDLE_MANIFEST_SCHEMA,
+    PARSEBENCH_SCORER_BUNDLE_MANIFEST_SHA256,
+    PARSEBENCH_SCORER_BUNDLE_MANIFEST_SIZE,
     PARSEBENCH_SCORER_REPOSITORY,
     PARSEBENCH_SCORER_REVISION,
     PARSEBENCH_SCORER_UV_LOCK_SHA256,
@@ -81,6 +85,53 @@ def _write_synthetic_pinned_lock(
     )
 
 
+def _write_synthetic_bundle_manifest(
+    checkout: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    scorer_revision: str = PARSEBENCH_SCORER_REVISION,
+) -> bytes:
+    manifest_path = checkout / PARSEBENCH_SCORER_BUNDLE_MANIFEST_FILENAME
+    files: list[dict[str, object]] = []
+    for path in sorted(
+        checkout.rglob("*"),
+        key=lambda candidate: candidate.relative_to(checkout).as_posix(),
+    ):
+        relative = path.relative_to(checkout)
+        if ".venv" in relative.parts or path == manifest_path or not path.is_file():
+            continue
+        content = path.read_bytes()
+        files.append(
+            {
+                "path": relative.as_posix(),
+                "size": len(content),
+                "sha256": hashlib.sha256(content).hexdigest(),
+            }
+        )
+    raw = json.dumps(
+        {
+            "schema_version": PARSEBENCH_SCORER_BUNDLE_MANIFEST_SCHEMA,
+            "scorer_revision": scorer_revision,
+            "files": files,
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    manifest_path.write_bytes(raw)
+    monkeypatch.setattr(
+        scoring_module,
+        "PARSEBENCH_SCORER_BUNDLE_MANIFEST_SHA256",
+        hashlib.sha256(raw).hexdigest(),
+    )
+    monkeypatch.setattr(
+        scoring_module,
+        "PARSEBENCH_SCORER_BUNDLE_MANIFEST_SIZE",
+        len(raw),
+    )
+    return raw
+
+
 def _scored(
     dimension: ParseBenchDimension,
     score: float,
@@ -105,6 +156,19 @@ def test_upstream_revisions_and_primary_metrics_are_pinned() -> None:
         PARSEBENCH_SCORER_UV_LOCK_SHA256
         == "d18a4befdb2c1941f9a47d097aba8c45fbe15b9da8d0ea02424c629b8f6d76a2"
     )
+    assert (
+        PARSEBENCH_SCORER_BUNDLE_MANIFEST_FILENAME
+        == "AWORLD_SCORER_BUNDLE_MANIFEST.json"
+    )
+    assert (
+        PARSEBENCH_SCORER_BUNDLE_MANIFEST_SCHEMA
+        == "aworld.parsebench.scorer-bundle/v1"
+    )
+    assert (
+        PARSEBENCH_SCORER_BUNDLE_MANIFEST_SHA256
+        == "6a3e317b5b10cdbbb684cc6a519e819af70bfe24646b1de871b2a9b95d7e800e"
+    )
+    assert PARSEBENCH_SCORER_BUNDLE_MANIFEST_SIZE == 32_520
     assert PARSEBENCH_DIMENSIONS == (
         ParseBenchDimension.TABLE,
         ParseBenchDimension.CHART,
@@ -1030,6 +1094,189 @@ def test_validate_official_scorer_checks_revision_cleanliness_and_probe(
     assert len(calls) == 3
 
 
+def test_validate_official_scorer_attests_git_free_vendored_bundle(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    checkout = tmp_path / "parsebench-scorer"
+    package = checkout / "src" / "parse_bench"
+    package.mkdir(parents=True)
+    (package / "__init__.py").write_text("__version__ = 'pinned'\n")
+    vendored = checkout / "VENDORED.md"
+    vendored.write_text(f"revision {PARSEBENCH_SCORER_REVISION}\n")
+    pyproject = checkout / "pyproject.toml"
+    pyproject.write_text("[project]\nname='parse-bench'\n")
+    _write_synthetic_pinned_lock(checkout, monkeypatch)
+    monkeypatch.setattr(
+        scoring_module,
+        "PARSEBENCH_SCORER_VENDORED_METADATA_SHA256",
+        hashlib.sha256(vendored.read_bytes()).hexdigest(),
+    )
+    monkeypatch.setattr(
+        scoring_module,
+        "PARSEBENCH_SCORER_PYPROJECT_SHA256",
+        hashlib.sha256(pyproject.read_bytes()).hexdigest(),
+    )
+    monkeypatch.setattr(
+        scoring_module,
+        "PARSEBENCH_SCORER_SOURCE_MANIFEST_SHA256",
+        scoring_module._source_tree_manifest_sha256(checkout / "src"),
+    )
+    _write_synthetic_bundle_manifest(checkout, monkeypatch)
+    venv = checkout / ".venv"
+    (venv / "bin").mkdir(parents=True)
+    (venv / "bin" / "python").symlink_to(sys.executable)
+    (package / "__pycache__").mkdir()
+
+    def fake_run(command: list[str], **_: object) -> subprocess.CompletedProcess[str]:
+        assert command[0] != "git"
+        return subprocess.CompletedProcess(
+            command,
+            0,
+            json.dumps(_fake_probe_payload(checkout)) + "\n",
+            "",
+        )
+
+    monkeypatch.setattr(scoring_module, "_completed_process", fake_run)
+
+    environment = validate_official_scorer(
+        checkout,
+        python_executable=sys.executable,
+    )
+    assert environment.source_root == (checkout / "src").resolve()
+
+    cache_payload = package / "__pycache__" / "injected.pyc"
+    cache_payload.write_bytes(b"not trusted")
+    with pytest.raises(OfficialScorerValidationError, match="bytecode cache"):
+        validate_official_scorer(checkout, python_executable=sys.executable)
+    cache_payload.unlink()
+
+    (package / "__init__.py").write_text("__version__ = 'tampered'\n")
+    with pytest.raises(OfficialScorerValidationError, match="bundle file"):
+        validate_official_scorer(checkout, python_executable=sys.executable)
+
+
+def test_validate_official_scorer_rejects_unmanifested_source_and_directory(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    checkout = tmp_path / "parsebench-scorer"
+    package = checkout / "src" / "parse_bench"
+    package.mkdir(parents=True)
+    (package / "__init__.py").write_text("__version__ = 'pinned'\n")
+    vendored = checkout / "VENDORED.md"
+    vendored.write_text(f"revision {PARSEBENCH_SCORER_REVISION}\n")
+    pyproject = checkout / "pyproject.toml"
+    pyproject.write_text("[project]\nname='parse-bench'\n")
+    _write_synthetic_pinned_lock(checkout, monkeypatch)
+    monkeypatch.setattr(
+        scoring_module,
+        "PARSEBENCH_SCORER_VENDORED_METADATA_SHA256",
+        hashlib.sha256(vendored.read_bytes()).hexdigest(),
+    )
+    monkeypatch.setattr(
+        scoring_module,
+        "PARSEBENCH_SCORER_PYPROJECT_SHA256",
+        hashlib.sha256(pyproject.read_bytes()).hexdigest(),
+    )
+    monkeypatch.setattr(
+        scoring_module,
+        "PARSEBENCH_SCORER_SOURCE_MANIFEST_SHA256",
+        scoring_module._source_tree_manifest_sha256(checkout / "src"),
+    )
+    _write_synthetic_bundle_manifest(checkout, monkeypatch)
+
+    (package / "sitecustomize.py").write_text("raise RuntimeError('loaded')\n")
+    with pytest.raises(OfficialScorerValidationError, match="unmanifested files"):
+        validate_official_scorer(checkout, python_executable=sys.executable)
+
+    (package / "sitecustomize.py").unlink()
+    (package / "empty_namespace").mkdir()
+    with pytest.raises(OfficialScorerValidationError, match="unmanifested directories"):
+        validate_official_scorer(checkout, python_executable=sys.executable)
+
+
+def test_validate_official_scorer_rejects_bundle_symlink_and_manifest_tamper(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    checkout = tmp_path / "parsebench-scorer"
+    package = checkout / "src" / "parse_bench"
+    package.mkdir(parents=True)
+    init_file = package / "__init__.py"
+    init_file.write_text("__version__ = 'pinned'\n")
+    vendored = checkout / "VENDORED.md"
+    vendored.write_text(f"revision {PARSEBENCH_SCORER_REVISION}\n")
+    pyproject = checkout / "pyproject.toml"
+    pyproject.write_text("[project]\nname='parse-bench'\n")
+    _write_synthetic_pinned_lock(checkout, monkeypatch)
+    monkeypatch.setattr(
+        scoring_module,
+        "PARSEBENCH_SCORER_VENDORED_METADATA_SHA256",
+        hashlib.sha256(vendored.read_bytes()).hexdigest(),
+    )
+    monkeypatch.setattr(
+        scoring_module,
+        "PARSEBENCH_SCORER_PYPROJECT_SHA256",
+        hashlib.sha256(pyproject.read_bytes()).hexdigest(),
+    )
+    monkeypatch.setattr(
+        scoring_module,
+        "PARSEBENCH_SCORER_SOURCE_MANIFEST_SHA256",
+        scoring_module._source_tree_manifest_sha256(checkout / "src"),
+    )
+    raw = _write_synthetic_bundle_manifest(checkout, monkeypatch)
+
+    manifest = checkout / PARSEBENCH_SCORER_BUNDLE_MANIFEST_FILENAME
+    manifest.write_bytes(raw + b"\n")
+    with pytest.raises(OfficialScorerValidationError, match="manifest size"):
+        validate_official_scorer(checkout, python_executable=sys.executable)
+
+    manifest.write_bytes(raw)
+    init_file.unlink()
+    init_file.symlink_to(pyproject)
+    with pytest.raises(OfficialScorerValidationError, match="file symlink"):
+        validate_official_scorer(checkout, python_executable=sys.executable)
+
+
+def test_vendored_bundle_manifest_rejects_revision_and_unsafe_path(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    checkout = tmp_path / "parsebench-scorer"
+    package = checkout / "src" / "parse_bench"
+    package.mkdir(parents=True)
+    (package / "__init__.py").write_text("__version__ = 'pinned'\n")
+    (checkout / "VENDORED.md").write_text("pinned\n")
+    (checkout / "pyproject.toml").write_text("[project]\nname='parse-bench'\n")
+    _write_synthetic_pinned_lock(checkout, monkeypatch)
+    raw = _write_synthetic_bundle_manifest(checkout, monkeypatch)
+    payload = json.loads(raw)
+
+    payload["scorer_revision"] = "0" * 40
+    with pytest.raises(OfficialScorerValidationError, match="revision mismatch"):
+        scoring_module._parse_vendored_bundle_manifest(
+            json.dumps(
+                payload,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        )
+
+    payload["scorer_revision"] = PARSEBENCH_SCORER_REVISION
+    payload["files"][0]["path"] = "../escape.py"
+    with pytest.raises(OfficialScorerValidationError, match="unsafe path"):
+        scoring_module._parse_vendored_bundle_manifest(
+            json.dumps(
+                payload,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        )
+
+
 def test_validate_official_scorer_preserves_virtualenv_python_symlink(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1187,6 +1434,8 @@ def test_official_scorer_command_is_pinned_and_disables_optional_llm_normalizati
     assert child_environment["PYTHONPATH"] == str(source_root)
     assert child_environment["PYTHONNOUSERSITE"] == "1"
     assert child_environment["PYTHONSAFEPATH"] == "1"
+    assert child_environment["PYTHONDONTWRITEBYTECODE"] == "1"
+    assert child_environment["PYTHONPYCACHEPREFIX"] == "/tmp/aworld-parsebench-pycache"
     assert child_environment["PYTHON_DOTENV_DISABLED"] == "1"
     assert child_environment["LLAMACLOUD_BENCH_LLM_NORMALIZATION"] == "off"
     assert child_environment["LANG"] == "C.UTF-8"
