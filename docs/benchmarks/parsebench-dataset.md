@@ -129,6 +129,24 @@ Runtime owns the model route and exposes only the protected proxy configuration
 needed by the AWorld/FileX process. FileX receives the credential through its
 process environment and removes it before constructing its structured config.
 
+PaddleOCR-VL also requires the local `PP-DocLayoutV3` detector. The benchmark
+never lets PaddleX fetch this model while a task is running. The reviewed
+Runtime materializes the official `PP-DocLayoutV3_infer.tar` archive with
+SHA-256
+`98b9bac88c80f6bc0fda7e0bfc2cae180020371c0b2edbb1eb498a70ace751b1`,
+verifies the three extracted model files, and mounts them read-only at
+`/opt/skillsbench-agent-frameworks/paddlex-models/PP-DocLayoutV3`. AWorld
+revalidates those files before every FileX invocation and records model
+`PP-DocLayoutV3` plus manifest digest
+`sha256:effeb59959c7da305dd1d0e74382e82dfa82f10b8ffb9be25b20a2b21d5bad6f`
+in the version-2 result provenance. A missing or changed model fails before
+FileX starts; it never falls back to a registry download.
+
+For a local diagnostic outside the Runtime image, set the non-secret
+`AWORLD_PARSEBENCH_LAYOUT_MODEL_DIR` to an absolute, non-symlinked directory
+containing that exact extracted model. This variable selects only local model
+files and must not contain a URL.
+
 ### Submit one or two tasks
 
 Use `--limit` or repeat `--task-id` to validate only a few tasks. The command
@@ -275,8 +293,10 @@ aworld-cli --no-banner benchmark parsebench run-task \
 This command is intended to run inside the authored task environment, where
 the document is mounted below `/workspace/input` and Runtime supplies protected
 `LLM_BASE_URL`, `LLM_MODEL_NAME`, and `LLM_API_KEY` values. Do not copy those
-values into an extracted task directory. The verifier runs separately through
-the task's `tests/test.sh`; it owns the ground truth and pinned scorer.
+values into an extracted task directory. Runtime also provides the immutable
+layout detector described above; a local run must set
+`AWORLD_PARSEBENCH_LAYOUT_MODEL_DIR` explicitly. The verifier runs separately
+through the task's `tests/test.sh`; it owns the ground truth and pinned scorer.
 
 Useful repository-level checks include:
 
@@ -321,7 +341,8 @@ Rule payloads, rule IDs, tags, expected Markdown, dimensions, and their JSONL
 line provenance remain under verifier-owned `tests/`. `task.toml` selects
 `verifier.environment_mode = "separate"` and gives the verifier its own
 no-network build environment. The AWorld harness writes `document.md`,
-`layout.json`, and `result.json` below `/logs/artifacts`; Harbor stops the agent
+`layout.json`, and the `aworld-parsebench-filex-result/v2` `result.json` below
+`/logs/artifacts`; Harbor stops the agent
 environment before starting the verifier and restores only those artifacts.
 The private `tests/` tree is never uploaded into the agent environment.
 

@@ -12,12 +12,15 @@ import pytest
 
 from aworld.benchmarks.parsebench.adapter import (
     DEFAULT_VLM_MODEL_PROFILE,
+    LAYOUT_MODEL_MANIFEST_SHA256,
+    LAYOUT_MODEL_NAME,
     FileXAdapterError,
     FileXExecutionOptions,
     FileXRunRequest,
     FileXRunResult,
     SubprocessFileXRunner,
     _run_bounded_process,
+    _validated_layout_model_dir,
     execute_filex_parsebench,
     load_parsebench_task_spec,
     normalize_filex_document_ir,
@@ -218,6 +221,11 @@ def test_executor_emits_pixel_xywh_lowercase_labels_and_valid_commit(
         == DEFAULT_VLM_MODEL_PROFILE
     )
     assert result["provenance"]["filex"]["resolved_model_name"] == runner.model_name
+    assert result["provenance"]["filex"]["layout_model_name"] == LAYOUT_MODEL_NAME
+    assert (
+        result["provenance"]["filex"]["layout_model_manifest_sha256"]
+        == LAYOUT_MODEL_MANIFEST_SHA256
+    )
     assert result["timing_ms"]["total"] == 6.0
     assert (
         validate_parsebench_artifacts(
@@ -419,6 +427,12 @@ def test_subprocess_runner_binds_protected_gateway_without_secret_in_argv(
     monkeypatch.setattr(
         "aworld.benchmarks.parsebench.adapter._run_bounded_process", fake_bounded
     )
+    layout_model_dir = tmp_path / "PP-DocLayoutV3"
+    layout_model_dir.mkdir()
+    monkeypatch.setattr(
+        "aworld.benchmarks.parsebench.adapter._validated_layout_model_dir",
+        lambda _environment: layout_model_dir,
+    )
     request = FileXRunRequest(
         source,
         "task",
@@ -447,10 +461,52 @@ def test_subprocess_runner_binds_protected_gateway_without_secret_in_argv(
         "model_name": "gemini-3.1-pro-preview",
     }
     assert set(inline["gateway_vllm"]) == {"base_url", "model_name"}
+    assert inline["paddle_ocr_pipeline_version"] == "v1.6"
+    assert inline["paddle_ocr_layout_detection_model_name"] == LAYOUT_MODEL_NAME
+    assert inline["paddle_ocr_layout_detection_model_dir"] == str(layout_model_dir)
+    assert inline["paddle_ocr_vl_rec_backend"] == "vllm-server"
+    assert inline["paddle_ocr_use_layout_detection"] is True
+    assert inline["paddle_ocr_use_doc_orientation_classify"] is False
+    assert inline["paddle_ocr_use_doc_unwarping"] is False
+    assert inline["paddle_ocr_use_chart_recognition"] is False
+    assert inline["paddle_ocr_use_seal_recognition"] is False
     child_env = seen["environment"]
     assert child_env["GATEWAY_VLLM_API_KEY"] == secret
+    assert child_env["PADDLE_PDX_CACHE_HOME"] == "/tmp/filex-paddlex-cache"
     assert "LLM_API_KEY" not in child_env
     assert result.resolved_model_name == "gemini-3.1-pro-preview"
+
+
+def test_layout_model_dir_requires_pinned_regular_files(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    model_dir = tmp_path / "PP-DocLayoutV3"
+    model_dir.mkdir()
+    payloads = {
+        "inference.json": b"json",
+        "inference.pdiparams": b"params",
+        "inference.yml": b"yaml",
+    }
+    expected = {
+        name: (len(content), "sha256:" + hashlib.sha256(content).hexdigest())
+        for name, content in payloads.items()
+    }
+    monkeypatch.setattr(
+        "aworld.benchmarks.parsebench.adapter._LAYOUT_MODEL_FILES", expected
+    )
+    for name, content in payloads.items():
+        (model_dir / name).write_bytes(content)
+
+    assert _validated_layout_model_dir(
+        {"AWORLD_PARSEBENCH_LAYOUT_MODEL_DIR": str(model_dir)}
+    ) == model_dir
+
+    (model_dir / "inference.yml").write_bytes(b"tampered")
+    with pytest.raises(FileXAdapterError, match="integrity") as error:
+        _validated_layout_model_dir(
+            {"AWORLD_PARSEBENCH_LAYOUT_MODEL_DIR": str(model_dir)}
+        )
+    assert error.value.code == "layout_model_mismatch"
 
 
 @pytest.mark.parametrize("missing", ["LLM_BASE_URL", "LLM_MODEL_NAME", "LLM_API_KEY"])

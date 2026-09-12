@@ -3,6 +3,8 @@
 from aworld.benchmarks.parsebench.adapter import (
     DEFAULT_PROVIDER,
     DEFAULT_VLM_MODEL_PROFILE,
+    LAYOUT_MODEL_MANIFEST_SHA256,
+    LAYOUT_MODEL_NAME,
     FileXAdapterError,
     FileXExecutionOptions,
     FileXRunResult,
@@ -27,6 +29,8 @@ __all__ = (
     "DATASET_REVISION",
     "DEFAULT_PROVIDER",
     "DEFAULT_VLM_MODEL_PROFILE",
+    "LAYOUT_MODEL_MANIFEST_SHA256",
+    "LAYOUT_MODEL_NAME",
     "PARSEBENCH_TASK_FILENAME",
     "PARSEBENCH_TASK_RUNTIME_PATH",
     "PARSEBENCH_TASK_SCHEMA_VERSION",
