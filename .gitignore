@@ -167,6 +167,12 @@ ai_news_today.*
 survey/
 eval/
 
+# Local agent planning and generated evaluation state
+/.agent/
+/artifacts/context-management/
+/dist/
+/regression_test_report.md
+
 # OpenSpec design docs (not runtime)
 openspec/
 
