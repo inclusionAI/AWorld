@@ -416,6 +416,7 @@ class SystemPromptAugmentOp(BaseOp):
                         agent_id=agent_id,
                         dynamic=bool(augment_prompts),
                     ),
+                    task_epoch=context.task_epoch,
                 )
             )
             if formatted_sections:
@@ -432,6 +433,7 @@ class SystemPromptAugmentOp(BaseOp):
                             task_epoch=context.task_epoch,
                             agent_id=agent_id,
                         ),
+                        task_epoch=context.task_epoch,
                     )
                 )
         except Exception as exc:
@@ -539,6 +541,7 @@ class SystemPromptAugmentOp(BaseOp):
                                 # values, so it is conservatively dynamic.
                                 dynamic=True,
                             ),
+                            task_epoch=context.task_epoch,
                         )
                     )
                     stored_sections = validated_amni_system_sections(
@@ -561,6 +564,7 @@ class SystemPromptAugmentOp(BaseOp):
                                     task_epoch=context.task_epoch,
                                     agent_id=agent_id,
                                 ),
+                                task_epoch=context.task_epoch,
                             )
                         )
                 except Exception as exc:

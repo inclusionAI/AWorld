@@ -1974,6 +1974,72 @@ instructions、progressive Skills/Tools、artifact offload、destructive sandbox
 表达事务能力意图，只有 sandbox adapter 提供明确且有界的 tracked task path 时才实际启用，不能把宿主根目录或
 未界定 workdir 自动纳入 checkpoint。
 
+## 2026-09-11 Provider-neutral Cache Economics Upgrade
+
+本阶段优化的是 Adaptive Context 的通用 cache economics，而不是某个模型的命中率。核心层只生产不可变
+`CachePlan`：它绑定最终 candidate、稳定前缀、inference identity、cache epoch、失效原因和可选 routing
+namespace；任何 Provider 原生字段只能由对应 lowering adapter 在 provider-owned 边界消费。OpenAI-compatible、
+Anthropic 和 reviewed custom transport 都遵守同一 candidate/receipt 契约；未实现原生 cache control 的 Provider
+仍发送语义等价的精确前缀，并将 native lowering/usage 标记为 `unsupported` 或 `unavailable`，不得伪造命中。
+因此 GLM 只是当前可用的第一组真实 conformance target，不进入 Context Compiler、cache plan、usage receipt 或
+准出统计的模型名分支。
+
+所有成功模型调用都生成 provider-neutral `CacheUsageReceipt`。它依据 usage 字段的计量结构区分 inclusive
+prompt totals 与 exclusive cache components，支持 exact、bounded、conflicting、invalid、unavailable 五类
+fidelity；缺失 cache 明细不能退化为零命中。相同 receipt 从 append-only call journal 投影到 Raw trajectory，
+CLI 与报告器重新计算并核对捕获值。发布收益指标采用 exact `uncached_input_tokens` 或版本化
+cache-adjusted cost per successful task，不以原始 hit ratio 代替任务收益。
+
+Amni 继续作为唯一 prompt assembly 来源：owner-proved 的 policy/instruction/Tool/Skill section 可以进入稳定前缀，
+memory、task、retrieval 和未知 augment 默认处于动态后缀。Adaptive 与 CLI compaction 共用 cache epoch 生命周期；
+一次真实 history rewrite 只产生一次有原因的 cold boundary，并保留 WorkingState 与最近完整 assistant/Tool 原子组，
+后续 turn 在该 epoch 内 append。Provider lowering 不得在 final compile 后重算或重排 prompt。
+
+准出实验固定为当前 default-on Adaptive 对当前 default-on Adaptive + cache component 的单因素消融：
+`adaptive-cache-off` 只关闭 framework/native cache intent，`adaptive-cache-on` 只打开相同字段，instruction、system
+prompt、model/provider、temperature、Tool surface、container、verifier、seed 和 step/deadline 完全一致。消融计划
+`provider-neutral-cache-v1` 的机器校验只允许 `context_cache.enabled` 与
+`context_cache.allow_provider_native_cache` 两条 changed path；禁止加入模型名、benchmark id、答案或题目特判。
+
+cache 准出采用 capability-aware 双层证据，不能混为一个结论：
+
+1. 通用稳定前缀、cache epoch、usage receipt 与轨迹观测层默认开启。每个 Provider 路径必须证明 provider request
+   语义不变、Raw trajectory/request trace 完整、质量不退化；`unsupported` 或 `exact_prefix_no_hint` 可进入这一层，
+   但报告必须标为 `safety_only`。
+2. Provider 原生 cache-control 层只对 adapter 明确支持的 capability 开启。候选运行的每次 provider-bound receipt
+   必须为 `applied:prompt_cache_key`、`applied:anthropic_cache_control` 或后续经审查注册的等价策略，基线必须为
+   `disabled:explicit_opt_out`，然后才允许把 hit/cost/Reward 差异归因于 AWorld。混合、缺失或 no-hint lowering
+   一律触发 `cache_causal_evidence_incomplete`，不得用随机 Reward 改善绕过。
+
+`OpenAI-compatible` 只表示 wire protocol 兼容，不表示任意网关都支持 `prompt_cache_key`。官方 OpenAI endpoint
+可以由 reviewed adapter 在 `auto` capability 下启用；自定义 base URL 默认产生
+`unsupported:provider_capability_not_declared` 并保持请求语义不变，部署方只有在独立 conformance/canary 后才能用
+`provider_native_cache_capability=supported` 显式开启。该声明由 `LLMProviderBase` 的共同 capability contract
+统一解析，而不是 OpenAI/GLM 特有开关；Anthropic adapter 也采用相同 fail-safe 规则：官方已审查 endpoint 可在
+`auto` 下启用，自定义 Anthropic-compatible base URL 默认只保留精确稳定前缀并产生
+`unsupported:provider_capability_not_declared`。其他 Provider 仍由各自 adapter 声明是否存在原生控制，核心
+Compiler 不检查 provider、模型或 endpoint 名称。
+
+这一区分不是降低门槛：通用层仍要求至少 10 个完整 pair、两类 workload、Reward 95% CI 非退化、完整 capture、
+rollback 与 canary；原生层在此基础上额外要求 lowering 因果链和 exact usage。没有原生控制的 Provider 不会因为
+一个不存在的能力永远阻塞 AWorld 的安全默认配置，但也绝不能宣称获得了 AWorld 控制的 cache 收益。
+
+当前真实 Provider preflight 在 streaming/non-streaming 共 8 个观测上达到 exact usage coverage 100%：cold 与
+prefix-change cache read 为 0，repeat 与 suffix-only change 均复用 10,752 tokens。该证据仅说明当前 endpoint
+满足 usage/conformance contract。当前 GLM 请求的实际 lowering 为 `exact_prefix_no_hint`，所以现有真实结果只能
+进入通用层安全证据，不能作为 native-cache 因果收益。原生层最终准出仍须跨至少两类 workload 获得不少于 10 个
+完整 paired rollout，Reward/任务完成率 95% CI 下界不低于 -0.01，且 exact uncached input 或版本化保守
+cache-adjusted cost-per-success 的 paired CI 上界严格低于 0；缺失 cache 明细的调用只能扩大保守区间，不能混入
+exact 指标。不能把 preflight、deterministic replay、单一 Provider 的通过或
+no-hint 下的单个 0→1 本身解释为跨 Provider 原生缓存收益。
+
+后续显式 native-hint 消融在当前 OpenAI-compatible 网关上完成了四个 Terminal pair。lowering 因果链和 capture
+完整，但结果未通过收益门禁：`cancel-async-tasks` 三个 seed 均为 Reward 0→0，其中一个 Candidate 出现显著调用
+长尾，使 provider-call 与保守成本 CI 均跨 0；`db-wal-recovery` 为 Reward 1→1，但 Candidate 调用从 9 增至 29。
+这组负向证据直接促成上述 capability gate：未经过独立准出的自定义 endpoint 不得因协议兼容而默认接收原生
+cache routing hint。它不否定稳定前缀、cache epoch 与 usage 观测的通用默认能力，但明确阻止当前 endpoint 的
+native hint default-on。
+
 ## Risks and Mitigations
 
 ### Resolver Becomes a New Monolith

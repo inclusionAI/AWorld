@@ -203,6 +203,56 @@ def test_context_only_manifest_and_paired_benefit_are_deterministic():
     assert docker_variant.settings["agent_memory_config"]["tool_result_offload"] is True
 
 
+def test_cache_ablation_is_provider_neutral_and_single_component():
+    baseline = ContextVariant.build(
+        "adaptive-cache-off",
+        {
+            "context_cache": {
+                "enabled": False,
+                "allow_provider_native_cache": False,
+            }
+        },
+    )
+    candidate = ContextVariant.build(
+        "adaptive-cache-on",
+        {
+            "context_cache": {
+                "enabled": True,
+                "allow_provider_native_cache": True,
+            }
+        },
+    )
+
+    contrast = ContextAblationContrast.build(
+        baseline=baseline,
+        candidate=candidate,
+        component=ContextAblationComponent.CACHE,
+    )
+
+    assert contrast.changed_paths == (
+        "context_cache.allow_provider_native_cache",
+        "context_cache.enabled",
+    )
+    assert all(
+        "provider" not in path or path.endswith("native_cache")
+        for path in contrast.changed_paths
+    )
+
+
+@pytest.mark.parametrize(
+    "context_cache,error",
+    [
+        ({"enabled": 1}, "must be a boolean"),
+        ({"allow_provider_native_cache": "yes"}, "must be a boolean"),
+        ({"provider_cache_namespace": ""}, "non-empty string"),
+        ({"model_name": "glm"}, "unknown fields"),
+    ],
+)
+def test_cache_variant_rejects_invalid_or_model_specific_fields(context_cache, error):
+    with pytest.raises((TypeError, ValueError), match=error):
+        ContextVariant.build("invalid-cache", {"context_cache": context_cache})
+
+
 def test_paired_delta_uses_candidate_upper_against_baseline_lower_cost_bound():
     manifest = _manifest()
 

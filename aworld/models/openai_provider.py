@@ -89,6 +89,23 @@ AZURE_OPENAI_CONTEXT_LOWERING = ProviderLoweringCapability(
 class OpenAIProvider(LLMProviderBase):
     """OpenAI provider implementation."""
 
+    def _supports_native_prompt_cache_control(self) -> bool:
+        """Require explicit capability for arbitrary compatible endpoints.
+
+        OpenAI-compatible describes a wire protocol, not every optional routing
+        extension. Official OpenAI may use its documented control by default;
+        custom gateways must opt in after their own conformance/canary run.
+        """
+        base_url = getattr(self, "base_url", None) or os.getenv("OPENAI_ENDPOINT")
+        auto_supported = not base_url
+        if base_url:
+            from urllib.parse import urlparse
+
+            auto_supported = urlparse(base_url).hostname == "api.openai.com"
+        return self.provider_native_cache_control_enabled(
+            auto_supported=auto_supported
+        )
+
     def _build_tcp_keepalive_socket_options(
         self,
     ) -> Optional[List[Tuple[int, int, int]]]:
@@ -335,10 +352,16 @@ class OpenAIProvider(LLMProviderBase):
             elif plan.stable_message_count <= 0:
                 cache_lowering_status = "unavailable"
                 cache_lowering_strategy = "no_stable_message_prefix"
-            elif plan.provider_cache_namespace is not None:
+            elif (
+                plan.provider_cache_namespace is not None
+                and self._supports_native_prompt_cache_control()
+            ):
                 request_kwargs["prompt_cache_key"] = plan.provider_cache_namespace
                 cache_lowering_status = "applied"
                 cache_lowering_strategy = "prompt_cache_key"
+            elif plan.provider_cache_namespace is not None:
+                cache_lowering_status = "unsupported"
+                cache_lowering_strategy = "provider_capability_not_declared"
             else:
                 # Preserve the exact prefix without claiming that an arbitrary
                 # OpenAI-compatible endpoint implements automatic caching.

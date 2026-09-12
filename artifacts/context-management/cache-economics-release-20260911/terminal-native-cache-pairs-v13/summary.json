@@ -1,0 +1,85 @@
+{
+  "schema_version": "aworld.context-eval-summary/v1",
+  "baseline_variant": "adaptive-native-cache-off",
+  "aggregates": {
+    "adaptive-native-cache-off": {
+      "run_count": 2,
+      "reward_mean": 0.0,
+      "provider_truth_rate": 1.0,
+      "capture_integrity_rate": 1.0,
+      "request_trace_match_rate": 1.0,
+      "provider_prefix_stability_rate": 1.0,
+      "cache_usage_exact_coverage": 1.0,
+      "uncached_input_tokens_exact": 117273,
+      "median_provider_request_bytes": 723435.0,
+      "median_prompt_tokens": 185452.5,
+      "median_cache_read_tokens": 126816.0,
+      "median_offloaded_artifact_bytes": 0.0,
+      "median_llm_call_journal_bytes": 12410052.5,
+      "median_tool_action_journal_bytes": 206963.5,
+      "median_partial_provider_request_bytes": 0.0,
+      "median_partial_prompt_tokens": 0.0,
+      "median_partial_cache_read_tokens": 0.0
+    },
+    "adaptive-native-cache-on": {
+      "run_count": 2,
+      "reward_mean": 0.0,
+      "provider_truth_rate": 1.0,
+      "capture_integrity_rate": 1.0,
+      "request_trace_match_rate": 1.0,
+      "provider_prefix_stability_rate": 1.0,
+      "cache_usage_exact_coverage": 0.9615384615384616,
+      "uncached_input_tokens_exact": 284795,
+      "median_provider_request_bytes": 2093962.0,
+      "median_prompt_tokens": 524408.0,
+      "median_cache_read_tokens": 371328.0,
+      "median_offloaded_artifact_bytes": 25302.0,
+      "median_llm_call_journal_bytes": 28329318.5,
+      "median_tool_action_journal_bytes": 536313.0,
+      "median_partial_provider_request_bytes": 0.0,
+      "median_partial_prompt_tokens": 0.0,
+      "median_partial_cache_read_tokens": 0.0
+    }
+  },
+  "paired_deltas": [
+    {
+      "task": "cancel-async-tasks",
+      "repetition": 1,
+      "baseline": "adaptive-native-cache-off",
+      "candidate": "adaptive-native-cache-on",
+      "reward_delta": 0.0,
+      "provider_request_bytes_delta": 2528692,
+      "prompt_tokens_delta": 626609,
+      "provider_call_count_delta": 22,
+      "cache_read_tokens_delta": 429504,
+      "offloaded_artifact_bytes_delta": 50604,
+      "cache_usage_exact_pair": false,
+      "uncached_input_tokens_exact_delta": null,
+      "model_seed": 20260943
+    },
+    {
+      "task": "cancel-async-tasks",
+      "repetition": 2,
+      "baseline": "adaptive-native-cache-off",
+      "candidate": "adaptive-native-cache-on",
+      "reward_delta": 0.0,
+      "provider_request_bytes_delta": 212362,
+      "prompt_tokens_delta": 51302,
+      "provider_call_count_delta": -4,
+      "cache_read_tokens_delta": 59520,
+      "offloaded_artifact_bytes_delta": 0,
+      "cache_usage_exact_pair": true,
+      "uncached_input_tokens_exact_delta": -8218,
+      "model_seed": 20260944
+    }
+  ],
+  "minimum_seed_gate": {
+    "required_complete_pairs_per_candidate": 3,
+    "complete_seed_count_by_candidate": {
+      "adaptive-native-cache-on": 2
+    },
+    "passed": false,
+    "seed_mismatch_count": 0
+  },
+  "decision_note": "This summary is descriptive. Apply the spec's sample-size, confidence interval, hard-gate, and cross-workload requirements before claiming framework benefit."
+}

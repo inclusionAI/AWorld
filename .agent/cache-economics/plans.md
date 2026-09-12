@@ -39,9 +39,10 @@ cache epoch with an immutable checkpoint; later turns append to that epoch.
   latency, and typed decisions. Exercise GLM first, while keeping the runner and
   receipt schema provider-neutral.
 - **Tests:** fake provider state machine plus parser/gate behavior.
-- **Acceptance criteria:** Benchmark cache conclusions are blocked unless exact
-  coverage is 100% for the selected cache-capable provider; ordinary quality
-  preflight and providers without native cache remain compatible.
+- **Acceptance criteria:** Benchmark cache-cost conclusions are blocked unless
+  exact coverage is 100% for the selected cache-capable provider. Providers
+  without an applied native control may establish compatibility and safety, but
+  cannot establish causal native-cache benefit.
 - **Status:** complete
 
 #### Task 1.3: CLI/report observability
@@ -74,11 +75,14 @@ cache epoch with an immutable checkpoint; later turns append to that epoch.
 - **Parallel:** no
 - **Files:** OpenAI/Anthropic providers and prompt cache adapters, tests
 - **Approach:** Consume CachePlan exactly once; retain explicit caller overrides;
-  never replay legacy prompt assembly in enforce mode.
+  never replay legacy prompt assembly in enforce mode. Treat protocol
+  compatibility and native-cache capability separately; custom compatible
+  endpoints fail safe unless explicitly enabled after conformance/canary.
 - **Tests:** sync/async/stream, HTTP/SDK, explicit opt-out, unsupported provider,
   request trace fidelity.
 - **Acceptance criteria:** Native hints reach supported providers and the sent
-  candidate remains byte/semantic equivalent to the frozen snapshot.
+  candidate remains byte/semantic equivalent to the frozen snapshot. Unverified
+  custom endpoints preserve the exact prefix without receiving a native hint.
 - **Status:** complete
 
 ### Milestone 3: Stable sections and cache epochs
@@ -129,9 +133,25 @@ cache epoch with an immutable checkpoint; later turns append to that epoch.
   candidates, at concurrency one, across at least two workload kinds and three
   seeds per case. Use GLM for the first live matrix and require the same generic
   receipt contract for any additional cache-capable provider.
-- **Acceptance criteria:** At least ten complete exact-usage pairs and all goal
-  acceptance gates satisfied.
-- **Status:** pending
+- **Acceptance criteria:** A positive release requires at least ten complete
+  pairs across two workload kinds and all goal acceptance gates satisfied. A
+  provider path may be rejected early when a complete causal matrix proves a
+  statistically directional regression, avoiding wasteful expansion. Every
+  provider path must prove
+  request/trajectory safety and quality non-regression. A provider path claiming
+  native-cache benefit must additionally prove that the candidate applied an
+  explicit provider cache lowering while the baseline applied an explicit
+  opt-out. Exact uncached-input claims require 100% exact usage; otherwise only
+  a versioned conservative bound whose paired upper CI is below zero may pass.
+- **Status:** complete for the currently configured endpoint; native hint
+  rejected by directional regression and placed behind explicit capability
+- **Frozen contrast:** `provider-neutral-cache-v1`; current Adaptive/enforce on
+  both sides, with only `context_cache.enabled` and
+  `context_cache.allow_provider_native_cache` changed.
+- **Live gate:** 8/8 exact cache usage observations across stream/non-stream;
+  GLM is one endpoint exercising the generic contract, not a code dependency.
+  Its current `exact_prefix_no_hint` lowering is safety/conformance evidence,
+  not causal native-cache benefit evidence.
 
 #### Task 4.3: Final review and release decision
 - **Parallel:** no
@@ -140,4 +160,12 @@ cache epoch with an immutable checkpoint; later turns append to that epoch.
   machine-verifiable ready/not-ready decision without weakening gates.
 - **Acceptance criteria:** No unresolved important review issue and evidence-backed
   release decision.
-- **Status:** pending
+- **Status:** complete
+- **Decision:** provider-neutral stable-prefix/epoch/usage layer remains safe
+  default-on; unverified custom-provider native hints are fail-safe off. Native
+  hints release only per provider capability after provider-scoped evidence.
+- **Compatibility closure:** the capability declaration is implemented once on
+  the provider base contract and consumed by both OpenAI and Anthropic native
+  adapters. Official reviewed endpoints may resolve `auto`; arbitrary compatible
+  endpoints must explicitly qualify. Legacy `ConfigDict` callers remain valid
+  when the new cache/output fields are absent.

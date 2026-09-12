@@ -1,0 +1,70 @@
+{
+  "schema_version": "aworld.context-eval-summary/v1",
+  "baseline_variant": "adaptive-native-cache-off",
+  "aggregates": {
+    "adaptive-native-cache-off": {
+      "run_count": 1,
+      "reward_mean": 1.0,
+      "provider_truth_rate": 1.0,
+      "capture_integrity_rate": 1.0,
+      "request_trace_match_rate": 1.0,
+      "provider_prefix_stability_rate": 1.0,
+      "cache_usage_exact_coverage": 1.0,
+      "uncached_input_tokens_exact": 28903,
+      "median_provider_request_bytes": 295970,
+      "median_prompt_tokens": 93543,
+      "median_cache_read_tokens": 64640,
+      "median_offloaded_artifact_bytes": 0,
+      "median_llm_call_journal_bytes": 5075587,
+      "median_tool_action_journal_bytes": 122021,
+      "median_partial_provider_request_bytes": 0,
+      "median_partial_prompt_tokens": 0,
+      "median_partial_cache_read_tokens": 0
+    },
+    "adaptive-native-cache-on": {
+      "run_count": 1,
+      "reward_mean": 1.0,
+      "provider_truth_rate": 1.0,
+      "capture_integrity_rate": 1.0,
+      "request_trace_match_rate": 1.0,
+      "provider_prefix_stability_rate": 1.0,
+      "cache_usage_exact_coverage": 0.9655172413793104,
+      "uncached_input_tokens_exact": 103408,
+      "median_provider_request_bytes": 2345474,
+      "median_prompt_tokens": 671359,
+      "median_cache_read_tokens": 522752,
+      "median_offloaded_artifact_bytes": 0,
+      "median_llm_call_journal_bytes": 32260899,
+      "median_tool_action_journal_bytes": 471045,
+      "median_partial_provider_request_bytes": 0,
+      "median_partial_prompt_tokens": 0,
+      "median_partial_cache_read_tokens": 0
+    }
+  },
+  "paired_deltas": [
+    {
+      "task": "db-wal-recovery",
+      "repetition": 1,
+      "baseline": "adaptive-native-cache-off",
+      "candidate": "adaptive-native-cache-on",
+      "reward_delta": 0.0,
+      "provider_request_bytes_delta": 2049504,
+      "prompt_tokens_delta": 577816,
+      "provider_call_count_delta": 20,
+      "cache_read_tokens_delta": 458112,
+      "offloaded_artifact_bytes_delta": 0,
+      "cache_usage_exact_pair": false,
+      "uncached_input_tokens_exact_delta": null,
+      "model_seed": 20260951
+    }
+  ],
+  "minimum_seed_gate": {
+    "required_complete_pairs_per_candidate": 3,
+    "complete_seed_count_by_candidate": {
+      "adaptive-native-cache-on": 1
+    },
+    "passed": false,
+    "seed_mismatch_count": 0
+  },
+  "decision_note": "This summary is descriptive. Apply the spec's sample-size, confidence interval, hard-gate, and cross-workload requirements before claiming framework benefit."
+}

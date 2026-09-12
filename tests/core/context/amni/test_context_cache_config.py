@@ -24,6 +24,7 @@ def test_context_cache_defaults_are_enabled():
     assert model_config.context_cache.enabled is True
     assert model_config.context_cache.allow_provider_native_cache is True
     assert model_config.context_cache.provider_cache_namespace is None
+    assert model_config.provider_native_cache_capability == "auto"
 
 
 def test_adaptive_context_is_default_on_with_explicit_rollback_modes():
@@ -54,10 +55,12 @@ def test_agent_config_top_level_context_cache_passthrough():
         context_cache=ContextCacheConfig(
             enabled=False, allow_provider_native_cache=False
         ),
+        provider_native_cache_capability="unsupported",
     )
 
     assert agent_config.llm_config.context_cache.enabled is False
     assert agent_config.llm_config.context_cache.allow_provider_native_cache is False
+    assert agent_config.llm_config.provider_native_cache_capability == "unsupported"
 
 
 def test_amni_config_factory_preserves_default_context_cache():

@@ -705,6 +705,31 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         value = getattr(mode, "value", mode)
         return value if value in {"observe", "shadow", "enforce"} else "off"
 
+    def _bind_context_output_budget(self, request_kwargs: dict[str, Any]) -> None:
+        """Bind the reserved Context output budget to the real model request.
+
+        The compiler cannot reason about an input budget while the corresponding
+        provider output remains unbounded. Explicit caller/model limits win.
+        A compiler reserve is not itself a provider output limit: silently
+        imposing the default reserve can truncate reasoning models.
+        """
+        if request_kwargs.get("max_tokens") is not None:
+            return
+        llm_config = getattr(self.conf, "llm_config", None)
+        params = getattr(llm_config, "params", None)
+        configured_limit = getattr(llm_config, "max_tokens", None)
+        if configured_limit is None and isinstance(params, dict):
+            configured_limit = params.get("max_tokens")
+        if configured_limit is None:
+            return
+        if (
+            isinstance(configured_limit, bool)
+            or not isinstance(configured_limit, int)
+            or configured_limit < 1
+        ):
+            raise ValueError("model max_tokens must be a positive integer")
+        request_kwargs["max_tokens"] = configured_limit
+
     def _get_agent_context_cache_config(self, context: Any):
         if context is None or not hasattr(context, "get_agent_context_config"):
             return None
@@ -840,6 +865,69 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         if context_observations:
             observability["context_observations"] = context_observations
         return plan, to_serializable(assembled_messages), observability
+
+    def _publish_prompt_assembly_system_sections(
+        self,
+        *,
+        context: Any,
+        plan: Any,
+        messages: List[Dict[str, Any]],
+        provider: Any,
+    ) -> bool:
+        """Publish exact framework-owned stable/dynamic system semantics.
+
+        Custom PromptAssembly providers remain fail-closed: an arbitrary
+        provider cannot promote its own content into the stable cache prefix.
+        Explicit Amni folded/section ownership also wins over this fallback.
+        """
+        from aworld.core.context.amni.prompt.assembly import (
+            CacheAwarePromptAssemblyProvider,
+        )
+
+        if type(provider) is not CacheAwarePromptAssemblyProvider:
+            return False
+        observations = context.get_context_observations(namespace=self.id())
+        if any(
+            sidecar.owner
+            in {
+                "amni.folded_system",
+                "amni.restored_folded_system",
+                "amni.system_sections",
+            }
+            for sidecar in observations
+        ):
+            return False
+        sections = getattr(plan, "system_sections", None)
+        if not isinstance(sections, list) or not sections:
+            return False
+        from aworld.agents.final_context_adapter import (
+            adapt_prompt_assembly_system_sections,
+        )
+        from aworld.core.context.compiler import ContextObservationSidecar
+
+        source_identity = (
+            f"agent-prompt-assembly://{self.id()}/task-{context.task_id}/"
+            f"epoch-{context.task_epoch}"
+        )
+        result = adapt_prompt_assembly_system_sections(
+            sections=sections,
+            messages=messages,
+            source_identity=source_identity,
+            task_id=context.task_id,
+            task_epoch=context.task_epoch,
+            agent_id=self.id(),
+            user_controlled=self._is_amni_context(context),
+        )
+        context.publish_context_observation(
+            ContextObservationSidecar.from_adapter_result(
+                owner="agent.prompt_assembly_system_sections",
+                namespace=self.id(),
+                source_identity=source_identity,
+                result=result,
+                task_epoch=context.task_epoch,
+            )
+        )
+        return True
 
     def _redacted_context_observations(
         self, context: Any = None
@@ -2181,6 +2269,7 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         self.context = message.context
         self._install_runtime_completion_contract(message.context)
         context_compiler_mode = self._context_compiler_mode_value()
+        self._bind_context_output_budget(kwargs)
         # A turn boundary expires single-call/turn sidecars before new owner
         # observations are collected for this request.
         if context_compiler_mode != "off":
@@ -2434,6 +2523,12 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                 request_kwargs=kwargs,
             )
         )
+        # Retain the owner that produced the plan.  The transport provider
+        # below has a different responsibility and cannot attest prompt
+        # section stability.
+        prompt_assembly_provider = self._get_prompt_assembly_provider(
+            message.context
+        )
 
         # Provider structural lowering is part of the final compiler input,
         # not an unobserved post-compile mutation. The LLM model boundary runs
@@ -2533,6 +2628,12 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                             source_identity=source_identity,
                             result=tool_result,
                         )
+                    )
+                    self._publish_prompt_assembly_system_sections(
+                        context=message.context,
+                        plan=prompt_assembly_plan,
+                        messages=messages,
+                        provider=prompt_assembly_provider,
                     )
                 except Exception as exc:
                     logger.warning(

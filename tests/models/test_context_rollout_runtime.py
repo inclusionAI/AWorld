@@ -8,7 +8,7 @@ from typing import Any
 
 import pytest
 
-from aworld.config import ModelConfig
+from aworld.config import ConfigDict, ModelConfig
 from aworld.core.context.base import Context
 from aworld.core.context.compiler import (
     CandidateCompileInput,
@@ -70,6 +70,50 @@ class CountingProvider(LLMProviderBase):
     async def astream_completion(self, messages, **kwargs):
         self._record("astream_completion", messages, kwargs)
         yield self._response("astream_completion")
+
+
+def test_legacy_config_dict_without_new_cache_fields_remains_compatible():
+    provider = CountingProvider()
+
+    model = LLMModel(
+        conf=ConfigDict({"max_model_len": 8192}),
+        custom_provider=provider,
+    )
+
+    assert model._context_cache_config is None
+    assert model._configured_max_tokens is None
+    assert model._context_input_budget == 3328
+
+
+@pytest.mark.asyncio
+async def test_configured_output_budget_reaches_every_direct_call_shape():
+    class TokenRecordingProvider(CountingProvider):
+        def __init__(self) -> None:
+            super().__init__()
+            self.max_tokens_seen: list[tuple[str, int | None]] = []
+
+        def _record(self, kind: str, messages: Any, kwargs: dict[str, Any]) -> None:
+            super()._record(kind, messages, kwargs)
+            self.max_tokens_seen.append((kind, kwargs.get("max_tokens")))
+
+    provider = TokenRecordingProvider()
+    model = LLMModel(
+        conf=ModelConfig(max_tokens=6144, context_compiler={"mode": "off"}),
+        custom_provider=provider,
+    )
+    messages = [{"role": "user", "content": "go"}]
+
+    model.completion(messages)
+    await model.acompletion(messages)
+    list(model.stream_completion(messages))
+    assert [item async for item in model.astream_completion(messages)]
+
+    assert provider.max_tokens_seen == [
+        ("completion", 6144),
+        ("acompletion", 6144),
+        ("stream_completion", 6144),
+        ("astream_completion", 6144),
+    ]
 
 
 def _counters() -> dict[str, int]:
@@ -706,6 +750,48 @@ async def test_anthropic_universal_cache_plan_lowers_native_boundary_all_paths()
         assert cache_plan["cache_epoch"] == 1
         assert cache_plan["break_reasons"] == ["history_compaction"]
         assert context.get_pending_cache_break_reasons() == ()
+
+
+def test_custom_anthropic_endpoint_requires_native_cache_capability():
+    provider, calls = _anthropic_without_transport()
+    provider.base_url = "https://anthropic-compatible.example.test/v1"
+    model = LLMModel(
+        conf=ModelConfig(
+            context_compiler={"mode": "enforce", "universal_final": True}
+        ),
+        custom_provider=provider,
+    )
+    model.provider_name = "anthropic"
+    context = Context(task_id="anthropic-custom-cache-capability")
+    context.trace_id = ""
+    messages = [
+        {"role": "system", "content": "stable rules"},
+        {"role": "user", "content": "dynamic request"},
+    ]
+
+    model.completion(messages, context=context)
+
+    assert calls[-1]["system"] == "stable rules"
+    lowering = context.get_llm_calls()[0]["context_rollout"]["provider_lowering"]
+    assert lowering["cache_lowering_status"] == "unsupported"
+    assert lowering["cache_lowering_strategy"] == "provider_capability_not_declared"
+
+    provider.kwargs["provider_native_cache_capability"] = "supported"
+    supported_context = Context(task_id="anthropic-custom-cache-opt-in")
+    supported_context.trace_id = ""
+    model.completion(messages, context=supported_context)
+
+    assert calls[-1]["system"] == [
+        {
+            "type": "text",
+            "text": "stable rules",
+            "cache_control": {"type": "ephemeral"},
+        }
+    ]
+    supported = supported_context.get_llm_calls()[0]["context_rollout"][
+        "provider_lowering"
+    ]
+    assert supported["cache_lowering_status"] == "applied"
 
 
 def test_unsupported_native_cache_provider_reports_evidence_without_blocking():

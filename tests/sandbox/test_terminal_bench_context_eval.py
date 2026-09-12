@@ -60,6 +60,10 @@ def test_variant_contract_accepts_context_policy_only(tmp_path):
                     "tool_result_offload": True,
                     "tool_result_length_threshold": 4096,
                 },
+                "context_cache": {
+                    "enabled": True,
+                    "allow_provider_native_cache": True,
+                },
                 "context_compiler": {
                     "mode": "enforce",
                     "universal_final": True,
@@ -78,6 +82,7 @@ def test_variant_contract_accepts_context_policy_only(tmp_path):
 
     loaded = runner._load_variant(variant)
     assert loaded["name"] == "candidate"
+    assert loaded["context_cache"]["enabled"] is True
     assert loaded["context_compiler"]["mode"] == "enforce"
 
 
@@ -1876,6 +1881,43 @@ def test_context_metrics_measure_real_provider_system_prefix_stability(tmp_path)
     assert metrics["provider_prefix_stable"] is True
 
 
+def test_context_metrics_use_provider_neutral_exact_cache_receipts(tmp_path):
+    harness = _load_example("terminal_bench_context_eval")
+    provider_calls = [
+        {
+            "provider_request": {"payload": {"messages": []}},
+            "request_trace_match": True,
+            "usage_raw": {
+                "prompt_tokens": 100,
+                "completion_tokens": 4,
+                "prompt_tokens_details": {"cached_tokens": 60},
+            },
+            "usage_normalized": {
+                "prompt_tokens": 100,
+                "completion_tokens": 4,
+            },
+        }
+    ]
+    (tmp_path / "provider_calls.json").write_text(
+        json.dumps(provider_calls), encoding="utf-8"
+    )
+
+    metrics = harness.collect_context_metrics(tmp_path)
+
+    assert metrics["cache_usage_exact_call_count"] == 1
+    assert metrics["cache_usage_exact_coverage"] == 1.0
+    assert metrics["cache_usage_exact_input_tokens"] == 100
+    assert metrics["cache_read_tokens"] == 60
+    assert metrics["uncached_input_tokens_exact"] == 40
+    assert metrics["cache_usage_fidelity_counts"] == {
+        "exact": 1,
+        "bounded": 0,
+        "conflicting": 0,
+        "invalid": 0,
+        "unavailable": 0,
+    }
+
+
 def test_capture_integrity_uses_reconciled_journal_not_task_response_projection(
     tmp_path,
 ):
@@ -2053,6 +2095,56 @@ def test_cache_usage_preflight_runner_persists_redacted_receipt_logs(
     )
     assert json.loads(tmp_path.joinpath("cache-usage-preflight.json").read_text()) == (
         receipt
+    )
+
+
+def test_cache_usage_preflight_retries_whole_probes_without_merging(
+    tmp_path, monkeypatch
+):
+    harness = _load_example("terminal_bench_context_eval")
+    failed = {
+        "schema_version": "aworld.cache-conformance-preflight/v1",
+        "status": "failed",
+        "cache_capability_observed": False,
+        "exact_usage_coverage": 1.0,
+        "observation_count": 8,
+        "failure_codes": ["repeat_cache_hit_not_observed"],
+    }
+    passed = {
+        "schema_version": "aworld.cache-conformance-preflight/v1",
+        "status": "passed",
+        "cache_capability_observed": True,
+        "exact_usage_coverage": 1.0,
+        "observation_count": 8,
+        "failure_codes": [],
+    }
+    receipts = iter((failed, passed))
+    stems = []
+
+    def fake_run(output_dir, *, timeout_sec, model_seed, artifact_stem):
+        stems.append(artifact_stem)
+        return next(receipts)
+
+    monkeypatch.setattr(harness, "run_cache_usage_preflight", fake_run)
+
+    result = harness.run_cache_usage_preflight_with_retries(
+        tmp_path, timeout_sec=12.0, model_seed=7, attempts=3
+    )
+
+    assert result["status"] == "passed"
+    assert result["observation_count"] == 8
+    assert result["attempt_policy"]["completed_attempts"] == 2
+    assert result["attempt_policy"]["whole_probe_only"] is True
+    assert [item["status"] for item in result["attempt_policy"]["attempts"]] == [
+        "failed",
+        "passed",
+    ]
+    assert stems == [
+        "cache-usage-preflight-attempt-01",
+        "cache-usage-preflight-attempt-02",
+    ]
+    assert json.loads(tmp_path.joinpath("cache-usage-preflight.json").read_text()) == (
+        result
     )
 
 
@@ -2365,8 +2457,13 @@ def test_summary_pairs_reward_with_context_effects():
             "reward": "0",
             "context_metrics": {
                 "provider_truth_available": True,
+                "provider_call_count": 2,
                 "provider_request_bytes": 1000,
                 "prompt_tokens": 100,
+                "cache_read_tokens": 20,
+                "cache_usage_exact_coverage": 1.0,
+                "cache_usage_exact_call_count": 2,
+                "uncached_input_tokens_exact": 80,
                 "offloaded_artifact_bytes": 0,
             },
         },
@@ -2377,8 +2474,13 @@ def test_summary_pairs_reward_with_context_effects():
             "reward": "1",
             "context_metrics": {
                 "provider_truth_available": True,
+                "provider_call_count": 1,
                 "provider_request_bytes": 700,
                 "prompt_tokens": 70,
+                "cache_read_tokens": 30,
+                "cache_usage_exact_coverage": 1.0,
+                "cache_usage_exact_call_count": 1,
+                "uncached_input_tokens_exact": 40,
                 "offloaded_artifact_bytes": 500,
             },
         },
@@ -2395,7 +2497,11 @@ def test_summary_pairs_reward_with_context_effects():
             "reward_delta": 1.0,
             "provider_request_bytes_delta": -300,
             "prompt_tokens_delta": -30,
+            "provider_call_count_delta": -1,
+            "cache_read_tokens_delta": 10,
             "offloaded_artifact_bytes_delta": 500,
+            "cache_usage_exact_pair": True,
+            "uncached_input_tokens_exact_delta": -40,
         }
     ]
     assert summary["minimum_seed_gate"]["passed"] is False
@@ -2453,3 +2559,18 @@ def test_python_functions_verifier_mode_is_explicit_and_not_a_variant_field(
     args = harness.parse_args()
 
     assert args.verifier_mode == "python-functions"
+
+
+def test_execution_output_must_not_reuse_prior_attempt_evidence(tmp_path):
+    harness = _load_example("terminal_bench_context_eval")
+    output_dir = tmp_path / "experiment"
+    output_dir.mkdir()
+
+    harness.ensure_fresh_execution_output(output_dir)
+    (output_dir / "fixture").mkdir()
+    (output_dir / "experiment_manifest.json").write_text("{}", encoding="utf-8")
+    harness.ensure_fresh_execution_output(output_dir)
+
+    (output_dir / "runs").mkdir()
+    with pytest.raises(FileExistsError, match="immutable --output-dir"):
+        harness.ensure_fresh_execution_output(output_dir)

@@ -1,0 +1,20 @@
+{
+  "schema_version": "aworld.model-preflight/v1",
+  "status": "passed",
+  "provider": "openai",
+  "model": "glm-5.2",
+  "model_seed": 20260951,
+  "latency_seconds": 1.851,
+  "response_sha256": "24205caa2913002bb8057e179e5221812613632cd08797c56a4dcd394a224acf",
+  "provider_response_observed": true,
+  "semantic_probe_complete": true,
+  "tool_call_probe_complete": true,
+  "response_quality": "complete",
+  "quality_reason_code": null,
+  "finish_reason": "tool_calls",
+  "usage": {
+    "prompt_tokens": 176,
+    "completion_tokens": 28
+  },
+  "process_exit_code": 0
+}

@@ -1,0 +1,17 @@
+{
+  "schema_version": "aworld.provider-native-cache-safety-check/v1",
+  "status": "passed",
+  "scope": "diagnostic_real_provider_call",
+  "endpoint_kind": "custom_openai_compatible",
+  "configured_capability": "auto",
+  "provider_cache_namespace_configured": true,
+  "cache_lowering_status": "unsupported",
+  "cache_lowering_strategy": "provider_capability_not_declared",
+  "prompt_cache_key_present": false,
+  "configured_max_tokens": 256,
+  "provider_request_max_tokens": 256,
+  "provider_call_status": "success",
+  "request_trace_match": true,
+  "quality_or_release_claim_eligible": false,
+  "note": "Redacted single-call diagnostic; release claims use checksum-bound benchmark evidence."
+}
