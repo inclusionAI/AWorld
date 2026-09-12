@@ -8,6 +8,7 @@ dimension scores into the leaderboard overall score.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 import os
@@ -31,8 +32,24 @@ PARSEBENCH_DATASET_ID = "llamaindex/ParseBench"
 PARSEBENCH_DATA_REVISION = DATASET_REVISION
 PARSEBENCH_SCORER_REPOSITORY = "https://github.com/run-llama/ParseBench.git"
 PARSEBENCH_SCORER_REVISION = SCORER_REVISION
+PARSEBENCH_SCORER_UV_LOCK_SHA256 = (
+    "d18a4befdb2c1941f9a47d097aba8c45fbe15b9da8d0ea02424c629b8f6d76a2"
+)
 PARSEBENCH_CASE_RESULT_SCHEMA = "aworld.parsebench.case-result/v1"
 PARSEBENCH_REPORT_SCHEMA = "aworld.parsebench.report/v1"
+PARSEBENCH_VERIFIER_RESULT_SCHEMA = "aworld.parsebench.verifier-result/v1"
+PARSEBENCH_VERIFIER_OUTPUT_DIR = "/logs/verifier"
+PARSEBENCH_REWARD_FILENAME = "reward.json"
+PARSEBENCH_VERIFIER_RESULT_FILENAME = "parsebench-result.json"
+PARSEBENCH_REWARD_PATH = (
+    f"{PARSEBENCH_VERIFIER_OUTPUT_DIR}/{PARSEBENCH_REWARD_FILENAME}"
+)
+PARSEBENCH_VERIFIER_RESULT_PATH = (
+    f"{PARSEBENCH_VERIFIER_OUTPUT_DIR}/{PARSEBENCH_VERIFIER_RESULT_FILENAME}"
+)
+PARSEBENCH_REWARD_KEY = "reward"
+PARSEBENCH_VERIFIER_STDOUT_SENTINEL = "AWORLD_PARSEBENCH_RESULT="
+PARSEBENCH_VERIFIER_STDOUT_MAX_BYTES = 64 * 1024
 
 
 PARSEBENCH_DIMENSIONS = (
@@ -69,6 +86,23 @@ _OFFICIAL_REPORT_FILENAME = "_evaluation_report.json"
 # one-time import cost.
 _PROBE_TIMEOUT_SECONDS = 120.0
 _ERROR_TEXT_LIMIT = 2_000
+_SCORER_ENV_ALLOWLIST = frozenset(
+    {
+        "LANG",
+        "LC_ALL",
+        "LC_CTYPE",
+        "TEMP",
+        "TMP",
+        "TMPDIR",
+        "TZ",
+    }
+)
+_PINNED_FAILURE_CLASSIFICATION = {
+    "provider": "official_failure",
+    "worker": "execution_failed",
+    "worker_not_layout": "official_failure",
+    "skipped": "not_scored",
+}
 
 
 class ParseBenchResultStatus(str, Enum):
@@ -76,6 +110,7 @@ class ParseBenchResultStatus(str, Enum):
 
     SCORED = "scored"
     NOT_SCORED = "not_scored"
+    OFFICIAL_FAILURE = "official_failure"
     EXECUTION_FAILED = "execution_failed"
     MISSING = "missing"
 
@@ -248,6 +283,23 @@ class ParseBenchCaseResult:
         )
 
     @classmethod
+    def official_failure(
+        cls,
+        *,
+        case_id: str,
+        dimension: ParseBenchDimension | str,
+        diagnostics: Iterable[str] = (),
+    ) -> ParseBenchCaseResult:
+        """Build a genuine provider failure that official macro scoring pads with 0."""
+
+        return cls(
+            case_id=case_id,
+            dimension=_coerce_dimension(dimension),
+            status=ParseBenchResultStatus.OFFICIAL_FAILURE,
+            diagnostics=tuple(diagnostics),
+        )
+
+    @classmethod
     def execution_failed(
         cls,
         *,
@@ -345,12 +397,14 @@ class ParseBenchDimensionResult:
     total_examples: int = 0
     successful_examples: int = 0
     failed_examples: int = 0
+    official_failure_examples: int = 0
     skipped_examples: int = 0
     numeric_examples: int = 0
     not_scored_examples: int = 0
     missing_examples: int = 0
     aggregate_metrics: Mapping[str, float] = field(default_factory=dict)
     errors: tuple[str, ...] = ()
+    official_failure_details: tuple[str, ...] = ()
     missing_case_ids: tuple[str, ...] = ()
     case_results: tuple[ParseBenchCaseResult, ...] = ()
 
@@ -360,6 +414,10 @@ class ParseBenchDimensionResult:
 
         object.__setattr__(self, "dimension", dimension)
         object.__setattr__(self, "status", status)
+        if status is ParseBenchResultStatus.OFFICIAL_FAILURE:
+            raise ValueError(
+                "official_failure is a case status; dimension results must encode its zero"
+            )
         object.__setattr__(
             self,
             "total_examples",
@@ -375,6 +433,16 @@ class ParseBenchDimensionResult:
             "failed_examples",
             _coerce_nonnegative_count(self.failed_examples, "failed_examples"),
         )
+        object.__setattr__(
+            self,
+            "official_failure_examples",
+            _coerce_nonnegative_count(
+                self.official_failure_examples,
+                "official_failure_examples",
+            ),
+        )
+        if self.official_failure_examples > self.failed_examples:
+            raise ValueError("official_failure_examples cannot exceed failed_examples")
         object.__setattr__(
             self,
             "skipped_examples",
@@ -406,6 +474,13 @@ class ParseBenchDimensionResult:
         )
         object.__setattr__(
             self,
+            "official_failure_details",
+            tuple(
+                str(detail) for detail in self.official_failure_details if str(detail)
+            ),
+        )
+        object.__setattr__(
+            self,
             "missing_case_ids",
             tuple(str(case_id) for case_id in self.missing_case_ids),
         )
@@ -425,6 +500,10 @@ class ParseBenchDimensionResult:
         object.__setattr__(self, "primary_metric", expected_metric)
 
         if status is ParseBenchResultStatus.SCORED:
+            if self.execution_failed_examples:
+                raise ValueError(
+                    "a scored ParseBench result cannot contain execution failures"
+                )
             if self.score is None:
                 raise ValueError("a scored ParseBench result must contain a score")
             object.__setattr__(self, "score", _coerce_score(self.score))
@@ -450,9 +529,11 @@ class ParseBenchDimensionResult:
         total_examples: int = 0,
         successful_examples: int = 0,
         failed_examples: int = 0,
+        official_failure_examples: int = 0,
         skipped_examples: int = 0,
         aggregate_metrics: Mapping[str, float] | None = None,
         errors: Iterable[str] = (),
+        official_failure_details: Iterable[str] = (),
         numeric_examples: int | None = None,
         not_scored_examples: int | None = None,
         missing_examples: int = 0,
@@ -467,6 +548,7 @@ class ParseBenchDimensionResult:
             total_examples=total_examples,
             successful_examples=successful_examples,
             failed_examples=failed_examples,
+            official_failure_examples=official_failure_examples,
             skipped_examples=skipped_examples,
             numeric_examples=(
                 successful_examples if numeric_examples is None else numeric_examples
@@ -477,6 +559,7 @@ class ParseBenchDimensionResult:
             missing_examples=missing_examples,
             aggregate_metrics=aggregate_metrics or {},
             errors=tuple(errors),
+            official_failure_details=tuple(official_failure_details),
             case_results=tuple(case_results),
         )
 
@@ -488,9 +571,11 @@ class ParseBenchDimensionResult:
         total_examples: int = 0,
         successful_examples: int = 0,
         failed_examples: int = 0,
+        official_failure_examples: int = 0,
         skipped_examples: int = 0,
         aggregate_metrics: Mapping[str, float] | None = None,
         errors: Iterable[str] = (),
+        official_failure_details: Iterable[str] = (),
         numeric_examples: int = 0,
         not_scored_examples: int | None = None,
         missing_examples: int = 0,
@@ -504,6 +589,7 @@ class ParseBenchDimensionResult:
             total_examples=total_examples,
             successful_examples=successful_examples,
             failed_examples=failed_examples,
+            official_failure_examples=official_failure_examples,
             skipped_examples=skipped_examples,
             numeric_examples=numeric_examples,
             not_scored_examples=(
@@ -512,6 +598,7 @@ class ParseBenchDimensionResult:
             missing_examples=missing_examples,
             aggregate_metrics=aggregate_metrics or {},
             errors=tuple(errors),
+            official_failure_details=tuple(official_failure_details),
             case_results=tuple(case_results),
         )
 
@@ -523,9 +610,11 @@ class ParseBenchDimensionResult:
         total_examples: int = 0,
         successful_examples: int = 0,
         failed_examples: int = 1,
+        official_failure_examples: int = 0,
         skipped_examples: int = 0,
         aggregate_metrics: Mapping[str, float] | None = None,
         errors: Iterable[str] = (),
+        official_failure_details: Iterable[str] = (),
         diagnostic_score: float | None = None,
         numeric_examples: int = 0,
         not_scored_examples: int | None = None,
@@ -541,6 +630,7 @@ class ParseBenchDimensionResult:
             total_examples=total_examples,
             successful_examples=successful_examples,
             failed_examples=failed_examples,
+            official_failure_examples=official_failure_examples,
             skipped_examples=skipped_examples,
             numeric_examples=numeric_examples,
             not_scored_examples=(
@@ -549,6 +639,7 @@ class ParseBenchDimensionResult:
             missing_examples=missing_examples,
             aggregate_metrics=aggregate_metrics or {},
             errors=tuple(errors),
+            official_failure_details=tuple(official_failure_details),
             case_results=tuple(case_results),
         )
 
@@ -560,6 +651,7 @@ class ParseBenchDimensionResult:
         total_examples: int = 0,
         successful_examples: int = 0,
         failed_examples: int = 0,
+        official_failure_examples: int = 0,
         skipped_examples: int = 0,
         diagnostic_score: float | None = None,
         numeric_examples: int = 0,
@@ -568,6 +660,7 @@ class ParseBenchDimensionResult:
         missing_case_ids: Iterable[str] = (),
         aggregate_metrics: Mapping[str, float] | None = None,
         errors: Iterable[str] = (),
+        official_failure_details: Iterable[str] = (),
         case_results: Iterable[ParseBenchCaseResult] = (),
     ) -> ParseBenchDimensionResult:
         """Build a dimension with absent expected case results."""
@@ -579,6 +672,7 @@ class ParseBenchDimensionResult:
             total_examples=total_examples,
             successful_examples=successful_examples,
             failed_examples=failed_examples,
+            official_failure_examples=official_failure_examples,
             skipped_examples=skipped_examples,
             numeric_examples=numeric_examples,
             not_scored_examples=not_scored_examples,
@@ -586,6 +680,7 @@ class ParseBenchDimensionResult:
             missing_case_ids=tuple(missing_case_ids),
             aggregate_metrics=aggregate_metrics or {},
             errors=tuple(errors),
+            official_failure_details=tuple(official_failure_details),
             case_results=tuple(case_results),
         )
 
@@ -594,11 +689,18 @@ class ParseBenchDimensionResult:
         return None if self.score is None else self.score * 100.0
 
     @property
+    def execution_failed_examples(self) -> int:
+        """Failures not zero-padded by the pinned official runner."""
+
+        return self.failed_examples - self.official_failure_examples
+
+    @property
     def counts(self) -> dict[str, int]:
         return {
             "numeric": self.numeric_examples,
             "not_scored": self.not_scored_examples,
-            "failed": self.failed_examples,
+            "official_failure": self.official_failure_examples,
+            "failed": self.execution_failed_examples,
             "missing": self.missing_examples,
         }
 
@@ -615,10 +717,13 @@ class ParseBenchDimensionResult:
             "total_examples": self.total_examples,
             "successful_examples": self.successful_examples,
             "failed_examples": self.failed_examples,
+            "official_failure_examples": self.official_failure_examples,
+            "execution_failed_examples": self.execution_failed_examples,
             "skipped_examples": self.skipped_examples,
             "counts": self.counts,
             "aggregate_metrics": dict(sorted(self.aggregate_metrics.items())),
             "errors": list(self.errors),
+            "official_failure_details": list(self.official_failure_details),
             "missing_case_ids": list(self.missing_case_ids),
             "case_results": [result.to_dict() for result in self.case_results],
         }
@@ -653,7 +758,13 @@ class ParseBenchReport:
 
         return {
             key: sum(result.counts[key] for result in self.dimensions)
-            for key in ("numeric", "not_scored", "failed", "missing")
+            for key in (
+                "numeric",
+                "not_scored",
+                "official_failure",
+                "failed",
+                "missing",
+            )
         }
 
     def to_dict(self) -> dict[str, Any]:
@@ -687,33 +798,316 @@ class ParseBenchReport:
         }
 
 
+@dataclass(frozen=True, slots=True)
+class ParseBenchVerifierResult:
+    """Versioned task-level verifier details carried beside Harbor rewards.
+
+    ``diagnostic_reward`` is intentionally a task-local macro over the
+    dimensions present in this task. It is useful to Harbor scheduling but is
+    never the official five-dimension benchmark overall.
+    """
+
+    task_id: str
+    case_results: tuple[ParseBenchCaseResult, ...]
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.task_id, str) or not self.task_id.strip():
+            raise ValueError("task_id must be a non-empty string")
+        task_id = self.task_id.strip()
+        if len(task_id) > 1_024:
+            raise ValueError("task_id must not exceed 1024 characters")
+        object.__setattr__(self, "task_id", task_id)
+
+        cases = tuple(self.case_results)
+        if not cases:
+            raise ValueError("a verifier result must contain at least one case result")
+        if any(not isinstance(case, ParseBenchCaseResult) for case in cases):
+            raise TypeError("case_results must contain ParseBenchCaseResult instances")
+        order = {
+            dimension: index for index, dimension in enumerate(PARSEBENCH_DIMENSIONS)
+        }
+        cases = tuple(
+            sorted(cases, key=lambda case: (order[case.dimension], case.case_id))
+        )
+        seen: set[tuple[ParseBenchDimension, str]] = set()
+        for case in cases:
+            key = (case.dimension, case.case_id)
+            if key in seen:
+                raise ValueError(
+                    f"duplicate ParseBench case for {case.dimension.value}: {case.case_id}"
+                )
+            seen.add(key)
+        object.__setattr__(self, "case_results", cases)
+
+    @classmethod
+    def from_case_results(
+        cls,
+        *,
+        task_id: str,
+        case_results: Iterable[ParseBenchCaseResult],
+    ) -> ParseBenchVerifierResult:
+        return cls(task_id=task_id, case_results=tuple(case_results))
+
+    @property
+    def dimension_results(self) -> tuple[ParseBenchDimensionResult, ...]:
+        return reduce_parsebench_case_results(self.case_results).dimensions
+
+    @property
+    def status(self) -> ParseBenchResultStatus:
+        statuses = {case.status for case in self.case_results}
+        if ParseBenchResultStatus.EXECUTION_FAILED in statuses:
+            return ParseBenchResultStatus.EXECUTION_FAILED
+        if ParseBenchResultStatus.MISSING in statuses:
+            return ParseBenchResultStatus.MISSING
+        if statuses & {
+            ParseBenchResultStatus.SCORED,
+            ParseBenchResultStatus.OFFICIAL_FAILURE,
+        }:
+            return ParseBenchResultStatus.SCORED
+        return ParseBenchResultStatus.NOT_SCORED
+
+    @property
+    def publishable(self) -> bool:
+        """Whether every case can safely participate in the global reducer."""
+
+        return self.status not in {
+            ParseBenchResultStatus.EXECUTION_FAILED,
+            ParseBenchResultStatus.MISSING,
+        }
+
+    @property
+    def diagnostic_reward(self) -> float | None:
+        scores = [
+            result.diagnostic_score
+            for result in self.dimension_results
+            if result.diagnostic_score is not None
+        ]
+        if scores:
+            return math.fsum(scores) / len(scores)
+        return 0.0 if self.publishable else None
+
+    @property
+    def counts(self) -> dict[str, int]:
+        aggregate = {
+            key: sum(result.counts[key] for result in self.dimension_results)
+            for key in (
+                "numeric",
+                "not_scored",
+                "official_failure",
+                "failed",
+                "missing",
+            )
+        }
+        return {
+            "numeric": aggregate["numeric"],
+            "not_scored": aggregate["not_scored"],
+            "official_failure": aggregate["official_failure"],
+            "execution_failure": aggregate["failed"],
+            "missing": aggregate["missing"],
+        }
+
+    @property
+    def diagnostics(self) -> tuple[str, ...]:
+        details: list[str] = []
+        for case in self.case_results:
+            details.extend(
+                f"{case.dimension.value}/{case.case_id}: {diagnostic}"
+                for diagnostic in case.diagnostics
+            )
+        return tuple(details)
+
+    def reward_payload(self) -> dict[str, float | int]:
+        """Return Harbor's bounded numeric mapping, with diagnostic macro first."""
+
+        reward = self.diagnostic_reward
+        if not self.publishable or reward is None:
+            raise ValueError(
+                "a verifier result that is not publishable cannot emit rewards"
+            )
+        payload: dict[str, float | int] = {PARSEBENCH_REWARD_KEY: reward}
+        for result in self.dimension_results:
+            prefix = f"parsebench_{result.dimension.value}"
+            if result.status is ParseBenchResultStatus.SCORED:
+                if result.score is None:  # defensive invariant guard
+                    raise ValueError("a scored dimension must contain a score")
+                payload[f"{prefix}_score"] = result.score
+            payload[f"{prefix}_numeric_count"] = result.numeric_examples
+            payload[f"{prefix}_not_scored_count"] = result.not_scored_examples
+            payload[f"{prefix}_official_failure_count"] = (
+                result.official_failure_examples
+            )
+            payload[f"{prefix}_execution_failure_count"] = (
+                result.execution_failed_examples
+            )
+            payload[f"{prefix}_missing_count"] = result.missing_examples
+        if len(payload) > 31:  # one macro + at most six keys for five dimensions
+            raise ValueError("ParseBench verifier reward mapping exceeds 31 keys")
+        return payload
+
+    @classmethod
+    def from_dict(cls, payload: Mapping[str, Any]) -> ParseBenchVerifierResult:
+        """Validate a full ``parsebench-result.json`` artifact."""
+
+        if not isinstance(payload, Mapping):
+            raise TypeError("ParseBench verifier result payload must be a mapping")
+        if payload.get("schema") != PARSEBENCH_VERIFIER_RESULT_SCHEMA:
+            raise ValueError(
+                "ParseBench verifier result schema must be "
+                f"{PARSEBENCH_VERIFIER_RESULT_SCHEMA!r}"
+            )
+        if payload.get("data_revision") != PARSEBENCH_DATA_REVISION:
+            raise ValueError("ParseBench verifier result data revision mismatch")
+        if payload.get("scorer_revision") != PARSEBENCH_SCORER_REVISION:
+            raise ValueError("ParseBench verifier result scorer revision mismatch")
+        raw_cases = payload.get("cases")
+        if not isinstance(raw_cases, list):
+            raise TypeError("ParseBench verifier result cases must be a list")
+        raw_task_id = payload.get("task_id")
+        if not isinstance(raw_task_id, str):
+            raise TypeError("ParseBench verifier result task_id must be a string")
+        result = cls.from_case_results(
+            task_id=raw_task_id,
+            case_results=(ParseBenchCaseResult.from_dict(case) for case in raw_cases),
+        )
+        if result.to_dict() != dict(payload):
+            raise ValueError(
+                "ParseBench verifier result derived fields are inconsistent"
+            )
+        return result
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "schema": PARSEBENCH_VERIFIER_RESULT_SCHEMA,
+            "task_id": self.task_id,
+            "dataset_id": PARSEBENCH_DATASET_ID,
+            "data_revision": PARSEBENCH_DATA_REVISION,
+            "scorer_revision": PARSEBENCH_SCORER_REVISION,
+            "status": self.status.value,
+            "publishable": self.publishable,
+            "diagnostic_reward": self.diagnostic_reward,
+            "counts": self.counts,
+            "diagnostics": list(self.diagnostics),
+            "cases": [case.to_dict() for case in self.case_results],
+        }
+
+    def render_stdout_sentinel(self) -> str:
+        """Render one canonical, bounded line for remote result recovery."""
+
+        payload = self.to_dict()
+        rendered = PARSEBENCH_VERIFIER_STDOUT_SENTINEL + json.dumps(
+            payload,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        if len(rendered.encode("utf-8")) <= PARSEBENCH_VERIFIER_STDOUT_MAX_BYTES:
+            return rendered
+
+        summary = dict(payload)
+        summary["cases"] = []
+        summary["diagnostics"] = [
+            "stdout details omitted; inspect parsebench-result.json"
+        ]
+        summary["stdout_truncated"] = True
+        rendered = PARSEBENCH_VERIFIER_STDOUT_SENTINEL + json.dumps(
+            summary,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        if len(rendered.encode("utf-8")) > PARSEBENCH_VERIFIER_STDOUT_MAX_BYTES:
+            raise ValueError(
+                "ParseBench verifier stdout summary exceeds its size limit"
+            )
+        return rendered
+
+
 def _official_count(report: Mapping[str, Any], key: str) -> int:
     if key not in report:
         raise ValueError(f"official ParseBench report is missing {key!r}")
     return _coerce_nonnegative_count(report[key], key)
 
 
-def _official_errors(report: Mapping[str, Any]) -> tuple[str, ...]:
+@dataclass(frozen=True, slots=True)
+class _OfficialFailureBreakdown:
+    official_failures: int
+    execution_failures: int
+    official_details: tuple[str, ...]
+    execution_errors: tuple[str, ...]
+
+
+def _official_error_detail(raw_result: Mapping[str, Any], error: str) -> str:
+    test_id = raw_result.get("test_id")
+    prefix = f"{test_id}: " if isinstance(test_id, str) and test_id else ""
+    return prefix + error.strip()
+
+
+def _is_pinned_official_skip(error: str | None) -> bool:
+    """Mirror pinned runner ``_is_skipped_result`` for serialized reports."""
+
+    return bool(error and "No layout data" in error)
+
+
+def _is_pinned_official_infra_failure(error: str | None) -> bool:
+    """Mirror pinned runner ``_is_infra_failure`` for serialized reports."""
+
+    if not error or "not LayoutOutput" in error:
+        return False
+    return error.startswith(
+        ("Worker error:", "Evaluation error:", "Task execution error:")
+    )
+
+
+def _official_failure_breakdown(
+    report: Mapping[str, Any],
+    *,
+    failed: int,
+) -> _OfficialFailureBreakdown:
     raw_results = report.get("per_example_results", [])
     if raw_results is None:
-        return ()
+        raw_results = []
     if not isinstance(raw_results, list):
         raise TypeError("official ParseBench per_example_results must be a list")
 
-    errors: list[str] = []
+    official_details: list[str] = []
+    execution_errors: list[str] = []
     for raw_result in raw_results:
         if (
             not isinstance(raw_result, Mapping)
             or raw_result.get("success") is not False
         ):
             continue
-        error = raw_result.get("error")
-        if not isinstance(error, str) or not error.strip():
+        raw_error = raw_result.get("error")
+        # Classify the unmodified string: the pinned runner uses exact
+        # ``startswith`` semantics for its infrastructure prefixes.
+        error = raw_error if isinstance(raw_error, str) else None
+        if _is_pinned_official_skip(error):
             continue
-        test_id = raw_result.get("test_id")
-        prefix = f"{test_id}: " if isinstance(test_id, str) and test_id else ""
-        errors.append(prefix + error.strip())
-    return tuple(errors)
+        detail = _official_error_detail(
+            raw_result,
+            (error.strip() if error else "")
+            or "official evaluation failed without diagnostic output",
+        )
+        if _is_pinned_official_infra_failure(error):
+            execution_errors.append(detail)
+        else:
+            official_details.append(detail)
+
+    classified = len(official_details) + len(execution_errors)
+    if classified > failed:
+        raise ValueError(
+            "official ParseBench report contains more failed rows than its failed count"
+        )
+    represented_execution_failures = len(execution_errors)
+    unrepresented = failed - classified
+    if unrepresented:
+        execution_errors.append(
+            f"official scorer omitted {unrepresented} failed example result(s)"
+        )
+    return _OfficialFailureBreakdown(
+        official_failures=len(official_details),
+        execution_failures=represented_execution_failures + unrepresented,
+        official_details=tuple(official_details),
+        execution_errors=tuple(execution_errors),
+    )
 
 
 def _official_primary_counts(
@@ -783,7 +1177,7 @@ def dimension_result_from_official_report(
     failed = _official_count(report, "failed")
     skipped = _official_count(report, "skipped")
     aggregate_metrics = _coerce_aggregate_metrics(report.get("aggregate_metrics"))
-    errors = _official_errors(report)
+    failures = _official_failure_breakdown(report, failed=failed)
     primary_metric = PARSEBENCH_PRIMARY_METRICS[dimension]
     numeric_count, not_scored_count = _official_primary_counts(
         report,
@@ -798,35 +1192,59 @@ def dimension_result_from_official_report(
             f"{primary_metric.removeprefix('avg_')!r} metric(s) but no {primary_metric!r} aggregate"
         )
 
-    if primary_metric in aggregate_metrics:
-        return ParseBenchDimensionResult.scored(
-            dimension=dimension,
-            score=_coerce_score(aggregate_metrics[primary_metric], primary_metric),
-            total_examples=total,
-            successful_examples=successful,
-            failed_examples=failed,
-            skipped_examples=skipped,
-            numeric_examples=numeric_count,
-            not_scored_examples=not_scored_count,
-            aggregate_metrics=aggregate_metrics,
-            errors=errors,
-        )
-
-    if failed:
-        if not errors:
-            errors = (
-                f"official scorer reported {failed} failed example(s) without a primary score",
-            )
+    diagnostic_score = (
+        _coerce_score(aggregate_metrics[primary_metric], primary_metric)
+        if primary_metric in aggregate_metrics
+        else None
+    )
+    if failures.execution_failures:
         return ParseBenchDimensionResult.execution_failed(
             dimension=dimension,
+            diagnostic_score=diagnostic_score,
             total_examples=total,
             successful_examples=successful,
             failed_examples=failed,
+            official_failure_examples=failures.official_failures,
             skipped_examples=skipped,
             numeric_examples=numeric_count,
             not_scored_examples=not_scored_count,
             aggregate_metrics=aggregate_metrics,
-            errors=errors,
+            errors=failures.execution_errors,
+            official_failure_details=failures.official_details,
+        )
+
+    if diagnostic_score is not None:
+        return ParseBenchDimensionResult.scored(
+            dimension=dimension,
+            score=diagnostic_score,
+            total_examples=total,
+            successful_examples=successful,
+            failed_examples=failed,
+            official_failure_examples=failures.official_failures,
+            skipped_examples=skipped,
+            numeric_examples=numeric_count,
+            not_scored_examples=not_scored_count,
+            aggregate_metrics=aggregate_metrics,
+            official_failure_details=failures.official_details,
+        )
+
+    if failures.official_failures:
+        # A dimension containing only genuine provider failures has no observed
+        # metric for the pinned runner to aggregate. At the distributed case
+        # boundary those attempts are the exact synthetic zeros the official
+        # macro padding rule prescribes.
+        return ParseBenchDimensionResult.scored(
+            dimension=dimension,
+            score=0.0,
+            total_examples=total,
+            successful_examples=successful,
+            failed_examples=failed,
+            official_failure_examples=failures.official_failures,
+            skipped_examples=skipped,
+            numeric_examples=numeric_count,
+            not_scored_examples=not_scored_count,
+            aggregate_metrics=aggregate_metrics,
+            official_failure_details=failures.official_details,
         )
 
     return ParseBenchDimensionResult.not_scored(
@@ -834,11 +1252,57 @@ def dimension_result_from_official_report(
         total_examples=total,
         successful_examples=successful,
         failed_examples=failed,
+        official_failure_examples=failures.official_failures,
         skipped_examples=skipped,
         numeric_examples=numeric_count,
         not_scored_examples=not_scored_count,
         aggregate_metrics=aggregate_metrics,
-        errors=errors,
+        official_failure_details=failures.official_details,
+    )
+
+
+def case_result_from_official_report(
+    *,
+    case_id: str,
+    dimension: ParseBenchDimension | str,
+    report: Mapping[str, Any],
+) -> ParseBenchCaseResult:
+    """Adapt one task-local official report into the distributed case contract."""
+
+    dimension = _coerce_dimension(dimension)
+    result = dimension_result_from_official_report(dimension, report)
+    if result.total_examples != 1:
+        raise ValueError(
+            "a distributed ParseBench case report must contain exactly one "
+            "official example"
+        )
+    if result.status is ParseBenchResultStatus.EXECUTION_FAILED:
+        return ParseBenchCaseResult.execution_failed(
+            case_id=case_id,
+            dimension=dimension,
+            diagnostics=result.errors,
+        )
+    if result.status is ParseBenchResultStatus.NOT_SCORED:
+        return ParseBenchCaseResult.not_scored(
+            case_id=case_id,
+            dimension=dimension,
+            aggregate_metrics=result.aggregate_metrics,
+            diagnostics=result.official_failure_details,
+        )
+    if result.official_failure_examples and not result.numeric_examples:
+        return ParseBenchCaseResult.official_failure(
+            case_id=case_id,
+            dimension=dimension,
+            diagnostics=result.official_failure_details,
+        )
+    if result.score is None:  # defensive invariant guard
+        raise ValueError("scored official ParseBench result must contain a score")
+    return ParseBenchCaseResult.scored(
+        case_id=case_id,
+        dimension=dimension,
+        score=result.score,
+        aggregate_metrics=result.aggregate_metrics,
+        diagnostics=result.official_failure_details,
     )
 
 
@@ -891,7 +1355,12 @@ def _aggregate_case_dimension(
         for result in ordered_cases
         if result.status is ParseBenchResultStatus.NOT_SCORED
     )
-    failed = tuple(
+    official_failures = tuple(
+        result
+        for result in ordered_cases
+        if result.status is ParseBenchResultStatus.OFFICIAL_FAILURE
+    )
+    execution_failures = tuple(
         result
         for result in ordered_cases
         if result.status is ParseBenchResultStatus.EXECUTION_FAILED
@@ -907,10 +1376,11 @@ def _aggregate_case_dimension(
     numeric_scores = [result.score for result in numeric]
     if any(score is None for score in numeric_scores):  # defensive invariant guard
         raise ValueError("numeric ParseBench case results must contain scores")
+    official_denominator = len(numeric) + len(official_failures)
     diagnostic_score = (
         math.fsum(score for score in numeric_scores if score is not None)
-        / len(numeric_scores)
-        if numeric_scores
+        / official_denominator
+        if official_denominator
         else None
     )
     primary_metric = PARSEBENCH_PRIMARY_METRICS[dimension]
@@ -918,24 +1388,30 @@ def _aggregate_case_dimension(
         {primary_metric: diagnostic_score} if diagnostic_score is not None else {}
     )
     error_details = tuple(
-        _case_diagnostic(result, "execution failed") for result in failed
+        _case_diagnostic(result, "execution failed") for result in execution_failures
+    )
+    official_failure_details = tuple(
+        _case_diagnostic(result, "official provider failure")
+        for result in official_failures
     )
     total = len(ordered_cases) + len(inferred_missing_ids)
     common: dict[str, Any] = {
         "dimension": dimension,
         "total_examples": total,
         "successful_examples": len(numeric),
-        "failed_examples": len(failed),
+        "failed_examples": len(official_failures) + len(execution_failures),
+        "official_failure_examples": len(official_failures),
         "skipped_examples": len(not_scored),
         "numeric_examples": len(numeric),
         "not_scored_examples": len(not_scored),
         "missing_examples": len(missing_ids),
         "aggregate_metrics": aggregate_metrics,
         "errors": error_details,
+        "official_failure_details": official_failure_details,
         "case_results": ordered_cases,
     }
 
-    if failed:
+    if execution_failures:
         return ParseBenchDimensionResult.execution_failed(
             diagnostic_score=diagnostic_score,
             **common,
@@ -946,7 +1422,7 @@ def _aggregate_case_dimension(
             missing_case_ids=missing_ids,
             **common,
         )
-    if numeric:
+    if numeric or official_failures:
         if diagnostic_score is None:  # narrowed by ``numeric`` at runtime
             raise ValueError("numeric ParseBench case results must produce a mean")
         return ParseBenchDimensionResult.scored(
@@ -963,10 +1439,11 @@ def reduce_parsebench_case_results(
 ) -> ParseBenchReport:
     """Aggregate detailed case outcomes, then perform the official reduction.
 
-    Numeric case scores are averaged within their dimension. ``not_scored``
-    cases remain in the report but are excluded from that denominator. Any
-    execution failure or missing expected result blocks publication while a
-    partial numeric mean is retained only as ``diagnostic_score``.
+    Numeric case scores and official provider-failure zeros are averaged
+    within their dimension. ``not_scored`` cases remain in the report but are
+    excluded from that denominator. Any execution/infra failure or missing
+    expected result blocks publication while a partial official mean is
+    retained only as ``diagnostic_score``.
 
     Supplying ``expected_case_ids`` lets the collector prove completeness
     against its immutable benchmark manifest instead of assuming that every
@@ -1075,9 +1552,15 @@ def reduce_parsebench_results(
             "missing dimensions: " + ", ".join(dimension.value for dimension in missing)
         )
     for result in ordered_results:
-        if result.failed_examples:
+        if result.official_failure_examples:
             diagnostics.append(
-                f"{result.dimension.value}: {result.failed_examples} execution failure(s)"
+                f"{result.dimension.value}: "
+                f"{result.official_failure_examples} official failure zero(s)"
+            )
+        if result.execution_failed_examples:
+            diagnostics.append(
+                f"{result.dimension.value}: "
+                f"{result.execution_failed_examples} execution failure(s)"
             )
         if result.missing_examples:
             diagnostics.append(
@@ -1133,12 +1616,34 @@ from pathlib import Path
 import parse_bench
 from parse_bench.analysis.aggregation_report import _DEFAULT_METRICS
 from parse_bench.evaluation.cli import EvaluationCLI
-from parse_bench.schemas.evaluation import EvaluationSummary
+from parse_bench.evaluation.runner import _is_infra_failure, _is_skipped_result
+from parse_bench.schemas.evaluation import EvaluationResult, EvaluationSummary
+
+def classify(error):
+    result = EvaluationResult(
+        test_id="probe",
+        example_id="probe",
+        pipeline_name="probe",
+        product_type="parse",
+        success=False,
+        error=error,
+    )
+    if _is_skipped_result(result):
+        return "not_scored"
+    if _is_infra_failure(result):
+        return "execution_failed"
+    return "official_failure"
 
 print(json.dumps({
     "module_file": str(Path(parse_bench.__file__).resolve()),
     "python": list(sys.version_info[:3]),
     "default_metrics": _DEFAULT_METRICS,
+    "failure_classification": {
+        "provider": classify("provider produced no usable output"),
+        "worker": classify("Worker error: evaluator crashed"),
+        "worker_not_layout": classify("Worker error: value is not LayoutOutput compatible"),
+        "skipped": classify("No layout data available"),
+    },
     "has_evaluation_cli": callable(getattr(EvaluationCLI, "run", None)),
     "has_evaluation_summary": callable(getattr(EvaluationSummary, "model_validate", None)),
 }, sort_keys=True))
@@ -1182,6 +1687,14 @@ def _completed_process(
         ) from exc
 
 
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
 @dataclass(frozen=True, slots=True)
 class OfficialScorerEnvironment:
     """A validated process boundary for the pinned upstream scorer."""
@@ -1190,25 +1703,37 @@ class OfficialScorerEnvironment:
     source_root: Path
     python_executable: Path
     scorer_revision: str = field(default=PARSEBENCH_SCORER_REVISION, init=False)
+    uv_lock_sha256: str = field(
+        default_factory=lambda: PARSEBENCH_SCORER_UV_LOCK_SHA256,
+        init=False,
+    )
     repository: str = field(default=PARSEBENCH_SCORER_REPOSITORY, init=False)
 
     def __post_init__(self) -> None:
-        object.__setattr__(self, "checkout", Path(self.checkout))
-        object.__setattr__(self, "source_root", Path(self.source_root))
+        checkout = Path(self.checkout).expanduser().resolve()
+        source_root = Path(self.source_root).expanduser().resolve()
+        if source_root != (checkout / "src").resolve():
+            raise ValueError("source_root must be the pinned scorer checkout/src path")
+        object.__setattr__(self, "checkout", checkout)
+        object.__setattr__(self, "source_root", source_root)
         object.__setattr__(self, "python_executable", Path(self.python_executable))
 
     def subprocess_environment(
         self,
         base_environment: Mapping[str, str] | None = None,
     ) -> dict[str, str]:
-        """Build the environment that imports only this checkout first."""
+        """Build a secret-free environment that imports only the pinned checkout."""
 
-        environment = dict(os.environ if base_environment is None else base_environment)
-        existing_pythonpath = environment.get("PYTHONPATH")
-        pythonpath = str(self.source_root)
-        if existing_pythonpath:
-            pythonpath += os.pathsep + existing_pythonpath
-        environment["PYTHONPATH"] = pythonpath
+        source = os.environ if base_environment is None else base_environment
+        environment = {
+            key: value
+            for key, value in source.items()
+            if key in _SCORER_ENV_ALLOWLIST and isinstance(value, str)
+        }
+        environment["PYTHONPATH"] = str(self.source_root)
+        environment["PYTHONNOUSERSITE"] = "1"
+        environment["PYTHONSAFEPATH"] = "1"
+        environment["PYTHON_DOTENV_DISABLED"] = "1"
         # The pinned scorer is deterministic by default; make the optional
         # chart LLM normalization setting explicit at the process boundary.
         environment["LLAMACLOUD_BENCH_LLM_NORMALIZATION"] = "off"
@@ -1306,6 +1831,29 @@ def validate_official_scorer(
             "official scorer checkout has uncommitted files"
         )
 
+    dotenv_path = checkout_path / ".env"
+    if dotenv_path.exists() or dotenv_path.is_symlink():
+        raise OfficialScorerValidationError(
+            "official scorer checkout contains a local .env file"
+        )
+
+    lock_path = checkout_path / "uv.lock"
+    if not lock_path.is_file() or lock_path.is_symlink():
+        raise OfficialScorerValidationError(
+            f"official scorer uv.lock is missing or not a regular file: {lock_path}"
+        )
+    try:
+        actual_lock_sha256 = _sha256_file(lock_path)
+    except OSError as exc:
+        raise OfficialScorerValidationError(
+            f"could not hash official scorer uv.lock: {exc}"
+        ) from exc
+    if actual_lock_sha256 != PARSEBENCH_SCORER_UV_LOCK_SHA256:
+        raise OfficialScorerValidationError(
+            "official scorer uv.lock SHA256 mismatch: expected "
+            f"{PARSEBENCH_SCORER_UV_LOCK_SHA256}, found {actual_lock_sha256}"
+        )
+
     environment = OfficialScorerEnvironment(
         checkout=checkout_path,
         source_root=source_root,
@@ -1358,6 +1906,11 @@ def validate_official_scorer(
     ):
         raise OfficialScorerValidationError(
             "official scorer primary metric contract does not match the pinned revision"
+        )
+    if probe.get("failure_classification") != _PINNED_FAILURE_CLASSIFICATION:
+        raise OfficialScorerValidationError(
+            "official scorer failure classification contract does not match "
+            "the pinned revision"
         )
     if (
         probe.get("has_evaluation_cli") is not True

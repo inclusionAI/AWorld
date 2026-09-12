@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import subprocess
 import sys
@@ -7,15 +8,23 @@ from pathlib import Path
 
 import pytest
 
+import aworld.benchmarks.parsebench.scoring as scoring_module
 from aworld.benchmarks.parsebench.scoring import (
+    PARSEBENCH_CASE_RESULT_SCHEMA,
     PARSEBENCH_DATA_REVISION,
     PARSEBENCH_DATASET_ID,
-    PARSEBENCH_CASE_RESULT_SCHEMA,
     PARSEBENCH_DIMENSIONS,
     PARSEBENCH_PRIMARY_METRICS,
     PARSEBENCH_REPORT_SCHEMA,
+    PARSEBENCH_REWARD_FILENAME,
+    PARSEBENCH_REWARD_KEY,
     PARSEBENCH_SCORER_REPOSITORY,
     PARSEBENCH_SCORER_REVISION,
+    PARSEBENCH_SCORER_UV_LOCK_SHA256,
+    PARSEBENCH_VERIFIER_RESULT_FILENAME,
+    PARSEBENCH_VERIFIER_RESULT_SCHEMA,
+    PARSEBENCH_VERIFIER_STDOUT_MAX_BYTES,
+    PARSEBENCH_VERIFIER_STDOUT_SENTINEL,
     OfficialScorerEnvironment,
     OfficialScorerValidationError,
     ParseBenchCaseResult,
@@ -23,12 +32,53 @@ from aworld.benchmarks.parsebench.scoring import (
     ParseBenchDimensionResult,
     ParseBenchOverallStatus,
     ParseBenchResultStatus,
+    ParseBenchVerifierResult,
+    case_result_from_official_report,
     dimension_result_from_official_report,
     reduce_parsebench_case_results,
     reduce_parsebench_results,
     run_official_scorer,
     validate_official_scorer,
 )
+
+
+_PINNED_FAILURE_CLASSIFICATION = {
+    "provider": "official_failure",
+    "worker": "execution_failed",
+    "worker_not_layout": "official_failure",
+    "skipped": "not_scored",
+}
+
+
+def _fake_probe_payload(checkout: Path) -> dict[str, object]:
+    return {
+        "module_file": str(
+            (checkout / "src" / "parse_bench" / "__init__.py").resolve()
+        ),
+        "python": [3, 12, 4],
+        "default_metrics": {
+            "table": "grits_trm_composite",
+            "layout": "layout_element_rule_pass_rate",
+            "text_content": "content_faithfulness",
+            "text_formatting": "semantic_formatting",
+        },
+        "failure_classification": _PINNED_FAILURE_CLASSIFICATION,
+        "has_evaluation_cli": True,
+        "has_evaluation_summary": True,
+    }
+
+
+def _write_synthetic_pinned_lock(
+    checkout: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    content = b"synthetic pinned ParseBench uv lock\n"
+    (checkout / "uv.lock").write_bytes(content)
+    monkeypatch.setattr(
+        scoring_module,
+        "PARSEBENCH_SCORER_UV_LOCK_SHA256",
+        hashlib.sha256(content).hexdigest(),
+    )
 
 
 def _scored(
@@ -51,6 +101,10 @@ def test_upstream_revisions_and_primary_metrics_are_pinned() -> None:
     assert PARSEBENCH_DATA_REVISION == "2805a1d940f95a203e0ae4b88be9934f7765b3fc"
     assert PARSEBENCH_SCORER_REPOSITORY == "https://github.com/run-llama/ParseBench.git"
     assert PARSEBENCH_SCORER_REVISION == "34b73455032797754f6ed62e14c27a8b5423d11e"
+    assert (
+        PARSEBENCH_SCORER_UV_LOCK_SHA256
+        == "d18a4befdb2c1941f9a47d097aba8c45fbe15b9da8d0ea02424c629b8f6d76a2"
+    )
     assert PARSEBENCH_DIMENSIONS == (
         ParseBenchDimension.TABLE,
         ParseBenchDimension.CHART,
@@ -107,7 +161,7 @@ def test_official_report_keeps_not_scored_distinct_from_zero() -> None:
     assert result.skipped_examples == 3
 
 
-def test_official_report_keeps_execution_failure_distinct_from_zero() -> None:
+def test_official_report_zero_pads_genuine_provider_failure() -> None:
     result = dimension_result_from_official_report(
         ParseBenchDimension.TABLE,
         {
@@ -126,9 +180,149 @@ def test_official_report_keeps_execution_failure_distinct_from_zero() -> None:
         },
     )
 
+    assert result.status is ParseBenchResultStatus.SCORED
+    assert result.score == 0.0
+    assert result.official_failure_examples == 1
+    assert result.execution_failed_examples == 0
+    assert result.official_failure_details == (
+        "table/example: provider produced no usable output",
+    )
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        "Worker error: evaluator crashed",
+        "Evaluation error: invalid ground truth",
+        "Task execution error: future timed out",
+    ],
+)
+def test_official_report_fails_closed_for_pinned_infra_prefixes(error: str) -> None:
+    result = dimension_result_from_official_report(
+        ParseBenchDimension.TABLE,
+        {
+            "total_examples": 2,
+            "successful": 1,
+            "failed": 1,
+            "skipped": 0,
+            # The pinned runner excludes infra failures from this diagnostic
+            # survivor score. It must not make the dimension publishable.
+            "aggregate_metrics": {"avg_grits_trm_composite": 1.0},
+            "per_example_results": [
+                {
+                    "test_id": "table/survivor",
+                    "success": True,
+                    "metrics": [{"metric_name": "grits_trm_composite", "value": 1.0}],
+                },
+                {
+                    "test_id": "table/infra",
+                    "success": False,
+                    "error": error,
+                },
+            ],
+        },
+    )
+
     assert result.status is ParseBenchResultStatus.EXECUTION_FAILED
     assert result.score is None
-    assert result.errors == ("table/example: provider produced no usable output",)
+    assert result.diagnostic_score == pytest.approx(1.0)
+    assert result.official_failure_examples == 0
+    assert result.execution_failed_examples == 1
+
+
+def test_official_report_treats_not_layout_output_exception_as_provider_failure() -> (
+    None
+):
+    result = dimension_result_from_official_report(
+        ParseBenchDimension.LAYOUT,
+        {
+            "total_examples": 1,
+            "successful": 0,
+            "failed": 1,
+            "skipped": 0,
+            "aggregate_metrics": {},
+            "per_example_results": [
+                {
+                    "test_id": "layout/provider",
+                    "success": False,
+                    "error": "Worker error: result is not LayoutOutput compatible",
+                }
+            ],
+        },
+    )
+
+    assert result.status is ParseBenchResultStatus.SCORED
+    assert result.score == 0.0
+    assert result.official_failure_examples == 1
+    assert result.execution_failed_examples == 0
+
+
+def test_official_report_mirrors_exact_infra_prefix_matching() -> None:
+    result = dimension_result_from_official_report(
+        ParseBenchDimension.CHART,
+        {
+            "total_examples": 1,
+            "successful": 0,
+            "failed": 1,
+            "skipped": 0,
+            "aggregate_metrics": {},
+            "per_example_results": [
+                {
+                    "test_id": "chart/provider",
+                    "success": False,
+                    # Pinned _is_infra_failure uses startswith on the raw text.
+                    "error": " Worker error: provider returned this literal message",
+                }
+            ],
+        },
+    )
+
+    assert result.status is ParseBenchResultStatus.SCORED
+    assert result.score == 0.0
+    assert result.official_failure_examples == 1
+
+
+def test_case_adapter_classifies_genuine_and_infra_failures() -> None:
+    genuine = case_result_from_official_report(
+        case_id="table/provider",
+        dimension=ParseBenchDimension.TABLE,
+        report={
+            "total_examples": 1,
+            "successful": 0,
+            "failed": 1,
+            "skipped": 0,
+            "aggregate_metrics": {},
+            "per_example_results": [
+                {
+                    "test_id": "table/provider",
+                    "success": False,
+                    "error": "provider produced no usable output",
+                }
+            ],
+        },
+    )
+    infra = case_result_from_official_report(
+        case_id="table/infra",
+        dimension=ParseBenchDimension.TABLE,
+        report={
+            "total_examples": 1,
+            "successful": 0,
+            "failed": 1,
+            "skipped": 0,
+            "aggregate_metrics": {},
+            "per_example_results": [
+                {
+                    "test_id": "table/infra",
+                    "success": False,
+                    "error": "Worker error: evaluator crashed",
+                }
+            ],
+        },
+    )
+
+    assert genuine.status is ParseBenchResultStatus.OFFICIAL_FAILURE
+    assert genuine.score is None
+    assert infra.status is ParseBenchResultStatus.EXECUTION_FAILED
 
 
 def test_official_report_with_no_applicable_primary_metric_is_not_scored() -> None:
@@ -300,10 +494,115 @@ def test_case_reducer_averages_only_numeric_scores_and_preserves_zero() -> None:
     assert dimension.counts == {
         "numeric": 2,
         "not_scored": 1,
+        "official_failure": 0,
         "failed": 0,
         "missing": 0,
     }
     assert report.counts == dimension.counts
+
+
+def test_distributed_reducer_matches_pinned_runner_genuine_failure_padding() -> None:
+    # Golden fixture captured from pinned EvaluationRunner._aggregate_metrics:
+    # one 1.0 survivor plus one same-product genuine failure yields 0.5.
+    official_report = {
+        "total_examples": 2,
+        "successful": 1,
+        "failed": 1,
+        "skipped": 0,
+        "aggregate_metrics": {
+            "avg_rule_pass_rate": 0.5,
+            "min_rule_pass_rate": 0.0,
+            "max_rule_pass_rate": 1.0,
+        },
+        "per_example_results": [
+            {
+                "test_id": "chart/survivor",
+                "success": True,
+                "metrics": [{"metric_name": "rule_pass_rate", "value": 1.0}],
+            },
+            {
+                "test_id": "chart/provider-failure",
+                "success": False,
+                "error": "provider produced no usable output",
+            },
+        ],
+    }
+    official = dimension_result_from_official_report(
+        ParseBenchDimension.CHART,
+        official_report,
+    )
+    distributed = reduce_parsebench_case_results(
+        [
+            ParseBenchCaseResult.scored(
+                case_id="chart/survivor",
+                dimension=ParseBenchDimension.CHART,
+                score=1.0,
+            ),
+            ParseBenchCaseResult.official_failure(
+                case_id="chart/provider-failure",
+                dimension=ParseBenchDimension.CHART,
+                diagnostics=("provider produced no usable output",),
+            ),
+        ]
+    ).dimensions[0]
+
+    assert official.status is ParseBenchResultStatus.SCORED
+    assert official.score == pytest.approx(0.5)
+    assert official.official_failure_examples == 1
+    assert distributed.status is ParseBenchResultStatus.SCORED
+    assert distributed.score == official.score
+    assert distributed.counts == {
+        "numeric": 1,
+        "not_scored": 0,
+        "official_failure": 1,
+        "failed": 0,
+        "missing": 0,
+    }
+
+
+def test_official_failure_zero_still_allows_complete_overall_publication() -> None:
+    cases = [
+        ParseBenchCaseResult.scored(
+            case_id=f"{dimension.value}/scored",
+            dimension=dimension,
+            score=1.0,
+        )
+        for dimension in PARSEBENCH_DIMENSIONS
+    ]
+    cases[1] = ParseBenchCaseResult.official_failure(
+        case_id="chart/provider-failure",
+        dimension=ParseBenchDimension.CHART,
+    )
+
+    report = reduce_parsebench_case_results(cases)
+
+    assert report.publishable is True
+    assert report.overall_score == pytest.approx(0.8)
+    assert report.counts == {
+        "numeric": 4,
+        "not_scored": 0,
+        "official_failure": 1,
+        "failed": 0,
+        "missing": 0,
+    }
+
+
+def test_official_report_without_failed_rows_fails_closed() -> None:
+    result = dimension_result_from_official_report(
+        ParseBenchDimension.TABLE,
+        {
+            "total_examples": 1,
+            "successful": 0,
+            "failed": 1,
+            "skipped": 0,
+            "aggregate_metrics": {},
+            "per_example_results": [],
+        },
+    )
+
+    assert result.status is ParseBenchResultStatus.EXECUTION_FAILED
+    assert result.execution_failed_examples == 1
+    assert result.official_failure_examples == 0
 
 
 def test_case_reducer_can_publish_with_not_scored_cases_excluded() -> None:
@@ -330,6 +629,7 @@ def test_case_reducer_can_publish_with_not_scored_cases_excluded() -> None:
     assert report.counts == {
         "numeric": 5,
         "not_scored": 1,
+        "official_failure": 0,
         "failed": 0,
         "missing": 0,
     }
@@ -374,6 +674,7 @@ def test_case_reducer_matches_filex_pinned_baseline_golden() -> None:
     assert report.counts == {
         "numeric": 5,
         "not_scored": 19,
+        "official_failure": 0,
         "failed": 0,
         "missing": 0,
     }
@@ -434,6 +735,7 @@ def test_case_reducer_expected_manifest_detects_missing_results() -> None:
     assert report.counts == {
         "numeric": 5,
         "not_scored": 0,
+        "official_failure": 0,
         "failed": 0,
         "missing": 1,
     }
@@ -529,6 +831,134 @@ def test_case_result_rejects_unknown_artifact_schema() -> None:
         )
 
 
+def test_verifier_result_contract_emits_bounded_harbor_rewards_and_details() -> None:
+    assert PARSEBENCH_REWARD_FILENAME == "reward.json"
+    assert PARSEBENCH_VERIFIER_RESULT_FILENAME == "parsebench-result.json"
+    assert PARSEBENCH_REWARD_KEY == "reward"
+    assert PARSEBENCH_VERIFIER_RESULT_SCHEMA == "aworld.parsebench.verifier-result/v1"
+
+    result = ParseBenchVerifierResult.from_case_results(
+        task_id="parsebench-task-001",
+        case_results=[
+            ParseBenchCaseResult.scored(
+                case_id="table/scored",
+                dimension=ParseBenchDimension.TABLE,
+                score=0.8,
+            ),
+            ParseBenchCaseResult.official_failure(
+                case_id="chart/provider-failure",
+                dimension=ParseBenchDimension.CHART,
+            ),
+            ParseBenchCaseResult.not_scored(
+                case_id="text_formatting/not-applicable",
+                dimension=ParseBenchDimension.TEXT_FORMATTING,
+            ),
+        ],
+    )
+
+    reward = result.reward_payload()
+    assert list(reward)[0] == "reward"
+    assert reward == {
+        "reward": pytest.approx(0.4),
+        "parsebench_table_score": pytest.approx(0.8),
+        "parsebench_table_numeric_count": 1,
+        "parsebench_table_not_scored_count": 0,
+        "parsebench_table_official_failure_count": 0,
+        "parsebench_table_execution_failure_count": 0,
+        "parsebench_table_missing_count": 0,
+        "parsebench_chart_score": 0.0,
+        "parsebench_chart_numeric_count": 0,
+        "parsebench_chart_not_scored_count": 0,
+        "parsebench_chart_official_failure_count": 1,
+        "parsebench_chart_execution_failure_count": 0,
+        "parsebench_chart_missing_count": 0,
+        "parsebench_text_formatting_numeric_count": 0,
+        "parsebench_text_formatting_not_scored_count": 1,
+        "parsebench_text_formatting_official_failure_count": 0,
+        "parsebench_text_formatting_execution_failure_count": 0,
+        "parsebench_text_formatting_missing_count": 0,
+    }
+    assert len(reward) <= 31
+
+    payload = result.to_dict()
+    assert payload["schema"] == PARSEBENCH_VERIFIER_RESULT_SCHEMA
+    assert payload["task_id"] == "parsebench-task-001"
+    assert payload["data_revision"] == PARSEBENCH_DATA_REVISION
+    assert payload["scorer_revision"] == PARSEBENCH_SCORER_REVISION
+    assert payload["status"] == "scored"
+    assert payload["publishable"] is True
+    assert payload["diagnostic_reward"] == pytest.approx(0.4)
+    assert payload["counts"] == {
+        "numeric": 1,
+        "not_scored": 1,
+        "official_failure": 1,
+        "execution_failure": 0,
+        "missing": 0,
+    }
+    assert ParseBenchVerifierResult.from_dict(payload) == result
+
+    stdout = result.render_stdout_sentinel()
+    assert "\n" not in stdout
+    assert stdout.startswith(PARSEBENCH_VERIFIER_STDOUT_SENTINEL)
+    assert len(stdout.encode("utf-8")) <= PARSEBENCH_VERIFIER_STDOUT_MAX_BYTES
+    assert (
+        json.loads(stdout.removeprefix(PARSEBENCH_VERIFIER_STDOUT_SENTINEL)) == payload
+    )
+
+
+def test_verifier_result_fails_closed_and_bounds_stdout() -> None:
+    result = ParseBenchVerifierResult.from_case_results(
+        task_id="parsebench-task-failed",
+        case_results=[
+            ParseBenchCaseResult.scored(
+                case_id="table/scored",
+                dimension=ParseBenchDimension.TABLE,
+                score=1.0,
+            ),
+            ParseBenchCaseResult.execution_failed(
+                case_id="chart/infra",
+                dimension=ParseBenchDimension.CHART,
+                diagnostics=("x" * (PARSEBENCH_VERIFIER_STDOUT_MAX_BYTES * 2),),
+            ),
+        ],
+    )
+
+    assert result.status is ParseBenchResultStatus.EXECUTION_FAILED
+    assert result.publishable is False
+    assert result.diagnostic_reward == pytest.approx(1.0)
+    with pytest.raises(ValueError, match="not publishable"):
+        result.reward_payload()
+
+    stdout = result.render_stdout_sentinel()
+    assert "\n" not in stdout
+    assert len(stdout.encode("utf-8")) <= PARSEBENCH_VERIFIER_STDOUT_MAX_BYTES
+    stdout_payload = json.loads(
+        stdout.removeprefix(PARSEBENCH_VERIFIER_STDOUT_SENTINEL)
+    )
+    assert stdout_payload["schema"] == PARSEBENCH_VERIFIER_RESULT_SCHEMA
+    assert stdout_payload["stdout_truncated"] is True
+    assert stdout_payload["cases"] == []
+
+
+def test_verifier_reward_mapping_has_exact_five_dimension_maximum() -> None:
+    result = ParseBenchVerifierResult.from_case_results(
+        task_id="parsebench-all-dimensions",
+        case_results=[
+            ParseBenchCaseResult.scored(
+                case_id=f"{dimension.value}/case",
+                dimension=dimension,
+                score=1.0,
+            )
+            for dimension in PARSEBENCH_DIMENSIONS
+        ],
+    )
+
+    reward = result.reward_payload()
+
+    assert list(reward)[0] == PARSEBENCH_REWARD_KEY
+    assert len(reward) == 31
+
+
 def test_report_serialization_is_deterministic_and_detailed() -> None:
     report = reduce_parsebench_results(
         [
@@ -552,6 +982,7 @@ def test_report_serialization_is_deterministic_and_detailed() -> None:
         "counts": {
             "numeric": 5,
             "not_scored": 0,
+            "official_failure": 0,
             "failed": 0,
             "missing": 0,
         },
@@ -571,6 +1002,7 @@ def test_validate_official_scorer_checks_revision_cleanliness_and_probe(
     checkout = tmp_path / "ParseBench"
     (checkout / ".git").mkdir(parents=True)
     (checkout / "src" / "parse_bench").mkdir(parents=True)
+    _write_synthetic_pinned_lock(checkout, monkeypatch)
     python_executable = Path(sys.executable).resolve()
     calls: list[tuple[str, ...]] = []
 
@@ -582,20 +1014,7 @@ def test_validate_official_scorer_checks_revision_cleanliness_and_probe(
             )
         if command[:4] == ["git", "-C", str(checkout.resolve()), "status"]:
             return subprocess.CompletedProcess(command, 0, "", "")
-        probe = {
-            "module_file": str(
-                (checkout / "src" / "parse_bench" / "__init__.py").resolve()
-            ),
-            "python": [3, 12, 4],
-            "default_metrics": {
-                "table": "grits_trm_composite",
-                "layout": "layout_element_rule_pass_rate",
-                "text_content": "content_faithfulness",
-                "text_formatting": "semantic_formatting",
-            },
-            "has_evaluation_cli": True,
-            "has_evaluation_summary": True,
-        }
+        probe = _fake_probe_payload(checkout)
         return subprocess.CompletedProcess(command, 0, json.dumps(probe) + "\n", "")
 
     monkeypatch.setattr(subprocess, "run", fake_run)
@@ -618,6 +1037,7 @@ def test_validate_official_scorer_preserves_virtualenv_python_symlink(
     checkout = tmp_path / "ParseBench"
     (checkout / ".git").mkdir(parents=True)
     (checkout / "src" / "parse_bench").mkdir(parents=True)
+    _write_synthetic_pinned_lock(checkout, monkeypatch)
     venv_python = tmp_path / ".venv" / "bin" / "python"
     venv_python.parent.mkdir(parents=True)
     venv_python.symlink_to(sys.executable)
@@ -629,18 +1049,7 @@ def test_validate_official_scorer_preserves_virtualenv_python_symlink(
             )
         if command[0] == "git":
             return subprocess.CompletedProcess(command, 0, "", "")
-        probe = {
-            "module_file": str(checkout / "src" / "parse_bench" / "__init__.py"),
-            "python": [3, 12, 4],
-            "default_metrics": {
-                "table": "grits_trm_composite",
-                "layout": "layout_element_rule_pass_rate",
-                "text_content": "content_faithfulness",
-                "text_formatting": "semantic_formatting",
-            },
-            "has_evaluation_cli": True,
-            "has_evaluation_summary": True,
-        }
+        probe = _fake_probe_payload(checkout)
         return subprocess.CompletedProcess(command, 0, json.dumps(probe), "")
 
     monkeypatch.setattr(subprocess, "run", fake_run)
@@ -687,6 +1096,48 @@ def test_validate_official_scorer_rejects_wrong_or_dirty_checkout(
         validate_official_scorer(checkout)
 
 
+def test_validate_official_scorer_rejects_wrong_uv_lock_with_clean_git(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    checkout = tmp_path / "ParseBench"
+    (checkout / ".git").mkdir(parents=True)
+    (checkout / "src" / "parse_bench").mkdir(parents=True)
+    (checkout / "uv.lock").write_text("malicious dependency override\n")
+
+    def clean_checkout(
+        command: list[str], **_: object
+    ) -> subprocess.CompletedProcess[str]:
+        output = PARSEBENCH_SCORER_REVISION + "\n" if "rev-parse" in command else ""
+        return subprocess.CompletedProcess(command, 0, output, "")
+
+    monkeypatch.setattr(subprocess, "run", clean_checkout)
+
+    with pytest.raises(OfficialScorerValidationError, match="uv.lock SHA256"):
+        validate_official_scorer(checkout)
+
+
+def test_validate_official_scorer_rejects_ignored_dotenv_file(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    checkout = tmp_path / "ParseBench"
+    (checkout / ".git").mkdir(parents=True)
+    (checkout / "src" / "parse_bench").mkdir(parents=True)
+    (checkout / ".env").write_text("OPENAI_API_KEY=sentinel-secret\n")
+
+    def clean_checkout(
+        command: list[str], **_: object
+    ) -> subprocess.CompletedProcess[str]:
+        output = PARSEBENCH_SCORER_REVISION + "\n" if "rev-parse" in command else ""
+        return subprocess.CompletedProcess(command, 0, output, "")
+
+    monkeypatch.setattr(subprocess, "run", clean_checkout)
+
+    with pytest.raises(OfficialScorerValidationError, match="local .env"):
+        validate_official_scorer(checkout)
+
+
 def test_official_scorer_command_is_pinned_and_disables_optional_llm_normalization(
     tmp_path: Path,
 ) -> None:
@@ -705,7 +1156,16 @@ def test_official_scorer_command_is_pinned_and_disables_optional_llm_normalizati
         report_dir=tmp_path / "report",
         max_workers=2,
     )
-    child_environment = environment.subprocess_environment({"PYTHONPATH": "/existing"})
+    child_environment = environment.subprocess_environment(
+        {
+            "LANG": "C.UTF-8",
+            "TMPDIR": "/safe-tmp",
+            "PYTHONPATH": "/malicious",
+            "PYTHONHOME": "/malicious-home",
+            "OPENAI_API_KEY": "sentinel-secret",
+            "SENTINEL_SECRET": "must-not-cross-boundary",
+        }
+    )
 
     assert command == (
         str(Path(sys.executable)),
@@ -724,11 +1184,16 @@ def test_official_scorer_command_is_pinned_and_disables_optional_llm_normalizati
         "--force=True",
         "--max_workers=2",
     )
-    assert child_environment["PYTHONPATH"].split(":", 1) == [
-        str(source_root),
-        "/existing",
-    ]
+    assert child_environment["PYTHONPATH"] == str(source_root)
+    assert child_environment["PYTHONNOUSERSITE"] == "1"
+    assert child_environment["PYTHONSAFEPATH"] == "1"
+    assert child_environment["PYTHON_DOTENV_DISABLED"] == "1"
     assert child_environment["LLAMACLOUD_BENCH_LLM_NORMALIZATION"] == "off"
+    assert child_environment["LANG"] == "C.UTF-8"
+    assert child_environment["TMPDIR"] == "/safe-tmp"
+    assert "PYTHONHOME" not in child_environment
+    assert "OPENAI_API_KEY" not in child_environment
+    assert "SENTINEL_SECRET" not in child_environment
 
 
 def test_run_official_scorer_loads_generated_report(
