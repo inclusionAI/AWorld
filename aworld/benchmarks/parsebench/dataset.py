@@ -880,7 +880,7 @@ def _instruction(execution: ParseBenchExecution) -> bytes:
 
 def _task_toml() -> bytes:
     return (
-        'version = "1.0"\n\n'
+        'schema_version = "1.4"\n\n'
         'artifacts = ["/logs/artifacts"]\n\n'
         "[metadata]\n"
         'author_name = "inclusionAI/AWorld"\n'

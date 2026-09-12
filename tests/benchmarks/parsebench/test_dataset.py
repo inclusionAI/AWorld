@@ -674,9 +674,7 @@ def test_converter_builds_deterministic_private_harbor_package(tmp_path: Path) -
                 assert f"{prefix}/task.toml" in members
                 assert f"{prefix}/instruction.md" in members
                 assert f"{prefix}/environment/Dockerfile" in members
-                assert (
-                    f"{prefix}/environment/{PARSEBENCH_TASK_FILENAME}" in members
-                )
+                assert f"{prefix}/environment/{PARSEBENCH_TASK_FILENAME}" in members
                 assert f"{prefix}/tests/Dockerfile" in members
                 assert f"{prefix}/tests/test.sh" in members
                 assert f"{prefix}/tests/ground_truth.json" in members
@@ -698,14 +696,12 @@ def test_converter_builds_deterministic_private_harbor_package(tmp_path: Path) -
                 verifier_script = (
                     task.extractfile(f"{prefix}/tests/test.sh").read().decode()
                 )
-                task_toml_text = (
-                    task.extractfile(f"{prefix}/task.toml").read().decode()
-                )
+                task_toml_text = task.extractfile(f"{prefix}/task.toml").read().decode()
                 task_config = tomllib.loads(task_toml_text)
+                assert task_config["schema_version"] == "1.4"
+                assert "version" not in task_config
                 public_task = json.load(
-                    task.extractfile(
-                        f"{prefix}/environment/{PARSEBENCH_TASK_FILENAME}"
-                    )
+                    task.extractfile(f"{prefix}/environment/{PARSEBENCH_TASK_FILENAME}")
                 )
                 ground_truth = json.load(
                     task.extractfile(f"{prefix}/tests/ground_truth.json")
