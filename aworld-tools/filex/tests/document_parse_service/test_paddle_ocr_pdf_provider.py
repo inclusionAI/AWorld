@@ -8,7 +8,9 @@ from types import ModuleType
 
 
 def _load_provider_module():
-    services_dir = Path(__file__).resolve().parent.parent.parent / "src" / "document_parse_service"
+    services_dir = (
+        Path(__file__).resolve().parent.parent.parent / "src" / "document_parse_service"
+    )
     module_path = services_dir / "paddle_ocr_pdf_provider.py"
     package_root = "aworld_test_paddle_pdf_pkg"
     services_package = f"{package_root}.document_parse_service"
@@ -18,7 +20,9 @@ def _load_provider_module():
     root_module.__path__ = []  # type: ignore[attr-defined]
     services_module = ModuleType(services_package)
     services_module.__path__ = [str(services_dir)]  # type: ignore[attr-defined]
-    document_artifact_models_stub = ModuleType(f"{services_package}.document_artifact_models")
+    document_artifact_models_stub = ModuleType(
+        f"{services_package}.document_artifact_models"
+    )
     paths_stub = ModuleType(f"{services_package}.paths")
 
     @dataclass
@@ -66,7 +70,9 @@ def _load_provider_module():
     try:
         sys.modules[package_root] = root_module
         sys.modules[services_package] = services_module
-        sys.modules[f"{services_package}.document_artifact_models"] = document_artifact_models_stub
+        sys.modules[f"{services_package}.document_artifact_models"] = (
+            document_artifact_models_stub
+        )
         sys.modules[f"{services_package}.paths"] = paths_stub
         spec = importlib.util.spec_from_file_location(module_name, module_path)
         module = importlib.util.module_from_spec(spec)
@@ -206,6 +212,21 @@ def test_paddle_ocr_preserves_page_element_geometry() -> None:
             }
         ],
     }
+
+
+def test_paddle_ocr_metrics_report_effective_gateway_model() -> None:
+    module = _load_provider_module()
+    provider = module.PaddleOcrPdfProvider(
+        env_content={
+            "gateway_vllm": {
+                "base_url": "https://gateway.example/v1",
+                "model_name": "gemini-3.1-pro-preview",
+            }
+        },
+        pipeline=object(),
+    )
+
+    assert provider._model_info()["vl_rec_api_model_name"] == ("gemini-3.1-pro-preview")
 
 
 def test_text_layer_formatting_recovers_sparse_bold_title() -> None:
@@ -384,9 +405,12 @@ def test_replace_markdown_asset_references_prefers_remote_url() -> None:
     )
 
     updated = module.PaddleOcrPdfProvider.replace_markdown_asset_references(
-        "![图](images/fig.png)\n<img src=\"images/fig.png\">",
+        '![图](images/fig.png)\n<img src="images/fig.png">',
         [asset],
     )
 
-    assert '<img src="https://mdn.example/file.jpg" data-file-id="A*remote" alt="图" />' in updated
+    assert (
+        '<img src="https://mdn.example/file.jpg" data-file-id="A*remote" alt="图" />'
+        in updated
+    )
     assert '<img src="https://mdn.example/file.jpg" data-file-id="A*remote">' in updated

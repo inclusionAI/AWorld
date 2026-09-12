@@ -57,7 +57,9 @@ class PaddleOcrPdfProvider:
 
     name = "paddle_ocr"
 
-    def __init__(self, *, env_content: dict[str, Any] | None = None, pipeline: Any | None = None) -> None:
+    def __init__(
+        self, *, env_content: dict[str, Any] | None = None, pipeline: Any | None = None
+    ) -> None:
         self._env_content = env_content or {}
         self._pipeline = pipeline
 
@@ -102,13 +104,17 @@ class PaddleOcrPdfProvider:
             else []
         )
         if text_layer_pages:
-            markdown_text = overlay_text_layer_formatting(markdown_text, text_layer_pages)
+            markdown_text = overlay_text_layer_formatting(
+                markdown_text, text_layer_pages
+            )
         assets = self._write_markdown_images(
             markdown_parts,
             task_id=task_id,
             source_file_name=source_file_name,
         )
-        document_ir = self._build_document_ir(raw_results, text_layer_pages=text_layer_pages)
+        document_ir = self._build_document_ir(
+            raw_results, text_layer_pages=text_layer_pages
+        )
 
         return PaddleOcrPdfResult(
             provider="paddle_ocr",
@@ -201,15 +207,11 @@ class PaddleOcrPdfProvider:
                             or f"p{fallback_index}-b{fallback_order}"
                         ),
                         "type": str(
-                            block.get("block_label")
-                            or block.get("label")
-                            or "unknown"
+                            block.get("block_label") or block.get("label") or "unknown"
                         ),
                         "bbox": normalized_bbox,
                         "text": str(
-                            block.get("block_content")
-                            or block.get("content")
-                            or ""
+                            block.get("block_content") or block.get("content") or ""
                         ),
                         "reading_order": (
                             int(order) if isinstance(order, (int, float)) else None
@@ -329,10 +331,18 @@ class PaddleOcrPdfProvider:
             if value not in (None, ""):
                 kwargs[key] = value
         gateway_vllm = self._gateway_vllm_config()
-        kwargs.setdefault("vl_rec_max_concurrency", self._option("vlm_max_concurrency") or 1)
+        kwargs.setdefault(
+            "vl_rec_max_concurrency", self._option("vlm_max_concurrency") or 1
+        )
         kwargs.setdefault("vl_rec_server_url", gateway_vllm.get("base_url"))
-        kwargs.setdefault("vl_rec_api_model_name", gateway_vllm.get("model_name") or gateway_vllm.get("http_model_name"))
-        kwargs.setdefault("vl_rec_api_key", gateway_vllm.get("api_key") or self._resolve_gateway_vllm_api_key())
+        kwargs.setdefault(
+            "vl_rec_api_model_name",
+            gateway_vllm.get("model_name") or gateway_vllm.get("http_model_name"),
+        )
+        kwargs.setdefault(
+            "vl_rec_api_key",
+            gateway_vllm.get("api_key") or self._resolve_gateway_vllm_api_key(),
+        )
         return {key: value for key, value in kwargs.items() if value not in (None, "")}
 
     def _predict_with_retries(
@@ -352,7 +362,9 @@ class PaddleOcrPdfProvider:
                 for raw_result in pipeline.predict(str(file_path), **predict_kwargs):
                     raw_results.append(raw_result)
                     if not first_batch_elapsed_ms:
-                        first_batch_elapsed_ms = round((time.monotonic() - started_at) * 1000, 2)
+                        first_batch_elapsed_ms = round(
+                            (time.monotonic() - started_at) * 1000, 2
+                        )
                 return raw_results, retry_count, first_batch_elapsed_ms
             except Exception as exc:  # noqa: BLE001
                 if retry_count >= max_retries or not self._is_retryable_error(exc):
@@ -374,7 +386,18 @@ class PaddleOcrPdfProvider:
         message = str(exc).lower()
         return any(
             signal in message
-            for signal in ("429", "rate limit", "rpm_limit", "额度超限", "限流", "timeout", "timed out", "502", "503", "504")
+            for signal in (
+                "429",
+                "rate limit",
+                "rpm_limit",
+                "额度超限",
+                "限流",
+                "timeout",
+                "timed out",
+                "502",
+                "503",
+                "504",
+            )
         )
 
     def _retry_delay_ms(self, retry_count: int) -> int:
@@ -434,7 +457,9 @@ class PaddleOcrPdfProvider:
         return {"markdown_texts": str(result or "")}
 
     @staticmethod
-    def _concatenate_markdown(pipeline: Any, markdown_parts: list[dict[str, Any]]) -> str:
+    def _concatenate_markdown(
+        pipeline: Any, markdown_parts: list[dict[str, Any]]
+    ) -> str:
         if not markdown_parts:
             return ""
         concatenate = getattr(pipeline, "concatenate_markdown_pages", None)
@@ -446,8 +471,14 @@ class PaddleOcrPdfProvider:
                 if isinstance(merged, dict):
                     return str(merged.get("markdown_texts") or "").strip()
             except Exception:  # noqa: BLE001
-                logger.debug("paddle_ocr_vl concatenate_markdown_pages failed", exc_info=True)
-        return "\n\n".join(str(part.get("markdown_texts") or "").strip() for part in markdown_parts if part.get("markdown_texts")).strip()
+                logger.debug(
+                    "paddle_ocr_vl concatenate_markdown_pages failed", exc_info=True
+                )
+        return "\n\n".join(
+            str(part.get("markdown_texts") or "").strip()
+            for part in markdown_parts
+            if part.get("markdown_texts")
+        ).strip()
 
     def _write_markdown_images(
         self,
@@ -526,11 +557,15 @@ class PaddleOcrPdfProvider:
             import numpy as np
             from PIL import Image
         except ImportError as exc:
-            raise RuntimeError("Saving PaddleOCR-VL markdown images requires pillow and numpy") from exc
+            raise RuntimeError(
+                "Saving PaddleOCR-VL markdown images requires pillow and numpy"
+            ) from exc
         if isinstance(image_data, np.ndarray):
             Image.fromarray(image_data).save(image_path)
             return
-        raise RuntimeError(f"Unsupported PaddleOCR-VL markdown image type: {type(image_data)!r}")
+        raise RuntimeError(
+            f"Unsupported PaddleOCR-VL markdown image type: {type(image_data)!r}"
+        )
 
     @staticmethod
     def _resolve_page_count(raw_results: list[Any]) -> int:
@@ -547,7 +582,9 @@ class PaddleOcrPdfProvider:
         return max(page_indexes) if page_indexes else len(raw_results)
 
     @staticmethod
-    def replace_markdown_asset_references(markdown_text: str, assets: list[DocumentAsset]) -> str:
+    def replace_markdown_asset_references(
+        markdown_text: str, assets: list[DocumentAsset]
+    ) -> str:
         updated = markdown_text
         for asset in assets:
             original = str(asset.meta.get("original_markdown_path") or "").strip()
@@ -610,12 +647,16 @@ class PaddleOcrPdfProvider:
             return updated
         escaped_file_id = escape(file_id, quote=True)
         updated = re.sub(
-            r"(<img\b(?![^>]*\bdata-file-id=)[^>]*\bsrc=\"" + re.escape(target) + r"\"[^>]*)(/?>)",
+            r"(<img\b(?![^>]*\bdata-file-id=)[^>]*\bsrc=\""
+            + re.escape(target)
+            + r"\"[^>]*)(/?>)",
             rf'\1 data-file-id="{escaped_file_id}"\2',
             updated,
         )
         updated = re.sub(
-            r"(<img\b(?![^>]*\bdata-file-id=)[^>]*\bsrc='" + re.escape(target) + r"'[^>]*)(/?>)",
+            r"(<img\b(?![^>]*\bdata-file-id=)[^>]*\bsrc='"
+            + re.escape(target)
+            + r"'[^>]*)(/?>)",
             rf'\1 data-file-id="{escaped_file_id}"\2',
             updated,
         )
@@ -638,11 +679,31 @@ class PaddleOcrPdfProvider:
             "use_ocr_for_image_block",
             "merge_layout_blocks",
         )
-        return {key: self._option(key) for key in keys if self._option(key) not in (None, "")}
+        info = {
+            key: self._option(key)
+            for key in keys
+            if self._option(key) not in (None, "")
+        }
+        gateway_vllm = self._gateway_vllm_config()
+        if "vl_rec_api_model_name" not in info:
+            model_name = gateway_vllm.get("model_name") or gateway_vllm.get(
+                "http_model_name"
+            )
+            if model_name not in (None, ""):
+                info["vl_rec_api_model_name"] = str(model_name)
+        return info
 
     def _option(self, key: str) -> Any:
-        for candidate in (f"pdf_paddle_ocr_{key}", f"paddle_ocr_{key}", f"pdf_{key}", key):
-            if candidate in self._env_content and self._env_content[candidate] not in (None, ""):
+        for candidate in (
+            f"pdf_paddle_ocr_{key}",
+            f"paddle_ocr_{key}",
+            f"pdf_{key}",
+            key,
+        ):
+            if candidate in self._env_content and self._env_content[candidate] not in (
+                None,
+                "",
+            ):
                 return self._env_content[candidate]
         return None
 
@@ -666,7 +727,11 @@ class PaddleOcrPdfProvider:
 
     @staticmethod
     def _resolve_gateway_vllm_api_key() -> str:
-        for env_name in ("GATEWAY_VLLM_API_KEY", "OPENAI_COMPATIBLE_API_KEY", "OPENAI_API_KEY"):
+        for env_name in (
+            "GATEWAY_VLLM_API_KEY",
+            "OPENAI_COMPATIBLE_API_KEY",
+            "OPENAI_API_KEY",
+        ):
             value = os.getenv(env_name)
             if value:
                 return value

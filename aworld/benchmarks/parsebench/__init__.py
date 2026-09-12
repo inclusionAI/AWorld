@@ -1,13 +1,14 @@
 """Pinned ParseBench contracts and dataset authoring support."""
 
 from aworld.benchmarks.parsebench.adapter import (
-    DEFAULT_LLM_MODEL_PROFILE,
     DEFAULT_PROVIDER,
     DEFAULT_VLM_MODEL_PROFILE,
     FileXAdapterError,
     FileXExecutionOptions,
+    FileXRunResult,
     execute_filex_parsebench,
     load_parsebench_task_spec,
+    validate_parsebench_artifacts,
 )
 from aworld.benchmarks.parsebench.contracts import (
     DATASET_REVISION,
@@ -23,12 +24,12 @@ from aworld.benchmarks.parsebench.contracts import (
 )
 
 __all__ = (
-    "DEFAULT_LLM_MODEL_PROFILE",
     "DEFAULT_PROVIDER",
     "DEFAULT_VLM_MODEL_PROFILE",
     "DATASET_REVISION",
     "FileXAdapterError",
     "FileXExecutionOptions",
+    "FileXRunResult",
     "PARSEBENCH_TASK_FILENAME",
     "PARSEBENCH_TASK_RUNTIME_PATH",
     "PARSEBENCH_TASK_SCHEMA_VERSION",
@@ -40,4 +41,5 @@ __all__ = (
     "SmokeSelection",
     "execute_filex_parsebench",
     "load_parsebench_task_spec",
+    "validate_parsebench_artifacts",
 )

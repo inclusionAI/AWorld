@@ -12,11 +12,18 @@ import json
 import math
 import os
 import re
+import selectors
+import shutil
+import signal
+import stat
 import subprocess
+import tempfile
+import time
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol
+from urllib.parse import urlsplit
 
 from aworld.benchmarks.parsebench.contracts import DATASET_REVISION, SCORER_REVISION
 
@@ -28,18 +35,20 @@ FILEX_COORDINATE_SYSTEM = "pixel_top_left_xyxy"
 DEFAULT_TASK_SPEC_PATH = Path("/workspace/parsebench-task.json")
 DEFAULT_ARTIFACTS_ROOT = Path("/logs/artifacts")
 DEFAULT_PROVIDER = "paddle_ocr"
-DEFAULT_LLM_MODEL_PROFILE = "default__gpt-5.5"
 DEFAULT_VLM_MODEL_PROFILE = "default__gemini-3.1-pro-preview"
+FILEX_METRICS_SCHEMA_VERSION = "1.0"
 
 _TASK_FIELDS = frozenset(
     {"schema_version", "task_id", "dataset_revision", "scorer_revision", "source"}
 )
 _SOURCE_FIELDS = frozenset({"runtime_path", "size", "sha256", "page"})
 _TASK_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
-_SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
+_SHA256_PATTERN = re.compile(r"^sha256:[0-9a-f]{64}$")
 _PROVIDER_PATTERN = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
 _MAX_TASK_SPEC_BYTES = 64 * 1024
 _MAX_RUNNER_OUTPUT_BYTES = 4 * 1024 * 1024
+_MAX_RUNNER_ERROR_BYTES = 4 * 1024 * 1024
+_PROCESS_TERM_GRACE_SECONDS = 1.0
 
 
 class FileXAdapterError(RuntimeError):
@@ -77,7 +86,6 @@ class FileXExecutionOptions:
     timeout_seconds: float = 600.0
     no_cache: bool = True
     clip_bboxes: bool = True
-    llm_model_profile: str = DEFAULT_LLM_MODEL_PROFILE
     vlm_model_profile: str = DEFAULT_VLM_MODEL_PROFILE
 
     def __post_init__(self) -> None:
@@ -99,7 +107,6 @@ class FileXExecutionOptions:
             raise ValueError("ParseBench execution requires no_cache=True")
         if not isinstance(self.clip_bboxes, bool):
             raise TypeError("clip_bboxes must be a bool")
-        _validate_logical_profile(self.llm_model_profile, "llm_model_profile")
         _validate_logical_profile(self.vlm_model_profile, "vlm_model_profile")
 
 
@@ -113,79 +120,75 @@ class FileXRunRequest:
     no_cache: bool
     timeout_seconds: float
     workspace_root: Path
-    llm_model_profile: str
     vlm_model_profile: str
 
 
+@dataclass(frozen=True, slots=True)
+class FileXRunResult:
+    payload: Mapping[str, object]
+    resolved_model_name: str
+
+
 class FileXRunner(Protocol):
-    def run(self, request: FileXRunRequest) -> Mapping[str, object]: ...
+    def run(self, request: FileXRunRequest) -> FileXRunResult: ...
 
 
 class SubprocessFileXRunner:
     """Invoke FileX without a shell and with a hard timeout."""
 
-    def __init__(self, *, executable: str = "filex") -> None:
+    def __init__(
+        self,
+        *,
+        executable: str = "filex",
+        environment: Mapping[str, str] | None = None,
+        max_stdout_bytes: int = _MAX_RUNNER_OUTPUT_BYTES,
+        max_stderr_bytes: int = _MAX_RUNNER_ERROR_BYTES,
+    ) -> None:
         if not isinstance(executable, str) or not executable.strip():
             raise ValueError("executable must be a non-empty string")
         self._executable = executable.strip()
+        self._environment = None if environment is None else dict(environment)
+        self._max_stdout_bytes = _positive_limit(max_stdout_bytes, "max_stdout_bytes")
+        self._max_stderr_bytes = _positive_limit(max_stderr_bytes, "max_stderr_bytes")
 
-    def run(self, request: FileXRunRequest) -> Mapping[str, object]:
+    def run(self, request: FileXRunRequest) -> FileXRunResult:
         if request.no_cache is not True:
             raise FileXAdapterError(
                 "cache_not_bypassed", "FileX benchmark execution requires no-cache"
             )
+        process_env = (
+            os.environ.copy() if self._environment is None else dict(self._environment)
+        )
+        base_url, model_name, api_key = _resolved_gateway_vllm(process_env)
+        process_env.pop("LLM_API_KEY", None)
         env_content: dict[str, object] = {
             "filex_parse_provider": request.provider,
             "filex_cache_enabled": False,
             "filex_no_cache": True,
-            # These are logical identities resolved by the protected runtime.
-            # Credentials and provider endpoints never enter task material.
-            "benchmark_llm_model_profile": request.llm_model_profile,
-            "benchmark_vlm_model_profile": request.vlm_model_profile,
+            "gateway_vllm": {
+                "base_url": base_url,
+                "model_name": model_name,
+            },
         }
-        command = [
-            self._executable,
-            "parse",
-            "--workspace-path",
-            str(request.source_path),
-            "--source-provider",
-            "local",
-            "--file-type",
-            request.file_type,
-            "--sync-mode",
-            "sync",
-            "--asset-reference-mode",
-            "local_path",
-            "--task-id",
-            request.task_id,
-            "--no-cache",
-            "--env-content-json",
-            _canonical_json_text(env_content),
-        ]
-        if request.page is not None:
-            command.extend(("--pages", str(request.page)))
-        process_env = os.environ.copy()
+        command = _filex_command(self._executable, request, env_content)
         process_env["FILEX_WORKSPACE_ROOT"] = str(request.workspace_root)
-        completed = subprocess.run(
+        # FileX reads this key without ever placing the credential in argv,
+        # task material, logs, or result artifacts.
+        process_env["GATEWAY_VLLM_API_KEY"] = api_key
+        stdout, _stderr, returncode = _run_bounded_process(
             command,
-            check=False,
-            capture_output=True,
-            text=True,
+            environment=process_env,
             timeout=request.timeout_seconds,
-            env=process_env,
-            shell=False,
+            max_stdout_bytes=self._max_stdout_bytes,
+            max_stderr_bytes=self._max_stderr_bytes,
         )
-        if completed.returncode != 0:
+        if returncode != 0:
             raise FileXAdapterError(
                 "filex_execution_failed",
-                f"FileX execution failed with exit status {completed.returncode}",
-            )
-        if len(completed.stdout.encode("utf-8")) > _MAX_RUNNER_OUTPUT_BYTES:
-            raise FileXAdapterError(
-                "filex_output_too_large", "FileX control output exceeds the size limit"
+                f"FileX execution failed with exit status {returncode}",
             )
         try:
-            payload = json.loads(completed.stdout)
+            payload = json.loads(stdout.decode("utf-8"))
         except (json.JSONDecodeError, UnicodeError) as exc:
             raise FileXAdapterError(
                 "invalid_filex_output", "FileX returned invalid JSON control output"
@@ -194,7 +197,162 @@ class SubprocessFileXRunner:
             raise FileXAdapterError(
                 "invalid_filex_output", "FileX control output must be a JSON object"
             )
-        return payload
+        return FileXRunResult(payload=payload, resolved_model_name=model_name)
+
+
+def _filex_command(
+    executable: str,
+    request: FileXRunRequest,
+    env_content: Mapping[str, object],
+) -> list[str]:
+    command = [
+        executable,
+        "parse",
+        "--workspace-path",
+        str(request.source_path),
+        "--source-provider",
+        "local",
+        "--file-type",
+        request.file_type,
+        "--sync-mode",
+        "sync",
+        "--asset-reference-mode",
+        "local_path",
+        "--task-id",
+        request.task_id,
+        "--no-cache",
+        "--env-content-json",
+        _canonical_json_text(env_content),
+    ]
+    if request.page is not None:
+        command.extend(("--pages", str(request.page)))
+    return command
+
+
+def _resolved_gateway_vllm(environment: Mapping[str, str]) -> tuple[str, str, str]:
+    base_url = str(environment.get("LLM_BASE_URL") or "").strip()
+    model_name = str(environment.get("LLM_MODEL_NAME") or "").strip()
+    api_key = str(environment.get("LLM_API_KEY") or "")
+    if not base_url or not model_name or not api_key.strip():
+        raise FileXAdapterError(
+            "missing_model_configuration",
+            "protected FileX model configuration is incomplete",
+        )
+    parsed = urlsplit(base_url)
+    if (
+        parsed.scheme not in {"http", "https"}
+        or not parsed.hostname
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.query
+        or parsed.fragment
+    ):
+        raise FileXAdapterError(
+            "invalid_model_configuration", "LLM_BASE_URL is not a safe HTTP endpoint"
+        )
+    try:
+        _validate_logical_profile(model_name, "LLM_MODEL_NAME")
+    except ValueError as exc:
+        raise FileXAdapterError(
+            "invalid_model_configuration", "LLM_MODEL_NAME is invalid"
+        ) from exc
+    if len(api_key) > 16_384 or any(ord(character) < 32 for character in api_key):
+        raise FileXAdapterError("invalid_model_configuration", "LLM_API_KEY is invalid")
+    return base_url, model_name, api_key
+
+
+def _run_bounded_process(
+    command: list[str],
+    *,
+    environment: Mapping[str, str],
+    timeout: float,
+    max_stdout_bytes: int,
+    max_stderr_bytes: int,
+) -> tuple[bytes, bytes, int]:
+    process = subprocess.Popen(
+        command,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        env=dict(environment),
+        shell=False,
+        start_new_session=True,
+    )
+    if process.stdout is None or process.stderr is None:  # pragma: no cover
+        _terminate_process_group(process)
+        raise FileXAdapterError(
+            "filex_execution_failed", "FileX process pipes were not created"
+        )
+    streams = {
+        process.stdout: ("stdout", max_stdout_bytes),
+        process.stderr: ("stderr", max_stderr_bytes),
+    }
+    buffers = {"stdout": bytearray(), "stderr": bytearray()}
+    selector = selectors.DefaultSelector()
+    for stream in streams:
+        os.set_blocking(stream.fileno(), False)
+        selector.register(stream, selectors.EVENT_READ)
+    deadline = time.monotonic() + timeout
+    try:
+        while selector.get_map():
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                _terminate_process_group(process)
+                raise subprocess.TimeoutExpired(command, timeout)
+            for key, _events in selector.select(min(remaining, 0.1)):
+                stream = key.fileobj
+                name, limit = streams[stream]
+                try:
+                    chunk = os.read(stream.fileno(), 64 * 1024)
+                except BlockingIOError:
+                    continue
+                if not chunk:
+                    selector.unregister(stream)
+                    continue
+                buffer = buffers[name]
+                if len(buffer) + len(chunk) > limit:
+                    _terminate_process_group(process)
+                    raise FileXAdapterError(
+                        f"filex_{name}_too_large",
+                        f"FileX {name} exceeds the size limit",
+                    )
+                buffer.extend(chunk)
+        remaining = max(0.0, deadline - time.monotonic())
+        try:
+            returncode = process.wait(timeout=remaining)
+        except subprocess.TimeoutExpired:
+            _terminate_process_group(process)
+            raise subprocess.TimeoutExpired(command, timeout) from None
+    except BaseException:
+        if process.poll() is None:
+            _terminate_process_group(process)
+        raise
+    finally:
+        selector.close()
+        process.stdout.close()
+        process.stderr.close()
+    return bytes(buffers["stdout"]), bytes(buffers["stderr"]), returncode
+
+
+def _terminate_process_group(process: subprocess.Popen[bytes]) -> None:
+    process_group_id = process.pid
+    try:
+        os.killpg(process_group_id, signal.SIGTERM)
+    except ProcessLookupError:
+        pass
+    if process.poll() is None:
+        try:
+            process.wait(timeout=_PROCESS_TERM_GRACE_SECONDS)
+        except subprocess.TimeoutExpired:
+            pass
+    # A child can retain the process group's pipes after the direct FileX
+    # process exits, so address the group even when the parent is already reaped.
+    try:
+        os.killpg(process_group_id, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+    if process.poll() is None:
+        process.wait()
 
 
 def load_parsebench_task_spec(
@@ -286,6 +444,8 @@ def execute_filex_parsebench(
 
     if not isinstance(spec, ParseBenchTaskSpec):
         raise TypeError("spec must be a ParseBenchTaskSpec")
+    options.artifacts_root.mkdir(parents=True, exist_ok=True)
+    _invalidate_result_marker(options.artifacts_root)
     source_path = _validated_source(spec, options.workspace_root)
     request = FileXRunRequest(
         source_path=source_path,
@@ -296,12 +456,11 @@ def execute_filex_parsebench(
         no_cache=True,
         timeout_seconds=options.timeout_seconds,
         workspace_root=options.workspace_root,
-        llm_model_profile=options.llm_model_profile,
         vlm_model_profile=options.vlm_model_profile,
     )
     selected_runner = runner or SubprocessFileXRunner()
     try:
-        raw_result = selected_runner.run(request)
+        run_result = selected_runner.run(request)
     except subprocess.TimeoutExpired as exc:
         raise FileXAdapterError("filex_timeout", "FileX execution timed out") from exc
     except FileXAdapterError:
@@ -310,13 +469,22 @@ def execute_filex_parsebench(
         raise FileXAdapterError(
             "filex_execution_failed", "FileX execution failed"
         ) from exc
+    if not isinstance(run_result, FileXRunResult):
+        raise FileXAdapterError(
+            "invalid_runner_result", "FileX runner did not return execution evidence"
+        )
+    raw_result = run_result.payload
     if not isinstance(raw_result, Mapping) or raw_result.get("success") is not True:
         raise FileXAdapterError(
             "filex_execution_failed", "FileX execution did not succeed"
         )
 
-    provider_version, cache_status = _validate_execution_identity(
-        raw_result, requested_provider=options.provider
+    provider_version, model_name, cache_status, timing_ms = (
+        _validate_execution_identity(
+            raw_result,
+            requested_provider=options.provider,
+            resolved_model_name=run_result.resolved_model_name,
+        )
     )
     markdown_path = _resolve_filex_artifact(
         raw_result.get("file_path"), options.workspace_root, "Markdown"
@@ -373,19 +541,24 @@ def execute_filex_parsebench(
                 "provider_version": provider_version,
                 "fallback_allowed": False,
                 "cache": cache_status,
-                "llm_model_profile": options.llm_model_profile,
-                "vlm_model_profile": options.vlm_model_profile,
+                "requested_model_profile": options.vlm_model_profile,
+                "resolved_model_name": model_name,
                 "document_ir_schema_version": FILEX_DOCUMENT_IR_SCHEMA_VERSION,
-                "coordinate_transform": "pixel-xyxy-to-normalized-xywh",
+                "coordinate_transform": "pixel-xyxy-to-pixel-xywh",
                 "bbox_policy": "clip" if options.clip_bboxes else "fail_closed",
             },
         },
+        "timing_ms": timing_ms,
     }
     result_bytes = _canonical_json_bytes(result, newline=True)
-    options.artifacts_root.mkdir(parents=True, exist_ok=True)
-    _atomic_write(options.artifacts_root / "document.md", document_bytes)
-    _atomic_write(options.artifacts_root / "layout.json", layout_bytes)
-    _atomic_write(options.artifacts_root / "result.json", result_bytes)
+    _publish_artifacts(
+        artifacts_root=options.artifacts_root,
+        document_bytes=document_bytes,
+        layout_bytes=layout_bytes,
+        result_bytes=result_bytes,
+        expected_task_id=spec.task_id,
+        expected_source=spec.source,
+    )
     return result
 
 
@@ -472,7 +645,7 @@ def normalize_filex_document_ir(
                     )
                 segment["confidence"] = score
             item: dict[str, Any] = {
-                "type": "table" if label == "Table" else "text",
+                "type": "table" if label == "table" else "text",
                 "md": text,
                 "html": "",
                 "value": text,
@@ -523,41 +696,41 @@ def normalize_filex_document_ir(
 
 
 _LABELS = {
-    "caption": "Caption",
-    "figure-title": "Caption",
-    "footnote": "Footnote",
-    "formula": "Formula",
-    "list-item": "List-item",
-    "list-items": "List-item",
-    "page-footer": "Page-footer",
-    "footer": "Page-footer",
-    "page-header": "Page-header",
-    "header": "Page-header",
-    "picture": "Picture",
-    "image": "Picture",
-    "chart": "Picture",
-    "seal": "Picture",
-    "section-header": "Section-header",
-    "paragraph-title": "Section-header",
-    "heading": "Section-header",
-    "table": "Table",
-    "text": "Text",
-    "content": "Text",
-    "abstract": "Text",
-    "reference": "Text",
-    "reference-content": "Text",
-    "aside-text": "Text",
-    "number": "Text",
-    "formula-number": "Text",
-    "title": "Title",
-    "doc-title": "Title",
-    "document-index": "Document Index",
-    "code": "Code",
-    "algorithm": "Code",
-    "checkbox-selected": "Checkbox-Selected",
-    "checkbox-unselected": "Checkbox-Unselected",
-    "form": "Form",
-    "key-value-region": "Key-Value Region",
+    "caption": "caption",
+    "figure-title": "caption",
+    "footnote": "footnote",
+    "formula": "formula",
+    "list-item": "list-item",
+    "list-items": "list-item",
+    "page-footer": "page-footer",
+    "footer": "page-footer",
+    "page-header": "page-header",
+    "header": "page-header",
+    "picture": "picture",
+    "image": "picture",
+    "chart": "picture",
+    "seal": "picture",
+    "section-header": "section-header",
+    "paragraph-title": "section-header",
+    "heading": "section-header",
+    "table": "table",
+    "text": "text",
+    "content": "text",
+    "abstract": "text",
+    "reference": "text",
+    "reference-content": "text",
+    "aside-text": "text",
+    "number": "text",
+    "formula-number": "text",
+    "title": "title",
+    "doc-title": "title",
+    "document-index": "document-index",
+    "code": "code",
+    "algorithm": "code",
+    "checkbox-selected": "checkbox-selected",
+    "checkbox-unselected": "checkbox-unselected",
+    "form": "form",
+    "key-value-region": "key-value-region",
 }
 
 
@@ -587,21 +760,23 @@ def _normalize_bbox(
             raise FileXAdapterError("invalid_bbox", "FileX bbox is outside its page")
     elif x1 < 0 or y1 < 0 or x2 > width or y2 > height:
         raise FileXAdapterError("invalid_bbox", "FileX bbox exceeds its page")
-    return {
-        "x": x1 / width,
-        "y": y1 / height,
-        "w": (x2 - x1) / width,
-        "h": (y2 - y1) / height,
-    }
+    return {"x": x1, "y": y1, "w": x2 - x1, "h": y2 - y1}
 
 
 def _validate_execution_identity(
-    result: Mapping[str, object], *, requested_provider: str
-) -> tuple[str, str]:
+    result: Mapping[str, object],
+    *,
+    requested_provider: str,
+    resolved_model_name: str,
+) -> tuple[str, str, str, dict[str, float]]:
     metrics = result.get("metrics")
     if not isinstance(metrics, Mapping):
         raise FileXAdapterError(
             "missing_provenance", "FileX did not emit provider metrics"
+        )
+    if metrics.get("schema_version") != FILEX_METRICS_SCHEMA_VERSION:
+        raise FileXAdapterError(
+            "metrics_schema_mismatch", "FileX metrics schema is not pinned"
         )
     provider = metrics.get("provider")
     if provider != requested_provider:
@@ -613,13 +788,22 @@ def _validate_execution_identity(
         raise FileXAdapterError(
             "missing_provenance", "FileX did not emit a provider version"
         )
+    if metrics.get("requested_provider_version") != provider_version:
+        raise FileXAdapterError(
+            "provider_version_mismatch",
+            "FileX actual provider version does not match the requested version",
+        )
     cache = metrics.get("cache")
     if not isinstance(cache, Mapping) or cache.get("status") != "bypass":
         raise FileXAdapterError(
             "cache_not_bypassed", "FileX benchmark execution used cache"
         )
+    if metrics.get("requested_provider") != requested_provider:
+        raise FileXAdapterError(
+            "missing_provenance", "FileX did not preserve the requested provider"
+        )
     status = metrics.get("status")
-    if status not in (None, "success"):
+    if status != "success":
         raise FileXAdapterError(
             "partial_filex_output", "FileX reported a partial parse failure"
         )
@@ -629,17 +813,23 @@ def _validate_execution_identity(
         ("model", "timeout_count"),
     ):
         section = metrics.get(section_name)
-        if isinstance(section, Mapping) and section.get(count_name) not in (None, 0):
+        count = section.get(count_name) if isinstance(section, Mapping) else None
+        if isinstance(count, bool) or not isinstance(count, int) or count != 0:
             raise FileXAdapterError(
                 "partial_filex_output", "FileX reported a partial parse failure"
             )
-    for failure_key in ("errors", "vlm_errors", "failed_pages"):
-        failure = metrics.get(failure_key)
-        if failure not in (None, [], {}, "", 0):
-            raise FileXAdapterError(
-                "partial_filex_output", "FileX reported a partial parse failure"
-            )
-    return provider_version.strip(), "bypass"
+    model = metrics.get("model")
+    if not isinstance(model, Mapping) or model.get("name") != resolved_model_name:
+        raise FileXAdapterError(
+            "model_identity_mismatch", "FileX resolved model identity does not match"
+        )
+    timings = metrics.get("timings_ms")
+    if not isinstance(timings, Mapping):
+        raise FileXAdapterError("missing_provenance", "FileX timings are missing")
+    timing_ms: dict[str, float] = {}
+    for key in ("initialization", "model_wait", "parse", "total"):
+        timing_ms[key] = _nonnegative_finite(timings.get(key), f"timings_ms.{key}")
+    return provider_version.strip(), resolved_model_name, "bypass", timing_ms
 
 
 def _validated_source(spec: ParseBenchTaskSpec, workspace_root: Path) -> Path:
@@ -708,16 +898,472 @@ def _artifact_evidence(path: str, content: bytes) -> dict[str, object]:
     }
 
 
-def _atomic_write(path: Path, content: bytes) -> None:
-    temporary = path.with_name(f".{path.name}.tmp-{os.getpid()}")
+def validate_parsebench_artifacts(
+    *,
+    result_path: Path,
+    markdown_path: Path,
+    layout_path: Path,
+    expected_task_id: str | None = None,
+    expected_source: ParseBenchTaskSource | None = None,
+) -> dict[str, Any]:
+    """Validate the result commit marker and its two content-addressed artifacts."""
+
+    result_bytes = _read_regular_file(result_path, "result")
+    markdown_bytes = _read_regular_file(markdown_path, "Markdown")
+    layout_bytes = _read_regular_file(layout_path, "layout")
     try:
-        temporary.write_bytes(content)
-        os.replace(temporary, path)
+        markdown = markdown_bytes.decode("utf-8")
+        result = json.loads(
+            result_bytes.decode("utf-8"),
+            parse_constant=_reject_json_constant,
+        )
+        layout = json.loads(
+            layout_bytes.decode("utf-8"),
+            parse_constant=_reject_json_constant,
+        )
+    except (UnicodeError, json.JSONDecodeError, ValueError) as exc:
+        raise FileXAdapterError(
+            "invalid_result_artifact",
+            "ParseBench result artifacts contain invalid JSON",
+        ) from exc
+    if not isinstance(result, dict) or not isinstance(layout, dict):
+        raise FileXAdapterError(
+            "invalid_result_artifact",
+            "ParseBench result artifacts must be JSON objects",
+        )
+    _exact_result_fields(
+        result,
+        {
+            "schema_version",
+            "status",
+            "task_id",
+            "artifacts",
+            "provenance",
+            "timing_ms",
+        },
+        "result",
+    )
+    if (
+        result["schema_version"] != RESULT_SCHEMA_VERSION
+        or result["status"] != "succeeded"
+    ):
+        raise FileXAdapterError(
+            "invalid_result_artifact", "ParseBench result marker is not successful"
+        )
+    task_id = result["task_id"]
+    if not isinstance(task_id, str) or _TASK_ID_PATTERN.fullmatch(task_id) is None:
+        raise FileXAdapterError("invalid_result_artifact", "result task_id is invalid")
+    if expected_task_id is not None and task_id != expected_task_id:
+        raise FileXAdapterError("result_mismatch", "result task_id does not match")
+
+    artifacts = result["artifacts"]
+    if not isinstance(artifacts, Mapping):
+        raise FileXAdapterError(
+            "invalid_result_artifact", "result artifacts are invalid"
+        )
+    _exact_result_fields(artifacts, {"document", "layout"}, "result artifacts")
+    _validate_artifact_evidence(
+        artifacts["document"],
+        expected_path="/logs/artifacts/document.md",
+        content=markdown_bytes,
+    )
+    _validate_artifact_evidence(
+        artifacts["layout"],
+        expected_path="/logs/artifacts/layout.json",
+        content=layout_bytes,
+    )
+
+    provenance = result["provenance"]
+    if not isinstance(provenance, Mapping):
+        raise FileXAdapterError(
+            "invalid_result_artifact", "result provenance is invalid"
+        )
+    _exact_result_fields(
+        provenance,
+        {"dataset_revision", "scorer_revision", "source", "filex"},
+        "result provenance",
+    )
+    if (
+        provenance["dataset_revision"] != DATASET_REVISION
+        or provenance["scorer_revision"] != SCORER_REVISION
+    ):
+        raise FileXAdapterError("revision_mismatch", "result revisions are not pinned")
+    source = provenance["source"]
+    if not isinstance(source, Mapping):
+        raise FileXAdapterError("invalid_result_artifact", "result source is invalid")
+    _exact_result_fields(
+        source, {"runtime_path", "size", "sha256", "page"}, "result source"
+    )
+    if (
+        not isinstance(source["runtime_path"], str)
+        or not Path(source["runtime_path"]).is_absolute()
+        or isinstance(source["size"], bool)
+        or not isinstance(source["size"], int)
+        or source["size"] <= 0
+        or not isinstance(source["sha256"], str)
+        or _SHA256_PATTERN.fullmatch(source["sha256"]) is None
+        or (
+            source["page"] is not None
+            and (
+                isinstance(source["page"], bool)
+                or not isinstance(source["page"], int)
+                or source["page"] < 1
+            )
+        )
+    ):
+        raise FileXAdapterError(
+            "invalid_result_artifact", "result source identity is invalid"
+        )
+    if expected_source is not None and source != {
+        "runtime_path": str(expected_source.runtime_path),
+        "size": expected_source.size,
+        "sha256": expected_source.sha256,
+        "page": expected_source.page,
+    }:
+        raise FileXAdapterError("result_mismatch", "result source does not match")
+
+    filex = provenance["filex"]
+    if not isinstance(filex, Mapping):
+        raise FileXAdapterError(
+            "invalid_result_artifact", "FileX provenance is invalid"
+        )
+    _exact_result_fields(
+        filex,
+        {
+            "provider",
+            "provider_version",
+            "fallback_allowed",
+            "cache",
+            "requested_model_profile",
+            "resolved_model_name",
+            "document_ir_schema_version",
+            "coordinate_transform",
+            "bbox_policy",
+        },
+        "FileX provenance",
+    )
+    for identity_key in (
+        "provider",
+        "provider_version",
+        "requested_model_profile",
+        "resolved_model_name",
+    ):
+        if not isinstance(filex[identity_key], str) or not filex[identity_key].strip():
+            raise FileXAdapterError(
+                "invalid_result_artifact", "FileX identity is incomplete"
+            )
+    if filex["fallback_allowed"] is not False or filex["cache"] != "bypass":
+        raise FileXAdapterError(
+            "invalid_result_artifact", "FileX deterministic controls are invalid"
+        )
+    if filex["document_ir_schema_version"] != FILEX_DOCUMENT_IR_SCHEMA_VERSION:
+        raise FileXAdapterError(
+            "invalid_result_artifact", "FileX Document IR identity is invalid"
+        )
+    if filex["coordinate_transform"] != "pixel-xyxy-to-pixel-xywh":
+        raise FileXAdapterError(
+            "invalid_result_artifact", "FileX coordinate identity is invalid"
+        )
+    if filex["bbox_policy"] not in {"clip", "fail_closed"}:
+        raise FileXAdapterError(
+            "invalid_result_artifact", "FileX bbox policy is invalid"
+        )
+
+    timing = result["timing_ms"]
+    if not isinstance(timing, Mapping):
+        raise FileXAdapterError("invalid_result_artifact", "result timing is invalid")
+    _exact_result_fields(
+        timing, {"initialization", "model_wait", "parse", "total"}, "result timing"
+    )
+    for key, value in timing.items():
+        _nonnegative_finite(value, f"timing_ms.{key}")
+
+    _exact_result_fields(
+        layout,
+        {
+            "task_type",
+            "example_id",
+            "pipeline_name",
+            "pages",
+            "layout_pages",
+            "markdown",
+        },
+        "ParseOutput",
+    )
+    if (
+        layout["task_type"] != "parse"
+        or layout["example_id"] != task_id
+        or not isinstance(layout["pipeline_name"], str)
+        or not layout["pipeline_name"].startswith("filex/")
+        or layout["markdown"] != markdown
+        or not isinstance(layout["pages"], list)
+        or not isinstance(layout["layout_pages"], list)
+        or not layout["layout_pages"]
+    ):
+        raise FileXAdapterError(
+            "invalid_result_artifact", "layout is not a compatible ParseOutput"
+        )
+    _validate_parse_output_layout(layout)
+    if expected_source is not None and expected_source.page is not None:
+        pages = layout["pages"]
+        if (
+            len(pages) != 1
+            or not isinstance(pages[0], Mapping)
+            or pages[0].get("page_index") != expected_source.page - 1
+        ):
+            raise FileXAdapterError("result_mismatch", "layout page does not match")
+    return result
+
+
+def _publish_artifacts(
+    *,
+    artifacts_root: Path,
+    document_bytes: bytes,
+    layout_bytes: bytes,
+    result_bytes: bytes,
+    expected_task_id: str,
+    expected_source: ParseBenchTaskSource,
+) -> None:
+    staging = Path(tempfile.mkdtemp(prefix=".parsebench-stage-", dir=artifacts_root))
+    try:
+        staged_document = staging / "document.md"
+        staged_layout = staging / "layout.json"
+        staged_result = staging / "result.json"
+        _write_fsynced(staged_document, document_bytes)
+        _write_fsynced(staged_layout, layout_bytes)
+        _write_fsynced(staged_result, result_bytes)
+        _fsync_directory(staging)
+        validate_parsebench_artifacts(
+            result_path=staged_result,
+            markdown_path=staged_document,
+            layout_path=staged_layout,
+            expected_task_id=expected_task_id,
+            expected_source=expected_source,
+        )
+        os.replace(staged_document, artifacts_root / "document.md")
+        os.replace(staged_layout, artifacts_root / "layout.json")
+        _fsync_directory(artifacts_root)
+        # The result is the commit marker and is always published last.
+        os.replace(staged_result, artifacts_root / "result.json")
+        _fsync_directory(artifacts_root)
     finally:
+        shutil.rmtree(staging, ignore_errors=True)
+
+
+def _invalidate_result_marker(artifacts_root: Path) -> None:
+    marker = artifacts_root / "result.json"
+    try:
+        marker.unlink()
+    except FileNotFoundError:
+        pass
+    _fsync_directory(artifacts_root)
+
+
+def _write_fsynced(path: Path, content: bytes) -> None:
+    with path.open("xb") as stream:
+        stream.write(content)
+        stream.flush()
+        os.fsync(stream.fileno())
+
+
+def _fsync_directory(path: Path) -> None:
+    descriptor = os.open(path, os.O_RDONLY)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def _read_regular_file(path: Path, description: str) -> bytes:
+    path = Path(path)
+    try:
+        flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+        descriptor = os.open(path, flags)
         try:
-            temporary.unlink()
-        except FileNotFoundError:
-            pass
+            if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+                raise FileXAdapterError(
+                    "invalid_result_artifact",
+                    f"ParseBench {description} artifact is not a regular file",
+                )
+            chunks: list[bytes] = []
+            while chunk := os.read(descriptor, 1024 * 1024):
+                chunks.append(chunk)
+            return b"".join(chunks)
+        finally:
+            os.close(descriptor)
+    except FileXAdapterError:
+        raise
+    except OSError as exc:
+        raise FileXAdapterError(
+            "invalid_result_artifact",
+            f"ParseBench {description} artifact is unreadable",
+        ) from exc
+
+
+def _validate_artifact_evidence(
+    evidence: object, *, expected_path: str, content: bytes
+) -> None:
+    if not isinstance(evidence, Mapping):
+        raise FileXAdapterError(
+            "invalid_result_artifact", "artifact evidence is invalid"
+        )
+    _exact_result_fields(evidence, {"path", "size", "sha256"}, "artifact evidence")
+    if (
+        evidence["path"] != expected_path
+        or evidence["size"] != len(content)
+        or evidence["sha256"] != hashlib.sha256(content).hexdigest()
+    ):
+        raise FileXAdapterError(
+            "artifact_checksum_mismatch", "artifact checksum does not match"
+        )
+
+
+def _validate_parse_output_layout(layout: Mapping[str, object]) -> None:
+    pages = layout["pages"]
+    layout_pages = layout["layout_pages"]
+    if not isinstance(pages, list) or not isinstance(layout_pages, list):
+        raise FileXAdapterError(
+            "invalid_result_artifact", "ParseOutput pages are invalid"
+        )
+    if not pages or len(pages) != len(layout_pages):
+        raise FileXAdapterError(
+            "invalid_result_artifact", "ParseOutput page cardinality is invalid"
+        )
+    allowed_labels = frozenset(_LABELS.values())
+    seen_indices: set[int] = set()
+    for page, layout_page in zip(pages, layout_pages, strict=True):
+        if not isinstance(page, Mapping) or not isinstance(layout_page, Mapping):
+            raise FileXAdapterError(
+                "invalid_result_artifact", "ParseOutput page is invalid"
+            )
+        _exact_result_fields(page, {"page_index", "markdown"}, "ParseOutput page")
+        _exact_result_fields(
+            layout_page,
+            {"page_number", "width", "height", "md", "text", "items"},
+            "ParseOutput layout page",
+        )
+        page_index = page["page_index"]
+        if (
+            isinstance(page_index, bool)
+            or not isinstance(page_index, int)
+            or page_index < 0
+            or page_index in seen_indices
+            or layout_page["page_number"] != page_index + 1
+            or not isinstance(page["markdown"], str)
+            or layout_page["md"] != page["markdown"]
+            or not isinstance(layout_page["text"], str)
+        ):
+            raise FileXAdapterError(
+                "invalid_result_artifact", "ParseOutput page identity is invalid"
+            )
+        seen_indices.add(page_index)
+        width = _result_positive_finite(layout_page["width"], "layout page width")
+        height = _result_positive_finite(layout_page["height"], "layout page height")
+        items = layout_page["items"]
+        if not isinstance(items, list):
+            raise FileXAdapterError(
+                "invalid_result_artifact", "ParseOutput layout items are invalid"
+            )
+        previous_order = -1
+        for item in items:
+            if not isinstance(item, Mapping):
+                raise FileXAdapterError(
+                    "invalid_result_artifact", "ParseOutput layout item is invalid"
+                )
+            _exact_result_fields(
+                item,
+                {
+                    "type",
+                    "md",
+                    "html",
+                    "value",
+                    "bbox",
+                    "layout_segments",
+                    "reading_order",
+                },
+                "ParseOutput layout item",
+            )
+            if (
+                item["type"] not in {"text", "table"}
+                or not all(
+                    isinstance(item[key], str) for key in ("md", "html", "value")
+                )
+                or not isinstance(item["layout_segments"], list)
+                or len(item["layout_segments"]) != 1
+                or item["bbox"] != item["layout_segments"][0]
+            ):
+                raise FileXAdapterError(
+                    "invalid_result_artifact", "ParseOutput layout item is invalid"
+                )
+            order = item["reading_order"]
+            if order is not None:
+                if (
+                    isinstance(order, bool)
+                    or not isinstance(order, int)
+                    or order < previous_order
+                ):
+                    raise FileXAdapterError(
+                        "invalid_result_artifact",
+                        "ParseOutput reading order is invalid",
+                    )
+                previous_order = order
+            _validate_result_bbox(
+                item["bbox"], width=width, height=height, labels=allowed_labels
+            )
+
+
+def _validate_result_bbox(
+    bbox: object, *, width: float, height: float, labels: frozenset[str]
+) -> None:
+    if not isinstance(bbox, Mapping) or set(bbox) not in (
+        {"x", "y", "w", "h", "label"},
+        {"x", "y", "w", "h", "label", "confidence"},
+    ):
+        raise FileXAdapterError(
+            "invalid_result_artifact", "ParseOutput bbox is invalid"
+        )
+    x = _result_nonnegative_finite(bbox["x"], "bbox.x")
+    y = _result_nonnegative_finite(bbox["y"], "bbox.y")
+    w = _result_positive_finite(bbox["w"], "bbox.w")
+    h = _result_positive_finite(bbox["h"], "bbox.h")
+    if x + w > width or y + h > height or bbox["label"] not in labels:
+        raise FileXAdapterError(
+            "invalid_result_artifact", "ParseOutput bbox is outside its page"
+        )
+    if "confidence" in bbox:
+        confidence = _result_nonnegative_finite(bbox["confidence"], "confidence")
+        if confidence > 1:
+            raise FileXAdapterError(
+                "invalid_result_artifact", "ParseOutput confidence is invalid"
+            )
+
+
+def _result_nonnegative_finite(value: object, name: str) -> float:
+    try:
+        return _nonnegative_finite(value, name)
+    except FileXAdapterError as exc:
+        raise FileXAdapterError(
+            "invalid_result_artifact", f"ParseOutput {name} is invalid"
+        ) from exc
+
+
+def _result_positive_finite(value: object, name: str) -> float:
+    number = _result_nonnegative_finite(value, name)
+    if number <= 0:
+        raise FileXAdapterError(
+            "invalid_result_artifact", f"ParseOutput {name} is invalid"
+        )
+    return number
+
+
+def _exact_result_fields(
+    value: Mapping[str, object], expected: set[str], description: str
+) -> None:
+    if set(value) != expected:
+        raise FileXAdapterError(
+            "invalid_result_artifact",
+            f"{description} fields do not match the pinned schema",
+        )
 
 
 def _require_exact_fields(
@@ -753,6 +1399,27 @@ def _validate_logical_profile(value: str, name: str) -> None:
         raise ValueError(f"{name} must be a bounded logical identity")
 
 
+def _positive_limit(value: int, name: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        raise ValueError(f"{name} must be a positive integer")
+    return value
+
+
+def _nonnegative_finite(value: object, name: str) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise FileXAdapterError("missing_provenance", f"{name} must be numeric")
+    number = float(value)
+    if not math.isfinite(number) or number < 0:
+        raise FileXAdapterError(
+            "missing_provenance", f"{name} must be non-negative and finite"
+        )
+    return number
+
+
+def _reject_json_constant(value: str) -> None:
+    raise ValueError(f"invalid JSON constant: {value}")
+
+
 def _finite_number(value: object, name: str) -> float:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         raise FileXAdapterError("invalid_document_ir", f"{name} must be numeric")
@@ -782,7 +1449,7 @@ def _sha256_file(path: Path) -> str:
     with path.open("rb") as source:
         while chunk := source.read(1024 * 1024):
             digest.update(chunk)
-    return digest.hexdigest()
+    return "sha256:" + digest.hexdigest()
 
 
 def _canonical_json_text(value: object) -> str:
@@ -802,17 +1469,18 @@ def _canonical_json_bytes(value: object, *, newline: bool = False) -> bytes:
 
 __all__ = (
     "DEFAULT_ARTIFACTS_ROOT",
-    "DEFAULT_LLM_MODEL_PROFILE",
     "DEFAULT_PROVIDER",
     "DEFAULT_TASK_SPEC_PATH",
     "DEFAULT_VLM_MODEL_PROFILE",
     "FileXAdapterError",
     "FileXExecutionOptions",
     "FileXRunRequest",
+    "FileXRunResult",
     "ParseBenchTaskSource",
     "ParseBenchTaskSpec",
     "SubprocessFileXRunner",
     "execute_filex_parsebench",
     "load_parsebench_task_spec",
     "normalize_filex_document_ir",
+    "validate_parsebench_artifacts",
 )
