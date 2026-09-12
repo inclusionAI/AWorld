@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import secrets
 from pathlib import Path
@@ -43,6 +44,7 @@ from aworld_cli.parsebench_gateway import (
     GatewayRunManifest,
     ParseBenchGatewayClient,
     ParseBenchGatewayError,
+    bind_image_build_intent,
     bind_submission_intent,
     build_submission_intent,
     build_submit_payload,
@@ -199,6 +201,12 @@ class BenchmarkTopLevelCommand:
         )
         submit.add_argument("--model-profile", default=DEFAULT_MODEL_PROFILE)
         submit.add_argument("--task-timeout", type=int, default=3_600)
+        submit.add_argument(
+            "--image-build-timeout",
+            type=float,
+            default=3_600.0,
+            help="Seconds to wait for the selected publication's Task images.",
+        )
         _add_gateway_arguments(submit)
 
         status = actions.add_parser(
@@ -339,6 +347,13 @@ class BenchmarkTopLevelCommand:
                     limit=args.limit,
                     allow_full=args.full,
                 )
+                if (
+                    not math.isfinite(args.image_build_timeout)
+                    or not 60 <= args.image_build_timeout <= 14_400
+                ):
+                    raise ValueError(
+                        "image_build_timeout must be between 60 and 14400 seconds"
+                    )
                 new_intent = build_submission_intent(
                     package,
                     selected_task_ids=selected_task_ids,
@@ -373,6 +388,31 @@ class BenchmarkTopLevelCommand:
                             value=bound_intent,
                         )
                         intent = bound_intent
+                    image_receipt = client.prepare_task_images(
+                        package,
+                        selected_task_ids=selected_task_ids,
+                        publication=publication,
+                        timeout_seconds=args.image_build_timeout,
+                    )
+                    if intent["status"] == "imported":
+                        ready_intent = bind_image_build_intent(
+                            intent,
+                            image_receipt,
+                        )
+                        finalize_json_output(
+                            args.run_manifest,
+                            reservation=intent,
+                            value=ready_intent,
+                        )
+                        intent = ready_intent
+                    elif (
+                        intent.get("status") != "images_ready"
+                        or intent.get("image_build_receipt") != image_receipt.to_dict()
+                    ):
+                        raise ParseBenchGatewayError(
+                            "submission_intent_conflict",
+                            "ParseBench image readiness changed while resuming",
+                        )
                     payload = build_submit_payload(
                         package,
                         selected_task_ids=selected_task_ids,
@@ -387,6 +427,7 @@ class BenchmarkTopLevelCommand:
                     selected_task_ids=selected_task_ids,
                     model_profile=args.model_profile,
                     publication=publication,
+                    image_build=image_receipt,
                     gateway_url=_gateway_url(args),
                     client_request_id=intent["client_request_id"],
                     response=response,

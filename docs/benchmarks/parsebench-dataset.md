@@ -157,10 +157,12 @@ files and must not contain a URL.
 
 Use `--limit` or repeat `--task-id` to validate only a few tasks. The command
 first validates the complete package and reserves the output path, then imports
-the package, binds the exact Dataset publication receipt, and submits the
-ordered selection with a durable client request ID. It finally writes a
-canonical, credential-free run manifest. Existing outputs are never
-overwritten:
+the package and binds the exact Dataset publication receipt. Before batch
+submission it asks mcpgateway to build only the selected Task images, waits for
+READY images from that same publication generation and task-set, and rejects a
+READY projection that has no immutable image digest. It then submits the
+ordered selection with a durable client request ID and writes a canonical,
+credential-free run manifest. Existing outputs are never overwritten:
 
 ```bash
 aworld-cli --no-banner benchmark parsebench submit \
@@ -185,10 +187,14 @@ aworld-cli --no-banner benchmark parsebench submit \
 The default model profile is already the ParseBench VLM profile. Override it
 only with another deployment-approved logical profile. `--task-timeout` is in
 seconds and accepts 60 through 14,400; the default is 3,600.
+`--image-build-timeout` independently bounds image preparation and defaults to
+3,600 seconds; it accepts 60 through 14,400. A partial selection uses the
+per-Task build API, so `--limit 2` does not construct every image in a full
+2,078-execution package.
 
 If the process or response is interrupted, the output remains a canonical
-`submitting` or `imported` intent. Resume only the exact same package,
-selection, model, timeout, and gateway URL:
+`submitting`, `imported`, or `images_ready` intent. Resume only the exact same
+package, selection, model, timeout, and gateway URL:
 
 ```bash
 aworld-cli --no-banner benchmark parsebench submit \
@@ -202,9 +208,12 @@ mcpgateway scopes the saved request ID by tenant and environment. The package
 import binds that ID to the uploaded ZIP digest, and the batch submission binds
 it to the complete canonical request. After an accepted response is lost,
 explicit `--resume` recovers both the original Dataset publication receipt and
-the original ordered batch/run receipt without repeating either mutation.
-Reusing the key with a different ZIP or different frozen submission semantics
-fails with a conflict. The CLI never retries mutating requests implicitly.
+the original ordered batch/run receipt. Image recovery first reads the
+current-generation status and triggers only images that are absent or in a
+terminal failed state; an in-flight image build is polled rather than blindly
+restarted. Reusing the key with a different ZIP or different frozen submission
+semantics fails with a conflict. The CLI never retries mutating requests
+implicitly.
 
 ### Check status
 
@@ -217,8 +226,8 @@ Status performs a lightweight `limit=0` metadata query and does not download
 run results. It prints the batch ID, status, total, completed, failed, and
 terminal flag. Keep the run manifest unchanged: it binds the package digest,
 publication receipt, dataset/scorer revisions, Runtime image, gateway URL,
-client request ID, model profile, task IDs, ordered run IDs, and acceptance
-checksum.
+current-generation image-build receipt, client request ID, model profile, task
+IDs, ordered run IDs, and acceptance checksum.
 
 ### Write the report
 
@@ -234,7 +243,7 @@ aworld-cli --no-banner benchmark parsebench report \
 downloads bounded pages using the gateway's reward-only projection, validates
 one stable terminal snapshot plus each task's sample/run mapping and versioned reward vector, applies
 the official five-dimension reduction, and atomically writes a deterministic
-`aworld.parsebench.gateway-report/v1` document. Smoke and partial reports are
+`aworld.parsebench.gateway-report/v2` document. Smoke and partial reports are
 always marked `publishable: false`, even when every selected task succeeds.
 
 ## Full release safety gates

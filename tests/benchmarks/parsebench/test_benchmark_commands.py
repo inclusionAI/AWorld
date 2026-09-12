@@ -10,6 +10,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "aworld-cli" / "src"))
 
 from aworld_cli.parsebench_gateway import (
+    DatasetImageBuildReceipt,
     DatasetPublicationReceipt,
     GatewayRunManifest,
     ParseBenchGatewayError,
@@ -75,6 +76,16 @@ def _publication() -> DatasetPublicationReceipt:
     )
 
 
+def _image_receipt(package: ParseBenchPackageDescriptor) -> DatasetImageBuildReceipt:
+    return DatasetImageBuildReceipt(
+        dataset_id=package.dataset_id,
+        service_name=package.service_name,
+        dataset_generation=_publication().generation,
+        task_set_sha256=_publication().task_set_sha256,
+        selected_task_ids=package.task_ids,
+    )
+
+
 def _run_manifest(tmp_path: Path) -> tuple[Path, GatewayRunManifest]:
     package = _package(tmp_path)
     manifest = GatewayRunManifest.from_submission(
@@ -82,6 +93,7 @@ def _run_manifest(tmp_path: Path) -> tuple[Path, GatewayRunManifest]:
         selected_task_ids=package.task_ids,
         model_profile="default__gemini-3.1-pro-preview",
         publication=_publication(),
+        image_build=_image_receipt(package),
         gateway_url="https://gateway.example.test/",
         client_request_id="parsebench-command-request",
         response={
@@ -174,6 +186,11 @@ def test_submit_writes_secret_free_versioned_run_manifest(
             observed["import_request_id"] = client_request_id
             return _publication()
 
+        def prepare_task_images(self, value, **kwargs):
+            assert value is package
+            observed["image_build"] = kwargs
+            return _image_receipt(package)
+
         def submit(self, payload):
             observed["payload"] = payload
             return {
@@ -215,6 +232,7 @@ def test_submit_writes_secret_free_versioned_run_manifest(
     assert observed["token"] == secret
     request = observed["payload"]
     assert observed["import_request_id"] == request["client_request_id"]
+    assert observed["image_build"]["publication"] == _publication()
     assert request["scheduler_config"] == {
         "execution_environment": "agent_only",
         "harness_profile": "aworld",
@@ -268,7 +286,7 @@ def test_status_and_report_use_versioned_manifest_and_bounded_results(
     monkeypatch.setattr(
         "aworld_cli.top_level_commands.benchmark_cmd.reduce_gateway_batch_results",
         lambda run_manifest, raw: {
-            "schema": "aworld.parsebench.gateway-report/v1",
+            "schema": "aworld.parsebench.gateway-report/v2",
             "batch_id": run_manifest.batch_id,
             "status": "scored",
             "publishable": False,
@@ -361,6 +379,9 @@ def test_submit_resumes_an_imported_intent_with_the_same_idempotency_key(
             import_calls += 1
             return _publication()
 
+        def prepare_task_images(self, _package, **_kwargs):
+            return _image_receipt(package)
+
         def submit(self, payload):
             observed_keys.append(payload["client_request_id"])
             if len(observed_keys) == 1:
@@ -399,8 +420,9 @@ def test_submit_resumes_an_imported_intent_with_the_same_idempotency_key(
 
     assert command.run(parser.parse_args(common), None) == 2
     saved_intent = json.loads(run_manifest.read_text(encoding="utf-8"))
-    assert saved_intent["status"] == "imported"
+    assert saved_intent["status"] == "images_ready"
     assert saved_intent["dataset_publication"] == _publication().to_dict()
+    assert saved_intent["image_build_receipt"] == _image_receipt(package).to_dict()
     capsys.readouterr()
 
     assert command.run(parser.parse_args([*common, "--resume"]), None) == 0
@@ -438,6 +460,9 @@ def test_submit_resumes_package_import_with_the_same_idempotency_key(
                     "gateway_unavailable", "simulated accepted import response loss"
                 )
             return _publication()
+
+        def prepare_task_images(self, _package, **_kwargs):
+            return _image_receipt(package)
 
         def submit(self, payload):
             nonlocal submit_calls
@@ -482,6 +507,86 @@ def test_submit_resumes_package_import_with_the_same_idempotency_key(
     assert import_keys == [recovered.client_request_id] * 2
     assert recovered.dataset_publication == _publication()
     assert submit_calls == 1
+
+
+def test_submit_resumes_image_preparation_from_imported_receipt(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    parser, command = _parser_and_command()
+    package = _package(tmp_path)
+    run_manifest = tmp_path / "recoverable-images.json"
+    import_calls = 0
+    image_calls = 0
+
+    class FakeGatewayClient:
+        def __init__(self, _gateway_url, **_kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+        def import_package(self, _package, *, client_request_id):
+            nonlocal import_calls
+            assert client_request_id
+            import_calls += 1
+            return _publication()
+
+        def prepare_task_images(self, _package, **_kwargs):
+            nonlocal image_calls
+            image_calls += 1
+            if image_calls == 1:
+                raise ParseBenchGatewayError(
+                    "gateway_unavailable",
+                    "simulated image build response loss",
+                )
+            return _image_receipt(package)
+
+        def submit(self, _payload):
+            run_ids = ["run-after-image-recovery"]
+            return {
+                "batch_id": "batch-after-image-recovery",
+                "total": 1,
+                "run_ids": run_ids,
+                "acceptance_checksum": batch_acceptance_checksum(
+                    batch_id="batch-after-image-recovery", run_ids=run_ids
+                ),
+            }
+
+    monkeypatch.setattr(
+        "aworld_cli.top_level_commands.benchmark_cmd.inspect_parsebench_package",
+        lambda _path: package,
+    )
+    monkeypatch.setattr(
+        "aworld_cli.top_level_commands.benchmark_cmd.ParseBenchGatewayClient",
+        FakeGatewayClient,
+    )
+    common = [
+        "benchmark",
+        "parsebench",
+        "submit",
+        "--package",
+        str(package.package_path),
+        "--run-manifest",
+        str(run_manifest),
+        "--gateway-url",
+        "https://gateway.example.test",
+    ]
+
+    assert command.run(parser.parse_args(common), None) == 2
+    interrupted = json.loads(run_manifest.read_text(encoding="utf-8"))
+    assert interrupted["status"] == "imported"
+    assert interrupted["dataset_publication"] == _publication().to_dict()
+
+    assert command.run(parser.parse_args([*common, "--resume"]), None) == 0
+    assert load_gateway_run_manifest(run_manifest).batch_id == (
+        "batch-after-image-recovery"
+    )
+    assert import_calls == 1
+    assert image_calls == 2
 
 
 def test_resume_rejects_a_different_gateway_before_any_client_call(
@@ -590,9 +695,20 @@ def test_submit_preflight_errors_have_zero_remote_side_effects(
         ]
     )
     assert command.run(invalid_model, None) == 2
+    invalid_image_timeout = parser.parse_args(
+        [
+            *common,
+            "--run-manifest",
+            str(tmp_path / "invalid-timeout.json"),
+            "--image-build-timeout",
+            "0",
+        ]
+    )
+    assert command.run(invalid_image_timeout, None) == 2
     collision = parser.parse_args([*common, "--run-manifest", str(existing)])
     assert command.run(collision, None) == 2
     assert remote_calls == 0
+    assert not (tmp_path / "invalid-timeout.json").exists()
     assert existing.read_text(encoding="utf-8") == "owner"
 
 
@@ -688,7 +804,7 @@ def test_report_failure_releases_its_reservation_for_retry(
     monkeypatch.setattr(
         "aworld_cli.top_level_commands.benchmark_cmd.reduce_gateway_batch_results",
         lambda *_args: {
-            "schema": "aworld.parsebench.gateway-report/v1",
+            "schema": "aworld.parsebench.gateway-report/v2",
             "batch_id": manifest.batch_id,
             "status": "scored",
             "publishable": False,

@@ -13,6 +13,7 @@ import secrets
 import stat
 import tarfile
 import tempfile
+import time
 from collections.abc import Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -63,11 +64,16 @@ from aworld.benchmarks.parsebench.scoring import (
 )
 
 DEFAULT_MODEL_PROFILE = "default__gemini-3.1-pro-preview"
-RUN_MANIFEST_SCHEMA = "aworld.parsebench.gateway-run/v2"
-REPORT_SCHEMA = "aworld.parsebench.gateway-report/v1"
-SUBMISSION_INTENT_SCHEMA = "aworld.parsebench.gateway-submission-intent/v1"
+RUN_MANIFEST_SCHEMA = "aworld.parsebench.gateway-run/v3"
+REPORT_SCHEMA = "aworld.parsebench.gateway-report/v2"
+SUBMISSION_INTENT_SCHEMA = "aworld.parsebench.gateway-submission-intent/v2"
+IMAGE_BUILD_RECEIPT_SCHEMA = "aworld.parsebench.dataset-images/v1"
 _PACKAGE_MANIFEST_SCHEMA = MATERIAL_MANIFEST_SCHEMA_VERSION
 _IMPORT_PATH = "api/v1/dataset-meta/package/import"
+_DATASET_IMAGE_PATH = "api/v1/dataset-meta/{dataset_id}/images"
+_DATASET_IMAGE_BUILD_PATH = "api/v1/dataset-meta/{dataset_id}/images/build"
+_TASK_IMAGE_DETAIL_PATH = "api/v1/dataset-meta/{dataset_id}/tasks/{task_id}"
+_TASK_IMAGE_BUILD_PATH = "api/v1/dataset-meta/{dataset_id}/tasks/{task_id}/image/build"
 _SUBMIT_PATH = "api/batch/submit"
 _RESULTS_PATH = "api/batch/results"
 _IDENTITY = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,254}$")
@@ -82,6 +88,8 @@ _MAX_TASK_MEMBERS = 64
 _MAX_ZIP_ENTRIES = PINNED_PARSEBENCH_CONTRACT.unique_execution_count + 4
 _MAX_BATCH_RESULTS = 10_000
 _MAX_BATCH_RESULTS_BYTES = 64 * 1024 * 1024
+_ACTIVE_IMAGE_STATUSES = frozenset({"QUEUED", "SUBMITTING", "BUILDING", "UNKNOWN"})
+_FAILED_IMAGE_STATUSES = frozenset({"FAILED", "PARTIAL_FAILED", "SOURCE_MISSING"})
 _IMMUTABLE_IMAGE = re.compile(
     r"^[A-Za-z0-9][A-Za-z0-9._/:-]{0,430}@sha256:[0-9a-f]{64}$"
 )
@@ -1277,6 +1285,75 @@ class DatasetPublicationReceipt:
 
 
 @dataclass(frozen=True, slots=True)
+class DatasetImageBuildReceipt:
+    """Secret-free proof that the selected publication images became READY."""
+
+    dataset_id: str
+    service_name: str
+    dataset_generation: int
+    task_set_sha256: str
+    selected_task_ids: tuple[str, ...]
+
+    def __post_init__(self) -> None:
+        if (
+            not isinstance(self.dataset_id, str)
+            or _IDENTITY.fullmatch(self.dataset_id) is None
+            or not isinstance(self.service_name, str)
+            or _IDENTITY.fullmatch(self.service_name) is None
+            or isinstance(self.dataset_generation, bool)
+            or not isinstance(self.dataset_generation, int)
+            or not 1 <= self.dataset_generation <= 2**63 - 1
+            or not isinstance(self.task_set_sha256, str)
+            or _SHA256.fullmatch(self.task_set_sha256) is None
+            or not isinstance(self.selected_task_ids, tuple)
+            or not self.selected_task_ids
+            or any(
+                not isinstance(task_id, str) or _IDENTITY.fullmatch(task_id) is None
+                for task_id in self.selected_task_ids
+            )
+            or len(set(self.selected_task_ids)) != len(self.selected_task_ids)
+        ):
+            raise ValueError("Dataset image build receipt is invalid")
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "schema": IMAGE_BUILD_RECEIPT_SCHEMA,
+            "dataset_id": self.dataset_id,
+            "service_name": self.service_name,
+            "dataset_generation": self.dataset_generation,
+            "task_set_sha256": self.task_set_sha256,
+            "selected_task_ids": list(self.selected_task_ids),
+            "status": "READY",
+        }
+
+    @classmethod
+    def from_dict(cls, value: Mapping[str, Any]) -> DatasetImageBuildReceipt:
+        if (
+            set(value)
+            != {
+                "schema",
+                "dataset_id",
+                "service_name",
+                "dataset_generation",
+                "task_set_sha256",
+                "selected_task_ids",
+                "status",
+            }
+            or value.get("schema") != IMAGE_BUILD_RECEIPT_SCHEMA
+            or value.get("status") != "READY"
+            or not isinstance(value.get("selected_task_ids"), list)
+        ):
+            raise ValueError("Dataset image build receipt fields are invalid")
+        return cls(
+            dataset_id=value.get("dataset_id"),
+            service_name=value.get("service_name"),
+            dataset_generation=value.get("dataset_generation"),
+            task_set_sha256=value.get("task_set_sha256"),
+            selected_task_ids=tuple(value["selected_task_ids"]),
+        )
+
+
+@dataclass(frozen=True, slots=True)
 class ParseBenchPackageDescriptor:
     package_path: Path
     package_sha256: str
@@ -1832,6 +1909,36 @@ def bind_submission_intent(
     }
 
 
+def bind_image_build_intent(
+    intent: Mapping[str, Any],
+    receipt: DatasetImageBuildReceipt,
+) -> dict[str, Any]:
+    """Advance an imported intent after its exact selected images are READY."""
+
+    raw_publication = intent.get("dataset_publication")
+    try:
+        publication = DatasetPublicationReceipt.from_dict(raw_publication)
+    except (TypeError, ValueError):
+        raise ValueError(
+            "ParseBench image build intent has no valid publication"
+        ) from None
+    if (
+        intent.get("schema") != SUBMISSION_INTENT_SCHEMA
+        or intent.get("status") != "imported"
+        or receipt.dataset_id != intent.get("dataset_id")
+        or receipt.service_name != intent.get("service_name")
+        or list(receipt.selected_task_ids) != intent.get("selected_task_ids")
+        or receipt.dataset_generation != publication.generation
+        or receipt.task_set_sha256 != publication.task_set_sha256
+    ):
+        raise ValueError("ParseBench submission intent cannot be image-bound")
+    return {
+        **dict(intent),
+        "status": "images_ready",
+        "image_build_receipt": receipt.to_dict(),
+    }
+
+
 def load_submission_intent(
     path: Path | str,
     *,
@@ -1883,10 +1990,15 @@ def load_submission_intent(
         not isinstance(value, Mapping)
         or _canonical_json(value) != payload
         or value.get("schema") != SUBMISSION_INTENT_SCHEMA
-        or value.get("status") not in {"submitting", "imported"}
+        or value.get("status") not in {"submitting", "imported", "images_ready"}
         or set(value)
         != base_keys
-        | ({"dataset_publication"} if value.get("status") == "imported" else set())
+        | (
+            {"dataset_publication"}
+            if value.get("status") in {"imported", "images_ready"}
+            else set()
+        )
+        | ({"image_build_receipt"} if value.get("status") == "images_ready" else set())
         or not isinstance(value.get("reservation_id"), str)
         or re.fullmatch(r"[0-9a-f]{32}", value["reservation_id"]) is None
     ):
@@ -1924,7 +2036,7 @@ def load_submission_intent(
             "ParseBench resume arguments do not match the saved submission intent",
         )
     publication = None
-    if value["status"] == "imported":
+    if value["status"] in {"imported", "images_ready"}:
         raw_publication = value.get("dataset_publication")
         try:
             if not isinstance(raw_publication, Mapping):
@@ -1935,6 +2047,29 @@ def load_submission_intent(
                 "submission_intent_invalid",
                 "ParseBench saved publication receipt is invalid",
             ) from None
+    if value["status"] == "images_ready":
+        raw_receipt = value.get("image_build_receipt")
+        try:
+            if not isinstance(raw_receipt, Mapping):
+                raise TypeError
+            image_receipt = DatasetImageBuildReceipt.from_dict(raw_receipt)
+        except (TypeError, ValueError):
+            raise ParseBenchGatewayError(
+                "submission_intent_invalid",
+                "ParseBench saved image build receipt is invalid",
+            ) from None
+        assert publication is not None
+        if (
+            image_receipt.dataset_id != package.dataset_id
+            or image_receipt.service_name != package.service_name
+            or image_receipt.dataset_generation != publication.generation
+            or image_receipt.task_set_sha256 != publication.task_set_sha256
+            or image_receipt.selected_task_ids != selected
+        ):
+            raise ParseBenchGatewayError(
+                "submission_intent_invalid",
+                "ParseBench saved image build receipt does not match the intent",
+            )
     return dict(value), publication
 
 
@@ -2033,22 +2168,25 @@ class ParseBenchGatewayClient:
             )
         return dict(data)
 
-    def _post_object(
+    def _request_object(
         self,
+        method: str,
         path: str,
         *,
         action: str,
         headers: Mapping[str, str] | None = None,
         content: Any = None,
         json_body: Mapping[str, Any] | None = None,
+        params: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
         try:
             with self._client.stream(
-                "POST",
+                method,
                 path,
                 headers=headers,
                 content=content,
                 json=dict(json_body) if json_body is not None else None,
+                params=dict(params) if params is not None else None,
             ) as response:
                 if not 200 <= response.status_code < 300:
                     raise ParseBenchGatewayError(
@@ -2095,6 +2233,38 @@ class ParseBenchGatewayClient:
                 f"mcpgateway {action} returned invalid JSON",
             ) from None
         return self._unwrap_response(value, action=action)
+
+    def _post_object(
+        self,
+        path: str,
+        *,
+        action: str,
+        headers: Mapping[str, str] | None = None,
+        content: Any = None,
+        json_body: Mapping[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        return self._request_object(
+            "POST",
+            path,
+            action=action,
+            headers=headers,
+            content=content,
+            json_body=json_body,
+        )
+
+    def _get_object(
+        self,
+        path: str,
+        *,
+        action: str,
+        params: Mapping[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        return self._request_object(
+            "GET",
+            path,
+            action=action,
+            params=params,
+        )
 
     def import_package(
         self,
@@ -2202,6 +2372,270 @@ class ParseBenchGatewayClient:
                 "gateway_identity_mismatch",
                 "mcpgateway returned an invalid Dataset publication receipt",
             ) from None
+
+    @staticmethod
+    def _validate_image_summary(
+        value: Mapping[str, Any],
+        *,
+        package: ParseBenchPackageDescriptor,
+        publication: DatasetPublicationReceipt,
+    ) -> dict[str, Any]:
+        count_fields = (
+            "total_count",
+            "queued_count",
+            "building_count",
+            "ready_count",
+            "failed_count",
+            "missing_count",
+            "unknown_count",
+        )
+        valid_statuses = {
+            "NOT_STARTED",
+            "QUEUED",
+            "BUILDING",
+            "READY",
+            "PARTIAL_FAILED",
+            "FAILED",
+        }
+        if (
+            not isinstance(value, Mapping)
+            or value.get("enabled") is not True
+            or value.get("repository_configured") is not True
+            or value.get("service_name") != package.service_name
+            or value.get("dataset_id") != package.dataset_id
+            or value.get("dataset_generation") != publication.generation
+            or value.get("provider_type") != "YOLO"
+            or value.get("runtime_type") != "offline"
+            or value.get("status") not in valid_statuses
+            or any(
+                isinstance(value.get(field), bool)
+                or not isinstance(value.get(field), int)
+                or value[field] < 0
+                or value[field] > len(package.task_ids)
+                for field in count_fields
+            )
+        ):
+            raise ParseBenchGatewayError(
+                "gateway_identity_mismatch",
+                "mcpgateway returned a different Dataset image build identity",
+            )
+        return dict(value)
+
+    def _image_summary(
+        self,
+        package: ParseBenchPackageDescriptor,
+        publication: DatasetPublicationReceipt,
+    ) -> dict[str, Any]:
+        result = self._get_object(
+            _DATASET_IMAGE_PATH.format(dataset_id=package.dataset_id),
+            action="Dataset image status",
+            params={"service_name": package.service_name, "refresh": "true"},
+        )
+        return self._validate_image_summary(
+            result,
+            package=package,
+            publication=publication,
+        )
+
+    def _task_image_status(
+        self,
+        package: ParseBenchPackageDescriptor,
+        *,
+        task_id: str,
+    ) -> str | None:
+        result = self._get_object(
+            _TASK_IMAGE_DETAIL_PATH.format(
+                dataset_id=package.dataset_id,
+                task_id=task_id,
+            ),
+            action="Dataset Task image status",
+            params={"service_name": package.service_name},
+        )
+        image_status = result.get("image_status")
+        arca_ready = result.get("arca_ready")
+        image_url = result.get("image_url")
+        image_digest = result.get("image_digest")
+        if (
+            result.get("service_name") != package.service_name
+            or result.get("dataset_id") != package.dataset_id
+            or result.get("task_id") != task_id
+            or image_status
+            not in {
+                None,
+                "QUEUED",
+                "SUBMITTING",
+                "BUILDING",
+                "READY",
+                "FAILED",
+                "UNKNOWN",
+                "SOURCE_MISSING",
+            }
+            or not isinstance(arca_ready, bool)
+            or (image_status == "READY") is not arca_ready
+        ):
+            raise ParseBenchGatewayError(
+                "gateway_identity_mismatch",
+                "mcpgateway returned a different Dataset Task image identity",
+            )
+        if image_status == "READY" and (
+            arca_ready is not True
+            or not isinstance(image_url, str)
+            or not image_url
+            or len(image_url) > 2_048
+            or any(character.isspace() for character in image_url)
+            or not isinstance(image_digest, str)
+            or _SHA256.fullmatch(image_digest) is None
+        ):
+            raise ParseBenchGatewayError(
+                "gateway_response_invalid",
+                "mcpgateway READY Task image is not immutable",
+            )
+        return image_status
+
+    def prepare_task_images(
+        self,
+        package: ParseBenchPackageDescriptor,
+        *,
+        selected_task_ids: Sequence[str],
+        publication: DatasetPublicationReceipt,
+        timeout_seconds: float = 3_600.0,
+        poll_interval_seconds: float = 2.0,
+    ) -> DatasetImageBuildReceipt:
+        """Build and wait for only the selected current-publication Task images."""
+
+        selected = tuple(selected_task_ids)
+        if (
+            not selected
+            or len(set(selected)) != len(selected)
+            or any(task_id not in package.task_ids for task_id in selected)
+        ):
+            raise ValueError("selected_task_ids must be a non-empty package subset")
+        if (
+            not math.isfinite(float(timeout_seconds))
+            or timeout_seconds <= 0
+            or not math.isfinite(float(poll_interval_seconds))
+            or poll_interval_seconds <= 0
+        ):
+            raise ValueError("Dataset image wait durations must be positive")
+
+        deadline = time.monotonic() + float(timeout_seconds)
+        request = {
+            "service_name": package.service_name,
+            "expected_generation": publication.generation,
+            "force_rebuild": False,
+        }
+        selects_package = len(selected) == len(package.task_ids) and set(
+            selected
+        ) == set(package.task_ids)
+        summary = self._image_summary(package, publication)
+        bulk_triggered = False
+        if selects_package:
+            complete = (
+                summary["status"] == "READY"
+                and summary["total_count"] == len(package.task_ids)
+                and summary["ready_count"] == len(package.task_ids)
+            )
+            active = summary["status"] in _ACTIVE_IMAGE_STATUSES
+            bulk_triggered = complete or (
+                active and summary["total_count"] == len(package.task_ids)
+            )
+            if not complete and not active:
+                summary = self._validate_image_summary(
+                    self._post_object(
+                        _DATASET_IMAGE_BUILD_PATH.format(dataset_id=package.dataset_id),
+                        action="Dataset image build",
+                        json_body=request,
+                    ),
+                    package=package,
+                    publication=publication,
+                )
+                bulk_triggered = True
+        else:
+            for task_id in selected:
+                status = self._task_image_status(package, task_id=task_id)
+                if status == "READY" or status in _ACTIVE_IMAGE_STATUSES:
+                    continue
+                self._validate_image_summary(
+                    self._post_object(
+                        _TASK_IMAGE_BUILD_PATH.format(
+                            dataset_id=package.dataset_id,
+                            task_id=task_id,
+                        ),
+                        action="Dataset Task image build",
+                        json_body=request,
+                    ),
+                    package=package,
+                    publication=publication,
+                )
+
+        while True:
+            summary = self._image_summary(package, publication)
+            if selects_package:
+                ready = (
+                    summary["status"] == "READY"
+                    and summary["total_count"] == len(package.task_ids)
+                    and summary["ready_count"] == len(package.task_ids)
+                )
+                failed = summary["status"] in _FAILED_IMAGE_STATUSES
+                active = summary["status"] in _ACTIVE_IMAGE_STATUSES
+                if not ready and not active and not bulk_triggered:
+                    self._validate_image_summary(
+                        self._post_object(
+                            _DATASET_IMAGE_BUILD_PATH.format(
+                                dataset_id=package.dataset_id
+                            ),
+                            action="Dataset image build",
+                            json_body=request,
+                        ),
+                        package=package,
+                        publication=publication,
+                    )
+                    bulk_triggered = True
+                    continue
+            else:
+                statuses = tuple(
+                    self._task_image_status(package, task_id=task_id)
+                    for task_id in selected
+                )
+                ready = all(status == "READY" for status in statuses)
+                failed = any(status in _FAILED_IMAGE_STATUSES for status in statuses)
+            if ready:
+                # Close the read window so a concurrent re-publication cannot be
+                # recorded as readiness for the imported generation, and a
+                # same-generation rebuild cannot be reported as still READY.
+                closing_summary = self._image_summary(package, publication)
+                if selects_package:
+                    closing_ready = (
+                        closing_summary["status"] == "READY"
+                        and closing_summary["total_count"] == len(package.task_ids)
+                        and closing_summary["ready_count"] == len(package.task_ids)
+                    )
+                else:
+                    closing_ready = all(
+                        self._task_image_status(package, task_id=task_id) == "READY"
+                        for task_id in selected
+                    )
+                if not closing_ready:
+                    continue
+                return DatasetImageBuildReceipt(
+                    dataset_id=package.dataset_id,
+                    service_name=package.service_name,
+                    dataset_generation=publication.generation,
+                    task_set_sha256=publication.task_set_sha256,
+                    selected_task_ids=selected,
+                )
+            if failed:
+                raise ParseBenchGatewayError(
+                    "dataset_image_build_failed",
+                    "One or more selected ParseBench Task images failed",
+                )
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise ParseBenchGatewayError(
+                    "dataset_image_build_timeout",
+                    "Timed out waiting for selected ParseBench Task images",
+                )
+            time.sleep(min(float(poll_interval_seconds), remaining))
 
     def submit(self, payload: Mapping[str, Any]) -> dict[str, Any]:
         return self._post_object(
@@ -2411,6 +2845,7 @@ class GatewayRunManifest:
     scorer_revision: str
     runtime_image: str
     dataset_publication: DatasetPublicationReceipt
+    dataset_image_build: DatasetImageBuildReceipt
     gateway_url: str
     client_request_id: str
     acceptance_checksum: str
@@ -2427,6 +2862,7 @@ class GatewayRunManifest:
             or self.dataset_revision != DATASET_REVISION
             or self.scorer_revision != SCORER_REVISION
             or not isinstance(self.dataset_publication, DatasetPublicationReceipt)
+            or not isinstance(self.dataset_image_build, DatasetImageBuildReceipt)
             or not isinstance(self.runtime_image, str)
             or _RUNTIME_IMAGE.fullmatch(self.runtime_image) is None
             or self.gateway_url != _normalize_base_url(self.gateway_url)
@@ -2456,6 +2892,16 @@ class GatewayRunManifest:
             raise ValueError("ParseBench gateway run manifest identity is invalid")
         _validated_profile(self.model_profile)
         _validated_profile(self.client_request_id)
+        if (
+            self.dataset_image_build.dataset_id != self.dataset_id
+            or self.dataset_image_build.service_name != self.service_name
+            or self.dataset_image_build.dataset_generation
+            != self.dataset_publication.generation
+            or self.dataset_image_build.task_set_sha256
+            != self.dataset_publication.task_set_sha256
+            or self.dataset_image_build.selected_task_ids != self.task_order
+        ):
+            raise ValueError("ParseBench gateway run image build identity is invalid")
         if set(self.task_order) != set(self.task_to_run):
             raise ValueError("ParseBench gateway run manifest task order is invalid")
         if self.acceptance_checksum != batch_acceptance_checksum(
@@ -2522,6 +2968,7 @@ class GatewayRunManifest:
         selected_task_ids: Sequence[str],
         model_profile: str,
         publication: DatasetPublicationReceipt,
+        image_build: DatasetImageBuildReceipt,
         gateway_url: str,
         client_request_id: str,
         response: Mapping[str, Any],
@@ -2578,6 +3025,7 @@ class GatewayRunManifest:
             scorer_revision=SCORER_REVISION,
             runtime_image=package.runtime_image,
             dataset_publication=publication,
+            dataset_image_build=image_build,
             gateway_url=_normalize_base_url(gateway_url),
             client_request_id=_validated_profile(client_request_id),
             acceptance_checksum=response["acceptance_checksum"],
@@ -2601,6 +3049,7 @@ class GatewayRunManifest:
             "scorer_revision": self.scorer_revision,
             "runtime_image": self.runtime_image,
             "dataset_publication": self.dataset_publication.to_dict(),
+            "dataset_image_build": self.dataset_image_build.to_dict(),
             "gateway_url": self.gateway_url,
             "client_request_id": self.client_request_id,
             "acceptance_checksum": self.acceptance_checksum,
@@ -2621,11 +3070,13 @@ class GatewayRunManifest:
         raw_task_order = value.get("task_order")
         raw_expected = value.get("expected_case_ids")
         raw_publication = value.get("dataset_publication")
+        raw_image_build = value.get("dataset_image_build")
         if (
             not isinstance(raw_mapping, Mapping)
             or not isinstance(raw_task_order, list)
             or not isinstance(raw_expected, Mapping)
             or not isinstance(raw_publication, Mapping)
+            or not isinstance(raw_image_build, Mapping)
         ):
             raise TypeError("ParseBench gateway run manifest is invalid")
         task_to_run = {str(task): str(run) for task, run in raw_mapping.items()}
@@ -2647,6 +3098,7 @@ class GatewayRunManifest:
             scorer_revision=str(value.get("scorer_revision") or ""),
             runtime_image=str(value.get("runtime_image") or ""),
             dataset_publication=DatasetPublicationReceipt.from_dict(raw_publication),
+            dataset_image_build=DatasetImageBuildReceipt.from_dict(raw_image_build),
             gateway_url=str(value.get("gateway_url") or ""),
             client_request_id=str(value.get("client_request_id") or ""),
             acceptance_checksum=str(value.get("acceptance_checksum") or ""),
@@ -2962,6 +3414,7 @@ def reduce_gateway_batch_results(
         "scorer_revision": manifest.scorer_revision,
         "runtime_image": manifest.runtime_image,
         "dataset_publication": manifest.dataset_publication.to_dict(),
+        "dataset_image_build": manifest.dataset_image_build.to_dict(),
         "gateway_url": manifest.gateway_url,
         "client_request_id": manifest.client_request_id,
         "acceptance_checksum": manifest.acceptance_checksum,
@@ -2990,9 +3443,11 @@ def reduce_gateway_batch_results(
 
 __all__ = (
     "DEFAULT_MODEL_PROFILE",
+    "IMAGE_BUILD_RECEIPT_SCHEMA",
     "REPORT_SCHEMA",
     "RUN_MANIFEST_SCHEMA",
     "SUBMISSION_INTENT_SCHEMA",
+    "DatasetImageBuildReceipt",
     "DatasetPublicationReceipt",
     "GatewayRunManifest",
     "ParseBenchGatewayClient",
@@ -3000,6 +3455,7 @@ __all__ = (
     "ParseBenchPackageDescriptor",
     "atomic_write_json",
     "batch_acceptance_checksum",
+    "bind_image_build_intent",
     "bind_submission_intent",
     "build_submission_intent",
     "build_submit_payload",

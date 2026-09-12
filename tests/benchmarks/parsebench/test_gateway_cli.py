@@ -15,6 +15,7 @@ import pytest
 import yaml
 from aworld_cli.parsebench_gateway import (
     DEFAULT_MODEL_PROFILE,
+    DatasetImageBuildReceipt,
     DatasetPublicationReceipt,
     GatewayRunManifest,
     ParseBenchGatewayClient,
@@ -104,6 +105,19 @@ def _publication() -> DatasetPublicationReceipt:
     )
 
 
+def _image_receipt(
+    package: Any,
+    selected_task_ids: tuple[str, ...] | None = None,
+) -> DatasetImageBuildReceipt:
+    return DatasetImageBuildReceipt(
+        dataset_id=package.dataset_id,
+        service_name=package.service_name,
+        dataset_generation=_publication().generation,
+        task_set_sha256=_publication().task_set_sha256,
+        selected_task_ids=selected_task_ids or tuple(package.task_ids),
+    )
+
+
 def _run_manifest(package: Any) -> GatewayRunManifest:
     selected = select_package_tasks(package)
     run_ids = [f"run-{index}" for index in range(len(selected))]
@@ -112,6 +126,7 @@ def _run_manifest(package: Any) -> GatewayRunManifest:
         selected_task_ids=selected,
         model_profile=DEFAULT_MODEL_PROFILE,
         publication=_publication(),
+        image_build=_image_receipt(package, selected),
         gateway_url="https://gateway.example.test/",
         client_request_id="parsebench-test-request",
         response={
@@ -194,6 +209,7 @@ def test_real_package_submit_and_smoke_report_are_deterministic(tmp_path: Path) 
     assert report["overall_score"] == pytest.approx(0.6)
     assert report["package_sha256"] == package.package_sha256
     assert report["service_name"] == package.service_name
+    assert report["dataset_image_build"] == _image_receipt(package).to_dict()
     assert report["publishable"] is False
     assert "not leaderboard-publishable" in report["diagnostics"][-1]
 
@@ -220,6 +236,7 @@ def test_run_manifest_preserves_submission_order_and_revalidates_acceptance(
         selected_task_ids=selected,
         model_profile=DEFAULT_MODEL_PROFILE,
         publication=_publication(),
+        image_build=_image_receipt(package, selected),
         gateway_url="https://gateway.example.test",
         client_request_id="parsebench-reversed-request",
         response={
@@ -239,6 +256,10 @@ def test_run_manifest_preserves_submission_order_and_revalidates_acceptance(
     tampered = loaded.to_dict()
     tampered["acceptance_checksum"] = "sha256:" + "f" * 64
     with pytest.raises(ValueError, match="acceptance checksum"):
+        GatewayRunManifest.from_dict(tampered)
+    tampered = loaded.to_dict()
+    tampered["dataset_image_build"]["dataset_generation"] += 1
+    with pytest.raises(ValueError, match="image build identity"):
         GatewayRunManifest.from_dict(tampered)
 
 
@@ -774,6 +795,220 @@ def test_gateway_client_rejects_package_replaced_after_inspection(
     assert requests == []
 
 
+def _image_summary_response(
+    package: Any, *, status: str, ready: int, total: int = 1
+) -> dict[str, Any]:
+    return {
+        "enabled": True,
+        "repository_configured": True,
+        "service_name": package.service_name,
+        "dataset_id": package.dataset_id,
+        "dataset_generation": _publication().generation,
+        "provider_type": "YOLO",
+        "runtime_type": "offline",
+        "status": status,
+        "total_count": total,
+        "queued_count": 0,
+        "building_count": 0 if status == "READY" else 1,
+        "ready_count": ready,
+        "failed_count": 0,
+        "missing_count": 0,
+        "unknown_count": 0,
+        "message": "test",
+    }
+
+
+def test_gateway_client_builds_selected_task_images_before_submission(
+    tmp_path: Path,
+) -> None:
+    package = _package(tmp_path / "dataset.zip")
+    task_id = package.task_ids[0]
+    triggered = False
+    detail_reads = 0
+    paths: list[tuple[str, str]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal detail_reads, triggered
+        paths.append((request.method, request.url.path))
+        if request.url.path.endswith("/images"):
+            return httpx.Response(
+                200,
+                json=_image_summary_response(
+                    package,
+                    status="BUILDING" if triggered and detail_reads < 2 else "READY",
+                    ready=0 if triggered and detail_reads < 2 else 1,
+                ),
+            )
+        if request.url.path.endswith("/image/build"):
+            assert json.loads(request.read()) == {
+                "service_name": package.service_name,
+                "expected_generation": _publication().generation,
+                "force_rebuild": False,
+            }
+            triggered = True
+            return httpx.Response(
+                200,
+                json=_image_summary_response(package, status="BUILDING", ready=0),
+            )
+        detail_reads += 1
+        ready = triggered and detail_reads >= 2
+        return httpx.Response(
+            200,
+            json={
+                "service_name": package.service_name,
+                "dataset_id": package.dataset_id,
+                "task_id": task_id,
+                "image_status": "READY" if ready else None,
+                "arca_ready": ready,
+                "image_url": "registry.example.test/parsebench:task" if ready else None,
+                "image_digest": "sha256:" + ("a" * 64) if ready else None,
+            },
+        )
+
+    with ParseBenchGatewayClient(
+        "https://gateway.example.test",
+        transport=httpx.MockTransport(handler),
+    ) as client:
+        receipt = client.prepare_task_images(
+            package,
+            selected_task_ids=(task_id,),
+            publication=_publication(),
+            timeout_seconds=1,
+            poll_interval_seconds=0.001,
+        )
+
+    assert receipt.selected_task_ids == (task_id,)
+    assert receipt.dataset_generation == _publication().generation
+    assert triggered is True
+    assert any(
+        method == "POST" and path.endswith("/image/build") for method, path in paths
+    )
+
+
+def test_gateway_client_uses_one_bulk_build_for_complete_package(
+    tmp_path: Path,
+) -> None:
+    package = _package(tmp_path / "dataset.zip")
+    triggered = False
+    paths: list[tuple[str, str]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal triggered
+        paths.append((request.method, request.url.path))
+        if request.method == "POST":
+            assert request.url.path.endswith(f"/{package.dataset_id}/images/build")
+            triggered = True
+            return httpx.Response(
+                200,
+                json=_image_summary_response(
+                    package,
+                    status="BUILDING",
+                    ready=0,
+                    total=len(package.task_ids),
+                ),
+            )
+        assert request.url.path.endswith(f"/{package.dataset_id}/images")
+        return httpx.Response(
+            200,
+            json=_image_summary_response(
+                package,
+                status="READY" if triggered else "NOT_STARTED",
+                ready=len(package.task_ids) if triggered else 0,
+                total=len(package.task_ids),
+            ),
+        )
+
+    with ParseBenchGatewayClient(
+        "https://gateway.example.test",
+        transport=httpx.MockTransport(handler),
+    ) as client:
+        receipt = client.prepare_task_images(
+            package,
+            selected_task_ids=package.task_ids,
+            publication=_publication(),
+            timeout_seconds=1,
+            poll_interval_seconds=0.001,
+        )
+
+    assert receipt.selected_task_ids == package.task_ids
+    assert [method for method, _path in paths].count("POST") == 1
+    assert all("/tasks/" not in path for _method, path in paths)
+
+
+def test_gateway_client_rejects_stale_image_generation_before_trigger(
+    tmp_path: Path,
+) -> None:
+    package = _package(tmp_path / "dataset.zip")
+    requested: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requested.append(request)
+        response = _image_summary_response(package, status="READY", ready=1)
+        response["dataset_generation"] = _publication().generation + 1
+        return httpx.Response(200, json=response)
+
+    with (
+        ParseBenchGatewayClient(
+            "https://gateway.example.test",
+            transport=httpx.MockTransport(handler),
+        ) as client,
+        pytest.raises(ParseBenchGatewayError) as captured,
+    ):
+        client.prepare_task_images(
+            package,
+            selected_task_ids=(package.task_ids[0],),
+            publication=_publication(),
+            timeout_seconds=1,
+            poll_interval_seconds=0.001,
+        )
+
+    assert captured.value.code == "gateway_identity_mismatch"
+    assert [request.method for request in requested] == ["GET"]
+
+
+def test_gateway_client_rejects_ready_task_image_without_digest(
+    tmp_path: Path,
+) -> None:
+    package = _package(tmp_path / "dataset.zip")
+    task_id = package.task_ids[0]
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/images"):
+            return httpx.Response(
+                200,
+                json=_image_summary_response(package, status="READY", ready=1),
+            )
+        return httpx.Response(
+            200,
+            json={
+                "service_name": package.service_name,
+                "dataset_id": package.dataset_id,
+                "task_id": task_id,
+                "image_status": "READY",
+                "arca_ready": True,
+                "image_url": "registry.example.test/parsebench:mutable",
+                "image_digest": None,
+            },
+        )
+
+    with (
+        ParseBenchGatewayClient(
+            "https://gateway.example.test",
+            transport=httpx.MockTransport(handler),
+        ) as client,
+        pytest.raises(ParseBenchGatewayError) as captured,
+    ):
+        client.prepare_task_images(
+            package,
+            selected_task_ids=(task_id,),
+            publication=_publication(),
+            timeout_seconds=1,
+            poll_interval_seconds=0.001,
+        )
+
+    assert captured.value.code == "gateway_response_invalid"
+
+
 @pytest.mark.parametrize(
     "field",
     ["sample_count", "material_task_count", "publication.sample_count"],
@@ -845,6 +1080,7 @@ def test_submission_response_rejects_boolean_total(tmp_path: Path) -> None:
             selected_task_ids=selected,
             model_profile=DEFAULT_MODEL_PROFILE,
             publication=_publication(),
+            image_build=_image_receipt(package, selected),
             gateway_url="https://gateway.example.test/",
             client_request_id="parsebench-test-request",
             response={
