@@ -1,0 +1,117 @@
+{
+  "schema_version": "aworld.context-eval-run/v1",
+  "variant": {
+    "schema_version": "aworld.context-eval-variant/v1",
+    "name": "adaptive-cache-off",
+    "agent_memory_config": {},
+    "context_cache": {
+      "enabled": false,
+      "allow_provider_native_cache": false
+    },
+    "context_compiler": {
+      "mode": "enforce"
+    },
+    "docker_output_policy": {}
+  },
+  "invariants": {
+    "model": "glm-5.2",
+    "provider": "openai",
+    "temperature": 0.0,
+    "model_seed": 20260915,
+    "max_steps": 120,
+    "llm_max_attempts": 3,
+    "llm_retry_delay_sec": 10.0,
+    "system_prompt_sha256": "28b39ebfd7315e17e064c13cf9d7722f7d2f2f1124677425f12b6287f77cb3d5",
+    "instruction_sha256": "171c6c76d19268242ffeeb7d805074c89d664516fdebf77360626bb5df72ed44",
+    "task_skill_count": 0,
+    "task_skill_catalog_sha256": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+    "external_mcp": {
+      "status": "disabled",
+      "config_sha256": "691f62624936af38f0e6b2ac6c8b43162a23696696f62d5037d9eb2b43bd73c5",
+      "server_names": []
+    },
+    "structural_capture_only": false,
+    "context_storage_isolated": true
+  },
+  "container": {
+    "name": "aworld-tool-eval-7537e02afe71",
+    "image_id": "sha256:6e89a7392d8caa79d08d6290a293d677456e17451e66551f4118c99019cbbf45",
+    "workdir": "/workspace"
+  },
+  "capture": {
+    "provider_call_count": 8,
+    "llm_call_count": 8,
+    "llm_call_source": "finalized_append_only_journal",
+    "llm_call_continuity": {
+      "task_response_count": 8,
+      "live_context_count": 8,
+      "counts_match": true,
+      "task_response_sha256": "0616b82839feeb600079bae1bced0e8d80f4721c59c24561aba6e1ef0b8782db",
+      "live_context_sha256": "0616b82839feeb600079bae1bced0e8d80f4721c59c24561aba6e1ef0b8782db",
+      "snapshots_match": true,
+      "journal_count": 8,
+      "journal_sha256": "0616b82839feeb600079bae1bced0e8d80f4721c59c24561aba6e1ef0b8782db",
+      "task_response_journal_identity_coverage": true,
+      "live_context_journal_identity_coverage": true,
+      "journal_superset": true,
+      "reconciled_count": 8,
+      "reconciled_sha256": "0616b82839feeb600079bae1bced0e8d80f4721c59c24561aba6e1ef0b8782db",
+      "journal_reconciliation": {
+        "status": "available",
+        "comparison_basis": "stable_provider_identity",
+        "journal_count": 8,
+        "reconciled_count": 8,
+        "journal_sha256": "c779a6915be50435add85a1366a47bb98be3e180f667a2bea7ac0e38f42c5673",
+        "reconciled_sha256": "c779a6915be50435add85a1366a47bb98be3e180f667a2bea7ac0e38f42c5673",
+        "snapshots_match": true,
+        "reason_code": null
+      }
+    },
+    "provider_capture_gate_passed": true,
+    "finalized_projection_reconciliation": {
+      "status": "available",
+      "comparison_basis": "trajectory_build_result_llm_call_count",
+      "trajectory_llm_call_count": 8,
+      "final_llm_call_count": 8,
+      "call_count_delta": 0,
+      "snapshots_match": true
+    },
+    "trajectory_items": 8,
+    "context_tool_output_artifacts": [],
+    "upstream_tool_output_artifacts": [],
+    "tool_action_journal": {
+      "schema_version": "aworld.tool-action-journal.v1",
+      "status": "available",
+      "valid_record_count": 21,
+      "invalid_record_count": 0,
+      "trailing_partial_ignored": false,
+      "event_count": 21,
+      "stream_count": 7
+    },
+    "checksums": {
+      "task_response.json": "526d332dfe76628b6c75618b981a58aea07614fc877cc1fc175049593b39b5ec",
+      "raw_trajectory.json": "182ae1a69cdd74a065628e3733fed2c7eb3eedc55fcbbadaba9a02bde5902816",
+      "llm_calls.json": "051bbb4af3c8641ddffb706ff5ca2319fdc6120b728dc05f3c70d9dc51724812",
+      "provider_calls.json": "051bbb4af3c8641ddffb706ff5ca2319fdc6120b728dc05f3c70d9dc51724812",
+      "context_lifecycle.json": "63e1038b3192566e16536a89c8e8565639c0e695c14b5c29c865fe7d6d186cfc",
+      "completion_contract.json": "2d0ffa139000f7bfc258cb4dc5cfb84585c2a0ca9e19118c1643833311bb25aa",
+      "semantic_progress.json": "9cc51a7de9774020f9524c87315b65b26ad877022480afcec5a1c0466e53e8a8",
+      "context_trace.json": "d2e99dda11ec87295a729d7d6737489851578616dc5e3f066537d2e147b1332d",
+      "tool_actions.journal.jsonl": "f8ec2b63fa11fcf929ab8e3119732c9c51360c86860f685e9869e5079a9144e3"
+    },
+    "semantic_progress_status": "available"
+  },
+  "started_at_epoch": 1789104527.552911,
+  "finished_at_epoch": 1789104572.910809,
+  "aworld_source": {
+    "source_root": "/Users/wuman/Documents/workspace/aworld-gateway/aworld",
+    "commit": "bccbb65e4b918ac4cd6d27700f94ecc8c7664b34",
+    "dirty": true,
+    "status_sha256": "4f29d37e24dfd99183d8332a5a6dda91fc0eab77484f52333ab628c1a4b3a17f",
+    "tracked_runtime_diff_sha256": "sha256:58dac47fd20de0e9ec7d036c681cc65a961d21c8e23e5ec317d48b03afc730a5",
+    "untracked_runtime_source_sha256": "sha256:a8fd9c19dd474ae11866ea74f15bdb5b6ac2bc8a1bfd76e20e51e4fca9cfe7d9",
+    "untracked_runtime_source_count": 3,
+    "source_fingerprint": "sha256:0b0c1a74a97bb8c2c8374ed0d9774aad7acb5c334d8fdbecdda8f596e6e196d0"
+  },
+  "python": "3.12.4 | packaged by Anaconda, Inc. | (main, Jun 18 2024, 10:07:17) [Clang 14.0.6 ]"
+}

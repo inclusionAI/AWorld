@@ -1,0 +1,268 @@
+{
+  "schema_version": "aworld.cache-conformance-preflight/v1",
+  "provider": "openai",
+  "model": "glm-5.2",
+  "run_nonce_hash": "sha256:d0768cdeb361fd1204e46d50d5140c32bb8738fcbd6f2d01f5d218a2c66e0a04",
+  "prefix_line_count": 900,
+  "observations": [
+    {
+      "label": "cold",
+      "mode": "nonstream",
+      "status": "success",
+      "latency_seconds": 1.894,
+      "request_fingerprint": "sha256:ba51b876412082dd3e78ae17d7117fb976478b5deb0655e22bf3181302665c89",
+      "provider_request_id_present": false,
+      "stream_chunk_count": null,
+      "cache_usage_receipt": {
+        "schema_version": "aworld.cache-usage-receipt.v1",
+        "fidelity": "exact",
+        "reason_code": null,
+        "input_tokens": 10802,
+        "output_tokens": 32,
+        "cache_read_tokens": 0,
+        "cache_write_tokens": null,
+        "cache_read_lower_bound": 0,
+        "cache_read_upper_bound": 0,
+        "reported_input_tokens": 10802,
+        "input_token_accounting": "inclusive",
+        "uncached_input_tokens": 10802,
+        "cache_read_ratio": 0.0,
+        "raw_cache_sources": [
+          "prompt_tokens_details.cached_tokens"
+        ],
+        "normalized_cache_sources": [
+          "cache_hit_tokens",
+          "prompt_tokens_details.cached_tokens"
+        ]
+      }
+    },
+    {
+      "label": "repeat",
+      "mode": "nonstream",
+      "status": "success",
+      "latency_seconds": 0.746,
+      "request_fingerprint": "sha256:ba51b876412082dd3e78ae17d7117fb976478b5deb0655e22bf3181302665c89",
+      "provider_request_id_present": false,
+      "stream_chunk_count": null,
+      "cache_usage_receipt": {
+        "schema_version": "aworld.cache-usage-receipt.v1",
+        "fidelity": "exact",
+        "reason_code": null,
+        "input_tokens": 10802,
+        "output_tokens": 2,
+        "cache_read_tokens": 10752,
+        "cache_write_tokens": null,
+        "cache_read_lower_bound": 10752,
+        "cache_read_upper_bound": 10752,
+        "reported_input_tokens": 10802,
+        "input_token_accounting": "inclusive",
+        "uncached_input_tokens": 50,
+        "cache_read_ratio": 0.9953712275504536,
+        "raw_cache_sources": [
+          "prompt_tokens_details.cached_tokens"
+        ],
+        "normalized_cache_sources": [
+          "cache_hit_tokens",
+          "prompt_tokens_details.cached_tokens"
+        ]
+      }
+    },
+    {
+      "label": "suffix_change",
+      "mode": "nonstream",
+      "status": "success",
+      "latency_seconds": 1.176,
+      "request_fingerprint": "sha256:19060d22ffd7fae4ed1c356fc2cf9c68991eec973265023178ba425544875868",
+      "provider_request_id_present": false,
+      "stream_chunk_count": null,
+      "cache_usage_receipt": {
+        "schema_version": "aworld.cache-usage-receipt.v1",
+        "fidelity": "exact",
+        "reason_code": null,
+        "input_tokens": 10802,
+        "output_tokens": 22,
+        "cache_read_tokens": 10752,
+        "cache_write_tokens": null,
+        "cache_read_lower_bound": 10752,
+        "cache_read_upper_bound": 10752,
+        "reported_input_tokens": 10802,
+        "input_token_accounting": "inclusive",
+        "uncached_input_tokens": 50,
+        "cache_read_ratio": 0.9953712275504536,
+        "raw_cache_sources": [
+          "prompt_tokens_details.cached_tokens"
+        ],
+        "normalized_cache_sources": [
+          "cache_hit_tokens",
+          "prompt_tokens_details.cached_tokens"
+        ]
+      }
+    },
+    {
+      "label": "prefix_change",
+      "mode": "nonstream",
+      "status": "success",
+      "latency_seconds": 9.674,
+      "request_fingerprint": "sha256:ae98fce1d31936b33a95e773cf50c7e81493360db318fe7173a442c719d443d0",
+      "provider_request_id_present": false,
+      "stream_chunk_count": null,
+      "cache_usage_receipt": {
+        "schema_version": "aworld.cache-usage-receipt.v1",
+        "fidelity": "exact",
+        "reason_code": null,
+        "input_tokens": 10802,
+        "output_tokens": 3,
+        "cache_read_tokens": 0,
+        "cache_write_tokens": null,
+        "cache_read_lower_bound": 0,
+        "cache_read_upper_bound": 0,
+        "reported_input_tokens": 10802,
+        "input_token_accounting": "inclusive",
+        "uncached_input_tokens": 10802,
+        "cache_read_ratio": 0.0,
+        "raw_cache_sources": [
+          "prompt_tokens_details.cached_tokens"
+        ],
+        "normalized_cache_sources": [
+          "cache_hit_tokens",
+          "prompt_tokens_details.cached_tokens"
+        ]
+      }
+    },
+    {
+      "label": "cold",
+      "mode": "stream",
+      "status": "success",
+      "latency_seconds": 1.328,
+      "request_fingerprint": "sha256:49b9f81005b319e418ba024dfceadfbc254ac45c5593592149d0801d54f23e65",
+      "provider_request_id_present": false,
+      "stream_chunk_count": 4,
+      "cache_usage_receipt": {
+        "schema_version": "aworld.cache-usage-receipt.v1",
+        "fidelity": "exact",
+        "reason_code": null,
+        "input_tokens": 10801,
+        "output_tokens": 3,
+        "cache_read_tokens": 0,
+        "cache_write_tokens": null,
+        "cache_read_lower_bound": 0,
+        "cache_read_upper_bound": 0,
+        "reported_input_tokens": 10801,
+        "input_token_accounting": "inclusive",
+        "uncached_input_tokens": 10801,
+        "cache_read_ratio": 0.0,
+        "raw_cache_sources": [
+          "prompt_tokens_details.cached_tokens"
+        ],
+        "normalized_cache_sources": [
+          "cache_hit_tokens",
+          "prompt_tokens_details.cached_tokens"
+        ]
+      }
+    },
+    {
+      "label": "repeat",
+      "mode": "stream",
+      "status": "success",
+      "latency_seconds": 0.951,
+      "request_fingerprint": "sha256:49b9f81005b319e418ba024dfceadfbc254ac45c5593592149d0801d54f23e65",
+      "provider_request_id_present": false,
+      "stream_chunk_count": 4,
+      "cache_usage_receipt": {
+        "schema_version": "aworld.cache-usage-receipt.v1",
+        "fidelity": "exact",
+        "reason_code": null,
+        "input_tokens": 10801,
+        "output_tokens": 3,
+        "cache_read_tokens": 10752,
+        "cache_write_tokens": null,
+        "cache_read_lower_bound": 10752,
+        "cache_read_upper_bound": 10752,
+        "reported_input_tokens": 10801,
+        "input_token_accounting": "inclusive",
+        "uncached_input_tokens": 49,
+        "cache_read_ratio": 0.9954633830200907,
+        "raw_cache_sources": [
+          "prompt_tokens_details.cached_tokens"
+        ],
+        "normalized_cache_sources": [
+          "cache_hit_tokens",
+          "prompt_tokens_details.cached_tokens"
+        ]
+      }
+    },
+    {
+      "label": "suffix_change",
+      "mode": "stream",
+      "status": "success",
+      "latency_seconds": 0.993,
+      "request_fingerprint": "sha256:b0431435c1161737e95e17d7be6d1b94f117f5141125ba4bd9c798b9dc89dd74",
+      "provider_request_id_present": false,
+      "stream_chunk_count": 4,
+      "cache_usage_receipt": {
+        "schema_version": "aworld.cache-usage-receipt.v1",
+        "fidelity": "exact",
+        "reason_code": null,
+        "input_tokens": 10801,
+        "output_tokens": 3,
+        "cache_read_tokens": 10752,
+        "cache_write_tokens": null,
+        "cache_read_lower_bound": 10752,
+        "cache_read_upper_bound": 10752,
+        "reported_input_tokens": 10801,
+        "input_token_accounting": "inclusive",
+        "uncached_input_tokens": 49,
+        "cache_read_ratio": 0.9954633830200907,
+        "raw_cache_sources": [
+          "prompt_tokens_details.cached_tokens"
+        ],
+        "normalized_cache_sources": [
+          "cache_hit_tokens",
+          "prompt_tokens_details.cached_tokens"
+        ]
+      }
+    },
+    {
+      "label": "prefix_change",
+      "mode": "stream",
+      "status": "success",
+      "latency_seconds": 1.447,
+      "request_fingerprint": "sha256:01c240384b4cf69931b8b86fce1dcbbc8ef455562bee8a85172aa1a194b37223",
+      "provider_request_id_present": false,
+      "stream_chunk_count": 4,
+      "cache_usage_receipt": {
+        "schema_version": "aworld.cache-usage-receipt.v1",
+        "fidelity": "exact",
+        "reason_code": null,
+        "input_tokens": 10801,
+        "output_tokens": 2,
+        "cache_read_tokens": 0,
+        "cache_write_tokens": null,
+        "cache_read_lower_bound": 0,
+        "cache_read_upper_bound": 0,
+        "reported_input_tokens": 10801,
+        "input_token_accounting": "inclusive",
+        "uncached_input_tokens": 10801,
+        "cache_read_ratio": 0.0,
+        "raw_cache_sources": [
+          "prompt_tokens_details.cached_tokens"
+        ],
+        "normalized_cache_sources": [
+          "cache_hit_tokens",
+          "prompt_tokens_details.cached_tokens"
+        ]
+      }
+    }
+  ],
+  "status": "passed",
+  "cache_capability_observed": true,
+  "exact_usage_coverage": 1.0,
+  "exact_observation_count": 8,
+  "observation_count": 8,
+  "validated_modes": [
+    "nonstream",
+    "stream"
+  ],
+  "failure_codes": [],
+  "process_exit_code": 0
+}

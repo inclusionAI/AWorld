@@ -331,8 +331,17 @@ class LLMModel:
         """
         candidate_policy = kwargs.pop("context_candidate_policy", None)
         runtime_config = kwargs.pop("context_compiler", None)
+
+        def conf_value(name: str, default: Any = None) -> Any:
+            """Read both typed ModelConfig and legacy dict-style config safely."""
+            if conf is None:
+                return default
+            if isinstance(conf, dict):
+                return conf.get(name, default)
+            return getattr(conf, name, default)
+
         self._context_cache_config = (
-            getattr(conf, "context_cache", None)
+            conf_value("context_cache")
             if conf is not None
             else kwargs.get("context_cache")
         )
@@ -387,11 +396,17 @@ class LLMModel:
         )
         configured_context_limit = context_config_value("context_limit", None)
         if configured_context_limit is None:
-            configured_context_limit = getattr(conf, "max_model_len", None) or 128000
+            configured_context_limit = conf_value("max_model_len") or 128000
+        self._configured_max_tokens = conf_value("max_tokens")
+        reserved_output_tokens = max(
+            int(context_config_value("reserved_output_tokens", 4096)),
+            int(self._configured_max_tokens or 0),
+        )
+        self._context_reserved_output_tokens = reserved_output_tokens
         self._context_input_budget = max(
             0,
             int(configured_context_limit)
-            - int(context_config_value("reserved_output_tokens", 4096))
+            - reserved_output_tokens
             - int(context_config_value("provider_protocol_reserve", 256))
             - int(context_config_value("safety_margin_tokens", 512)),
         )
@@ -403,17 +418,13 @@ class LLMModel:
             if context_config_value("universal_final", True):
                 configured_context_limit = context_config_value("context_limit", None)
                 if configured_context_limit is None:
-                    configured_context_limit = (
-                        getattr(conf, "max_model_len", None) or 128000
-                    )
+                    configured_context_limit = conf_value("max_model_len") or 128000
                 final_policy = FinalCompilePolicy(
                     compiler_version=compiler_version,
                     policy_version=context_config_value("policy_version", "v1"),
                     input_budget=ContextInputBudget(
                         context_limit=configured_context_limit,
-                        reserved_output_tokens=context_config_value(
-                            "reserved_output_tokens", 4096
-                        ),
+                        reserved_output_tokens=reserved_output_tokens,
                         provider_protocol_reserve=context_config_value(
                             "provider_protocol_reserve", 256
                         ),
@@ -435,10 +446,8 @@ class LLMModel:
             candidate_policy=candidate_policy,
         )
 
-        self.llm_response_parser: ModelResponseParser = (
-            conf.llm_response_parser
-            if conf and hasattr(conf, "llm_response_parser")
-            else None
+        self.llm_response_parser: ModelResponseParser = conf_value(
+            "llm_response_parser"
         )
 
         # If custom_provider instance is provided, use it directly
@@ -518,6 +527,7 @@ class LLMModel:
             "llm_client_type",
             "llm_response_parser",
             "context_compiler",
+            "max_tokens",
         ]
         args = {}
         # Filter out used parameters and add remaining parameters to args
@@ -1939,6 +1949,8 @@ class LLMModel:
         Returns:
             ModelResponse: Unified model response object.
         """
+        if max_tokens is None:
+            max_tokens = self._configured_max_tokens
         # Call provider's acompletion method directly
         agent_call_id = _resolve_context_call_id(kwargs)
         start_ms = time.time()
@@ -2186,6 +2198,8 @@ class LLMModel:
         Returns:
             ModelResponse: Unified model response object.
         """
+        if max_tokens is None:
+            max_tokens = self._configured_max_tokens
         # Call provider's completion method directly
         agent_call_id = _resolve_context_call_id(kwargs)
         start_ms = time.time()
@@ -2384,6 +2398,8 @@ class LLMModel:
         Returns:
             Generator yielding ModelResponse chunks.
         """
+        if max_tokens is None:
+            max_tokens = self._configured_max_tokens
         agent_call_id = _resolve_context_call_id(kwargs)
         start_ms = time.time()
         request_id = LLMModel._generate_llm_request_id()
@@ -2549,6 +2565,8 @@ class LLMModel:
         Returns:
             AsyncGenerator yielding ModelResponse chunks.
         """
+        if max_tokens is None:
+            max_tokens = self._configured_max_tokens
         # Call provider's astream_completion method directly
         agent_call_id = _resolve_context_call_id(kwargs)
         start_ms = time.time()

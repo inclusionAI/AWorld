@@ -322,6 +322,64 @@ def _overlay_amni_system_section_semantics(
     return tuple(overlaid)
 
 
+def _overlay_prompt_assembly_system_section_semantics(
+    message_items: tuple[ContextItem, ...],
+    observations: tuple[ContextObservationSidecar, ...],
+    *,
+    task_epoch: int | None,
+) -> tuple[ContextItem, ...]:
+    """Apply exact framework PromptAssembly stability without changing payloads."""
+    matches: list[tuple[ContextItem, ...]] = []
+    for sidecar in observations:
+        if (
+            sidecar.owner != "agent.prompt_assembly_system_sections"
+            or sidecar.task_epoch != task_epoch
+        ):
+            continue
+        sections = sidecar.result.items
+        if not sections:
+            continue
+        seen_occurrences: set[int] = set()
+        exact = True
+        for section in sections:
+            occurrence = section.occurrence
+            if (
+                occurrence in seen_occurrences
+                or occurrence < 0
+                or occurrence >= len(message_items)
+                or section.kind is not ContextKind.SYSTEM
+                or message_items[occurrence].kind is not ContextKind.SYSTEM
+                or section.payload != message_items[occurrence].payload
+            ):
+                exact = False
+                break
+            seen_occurrences.add(occurrence)
+        final_system_occurrences = {
+            index
+            for index, item in enumerate(message_items)
+            if item.kind is ContextKind.SYSTEM
+        }
+        if exact and seen_occurrences == final_system_occurrences:
+            matches.append(sections)
+    if len(matches) != 1:
+        return message_items
+    overlaid = list(message_items)
+    for proof in matches[0]:
+        current = overlaid[proof.occurrence]
+        overlaid[proof.occurrence] = replace(
+            current,
+            authority=proof.authority,
+            scope=proof.scope,
+            lifetime=proof.lifetime,
+            priority=proof.priority,
+            required=proof.required,
+            trust=proof.trust,
+            stability=proof.stability,
+            activation_reason=proof.activation_reason,
+        )
+    return tuple(overlaid)
+
+
 def build_observed_model_boundary_attribution_plan(
     *,
     observed_request: ProviderRequestSnapshot,
@@ -476,6 +534,11 @@ def compile_model_boundary_context(
         allow_trust_isolation=True,
     )
     if messages_bound:
+        message_items = _overlay_prompt_assembly_system_section_semantics(
+            message_items,
+            observations,
+            task_epoch=task_epoch,
+        )
         message_items = _overlay_amni_system_section_semantics(
             message_items,
             observations,
@@ -576,6 +639,7 @@ def compile_model_boundary_context(
                     "amni.folded_system",
                     "amni.restored_folded_system",
                     "amni.system_sections",
+                    "agent.prompt_assembly_system_sections",
                 }:
                 continue
             # Exact folded-system ownership covers the pre-fold neuron

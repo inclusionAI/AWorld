@@ -1,0 +1,5090 @@
+{
+  "schema_version": "aworld.context-benefit-report/v1",
+  "baseline_variant": "adaptive-cache-off",
+  "candidate_variant": "adaptive-cache-on",
+  "workloads": [
+    {
+      "experiment": "/Users/wuman/Documents/workspace/aworld-gateway/aworld/artifacts/context-management/cache-economics-release-20260911/terminal-cache-smoke-v10",
+      "manifest": {
+        "experiment_id": "terminal-cache-smoke-v10",
+        "workload_id": "terminal-bench-2.1",
+        "workload_kind": "terminal_bench",
+        "dataset_checksum": "sha256:4c5adc1d51982df19093b79b4f1107301441e12fd7cb15b02e7c01d7b3b2a6a0",
+        "repository_snapshot": "sha256:9ccdd2eabd94bb678d7e0b903c25080f75a8151f9036e6ebc6c0fe03910f6320",
+        "environment_hash": "sha256:b0a284edd8b8b2985ed41b7a1bd58336df7d4c69e5112f01bd585a24a1551b1c",
+        "inference_profile_hash": "sha256:920a6c2d3158215ae4c8221414372977f0112765df4c6cadfd6e702971fa0608",
+        "variants": [
+          {
+            "name": "adaptive-cache-off",
+            "settings": {
+              "agent_memory_config": {},
+              "context_cache": {
+                "enabled": false,
+                "allow_provider_native_cache": false
+              },
+              "context_compiler": {
+                "mode": "enforce"
+              },
+              "docker_output_policy": {}
+            },
+            "settings_hash": "sha256:3f1fa8f890e37ff51c030c7dd85645fe3d5a87ca0c1aed27c7be3470a232b319"
+          },
+          {
+            "name": "adaptive-cache-on",
+            "settings": {
+              "agent_memory_config": {},
+              "context_cache": {
+                "enabled": true,
+                "allow_provider_native_cache": true
+              },
+              "context_compiler": {
+                "mode": "enforce"
+              },
+              "docker_output_policy": {}
+            },
+            "settings_hash": "sha256:365fb18806216d3d22d6bd7eefe2667214d35631eee2113605ac9299d56f296d"
+          }
+        ],
+        "case_ids": [
+          "cancel-async-tasks"
+        ],
+        "repeats": 1,
+        "interleaving_seed": 20260931,
+        "independent_verifier_id": "packaged-test-sh-v1",
+        "manifest_hash": "sha256:f3e1664f62c7fd9282ab6f123cbf56fe5ed2f0ebddab073da46241fa4412463d",
+        "cost_policy_hash": "sha256:bed1b5be9859e399a9b8931e3d6c710ab4a6ecc10f284ec1b6e1b83d3ca4ced0"
+      },
+      "trials": [
+        {
+          "manifest_hash": "sha256:f3e1664f62c7fd9282ab6f123cbf56fe5ed2f0ebddab073da46241fa4412463d",
+          "case_id": "cancel-async-tasks",
+          "repeat": 1,
+          "variant": "adaptive-cache-on",
+          "request_hash": "sha256:24ee11b2c6b8ddc48fc6a36a14c7b77afdc7f56b3ec745f6f6129063c6a00bf9",
+          "trace_hash": "sha256:c0aee827dd47ee094b62033fa5c3a2fd04b502de876f0bc490769381905427d8",
+          "trajectory_checksum": "sha256:cd6d4d4a40c7e20363e637e200330aedac88ea0cbcbec3aa58373fed1f65ecfb",
+          "artifact_checksum": null,
+          "verifier_result_hash": "sha256:9b8ea95d04845c673fc8a26631d17813430891d92abc602acbf5087d3e6ae4b0",
+          "reward": 1.0,
+          "fidelity": "complete",
+          "metrics": {
+            "provider_call_count": 23,
+            "partial_provider_call_count": 0,
+            "llm_call_journal_bytes": 18843233,
+            "llm_call_journal_valid_records": 199,
+            "provider_request_bytes": 1165443,
+            "prompt_tokens": 291229,
+            "completion_tokens": 175816,
+            "cache_read_tokens": 178752,
+            "cache_usage_exact_call_count": 22,
+            "cache_usage_exact_coverage": 0.9565217391304348,
+            "cache_usage_exact_input_tokens": 281204,
+            "provider_prefix_unique_count": 1,
+            "request_trace_match_count": 23,
+            "partial_provider_request_bytes": 0,
+            "partial_prompt_tokens": 0,
+            "partial_completion_tokens": 0,
+            "partial_cache_read_tokens": 0,
+            "partial_provider_prefix_unique_count": 0,
+            "partial_request_trace_match_count": 0,
+            "request_trace_match_rate": 1.0,
+            "trajectory_items": 21,
+            "offloaded_artifact_count": 0,
+            "offloaded_artifact_bytes": 0,
+            "partial_raw_trajectory_call_count": 0,
+            "partial_raw_trajectory_tool_event_count": 0,
+            "tool_action_journal_bytes": 332774,
+            "tool_action_journal_valid_records": 60,
+            "finalized_projection_call_count_delta": 0,
+            "evidence_parse_error_count": 0,
+            "wall_time_seconds": 2675.8742990493774,
+            "cache_usage_bounded_call_count": 1,
+            "cache_usage_conflicting_call_count": 0,
+            "cache_usage_invalid_call_count": 0,
+            "cache_usage_unavailable_call_count": 0,
+            "provider_attribution_receipt_count": 23,
+            "provider_attributed_value_bytes": 1143189,
+            "provider_attribution_overhead_bytes": 4364,
+            "normalized_cost_status": "unavailable",
+            "normalized_cost_reason": "provider_cache_usage_missing_or_conflicting",
+            "normalized_cost_lower_bound_microunits": 297145700000,
+            "normalized_cost_upper_bound_microunits": 306168200000,
+            "normalized_cost_bound_receipt": {
+              "schema_version": "aworld.normalized-cost-bound-receipt.v1",
+              "policy_hash": "sha256:bed1b5be9859e399a9b8931e3d6c710ab4a6ecc10f284ec1b6e1b83d3ca4ced0",
+              "lower": {
+                "schema_version": "aworld.normalized-cost-receipt.v1",
+                "policy_hash": "sha256:bed1b5be9859e399a9b8931e3d6c710ab4a6ecc10f284ec1b6e1b83d3ca4ced0",
+                "input_tokens": 291229,
+                "cache_read_tokens": 188777,
+                "output_tokens": 175816,
+                "total_microunits": 297145700000,
+                "normalized_cost": 297145.7
+              },
+              "upper": {
+                "schema_version": "aworld.normalized-cost-receipt.v1",
+                "policy_hash": "sha256:bed1b5be9859e399a9b8931e3d6c710ab4a6ecc10f284ec1b6e1b83d3ca4ced0",
+                "input_tokens": 291229,
+                "cache_read_tokens": 178752,
+                "output_tokens": 175816,
+                "total_microunits": 306168200000,
+                "normalized_cost": 306168.2
+              },
+              "total_call_count": 23,
+              "exact_call_count": 22,
+              "cache_bounded_call_count": 1,
+              "provider_attempt_bounded_call_count": 0,
+              "usage_bounded_call_count": 0,
+              "source_hash": "sha256:24ee11b2c6b8ddc48fc6a36a14c7b77afdc7f56b3ec745f6f6129063c6a00bf9"
+            },
+            "semantic_semantic_tool_observation_count": 20,
+            "semantic_tool_success_to_next_llm_count": 20,
+            "semantic_agent_step_count": 21,
+            "semantic_agent_step_budget_extension_count": 0,
+            "semantic_agent_step_budget_extended_steps": 0,
+            "semantic_agent_step_budget_effective_limit": 120,
+            "semantic_agent_step_budget_hard_limit": 240,
+            "semantic_configured_max_steps": 120,
+            "raw_tool_output_bytes": 53512,
+            "inline_tool_output_tokens": 14163,
+            "offloaded_tool_output_tokens": 0,
+            "double_offload_count": 0
+          }
+        },
+        {
+          "manifest_hash": "sha256:f3e1664f62c7fd9282ab6f123cbf56fe5ed2f0ebddab073da46241fa4412463d",
+          "case_id": "cancel-async-tasks",
+          "repeat": 1,
+          "variant": "adaptive-cache-off",
+          "request_hash": "sha256:731739e44590d3b75ccb224be920e42503cd03fcfd3591a73af02da8d2e857e8",
+          "trace_hash": "sha256:f8dc9379c0e435c887fc82f452ac77f9f1235daf3ff4fd178285dafb0a47af13",
+          "trajectory_checksum": "sha256:6889a4101a0049b811fa931c5fc430e7fca057fdfabda237fb4621c5664ae4a2",
+          "artifact_checksum": null,
+          "verifier_result_hash": "sha256:144aa5cb930a8846709a2ce08232e5a7f4f61b6e079a66efceab8662321c814b",
+          "reward": 0.0,
+          "fidelity": "complete",
+          "metrics": {
+            "provider_call_count": 20,
+            "partial_provider_call_count": 0,
+            "llm_call_journal_bytes": 16050043,
+            "llm_call_journal_valid_records": 176,
+            "provider_request_bytes": 1039522,
+            "prompt_tokens": 256515,
+            "completion_tokens": 66283,
+            "cache_read_tokens": 184000,
+            "cache_usage_exact_call_count": 19,
+            "cache_usage_exact_coverage": 0.95,
+            "cache_usage_exact_input_tokens": 245771,
+            "provider_prefix_unique_count": 1,
+            "request_trace_match_count": 20,
+            "partial_provider_request_bytes": 0,
+            "partial_prompt_tokens": 0,
+            "partial_completion_tokens": 0,
+            "partial_cache_read_tokens": 0,
+            "partial_provider_prefix_unique_count": 0,
+            "partial_request_trace_match_count": 0,
+            "request_trace_match_rate": 1.0,
+            "trajectory_items": 19,
+            "offloaded_artifact_count": 0,
+            "offloaded_artifact_bytes": 0,
+            "partial_raw_trajectory_call_count": 0,
+            "partial_raw_trajectory_tool_event_count": 0,
+            "tool_action_journal_bytes": 300938,
+            "tool_action_journal_valid_records": 54,
+            "finalized_projection_call_count_delta": 0,
+            "evidence_parse_error_count": 0,
+            "wall_time_seconds": 988.3438050746918,
+            "cache_usage_bounded_call_count": 1,
+            "cache_usage_conflicting_call_count": 0,
+            "cache_usage_invalid_call_count": 0,
+            "cache_usage_unavailable_call_count": 0,
+            "provider_attribution_receipt_count": 20,
+            "provider_attributed_value_bytes": 1020958,
+            "provider_attribution_overhead_bytes": 3748,
+            "normalized_cost_status": "unavailable",
+            "normalized_cost_reason": "provider_cache_usage_missing_or_conflicting",
+            "normalized_cost_lower_bound_microunits": 147528400000,
+            "normalized_cost_upper_bound_microunits": 157198000000,
+            "normalized_cost_bound_receipt": {
+              "schema_version": "aworld.normalized-cost-bound-receipt.v1",
+              "policy_hash": "sha256:bed1b5be9859e399a9b8931e3d6c710ab4a6ecc10f284ec1b6e1b83d3ca4ced0",
+              "lower": {
+                "schema_version": "aworld.normalized-cost-receipt.v1",
+                "policy_hash": "sha256:bed1b5be9859e399a9b8931e3d6c710ab4a6ecc10f284ec1b6e1b83d3ca4ced0",
+                "input_tokens": 256515,
+                "cache_read_tokens": 194744,
+                "output_tokens": 66283,
+                "total_microunits": 147528400000,
+                "normalized_cost": 147528.4
+              },
+              "upper": {
+                "schema_version": "aworld.normalized-cost-receipt.v1",
+                "policy_hash": "sha256:bed1b5be9859e399a9b8931e3d6c710ab4a6ecc10f284ec1b6e1b83d3ca4ced0",
+                "input_tokens": 256515,
+                "cache_read_tokens": 184000,
+                "output_tokens": 66283,
+                "total_microunits": 157198000000,
+                "normalized_cost": 157198.0
+              },
+              "total_call_count": 20,
+              "exact_call_count": 19,
+              "cache_bounded_call_count": 1,
+              "provider_attempt_bounded_call_count": 0,
+              "usage_bounded_call_count": 0,
+              "source_hash": "sha256:731739e44590d3b75ccb224be920e42503cd03fcfd3591a73af02da8d2e857e8"
+            },
+            "semantic_semantic_tool_observation_count": 18,
+            "semantic_tool_success_to_next_llm_count": 18,
+            "semantic_agent_step_count": 19,
+            "semantic_agent_step_budget_extension_count": 0,
+            "semantic_agent_step_budget_extended_steps": 0,
+            "semantic_agent_step_budget_effective_limit": 120,
+            "semantic_agent_step_budget_hard_limit": 240,
+            "semantic_configured_max_steps": 120,
+            "raw_tool_output_bytes": 53530,
+            "inline_tool_output_tokens": 14182,
+            "offloaded_tool_output_tokens": 0,
+            "double_offload_count": 0
+          }
+        }
+      ],
+      "gates": [
+        {
+          "task": "cancel-async-tasks",
+          "variant": "adaptive-cache-on",
+          "agent_completed": true,
+          "capture_continuity": true,
+          "provider_snapshot_integrity": true,
+          "request_trace_match": true,
+          "trajectory_complete": true,
+          "raw_trajectory_available": true,
+          "reward_available": true
+        },
+        {
+          "task": "cancel-async-tasks",
+          "variant": "adaptive-cache-off",
+          "agent_completed": true,
+          "capture_continuity": true,
+          "provider_snapshot_integrity": true,
+          "request_trace_match": true,
+          "trajectory_complete": true,
+          "raw_trajectory_available": true,
+          "reward_available": true
+        }
+      ],
+      "benefit": {
+        "complete_pairs": 1,
+        "mean_reward_delta": 1.0,
+        "reward_interval": {
+          "lower": 1.0,
+          "upper": 1.0,
+          "confidence": 0.95,
+          "samples": 10000,
+          "seed": 20260911
+        },
+        "metric_means": {
+          "cache_read_tokens": -5248.0,
+          "cache_usage_bounded_call_count": 0.0,
+          "cache_usage_conflicting_call_count": 0.0,
+          "cache_usage_exact_call_count": 3.0,
+          "cache_usage_exact_coverage": 0.006521739130434856,
+          "cache_usage_exact_input_tokens": 35433.0,
+          "cache_usage_invalid_call_count": 0.0,
+          "cache_usage_unavailable_call_count": 0.0,
+          "completion_tokens": 109533.0,
+          "double_offload_count": 0.0,
+          "evidence_parse_error_count": 0.0,
+          "finalized_projection_call_count_delta": 0.0,
+          "inline_tool_output_tokens": -19.0,
+          "llm_call_journal_bytes": 2793190.0,
+          "llm_call_journal_valid_records": 23.0,
+          "normalized_cost_conservative_delta_microunits": 158639800000.0,
+          "normalized_cost_lower_bound_microunits": 149617300000.0,
+          "normalized_cost_upper_bound_microunits": 148970200000.0,
+          "offloaded_artifact_bytes": 0.0,
+          "offloaded_artifact_count": 0.0,
+          "offloaded_tool_output_tokens": 0.0,
+          "partial_cache_read_tokens": 0.0,
+          "partial_completion_tokens": 0.0,
+          "partial_prompt_tokens": 0.0,
+          "partial_provider_call_count": 0.0,
+          "partial_provider_prefix_unique_count": 0.0,
+          "partial_provider_request_bytes": 0.0,
+          "partial_raw_trajectory_call_count": 0.0,
+          "partial_raw_trajectory_tool_event_count": 0.0,
+          "partial_request_trace_match_count": 0.0,
+          "prompt_tokens": 34714.0,
+          "provider_attributed_value_bytes": 122231.0,
+          "provider_attribution_overhead_bytes": 616.0,
+          "provider_attribution_receipt_count": 3.0,
+          "provider_call_count": 3.0,
+          "provider_prefix_unique_count": 0.0,
+          "provider_request_bytes": 125921.0,
+          "raw_tool_output_bytes": -18.0,
+          "request_trace_match_count": 3.0,
+          "request_trace_match_rate": 0.0,
+          "semantic_agent_step_budget_effective_limit": 0.0,
+          "semantic_agent_step_budget_extended_steps": 0.0,
+          "semantic_agent_step_budget_extension_count": 0.0,
+          "semantic_agent_step_budget_hard_limit": 0.0,
+          "semantic_agent_step_count": 2.0,
+          "semantic_configured_max_steps": 0.0,
+          "semantic_semantic_tool_observation_count": 2.0,
+          "semantic_tool_success_to_next_llm_count": 2.0,
+          "tool_action_journal_bytes": 31836.0,
+          "tool_action_journal_valid_records": 6.0,
+          "trajectory_items": 2.0,
+          "wall_time_seconds": 1687.5304939746857
+        },
+        "metric_intervals": {
+          "cache_read_tokens": {
+            "lower": -5248.0,
+            "upper": -5248.0,
+            "confidence": 0.95,
+            "samples": 10000,
+            "seed": 20260912
+          },
+          "cache_usage_bounded_call_count": {
+            "lower": 0.0,
+            "upper": 0.0,
+            "confidence": 0.95,
+            "samples": 10000,
+            "seed": 20260913
+          },
+          "cache_usage_conflicting_call_count": {
+            "lower": 0.0,
+            "upper": 0.0,
+            "confidence": 0.95,
+            "samples": 10000,
+            "seed": 20260914
+          },
+          "cache_usage_exact_call_count": {
+            "lower": 3.0,
+            "upper": 3.0,
+            "confidence": 0.95,
+            "samples": 10000,
+            "seed": 20260915
+          },
+          "cache_usage_exact_coverage": {
+            "lower": 0.006521739130434856,
+            "upper": 0.006521739130434856,
+            "confidence": 0.95,
+            "samples": 10000,
+            "seed": 20260916
+          },
+          "cache_usage_exact_input_tokens": {
+            "lower": 35433.0,
+            "upper": 35433.0,
+            "confidence": 0.95,
+            "samples": 10000,
+            "seed": 20260917
+          },
+          "cache_usage_invalid_call_count": {
+            "lower": 0.0,
+            "upper": 0.0,
+            "confidence": 0.95,
+            "samples": 10000,
+            "seed": 20260918
+          },
+          "cache_usage_unavailable_call_count": {
+            "lower": 0.0,
+            "upper": 0.0,
+            "confidence": 0.95,
+            "samples": 10000,
+            "seed": 20260919
+          },
+          "completion_tokens": {
+            "lower": 109533.0,
+            "upper": 109533.0,
+            "confidence": 0.95,
+            "samples": 10000,
+            "seed": 20260920
+          },
+          "double_offload_count": {
+            "lower": 0.0,
+            "upper": 0.0,
+            "confidence": 0.95,
+            "samples": 10000,
+            "seed": 20260921
+          },
+          "evidence_parse_error_count": {
+            "lower": 0.0,
+            "upper": 0.0,
+            "confidence": 0.95,
+            "samples": 10000,
+            "seed": 20260922
+          },
+          "finalized_projection_call_count_delta": {
+            "lower": 0.0,
+            "upper": 0.0,
+            "confidence": 0.95,
+            "samples": 10000,
+            "seed": 20260923
+          },
+          "inline_tool_output_tokens": {
+            "lower": -19.0,
+            "upper": -19.0,
+            "confidence": 0.95,
+            "samples": 10000,
+            "seed": 20260924
+          },
+          "llm_call_journal_bytes": {
+            "lower": 2793190.0,
+            "upper": 2793190.0,
+            "confidence": 0.95,
+            "samples": 10000,
+            "seed": 20260925
+          },
+          "llm_call_journal_valid_records": {
+            "lower": 23.0,
+            "upper": 23.0,
+            "confidence": 0.95,
+            "samples": 10000,
+            "seed": 20260926
+          },
+          "normalized_cost_conservative_delta_microunits": {
+            "lower": 158639800000.0,
+            "upper": 158639800000.0,
+            "confidence": 0.95,
+            "samples": 10000,
+            "seed": 20260927
+          },
+          "normalized_cost_lower_bound_microunits": {
+            "lower": 149617300000.0,
+            "upper": 149617300000.0,
+            "confidence": 0.95,
+            "samples": 10000,
+            "seed": 20260928
+          },
+          "normalized_cost_upper_bound_microunits": {
+            "lower": 148970200000.0,
+            "upper": 148970200000.0,
+            "confidence": 0.95,
+            "samples": 10000,
+            "seed": 20260929
+          },
+          "offloaded_artifact_bytes": {
+            "lower": 0.0,
+            "upper": 0.0,
+            "confidence": 0.95,
+            "samples": 10000,
+            "seed": 20260930
+          },
+          "offloaded_artifact_count": {
+            "lower": 0.0,
+            "upper": 0.0,
+            "confidence": 0.95,
+            "samples": 10000,
+            "seed": 20260931
+          },
+          "offloaded_tool_output_tokens": {
+            "lower": 0.0,
+            "upper": 0.0,
+            "confidence": 0.95,
+            "samples": 10000,
+            "seed": 20260932
+          },
+          "partial_cache_read_tokens": {
+            "lower": 0.0,
+            "upper": 0.0,
+            "confidence": 0.95,
+            "samples": 10000,
+            "seed": 20260933
+          },
+          "partial_completion_tokens": {
+            "lower": 0.0,
+            "upper": 0.0,
+            "confidence": 0.95,
+            "samples": 10000,
+            "seed": 20260934
+          },
+          "partial_prompt_tokens": {
+            "lower": 0.0,
+            "upper": 0.0,
+            "confidence": 0.95,
+            "samples": 10000,
+            "seed": 20260935
+          },
+          "partial_provider_call_count": {
+            "lower": 0.0,
+            "upper": 0.0,
+            "confidence": 0.95,
+            "samples": 10000,
+            "seed": 20260936
+          },
+          "partial_provider_prefix_unique_count": {
+            "lower": 0.0,
+            "upper": 0.0,
+            "confidence": 0.95,
+            "samples": 10000,
+            "seed": 20260937
+          },
+          "partial_provider_request_bytes": {
+            "lower": 0.0,
+            "upper": 0.0,
+            "confidence": 0.95,
+            "samples": 10000,
+            "seed": 20260938
+          },
+          "partial_raw_trajectory_call_count": {
+            "lower": 0.0,
+            "upper": 0.0,
+            "confidence": 0.95,
+            "samples": 10000,
+            "seed": 20260939
+          },
+          "partial_raw_trajectory_tool_event_count": {
+            "lower": 0.0,
+            "upper": 0.0,
+            "confidence": 0.95,
+            "samples": 10000,
+            "seed": 20260940
+          },
+          "partial_request_trace_match_count": {
+            "lower": 0.0,
+            "upper": 0.0,
+            "confidence": 0.95,
+            "samples": 10000,
+            "seed": 20260941
+          },
+          "prompt_tokens": {
+            "lower": 34714.0,
+            "upper": 34714.0,
+            "confidence": 0.95,
+            "samples": 10000,
+            "seed": 20260942
+          },
+          "provider_attributed_value_bytes": {
+            "lower": 122231.0,
+            "upper": 122231.0,
+            "confidence": 0.95,
+            "samples": 10000,
+            "seed": 20260943
+          },
+          "provider_attribution_overhead_bytes": {
+            "lower": 616.0,
+            "upper": 616.0,
+            "confidence": 0.95,
+            "samples": 10000,
+            "seed": 20260944
+          },
+          "provider_attribution_receipt_count": {
+            "lower": 3.0,
+            "upper": 3.0,
+            "confidence": 0.95,
+            "samples": 10000,
+            "seed": 20260945
+          },
+          "provider_call_count": {
+            "lower": 3.0,
+            "upper": 3.0,
+            "confidence": 0.95,
+            "samples": 10000,
+            "seed": 20260946
+          },
+          "provider_prefix_unique_count": {
+            "lower": 0.0,
+            "upper": 0.0,
+            "confidence": 0.95,
+            "samples": 10000,
+            "seed": 20260947
+          },
+          "provider_request_bytes": {
+            "lower": 125921.0,
+            "upper": 125921.0,
+            "confidence": 0.95,
+            "samples": 10000,
+            "seed": 20260948
+          },
+          "raw_tool_output_bytes": {
+            "lower": -18.0,
+            "upper": -18.0,
+            "confidence": 0.95,
+            "samples": 10000,
+            "seed": 20260949
+          },
+          "request_trace_match_count": {
+            "lower": 3.0,
+            "upper": 3.0,
+            "confidence": 0.95,
+            "samples": 10000,
+            "seed": 20260950
+          },
+          "request_trace_match_rate": {
+            "lower": 0.0,
+            "upper": 0.0,
+            "confidence": 0.95,
+            "samples": 10000,
+            "seed": 20260951
+          },
+          "semantic_agent_step_budget_effective_limit": {
+            "lower": 0.0,
+            "upper": 0.0,
+            "confidence": 0.95,
+            "samples": 10000,
+            "seed": 20260952
+          },
+          "semantic_agent_step_budget_extended_steps": {
+            "lower": 0.0,
+            "upper": 0.0,
+            "confidence": 0.95,
+            "samples": 10000,
+            "seed": 20260953
+          },
+          "semantic_agent_step_budget_extension_count": {
+            "lower": 0.0,
+            "upper": 0.0,
+            "confidence": 0.95,
+            "samples": 10000,
+            "seed": 20260954
+          },
+          "semantic_agent_step_budget_hard_limit": {
+            "lower": 0.0,
+            "upper": 0.0,
+            "confidence": 0.95,
+            "samples": 10000,
+            "seed": 20260955
+          },
+          "semantic_agent_step_count": {
+            "lower": 2.0,
+            "upper": 2.0,
+            "confidence": 0.95,
+            "samples": 10000,
+            "seed": 20260956
+          },
+          "semantic_configured_max_steps": {
+            "lower": 0.0,
+            "upper": 0.0,
+            "confidence": 0.95,
+            "samples": 10000,
+            "seed": 20260957
+          },
+          "semantic_semantic_tool_observation_count": {
+            "lower": 2.0,
+            "upper": 2.0,
+            "confidence": 0.95,
+            "samples": 10000,
+            "seed": 20260958
+          },
+          "semantic_tool_success_to_next_llm_count": {
+            "lower": 2.0,
+            "upper": 2.0,
+            "confidence": 0.95,
+            "samples": 10000,
+            "seed": 20260959
+          },
+          "tool_action_journal_bytes": {
+            "lower": 31836.0,
+            "upper": 31836.0,
+            "confidence": 0.95,
+            "samples": 10000,
+            "seed": 20260960
+          },
+          "tool_action_journal_valid_records": {
+            "lower": 6.0,
+            "upper": 6.0,
+            "confidence": 0.95,
+            "samples": 10000,
+            "seed": 20260961
+          },
+          "trajectory_items": {
+            "lower": 2.0,
+            "upper": 2.0,
+            "confidence": 0.95,
+            "samples": 10000,
+            "seed": 20260962
+          },
+          "wall_time_seconds": {
+            "lower": 1687.5304939746857,
+            "upper": 1687.5304939746857,
+            "confidence": 0.95,
+            "samples": 10000,
+            "seed": 20260963
+          }
+        }
+      },
+      "provider_attribution_runs": [
+        {
+          "experiment": "/Users/wuman/Documents/workspace/aworld-gateway/aworld/artifacts/context-management/cache-economics-release-20260911/terminal-cache-smoke-v10",
+          "run": "/Users/wuman/Documents/workspace/aworld-gateway/aworld/artifacts/context-management/cache-economics-release-20260911/terminal-cache-smoke-v10/runs/cancel-async-tasks/adaptive-cache-on/repeat-01",
+          "case_id": "cancel-async-tasks",
+          "variant": "adaptive-cache-on",
+          "repeat": 1,
+          "summary": {
+            "status": "available",
+            "provider_call_count": 23,
+            "available_receipt_count": 23,
+            "unavailable_receipt_count": 0,
+            "invalid_receipt_count": 0,
+            "coverage_rate": 1.0,
+            "byte_conservation": true,
+            "attributed_value_bytes": 1143189,
+            "provider_envelope_and_params": 4364,
+            "total_canonical_bytes": 1147553,
+            "subject": "candidate_selected",
+            "subject_counts": {
+              "candidate_selected": 23
+            },
+            "per_call": [
+              {
+                "ordinal": 0,
+                "request_id_hash": "sha256:d95ef78e002cea025e416de027f0454cf89d0dc0c618445d721b3a56c1e26f4d",
+                "total_canonical_bytes": 6782,
+                "message_bytes": 875,
+                "tool_schema_bytes": 5741,
+                "provider_envelope_and_params": 166,
+                "messages_content_hash": "sha256:7f88c40a2b32d425d7fa34393c0698ed758adbadebe07fafc7c3d63cddc21012",
+                "tools_content_hash": "sha256:71e1b7e58af6d7b126c45ccc4eed3d4398707846a4aa370513a1bd6709fc687d",
+                "by_dimension": {
+                  "owner": {
+                    "model_final_messages": 875,
+                    "model_final_tool_catalog": 5741
+                  },
+                  "kind": {
+                    "system": 307,
+                    "tool_catalog": 5741,
+                    "user": 568
+                  },
+                  "source_kind": {
+                    "agent": 875,
+                    "tool_catalog": 5741
+                  },
+                  "residency": {
+                    "dynamic": 6309,
+                    "stable": 307
+                  }
+                }
+              },
+              {
+                "ordinal": 1,
+                "request_id_hash": "sha256:b1d78c707b2dbc00c21d98c80cb1fba19f36383b9087e73301fb5e5f1541a018",
+                "total_canonical_bytes": 12178,
+                "message_bytes": 6267,
+                "tool_schema_bytes": 5741,
+                "provider_envelope_and_params": 170,
+                "messages_content_hash": "sha256:8547b021001e9d60d7a98d4bb65d1a34a7a5055f8fc3b8f35981869331e05736",
+                "tools_content_hash": "sha256:71e1b7e58af6d7b126c45ccc4eed3d4398707846a4aa370513a1bd6709fc687d",
+                "by_dimension": {
+                  "owner": {
+                    "model_final_messages": 6267,
+                    "model_final_tool_catalog": 5741
+                  },
+                  "kind": {
+                    "memory": 543,
+                    "system": 307,
+                    "tool_catalog": 5741,
+                    "tool_result": 1979,
+                    "user": 3438
+                  },
+                  "source_kind": {
+                    "agent": 6267,
+                    "tool_catalog": 5741
+                  },
+                  "residency": {
+                    "dynamic": 11701,
+                    "stable": 307
+                  }
+                }
+              },
+              {
+                "ordinal": 2,
+                "request_id_hash": "sha256:ceb2b2c6e7a6545423d7e71f567dc46737ab717a6de6418d43f3b988373001fa",
+                "total_canonical_bytes": 13546,
+                "message_bytes": 7633,
+                "tool_schema_bytes": 5741,
+                "provider_envelope_and_params": 172,
+                "messages_content_hash": "sha256:488cead4e1a67969f24fcac38b2edc09d7abe8195823a4bbbcc47dc6a183f02c",
+                "tools_content_hash": "sha256:71e1b7e58af6d7b126c45ccc4eed3d4398707846a4aa370513a1bd6709fc687d",
+                "by_dimension": {
+                  "owner": {
+                    "model_final_messages": 7633,
+                    "model_final_tool_catalog": 5741
+                  },
+                  "kind": {
+                    "memory": 940,
+                    "system": 307,
+                    "tool_catalog": 5741,
+                    "tool_result": 2282,
+                    "user": 4104
+                  },
+                  "source_kind": {
+                    "agent": 7633,
+                    "tool_catalog": 5741
+                  },
+                  "residency": {
+                    "dynamic": 13067,
+                    "stable": 307
+                  }
+                }
+              },
+              {
+                "ordinal": 3,
+                "request_id_hash": "sha256:3e1a228fe4e4287daf7d8e15a0af3c84c7d26fc4d20da842d3375841bd4abb5a",
+                "total_canonical_bytes": 17520,
+                "message_bytes": 11604,
+                "tool_schema_bytes": 5741,
+                "provider_envelope_and_params": 175,
+                "messages_content_hash": "sha256:c041d65485eedc59c9e13e920a00582dcf53b69238141b77c50fb8843822e632",
+                "tools_content_hash": "sha256:71e1b7e58af6d7b126c45ccc4eed3d4398707846a4aa370513a1bd6709fc687d",
+                "by_dimension": {
+                  "owner": {
+                    "model_final_messages": 11604,
+                    "model_final_tool_catalog": 5741
+                  },
+                  "kind": {
+                    "memory": 2109,
+                    "system": 307,
+                    "tool_catalog": 5741,
+                    "tool_result": 2959,
+                    "user": 6229
+                  },
+                  "source_kind": {
+                    "agent": 11604,
+                    "tool_catalog": 5741
+                  },
+                  "residency": {
+                    "dynamic": 17038,
+                    "stable": 307
+                  }
+                }
+              },
+              {
+                "ordinal": 4,
+                "request_id_hash": "sha256:308ef0a277aa98d53e0e20da9d78808770eedb892c32e78c861b323cc52208f3",
+                "total_canonical_bytes": 29463,
+                "message_bytes": 23544,
+                "tool_schema_bytes": 5741,
+                "provider_envelope_and_params": 178,
+                "messages_content_hash": "sha256:cb4abfb31544b8403cd41b53d40a46dbe07c41dddb3735cf1e577a9f318da605",
+                "tools_content_hash": "sha256:71e1b7e58af6d7b126c45ccc4eed3d4398707846a4aa370513a1bd6709fc687d",
+                "by_dimension": {
+                  "owner": {
+                    "model_final_messages": 23544,
+                    "model_final_tool_catalog": 5741
+                  },
+                  "kind": {
+                    "memory": 2588,
+                    "system": 307,
+                    "tool_catalog": 5741,
+                    "tool_result": 13035,
+                    "user": 7614
+                  },
+                  "source_kind": {
+                    "agent": 23544,
+                    "tool_catalog": 5741
+                  },
+                  "residency": {
+                    "dynamic": 28978,
+                    "stable": 307
+                  }
+                }
+              },
+              {
+                "ordinal": 5,
+                "request_id_hash": "sha256:df53a8cd8bb9376a97146a87a6aa2466ee8dddf3fb27f5668820dca8a6d80d49",
+                "total_canonical_bytes": 32637,
+                "message_bytes": 26716,
+                "tool_schema_bytes": 5741,
+                "provider_envelope_and_params": 180,
+                "messages_content_hash": "sha256:b0d4400cacaed7d5581a86dac4d8275e65f226eb9f79128741f996c8ee367b66",
+                "tools_content_hash": "sha256:71e1b7e58af6d7b126c45ccc4eed3d4398707846a4aa370513a1bd6709fc687d",
+                "by_dimension": {
+                  "owner": {
+                    "model_final_messages": 26716,
+                    "model_final_tool_catalog": 5741
+                  },
+                  "kind": {
+                    "memory": 2970,
+                    "system": 307,
+                    "tool_catalog": 5741,
+                    "tool_result": 16637,
+                    "user": 6802
+                  },
+                  "source_kind": {
+                    "agent": 26716,
+                    "tool_catalog": 5741
+                  },
+                  "residency": {
+                    "dynamic": 32150,
+                    "stable": 307
+                  }
+                }
+              },
+              {
+                "ordinal": 6,
+                "request_id_hash": "sha256:38810039890cad0188d13752fb5bf0142c0d61610e9e0001f5cf8a0d5a91e7ae",
+                "total_canonical_bytes": 32637,
+                "message_bytes": 26716,
+                "tool_schema_bytes": 5741,
+                "provider_envelope_and_params": 180,
+                "messages_content_hash": "sha256:b0d4400cacaed7d5581a86dac4d8275e65f226eb9f79128741f996c8ee367b66",
+                "tools_content_hash": "sha256:71e1b7e58af6d7b126c45ccc4eed3d4398707846a4aa370513a1bd6709fc687d",
+                "by_dimension": {
+                  "owner": {
+                    "model_final_messages": 26716,
+                    "model_final_tool_catalog": 5741
+                  },
+                  "kind": {
+                    "memory": 2970,
+                    "system": 307,
+                    "tool_catalog": 5741,
+                    "tool_result": 16637,
+                    "user": 6802
+                  },
+                  "source_kind": {
+                    "agent": 26716,
+                    "tool_catalog": 5741
+                  },
+                  "residency": {
+                    "dynamic": 32150,
+                    "stable": 307
+                  }
+                }
+              },
+              {
+                "ordinal": 7,
+                "request_id_hash": "sha256:81924b417214c3f4d116091c5da5b82dd5ddfcc80c927ada6ec727bd52d36f1c",
+                "total_canonical_bytes": 32637,
+                "message_bytes": 26716,
+                "tool_schema_bytes": 5741,
+                "provider_envelope_and_params": 180,
+                "messages_content_hash": "sha256:b0d4400cacaed7d5581a86dac4d8275e65f226eb9f79128741f996c8ee367b66",
+                "tools_content_hash": "sha256:71e1b7e58af6d7b126c45ccc4eed3d4398707846a4aa370513a1bd6709fc687d",
+                "by_dimension": {
+                  "owner": {
+                    "model_final_messages": 26716,
+                    "model_final_tool_catalog": 5741
+                  },
+                  "kind": {
+                    "memory": 2970,
+                    "system": 307,
+                    "tool_catalog": 5741,
+                    "tool_result": 16637,
+                    "user": 6802
+                  },
+                  "source_kind": {
+                    "agent": 26716,
+                    "tool_catalog": 5741
+                  },
+                  "residency": {
+                    "dynamic": 32150,
+                    "stable": 307
+                  }
+                }
+              },
+              {
+                "ordinal": 8,
+                "request_id_hash": "sha256:2f93ea830aa51df2e1b0ca03cd5dbfeacfad269b9113434669b2631e4c708fb3",
+                "total_canonical_bytes": 35040,
+                "message_bytes": 29117,
+                "tool_schema_bytes": 5741,
+                "provider_envelope_and_params": 182,
+                "messages_content_hash": "sha256:f2535d3df6e5b149b5afe95b825fb41f1ca9bca309127a7f537a37fb13e81e4b",
+                "tools_content_hash": "sha256:71e1b7e58af6d7b126c45ccc4eed3d4398707846a4aa370513a1bd6709fc687d",
+                "by_dimension": {
+                  "owner": {
+                    "model_final_messages": 29117,
+                    "model_final_tool_catalog": 5741
+                  },
+                  "kind": {
+                    "memory": 3750,
+                    "system": 307,
+                    "tool_catalog": 5741,
+                    "tool_result": 16974,
+                    "user": 8086
+                  },
+                  "source_kind": {
+                    "agent": 29117,
+                    "tool_catalog": 5741
+                  },
+                  "residency": {
+                    "dynamic": 34551,
+                    "stable": 307
+                  }
+                }
+              },
+              {
+                "ordinal": 9,
+                "request_id_hash": "sha256:fc2ee5b09885209d5f745c1c3ffda0dabce8adb138e68f6875e6a40b00276ec2",
+                "total_canonical_bytes": 36583,
+                "message_bytes": 30658,
+                "tool_schema_bytes": 5741,
+                "provider_envelope_and_params": 184,
+                "messages_content_hash": "sha256:94a9c4da4b7990f8c9a085394e9e6142fb774dc9cafde12f4d0f8721f5ab8095",
+                "tools_content_hash": "sha256:71e1b7e58af6d7b126c45ccc4eed3d4398707846a4aa370513a1bd6709fc687d",
+                "by_dimension": {
+                  "owner": {
+                    "model_final_messages": 30658,
+                    "model_final_tool_catalog": 5741
+                  },
+                  "kind": {
+                    "memory": 4094,
+                    "system": 307,
+                    "tool_catalog": 5741,
+                    "tool_result": 19458,
+                    "user": 6799
+                  },
+                  "source_kind": {
+                    "agent": 30658,
+                    "tool_catalog": 5741
+                  },
+                  "residency": {
+                    "dynamic": 36092,
+                    "stable": 307
+                  }
+                }
+              },
+              {
+                "ordinal": 10,
+                "request_id_hash": "sha256:b05b6519428407c4f4c7730cdea133d7e7e3478bec02100eef26630bcf264db3",
+                "total_canonical_bytes": 39005,
+                "message_bytes": 33078,
+                "tool_schema_bytes": 5741,
+                "provider_envelope_and_params": 186,
+                "messages_content_hash": "sha256:6b7086b1e34c8433a7b070075dda24cd20bcbba022c4c22bb037ad6789ff3343",
+                "tools_content_hash": "sha256:71e1b7e58af6d7b126c45ccc4eed3d4398707846a4aa370513a1bd6709fc687d",
+                "by_dimension": {
+                  "owner": {
+                    "model_final_messages": 33078,
+                    "model_final_tool_catalog": 5741
+                  },
+                  "kind": {
+                    "memory": 4887,
+                    "system": 307,
+                    "tool_catalog": 5741,
+                    "tool_result": 19796,
+                    "user": 8088
+                  },
+                  "source_kind": {
+                    "agent": 33078,
+                    "tool_catalog": 5741
+                  },
+                  "residency": {
+                    "dynamic": 38512,
+                    "stable": 307
+                  }
+                }
+              },
+              {
+                "ordinal": 11,
+                "request_id_hash": "sha256:79f1620aa797576175e54055320656e4d4274e8e3ccdf84f17c931170d7a8edb",
+                "total_canonical_bytes": 42117,
+                "message_bytes": 36188,
+                "tool_schema_bytes": 5741,
+                "provider_envelope_and_params": 188,
+                "messages_content_hash": "sha256:0b78178c058c53b8c201ccea51db0115cca4c59443ec1ab17b2d21bdb36d7a18",
+                "tools_content_hash": "sha256:71e1b7e58af6d7b126c45ccc4eed3d4398707846a4aa370513a1bd6709fc687d",
+                "by_dimension": {
+                  "owner": {
+                    "model_final_messages": 36188,
+                    "model_final_tool_catalog": 5741
+                  },
+                  "kind": {
+                    "memory": 5269,
+                    "system": 307,
+                    "tool_catalog": 5741,
+                    "tool_result": 22475,
+                    "user": 8137
+                  },
+                  "source_kind": {
+                    "agent": 36188,
+                    "tool_catalog": 5741
+                  },
+                  "residency": {
+                    "dynamic": 41622,
+                    "stable": 307
+                  }
+                }
+              },
+              {
+                "ordinal": 12,
+                "request_id_hash": "sha256:3519fbb3464517c7a0c6de29a4d01e4e43a2af05ef02de7b16efe1d50f2d1ff4",
+                "total_canonical_bytes": 43900,
+                "message_bytes": 37968,
+                "tool_schema_bytes": 5741,
+                "provider_envelope_and_params": 191,
+                "messages_content_hash": "sha256:618ae6e9b946c67563cf7b28d4648d1f34475d22db50dc98a5b1b86cc7dfdba8",
+                "tools_content_hash": "sha256:71e1b7e58af6d7b126c45ccc4eed3d4398707846a4aa370513a1bd6709fc687d",
+                "by_dimension": {
+                  "owner": {
+                    "model_final_messages": 37968,
+                    "model_final_tool_catalog": 5741
+                  },
+                  "kind": {
+                    "memory": 7175,
+                    "system": 307,
+                    "tool_catalog": 5741,
+                    "tool_result": 23152,
+                    "user": 7334
+                  },
+                  "source_kind": {
+                    "agent": 37968,
+                    "tool_catalog": 5741
+                  },
+                  "residency": {
+                    "dynamic": 43402,
+                    "stable": 307
+                  }
+                }
+              },
+              {
+                "ordinal": 13,
+                "request_id_hash": "sha256:885c0452f50c7740e841527eb6b0273e39db937c6d44a481c884489f314d3678",
+                "total_canonical_bytes": 55214,
+                "message_bytes": 49279,
+                "tool_schema_bytes": 5741,
+                "provider_envelope_and_params": 194,
+                "messages_content_hash": "sha256:631ec3f46081fc5dd237d547bb0a5f6dcc0b2c73ffe6eecdf3d796a84c606657",
+                "tools_content_hash": "sha256:71e1b7e58af6d7b126c45ccc4eed3d4398707846a4aa370513a1bd6709fc687d",
+                "by_dimension": {
+                  "owner": {
+                    "model_final_messages": 49279,
+                    "model_final_tool_catalog": 5741
+                  },
+                  "kind": {
+                    "memory": 7649,
+                    "system": 307,
+                    "tool_catalog": 5741,
+                    "tool_result": 33763,
+                    "user": 7560
+                  },
+                  "source_kind": {
+                    "agent": 49279,
+                    "tool_catalog": 5741
+                  },
+                  "residency": {
+                    "dynamic": 54713,
+                    "stable": 307
+                  }
+                }
+              },
+              {
+                "ordinal": 14,
+                "request_id_hash": "sha256:0ec9b482c376cc51b22b9c395e61c39a51c5c8997d1e4c00dfd4e3046a430ed0",
+                "total_canonical_bytes": 61473,
+                "message_bytes": 55536,
+                "tool_schema_bytes": 5741,
+                "provider_envelope_and_params": 196,
+                "messages_content_hash": "sha256:e233625aeedac8cdd0c234aee15fd2d64bbc0c386522f7e55605224ca2eaf2a0",
+                "tools_content_hash": "sha256:71e1b7e58af6d7b126c45ccc4eed3d4398707846a4aa370513a1bd6709fc687d",
+                "by_dimension": {
+                  "owner": {
+                    "model_final_messages": 55536,
+                    "model_final_tool_catalog": 5741
+                  },
+                  "kind": {
+                    "memory": 8182,
+                    "system": 307,
+                    "tool_catalog": 5741,
+                    "tool_result": 39709,
+                    "user": 7338
+                  },
+                  "source_kind": {
+                    "agent": 55536,
+                    "tool_catalog": 5741
+                  },
+                  "residency": {
+                    "dynamic": 60970,
+                    "stable": 307
+                  }
+                }
+              },
+              {
+                "ordinal": 15,
+                "request_id_hash": "sha256:c4b91469c83e3859821642764d9048ce4fed51f0846f57669a5e66696d0aa1f6",
+                "total_canonical_bytes": 62223,
+                "message_bytes": 56284,
+                "tool_schema_bytes": 5741,
+                "provider_envelope_and_params": 198,
+                "messages_content_hash": "sha256:a45ef4732d3c5ed2d67ffaad971215f9c80843a79fd31e943afea403d71217ff",
+                "tools_content_hash": "sha256:71e1b7e58af6d7b126c45ccc4eed3d4398707846a4aa370513a1bd6709fc687d",
+                "by_dimension": {
+                  "owner": {
+                    "model_final_messages": 56284,
+                    "model_final_tool_catalog": 5741
+                  },
+                  "kind": {
+                    "memory": 8795,
+                    "system": 307,
+                    "tool_catalog": 5741,
+                    "tool_result": 41168,
+                    "user": 6014
+                  },
+                  "source_kind": {
+                    "agent": 56284,
+                    "tool_catalog": 5741
+                  },
+                  "residency": {
+                    "dynamic": 61718,
+                    "stable": 307
+                  }
+                }
+              },
+              {
+                "ordinal": 16,
+                "request_id_hash": "sha256:bf3676ed3e7d53644560e36fbd1e655172ff75da84291f6042dcdd58a611dc0c",
+                "total_canonical_bytes": 71564,
+                "message_bytes": 65623,
+                "tool_schema_bytes": 5741,
+                "provider_envelope_and_params": 200,
+                "messages_content_hash": "sha256:114c18e035068746cc72071bb5498f97c199fe6e26c1a2a42717798dd4341ea5",
+                "tools_content_hash": "sha256:71e1b7e58af6d7b126c45ccc4eed3d4398707846a4aa370513a1bd6709fc687d",
+                "by_dimension": {
+                  "owner": {
+                    "model_final_messages": 65623,
+                    "model_final_tool_catalog": 5741
+                  },
+                  "kind": {
+                    "memory": 9414,
+                    "system": 307,
+                    "tool_catalog": 5741,
+                    "tool_result": 48121,
+                    "user": 7781
+                  },
+                  "source_kind": {
+                    "agent": 65623,
+                    "tool_catalog": 5741
+                  },
+                  "residency": {
+                    "dynamic": 71057,
+                    "stable": 307
+                  }
+                }
+              },
+              {
+                "ordinal": 17,
+                "request_id_hash": "sha256:3effa9d9cb4575d58ffa23dad57d9d526a85ad6ebc1a76c9441239a408352db3",
+                "total_canonical_bytes": 74624,
+                "message_bytes": 68681,
+                "tool_schema_bytes": 5741,
+                "provider_envelope_and_params": 202,
+                "messages_content_hash": "sha256:70cac3dd6e23f11ab18d2f51084c148fe0bf90409c41c9994e329d4e08b2e9a7",
+                "tools_content_hash": "sha256:71e1b7e58af6d7b126c45ccc4eed3d4398707846a4aa370513a1bd6709fc687d",
+                "by_dimension": {
+                  "owner": {
+                    "model_final_messages": 68681,
+                    "model_final_tool_catalog": 5741
+                  },
+                  "kind": {
+                    "memory": 10135,
+                    "system": 307,
+                    "tool_catalog": 5741,
+                    "tool_result": 50300,
+                    "user": 7939
+                  },
+                  "source_kind": {
+                    "agent": 68681,
+                    "tool_catalog": 5741
+                  },
+                  "residency": {
+                    "dynamic": 74115,
+                    "stable": 307
+                  }
+                }
+              },
+              {
+                "ordinal": 18,
+                "request_id_hash": "sha256:4d25cc864bd1db491cb4ced6dfd9ac9651408ca22f2d950c3f72e18605876ed9",
+                "total_canonical_bytes": 82087,
+                "message_bytes": 76142,
+                "tool_schema_bytes": 5741,
+                "provider_envelope_and_params": 204,
+                "messages_content_hash": "sha256:daa94ab0b312ad2ba07cddbe6fe6619a5abb8cf4d69f5f1d73e8ff9fc94822fd",
+                "tools_content_hash": "sha256:71e1b7e58af6d7b126c45ccc4eed3d4398707846a4aa370513a1bd6709fc687d",
+                "by_dimension": {
+                  "owner": {
+                    "model_final_messages": 76142,
+                    "model_final_tool_catalog": 5741
+                  },
+                  "kind": {
+                    "memory": 10639,
+                    "system": 307,
+                    "tool_catalog": 5741,
+                    "tool_result": 57253,
+                    "user": 7943
+                  },
+                  "source_kind": {
+                    "agent": 76142,
+                    "tool_catalog": 5741
+                  },
+                  "residency": {
+                    "dynamic": 81576,
+                    "stable": 307
+                  }
+                }
+              },
+              {
+                "ordinal": 19,
+                "request_id_hash": "sha256:78589355cf8636c4075de968468e36836971516231c01c2afd7512652d8e8496",
+                "total_canonical_bytes": 86417,
+                "message_bytes": 80470,
+                "tool_schema_bytes": 5741,
+                "provider_envelope_and_params": 206,
+                "messages_content_hash": "sha256:1c0f3044767503439d67bb301b66410f602be0ad71f563ea353641d52fdb967f",
+                "tools_content_hash": "sha256:71e1b7e58af6d7b126c45ccc4eed3d4398707846a4aa370513a1bd6709fc687d",
+                "by_dimension": {
+                  "owner": {
+                    "model_final_messages": 80470,
+                    "model_final_tool_catalog": 5741
+                  },
+                  "kind": {
+                    "memory": 11430,
+                    "system": 307,
+                    "tool_catalog": 5741,
+                    "tool_result": 60317,
+                    "user": 8416
+                  },
+                  "source_kind": {
+                    "agent": 80470,
+                    "tool_catalog": 5741
+                  },
+                  "residency": {
+                    "dynamic": 85904,
+                    "stable": 307
+                  }
+                }
+              },
+              {
+                "ordinal": 20,
+                "request_id_hash": "sha256:f9501b5012f012e3f592023b0a2dd3f264fbcbd3dcc2a5b15ddb62814d1bf38f",
+                "total_canonical_bytes": 88630,
+                "message_bytes": 82681,
+                "tool_schema_bytes": 5741,
+                "provider_envelope_and_params": 208,
+                "messages_content_hash": "sha256:3e244bfbda7c46f246fe2ccab565ee105a8650292e4873847cd9e12c2a11e980",
+                "tools_content_hash": "sha256:71e1b7e58af6d7b126c45ccc4eed3d4398707846a4aa370513a1bd6709fc687d",
+                "by_dimension": {
+                  "owner": {
+                    "model_final_messages": 82681,
+                    "model_final_tool_catalog": 5741
+                  },
+                  "kind": {
+                    "memory": 11797,
+                    "system": 307,
+                    "tool_catalog": 5741,
+                    "tool_result": 62313,
+                    "user": 8264
+                  },
+                  "source_kind": {
+                    "agent": 82681,
+                    "tool_catalog": 5741
+                  },
+                  "residency": {
+                    "dynamic": 88115,
+                    "stable": 307
+                  }
+                }
+              },
+              {
+                "ordinal": 21,
+                "request_id_hash": "sha256:527c09262d0b79e5879c998ef77a4eb8301dfa5ec1d0d35ffe6d0743ed9e64b7",
+                "total_canonical_bytes": 94122,
+                "message_bytes": 88170,
+                "tool_schema_bytes": 5741,
+                "provider_envelope_and_params": 211,
+                "messages_content_hash": "sha256:f58b6f870c3aad655c5a5d0f7b17e341140e58ea8ea464fb768a08bf46c62c44",
+                "tools_content_hash": "sha256:71e1b7e58af6d7b126c45ccc4eed3d4398707846a4aa370513a1bd6709fc687d",
+                "by_dimension": {
+                  "owner": {
+                    "model_final_messages": 88170,
+                    "model_final_tool_catalog": 5741
+                  },
+                  "kind": {
+                    "memory": 12501,
+                    "system": 307,
+                    "tool_catalog": 5741,
+                    "tool_result": 67881,
+                    "user": 7481
+                  },
+                  "source_kind": {
+                    "agent": 88170,
+                    "tool_catalog": 5741
+                  },
+                  "residency": {
+                    "dynamic": 93604,
+                    "stable": 307
+                  }
+                }
+              },
+              {
+                "ordinal": 22,
+                "request_id_hash": "sha256:303028156c69cdaf6ba7aadd3211a9791e67c84559afa147957284cce5471f4c",
+                "total_canonical_bytes": 97154,
+                "message_bytes": 91200,
+                "tool_schema_bytes": 5741,
+                "provider_envelope_and_params": 213,
+                "messages_content_hash": "sha256:e910cf2f29d85c3109654c9de5756f50979de019cfcbdd307dc0e209562c1086",
+                "tools_content_hash": "sha256:71e1b7e58af6d7b126c45ccc4eed3d4398707846a4aa370513a1bd6709fc687d",
+                "by_dimension": {
+                  "owner": {
+                    "model_final_messages": 91200,
+                    "model_final_tool_catalog": 5741
+                  },
+                  "kind": {
+                    "memory": 12939,
+                    "system": 307,
+                    "tool_catalog": 5741,
+                    "tool_result": 70479,
+                    "user": 7475
+                  },
+                  "source_kind": {
+                    "agent": 91200,
+                    "tool_catalog": 5741
+                  },
+                  "residency": {
+                    "dynamic": 96634,
+                    "stable": 307
+                  }
+                }
+              }
+            ],
+            "by_dimension": {
+              "owner": {
+                "model_final_messages": 1011146,
+                "model_final_tool_catalog": 132043
+              },
+              "kind": {
+                "memory": 143746,
+                "system": 7061,
+                "tool_catalog": 132043,
+                "tool_result": 703325,
+                "user": 157014
+              },
+              "source_kind": {
+                "agent": 1011146,
+                "tool_catalog": 132043
+              },
+              "residency": {
+                "dynamic": 1136128,
+                "stable": 7061
+              }
+            },
+            "dimension_resolution": {
+              "owner": "compiler_owner_v1",
+              "kind": "provider_occurrence_kind_v1",
+              "source_kind": "provider_occurrence_source_v1",
+              "residency": "compiler_logical_residency_v1"
+            },
+            "fallback": "none",
+            "reason": null
+          }
+        },
+        {
+          "experiment": "/Users/wuman/Documents/workspace/aworld-gateway/aworld/artifacts/context-management/cache-economics-release-20260911/terminal-cache-smoke-v10",
+          "run": "/Users/wuman/Documents/workspace/aworld-gateway/aworld/artifacts/context-management/cache-economics-release-20260911/terminal-cache-smoke-v10/runs/cancel-async-tasks/adaptive-cache-off/repeat-01",
+          "case_id": "cancel-async-tasks",
+          "variant": "adaptive-cache-off",
+          "repeat": 1,
+          "summary": {
+            "status": "available",
+            "provider_call_count": 20,
+            "available_receipt_count": 20,
+            "unavailable_receipt_count": 0,
+            "invalid_receipt_count": 0,
+            "coverage_rate": 1.0,
+            "byte_conservation": true,
+            "attributed_value_bytes": 1020958,
+            "provider_envelope_and_params": 3748,
+            "total_canonical_bytes": 1024706,
+            "subject": "candidate_selected",
+            "subject_counts": {
+              "candidate_selected": 20
+            },
+            "per_call": [
+              {
+                "ordinal": 0,
+                "request_id_hash": "sha256:f60a3880203d33336a9ad5a2afc065a2f5d6247e3aeec27319465b481e068376",
+                "total_canonical_bytes": 6782,
+                "message_bytes": 875,
+                "tool_schema_bytes": 5741,
+                "provider_envelope_and_params": 166,
+                "messages_content_hash": "sha256:7f88c40a2b32d425d7fa34393c0698ed758adbadebe07fafc7c3d63cddc21012",
+                "tools_content_hash": "sha256:71e1b7e58af6d7b126c45ccc4eed3d4398707846a4aa370513a1bd6709fc687d",
+                "by_dimension": {
+                  "owner": {
+                    "model_final_messages": 875,
+                    "model_final_tool_catalog": 5741
+                  },
+                  "kind": {
+                    "system": 307,
+                    "tool_catalog": 5741,
+                    "user": 568
+                  },
+                  "source_kind": {
+                    "agent": 875,
+                    "tool_catalog": 5741
+                  },
+                  "residency": {
+                    "dynamic": 6616
+                  }
+                }
+              },
+              {
+                "ordinal": 1,
+                "request_id_hash": "sha256:faedd81eb8c6bc346e88cdac2e5a2216822a9107d44db7b71b385382f3edb338",
+                "total_canonical_bytes": 14519,
+                "message_bytes": 8608,
+                "tool_schema_bytes": 5741,
+                "provider_envelope_and_params": 170,
+                "messages_content_hash": "sha256:bdd736b214262389a19e82fe34fc2a00b31e7e3852394321a8b59950e5d332f0",
+                "tools_content_hash": "sha256:71e1b7e58af6d7b126c45ccc4eed3d4398707846a4aa370513a1bd6709fc687d",
+                "by_dimension": {
+                  "owner": {
+                    "model_final_messages": 8608,
+                    "model_final_tool_catalog": 5741
+                  },
+                  "kind": {
+                    "memory": 589,
+                    "system": 307,
+                    "tool_catalog": 5741,
+                    "tool_result": 3147,
+                    "user": 4565
+                  },
+                  "source_kind": {
+                    "agent": 8608,
+                    "tool_catalog": 5741
+                  },
+                  "residency": {
+                    "dynamic": 14349
+                  }
+                }
+              },
+              {
+                "ordinal": 2,
+                "request_id_hash": "sha256:b034f582d95de98cd8d458b173639b9cdd48cab434b189d8e88ddfa3a1662123",
+                "total_canonical_bytes": 14519,
+                "message_bytes": 8608,
+                "tool_schema_bytes": 5741,
+                "provider_envelope_and_params": 170,
+                "messages_content_hash": "sha256:bdd736b214262389a19e82fe34fc2a00b31e7e3852394321a8b59950e5d332f0",
+                "tools_content_hash": "sha256:71e1b7e58af6d7b126c45ccc4eed3d4398707846a4aa370513a1bd6709fc687d",
+                "by_dimension": {
+                  "owner": {
+                    "model_final_messages": 8608,
+                    "model_final_tool_catalog": 5741
+                  },
+                  "kind": {
+                    "memory": 589,
+                    "system": 307,
+                    "tool_catalog": 5741,
+                    "tool_result": 3147,
+                    "user": 4565
+                  },
+                  "source_kind": {
+                    "agent": 8608,
+                    "tool_catalog": 5741
+                  },
+                  "residency": {
+                    "dynamic": 14349
+                  }
+                }
+              },
+              {
+                "ordinal": 3,
+                "request_id_hash": "sha256:b5eb99fc737b0334dcca8f7789462f1409dbb33ae4df5efc14f948d30931649e",
+                "total_canonical_bytes": 21715,
+                "message_bytes": 15802,
+                "tool_schema_bytes": 5741,
+                "provider_envelope_and_params": 172,
+                "messages_content_hash": "sha256:023d011de13ba954564b68ab118e7156e1204d8ad1c1033763f017dbb81193d3",
+                "tools_content_hash": "sha256:71e1b7e58af6d7b126c45ccc4eed3d4398707846a4aa370513a1bd6709fc687d",
+                "by_dimension": {
+                  "owner": {
+                    "model_final_messages": 15802,
+                    "model_final_tool_catalog": 5741
+                  },
+                  "kind": {
+                    "memory": 2179,
+                    "system": 307,
+                    "tool_catalog": 5741,
+                    "tool_result": 6089,
+                    "user": 7227
+                  },
+                  "source_kind": {
+                    "agent": 15802,
+                    "tool_catalog": 5741
+                  },
+                  "residency": {
+                    "dynamic": 21543
+                  }
+                }
+              },
+              {
+                "ordinal": 4,
+                "request_id_hash": "sha256:ff1701c560c8658d62b763ef9deaeefb8c5ad2bb9930a0956dc2ea19eeaa11cd",
+                "total_canonical_bytes": 26030,
+                "message_bytes": 20114,
+                "tool_schema_bytes": 5741,
+                "provider_envelope_and_params": 175,
+                "messages_content_hash": "sha256:689c61c35c007a0b5c52e3dd3107629b8905d04d8fb1fb2a4fdfc1848b4433ab",
+                "tools_content_hash": "sha256:71e1b7e58af6d7b126c45ccc4eed3d4398707846a4aa370513a1bd6709fc687d",
+                "by_dimension": {
+                  "owner": {
+                    "model_final_messages": 20114,
+                    "model_final_tool_catalog": 5741
+                  },
+                  "kind": {
+                    "memory": 2897,
+                    "system": 307,
+                    "tool_catalog": 5741,
+                    "tool_result": 9301,
+                    "user": 7609
+                  },
+                  "source_kind": {
+                    "agent": 20114,
+                    "tool_catalog": 5741
+                  },
+                  "residency": {
+                    "dynamic": 25855
+                  }
+                }
+              },
+              {
+                "ordinal": 5,
+                "request_id_hash": "sha256:4cc7cc74e5dfd031b2df47af170d9dd958be2b3d2c671110e9e910e3ef2e755d",
+                "total_canonical_bytes": 26474,
+                "message_bytes": 20555,
+                "tool_schema_bytes": 5741,
+                "provider_envelope_and_params": 178,
+                "messages_content_hash": "sha256:f81f55be8b182289d1b732f585a50c407a0b4d6c70ada04fddc9c4f12d20bc93",
+                "tools_content_hash": "sha256:71e1b7e58af6d7b126c45ccc4eed3d4398707846a4aa370513a1bd6709fc687d",
+                "by_dimension": {
+                  "owner": {
+                    "model_final_messages": 20555,
+                    "model_final_tool_catalog": 5741
+                  },
+                  "kind": {
+                    "memory": 3669,
+                    "system": 307,
+                    "tool_catalog": 5741,
+                    "tool_result": 10181,
+                    "user": 6398
+                  },
+                  "source_kind": {
+                    "agent": 20555,
+                    "tool_catalog": 5741
+                  },
+                  "residency": {
+                    "dynamic": 26296
+                  }
+                }
+              },
+              {
+                "ordinal": 6,
+                "request_id_hash": "sha256:77189524b439f32f89316d913b92028a57403c37b15c8b3c0fe7629197ba685e",
+                "total_canonical_bytes": 40084,
+                "message_bytes": 34162,
+                "tool_schema_bytes": 5741,
+                "provider_envelope_and_params": 181,
+                "messages_content_hash": "sha256:0b2fc0a1ef727d6b0012355ff7b5cafaa3a368416edc491bfc6f6eb6c93495a5",
+                "tools_content_hash": "sha256:71e1b7e58af6d7b126c45ccc4eed3d4398707846a4aa370513a1bd6709fc687d",
+                "by_dimension": {
+                  "owner": {
+                    "model_final_messages": 34162,
+                    "model_final_tool_catalog": 5741
+                  },
+                  "kind": {
+                    "memory": 4837,
+                    "system": 307,
+                    "tool_catalog": 5741,
+                    "tool_result": 22112,
+                    "user": 6906
+                  },
+                  "source_kind": {
+                    "agent": 34162,
+                    "tool_catalog": 5741
+                  },
+                  "residency": {
+                    "dynamic": 39903
+                  }
+                }
+              },
+              {
+                "ordinal": 7,
+                "request_id_hash": "sha256:b936a776721935c574917f5643bdaba15f2e8c94b481f7c892935139b46659fa",
+                "total_canonical_bytes": 42726,
+                "message_bytes": 36802,
+                "tool_schema_bytes": 5741,
+                "provider_envelope_and_params": 183,
+                "messages_content_hash": "sha256:86b8bea2f017b17d473c805248344299df9403397da5d82dfe5dde6166461add",
+                "tools_content_hash": "sha256:71e1b7e58af6d7b126c45ccc4eed3d4398707846a4aa370513a1bd6709fc687d",
+                "by_dimension": {
+                  "owner": {
+                    "model_final_messages": 36802,
+                    "model_final_tool_catalog": 5741
+                  },
+                  "kind": {
+                    "memory": 5861,
+                    "system": 307,
+                    "tool_catalog": 5741,
+                    "tool_result": 22448,
+                    "user": 8186
+                  },
+                  "source_kind": {
+                    "agent": 36802,
+                    "tool_catalog": 5741
+                  },
+                  "residency": {
+                    "dynamic": 42543
+                  }
+                }
+              },
+              {
+                "ordinal": 8,
+                "request_id_hash": "sha256:4d27660dd22bcbf48b710f31b5d8c6518469274914b6b4b0db1debf53d2037e2",
+                "total_canonical_bytes": 46843,
+                "message_bytes": 40917,
+                "tool_schema_bytes": 5741,
+                "provider_envelope_and_params": 185,
+                "messages_content_hash": "sha256:d85e79a7b18cee8805ce8f31922748adc584159dd746a2eb249d4c07607935b0",
+                "tools_content_hash": "sha256:71e1b7e58af6d7b126c45ccc4eed3d4398707846a4aa370513a1bd6709fc687d",
+                "by_dimension": {
+                  "owner": {
+                    "model_final_messages": 40917,
+                    "model_final_tool_catalog": 5741
+                  },
+                  "kind": {
+                    "memory": 6208,
+                    "system": 307,
+                    "tool_catalog": 5741,
+                    "tool_result": 25702,
+                    "user": 8700
+                  },
+                  "source_kind": {
+                    "agent": 40917,
+                    "tool_catalog": 5741
+                  },
+                  "residency": {
+                    "dynamic": 46658
+                  }
+                }
+              },
+              {
+                "ordinal": 9,
+                "request_id_hash": "sha256:d1a91def7f640d5fb5ce8a94e78e1c1dd4e7c8f0307b73f6cc2286254f98e39c",
+                "total_canonical_bytes": 48755,
+                "message_bytes": 42827,
+                "tool_schema_bytes": 5741,
+                "provider_envelope_and_params": 187,
+                "messages_content_hash": "sha256:a2f081b2d8371ee10c9820a6ee40be323ecd434765ee51484bfc33cb21379512",
+                "tools_content_hash": "sha256:71e1b7e58af6d7b126c45ccc4eed3d4398707846a4aa370513a1bd6709fc687d",
+                "by_dimension": {
+                  "owner": {
+                    "model_final_messages": 42827,
+                    "model_final_tool_catalog": 5741
+                  },
+                  "kind": {
+                    "memory": 6693,
+                    "system": 307,
+                    "tool_catalog": 5741,
+                    "tool_result": 28956,
+                    "user": 6871
+                  },
+                  "source_kind": {
+                    "agent": 42827,
+                    "tool_catalog": 5741
+                  },
+                  "residency": {
+                    "dynamic": 48568
+                  }
+                }
+              },
+              {
+                "ordinal": 10,
+                "request_id_hash": "sha256:5bb630ea2f8e22d78086764f4ea8d8dd3dc8417b97639641c80fe83d13248221",
+                "total_canonical_bytes": 51180,
+                "message_bytes": 45250,
+                "tool_schema_bytes": 5741,
+                "provider_envelope_and_params": 189,
+                "messages_content_hash": "sha256:010163c367e64e78ea6f7c2d16ad541a23dcb306bd96aeabd6f533aa3e8ef1c4",
+                "tools_content_hash": "sha256:71e1b7e58af6d7b126c45ccc4eed3d4398707846a4aa370513a1bd6709fc687d",
+                "by_dimension": {
+                  "owner": {
+                    "model_final_messages": 45250,
+                    "model_final_tool_catalog": 5741
+                  },
+                  "kind": {
+                    "memory": 7451,
+                    "system": 307,
+                    "tool_catalog": 5741,
+                    "tool_result": 29297,
+                    "user": 8195
+                  },
+                  "source_kind": {
+                    "agent": 45250,
+                    "tool_catalog": 5741
+                  },
+                  "residency": {
+                    "dynamic": 50991
+                  }
+                }
+              },
+              {
+                "ordinal": 11,
+                "request_id_hash": "sha256:28dc64bb8841d460734a45f576977dc51e38a6864cb42835c01103de2a79e485",
+                "total_canonical_bytes": 58952,
+                "message_bytes": 53020,
+                "tool_schema_bytes": 5741,
+                "provider_envelope_and_params": 191,
+                "messages_content_hash": "sha256:c248aea6061e04f66f608ca25f212546fb783cbd8935eb64e5fa6df5008858a3",
+                "tools_content_hash": "sha256:71e1b7e58af6d7b126c45ccc4eed3d4398707846a4aa370513a1bd6709fc687d",
+                "by_dimension": {
+                  "owner": {
+                    "model_final_messages": 53020,
+                    "model_final_tool_catalog": 5741
+                  },
+                  "kind": {
+                    "memory": 7830,
+                    "system": 307,
+                    "tool_catalog": 5741,
+                    "tool_result": 37790,
+                    "user": 7093
+                  },
+                  "source_kind": {
+                    "agent": 53020,
+                    "tool_catalog": 5741
+                  },
+                  "residency": {
+                    "dynamic": 58761
+                  }
+                }
+              },
+              {
+                "ordinal": 12,
+                "request_id_hash": "sha256:26c6b1ac61ed2e23ce8524039852cde70316ff9ce6fa3b58b41703920a759a94",
+                "total_canonical_bytes": 63065,
+                "message_bytes": 57131,
+                "tool_schema_bytes": 5741,
+                "provider_envelope_and_params": 193,
+                "messages_content_hash": "sha256:f88881afd47e8986929a4111d0a7d4b425793bf7d70906f8c72272f4caf9d48c",
+                "tools_content_hash": "sha256:71e1b7e58af6d7b126c45ccc4eed3d4398707846a4aa370513a1bd6709fc687d",
+                "by_dimension": {
+                  "owner": {
+                    "model_final_messages": 57131,
+                    "model_final_tool_catalog": 5741
+                  },
+                  "kind": {
+                    "memory": 8291,
+                    "system": 307,
+                    "tool_catalog": 5741,
+                    "tool_result": 41346,
+                    "user": 7187
+                  },
+                  "source_kind": {
+                    "agent": 57131,
+                    "tool_catalog": 5741
+                  },
+                  "residency": {
+                    "dynamic": 62872
+                  }
+                }
+              },
+              {
+                "ordinal": 13,
+                "request_id_hash": "sha256:1b3b0224b091cd62b370f03570f651db3ef7693f2ec8ac0b3104ab9a65d0af59",
+                "total_canonical_bytes": 65868,
+                "message_bytes": 59932,
+                "tool_schema_bytes": 5741,
+                "provider_envelope_and_params": 195,
+                "messages_content_hash": "sha256:74e6bb12f1a6c1a0f85cbac0609c48b860833f2c4ad21df1f7f0bd282ed51c23",
+                "tools_content_hash": "sha256:71e1b7e58af6d7b126c45ccc4eed3d4398707846a4aa370513a1bd6709fc687d",
+                "by_dimension": {
+                  "owner": {
+                    "model_final_messages": 59932,
+                    "model_final_tool_catalog": 5741
+                  },
+                  "kind": {
+                    "memory": 9318,
+                    "system": 307,
+                    "tool_catalog": 5741,
+                    "tool_result": 42468,
+                    "user": 7839
+                  },
+                  "source_kind": {
+                    "agent": 59932,
+                    "tool_catalog": 5741
+                  },
+                  "residency": {
+                    "dynamic": 65673
+                  }
+                }
+              },
+              {
+                "ordinal": 14,
+                "request_id_hash": "sha256:5f992ff6fb7554e692e5e47cdc9332f8fd71f818098f5dcf4ff6e27f33a53cfa",
+                "total_canonical_bytes": 68557,
+                "message_bytes": 62619,
+                "tool_schema_bytes": 5741,
+                "provider_envelope_and_params": 197,
+                "messages_content_hash": "sha256:c26576133ddc49a7f23210b6cb77115ed1ea7b09b9eb53c4fc73878baa1e4b1b",
+                "tools_content_hash": "sha256:71e1b7e58af6d7b126c45ccc4eed3d4398707846a4aa370513a1bd6709fc687d",
+                "by_dimension": {
+                  "owner": {
+                    "model_final_messages": 62619,
+                    "model_final_tool_catalog": 5741
+                  },
+                  "kind": {
+                    "memory": 9848,
+                    "system": 307,
+                    "tool_catalog": 5741,
+                    "tool_result": 44595,
+                    "user": 7869
+                  },
+                  "source_kind": {
+                    "agent": 62619,
+                    "tool_catalog": 5741
+                  },
+                  "residency": {
+                    "dynamic": 68360
+                  }
+                }
+              },
+              {
+                "ordinal": 15,
+                "request_id_hash": "sha256:f9820effc8cdae8c55502dd30ce668c5d72d436ad8b950bf2b13d58c84f7ec0d",
+                "total_canonical_bytes": 77607,
+                "message_bytes": 71667,
+                "tool_schema_bytes": 5741,
+                "provider_envelope_and_params": 199,
+                "messages_content_hash": "sha256:272cc991f7cc55d3e49bffc7b6a00c4704600186f6e7db27c5eae50148a3e7df",
+                "tools_content_hash": "sha256:71e1b7e58af6d7b126c45ccc4eed3d4398707846a4aa370513a1bd6709fc687d",
+                "by_dimension": {
+                  "owner": {
+                    "model_final_messages": 71667,
+                    "model_final_tool_catalog": 5741
+                  },
+                  "kind": {
+                    "memory": 10240,
+                    "system": 307,
+                    "tool_catalog": 5741,
+                    "tool_result": 53201,
+                    "user": 7919
+                  },
+                  "source_kind": {
+                    "agent": 71667,
+                    "tool_catalog": 5741
+                  },
+                  "residency": {
+                    "dynamic": 77408
+                  }
+                }
+              },
+              {
+                "ordinal": 16,
+                "request_id_hash": "sha256:4a4e95bffa06e760a6bc89258d745e77b72b095ef85e7bb538b1f1bedab96b1f",
+                "total_canonical_bytes": 78052,
+                "message_bytes": 72110,
+                "tool_schema_bytes": 5741,
+                "provider_envelope_and_params": 201,
+                "messages_content_hash": "sha256:6be5658a078061f088d2df951fb752acf670574649d715d91ff5d44fae4078d5",
+                "tools_content_hash": "sha256:71e1b7e58af6d7b126c45ccc4eed3d4398707846a4aa370513a1bd6709fc687d",
+                "by_dimension": {
+                  "owner": {
+                    "model_final_messages": 72110,
+                    "model_final_tool_catalog": 5741
+                  },
+                  "kind": {
+                    "memory": 10917,
+                    "system": 307,
+                    "tool_catalog": 5741,
+                    "tool_result": 53542,
+                    "user": 7344
+                  },
+                  "source_kind": {
+                    "agent": 72110,
+                    "tool_catalog": 5741
+                  },
+                  "residency": {
+                    "dynamic": 77851
+                  }
+                }
+              },
+              {
+                "ordinal": 17,
+                "request_id_hash": "sha256:0a0217cb9423770d956b74331d1faaf56f7ae1dc9b123a9718c115a455ee1eb6",
+                "total_canonical_bytes": 87135,
+                "message_bytes": 81191,
+                "tool_schema_bytes": 5741,
+                "provider_envelope_and_params": 203,
+                "messages_content_hash": "sha256:78d40d6118f29ab14ce4cddc4cb98fdaa2b5eb468cf4f272392a4e63c63dd047",
+                "tools_content_hash": "sha256:71e1b7e58af6d7b126c45ccc4eed3d4398707846a4aa370513a1bd6709fc687d",
+                "by_dimension": {
+                  "owner": {
+                    "model_final_messages": 81191,
+                    "model_final_tool_catalog": 5741
+                  },
+                  "kind": {
+                    "memory": 11295,
+                    "system": 307,
+                    "tool_catalog": 5741,
+                    "tool_result": 62231,
+                    "user": 7358
+                  },
+                  "source_kind": {
+                    "agent": 81191,
+                    "tool_catalog": 5741
+                  },
+                  "residency": {
+                    "dynamic": 86932
+                  }
+                }
+              },
+              {
+                "ordinal": 18,
+                "request_id_hash": "sha256:7b294da05b0af1c40b3655c49ebd492c31d49d867483373a611fb7ac02cdf94f",
+                "total_canonical_bytes": 89971,
+                "message_bytes": 84025,
+                "tool_schema_bytes": 5741,
+                "provider_envelope_and_params": 205,
+                "messages_content_hash": "sha256:8a6126b1757d4488c2416bd3c97433449650c695b867c4b7fffd042cd058b91c",
+                "tools_content_hash": "sha256:71e1b7e58af6d7b126c45ccc4eed3d4398707846a4aa370513a1bd6709fc687d",
+                "by_dimension": {
+                  "owner": {
+                    "model_final_messages": 84025,
+                    "model_final_tool_catalog": 5741
+                  },
+                  "kind": {
+                    "memory": 11712,
+                    "system": 307,
+                    "tool_catalog": 5741,
+                    "tool_result": 64728,
+                    "user": 7278
+                  },
+                  "source_kind": {
+                    "agent": 84025,
+                    "tool_catalog": 5741
+                  },
+                  "residency": {
+                    "dynamic": 89766
+                  }
+                }
+              },
+              {
+                "ordinal": 19,
+                "request_id_hash": "sha256:141268b74dcaf4502de630bd921a208e4cf7a6d329b746dda4bac6be40d3c01d",
+                "total_canonical_bytes": 95872,
+                "message_bytes": 89923,
+                "tool_schema_bytes": 5741,
+                "provider_envelope_and_params": 208,
+                "messages_content_hash": "sha256:6fa65a3c08104b5bb015db8913f06f8eed35246712c56c96cedb500901eef8ad",
+                "tools_content_hash": "sha256:71e1b7e58af6d7b126c45ccc4eed3d4398707846a4aa370513a1bd6709fc687d",
+                "by_dimension": {
+                  "owner": {
+                    "model_final_messages": 89923,
+                    "model_final_tool_catalog": 5741
+                  },
+                  "kind": {
+                    "memory": 12380,
+                    "system": 307,
+                    "tool_catalog": 5741,
+                    "tool_result": 69834,
+                    "user": 7402
+                  },
+                  "source_kind": {
+                    "agent": 89923,
+                    "tool_catalog": 5741
+                  },
+                  "residency": {
+                    "dynamic": 95664
+                  }
+                }
+              }
+            ],
+            "by_dimension": {
+              "owner": {
+                "model_final_messages": 906138,
+                "model_final_tool_catalog": 114820
+              },
+              "kind": {
+                "memory": 132804,
+                "system": 6140,
+                "tool_catalog": 114820,
+                "tool_result": 630115,
+                "user": 137079
+              },
+              "source_kind": {
+                "agent": 906138,
+                "tool_catalog": 114820
+              },
+              "residency": {
+                "dynamic": 1020958
+              }
+            },
+            "dimension_resolution": {
+              "owner": "compiler_owner_v1",
+              "kind": "provider_occurrence_kind_v1",
+              "source_kind": "provider_occurrence_source_v1",
+              "residency": "compiler_logical_residency_v1"
+            },
+            "fallback": "none",
+            "reason": null
+          }
+        }
+      ],
+      "provider_attribution_deltas": [
+        {
+          "experiment": "/Users/wuman/Documents/workspace/aworld-gateway/aworld/artifacts/context-management/cache-economics-release-20260911/terminal-cache-smoke-v10",
+          "case_id": "cancel-async-tasks",
+          "repeat": 1,
+          "baseline_variant": "adaptive-cache-off",
+          "candidate_variant": "adaptive-cache-on",
+          "baseline_run": "/Users/wuman/Documents/workspace/aworld-gateway/aworld/artifacts/context-management/cache-economics-release-20260911/terminal-cache-smoke-v10/runs/cancel-async-tasks/adaptive-cache-off/repeat-01",
+          "candidate_run": "/Users/wuman/Documents/workspace/aworld-gateway/aworld/artifacts/context-management/cache-economics-release-20260911/terminal-cache-smoke-v10/runs/cancel-async-tasks/adaptive-cache-on/repeat-01",
+          "status": "available",
+          "reason": null,
+          "total_canonical_bytes_delta": 122847,
+          "by_dimension_delta": {
+            "owner": {
+              "model_final_messages": 105008,
+              "model_final_tool_catalog": 17223
+            },
+            "kind": {
+              "memory": 10942,
+              "system": 921,
+              "tool_catalog": 17223,
+              "tool_result": 73210,
+              "user": 19935
+            },
+            "source_kind": {
+              "agent": 105008,
+              "tool_catalog": 17223
+            },
+            "residency": {
+              "dynamic": 115170,
+              "stable": 7061
+            }
+          },
+          "dimension_status": {
+            "owner": {
+              "status": "available",
+              "reason": null
+            },
+            "kind": {
+              "status": "available",
+              "reason": null
+            },
+            "source_kind": {
+              "status": "available",
+              "reason": null
+            },
+            "residency": {
+              "status": "available",
+              "reason": null
+            }
+          },
+          "request_amplification": {
+            "status": "available",
+            "baseline_call_count": 20,
+            "candidate_call_count": 23,
+            "aligned_call_count": 20,
+            "candidate_only_call_count": 3,
+            "baseline_only_call_count": 0,
+            "aligned_provider_bytes_delta": -157059,
+            "candidate_only_provider_bytes": 279906,
+            "baseline_only_provider_bytes": 0,
+            "total_provider_bytes_delta": 122847,
+            "byte_reconciliation": true,
+            "first_call": {
+              "messages_match": true,
+              "tools_match": true,
+              "model_visible_inputs_match": true,
+              "provider_bytes_delta": 0,
+              "message_bytes_delta": 0,
+              "tool_schema_bytes_delta": 0,
+              "provider_envelope_and_params_delta": 0
+            }
+          }
+        }
+      ],
+      "provider_attribution_pairing": {
+        "status": "available",
+        "expected_run_count": 2,
+        "actual_run_count": 2,
+        "unique_actual_run_count": 2,
+        "missing_run_count": 0,
+        "unexpected_run_count": 0,
+        "duplicate_run_count": 0,
+        "available_pair_count": 1,
+        "expected_pair_count": 1,
+        "reason": null
+      },
+      "turn_artifact_economics_runs": [
+        {
+          "experiment": "/Users/wuman/Documents/workspace/aworld-gateway/aworld/artifacts/context-management/cache-economics-release-20260911/terminal-cache-smoke-v10",
+          "run": "/Users/wuman/Documents/workspace/aworld-gateway/aworld/artifacts/context-management/cache-economics-release-20260911/terminal-cache-smoke-v10/runs/cancel-async-tasks/adaptive-cache-on/repeat-01",
+          "case_id": "cancel-async-tasks",
+          "variant": "adaptive-cache-on",
+          "repeat": 1,
+          "summary": {
+            "schema_version": "aworld.context.turn-artifact-economics-summary.v1",
+            "turn_causes": {
+              "status": "available",
+              "inferred_framework_retry_count": 0,
+              "model_receipt_count": 23,
+              "tool_receipt_count": 26,
+              "counts": {
+                "artifact_retrieval": {
+                  "model": 0,
+                  "tool": 0
+                },
+                "deferred_catalog_expansion": {
+                  "model": 0,
+                  "tool": 0
+                },
+                "deferred_skill_expansion": {
+                  "model": 0,
+                  "tool": 0
+                },
+                "framework_retry": {
+                  "model": 2,
+                  "tool": 0
+                },
+                "initial_input": {
+                  "model": 1,
+                  "tool": 0
+                },
+                "model_choice": {
+                  "model": 20,
+                  "tool": 26
+                },
+                "unavailable": {
+                  "model": 0,
+                  "tool": 0
+                },
+                "validation_repair": {
+                  "model": 0,
+                  "tool": 0
+                }
+              }
+            },
+            "tool_outputs": {
+              "status": "available",
+              "raw_bytes": 53512,
+              "inline_tokens": 14163,
+              "offloaded_tokens": 0,
+              "double_offload_count": 0,
+              "audit_snapshot_count": 0
+            },
+            "artifacts": {
+              "persisted_count": 0,
+              "persisted_bytes": 0
+            },
+            "retrieval": {
+              "status": "not_applicable",
+              "attempt_count": 0,
+              "failed_attempt_count": 0,
+              "opportunity_count": 0,
+              "retrieval_count": 0,
+              "retrieved_bytes": 0,
+              "consumed_count": 0,
+              "consumption_coverage": 0.0
+            },
+            "artifact_progress": {
+              "status": "not_applicable",
+              "reason": "sandbox_receipts_absent"
+            },
+            "semantic_progress": {
+              "schema_version": "aworld.context.semantic-progress-evidence/v1",
+              "status": "available",
+              "counts": {
+                "semantic_tool_observation_count": 20,
+                "tool_success_to_next_llm_count": 20,
+                "agent_step_count": 21,
+                "agent_step_budget_extension_count": 0,
+                "agent_step_budget_extended_steps": 0,
+                "agent_step_budget_effective_limit": 120,
+                "agent_step_budget_hard_limit": 240,
+                "configured_max_steps": 120
+              },
+              "agents": [
+                {
+                  "agent_id_hash": "3a18567f74ab9f90f0ea9f8c16fc41d614e616139daafb661d43e7b6294aca5f",
+                  "repetition_count": 1,
+                  "low_information_gain_count": 1,
+                  "no_goal_progress_count": 0,
+                  "goal_progress_count": 0,
+                  "goal_progress": false,
+                  "artifact_advanced": false,
+                  "completion_advanced": false,
+                  "operation_hash": "sha256:1d9666e449a7da51debe48bddf4f050976b13cc9be2168e8f55be0cf982db288",
+                  "result_hash": "sha256:cfc77bfb9ab8db8fb8ae879524cd5ab3bb253896856c3bf1ff934c05b625867e"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "experiment": "/Users/wuman/Documents/workspace/aworld-gateway/aworld/artifacts/context-management/cache-economics-release-20260911/terminal-cache-smoke-v10",
+          "run": "/Users/wuman/Documents/workspace/aworld-gateway/aworld/artifacts/context-management/cache-economics-release-20260911/terminal-cache-smoke-v10/runs/cancel-async-tasks/adaptive-cache-off/repeat-01",
+          "case_id": "cancel-async-tasks",
+          "variant": "adaptive-cache-off",
+          "repeat": 1,
+          "summary": {
+            "schema_version": "aworld.context.turn-artifact-economics-summary.v1",
+            "turn_causes": {
+              "status": "available",
+              "inferred_framework_retry_count": 0,
+              "model_receipt_count": 20,
+              "tool_receipt_count": 23,
+              "counts": {
+                "artifact_retrieval": {
+                  "model": 0,
+                  "tool": 0
+                },
+                "deferred_catalog_expansion": {
+                  "model": 0,
+                  "tool": 0
+                },
+                "deferred_skill_expansion": {
+                  "model": 0,
+                  "tool": 0
+                },
+                "framework_retry": {
+                  "model": 1,
+                  "tool": 0
+                },
+                "initial_input": {
+                  "model": 1,
+                  "tool": 0
+                },
+                "model_choice": {
+                  "model": 18,
+                  "tool": 23
+                },
+                "unavailable": {
+                  "model": 0,
+                  "tool": 0
+                },
+                "validation_repair": {
+                  "model": 0,
+                  "tool": 0
+                }
+              }
+            },
+            "tool_outputs": {
+              "status": "available",
+              "raw_bytes": 53530,
+              "inline_tokens": 14182,
+              "offloaded_tokens": 0,
+              "double_offload_count": 0,
+              "audit_snapshot_count": 0
+            },
+            "artifacts": {
+              "persisted_count": 0,
+              "persisted_bytes": 0
+            },
+            "retrieval": {
+              "status": "not_applicable",
+              "attempt_count": 0,
+              "failed_attempt_count": 0,
+              "opportunity_count": 0,
+              "retrieval_count": 0,
+              "retrieved_bytes": 0,
+              "consumed_count": 0,
+              "consumption_coverage": 0.0
+            },
+            "artifact_progress": {
+              "status": "not_applicable",
+              "reason": "sandbox_receipts_absent"
+            },
+            "semantic_progress": {
+              "schema_version": "aworld.context.semantic-progress-evidence/v1",
+              "status": "available",
+              "counts": {
+                "semantic_tool_observation_count": 18,
+                "tool_success_to_next_llm_count": 18,
+                "agent_step_count": 19,
+                "agent_step_budget_extension_count": 0,
+                "agent_step_budget_extended_steps": 0,
+                "agent_step_budget_effective_limit": 120,
+                "agent_step_budget_hard_limit": 240,
+                "configured_max_steps": 120
+              },
+              "agents": [
+                {
+                  "agent_id_hash": "f03ea50894a23dbb71c04b12953addab5d0867d8bab4ccaf15f5556b94395b2e",
+                  "repetition_count": 1,
+                  "low_information_gain_count": 1,
+                  "no_goal_progress_count": 0,
+                  "goal_progress_count": 0,
+                  "goal_progress": false,
+                  "artifact_advanced": false,
+                  "completion_advanced": false,
+                  "operation_hash": "sha256:863d35241d883c9aed688bc26beeee0245db8ec7714d500fa99429c697eabec2",
+                  "result_hash": "sha256:616c9f9d214961c39086709364b89b897d42f7a6b88a6e7f36f34dd502cfd494"
+                }
+              ]
+            }
+          }
+        }
+      ],
+      "turn_artifact_economics_deltas": [
+        {
+          "experiment": "/Users/wuman/Documents/workspace/aworld-gateway/aworld/artifacts/context-management/cache-economics-release-20260911/terminal-cache-smoke-v10",
+          "case_id": "cancel-async-tasks",
+          "repeat": 1,
+          "status": "available",
+          "artifact_progress": {
+            "status": "unsupported",
+            "reason": "paired_artifact_progress_unavailable"
+          },
+          "semantic_progress": {
+            "status": "available",
+            "candidate_minus_baseline": {
+              "agent_step_budget_effective_limit": 0,
+              "agent_step_budget_extended_steps": 0,
+              "agent_step_budget_extension_count": 0,
+              "agent_step_budget_hard_limit": 0,
+              "agent_step_count": 2,
+              "configured_max_steps": 0,
+              "semantic_tool_observation_count": 2,
+              "tool_success_to_next_llm_count": 2
+            }
+          },
+          "candidate_minus_baseline": {
+            "raw_tool_output_bytes": -18,
+            "inline_tool_output_tokens": -19,
+            "offloaded_tool_output_tokens": 0,
+            "double_offload_count": 0,
+            "retrieved_bytes": 0,
+            "artifact_consumed_count": 0,
+            "turn_causes": {
+              "artifact_retrieval": {
+                "model": 0,
+                "tool": 0
+              },
+              "deferred_catalog_expansion": {
+                "model": 0,
+                "tool": 0
+              },
+              "deferred_skill_expansion": {
+                "model": 0,
+                "tool": 0
+              },
+              "framework_retry": {
+                "model": 1,
+                "tool": 0
+              },
+              "initial_input": {
+                "model": 0,
+                "tool": 0
+              },
+              "model_choice": {
+                "model": 2,
+                "tool": 3
+              },
+              "unavailable": {
+                "model": 0,
+                "tool": 0
+              },
+              "validation_repair": {
+                "model": 0,
+                "tool": 0
+              }
+            }
+          }
+        }
+      ],
+      "execution_depth_runs": [
+        {
+          "experiment": "/Users/wuman/Documents/workspace/aworld-gateway/aworld/artifacts/context-management/cache-economics-release-20260911/terminal-cache-smoke-v10",
+          "run": "/Users/wuman/Documents/workspace/aworld-gateway/aworld/artifacts/context-management/cache-economics-release-20260911/terminal-cache-smoke-v10/runs/cancel-async-tasks/adaptive-cache-on/repeat-01",
+          "case_id": "cancel-async-tasks",
+          "variant": "adaptive-cache-on",
+          "repeat": 1,
+          "summary": {
+            "status": "available",
+            "agent_process_completed": true,
+            "agent_completed": true,
+            "loop_budget_exhausted": false,
+            "reward_available": true,
+            "reward": 1.0,
+            "failure_reason_code": null,
+            "model_round_count": 23,
+            "model_round_fidelity": "final_provider_truth",
+            "tool_started_count": 20,
+            "tool_completed_count": 20,
+            "agent_step_count": 21,
+            "configured_max_steps": 120,
+            "wall_time_seconds": 2677.0390980243683,
+            "typed_progress": {
+              "status": "available",
+              "sources": [
+                "semantic_progress"
+              ],
+              "positive_count": 0,
+              "no_progress_count": 0,
+              "recovery_count": 0
+            },
+            "classification": "agent_completed",
+            "supports_quality_claim": false,
+            "interpretation": "Leading execution indicators explain continuity and productive depth; they do not replace independent Reward or completion evidence."
+          }
+        },
+        {
+          "experiment": "/Users/wuman/Documents/workspace/aworld-gateway/aworld/artifacts/context-management/cache-economics-release-20260911/terminal-cache-smoke-v10",
+          "run": "/Users/wuman/Documents/workspace/aworld-gateway/aworld/artifacts/context-management/cache-economics-release-20260911/terminal-cache-smoke-v10/runs/cancel-async-tasks/adaptive-cache-off/repeat-01",
+          "case_id": "cancel-async-tasks",
+          "variant": "adaptive-cache-off",
+          "repeat": 1,
+          "summary": {
+            "status": "available",
+            "agent_process_completed": true,
+            "agent_completed": true,
+            "loop_budget_exhausted": false,
+            "reward_available": true,
+            "reward": 0.0,
+            "failure_reason_code": null,
+            "model_round_count": 20,
+            "model_round_fidelity": "final_provider_truth",
+            "tool_started_count": 18,
+            "tool_completed_count": 18,
+            "agent_step_count": 19,
+            "configured_max_steps": 120,
+            "wall_time_seconds": 989.5304529666901,
+            "typed_progress": {
+              "status": "available",
+              "sources": [
+                "semantic_progress"
+              ],
+              "positive_count": 0,
+              "no_progress_count": 0,
+              "recovery_count": 0
+            },
+            "classification": "agent_completed",
+            "supports_quality_claim": false,
+            "interpretation": "Leading execution indicators explain continuity and productive depth; they do not replace independent Reward or completion evidence."
+          }
+        }
+      ],
+      "execution_depth_deltas": [
+        {
+          "experiment": "/Users/wuman/Documents/workspace/aworld-gateway/aworld/artifacts/context-management/cache-economics-release-20260911/terminal-cache-smoke-v10",
+          "case_id": "cancel-async-tasks",
+          "repeat": 1,
+          "baseline_variant": "adaptive-cache-off",
+          "candidate_variant": "adaptive-cache-on",
+          "status": "available",
+          "agent_completion_delta": 0,
+          "model_round_count_delta": 3,
+          "tool_completed_count_delta": 2,
+          "agent_step_count_delta": 2,
+          "wall_time_seconds_delta": 1687.5086450576782,
+          "typed_positive_progress_delta": 0,
+          "typed_no_progress_delta": 0,
+          "classification": "depth_increased_progress_unavailable",
+          "supports_quality_claim": false
+        }
+      ],
+      "execution_depth_summary": {
+        "schema_version": "aworld.context-execution-depth-summary/v1",
+        "variants": {
+          "adaptive-cache-off": {
+            "run_count": 1,
+            "agent_process_completion_rate": 1.0,
+            "agent_completion_rate": 1.0,
+            "loop_budget_exhaustion_rate": 0.0,
+            "reward_availability_rate": 1.0,
+            "reward_pass_rate_when_available": 0.0,
+            "mean_model_round_count": 20.0,
+            "mean_tool_completed_count": 18.0,
+            "mean_agent_step_count": 19.0,
+            "mean_wall_time_seconds": 989.5304529666901,
+            "classification_counts": {
+              "agent_completed": 1
+            }
+          },
+          "adaptive-cache-on": {
+            "run_count": 1,
+            "agent_process_completion_rate": 1.0,
+            "agent_completion_rate": 1.0,
+            "loop_budget_exhaustion_rate": 0.0,
+            "reward_availability_rate": 1.0,
+            "reward_pass_rate_when_available": 1.0,
+            "mean_model_round_count": 23.0,
+            "mean_tool_completed_count": 20.0,
+            "mean_agent_step_count": 21.0,
+            "mean_wall_time_seconds": 2677.0390980243683,
+            "classification_counts": {
+              "agent_completed": 1
+            }
+          }
+        },
+        "supports_quality_claim": false,
+        "interpretation": "Completion, depth, progress and recovery are leading indicators. Only independent task outcomes establish quality benefit."
+      },
+      "normalized_cost_policy": {
+        "version": "aworld.normalized-cost.cache-adjusted-tokens.v1",
+        "unit": "cache_adjusted_token_equivalent",
+        "uncached_input_microunits_per_token": 1000000,
+        "cache_read_microunits_per_token": 100000,
+        "output_microunits_per_token": 1000000,
+        "policy_hash": "sha256:bed1b5be9859e399a9b8931e3d6c710ab4a6ecc10f284ec1b6e1b83d3ca4ced0"
+      }
+    }
+  ],
+  "combined_benefit": {
+    "complete_pairs": 1,
+    "mean_reward_delta": 1.0,
+    "reward_interval": {
+      "lower": 1.0,
+      "upper": 1.0,
+      "confidence": 0.95,
+      "samples": 10000,
+      "seed": 20261911
+    },
+    "metric_means": {
+      "cache_read_tokens": -5248.0,
+      "cache_usage_bounded_call_count": 0.0,
+      "cache_usage_conflicting_call_count": 0.0,
+      "cache_usage_exact_call_count": 3.0,
+      "cache_usage_exact_coverage": 0.006521739130434856,
+      "cache_usage_exact_input_tokens": 35433.0,
+      "cache_usage_invalid_call_count": 0.0,
+      "cache_usage_unavailable_call_count": 0.0,
+      "completion_tokens": 109533.0,
+      "double_offload_count": 0.0,
+      "evidence_parse_error_count": 0.0,
+      "finalized_projection_call_count_delta": 0.0,
+      "inline_tool_output_tokens": -19.0,
+      "llm_call_journal_bytes": 2793190.0,
+      "llm_call_journal_valid_records": 23.0,
+      "normalized_cost_conservative_delta_microunits": 158639800000.0,
+      "normalized_cost_lower_bound_microunits": 149617300000.0,
+      "normalized_cost_upper_bound_microunits": 148970200000.0,
+      "offloaded_artifact_bytes": 0.0,
+      "offloaded_artifact_count": 0.0,
+      "offloaded_tool_output_tokens": 0.0,
+      "partial_cache_read_tokens": 0.0,
+      "partial_completion_tokens": 0.0,
+      "partial_prompt_tokens": 0.0,
+      "partial_provider_call_count": 0.0,
+      "partial_provider_prefix_unique_count": 0.0,
+      "partial_provider_request_bytes": 0.0,
+      "partial_raw_trajectory_call_count": 0.0,
+      "partial_raw_trajectory_tool_event_count": 0.0,
+      "partial_request_trace_match_count": 0.0,
+      "prompt_tokens": 34714.0,
+      "provider_attributed_value_bytes": 122231.0,
+      "provider_attribution_overhead_bytes": 616.0,
+      "provider_attribution_receipt_count": 3.0,
+      "provider_call_count": 3.0,
+      "provider_prefix_unique_count": 0.0,
+      "provider_request_bytes": 125921.0,
+      "raw_tool_output_bytes": -18.0,
+      "request_trace_match_count": 3.0,
+      "request_trace_match_rate": 0.0,
+      "semantic_agent_step_budget_effective_limit": 0.0,
+      "semantic_agent_step_budget_extended_steps": 0.0,
+      "semantic_agent_step_budget_extension_count": 0.0,
+      "semantic_agent_step_budget_hard_limit": 0.0,
+      "semantic_agent_step_count": 2.0,
+      "semantic_configured_max_steps": 0.0,
+      "semantic_semantic_tool_observation_count": 2.0,
+      "semantic_tool_success_to_next_llm_count": 2.0,
+      "tool_action_journal_bytes": 31836.0,
+      "tool_action_journal_valid_records": 6.0,
+      "trajectory_items": 2.0,
+      "wall_time_seconds": 1687.5304939746857
+    },
+    "metric_intervals": {
+      "cache_read_tokens": {
+        "lower": -5248.0,
+        "upper": -5248.0,
+        "confidence": 0.95,
+        "samples": 10000,
+        "seed": 20261912
+      },
+      "cache_usage_bounded_call_count": {
+        "lower": 0.0,
+        "upper": 0.0,
+        "confidence": 0.95,
+        "samples": 10000,
+        "seed": 20261913
+      },
+      "cache_usage_conflicting_call_count": {
+        "lower": 0.0,
+        "upper": 0.0,
+        "confidence": 0.95,
+        "samples": 10000,
+        "seed": 20261914
+      },
+      "cache_usage_exact_call_count": {
+        "lower": 3.0,
+        "upper": 3.0,
+        "confidence": 0.95,
+        "samples": 10000,
+        "seed": 20261915
+      },
+      "cache_usage_exact_coverage": {
+        "lower": 0.006521739130434856,
+        "upper": 0.006521739130434856,
+        "confidence": 0.95,
+        "samples": 10000,
+        "seed": 20261916
+      },
+      "cache_usage_exact_input_tokens": {
+        "lower": 35433.0,
+        "upper": 35433.0,
+        "confidence": 0.95,
+        "samples": 10000,
+        "seed": 20261917
+      },
+      "cache_usage_invalid_call_count": {
+        "lower": 0.0,
+        "upper": 0.0,
+        "confidence": 0.95,
+        "samples": 10000,
+        "seed": 20261918
+      },
+      "cache_usage_unavailable_call_count": {
+        "lower": 0.0,
+        "upper": 0.0,
+        "confidence": 0.95,
+        "samples": 10000,
+        "seed": 20261919
+      },
+      "completion_tokens": {
+        "lower": 109533.0,
+        "upper": 109533.0,
+        "confidence": 0.95,
+        "samples": 10000,
+        "seed": 20261920
+      },
+      "double_offload_count": {
+        "lower": 0.0,
+        "upper": 0.0,
+        "confidence": 0.95,
+        "samples": 10000,
+        "seed": 20261921
+      },
+      "evidence_parse_error_count": {
+        "lower": 0.0,
+        "upper": 0.0,
+        "confidence": 0.95,
+        "samples": 10000,
+        "seed": 20261922
+      },
+      "finalized_projection_call_count_delta": {
+        "lower": 0.0,
+        "upper": 0.0,
+        "confidence": 0.95,
+        "samples": 10000,
+        "seed": 20261923
+      },
+      "inline_tool_output_tokens": {
+        "lower": -19.0,
+        "upper": -19.0,
+        "confidence": 0.95,
+        "samples": 10000,
+        "seed": 20261924
+      },
+      "llm_call_journal_bytes": {
+        "lower": 2793190.0,
+        "upper": 2793190.0,
+        "confidence": 0.95,
+        "samples": 10000,
+        "seed": 20261925
+      },
+      "llm_call_journal_valid_records": {
+        "lower": 23.0,
+        "upper": 23.0,
+        "confidence": 0.95,
+        "samples": 10000,
+        "seed": 20261926
+      },
+      "normalized_cost_conservative_delta_microunits": {
+        "lower": 158639800000.0,
+        "upper": 158639800000.0,
+        "confidence": 0.95,
+        "samples": 10000,
+        "seed": 20261927
+      },
+      "normalized_cost_lower_bound_microunits": {
+        "lower": 149617300000.0,
+        "upper": 149617300000.0,
+        "confidence": 0.95,
+        "samples": 10000,
+        "seed": 20261928
+      },
+      "normalized_cost_upper_bound_microunits": {
+        "lower": 148970200000.0,
+        "upper": 148970200000.0,
+        "confidence": 0.95,
+        "samples": 10000,
+        "seed": 20261929
+      },
+      "offloaded_artifact_bytes": {
+        "lower": 0.0,
+        "upper": 0.0,
+        "confidence": 0.95,
+        "samples": 10000,
+        "seed": 20261930
+      },
+      "offloaded_artifact_count": {
+        "lower": 0.0,
+        "upper": 0.0,
+        "confidence": 0.95,
+        "samples": 10000,
+        "seed": 20261931
+      },
+      "offloaded_tool_output_tokens": {
+        "lower": 0.0,
+        "upper": 0.0,
+        "confidence": 0.95,
+        "samples": 10000,
+        "seed": 20261932
+      },
+      "partial_cache_read_tokens": {
+        "lower": 0.0,
+        "upper": 0.0,
+        "confidence": 0.95,
+        "samples": 10000,
+        "seed": 20261933
+      },
+      "partial_completion_tokens": {
+        "lower": 0.0,
+        "upper": 0.0,
+        "confidence": 0.95,
+        "samples": 10000,
+        "seed": 20261934
+      },
+      "partial_prompt_tokens": {
+        "lower": 0.0,
+        "upper": 0.0,
+        "confidence": 0.95,
+        "samples": 10000,
+        "seed": 20261935
+      },
+      "partial_provider_call_count": {
+        "lower": 0.0,
+        "upper": 0.0,
+        "confidence": 0.95,
+        "samples": 10000,
+        "seed": 20261936
+      },
+      "partial_provider_prefix_unique_count": {
+        "lower": 0.0,
+        "upper": 0.0,
+        "confidence": 0.95,
+        "samples": 10000,
+        "seed": 20261937
+      },
+      "partial_provider_request_bytes": {
+        "lower": 0.0,
+        "upper": 0.0,
+        "confidence": 0.95,
+        "samples": 10000,
+        "seed": 20261938
+      },
+      "partial_raw_trajectory_call_count": {
+        "lower": 0.0,
+        "upper": 0.0,
+        "confidence": 0.95,
+        "samples": 10000,
+        "seed": 20261939
+      },
+      "partial_raw_trajectory_tool_event_count": {
+        "lower": 0.0,
+        "upper": 0.0,
+        "confidence": 0.95,
+        "samples": 10000,
+        "seed": 20261940
+      },
+      "partial_request_trace_match_count": {
+        "lower": 0.0,
+        "upper": 0.0,
+        "confidence": 0.95,
+        "samples": 10000,
+        "seed": 20261941
+      },
+      "prompt_tokens": {
+        "lower": 34714.0,
+        "upper": 34714.0,
+        "confidence": 0.95,
+        "samples": 10000,
+        "seed": 20261942
+      },
+      "provider_attributed_value_bytes": {
+        "lower": 122231.0,
+        "upper": 122231.0,
+        "confidence": 0.95,
+        "samples": 10000,
+        "seed": 20261943
+      },
+      "provider_attribution_overhead_bytes": {
+        "lower": 616.0,
+        "upper": 616.0,
+        "confidence": 0.95,
+        "samples": 10000,
+        "seed": 20261944
+      },
+      "provider_attribution_receipt_count": {
+        "lower": 3.0,
+        "upper": 3.0,
+        "confidence": 0.95,
+        "samples": 10000,
+        "seed": 20261945
+      },
+      "provider_call_count": {
+        "lower": 3.0,
+        "upper": 3.0,
+        "confidence": 0.95,
+        "samples": 10000,
+        "seed": 20261946
+      },
+      "provider_prefix_unique_count": {
+        "lower": 0.0,
+        "upper": 0.0,
+        "confidence": 0.95,
+        "samples": 10000,
+        "seed": 20261947
+      },
+      "provider_request_bytes": {
+        "lower": 125921.0,
+        "upper": 125921.0,
+        "confidence": 0.95,
+        "samples": 10000,
+        "seed": 20261948
+      },
+      "raw_tool_output_bytes": {
+        "lower": -18.0,
+        "upper": -18.0,
+        "confidence": 0.95,
+        "samples": 10000,
+        "seed": 20261949
+      },
+      "request_trace_match_count": {
+        "lower": 3.0,
+        "upper": 3.0,
+        "confidence": 0.95,
+        "samples": 10000,
+        "seed": 20261950
+      },
+      "request_trace_match_rate": {
+        "lower": 0.0,
+        "upper": 0.0,
+        "confidence": 0.95,
+        "samples": 10000,
+        "seed": 20261951
+      },
+      "semantic_agent_step_budget_effective_limit": {
+        "lower": 0.0,
+        "upper": 0.0,
+        "confidence": 0.95,
+        "samples": 10000,
+        "seed": 20261952
+      },
+      "semantic_agent_step_budget_extended_steps": {
+        "lower": 0.0,
+        "upper": 0.0,
+        "confidence": 0.95,
+        "samples": 10000,
+        "seed": 20261953
+      },
+      "semantic_agent_step_budget_extension_count": {
+        "lower": 0.0,
+        "upper": 0.0,
+        "confidence": 0.95,
+        "samples": 10000,
+        "seed": 20261954
+      },
+      "semantic_agent_step_budget_hard_limit": {
+        "lower": 0.0,
+        "upper": 0.0,
+        "confidence": 0.95,
+        "samples": 10000,
+        "seed": 20261955
+      },
+      "semantic_agent_step_count": {
+        "lower": 2.0,
+        "upper": 2.0,
+        "confidence": 0.95,
+        "samples": 10000,
+        "seed": 20261956
+      },
+      "semantic_configured_max_steps": {
+        "lower": 0.0,
+        "upper": 0.0,
+        "confidence": 0.95,
+        "samples": 10000,
+        "seed": 20261957
+      },
+      "semantic_semantic_tool_observation_count": {
+        "lower": 2.0,
+        "upper": 2.0,
+        "confidence": 0.95,
+        "samples": 10000,
+        "seed": 20261958
+      },
+      "semantic_tool_success_to_next_llm_count": {
+        "lower": 2.0,
+        "upper": 2.0,
+        "confidence": 0.95,
+        "samples": 10000,
+        "seed": 20261959
+      },
+      "tool_action_journal_bytes": {
+        "lower": 31836.0,
+        "upper": 31836.0,
+        "confidence": 0.95,
+        "samples": 10000,
+        "seed": 20261960
+      },
+      "tool_action_journal_valid_records": {
+        "lower": 6.0,
+        "upper": 6.0,
+        "confidence": 0.95,
+        "samples": 10000,
+        "seed": 20261961
+      },
+      "trajectory_items": {
+        "lower": 2.0,
+        "upper": 2.0,
+        "confidence": 0.95,
+        "samples": 10000,
+        "seed": 20261962
+      },
+      "wall_time_seconds": {
+        "lower": 1687.5304939746857,
+        "upper": 1687.5304939746857,
+        "confidence": 0.95,
+        "samples": 10000,
+        "seed": 20261963
+      }
+    }
+  },
+  "combined_benefit_sampling": {
+    "method": "stratified_paired_bootstrap",
+    "stratum_count": 1,
+    "weighting": "observed_pair_count"
+  },
+  "benefit_evidence": {
+    "proven": true,
+    "path": "quality",
+    "reason": "reward_confidence_lower_bound_positive"
+  },
+  "attributed_benefit_evidence": {
+    "proven": false,
+    "path": null,
+    "reason": "provider_native_cache_control_not_applied",
+    "observed_paired_benefit": {
+      "proven": true,
+      "path": "quality",
+      "reason": "reward_confidence_lower_bound_positive"
+    }
+  },
+  "cache_ablation_evidence": [
+    {
+      "experiment": "/Users/wuman/Documents/workspace/aworld-gateway/aworld/artifacts/context-management/cache-economics-release-20260911/terminal-cache-smoke-v10",
+      "status": "available",
+      "reason_code": null,
+      "ablation_plan_hash": "sha256:943f017a297d34eebfa139633ca4c1256e4058eee918b73f6040e6b154ebaf02",
+      "contrast_hash": "sha256:c909e4d1a8940b25c23cf9ffbb9d904ca48ef9c79ea39ff415a7e047ce74cf23",
+      "changed_paths": [
+        "context_cache.allow_provider_native_cache",
+        "context_cache.enabled"
+      ],
+      "preflight_run_nonce_hash": "sha256:639d4444506a27cd5f523459baaa549945b66c7d47763e3d2e1d40a66472f136",
+      "exact_usage_coverage": 1.0,
+      "observation_count": 8,
+      "validated_modes": [
+        "nonstream",
+        "stream"
+      ]
+    }
+  ],
+  "cache_causal_evidence": {
+    "status": "unavailable",
+    "reason_code": "provider_native_cache_control_not_applied",
+    "runs": [
+      {
+        "experiment": "/Users/wuman/Documents/workspace/aworld-gateway/aworld/artifacts/context-management/cache-economics-release-20260911/terminal-cache-smoke-v10",
+        "run": "/Users/wuman/Documents/workspace/aworld-gateway/aworld/artifacts/context-management/cache-economics-release-20260911/terminal-cache-smoke-v10/runs/cancel-async-tasks/adaptive-cache-on/repeat-01",
+        "case_id": "cancel-async-tasks",
+        "variant": "adaptive-cache-on",
+        "repeat": 1,
+        "status": "safety_only",
+        "reason_code": "provider_native_cache_control_not_applied",
+        "call_count": 23,
+        "lowering_counts": {
+          "preserved:exact_prefix_no_hint": 23
+        }
+      },
+      {
+        "experiment": "/Users/wuman/Documents/workspace/aworld-gateway/aworld/artifacts/context-management/cache-economics-release-20260911/terminal-cache-smoke-v10",
+        "run": "/Users/wuman/Documents/workspace/aworld-gateway/aworld/artifacts/context-management/cache-economics-release-20260911/terminal-cache-smoke-v10/runs/cancel-async-tasks/adaptive-cache-off/repeat-01",
+        "case_id": "cancel-async-tasks",
+        "variant": "adaptive-cache-off",
+        "repeat": 1,
+        "status": "available",
+        "reason_code": null,
+        "call_count": 20,
+        "lowering_counts": {
+          "disabled:explicit_opt_out": 20
+        }
+      }
+    ]
+  },
+  "normalized_cost_policy_ready": true,
+  "normalized_cost_exact_policy_ready": false,
+  "normalized_cost_bound_policy_ready": true,
+  "capture_integrity_rate": 1.0,
+  "request_trace_match_rate": 1.0,
+  "trajectory_complete_rate": 1.0,
+  "provider_attribution_runs": [
+    {
+      "experiment": "/Users/wuman/Documents/workspace/aworld-gateway/aworld/artifacts/context-management/cache-economics-release-20260911/terminal-cache-smoke-v10",
+      "run": "/Users/wuman/Documents/workspace/aworld-gateway/aworld/artifacts/context-management/cache-economics-release-20260911/terminal-cache-smoke-v10/runs/cancel-async-tasks/adaptive-cache-on/repeat-01",
+      "case_id": "cancel-async-tasks",
+      "variant": "adaptive-cache-on",
+      "repeat": 1,
+      "summary": {
+        "status": "available",
+        "provider_call_count": 23,
+        "available_receipt_count": 23,
+        "unavailable_receipt_count": 0,
+        "invalid_receipt_count": 0,
+        "coverage_rate": 1.0,
+        "byte_conservation": true,
+        "attributed_value_bytes": 1143189,
+        "provider_envelope_and_params": 4364,
+        "total_canonical_bytes": 1147553,
+        "subject": "candidate_selected",
+        "subject_counts": {
+          "candidate_selected": 23
+        },
+        "per_call": [
+          {
+            "ordinal": 0,
+            "request_id_hash": "sha256:d95ef78e002cea025e416de027f0454cf89d0dc0c618445d721b3a56c1e26f4d",
+            "total_canonical_bytes": 6782,
+            "message_bytes": 875,
+            "tool_schema_bytes": 5741,
+            "provider_envelope_and_params": 166,
+            "messages_content_hash": "sha256:7f88c40a2b32d425d7fa34393c0698ed758adbadebe07fafc7c3d63cddc21012",
+            "tools_content_hash": "sha256:71e1b7e58af6d7b126c45ccc4eed3d4398707846a4aa370513a1bd6709fc687d",
+            "by_dimension": {
+              "owner": {
+                "model_final_messages": 875,
+                "model_final_tool_catalog": 5741
+              },
+              "kind": {
+                "system": 307,
+                "tool_catalog": 5741,
+                "user": 568
+              },
+              "source_kind": {
+                "agent": 875,
+                "tool_catalog": 5741
+              },
+              "residency": {
+                "dynamic": 6309,
+                "stable": 307
+              }
+            }
+          },
+          {
+            "ordinal": 1,
+            "request_id_hash": "sha256:b1d78c707b2dbc00c21d98c80cb1fba19f36383b9087e73301fb5e5f1541a018",
+            "total_canonical_bytes": 12178,
+            "message_bytes": 6267,
+            "tool_schema_bytes": 5741,
+            "provider_envelope_and_params": 170,
+            "messages_content_hash": "sha256:8547b021001e9d60d7a98d4bb65d1a34a7a5055f8fc3b8f35981869331e05736",
+            "tools_content_hash": "sha256:71e1b7e58af6d7b126c45ccc4eed3d4398707846a4aa370513a1bd6709fc687d",
+            "by_dimension": {
+              "owner": {
+                "model_final_messages": 6267,
+                "model_final_tool_catalog": 5741
+              },
+              "kind": {
+                "memory": 543,
+                "system": 307,
+                "tool_catalog": 5741,
+                "tool_result": 1979,
+                "user": 3438
+              },
+              "source_kind": {
+                "agent": 6267,
+                "tool_catalog": 5741
+              },
+              "residency": {
+                "dynamic": 11701,
+                "stable": 307
+              }
+            }
+          },
+          {
+            "ordinal": 2,
+            "request_id_hash": "sha256:ceb2b2c6e7a6545423d7e71f567dc46737ab717a6de6418d43f3b988373001fa",
+            "total_canonical_bytes": 13546,
+            "message_bytes": 7633,
+            "tool_schema_bytes": 5741,
+            "provider_envelope_and_params": 172,
+            "messages_content_hash": "sha256:488cead4e1a67969f24fcac38b2edc09d7abe8195823a4bbbcc47dc6a183f02c",
+            "tools_content_hash": "sha256:71e1b7e58af6d7b126c45ccc4eed3d4398707846a4aa370513a1bd6709fc687d",
+            "by_dimension": {
+              "owner": {
+                "model_final_messages": 7633,
+                "model_final_tool_catalog": 5741
+              },
+              "kind": {
+                "memory": 940,
+                "system": 307,
+                "tool_catalog": 5741,
+                "tool_result": 2282,
+                "user": 4104
+              },
+              "source_kind": {
+                "agent": 7633,
+                "tool_catalog": 5741
+              },
+              "residency": {
+                "dynamic": 13067,
+                "stable": 307
+              }
+            }
+          },
+          {
+            "ordinal": 3,
+            "request_id_hash": "sha256:3e1a228fe4e4287daf7d8e15a0af3c84c7d26fc4d20da842d3375841bd4abb5a",
+            "total_canonical_bytes": 17520,
+            "message_bytes": 11604,
+            "tool_schema_bytes": 5741,
+            "provider_envelope_and_params": 175,
+            "messages_content_hash": "sha256:c041d65485eedc59c9e13e920a00582dcf53b69238141b77c50fb8843822e632",
+            "tools_content_hash": "sha256:71e1b7e58af6d7b126c45ccc4eed3d4398707846a4aa370513a1bd6709fc687d",
+            "by_dimension": {
+              "owner": {
+                "model_final_messages": 11604,
+                "model_final_tool_catalog": 5741
+              },
+              "kind": {
+                "memory": 2109,
+                "system": 307,
+                "tool_catalog": 5741,
+                "tool_result": 2959,
+                "user": 6229
+              },
+              "source_kind": {
+                "agent": 11604,
+                "tool_catalog": 5741
+              },
+              "residency": {
+                "dynamic": 17038,
+                "stable": 307
+              }
+            }
+          },
+          {
+            "ordinal": 4,
+            "request_id_hash": "sha256:308ef0a277aa98d53e0e20da9d78808770eedb892c32e78c861b323cc52208f3",
+            "total_canonical_bytes": 29463,
+            "message_bytes": 23544,
+            "tool_schema_bytes": 5741,
+            "provider_envelope_and_params": 178,
+            "messages_content_hash": "sha256:cb4abfb31544b8403cd41b53d40a46dbe07c41dddb3735cf1e577a9f318da605",
+            "tools_content_hash": "sha256:71e1b7e58af6d7b126c45ccc4eed3d4398707846a4aa370513a1bd6709fc687d",
+            "by_dimension": {
+              "owner": {
+                "model_final_messages": 23544,
+                "model_final_tool_catalog": 5741
+              },
+              "kind": {
+                "memory": 2588,
+                "system": 307,
+                "tool_catalog": 5741,
+                "tool_result": 13035,
+                "user": 7614
+              },
+              "source_kind": {
+                "agent": 23544,
+                "tool_catalog": 5741
+              },
+              "residency": {
+                "dynamic": 28978,
+                "stable": 307
+              }
+            }
+          },
+          {
+            "ordinal": 5,
+            "request_id_hash": "sha256:df53a8cd8bb9376a97146a87a6aa2466ee8dddf3fb27f5668820dca8a6d80d49",
+            "total_canonical_bytes": 32637,
+            "message_bytes": 26716,
+            "tool_schema_bytes": 5741,
+            "provider_envelope_and_params": 180,
+            "messages_content_hash": "sha256:b0d4400cacaed7d5581a86dac4d8275e65f226eb9f79128741f996c8ee367b66",
+            "tools_content_hash": "sha256:71e1b7e58af6d7b126c45ccc4eed3d4398707846a4aa370513a1bd6709fc687d",
+            "by_dimension": {
+              "owner": {
+                "model_final_messages": 26716,
+                "model_final_tool_catalog": 5741
+              },
+              "kind": {
+                "memory": 2970,
+                "system": 307,
+                "tool_catalog": 5741,
+                "tool_result": 16637,
+                "user": 6802
+              },
+              "source_kind": {
+                "agent": 26716,
+                "tool_catalog": 5741
+              },
+              "residency": {
+                "dynamic": 32150,
+                "stable": 307
+              }
+            }
+          },
+          {
+            "ordinal": 6,
+            "request_id_hash": "sha256:38810039890cad0188d13752fb5bf0142c0d61610e9e0001f5cf8a0d5a91e7ae",
+            "total_canonical_bytes": 32637,
+            "message_bytes": 26716,
+            "tool_schema_bytes": 5741,
+            "provider_envelope_and_params": 180,
+            "messages_content_hash": "sha256:b0d4400cacaed7d5581a86dac4d8275e65f226eb9f79128741f996c8ee367b66",
+            "tools_content_hash": "sha256:71e1b7e58af6d7b126c45ccc4eed3d4398707846a4aa370513a1bd6709fc687d",
+            "by_dimension": {
+              "owner": {
+                "model_final_messages": 26716,
+                "model_final_tool_catalog": 5741
+              },
+              "kind": {
+                "memory": 2970,
+                "system": 307,
+                "tool_catalog": 5741,
+                "tool_result": 16637,
+                "user": 6802
+              },
+              "source_kind": {
+                "agent": 26716,
+                "tool_catalog": 5741
+              },
+              "residency": {
+                "dynamic": 32150,
+                "stable": 307
+              }
+            }
+          },
+          {
+            "ordinal": 7,
+            "request_id_hash": "sha256:81924b417214c3f4d116091c5da5b82dd5ddfcc80c927ada6ec727bd52d36f1c",
+            "total_canonical_bytes": 32637,
+            "message_bytes": 26716,
+            "tool_schema_bytes": 5741,
+            "provider_envelope_and_params": 180,
+            "messages_content_hash": "sha256:b0d4400cacaed7d5581a86dac4d8275e65f226eb9f79128741f996c8ee367b66",
+            "tools_content_hash": "sha256:71e1b7e58af6d7b126c45ccc4eed3d4398707846a4aa370513a1bd6709fc687d",
+            "by_dimension": {
+              "owner": {
+                "model_final_messages": 26716,
+                "model_final_tool_catalog": 5741
+              },
+              "kind": {
+                "memory": 2970,
+                "system": 307,
+                "tool_catalog": 5741,
+                "tool_result": 16637,
+                "user": 6802
+              },
+              "source_kind": {
+                "agent": 26716,
+                "tool_catalog": 5741
+              },
+              "residency": {
+                "dynamic": 32150,
+                "stable": 307
+              }
+            }
+          },
+          {
+            "ordinal": 8,
+            "request_id_hash": "sha256:2f93ea830aa51df2e1b0ca03cd5dbfeacfad269b9113434669b2631e4c708fb3",
+            "total_canonical_bytes": 35040,
+            "message_bytes": 29117,
+            "tool_schema_bytes": 5741,
+            "provider_envelope_and_params": 182,
+            "messages_content_hash": "sha256:f2535d3df6e5b149b5afe95b825fb41f1ca9bca309127a7f537a37fb13e81e4b",
+            "tools_content_hash": "sha256:71e1b7e58af6d7b126c45ccc4eed3d4398707846a4aa370513a1bd6709fc687d",
+            "by_dimension": {
+              "owner": {
+                "model_final_messages": 29117,
+                "model_final_tool_catalog": 5741
+              },
+              "kind": {
+                "memory": 3750,
+                "system": 307,
+                "tool_catalog": 5741,
+                "tool_result": 16974,
+                "user": 8086
+              },
+              "source_kind": {
+                "agent": 29117,
+                "tool_catalog": 5741
+              },
+              "residency": {
+                "dynamic": 34551,
+                "stable": 307
+              }
+            }
+          },
+          {
+            "ordinal": 9,
+            "request_id_hash": "sha256:fc2ee5b09885209d5f745c1c3ffda0dabce8adb138e68f6875e6a40b00276ec2",
+            "total_canonical_bytes": 36583,
+            "message_bytes": 30658,
+            "tool_schema_bytes": 5741,
+            "provider_envelope_and_params": 184,
+            "messages_content_hash": "sha256:94a9c4da4b7990f8c9a085394e9e6142fb774dc9cafde12f4d0f8721f5ab8095",
+            "tools_content_hash": "sha256:71e1b7e58af6d7b126c45ccc4eed3d4398707846a4aa370513a1bd6709fc687d",
+            "by_dimension": {
+              "owner": {
+                "model_final_messages": 30658,
+                "model_final_tool_catalog": 5741
+              },
+              "kind": {
+                "memory": 4094,
+                "system": 307,
+                "tool_catalog": 5741,
+                "tool_result": 19458,
+                "user": 6799
+              },
+              "source_kind": {
+                "agent": 30658,
+                "tool_catalog": 5741
+              },
+              "residency": {
+                "dynamic": 36092,
+                "stable": 307
+              }
+            }
+          },
+          {
+            "ordinal": 10,
+            "request_id_hash": "sha256:b05b6519428407c4f4c7730cdea133d7e7e3478bec02100eef26630bcf264db3",
+            "total_canonical_bytes": 39005,
+            "message_bytes": 33078,
+            "tool_schema_bytes": 5741,
+            "provider_envelope_and_params": 186,
+            "messages_content_hash": "sha256:6b7086b1e34c8433a7b070075dda24cd20bcbba022c4c22bb037ad6789ff3343",
+            "tools_content_hash": "sha256:71e1b7e58af6d7b126c45ccc4eed3d4398707846a4aa370513a1bd6709fc687d",
+            "by_dimension": {
+              "owner": {
+                "model_final_messages": 33078,
+                "model_final_tool_catalog": 5741
+              },
+              "kind": {
+                "memory": 4887,
+                "system": 307,
+                "tool_catalog": 5741,
+                "tool_result": 19796,
+                "user": 8088
+              },
+              "source_kind": {
+                "agent": 33078,
+                "tool_catalog": 5741
+              },
+              "residency": {
+                "dynamic": 38512,
+                "stable": 307
+              }
+            }
+          },
+          {
+            "ordinal": 11,
+            "request_id_hash": "sha256:79f1620aa797576175e54055320656e4d4274e8e3ccdf84f17c931170d7a8edb",
+            "total_canonical_bytes": 42117,
+            "message_bytes": 36188,
+            "tool_schema_bytes": 5741,
+            "provider_envelope_and_params": 188,
+            "messages_content_hash": "sha256:0b78178c058c53b8c201ccea51db0115cca4c59443ec1ab17b2d21bdb36d7a18",
+            "tools_content_hash": "sha256:71e1b7e58af6d7b126c45ccc4eed3d4398707846a4aa370513a1bd6709fc687d",
+            "by_dimension": {
+              "owner": {
+                "model_final_messages": 36188,
+                "model_final_tool_catalog": 5741
+              },
+              "kind": {
+                "memory": 5269,
+                "system": 307,
+                "tool_catalog": 5741,
+                "tool_result": 22475,
+                "user": 8137
+              },
+              "source_kind": {
+                "agent": 36188,
+                "tool_catalog": 5741
+              },
+              "residency": {
+                "dynamic": 41622,
+                "stable": 307
+              }
+            }
+          },
+          {
+            "ordinal": 12,
+            "request_id_hash": "sha256:3519fbb3464517c7a0c6de29a4d01e4e43a2af05ef02de7b16efe1d50f2d1ff4",
+            "total_canonical_bytes": 43900,
+            "message_bytes": 37968,
+            "tool_schema_bytes": 5741,
+            "provider_envelope_and_params": 191,
+            "messages_content_hash": "sha256:618ae6e9b946c67563cf7b28d4648d1f34475d22db50dc98a5b1b86cc7dfdba8",
+            "tools_content_hash": "sha256:71e1b7e58af6d7b126c45ccc4eed3d4398707846a4aa370513a1bd6709fc687d",
+            "by_dimension": {
+              "owner": {
+                "model_final_messages": 37968,
+                "model_final_tool_catalog": 5741
+              },
+              "kind": {
+                "memory": 7175,
+                "system": 307,
+                "tool_catalog": 5741,
+                "tool_result": 23152,
+                "user": 7334
+              },
+              "source_kind": {
+                "agent": 37968,
+                "tool_catalog": 5741
+              },
+              "residency": {
+                "dynamic": 43402,
+                "stable": 307
+              }
+            }
+          },
+          {
+            "ordinal": 13,
+            "request_id_hash": "sha256:885c0452f50c7740e841527eb6b0273e39db937c6d44a481c884489f314d3678",
+            "total_canonical_bytes": 55214,
+            "message_bytes": 49279,
+            "tool_schema_bytes": 5741,
+            "provider_envelope_and_params": 194,
+            "messages_content_hash": "sha256:631ec3f46081fc5dd237d547bb0a5f6dcc0b2c73ffe6eecdf3d796a84c606657",
+            "tools_content_hash": "sha256:71e1b7e58af6d7b126c45ccc4eed3d4398707846a4aa370513a1bd6709fc687d",
+            "by_dimension": {
+              "owner": {
+                "model_final_messages": 49279,
+                "model_final_tool_catalog": 5741
+              },
+              "kind": {
+                "memory": 7649,
+                "system": 307,
+                "tool_catalog": 5741,
+                "tool_result": 33763,
+                "user": 7560
+              },
+              "source_kind": {
+                "agent": 49279,
+                "tool_catalog": 5741
+              },
+              "residency": {
+                "dynamic": 54713,
+                "stable": 307
+              }
+            }
+          },
+          {
+            "ordinal": 14,
+            "request_id_hash": "sha256:0ec9b482c376cc51b22b9c395e61c39a51c5c8997d1e4c00dfd4e3046a430ed0",
+            "total_canonical_bytes": 61473,
+            "message_bytes": 55536,
+            "tool_schema_bytes": 5741,
+            "provider_envelope_and_params": 196,
+            "messages_content_hash": "sha256:e233625aeedac8cdd0c234aee15fd2d64bbc0c386522f7e55605224ca2eaf2a0",
+            "tools_content_hash": "sha256:71e1b7e58af6d7b126c45ccc4eed3d4398707846a4aa370513a1bd6709fc687d",
+            "by_dimension": {
+              "owner": {
+                "model_final_messages": 55536,
+                "model_final_tool_catalog": 5741
+              },
+              "kind": {
+                "memory": 8182,
+                "system": 307,
+                "tool_catalog": 5741,
+                "tool_result": 39709,
+                "user": 7338
+              },
+              "source_kind": {
+                "agent": 55536,
+                "tool_catalog": 5741
+              },
+              "residency": {
+                "dynamic": 60970,
+                "stable": 307
+              }
+            }
+          },
+          {
+            "ordinal": 15,
+            "request_id_hash": "sha256:c4b91469c83e3859821642764d9048ce4fed51f0846f57669a5e66696d0aa1f6",
+            "total_canonical_bytes": 62223,
+            "message_bytes": 56284,
+            "tool_schema_bytes": 5741,
+            "provider_envelope_and_params": 198,
+            "messages_content_hash": "sha256:a45ef4732d3c5ed2d67ffaad971215f9c80843a79fd31e943afea403d71217ff",
+            "tools_content_hash": "sha256:71e1b7e58af6d7b126c45ccc4eed3d4398707846a4aa370513a1bd6709fc687d",
+            "by_dimension": {
+              "owner": {
+                "model_final_messages": 56284,
+                "model_final_tool_catalog": 5741
+              },
+              "kind": {
+                "memory": 8795,
+                "system": 307,
+                "tool_catalog": 5741,
+                "tool_result": 41168,
+                "user": 6014
+              },
+              "source_kind": {
+                "agent": 56284,
+                "tool_catalog": 5741
+              },
+              "residency": {
+                "dynamic": 61718,
+                "stable": 307
+              }
+            }
+          },
+          {
+            "ordinal": 16,
+            "request_id_hash": "sha256:bf3676ed3e7d53644560e36fbd1e655172ff75da84291f6042dcdd58a611dc0c",
+            "total_canonical_bytes": 71564,
+            "message_bytes": 65623,
+            "tool_schema_bytes": 5741,
+            "provider_envelope_and_params": 200,
+            "messages_content_hash": "sha256:114c18e035068746cc72071bb5498f97c199fe6e26c1a2a42717798dd4341ea5",
+            "tools_content_hash": "sha256:71e1b7e58af6d7b126c45ccc4eed3d4398707846a4aa370513a1bd6709fc687d",
+            "by_dimension": {
+              "owner": {
+                "model_final_messages": 65623,
+                "model_final_tool_catalog": 5741
+              },
+              "kind": {
+                "memory": 9414,
+                "system": 307,
+                "tool_catalog": 5741,
+                "tool_result": 48121,
+                "user": 7781
+              },
+              "source_kind": {
+                "agent": 65623,
+                "tool_catalog": 5741
+              },
+              "residency": {
+                "dynamic": 71057,
+                "stable": 307
+              }
+            }
+          },
+          {
+            "ordinal": 17,
+            "request_id_hash": "sha256:3effa9d9cb4575d58ffa23dad57d9d526a85ad6ebc1a76c9441239a408352db3",
+            "total_canonical_bytes": 74624,
+            "message_bytes": 68681,
+            "tool_schema_bytes": 5741,
+            "provider_envelope_and_params": 202,
+            "messages_content_hash": "sha256:70cac3dd6e23f11ab18d2f51084c148fe0bf90409c41c9994e329d4e08b2e9a7",
+            "tools_content_hash": "sha256:71e1b7e58af6d7b126c45ccc4eed3d4398707846a4aa370513a1bd6709fc687d",
+            "by_dimension": {
+              "owner": {
+                "model_final_messages": 68681,
+                "model_final_tool_catalog": 5741
+              },
+              "kind": {
+                "memory": 10135,
+                "system": 307,
+                "tool_catalog": 5741,
+                "tool_result": 50300,
+                "user": 7939
+              },
+              "source_kind": {
+                "agent": 68681,
+                "tool_catalog": 5741
+              },
+              "residency": {
+                "dynamic": 74115,
+                "stable": 307
+              }
+            }
+          },
+          {
+            "ordinal": 18,
+            "request_id_hash": "sha256:4d25cc864bd1db491cb4ced6dfd9ac9651408ca22f2d950c3f72e18605876ed9",
+            "total_canonical_bytes": 82087,
+            "message_bytes": 76142,
+            "tool_schema_bytes": 5741,
+            "provider_envelope_and_params": 204,
+            "messages_content_hash": "sha256:daa94ab0b312ad2ba07cddbe6fe6619a5abb8cf4d69f5f1d73e8ff9fc94822fd",
+            "tools_content_hash": "sha256:71e1b7e58af6d7b126c45ccc4eed3d4398707846a4aa370513a1bd6709fc687d",
+            "by_dimension": {
+              "owner": {
+                "model_final_messages": 76142,
+                "model_final_tool_catalog": 5741
+              },
+              "kind": {
+                "memory": 10639,
+                "system": 307,
+                "tool_catalog": 5741,
+                "tool_result": 57253,
+                "user": 7943
+              },
+              "source_kind": {
+                "agent": 76142,
+                "tool_catalog": 5741
+              },
+              "residency": {
+                "dynamic": 81576,
+                "stable": 307
+              }
+            }
+          },
+          {
+            "ordinal": 19,
+            "request_id_hash": "sha256:78589355cf8636c4075de968468e36836971516231c01c2afd7512652d8e8496",
+            "total_canonical_bytes": 86417,
+            "message_bytes": 80470,
+            "tool_schema_bytes": 5741,
+            "provider_envelope_and_params": 206,
+            "messages_content_hash": "sha256:1c0f3044767503439d67bb301b66410f602be0ad71f563ea353641d52fdb967f",
+            "tools_content_hash": "sha256:71e1b7e58af6d7b126c45ccc4eed3d4398707846a4aa370513a1bd6709fc687d",
+            "by_dimension": {
+              "owner": {
+                "model_final_messages": 80470,
+                "model_final_tool_catalog": 5741
+              },
+              "kind": {
+                "memory": 11430,
+                "system": 307,
+                "tool_catalog": 5741,
+                "tool_result": 60317,
+                "user": 8416
+              },
+              "source_kind": {
+                "agent": 80470,
+                "tool_catalog": 5741
+              },
+              "residency": {
+                "dynamic": 85904,
+                "stable": 307
+              }
+            }
+          },
+          {
+            "ordinal": 20,
+            "request_id_hash": "sha256:f9501b5012f012e3f592023b0a2dd3f264fbcbd3dcc2a5b15ddb62814d1bf38f",
+            "total_canonical_bytes": 88630,
+            "message_bytes": 82681,
+            "tool_schema_bytes": 5741,
+            "provider_envelope_and_params": 208,
+            "messages_content_hash": "sha256:3e244bfbda7c46f246fe2ccab565ee105a8650292e4873847cd9e12c2a11e980",
+            "tools_content_hash": "sha256:71e1b7e58af6d7b126c45ccc4eed3d4398707846a4aa370513a1bd6709fc687d",
+            "by_dimension": {
+              "owner": {
+                "model_final_messages": 82681,
+                "model_final_tool_catalog": 5741
+              },
+              "kind": {
+                "memory": 11797,
+                "system": 307,
+                "tool_catalog": 5741,
+                "tool_result": 62313,
+                "user": 8264
+              },
+              "source_kind": {
+                "agent": 82681,
+                "tool_catalog": 5741
+              },
+              "residency": {
+                "dynamic": 88115,
+                "stable": 307
+              }
+            }
+          },
+          {
+            "ordinal": 21,
+            "request_id_hash": "sha256:527c09262d0b79e5879c998ef77a4eb8301dfa5ec1d0d35ffe6d0743ed9e64b7",
+            "total_canonical_bytes": 94122,
+            "message_bytes": 88170,
+            "tool_schema_bytes": 5741,
+            "provider_envelope_and_params": 211,
+            "messages_content_hash": "sha256:f58b6f870c3aad655c5a5d0f7b17e341140e58ea8ea464fb768a08bf46c62c44",
+            "tools_content_hash": "sha256:71e1b7e58af6d7b126c45ccc4eed3d4398707846a4aa370513a1bd6709fc687d",
+            "by_dimension": {
+              "owner": {
+                "model_final_messages": 88170,
+                "model_final_tool_catalog": 5741
+              },
+              "kind": {
+                "memory": 12501,
+                "system": 307,
+                "tool_catalog": 5741,
+                "tool_result": 67881,
+                "user": 7481
+              },
+              "source_kind": {
+                "agent": 88170,
+                "tool_catalog": 5741
+              },
+              "residency": {
+                "dynamic": 93604,
+                "stable": 307
+              }
+            }
+          },
+          {
+            "ordinal": 22,
+            "request_id_hash": "sha256:303028156c69cdaf6ba7aadd3211a9791e67c84559afa147957284cce5471f4c",
+            "total_canonical_bytes": 97154,
+            "message_bytes": 91200,
+            "tool_schema_bytes": 5741,
+            "provider_envelope_and_params": 213,
+            "messages_content_hash": "sha256:e910cf2f29d85c3109654c9de5756f50979de019cfcbdd307dc0e209562c1086",
+            "tools_content_hash": "sha256:71e1b7e58af6d7b126c45ccc4eed3d4398707846a4aa370513a1bd6709fc687d",
+            "by_dimension": {
+              "owner": {
+                "model_final_messages": 91200,
+                "model_final_tool_catalog": 5741
+              },
+              "kind": {
+                "memory": 12939,
+                "system": 307,
+                "tool_catalog": 5741,
+                "tool_result": 70479,
+                "user": 7475
+              },
+              "source_kind": {
+                "agent": 91200,
+                "tool_catalog": 5741
+              },
+              "residency": {
+                "dynamic": 96634,
+                "stable": 307
+              }
+            }
+          }
+        ],
+        "by_dimension": {
+          "owner": {
+            "model_final_messages": 1011146,
+            "model_final_tool_catalog": 132043
+          },
+          "kind": {
+            "memory": 143746,
+            "system": 7061,
+            "tool_catalog": 132043,
+            "tool_result": 703325,
+            "user": 157014
+          },
+          "source_kind": {
+            "agent": 1011146,
+            "tool_catalog": 132043
+          },
+          "residency": {
+            "dynamic": 1136128,
+            "stable": 7061
+          }
+        },
+        "dimension_resolution": {
+          "owner": "compiler_owner_v1",
+          "kind": "provider_occurrence_kind_v1",
+          "source_kind": "provider_occurrence_source_v1",
+          "residency": "compiler_logical_residency_v1"
+        },
+        "fallback": "none",
+        "reason": null
+      }
+    },
+    {
+      "experiment": "/Users/wuman/Documents/workspace/aworld-gateway/aworld/artifacts/context-management/cache-economics-release-20260911/terminal-cache-smoke-v10",
+      "run": "/Users/wuman/Documents/workspace/aworld-gateway/aworld/artifacts/context-management/cache-economics-release-20260911/terminal-cache-smoke-v10/runs/cancel-async-tasks/adaptive-cache-off/repeat-01",
+      "case_id": "cancel-async-tasks",
+      "variant": "adaptive-cache-off",
+      "repeat": 1,
+      "summary": {
+        "status": "available",
+        "provider_call_count": 20,
+        "available_receipt_count": 20,
+        "unavailable_receipt_count": 0,
+        "invalid_receipt_count": 0,
+        "coverage_rate": 1.0,
+        "byte_conservation": true,
+        "attributed_value_bytes": 1020958,
+        "provider_envelope_and_params": 3748,
+        "total_canonical_bytes": 1024706,
+        "subject": "candidate_selected",
+        "subject_counts": {
+          "candidate_selected": 20
+        },
+        "per_call": [
+          {
+            "ordinal": 0,
+            "request_id_hash": "sha256:f60a3880203d33336a9ad5a2afc065a2f5d6247e3aeec27319465b481e068376",
+            "total_canonical_bytes": 6782,
+            "message_bytes": 875,
+            "tool_schema_bytes": 5741,
+            "provider_envelope_and_params": 166,
+            "messages_content_hash": "sha256:7f88c40a2b32d425d7fa34393c0698ed758adbadebe07fafc7c3d63cddc21012",
+            "tools_content_hash": "sha256:71e1b7e58af6d7b126c45ccc4eed3d4398707846a4aa370513a1bd6709fc687d",
+            "by_dimension": {
+              "owner": {
+                "model_final_messages": 875,
+                "model_final_tool_catalog": 5741
+              },
+              "kind": {
+                "system": 307,
+                "tool_catalog": 5741,
+                "user": 568
+              },
+              "source_kind": {
+                "agent": 875,
+                "tool_catalog": 5741
+              },
+              "residency": {
+                "dynamic": 6616
+              }
+            }
+          },
+          {
+            "ordinal": 1,
+            "request_id_hash": "sha256:faedd81eb8c6bc346e88cdac2e5a2216822a9107d44db7b71b385382f3edb338",
+            "total_canonical_bytes": 14519,
+            "message_bytes": 8608,
+            "tool_schema_bytes": 5741,
+            "provider_envelope_and_params": 170,
+            "messages_content_hash": "sha256:bdd736b214262389a19e82fe34fc2a00b31e7e3852394321a8b59950e5d332f0",
+            "tools_content_hash": "sha256:71e1b7e58af6d7b126c45ccc4eed3d4398707846a4aa370513a1bd6709fc687d",
+            "by_dimension": {
+              "owner": {
+                "model_final_messages": 8608,
+                "model_final_tool_catalog": 5741
+              },
+              "kind": {
+                "memory": 589,
+                "system": 307,
+                "tool_catalog": 5741,
+                "tool_result": 3147,
+                "user": 4565
+              },
+              "source_kind": {
+                "agent": 8608,
+                "tool_catalog": 5741
+              },
+              "residency": {
+                "dynamic": 14349
+              }
+            }
+          },
+          {
+            "ordinal": 2,
+            "request_id_hash": "sha256:b034f582d95de98cd8d458b173639b9cdd48cab434b189d8e88ddfa3a1662123",
+            "total_canonical_bytes": 14519,
+            "message_bytes": 8608,
+            "tool_schema_bytes": 5741,
+            "provider_envelope_and_params": 170,
+            "messages_content_hash": "sha256:bdd736b214262389a19e82fe34fc2a00b31e7e3852394321a8b59950e5d332f0",
+            "tools_content_hash": "sha256:71e1b7e58af6d7b126c45ccc4eed3d4398707846a4aa370513a1bd6709fc687d",
+            "by_dimension": {
+              "owner": {
+                "model_final_messages": 8608,
+                "model_final_tool_catalog": 5741
+              },
+              "kind": {
+                "memory": 589,
+                "system": 307,
+                "tool_catalog": 5741,
+                "tool_result": 3147,
+                "user": 4565
+              },
+              "source_kind": {
+                "agent": 8608,
+                "tool_catalog": 5741
+              },
+              "residency": {
+                "dynamic": 14349
+              }
+            }
+          },
+          {
+            "ordinal": 3,
+            "request_id_hash": "sha256:b5eb99fc737b0334dcca8f7789462f1409dbb33ae4df5efc14f948d30931649e",
+            "total_canonical_bytes": 21715,
+            "message_bytes": 15802,
+            "tool_schema_bytes": 5741,
+            "provider_envelope_and_params": 172,
+            "messages_content_hash": "sha256:023d011de13ba954564b68ab118e7156e1204d8ad1c1033763f017dbb81193d3",
+            "tools_content_hash": "sha256:71e1b7e58af6d7b126c45ccc4eed3d4398707846a4aa370513a1bd6709fc687d",
+            "by_dimension": {
+              "owner": {
+                "model_final_messages": 15802,
+                "model_final_tool_catalog": 5741
+              },
+              "kind": {
+                "memory": 2179,
+                "system": 307,
+                "tool_catalog": 5741,
+                "tool_result": 6089,
+                "user": 7227
+              },
+              "source_kind": {
+                "agent": 15802,
+                "tool_catalog": 5741
+              },
+              "residency": {
+                "dynamic": 21543
+              }
+            }
+          },
+          {
+            "ordinal": 4,
+            "request_id_hash": "sha256:ff1701c560c8658d62b763ef9deaeefb8c5ad2bb9930a0956dc2ea19eeaa11cd",
+            "total_canonical_bytes": 26030,
+            "message_bytes": 20114,
+            "tool_schema_bytes": 5741,
+            "provider_envelope_and_params": 175,
+            "messages_content_hash": "sha256:689c61c35c007a0b5c52e3dd3107629b8905d04d8fb1fb2a4fdfc1848b4433ab",
+            "tools_content_hash": "sha256:71e1b7e58af6d7b126c45ccc4eed3d4398707846a4aa370513a1bd6709fc687d",
+            "by_dimension": {
+              "owner": {
+                "model_final_messages": 20114,
+                "model_final_tool_catalog": 5741
+              },
+              "kind": {
+                "memory": 2897,
+                "system": 307,
+                "tool_catalog": 5741,
+                "tool_result": 9301,
+                "user": 7609
+              },
+              "source_kind": {
+                "agent": 20114,
+                "tool_catalog": 5741
+              },
+              "residency": {
+                "dynamic": 25855
+              }
+            }
+          },
+          {
+            "ordinal": 5,
+            "request_id_hash": "sha256:4cc7cc74e5dfd031b2df47af170d9dd958be2b3d2c671110e9e910e3ef2e755d",
+            "total_canonical_bytes": 26474,
+            "message_bytes": 20555,
+            "tool_schema_bytes": 5741,
+            "provider_envelope_and_params": 178,
+            "messages_content_hash": "sha256:f81f55be8b182289d1b732f585a50c407a0b4d6c70ada04fddc9c4f12d20bc93",
+            "tools_content_hash": "sha256:71e1b7e58af6d7b126c45ccc4eed3d4398707846a4aa370513a1bd6709fc687d",
+            "by_dimension": {
+              "owner": {
+                "model_final_messages": 20555,
+                "model_final_tool_catalog": 5741
+              },
+              "kind": {
+                "memory": 3669,
+                "system": 307,
+                "tool_catalog": 5741,
+                "tool_result": 10181,
+                "user": 6398
+              },
+              "source_kind": {
+                "agent": 20555,
+                "tool_catalog": 5741
+              },
+              "residency": {
+                "dynamic": 26296
+              }
+            }
+          },
+          {
+            "ordinal": 6,
+            "request_id_hash": "sha256:77189524b439f32f89316d913b92028a57403c37b15c8b3c0fe7629197ba685e",
+            "total_canonical_bytes": 40084,
+            "message_bytes": 34162,
+            "tool_schema_bytes": 5741,
+            "provider_envelope_and_params": 181,
+            "messages_content_hash": "sha256:0b2fc0a1ef727d6b0012355ff7b5cafaa3a368416edc491bfc6f6eb6c93495a5",
+            "tools_content_hash": "sha256:71e1b7e58af6d7b126c45ccc4eed3d4398707846a4aa370513a1bd6709fc687d",
+            "by_dimension": {
+              "owner": {
+                "model_final_messages": 34162,
+                "model_final_tool_catalog": 5741
+              },
+              "kind": {
+                "memory": 4837,
+                "system": 307,
+                "tool_catalog": 5741,
+                "tool_result": 22112,
+                "user": 6906
+              },
+              "source_kind": {
+                "agent": 34162,
+                "tool_catalog": 5741
+              },
+              "residency": {
+                "dynamic": 39903
+              }
+            }
+          },
+          {
+            "ordinal": 7,
+            "request_id_hash": "sha256:b936a776721935c574917f5643bdaba15f2e8c94b481f7c892935139b46659fa",
+            "total_canonical_bytes": 42726,
+            "message_bytes": 36802,
+            "tool_schema_bytes": 5741,
+            "provider_envelope_and_params": 183,
+            "messages_content_hash": "sha256:86b8bea2f017b17d473c805248344299df9403397da5d82dfe5dde6166461add",
+            "tools_content_hash": "sha256:71e1b7e58af6d7b126c45ccc4eed3d4398707846a4aa370513a1bd6709fc687d",
+            "by_dimension": {
+              "owner": {
+                "model_final_messages": 36802,
+                "model_final_tool_catalog": 5741
+              },
+              "kind": {
+                "memory": 5861,
+                "system": 307,
+                "tool_catalog": 5741,
+                "tool_result": 22448,
+                "user": 8186
+              },
+              "source_kind": {
+                "agent": 36802,
+                "tool_catalog": 5741
+              },
+              "residency": {
+                "dynamic": 42543
+              }
+            }
+          },
+          {
+            "ordinal": 8,
+            "request_id_hash": "sha256:4d27660dd22bcbf48b710f31b5d8c6518469274914b6b4b0db1debf53d2037e2",
+            "total_canonical_bytes": 46843,
+            "message_bytes": 40917,
+            "tool_schema_bytes": 5741,
+            "provider_envelope_and_params": 185,
+            "messages_content_hash": "sha256:d85e79a7b18cee8805ce8f31922748adc584159dd746a2eb249d4c07607935b0",
+            "tools_content_hash": "sha256:71e1b7e58af6d7b126c45ccc4eed3d4398707846a4aa370513a1bd6709fc687d",
+            "by_dimension": {
+              "owner": {
+                "model_final_messages": 40917,
+                "model_final_tool_catalog": 5741
+              },
+              "kind": {
+                "memory": 6208,
+                "system": 307,
+                "tool_catalog": 5741,
+                "tool_result": 25702,
+                "user": 8700
+              },
+              "source_kind": {
+                "agent": 40917,
+                "tool_catalog": 5741
+              },
+              "residency": {
+                "dynamic": 46658
+              }
+            }
+          },
+          {
+            "ordinal": 9,
+            "request_id_hash": "sha256:d1a91def7f640d5fb5ce8a94e78e1c1dd4e7c8f0307b73f6cc2286254f98e39c",
+            "total_canonical_bytes": 48755,
+            "message_bytes": 42827,
+            "tool_schema_bytes": 5741,
+            "provider_envelope_and_params": 187,
+            "messages_content_hash": "sha256:a2f081b2d8371ee10c9820a6ee40be323ecd434765ee51484bfc33cb21379512",
+            "tools_content_hash": "sha256:71e1b7e58af6d7b126c45ccc4eed3d4398707846a4aa370513a1bd6709fc687d",
+            "by_dimension": {
+              "owner": {
+                "model_final_messages": 42827,
+                "model_final_tool_catalog": 5741
+              },
+              "kind": {
+                "memory": 6693,
+                "system": 307,
+                "tool_catalog": 5741,
+                "tool_result": 28956,
+                "user": 6871
+              },
+              "source_kind": {
+                "agent": 42827,
+                "tool_catalog": 5741
+              },
+              "residency": {
+                "dynamic": 48568
+              }
+            }
+          },
+          {
+            "ordinal": 10,
+            "request_id_hash": "sha256:5bb630ea2f8e22d78086764f4ea8d8dd3dc8417b97639641c80fe83d13248221",
+            "total_canonical_bytes": 51180,
+            "message_bytes": 45250,
+            "tool_schema_bytes": 5741,
+            "provider_envelope_and_params": 189,
+            "messages_content_hash": "sha256:010163c367e64e78ea6f7c2d16ad541a23dcb306bd96aeabd6f533aa3e8ef1c4",
+            "tools_content_hash": "sha256:71e1b7e58af6d7b126c45ccc4eed3d4398707846a4aa370513a1bd6709fc687d",
+            "by_dimension": {
+              "owner": {
+                "model_final_messages": 45250,
+                "model_final_tool_catalog": 5741
+              },
+              "kind": {
+                "memory": 7451,
+                "system": 307,
+                "tool_catalog": 5741,
+                "tool_result": 29297,
+                "user": 8195
+              },
+              "source_kind": {
+                "agent": 45250,
+                "tool_catalog": 5741
+              },
+              "residency": {
+                "dynamic": 50991
+              }
+            }
+          },
+          {
+            "ordinal": 11,
+            "request_id_hash": "sha256:28dc64bb8841d460734a45f576977dc51e38a6864cb42835c01103de2a79e485",
+            "total_canonical_bytes": 58952,
+            "message_bytes": 53020,
+            "tool_schema_bytes": 5741,
+            "provider_envelope_and_params": 191,
+            "messages_content_hash": "sha256:c248aea6061e04f66f608ca25f212546fb783cbd8935eb64e5fa6df5008858a3",
+            "tools_content_hash": "sha256:71e1b7e58af6d7b126c45ccc4eed3d4398707846a4aa370513a1bd6709fc687d",
+            "by_dimension": {
+              "owner": {
+                "model_final_messages": 53020,
+                "model_final_tool_catalog": 5741
+              },
+              "kind": {
+                "memory": 7830,
+                "system": 307,
+                "tool_catalog": 5741,
+                "tool_result": 37790,
+                "user": 7093
+              },
+              "source_kind": {
+                "agent": 53020,
+                "tool_catalog": 5741
+              },
+              "residency": {
+                "dynamic": 58761
+              }
+            }
+          },
+          {
+            "ordinal": 12,
+            "request_id_hash": "sha256:26c6b1ac61ed2e23ce8524039852cde70316ff9ce6fa3b58b41703920a759a94",
+            "total_canonical_bytes": 63065,
+            "message_bytes": 57131,
+            "tool_schema_bytes": 5741,
+            "provider_envelope_and_params": 193,
+            "messages_content_hash": "sha256:f88881afd47e8986929a4111d0a7d4b425793bf7d70906f8c72272f4caf9d48c",
+            "tools_content_hash": "sha256:71e1b7e58af6d7b126c45ccc4eed3d4398707846a4aa370513a1bd6709fc687d",
+            "by_dimension": {
+              "owner": {
+                "model_final_messages": 57131,
+                "model_final_tool_catalog": 5741
+              },
+              "kind": {
+                "memory": 8291,
+                "system": 307,
+                "tool_catalog": 5741,
+                "tool_result": 41346,
+                "user": 7187
+              },
+              "source_kind": {
+                "agent": 57131,
+                "tool_catalog": 5741
+              },
+              "residency": {
+                "dynamic": 62872
+              }
+            }
+          },
+          {
+            "ordinal": 13,
+            "request_id_hash": "sha256:1b3b0224b091cd62b370f03570f651db3ef7693f2ec8ac0b3104ab9a65d0af59",
+            "total_canonical_bytes": 65868,
+            "message_bytes": 59932,
+            "tool_schema_bytes": 5741,
+            "provider_envelope_and_params": 195,
+            "messages_content_hash": "sha256:74e6bb12f1a6c1a0f85cbac0609c48b860833f2c4ad21df1f7f0bd282ed51c23",
+            "tools_content_hash": "sha256:71e1b7e58af6d7b126c45ccc4eed3d4398707846a4aa370513a1bd6709fc687d",
+            "by_dimension": {
+              "owner": {
+                "model_final_messages": 59932,
+                "model_final_tool_catalog": 5741
+              },
+              "kind": {
+                "memory": 9318,
+                "system": 307,
+                "tool_catalog": 5741,
+                "tool_result": 42468,
+                "user": 7839
+              },
+              "source_kind": {
+                "agent": 59932,
+                "tool_catalog": 5741
+              },
+              "residency": {
+                "dynamic": 65673
+              }
+            }
+          },
+          {
+            "ordinal": 14,
+            "request_id_hash": "sha256:5f992ff6fb7554e692e5e47cdc9332f8fd71f818098f5dcf4ff6e27f33a53cfa",
+            "total_canonical_bytes": 68557,
+            "message_bytes": 62619,
+            "tool_schema_bytes": 5741,
+            "provider_envelope_and_params": 197,
+            "messages_content_hash": "sha256:c26576133ddc49a7f23210b6cb77115ed1ea7b09b9eb53c4fc73878baa1e4b1b",
+            "tools_content_hash": "sha256:71e1b7e58af6d7b126c45ccc4eed3d4398707846a4aa370513a1bd6709fc687d",
+            "by_dimension": {
+              "owner": {
+                "model_final_messages": 62619,
+                "model_final_tool_catalog": 5741
+              },
+              "kind": {
+                "memory": 9848,
+                "system": 307,
+                "tool_catalog": 5741,
+                "tool_result": 44595,
+                "user": 7869
+              },
+              "source_kind": {
+                "agent": 62619,
+                "tool_catalog": 5741
+              },
+              "residency": {
+                "dynamic": 68360
+              }
+            }
+          },
+          {
+            "ordinal": 15,
+            "request_id_hash": "sha256:f9820effc8cdae8c55502dd30ce668c5d72d436ad8b950bf2b13d58c84f7ec0d",
+            "total_canonical_bytes": 77607,
+            "message_bytes": 71667,
+            "tool_schema_bytes": 5741,
+            "provider_envelope_and_params": 199,
+            "messages_content_hash": "sha256:272cc991f7cc55d3e49bffc7b6a00c4704600186f6e7db27c5eae50148a3e7df",
+            "tools_content_hash": "sha256:71e1b7e58af6d7b126c45ccc4eed3d4398707846a4aa370513a1bd6709fc687d",
+            "by_dimension": {
+              "owner": {
+                "model_final_messages": 71667,
+                "model_final_tool_catalog": 5741
+              },
+              "kind": {
+                "memory": 10240,
+                "system": 307,
+                "tool_catalog": 5741,
+                "tool_result": 53201,
+                "user": 7919
+              },
+              "source_kind": {
+                "agent": 71667,
+                "tool_catalog": 5741
+              },
+              "residency": {
+                "dynamic": 77408
+              }
+            }
+          },
+          {
+            "ordinal": 16,
+            "request_id_hash": "sha256:4a4e95bffa06e760a6bc89258d745e77b72b095ef85e7bb538b1f1bedab96b1f",
+            "total_canonical_bytes": 78052,
+            "message_bytes": 72110,
+            "tool_schema_bytes": 5741,
+            "provider_envelope_and_params": 201,
+            "messages_content_hash": "sha256:6be5658a078061f088d2df951fb752acf670574649d715d91ff5d44fae4078d5",
+            "tools_content_hash": "sha256:71e1b7e58af6d7b126c45ccc4eed3d4398707846a4aa370513a1bd6709fc687d",
+            "by_dimension": {
+              "owner": {
+                "model_final_messages": 72110,
+                "model_final_tool_catalog": 5741
+              },
+              "kind": {
+                "memory": 10917,
+                "system": 307,
+                "tool_catalog": 5741,
+                "tool_result": 53542,
+                "user": 7344
+              },
+              "source_kind": {
+                "agent": 72110,
+                "tool_catalog": 5741
+              },
+              "residency": {
+                "dynamic": 77851
+              }
+            }
+          },
+          {
+            "ordinal": 17,
+            "request_id_hash": "sha256:0a0217cb9423770d956b74331d1faaf56f7ae1dc9b123a9718c115a455ee1eb6",
+            "total_canonical_bytes": 87135,
+            "message_bytes": 81191,
+            "tool_schema_bytes": 5741,
+            "provider_envelope_and_params": 203,
+            "messages_content_hash": "sha256:78d40d6118f29ab14ce4cddc4cb98fdaa2b5eb468cf4f272392a4e63c63dd047",
+            "tools_content_hash": "sha256:71e1b7e58af6d7b126c45ccc4eed3d4398707846a4aa370513a1bd6709fc687d",
+            "by_dimension": {
+              "owner": {
+                "model_final_messages": 81191,
+                "model_final_tool_catalog": 5741
+              },
+              "kind": {
+                "memory": 11295,
+                "system": 307,
+                "tool_catalog": 5741,
+                "tool_result": 62231,
+                "user": 7358
+              },
+              "source_kind": {
+                "agent": 81191,
+                "tool_catalog": 5741
+              },
+              "residency": {
+                "dynamic": 86932
+              }
+            }
+          },
+          {
+            "ordinal": 18,
+            "request_id_hash": "sha256:7b294da05b0af1c40b3655c49ebd492c31d49d867483373a611fb7ac02cdf94f",
+            "total_canonical_bytes": 89971,
+            "message_bytes": 84025,
+            "tool_schema_bytes": 5741,
+            "provider_envelope_and_params": 205,
+            "messages_content_hash": "sha256:8a6126b1757d4488c2416bd3c97433449650c695b867c4b7fffd042cd058b91c",
+            "tools_content_hash": "sha256:71e1b7e58af6d7b126c45ccc4eed3d4398707846a4aa370513a1bd6709fc687d",
+            "by_dimension": {
+              "owner": {
+                "model_final_messages": 84025,
+                "model_final_tool_catalog": 5741
+              },
+              "kind": {
+                "memory": 11712,
+                "system": 307,
+                "tool_catalog": 5741,
+                "tool_result": 64728,
+                "user": 7278
+              },
+              "source_kind": {
+                "agent": 84025,
+                "tool_catalog": 5741
+              },
+              "residency": {
+                "dynamic": 89766
+              }
+            }
+          },
+          {
+            "ordinal": 19,
+            "request_id_hash": "sha256:141268b74dcaf4502de630bd921a208e4cf7a6d329b746dda4bac6be40d3c01d",
+            "total_canonical_bytes": 95872,
+            "message_bytes": 89923,
+            "tool_schema_bytes": 5741,
+            "provider_envelope_and_params": 208,
+            "messages_content_hash": "sha256:6fa65a3c08104b5bb015db8913f06f8eed35246712c56c96cedb500901eef8ad",
+            "tools_content_hash": "sha256:71e1b7e58af6d7b126c45ccc4eed3d4398707846a4aa370513a1bd6709fc687d",
+            "by_dimension": {
+              "owner": {
+                "model_final_messages": 89923,
+                "model_final_tool_catalog": 5741
+              },
+              "kind": {
+                "memory": 12380,
+                "system": 307,
+                "tool_catalog": 5741,
+                "tool_result": 69834,
+                "user": 7402
+              },
+              "source_kind": {
+                "agent": 89923,
+                "tool_catalog": 5741
+              },
+              "residency": {
+                "dynamic": 95664
+              }
+            }
+          }
+        ],
+        "by_dimension": {
+          "owner": {
+            "model_final_messages": 906138,
+            "model_final_tool_catalog": 114820
+          },
+          "kind": {
+            "memory": 132804,
+            "system": 6140,
+            "tool_catalog": 114820,
+            "tool_result": 630115,
+            "user": 137079
+          },
+          "source_kind": {
+            "agent": 906138,
+            "tool_catalog": 114820
+          },
+          "residency": {
+            "dynamic": 1020958
+          }
+        },
+        "dimension_resolution": {
+          "owner": "compiler_owner_v1",
+          "kind": "provider_occurrence_kind_v1",
+          "source_kind": "provider_occurrence_source_v1",
+          "residency": "compiler_logical_residency_v1"
+        },
+        "fallback": "none",
+        "reason": null
+      }
+    }
+  ],
+  "provider_attribution_deltas": [
+    {
+      "experiment": "/Users/wuman/Documents/workspace/aworld-gateway/aworld/artifacts/context-management/cache-economics-release-20260911/terminal-cache-smoke-v10",
+      "case_id": "cancel-async-tasks",
+      "repeat": 1,
+      "baseline_variant": "adaptive-cache-off",
+      "candidate_variant": "adaptive-cache-on",
+      "baseline_run": "/Users/wuman/Documents/workspace/aworld-gateway/aworld/artifacts/context-management/cache-economics-release-20260911/terminal-cache-smoke-v10/runs/cancel-async-tasks/adaptive-cache-off/repeat-01",
+      "candidate_run": "/Users/wuman/Documents/workspace/aworld-gateway/aworld/artifacts/context-management/cache-economics-release-20260911/terminal-cache-smoke-v10/runs/cancel-async-tasks/adaptive-cache-on/repeat-01",
+      "status": "available",
+      "reason": null,
+      "total_canonical_bytes_delta": 122847,
+      "by_dimension_delta": {
+        "owner": {
+          "model_final_messages": 105008,
+          "model_final_tool_catalog": 17223
+        },
+        "kind": {
+          "memory": 10942,
+          "system": 921,
+          "tool_catalog": 17223,
+          "tool_result": 73210,
+          "user": 19935
+        },
+        "source_kind": {
+          "agent": 105008,
+          "tool_catalog": 17223
+        },
+        "residency": {
+          "dynamic": 115170,
+          "stable": 7061
+        }
+      },
+      "dimension_status": {
+        "owner": {
+          "status": "available",
+          "reason": null
+        },
+        "kind": {
+          "status": "available",
+          "reason": null
+        },
+        "source_kind": {
+          "status": "available",
+          "reason": null
+        },
+        "residency": {
+          "status": "available",
+          "reason": null
+        }
+      },
+      "request_amplification": {
+        "status": "available",
+        "baseline_call_count": 20,
+        "candidate_call_count": 23,
+        "aligned_call_count": 20,
+        "candidate_only_call_count": 3,
+        "baseline_only_call_count": 0,
+        "aligned_provider_bytes_delta": -157059,
+        "candidate_only_provider_bytes": 279906,
+        "baseline_only_provider_bytes": 0,
+        "total_provider_bytes_delta": 122847,
+        "byte_reconciliation": true,
+        "first_call": {
+          "messages_match": true,
+          "tools_match": true,
+          "model_visible_inputs_match": true,
+          "provider_bytes_delta": 0,
+          "message_bytes_delta": 0,
+          "tool_schema_bytes_delta": 0,
+          "provider_envelope_and_params_delta": 0
+        }
+      }
+    }
+  ],
+  "provider_attribution_pairing": [
+    {
+      "status": "available",
+      "expected_run_count": 2,
+      "actual_run_count": 2,
+      "unique_actual_run_count": 2,
+      "missing_run_count": 0,
+      "unexpected_run_count": 0,
+      "duplicate_run_count": 0,
+      "available_pair_count": 1,
+      "expected_pair_count": 1,
+      "reason": null
+    }
+  ],
+  "turn_artifact_economics_runs": [
+    {
+      "experiment": "/Users/wuman/Documents/workspace/aworld-gateway/aworld/artifacts/context-management/cache-economics-release-20260911/terminal-cache-smoke-v10",
+      "run": "/Users/wuman/Documents/workspace/aworld-gateway/aworld/artifacts/context-management/cache-economics-release-20260911/terminal-cache-smoke-v10/runs/cancel-async-tasks/adaptive-cache-on/repeat-01",
+      "case_id": "cancel-async-tasks",
+      "variant": "adaptive-cache-on",
+      "repeat": 1,
+      "summary": {
+        "schema_version": "aworld.context.turn-artifact-economics-summary.v1",
+        "turn_causes": {
+          "status": "available",
+          "inferred_framework_retry_count": 0,
+          "model_receipt_count": 23,
+          "tool_receipt_count": 26,
+          "counts": {
+            "artifact_retrieval": {
+              "model": 0,
+              "tool": 0
+            },
+            "deferred_catalog_expansion": {
+              "model": 0,
+              "tool": 0
+            },
+            "deferred_skill_expansion": {
+              "model": 0,
+              "tool": 0
+            },
+            "framework_retry": {
+              "model": 2,
+              "tool": 0
+            },
+            "initial_input": {
+              "model": 1,
+              "tool": 0
+            },
+            "model_choice": {
+              "model": 20,
+              "tool": 26
+            },
+            "unavailable": {
+              "model": 0,
+              "tool": 0
+            },
+            "validation_repair": {
+              "model": 0,
+              "tool": 0
+            }
+          }
+        },
+        "tool_outputs": {
+          "status": "available",
+          "raw_bytes": 53512,
+          "inline_tokens": 14163,
+          "offloaded_tokens": 0,
+          "double_offload_count": 0,
+          "audit_snapshot_count": 0
+        },
+        "artifacts": {
+          "persisted_count": 0,
+          "persisted_bytes": 0
+        },
+        "retrieval": {
+          "status": "not_applicable",
+          "attempt_count": 0,
+          "failed_attempt_count": 0,
+          "opportunity_count": 0,
+          "retrieval_count": 0,
+          "retrieved_bytes": 0,
+          "consumed_count": 0,
+          "consumption_coverage": 0.0
+        },
+        "artifact_progress": {
+          "status": "not_applicable",
+          "reason": "sandbox_receipts_absent"
+        },
+        "semantic_progress": {
+          "schema_version": "aworld.context.semantic-progress-evidence/v1",
+          "status": "available",
+          "counts": {
+            "semantic_tool_observation_count": 20,
+            "tool_success_to_next_llm_count": 20,
+            "agent_step_count": 21,
+            "agent_step_budget_extension_count": 0,
+            "agent_step_budget_extended_steps": 0,
+            "agent_step_budget_effective_limit": 120,
+            "agent_step_budget_hard_limit": 240,
+            "configured_max_steps": 120
+          },
+          "agents": [
+            {
+              "agent_id_hash": "3a18567f74ab9f90f0ea9f8c16fc41d614e616139daafb661d43e7b6294aca5f",
+              "repetition_count": 1,
+              "low_information_gain_count": 1,
+              "no_goal_progress_count": 0,
+              "goal_progress_count": 0,
+              "goal_progress": false,
+              "artifact_advanced": false,
+              "completion_advanced": false,
+              "operation_hash": "sha256:1d9666e449a7da51debe48bddf4f050976b13cc9be2168e8f55be0cf982db288",
+              "result_hash": "sha256:cfc77bfb9ab8db8fb8ae879524cd5ab3bb253896856c3bf1ff934c05b625867e"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "experiment": "/Users/wuman/Documents/workspace/aworld-gateway/aworld/artifacts/context-management/cache-economics-release-20260911/terminal-cache-smoke-v10",
+      "run": "/Users/wuman/Documents/workspace/aworld-gateway/aworld/artifacts/context-management/cache-economics-release-20260911/terminal-cache-smoke-v10/runs/cancel-async-tasks/adaptive-cache-off/repeat-01",
+      "case_id": "cancel-async-tasks",
+      "variant": "adaptive-cache-off",
+      "repeat": 1,
+      "summary": {
+        "schema_version": "aworld.context.turn-artifact-economics-summary.v1",
+        "turn_causes": {
+          "status": "available",
+          "inferred_framework_retry_count": 0,
+          "model_receipt_count": 20,
+          "tool_receipt_count": 23,
+          "counts": {
+            "artifact_retrieval": {
+              "model": 0,
+              "tool": 0
+            },
+            "deferred_catalog_expansion": {
+              "model": 0,
+              "tool": 0
+            },
+            "deferred_skill_expansion": {
+              "model": 0,
+              "tool": 0
+            },
+            "framework_retry": {
+              "model": 1,
+              "tool": 0
+            },
+            "initial_input": {
+              "model": 1,
+              "tool": 0
+            },
+            "model_choice": {
+              "model": 18,
+              "tool": 23
+            },
+            "unavailable": {
+              "model": 0,
+              "tool": 0
+            },
+            "validation_repair": {
+              "model": 0,
+              "tool": 0
+            }
+          }
+        },
+        "tool_outputs": {
+          "status": "available",
+          "raw_bytes": 53530,
+          "inline_tokens": 14182,
+          "offloaded_tokens": 0,
+          "double_offload_count": 0,
+          "audit_snapshot_count": 0
+        },
+        "artifacts": {
+          "persisted_count": 0,
+          "persisted_bytes": 0
+        },
+        "retrieval": {
+          "status": "not_applicable",
+          "attempt_count": 0,
+          "failed_attempt_count": 0,
+          "opportunity_count": 0,
+          "retrieval_count": 0,
+          "retrieved_bytes": 0,
+          "consumed_count": 0,
+          "consumption_coverage": 0.0
+        },
+        "artifact_progress": {
+          "status": "not_applicable",
+          "reason": "sandbox_receipts_absent"
+        },
+        "semantic_progress": {
+          "schema_version": "aworld.context.semantic-progress-evidence/v1",
+          "status": "available",
+          "counts": {
+            "semantic_tool_observation_count": 18,
+            "tool_success_to_next_llm_count": 18,
+            "agent_step_count": 19,
+            "agent_step_budget_extension_count": 0,
+            "agent_step_budget_extended_steps": 0,
+            "agent_step_budget_effective_limit": 120,
+            "agent_step_budget_hard_limit": 240,
+            "configured_max_steps": 120
+          },
+          "agents": [
+            {
+              "agent_id_hash": "f03ea50894a23dbb71c04b12953addab5d0867d8bab4ccaf15f5556b94395b2e",
+              "repetition_count": 1,
+              "low_information_gain_count": 1,
+              "no_goal_progress_count": 0,
+              "goal_progress_count": 0,
+              "goal_progress": false,
+              "artifact_advanced": false,
+              "completion_advanced": false,
+              "operation_hash": "sha256:863d35241d883c9aed688bc26beeee0245db8ec7714d500fa99429c697eabec2",
+              "result_hash": "sha256:616c9f9d214961c39086709364b89b897d42f7a6b88a6e7f36f34dd502cfd494"
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "turn_artifact_economics_deltas": [
+    {
+      "experiment": "/Users/wuman/Documents/workspace/aworld-gateway/aworld/artifacts/context-management/cache-economics-release-20260911/terminal-cache-smoke-v10",
+      "case_id": "cancel-async-tasks",
+      "repeat": 1,
+      "status": "available",
+      "artifact_progress": {
+        "status": "unsupported",
+        "reason": "paired_artifact_progress_unavailable"
+      },
+      "semantic_progress": {
+        "status": "available",
+        "candidate_minus_baseline": {
+          "agent_step_budget_effective_limit": 0,
+          "agent_step_budget_extended_steps": 0,
+          "agent_step_budget_extension_count": 0,
+          "agent_step_budget_hard_limit": 0,
+          "agent_step_count": 2,
+          "configured_max_steps": 0,
+          "semantic_tool_observation_count": 2,
+          "tool_success_to_next_llm_count": 2
+        }
+      },
+      "candidate_minus_baseline": {
+        "raw_tool_output_bytes": -18,
+        "inline_tool_output_tokens": -19,
+        "offloaded_tool_output_tokens": 0,
+        "double_offload_count": 0,
+        "retrieved_bytes": 0,
+        "artifact_consumed_count": 0,
+        "turn_causes": {
+          "artifact_retrieval": {
+            "model": 0,
+            "tool": 0
+          },
+          "deferred_catalog_expansion": {
+            "model": 0,
+            "tool": 0
+          },
+          "deferred_skill_expansion": {
+            "model": 0,
+            "tool": 0
+          },
+          "framework_retry": {
+            "model": 1,
+            "tool": 0
+          },
+          "initial_input": {
+            "model": 0,
+            "tool": 0
+          },
+          "model_choice": {
+            "model": 2,
+            "tool": 3
+          },
+          "unavailable": {
+            "model": 0,
+            "tool": 0
+          },
+          "validation_repair": {
+            "model": 0,
+            "tool": 0
+          }
+        }
+      }
+    }
+  ],
+  "execution_depth_runs": [
+    {
+      "experiment": "/Users/wuman/Documents/workspace/aworld-gateway/aworld/artifacts/context-management/cache-economics-release-20260911/terminal-cache-smoke-v10",
+      "run": "/Users/wuman/Documents/workspace/aworld-gateway/aworld/artifacts/context-management/cache-economics-release-20260911/terminal-cache-smoke-v10/runs/cancel-async-tasks/adaptive-cache-on/repeat-01",
+      "case_id": "cancel-async-tasks",
+      "variant": "adaptive-cache-on",
+      "repeat": 1,
+      "summary": {
+        "status": "available",
+        "agent_process_completed": true,
+        "agent_completed": true,
+        "loop_budget_exhausted": false,
+        "reward_available": true,
+        "reward": 1.0,
+        "failure_reason_code": null,
+        "model_round_count": 23,
+        "model_round_fidelity": "final_provider_truth",
+        "tool_started_count": 20,
+        "tool_completed_count": 20,
+        "agent_step_count": 21,
+        "configured_max_steps": 120,
+        "wall_time_seconds": 2677.0390980243683,
+        "typed_progress": {
+          "status": "available",
+          "sources": [
+            "semantic_progress"
+          ],
+          "positive_count": 0,
+          "no_progress_count": 0,
+          "recovery_count": 0
+        },
+        "classification": "agent_completed",
+        "supports_quality_claim": false,
+        "interpretation": "Leading execution indicators explain continuity and productive depth; they do not replace independent Reward or completion evidence."
+      }
+    },
+    {
+      "experiment": "/Users/wuman/Documents/workspace/aworld-gateway/aworld/artifacts/context-management/cache-economics-release-20260911/terminal-cache-smoke-v10",
+      "run": "/Users/wuman/Documents/workspace/aworld-gateway/aworld/artifacts/context-management/cache-economics-release-20260911/terminal-cache-smoke-v10/runs/cancel-async-tasks/adaptive-cache-off/repeat-01",
+      "case_id": "cancel-async-tasks",
+      "variant": "adaptive-cache-off",
+      "repeat": 1,
+      "summary": {
+        "status": "available",
+        "agent_process_completed": true,
+        "agent_completed": true,
+        "loop_budget_exhausted": false,
+        "reward_available": true,
+        "reward": 0.0,
+        "failure_reason_code": null,
+        "model_round_count": 20,
+        "model_round_fidelity": "final_provider_truth",
+        "tool_started_count": 18,
+        "tool_completed_count": 18,
+        "agent_step_count": 19,
+        "configured_max_steps": 120,
+        "wall_time_seconds": 989.5304529666901,
+        "typed_progress": {
+          "status": "available",
+          "sources": [
+            "semantic_progress"
+          ],
+          "positive_count": 0,
+          "no_progress_count": 0,
+          "recovery_count": 0
+        },
+        "classification": "agent_completed",
+        "supports_quality_claim": false,
+        "interpretation": "Leading execution indicators explain continuity and productive depth; they do not replace independent Reward or completion evidence."
+      }
+    }
+  ],
+  "execution_depth_deltas": [
+    {
+      "experiment": "/Users/wuman/Documents/workspace/aworld-gateway/aworld/artifacts/context-management/cache-economics-release-20260911/terminal-cache-smoke-v10",
+      "case_id": "cancel-async-tasks",
+      "repeat": 1,
+      "baseline_variant": "adaptive-cache-off",
+      "candidate_variant": "adaptive-cache-on",
+      "status": "available",
+      "agent_completion_delta": 0,
+      "model_round_count_delta": 3,
+      "tool_completed_count_delta": 2,
+      "agent_step_count_delta": 2,
+      "wall_time_seconds_delta": 1687.5086450576782,
+      "typed_positive_progress_delta": 0,
+      "typed_no_progress_delta": 0,
+      "classification": "depth_increased_progress_unavailable",
+      "supports_quality_claim": false
+    }
+  ],
+  "execution_depth_summary": {
+    "schema_version": "aworld.context-execution-depth-summary/v1",
+    "variants": {
+      "adaptive-cache-off": {
+        "run_count": 1,
+        "agent_process_completion_rate": 1.0,
+        "agent_completion_rate": 1.0,
+        "loop_budget_exhaustion_rate": 0.0,
+        "reward_availability_rate": 1.0,
+        "reward_pass_rate_when_available": 0.0,
+        "mean_model_round_count": 20.0,
+        "mean_tool_completed_count": 18.0,
+        "mean_agent_step_count": 19.0,
+        "mean_wall_time_seconds": 989.5304529666901,
+        "classification_counts": {
+          "agent_completed": 1
+        }
+      },
+      "adaptive-cache-on": {
+        "run_count": 1,
+        "agent_process_completion_rate": 1.0,
+        "agent_completion_rate": 1.0,
+        "loop_budget_exhaustion_rate": 0.0,
+        "reward_availability_rate": 1.0,
+        "reward_pass_rate_when_available": 1.0,
+        "mean_model_round_count": 23.0,
+        "mean_tool_completed_count": 20.0,
+        "mean_agent_step_count": 21.0,
+        "mean_wall_time_seconds": 2677.0390980243683,
+        "classification_counts": {
+          "agent_completed": 1
+        }
+      }
+    },
+    "supports_quality_claim": false,
+    "interpretation": "Completion, depth, progress and recovery are leading indicators. Only independent task outcomes establish quality benefit."
+  },
+  "rollout_capabilities": [
+    {
+      "provider": "openai",
+      "entry_point": "amni",
+      "provider_lowering": true,
+      "request_trace_match": true,
+      "lifecycle": true,
+      "trajectory_complete": true,
+      "call_shape": "async_stream",
+      "evidence_fingerprint": "sha256:ebe5902f232a29cc8b6043ba2402e7099552dd4a91bf07d5e4a5e7d3c6aafa53"
+    }
+  ],
+  "capability_evidence_runs": [
+    {
+      "run": "/Users/wuman/Documents/workspace/aworld-gateway/aworld/artifacts/context-management/cache-economics-release-20260911/terminal-cache-smoke-v10/runs/cancel-async-tasks/adaptive-cache-on/repeat-01",
+      "status": "available",
+      "reason_code": null,
+      "verified_call_count": 23
+    }
+  ],
+  "required_capabilities": [],
+  "capability_matrix_hash": "sha256:5b592a5bb146319df6f5e772b3ab9810f6ffcec76a9d306959cfee9f87225781",
+  "rollback_bundle": null,
+  "canary_health": null,
+  "default_on_readiness": {
+    "status": "not_ready",
+    "gate_failures": [
+      "cache_causal_evidence_incomplete",
+      "canary_health_missing",
+      "capability_matrix_incomplete",
+      "cross_workload_evidence_missing",
+      "insufficient_paired_evidence",
+      "rollback_bundle_missing",
+      "turn_artifact_economics_incomplete"
+    ],
+    "workload_kinds": [
+      "terminal_bench"
+    ],
+    "complete_pairs": 1,
+    "rollback_config_hash": null,
+    "canary_health_decision_fingerprint": null
+  },
+  "decision_note": "READY requires complete provider/trajectory gates, at least two workload kinds, at least ten complete pairs, and either a positive reward confidence lower bound or quality non-regression plus a confidence-bounded versioned/billed cost reduction or provider-call reduction. It also requires a healthy canary decision bound to the expected frozen health policy and the same executable rollback bundle; this offline report supplies no operational canary evidence by itself. Absolute token or wall-time growth is descriptive, not an automatic regression: quality still comes from the independent verifier, while typed progress/recovery evidence explains whether longer execution was productive."
+}

@@ -2,11 +2,14 @@
 
 ## Current Status
 
-**Phase:** Milestone 4
-**Current milestone:** Verification and release evidence
-**Current task:** Run frozen real-provider paired evaluation at concurrency one
-**Last action:** Deterministic replay reached 100% request trace match, 100% exact
-usage, and zero unexplained breaks; 81 focused replay/provider tests passed.
+**Phase:** Milestone 4 complete
+**Current milestone:** Capability-aware release decision
+**Current task:** Complete
+**Last action:** Final cross-provider and compatibility review passed. The
+provider-neutral Adaptive/Context layer reuses the existing 12-pair machine
+`ready` decision and remains default-on; native controls share one capability
+contract, and the configured custom endpoint remains safely ineligible after
+directional regression evidence.
 
 ## Completed Milestones
 
@@ -21,8 +24,8 @@ usage, and zero unexplained breaks; 81 focused replay/provider tests passed.
 | Task | Status | Notes |
 |---|---|---|
 | 4.1 Deterministic cache/replay suite | complete | Recomputes provider payload/usage and validates candidate/plan/lowering binding plus epoch transitions |
-| 4.2 Frozen real-provider paired evaluation | pending | Requires 4.1 green; GLM is one conformance target only |
-| 4.3 Final review and release decision | pending | Requires paired CI gates and rollback/canary evidence |
+| 4.2 Frozen real-provider paired evaluation | complete | No-hint safety proven; explicit native hint rejected early after four causal pairs showed directional regression |
+| 4.3 Final review and release decision | complete | Safe generic layer default-on; custom native controls capability-gated and current endpoint not eligible |
 
 ### Review Feedback
 
@@ -110,9 +113,15 @@ Milestone 1 review: APPROVE after fixes.
   append-only epoch.
 
 ### Known Issues
-- Amni folded system content may collapse stable and dynamic sections.
-- Historical GLM release evidence has 451/468 exact calls; seven calls have
-  cache-specific missing/conflicting data and ten have incomplete attempt truth.
+- No provider-native control currently has the ten complete positive pairs over
+  two workload kinds required for its own default-on release. The configured
+  custom endpoint has stronger negative evidence and is deliberately ineligible;
+  this is not an unresolved gate for the provider-neutral stable-prefix,
+  cache-epoch, usage-receipt and fail-safe capability layer.
+- Local disk has about 5 GiB free. A dedicated 2 CPU / 2 GiB Colima profile is
+  used serially; large SkillsBench images are excluded from this local pass.
+- Historical GLM release evidence has 451/468 exact calls and remains diagnostic
+  only; new release claims require 100% exact cache usage per complete pair.
 
 ## Action Log
 
@@ -227,3 +236,100 @@ Milestone 1 review: APPROVE after fixes.
   the shared provider suite.
 - Validation: 81 replay/preflight/usage/provider tests passed; scoped Ruff and
   `git diff --check` passed.
+
+### 2026-09-11 — Task 4.2 cache-only causal gate started
+- Registered `context_cache` as a dedicated evaluation component and added a
+  frozen `adaptive-cache-off` versus `adaptive-cache-on` plan. The plan changes
+  exactly two generic policy paths and rejects model/provider fields.
+- Both sides explicitly use the default-on Adaptive enforce runtime; instruction,
+  model/provider, Tool surface, verifier, environment, seed, and step budget are
+  invariant.
+- The harness now derives cache totals through the shared usage receipt rather
+  than provider-name aliases. Exact uncached input can prove execution efficiency
+  only when every call in both paired trials has exact cache usage.
+- Release reporting revalidates the ablation-plan hash plus an 8-observation
+  stream/non-stream preflight before accepting cache economics.
+- Live preflight: 8/8 exact, with cold/prefix-change at 0 cache reads and
+  repeat/suffix-only change at 10,752 tokens for both call shapes.
+- Validation: 128 focused control-plane/harness/report tests passed; scoped Ruff
+  and `git diff --check` passed.
+
+### 2026-09-11 — Capability-aware causal correction
+- A resource-bounded, serial Terminal Bench pair on the randomly selected
+  `cancel-async-tasks` case completed with checksum-valid provider calls, Raw
+  trajectories and request traces. Candidate observed Reward 1 versus baseline
+  0, but its 23 calls all recorded `preserved:exact_prefix_no_hint`; baseline's
+  20 calls recorded `disabled:explicit_opt_out`.
+- Because the provider-bound payload carried no AWorld native cache hint, the
+  Reward difference is retained as a quality observation but cannot be
+  attributed to cache control. The report now emits typed
+  `cache_causal_evidence`, classifies this path `safety_only`, and hard-fails
+  native benefit with `cache_causal_evidence_incomplete`.
+- Partial exact-usage coverage no longer leaks a provisional
+  `uncached_input_tokens_exact` into paired metrics. Execution output directories
+  are immutable after a real run starts, preventing accidental evidence reuse.
+- A formal optional `ModelConfig.max_tokens` now binds an explicit provider
+  output cap to the compiler reserve. The compiler's default reserve is not
+  silently sent as `max_tokens`, because doing so can truncate long-reasoning
+  models and change task quality.
+- The release contract is now layered without weakening gates: every provider
+  proves safety/quality/capture; only explicitly applied and baseline-opted-out
+  native controls may claim cache benefit. The existing GLM endpoint remains a
+  conformance target, never a provider-specific implementation dependency.
+- Validation: report/control-plane tests 56/56 passed; the wider focused
+  provider/compiler/harness suite completed without an observed new failure.
+
+### 2026-09-11 — Native hint negative evidence and fail-safe
+- Added a second frozen plan with one shared generic routing namespace and only
+  the same two cache-policy paths changed. Real provider receipts proved every
+  Candidate request carried `prompt_cache_key` and every Baseline request was an
+  explicit opt-out; the current endpoint accepts the field.
+- `cancel-async-tasks` produced three complete Python-sidecar pairs, all Reward
+  0→0. Two seeds reduced work, but one Candidate long tail made both the combined
+  provider-call CI and conservative-cost CI cross zero.
+- `db-wal-recovery` retained Reward 1→1 but Candidate calls increased 9→29 and
+  wall time about 93→681 seconds. Native hint benefit is therefore not proven
+  and is not eligible for current-endpoint default-on.
+- Across all four complete pairs, Reward delta remained 0, while the Candidate
+  provider-call 95% CI was `[+2.25, +15.25]` and conservative normalized-cost
+  CI was `[+26.88B, +195.74B]` microunits. This is statistically directional
+  regression for this endpoint, not merely missing positive evidence.
+- Fixed the architectural cause: arbitrary OpenAI-compatible base URLs no longer
+  inherit optional OpenAI native cache controls. `auto` enables the reviewed
+  official endpoint; custom endpoints preserve the exact prefix and emit typed
+  unsupported evidence unless deployment explicitly declares `supported` after
+  conformance/canary. No provider/model name enters the Context Compiler.
+- The benchmark harness exposes this provider capability as an invariant option,
+  never a variant or task-specific field. The final focused
+  Context/provider/harness/report suite is 265/265 green, with an additional
+  23/23 cache usage/compiler/CLI tests green after the fail-safe.
+- A real post-fix GLM request with a configured namespace completed successfully,
+  recorded `unsupported:provider_capability_not_declared`, omitted
+  `prompt_cache_key`, and retained request-trace match. This establishes the
+  intended safe default on the currently configured custom endpoint.
+- All benchmark containers were removed by the harness and the dedicated
+  `cache-eval` Colima profile was stopped after validation.
+
+### 2026-09-12 — Final compatibility and cross-provider review
+- Fixed legacy `ConfigDict` compatibility: missing newly introduced
+  `context_cache`, `max_tokens`, and response-parser keys no longer raise
+  `KeyError`. Explicit output limits now have a regression test across sync,
+  async, stream, and async-stream model entry points.
+- Moved native cache capability resolution into the common provider contract.
+  Both OpenAI and Anthropic adapters now distinguish reviewed official endpoints
+  from arbitrary compatible base URLs; custom endpoints preserve request
+  correctness and emit `unsupported:provider_capability_not_declared` unless a
+  deployment explicitly qualifies them.
+- Final focused regression: 313/313 passed. Scoped Ruff and `git diff --check`
+  passed. No task prompt, Tool, environment, verifier, or benchmark answer was
+  changed.
+- Final review verdict: APPROVE for the provider-neutral safe default layer.
+  Provider-native cache controls remain independently gated and the current GLM
+  endpoint remains rejected by real causal regression evidence.
+- Revalidated the preceding default-on release rather than discarding it: the
+  frozen 12-pair report spans `terminal_bench`, `skills_bench`, and
+  `tool_research`, has Reward CI `[0.0, 0.25]`, provider-call CI entirely below
+  zero, complete rollback/canary bindings, and machine status `ready` with no
+  gate failures. That evidence releases the generic Adaptive/Context layer; the
+  four-pair native-hint regression scopes only to the optional control on the
+  configured endpoint.

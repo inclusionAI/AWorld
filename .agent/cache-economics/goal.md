@@ -18,28 +18,33 @@ evidence sufficient for the proposed release gates.
 
 ## Acceptance Criteria
 
-- [ ] Every successful model call can emit a structured cache receipt with raw
+- [x] Every successful model call can emit a structured cache receipt with raw
       and normalized usage fidelity, stable/provider-wire identity, cache epoch,
       and explained break reasons.
-- [ ] A provider-capability-driven cache preflight validates cold,
+- [x] A provider-capability-driven cache preflight validates cold,
       repeated-prefix, suffix-change, prefix-change, streaming, and
       non-streaming behavior without exposing prompts, responses, endpoints, or
       credentials. GLM is the first live conformance target, not a core
       dependency or unique source of truth.
-- [ ] Cache hints are frozen in the immutable candidate and consumed only by
+- [x] Cache hints are frozen in the immutable candidate and consumed only by
       provider adapters; no provider performs a post-final-compile prompt
       transform.
-- [ ] Stable system/tool/skill material is separated from turn-dynamic material
+- [x] Stable system/tool/skill material is separated from turn-dynamic material
       without weakening trust, scope, or instruction semantics.
-- [ ] Adaptive and CLI compaction establish an auditable cache epoch and retain
+- [x] Adaptive and CLI compaction establish an auditable cache epoch and retain
       an immutable checkpoint plus recent complete assistant/tool atomic groups.
-- [ ] Deterministic cache/replay tests have 100% request trace match, zero
+- [x] Deterministic cache/replay tests have 100% request trace match, zero
       unexplained cache breaks, and 100% exact usage on valid cache probes.
-- [ ] Frozen paired evaluation across at least two workload kinds has at least
+- [x] Frozen paired evaluation across at least two workload kinds has at least
       ten complete pairs, reward/complete-rate 95% CI lower bound no worse than
       -0.01, and uncached-input or cache-adjusted-cost-per-success CI upper bound
       below zero.
-- [ ] No benchmark task instruction, environment, verifier, or task-specific
+      The provider-neutral Adaptive layer has 12 complete pairs over Terminal,
+      SkillsBench, and Tool Research with a machine `ready` decision. The
+      currently configured custom endpoint's optional native hint was separately
+      rejected after a causal matrix proved directional regression; every native
+      control still requires its own provider-scoped release evidence.
+- [x] No benchmark task instruction, environment, verifier, or task-specific
       prompt/tool is modified to obtain a pass.
 
 ## Non-Goals

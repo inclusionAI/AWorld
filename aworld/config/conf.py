@@ -173,6 +173,10 @@ class ModelConfig(BaseConfig):
     llm_stream_call: bool = False
     max_retries: int = 3
     max_model_len: Optional[int] = None  # Maximum model context length
+    max_tokens: Optional[int] = Field(default=None, gt=0)
+    provider_native_cache_capability: Literal[
+        "auto", "supported", "unsupported"
+    ] = "auto"
     model_type: Optional[str] = (
         "qwen"  # Model type determines tokenizer and maximum length
     )

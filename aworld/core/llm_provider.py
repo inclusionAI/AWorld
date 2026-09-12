@@ -80,6 +80,27 @@ class LLMProviderBase(abc.ABC):
         """Return a versioned provider-owned lowering contract, if supported."""
         return None
 
+    def provider_native_cache_control_enabled(
+        self, *, auto_supported: bool
+    ) -> bool:
+        """Resolve the common native-cache capability declaration.
+
+        Wire compatibility is not evidence that an optional provider cache
+        control is implemented. Provider adapters supply only their reviewed
+        ``auto`` decision; deployments may explicitly opt a compatible endpoint
+        in or out after conformance and canary validation.
+        """
+        capability = self.kwargs.get("provider_native_cache_capability", "auto")
+        if capability == "supported":
+            return True
+        if capability == "unsupported":
+            return False
+        if capability != "auto":
+            raise ValueError("invalid provider native cache capability")
+        if not isinstance(auto_supported, bool):
+            raise TypeError("auto_supported must be a boolean")
+        return auto_supported
+
     def commit_provider_prepared_attempt(
         self,
         *,

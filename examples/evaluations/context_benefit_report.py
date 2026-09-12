@@ -72,7 +72,10 @@ _COST_BENEFIT_METRICS = (
     "normalized_cost_microunits",
     "normalized_cost_conservative_delta_microunits",
 )
-_EXECUTION_EFFICIENCY_METRICS = ("provider_call_count",)
+_EXECUTION_EFFICIENCY_METRICS = (
+    "provider_call_count",
+    "uncached_input_tokens_exact",
+)
 
 _TURN_CAUSES = {
     "initial_input",
@@ -2441,6 +2444,162 @@ def benefit_evidence(
     }
 
 
+def cache_ablation_evidence(
+    manifest_payload: dict[str, Any], *, baseline: str, candidate: str
+) -> dict[str, Any]:
+    """Revalidate a cache-only contrast and its provider-neutral preflight."""
+    try:
+        by_name = {
+            item["name"]: item
+            for item in manifest_payload["variants"]
+            if isinstance(item, dict) and isinstance(item.get("name"), str)
+        }
+        baseline_payload = by_name[baseline]
+        candidate_payload = by_name[candidate]
+        if not any(
+            "context_cache" in payload
+            for payload in (baseline_payload, candidate_payload)
+        ):
+            return {"status": "not_required", "reason_code": None}
+        baseline_variant = ContextVariant.build(
+            baseline, variant_settings(baseline_payload)
+        )
+        candidate_variant = ContextVariant.build(
+            candidate, variant_settings(candidate_payload)
+        )
+        contrast = ContextAblationContrast.build(
+            baseline=baseline_variant,
+            candidate=candidate_variant,
+            component=ContextAblationComponent.CACHE,
+        )
+        receipt = manifest_payload["ablation_plan"]
+        plan = ContextAblationPlan.build(
+            name=receipt["name"],
+            variants=(baseline_variant, candidate_variant),
+            contrasts=(contrast,),
+        )
+        if receipt != plan.to_dict():
+            raise ValueError("cache_ablation_plan_mismatch")
+        preflight = manifest_payload["cache_usage_preflight"]
+        if not (
+            preflight.get("schema_version")
+            == "aworld.cache-conformance-preflight/v1"
+            and preflight.get("status") == "passed"
+            and preflight.get("cache_capability_observed") is True
+            and preflight.get("exact_usage_coverage") == 1.0
+            and preflight.get("observation_count") == 8
+            and set(preflight.get("validated_modes") or ())
+            == {"nonstream", "stream"}
+            and preflight.get("failure_codes") == []
+            and preflight.get("process_exit_code") == 0
+        ):
+            raise ValueError("cache_preflight_not_exact")
+        return {
+            "status": "available",
+            "reason_code": None,
+            "ablation_plan_hash": plan.plan_hash,
+            "contrast_hash": contrast.contrast_hash,
+            "changed_paths": list(contrast.changed_paths),
+            "preflight_run_nonce_hash": preflight.get("run_nonce_hash"),
+            "exact_usage_coverage": 1.0,
+            "observation_count": 8,
+            "validated_modes": ["nonstream", "stream"],
+        }
+    except (KeyError, TypeError, ValueError) as exc:
+        reason = str(exc)
+        if not re.fullmatch(r"[a-z][a-z0-9_]{0,127}", reason):
+            reason = "cache_ablation_evidence_invalid"
+        return {"status": "unavailable", "reason_code": reason}
+
+
+_EXPLICIT_NATIVE_CACHE_LOWERINGS = frozenset(
+    {"prompt_cache_key", "anthropic_cache_control"}
+)
+
+
+def cache_lowering_run_evidence(
+    calls: list[dict[str, Any]], *, cache_enabled: bool
+) -> dict[str, Any]:
+    """Classify whether a cache policy changed the provider-bound request.
+
+    Exact-prefix providers may cache automatically and remain safe with the
+    policy enabled, but ``exact_prefix_no_hint`` is deliberately not causal
+    evidence for an AWorld cache-control ablation.
+    """
+    lowerings = []
+    for call in calls:
+        rollout = call.get("context_rollout") if isinstance(call, dict) else None
+        lowering = rollout.get("provider_lowering") if isinstance(rollout, dict) else None
+        if not isinstance(lowering, dict):
+            return {
+                "status": "unavailable",
+                "reason_code": "provider_cache_lowering_missing",
+            }
+        status = lowering.get("cache_lowering_status")
+        strategy = lowering.get("cache_lowering_strategy")
+        if not isinstance(status, str) or not isinstance(strategy, str):
+            return {
+                "status": "unavailable",
+                "reason_code": "provider_cache_lowering_missing",
+            }
+        lowerings.append((status, strategy))
+    if not lowerings:
+        return {
+            "status": "unavailable",
+            "reason_code": "provider_calls_missing",
+        }
+
+    counts: dict[str, int] = {}
+    for status, strategy in lowerings:
+        key = f"{status}:{strategy}"
+        counts[key] = counts.get(key, 0) + 1
+    evidence = {
+        "call_count": len(lowerings),
+        "lowering_counts": dict(sorted(counts.items())),
+    }
+    if not cache_enabled:
+        if all(
+            status == "disabled" and strategy == "explicit_opt_out"
+            for status, strategy in lowerings
+        ):
+            return {"status": "available", "reason_code": None, **evidence}
+        return {
+            "status": "unavailable",
+            "reason_code": "cache_disabled_lowering_not_proven",
+            **evidence,
+        }
+
+    if all(
+        status == "applied" and strategy in _EXPLICIT_NATIVE_CACHE_LOWERINGS
+        for status, strategy in lowerings
+    ):
+        return {"status": "available", "reason_code": None, **evidence}
+    if all(
+        status == "preserved" and strategy == "exact_prefix_no_hint"
+        for status, strategy in lowerings
+    ):
+        return {
+            "status": "safety_only",
+            "reason_code": "provider_native_cache_control_not_applied",
+            **evidence,
+        }
+    if all(
+        status == "unsupported"
+        and strategy == "provider_capability_not_declared"
+        for status, strategy in lowerings
+    ):
+        return {
+            "status": "safety_only",
+            "reason_code": "provider_native_cache_capability_unverified",
+            **evidence,
+        }
+    return {
+        "status": "unavailable",
+        "reason_code": "explicit_provider_cache_lowering_incomplete",
+        **evidence,
+    }
+
+
 def normalized_cost_evidence_ready(workload_reports: list[dict[str, Any]]) -> bool:
     """Revalidate every policy/receipt and its trial-manifest binding."""
     if not workload_reports:
@@ -2755,6 +2914,13 @@ def trial_from_result(
     ):
         numeric_metrics["wall_time_seconds"] = finished_at - started_at
     provider_metrics = authoritative_provider_metrics(calls)
+    if provider_metrics["cache_usage_exact_coverage"] != 1.0:
+        # Partial exact totals are diagnostic only. Omitting this field prevents
+        # paired metric intersection from treating unknown cache work as zero.
+        # The harness also emits a provisional value in context_metrics, so
+        # remove both sources before merging authoritative provider evidence.
+        numeric_metrics.pop("uncached_input_tokens_exact", None)
+        provider_metrics.pop("uncached_input_tokens_exact", None)
     numeric_metrics.update(provider_metrics)
     if normalized_cost_policy is not None:
         usage, usage_reason = authoritative_normalized_usage(calls)
@@ -2918,6 +3084,8 @@ def aggregate(
     capability_evidence_runs: list[dict[str, Any]] = []
     workload_kinds = []
     candidate_baseline_modes: list[bool] = []
+    cache_ablation_runs: list[dict[str, Any]] = []
+    cache_lowering_runs: list[dict[str, Any]] = []
     for experiment in experiments:
         manifest_payload = read_json(experiment / "experiment_manifest.json")
         results = read_json(experiment / "results.json", [])
@@ -2944,6 +3112,16 @@ def aggregate(
             variant_payload_by_name[baseline].get("context_compiler") or {}
         ).get("mode") in {"shadow", "enforce"}
         candidate_baseline_modes.append(allow_candidate_baseline)
+        cache_ablation_runs.append(
+            {
+                "experiment": str(experiment),
+                **cache_ablation_evidence(
+                    manifest_payload,
+                    baseline=baseline,
+                    candidate=candidate,
+                ),
+            }
+        )
         results = [
             result
             for result in results
@@ -3001,6 +3179,27 @@ def aggregate(
             if isinstance(calls, list):
                 valid_calls = [call for call in calls if isinstance(call, dict)]
                 experiment_calls.extend(valid_calls)
+                cache_settings = (
+                    variant_payload_by_name[result["variant"]].get("context_cache")
+                    or {}
+                )
+                if any(
+                    "context_cache" in payload
+                    for payload in variant_payload_by_name.values()
+                ):
+                    cache_lowering_runs.append(
+                        {
+                            "experiment": str(experiment),
+                            "run": str(run_dir),
+                            "case_id": result["task"],
+                            "variant": result["variant"],
+                            "repeat": int(result["repetition"]),
+                            **cache_lowering_run_evidence(
+                                valid_calls,
+                                cache_enabled=bool(cache_settings.get("enabled")),
+                            ),
+                        }
+                    )
                 attribution_runs.append(
                     {
                         "experiment": str(experiment),
@@ -3161,6 +3360,66 @@ def aggregate(
     )
     if not benefit["proven"]:
         hard_failures.add("positive_benefit_not_proven")
+    required_cache_ablation_runs = [
+        row for row in cache_ablation_runs if row["status"] != "not_required"
+    ]
+    if required_cache_ablation_runs and any(
+        row["status"] != "available" for row in required_cache_ablation_runs
+    ):
+        hard_failures.add("cache_ablation_evidence_incomplete")
+    cache_causal_evidence = {
+        "status": "not_required",
+        "reason_code": None,
+        "runs": cache_lowering_runs,
+    }
+    if required_cache_ablation_runs:
+        candidate_lowerings = [
+            row for row in cache_lowering_runs if row["variant"] == candidate
+        ]
+        baseline_lowerings = [
+            row for row in cache_lowering_runs if row["variant"] == baseline
+        ]
+        if (
+            candidate_lowerings
+            and baseline_lowerings
+            and all(row["status"] == "available" for row in candidate_lowerings)
+            and all(row["status"] == "available" for row in baseline_lowerings)
+        ):
+            cache_causal_evidence = {
+                "status": "available",
+                "reason_code": None,
+                "runs": cache_lowering_runs,
+            }
+        else:
+            reason = "explicit_provider_cache_lowering_incomplete"
+            if candidate_lowerings and all(
+                row["status"] == "safety_only" for row in candidate_lowerings
+            ):
+                reason_codes = {
+                    str(row["reason_code"]) for row in candidate_lowerings
+                }
+                reason = (
+                    next(iter(reason_codes))
+                    if len(reason_codes) == 1
+                    else "provider_native_cache_control_not_applied"
+                )
+            cache_causal_evidence = {
+                "status": "unavailable",
+                "reason_code": reason,
+                "runs": cache_lowering_runs,
+            }
+            hard_failures.add("cache_causal_evidence_incomplete")
+    attributed_benefit = dict(benefit)
+    if (
+        required_cache_ablation_runs
+        and cache_causal_evidence["status"] != "available"
+    ):
+        attributed_benefit = {
+            "proven": False,
+            "path": None,
+            "reason": cache_causal_evidence["reason_code"],
+            "observed_paired_benefit": benefit,
+        }
     if (
         any(row["summary"]["status"] != "available" for row in all_attribution_runs)
         or not all_attribution_runs
@@ -3257,6 +3516,9 @@ def aggregate(
             else None
         ),
         "benefit_evidence": benefit,
+        "attributed_benefit_evidence": attributed_benefit,
+        "cache_ablation_evidence": cache_ablation_runs,
+        "cache_causal_evidence": cache_causal_evidence,
         "normalized_cost_policy_ready": normalized_cost_policy_ready,
         "normalized_cost_exact_policy_ready": normalized_cost_exact_policy_ready,
         "normalized_cost_bound_policy_ready": normalized_cost_bound_policy_ready,

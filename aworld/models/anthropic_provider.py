@@ -32,6 +32,20 @@ ANTHROPIC_CONTEXT_LOWERING = ProviderLoweringCapability(
 class AnthropicProvider(LLMProviderBase):
     """Anthropic provider implementation."""
 
+    def _supports_native_prompt_cache_control(self) -> bool:
+        """Fail safe for custom Anthropic-compatible endpoints in auto mode."""
+        base_url = getattr(self, "base_url", None) or os.getenv(
+            "ANTHROPIC_BASE_URL"
+        )
+        auto_supported = not base_url
+        if base_url:
+            from urllib.parse import urlparse
+
+            auto_supported = urlparse(base_url).hostname == "api.anthropic.com"
+        return self.provider_native_cache_control_enabled(
+            auto_supported=auto_supported
+        )
+
     def __init__(
         self,
         api_key: str = None,
@@ -252,6 +266,9 @@ class AnthropicProvider(LLMProviderBase):
             elif cache_plan.stable_message_count <= 0:
                 cache_lowering_status = "unavailable"
                 cache_lowering_strategy = "no_stable_message_prefix"
+            elif not self._supports_native_prompt_cache_control():
+                cache_lowering_status = "unsupported"
+                cache_lowering_strategy = "provider_capability_not_declared"
             else:
                 boundary = cache_plan.stable_message_count - 1
                 if boundary >= len(message_occurrences):

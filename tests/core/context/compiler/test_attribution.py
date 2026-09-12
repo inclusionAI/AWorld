@@ -9,7 +9,9 @@ import pytest
 from aworld.agents.final_context_adapter import (
     adapt_agent_final_request,
     adapt_amni_system_sections,
+    adapt_prompt_assembly_system_sections,
 )
+from aworld.core.context.amni.prompt.assembly import PromptSection
 from aworld.core.context.compiler import (
     AdapterResult,
     AttributionCollection,
@@ -334,6 +336,123 @@ def test_amni_ordered_sections_preserve_stable_prefix_before_dynamic_context():
     ]
     assert result.cache_plan.stable_message_count == 1
     assert result.request_snapshot.thaw()["messages"] == list(messages)
+
+
+def test_framework_prompt_assembly_sections_prove_provider_neutral_stable_prefix():
+    request_id = "framework-prompt-assembly-sections"
+    messages = (
+        {"role": "system", "content": "stable base"},
+        {"role": "system", "content": "dynamic task context"},
+        {"role": "user", "content": "go"},
+    )
+    message_result, tool_result = adapt_agent_final_request(
+        messages=messages,
+        tools=(),
+        source_identity="model-final://agent/task-task/epoch-1",
+        task_id="task",
+        task_epoch=1,
+        agent_id="agent",
+        amni_folded_system=True,
+    )
+    binding = {
+        "request_id_hash": canonical_json_hash({"request_id": request_id}),
+        "task_epoch": 1,
+    }
+    observations = (
+        ContextObservationSidecar.from_adapter_result(
+            owner="model.final_messages",
+            namespace="agent",
+            source_identity="model-messages",
+            result=message_result,
+            collection=AttributionCollection.MESSAGES,
+            **binding,
+        ),
+        ContextObservationSidecar.from_adapter_result(
+            owner="model.final_tool_catalog",
+            namespace="agent",
+            source_identity="model-tools",
+            result=tool_result,
+            collection=AttributionCollection.TOOLS,
+            **binding,
+        ),
+        ContextObservationSidecar.from_adapter_result(
+            owner="agent.prompt_assembly_system_sections",
+            namespace="agent",
+            source_identity="assembly-sections",
+            result=adapt_prompt_assembly_system_sections(
+                sections=(
+                    PromptSection(
+                        name="system_prompt",
+                        kind="system",
+                        stability="stable",
+                        content=messages[0],
+                    ),
+                    PromptSection(
+                        name="task",
+                        kind="system",
+                        stability="dynamic",
+                        content=messages[1],
+                    ),
+                ),
+                messages=messages,
+                source_identity="assembly-sections",
+                task_id="task",
+                task_epoch=1,
+                agent_id="agent",
+                user_controlled=True,
+            ),
+            task_epoch=1,
+        ),
+    )
+    legacy = ProviderRequestSnapshot(
+        request_id=request_id,
+        provider_name="provider-agnostic",
+        payload={"messages": messages, "tools": None, "params": {}},
+        capture_stage=RequestCaptureStage.MODEL_BOUNDARY,
+        fidelity=ProviderRequestFidelity.MODEL_BOUNDARY,
+    )
+
+    result = compile_model_boundary_context(
+        legacy_request=legacy,
+        observations=observations,
+        inference_profile=replace(
+            _profile(), provider="provider-agnostic", model="any-model"
+        ),
+        policy=_policy(),
+        created_at=datetime.now(timezone.utc),
+        task_id="task",
+        session_id=None,
+        trace_id=None,
+        task_epoch=1,
+    )
+
+    assert result.cache_plan.stable_message_count == 1
+    assert dict(result.stable_partition.stable_items[0].payload.items()) == messages[0]
+    assert result.stable_partition.stable_items[0].trust is Trust.USER_CONTROLLED
+    assert result.request_snapshot.thaw()["messages"] == list(messages)
+
+
+def test_prompt_assembly_sections_reject_mismatched_final_message():
+    messages = ({"role": "system", "content": "actual"},)
+    with pytest.raises(
+        ValueError, match="does not match final message"
+    ):
+        adapt_prompt_assembly_system_sections(
+            sections=(
+                PromptSection(
+                    name="system_prompt",
+                    kind="system",
+                    stability="stable",
+                    content={"role": "system", "content": "claimed"},
+                ),
+            ),
+            messages=messages,
+            source_identity="assembly-sections",
+            task_id="task",
+            task_epoch=1,
+            agent_id="agent",
+            user_controlled=False,
+        )
 
 
 def test_audit_only_evidence_cannot_block_an_exact_emitted_request():
