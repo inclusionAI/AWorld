@@ -64,10 +64,10 @@ from aworld.benchmarks.parsebench.scoring import (
 )
 
 DEFAULT_MODEL_PROFILE = "default__gemini-3.1-pro-preview"
-RUN_MANIFEST_SCHEMA = "aworld.parsebench.gateway-run/v3"
-REPORT_SCHEMA = "aworld.parsebench.gateway-report/v2"
-SUBMISSION_INTENT_SCHEMA = "aworld.parsebench.gateway-submission-intent/v2"
-IMAGE_BUILD_RECEIPT_SCHEMA = "aworld.parsebench.dataset-images/v1"
+RUN_MANIFEST_SCHEMA = "aworld.parsebench.gateway-run/v4"
+REPORT_SCHEMA = "aworld.parsebench.gateway-report/v3"
+SUBMISSION_INTENT_SCHEMA = "aworld.parsebench.gateway-submission-intent/v3"
+IMAGE_BUILD_RECEIPT_SCHEMA = "aworld.parsebench.dataset-images/v2"
 _PACKAGE_MANIFEST_SCHEMA = MATERIAL_MANIFEST_SCHEMA_VERSION
 _IMPORT_PATH = "api/v1/dataset-meta/package/import"
 _DATASET_IMAGE_PATH = "api/v1/dataset-meta/{dataset_id}/images"
@@ -90,6 +90,7 @@ _MAX_BATCH_RESULTS = 10_000
 _MAX_BATCH_RESULTS_BYTES = 64 * 1024 * 1024
 _ACTIVE_IMAGE_STATUSES = frozenset({"QUEUED", "SUBMITTING", "BUILDING", "UNKNOWN"})
 _FAILED_IMAGE_STATUSES = frozenset({"FAILED", "PARTIAL_FAILED", "SOURCE_MISSING"})
+_IMAGE_RUNTIME_TYPES = frozenset({"offline", "online"})
 _IMMUTABLE_IMAGE = re.compile(
     r"^[A-Za-z0-9][A-Za-z0-9._/:-]{0,430}@sha256:[0-9a-f]{64}$"
 )
@@ -1292,6 +1293,7 @@ class DatasetImageBuildReceipt:
     service_name: str
     dataset_generation: int
     task_set_sha256: str
+    runtime_type: str
     selected_task_ids: tuple[str, ...]
 
     def __post_init__(self) -> None:
@@ -1305,6 +1307,7 @@ class DatasetImageBuildReceipt:
             or not 1 <= self.dataset_generation <= 2**63 - 1
             or not isinstance(self.task_set_sha256, str)
             or _SHA256.fullmatch(self.task_set_sha256) is None
+            or self.runtime_type not in _IMAGE_RUNTIME_TYPES
             or not isinstance(self.selected_task_ids, tuple)
             or not self.selected_task_ids
             or any(
@@ -1322,6 +1325,7 @@ class DatasetImageBuildReceipt:
             "service_name": self.service_name,
             "dataset_generation": self.dataset_generation,
             "task_set_sha256": self.task_set_sha256,
+            "runtime_type": self.runtime_type,
             "selected_task_ids": list(self.selected_task_ids),
             "status": "READY",
         }
@@ -1336,6 +1340,7 @@ class DatasetImageBuildReceipt:
                 "service_name",
                 "dataset_generation",
                 "task_set_sha256",
+                "runtime_type",
                 "selected_task_ids",
                 "status",
             }
@@ -1349,6 +1354,7 @@ class DatasetImageBuildReceipt:
             service_name=value.get("service_name"),
             dataset_generation=value.get("dataset_generation"),
             task_set_sha256=value.get("task_set_sha256"),
+            runtime_type=value.get("runtime_type"),
             selected_task_ids=tuple(value["selected_task_ids"]),
         )
 
@@ -2379,6 +2385,7 @@ class ParseBenchGatewayClient:
         *,
         package: ParseBenchPackageDescriptor,
         publication: DatasetPublicationReceipt,
+        expected_runtime_type: str | None = None,
     ) -> dict[str, Any]:
         count_fields = (
             "total_count",
@@ -2399,13 +2406,17 @@ class ParseBenchGatewayClient:
         }
         if (
             not isinstance(value, Mapping)
-            or value.get("enabled") is not True
+            or not isinstance(value.get("enabled"), bool)
             or value.get("repository_configured") is not True
             or value.get("service_name") != package.service_name
             or value.get("dataset_id") != package.dataset_id
             or value.get("dataset_generation") != publication.generation
             or value.get("provider_type") != "YOLO"
-            or value.get("runtime_type") != "offline"
+            or value.get("runtime_type") not in _IMAGE_RUNTIME_TYPES
+            or (
+                expected_runtime_type is not None
+                and value.get("runtime_type") != expected_runtime_type
+            )
             or value.get("status") not in valid_statuses
             or any(
                 isinstance(value.get(field), bool)
@@ -2419,12 +2430,43 @@ class ParseBenchGatewayClient:
                 "gateway_identity_mismatch",
                 "mcpgateway returned a different Dataset image build identity",
             )
+        total = value["total_count"]
+        queued = value["queued_count"]
+        building = value["building_count"]
+        ready = value["ready_count"]
+        failed = value["failed_count"]
+        missing = value["missing_count"]
+        unknown = value["unknown_count"]
+        if total != queued + building + ready + failed + missing + unknown:
+            raise ParseBenchGatewayError(
+                "gateway_identity_mismatch",
+                "mcpgateway returned inconsistent Dataset image build counts",
+            )
+        if total == 0:
+            derived_status = "NOT_STARTED"
+        elif ready == total:
+            derived_status = "READY"
+        elif queued and not (building or ready or failed or missing or unknown):
+            derived_status = "QUEUED"
+        elif queued or building or unknown:
+            derived_status = "BUILDING"
+        elif ready:
+            derived_status = "PARTIAL_FAILED"
+        else:
+            derived_status = "FAILED"
+        if value["status"] != derived_status:
+            raise ParseBenchGatewayError(
+                "gateway_identity_mismatch",
+                "mcpgateway returned an inconsistent Dataset image build status",
+            )
         return dict(value)
 
     def _image_summary(
         self,
         package: ParseBenchPackageDescriptor,
         publication: DatasetPublicationReceipt,
+        *,
+        expected_runtime_type: str | None = None,
     ) -> dict[str, Any]:
         result = self._get_object(
             _DATASET_IMAGE_PATH.format(dataset_id=package.dataset_id),
@@ -2435,6 +2477,7 @@ class ParseBenchGatewayClient:
             result,
             package=package,
             publication=publication,
+            expected_runtime_type=expected_runtime_type,
         )
 
     def _task_image_status(
@@ -2528,6 +2571,7 @@ class ParseBenchGatewayClient:
             selected
         ) == set(package.task_ids)
         summary = self._image_summary(package, publication)
+        runtime_type = summary["runtime_type"]
         bulk_triggered = False
         if selects_package:
             complete = (
@@ -2548,6 +2592,7 @@ class ParseBenchGatewayClient:
                     ),
                     package=package,
                     publication=publication,
+                    expected_runtime_type=runtime_type,
                 )
                 bulk_triggered = True
         else:
@@ -2566,10 +2611,15 @@ class ParseBenchGatewayClient:
                     ),
                     package=package,
                     publication=publication,
+                    expected_runtime_type=runtime_type,
                 )
 
         while True:
-            summary = self._image_summary(package, publication)
+            summary = self._image_summary(
+                package,
+                publication,
+                expected_runtime_type=runtime_type,
+            )
             if selects_package:
                 ready = (
                     summary["status"] == "READY"
@@ -2589,6 +2639,7 @@ class ParseBenchGatewayClient:
                         ),
                         package=package,
                         publication=publication,
+                        expected_runtime_type=runtime_type,
                     )
                     bulk_triggered = True
                     continue
@@ -2603,7 +2654,11 @@ class ParseBenchGatewayClient:
                 # Close the read window so a concurrent re-publication cannot be
                 # recorded as readiness for the imported generation, and a
                 # same-generation rebuild cannot be reported as still READY.
-                closing_summary = self._image_summary(package, publication)
+                closing_summary = self._image_summary(
+                    package,
+                    publication,
+                    expected_runtime_type=runtime_type,
+                )
                 if selects_package:
                     closing_ready = (
                         closing_summary["status"] == "READY"
@@ -2622,6 +2677,7 @@ class ParseBenchGatewayClient:
                     service_name=package.service_name,
                     dataset_generation=publication.generation,
                     task_set_sha256=publication.task_set_sha256,
+                    runtime_type=runtime_type,
                     selected_task_ids=selected,
                 )
             if failed:

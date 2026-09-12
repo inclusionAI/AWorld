@@ -114,6 +114,7 @@ def _image_receipt(
         service_name=package.service_name,
         dataset_generation=_publication().generation,
         task_set_sha256=_publication().task_set_sha256,
+        runtime_type="offline",
         selected_task_ids=selected_task_ids or tuple(package.task_ids),
     )
 
@@ -796,24 +797,45 @@ def test_gateway_client_rejects_package_replaced_after_inspection(
 
 
 def _image_summary_response(
-    package: Any, *, status: str, ready: int, total: int = 1
+    package: Any,
+    *,
+    status: str,
+    ready: int,
+    total: int = 1,
+    runtime_type: str = "offline",
+    enabled: bool = True,
 ) -> dict[str, Any]:
+    counts = {
+        "queued_count": 0,
+        "building_count": 0,
+        "ready_count": ready,
+        "failed_count": 0,
+        "missing_count": 0,
+        "unknown_count": 0,
+    }
+    if status == "NOT_STARTED":
+        total = 0
+        counts["ready_count"] = 0
+    elif status == "QUEUED":
+        counts["queued_count"] = total - ready
+    elif status == "BUILDING":
+        counts["building_count"] = total - ready
+    elif status == "PARTIAL_FAILED":
+        counts["failed_count"] = total - ready
+    elif status == "FAILED":
+        counts["failed_count"] = total
+        counts["ready_count"] = 0
     return {
-        "enabled": True,
+        "enabled": enabled,
         "repository_configured": True,
         "service_name": package.service_name,
         "dataset_id": package.dataset_id,
         "dataset_generation": _publication().generation,
         "provider_type": "YOLO",
-        "runtime_type": "offline",
+        "runtime_type": runtime_type,
         "status": status,
         "total_count": total,
-        "queued_count": 0,
-        "building_count": 0 if status == "READY" else 1,
-        "ready_count": ready,
-        "failed_count": 0,
-        "missing_count": 0,
-        "unknown_count": 0,
+        **counts,
         "message": "test",
     }
 
@@ -933,6 +955,119 @@ def test_gateway_client_uses_one_bulk_build_for_complete_package(
     assert receipt.selected_task_ids == package.task_ids
     assert [method for method, _path in paths].count("POST") == 1
     assert all("/tasks/" not in path for _method, path in paths)
+
+
+def test_gateway_client_accepts_ready_online_images_when_builds_are_disabled(
+    tmp_path: Path,
+) -> None:
+    package = _package(tmp_path / "dataset.zip")
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(
+            200,
+            json=_image_summary_response(
+                package,
+                status="READY",
+                ready=len(package.task_ids),
+                total=len(package.task_ids),
+                runtime_type="online",
+                enabled=False,
+            ),
+        )
+
+    with ParseBenchGatewayClient(
+        "https://gateway.example.test",
+        transport=httpx.MockTransport(handler),
+    ) as client:
+        receipt = client.prepare_task_images(
+            package,
+            selected_task_ids=package.task_ids,
+            publication=_publication(),
+            timeout_seconds=1,
+            poll_interval_seconds=0.001,
+        )
+
+    assert receipt.runtime_type == "online"
+    assert receipt.to_dict()["runtime_type"] == "online"
+    assert requests
+    assert {request.method for request in requests} == {"GET"}
+
+
+def test_gateway_client_rejects_runtime_type_drift_while_closing_readiness(
+    tmp_path: Path,
+) -> None:
+    package = _package(tmp_path / "dataset.zip")
+    reads = 0
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        nonlocal reads
+        reads += 1
+        return httpx.Response(
+            200,
+            json=_image_summary_response(
+                package,
+                status="READY",
+                ready=len(package.task_ids),
+                total=len(package.task_ids),
+                runtime_type="online" if reads == 1 else "offline",
+            ),
+        )
+
+    with (
+        ParseBenchGatewayClient(
+            "https://gateway.example.test",
+            transport=httpx.MockTransport(handler),
+        ) as client,
+        pytest.raises(ParseBenchGatewayError) as captured,
+    ):
+        client.prepare_task_images(
+            package,
+            selected_task_ids=package.task_ids,
+            publication=_publication(),
+            timeout_seconds=1,
+            poll_interval_seconds=0.001,
+        )
+
+    assert captured.value.code == "gateway_identity_mismatch"
+    assert reads == 2
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        lambda summary: summary.update({"unknown_count": 1}),
+        lambda summary: summary.update({"status": "BUILDING"}),
+    ],
+)
+def test_gateway_client_rejects_inconsistent_image_aggregate(
+    tmp_path: Path,
+    mutate: Callable[[dict[str, Any]], None],
+) -> None:
+    package = _package(tmp_path / "dataset.zip")
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        summary = _image_summary_response(package, status="READY", ready=1)
+        mutate(summary)
+        return httpx.Response(200, json=summary)
+
+    with (
+        ParseBenchGatewayClient(
+            "https://gateway.example.test",
+            transport=httpx.MockTransport(handler),
+        ) as client,
+        pytest.raises(ParseBenchGatewayError) as captured,
+    ):
+        client.prepare_task_images(
+            package,
+            selected_task_ids=(package.task_ids[0],),
+            publication=_publication(),
+            timeout_seconds=1,
+            poll_interval_seconds=0.001,
+        )
+
+    assert captured.value.code == "gateway_identity_mismatch"
 
 
 def test_gateway_client_rejects_stale_image_generation_before_trigger(

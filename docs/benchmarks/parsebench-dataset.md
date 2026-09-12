@@ -160,8 +160,11 @@ first validates the complete package and reserves the output path, then imports
 the package and binds the exact Dataset publication receipt. Before batch
 submission it asks mcpgateway to build only the selected Task images, waits for
 READY images from that same publication generation and task-set, and rejects a
-READY projection that has no immutable image digest. It then submits the
-ordered selection with a durable client request ID and writes a canonical,
+READY projection that has no immutable image digest. The observed image
+runtime type (`offline` or `online`) is frozen into the resumable intent and
+run manifest; pre/prod deployments can therefore use their configured online
+Arca image path without weakening identity checks. It then submits the ordered
+selection with a durable client request ID and writes a canonical,
 credential-free run manifest. Existing outputs are never overwritten:
 
 ```bash
@@ -243,7 +246,7 @@ aworld-cli --no-banner benchmark parsebench report \
 downloads bounded pages using the gateway's reward-only projection, validates
 one stable terminal snapshot plus each task's sample/run mapping and versioned reward vector, applies
 the official five-dimension reduction, and atomically writes a deterministic
-`aworld.parsebench.gateway-report/v2` document. Smoke and partial reports are
+`aworld.parsebench.gateway-report/v3` document. Smoke and partial reports are
 always marked `publishable: false`, even when every selected task succeeds.
 
 ## Full release safety gates

@@ -82,6 +82,7 @@ def _image_receipt(package: ParseBenchPackageDescriptor) -> DatasetImageBuildRec
         service_name=package.service_name,
         dataset_generation=_publication().generation,
         task_set_sha256=_publication().task_set_sha256,
+        runtime_type="offline",
         selected_task_ids=package.task_ids,
     )
 
@@ -286,7 +287,7 @@ def test_status_and_report_use_versioned_manifest_and_bounded_results(
     monkeypatch.setattr(
         "aworld_cli.top_level_commands.benchmark_cmd.reduce_gateway_batch_results",
         lambda run_manifest, raw: {
-            "schema": "aworld.parsebench.gateway-report/v2",
+            "schema": "aworld.parsebench.gateway-report/v3",
             "batch_id": run_manifest.batch_id,
             "status": "scored",
             "publishable": False,
@@ -804,7 +805,7 @@ def test_report_failure_releases_its_reservation_for_retry(
     monkeypatch.setattr(
         "aworld_cli.top_level_commands.benchmark_cmd.reduce_gateway_batch_results",
         lambda *_args: {
-            "schema": "aworld.parsebench.gateway-report/v2",
+            "schema": "aworld.parsebench.gateway-report/v3",
             "batch_id": manifest.batch_id,
             "status": "scored",
             "publishable": False,
