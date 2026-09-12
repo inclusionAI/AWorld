@@ -3,6 +3,9 @@ from __future__ import annotations
 from aworld.benchmarks.parsebench.contracts import (
     DATASET_REVISION,
     EXPECTED_SOURCE_FIELDS,
+    PARSEBENCH_TASK_FILENAME,
+    PARSEBENCH_TASK_RUNTIME_PATH,
+    PARSEBENCH_TASK_SCHEMA_VERSION,
     PINNED_PARSEBENCH_CONTRACT,
     SCORER_REVISION,
     ParseBenchDimension,
@@ -12,6 +15,9 @@ from aworld.benchmarks.parsebench.contracts import (
 def test_pinned_parsebench_contract_models_all_upstream_dimensions() -> None:
     assert DATASET_REVISION == "2805a1d940f95a203e0ae4b88be9934f7765b3fc"
     assert SCORER_REVISION == "34b73455032797754f6ed62e14c27a8b5423d11e"
+    assert PARSEBENCH_TASK_SCHEMA_VERSION == "aworld-parsebench-task/v1"
+    assert PARSEBENCH_TASK_FILENAME == "parsebench-task.json"
+    assert PARSEBENCH_TASK_RUNTIME_PATH == "/workspace/parsebench-task.json"
     assert EXPECTED_SOURCE_FIELDS == frozenset(
         {
             "pdf",

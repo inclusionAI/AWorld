@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import argparse
 from collections import Counter, defaultdict
+from dataclasses import dataclass
 import gzip
-from hashlib import sha256
+from hashlib import sha1, sha256
 from io import BytesIO
 import json
 import math
@@ -24,6 +25,9 @@ from aworld.benchmarks.parsebench.contracts import (
     EXPECTED_SOURCE_FIELDS,
     GROUND_TRUTH_SCHEMA_VERSION,
     MATERIAL_MANIFEST_SCHEMA_VERSION,
+    PARSEBENCH_TASK_FILENAME,
+    PARSEBENCH_TASK_RUNTIME_PATH,
+    PARSEBENCH_TASK_SCHEMA_VERSION,
     PINNED_PARSEBENCH_CONTRACT,
     PROVENANCE_SCHEMA_VERSION,
     TASK_ARCHIVE_SCHEMA_VERSION,
@@ -44,7 +48,6 @@ DEFAULT_DATASET_ID = "parsebench-2805a1d9"
 DEFAULT_SERVICE_NAME = "aworld-filex-parsebench"
 DEFAULT_RUNTIME_IMAGE = "aworld-filex-parsebench:local"
 
-_REVISION_MARKER = ".parsebench-revision"
 _ZIP_TIMESTAMP = (1980, 1, 1, 0, 0, 0)
 _SHA256_PATTERN = re.compile(r"^sha256:[0-9a-f]{64}$")
 _IDENTITY_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,254}$")
@@ -57,6 +60,13 @@ _LFS_POINTER_PREFIX = b"version https://git-lfs.github.com/spec/v1"
 _DIMENSION_ORDER = {
     dimension: index for index, dimension in enumerate(ParseBenchDimension)
 }
+
+
+@dataclass(frozen=True, slots=True)
+class _RevisionEvidence:
+    revision: str
+    kind: str
+    blobs_root: Path | None = None
 
 
 class _DuplicateJsonKey(ValueError):
@@ -154,23 +164,52 @@ def _git_checkout_revision(source_root: Path) -> str | None:
     return revision
 
 
-def _source_revision(source_root: Path) -> str:
-    git_revision = _git_checkout_revision(source_root)
-    if git_revision is not None:
-        return git_revision
-    marker = source_root / _REVISION_MARKER
-    if marker.is_file():
-        try:
-            revision = marker.read_text(encoding="ascii").strip()
-        except (OSError, UnicodeError):
-            revision = ""
-        if re.fullmatch(r"[0-9a-f]{40}", revision) is not None:
-            return revision
+def _hf_snapshot_blob_root(source_root: Path) -> Path | None:
+    cache_root = source_root.parent.parent
+    if (
+        source_root.parent.name != "snapshots"
+        or not cache_root.name.startswith("datasets--")
+        or re.fullmatch(r"[0-9a-f]{40}", source_root.name) is None
+    ):
+        return None
+    try:
+        blobs_root = (cache_root / "blobs").resolve(strict=True)
+    except (OSError, RuntimeError):
+        return None
+    if not blobs_root.is_dir() or not blobs_root.is_relative_to(cache_root):
+        return None
+    return blobs_root
+
+
+def _source_revision_evidence(source_root: Path) -> _RevisionEvidence:
+    if (source_root / ".git").exists():
+        git_revision = _git_checkout_revision(source_root)
+        if git_revision is None:
+            raise ParseBenchDatasetError(
+                "source_revision_unverifiable",
+                "ParseBench Git checkout revision could not be verified",
+            )
+        return _RevisionEvidence(git_revision, "clean-git-checkout")
+    if (source_root / ".parsebench-revision").exists():
+        raise ParseBenchDatasetError(
+            "source_revision_marker_unsupported",
+            "ParseBench exported revision markers are not trusted evidence",
+        )
+    blobs_root = _hf_snapshot_blob_root(source_root)
+    if blobs_root is not None:
+        return _RevisionEvidence(
+            source_root.name,
+            "huggingface-content-addressed-snapshot",
+            blobs_root,
+        )
     if (
         source_root.parent.name == "snapshots"
         and re.fullmatch(r"[0-9a-f]{40}", source_root.name) is not None
     ):
-        return source_root.name
+        raise ParseBenchDatasetError(
+            "source_revision_unverifiable",
+            "ParseBench Hugging Face snapshot has no bounded blob store",
+        )
     raise ParseBenchDatasetError(
         "source_revision_missing",
         "ParseBench checkout has no verifiable revision evidence",
@@ -197,21 +236,136 @@ def _validate_printable_token(
 def _is_allowed_material_file(source_root: Path, resolved: Path) -> bool:
     if resolved.is_relative_to(source_root):
         return True
-    cache_root = source_root.parent.parent
-    if (
-        source_root.parent.name != "snapshots"
-        or not cache_root.name.startswith("datasets--")
-        or re.fullmatch(r"[0-9a-f]{40}", source_root.name) is None
-    ):
-        return False
+    blobs_root = _hf_snapshot_blob_root(source_root)
+    return blobs_root is not None and resolved.is_relative_to(blobs_root)
+
+
+def _git_material_command(
+    source_root: Path,
+    arguments: Sequence[str],
+    relative_paths: Sequence[str],
+) -> bytes:
     try:
-        blobs_root = (cache_root / "blobs").resolve(strict=True)
+        completed = subprocess.run(
+            ["git", "-C", str(source_root), *arguments, "--", *relative_paths],
+            check=False,
+            capture_output=True,
+            timeout=30,
+        )
+    except (OSError, subprocess.SubprocessError):
+        raise ParseBenchDatasetError(
+            "source_revision_unverifiable",
+            "ParseBench Git material state could not be verified",
+        ) from None
+    if completed.returncode != 0:
+        raise ParseBenchDatasetError(
+            "source_revision_unverifiable",
+            "ParseBench Git material state could not be verified",
+        )
+    return completed.stdout
+
+
+def _validate_clean_git_material(
+    source_root: Path,
+    relative_paths: Sequence[str],
+) -> None:
+    for start in range(0, len(relative_paths), 128):
+        paths = relative_paths[start : start + 128]
+        tracked_output = _git_material_command(
+            source_root,
+            ("ls-files", "--cached", "-v", "-z"),
+            paths,
+        )
+        tracked: set[str] = set()
+        unsafe_index_flag = False
+        for raw_item in tracked_output.split(b"\0"):
+            if not raw_item:
+                continue
+            item = os.fsdecode(raw_item)
+            if len(item) < 3 or item[:2] != "H ":
+                unsafe_index_flag = True
+                continue
+            tracked.add(item[2:])
+        if unsafe_index_flag or tracked != set(paths):
+            raise ParseBenchDatasetError(
+                "source_revision_dirty",
+                "ParseBench Git material is untracked or differs from HEAD",
+            )
+        status = _git_material_command(
+            source_root,
+            ("status", "--porcelain=v1", "-z", "--untracked-files=all"),
+            paths,
+        )
+        if status:
+            raise ParseBenchDatasetError(
+                "source_revision_dirty",
+                "ParseBench Git material is untracked or differs from HEAD",
+            )
+
+
+def _git_blob_sha1_file(path: Path) -> str:
+    try:
+        size = path.stat().st_size
+        digest = sha1(f"blob {size}\0".encode("ascii"), usedforsecurity=False)
+        with path.open("rb") as source:
+            while chunk := source.read(1024 * 1024):
+                digest.update(chunk)
     except (OSError, RuntimeError):
-        return False
-    return (
-        blobs_root.is_dir()
-        and blobs_root.is_relative_to(cache_root)
-        and resolved.is_relative_to(blobs_root)
+        raise ParseBenchDatasetError(
+            "source_read_failed",
+            "ParseBench source material could not be read",
+        ) from None
+    return digest.hexdigest()
+
+
+def _validate_hf_blob_material(
+    blobs_root: Path,
+    material_paths: Iterable[Path],
+) -> None:
+    for material_path in sorted(set(material_paths)):
+        try:
+            resolved = material_path.resolve(strict=True)
+        except (OSError, RuntimeError):
+            raise ParseBenchDatasetError(
+                "source_revision_unverifiable",
+                "ParseBench snapshot material could not be resolved",
+            ) from None
+        if resolved.parent != blobs_root:
+            raise ParseBenchDatasetError(
+                "source_revision_unverifiable",
+                "ParseBench snapshot material is not backed by its blob store",
+            )
+        blob_id = resolved.name
+        if re.fullmatch(r"[0-9a-f]{64}", blob_id) is not None:
+            matches = _sha256_file(resolved) == f"sha256:{blob_id}"
+        elif re.fullmatch(r"[0-9a-f]{40}", blob_id) is not None:
+            matches = _git_blob_sha1_file(resolved) == blob_id
+        else:
+            raise ParseBenchDatasetError(
+                "source_revision_unverifiable",
+                "ParseBench snapshot uses a non-content-addressed blob",
+            )
+        if not matches:
+            raise ParseBenchDatasetError(
+                "source_content_mismatch",
+                "ParseBench snapshot material does not match its blob identity",
+            )
+
+
+def _validate_revision_materials(
+    source_root: Path,
+    revision_evidence: _RevisionEvidence,
+    material_paths: dict[str, Path],
+) -> None:
+    logical_paths = tuple(sorted(material_paths))
+    if revision_evidence.kind == "clean-git-checkout":
+        _validate_clean_git_material(source_root, logical_paths)
+        return
+    if revision_evidence.blobs_root is None:
+        raise AssertionError("snapshot revision evidence has no blob root")
+    _validate_hf_blob_material(
+        revision_evidence.blobs_root,
+        material_paths.values(),
     )
 
 
@@ -551,8 +705,8 @@ def load_parsebench_checkout(
             "source_root_invalid",
             "ParseBench source root is not a directory",
         )
-    revision = _source_revision(source_root)
-    if revision != contract.dataset_revision:
+    revision_evidence = _source_revision_evidence(source_root)
+    if revision_evidence.revision != contract.dataset_revision:
         raise ParseBenchDatasetError(
             "source_revision_mismatch",
             "ParseBench checkout revision does not match the pinned contract",
@@ -577,13 +731,23 @@ def load_parsebench_checkout(
         all_rules.extend(rules)
         all_resources.update(resources)
         source_evidence.append(evidence)
+    executions = _build_executions(all_rules, all_resources)
+    material_paths = dict(all_resources)
+    material_paths.update(
+        {
+            item.relative_path: (source_root / item.relative_path)
+            for item in source_evidence
+        }
+    )
+    _validate_revision_materials(source_root, revision_evidence, material_paths)
     dataset = ParseBenchSourceDataset(
         source_root=source_root,
-        dataset_revision=revision,
+        dataset_revision=revision_evidence.revision,
         scorer_revision=contract.scorer_revision,
+        revision_evidence=revision_evidence.kind,
         source_files=tuple(source_evidence),
         rules=tuple(all_rules),
-        executions=_build_executions(all_rules, all_resources),
+        executions=executions,
     )
     _validate_cardinality(dataset, contract=contract)
     return dataset
@@ -675,6 +839,24 @@ def _private_ground_truth(execution: ParseBenchExecution) -> bytes:
     return _canonical_json(document, newline=True)
 
 
+def _public_task_contract(execution: ParseBenchExecution) -> bytes:
+    document = {
+        "schema_version": PARSEBENCH_TASK_SCHEMA_VERSION,
+        "task_id": execution.task_id,
+        "source": {
+            "runtime_path": (
+                f"/workspace/input/document{execution.source_file.suffix.lower()}"
+            ),
+            "sha256": execution.source_sha256,
+            "size": execution.source_size,
+            "page": execution.page,
+        },
+        "dataset_revision": PINNED_PARSEBENCH_CONTRACT.dataset_revision,
+        "scorer_revision": PINNED_PARSEBENCH_CONTRACT.scorer_revision,
+    }
+    return _canonical_json(document, newline=True)
+
+
 def _instruction(execution: ParseBenchExecution) -> bytes:
     source_name = f"document{execution.source_file.suffix.lower()}"
     scope = (
@@ -686,35 +868,39 @@ def _instruction(execution: ParseBenchExecution) -> bytes:
         "# FileX ParseBench task\n\n"
         f"Parse {scope} from `/workspace/input/{source_name}` with the configured deterministic "
         "FileX benchmark adapter.\n\n"
-        "Write the following outputs under `/workspace/output`:\n\n"
-        "- `document.md`: parsed Markdown.\n"
-        "- `layout.json`: normalized per-page layout evidence.\n"
-        "- `result.json`: parser/provider identity, timing, status, and output paths.\n\n"
+        "Write exactly these output artifacts:\n\n"
+        "- `/logs/artifacts/document.md`: parsed Markdown.\n"
+        "- `/logs/artifacts/layout.json`: normalized per-page layout evidence.\n"
+        "- `/logs/artifacts/result.json`: parser/provider identity, timing, status, "
+        "and output paths.\n\n"
         "Do not inspect or depend on verifier-only files. Fail explicitly if the "
         "configured provider falls back or cannot emit required output.\n"
     ).encode("utf-8")
 
 
-def _task_toml(*, runtime_image: str) -> bytes:
-    image = json.dumps(runtime_image)
+def _task_toml() -> bytes:
     return (
         'version = "1.0"\n\n'
-        "artifacts = [\n"
-        '  { source = "/workspace/output/document.md", destination = "document.md" },\n'
-        '  { source = "/workspace/output/layout.json", destination = "layout.json" },\n'
-        '  { source = "/workspace/output/result.json", destination = "result.json" },\n'
-        "]\n\n"
+        'artifacts = ["/logs/artifacts"]\n\n'
         "[metadata]\n"
         'author_name = "inclusionAI/AWorld"\n'
         'difficulty = "benchmark"\n'
         'category = "parsebench"\n'
         'tags = ["parsebench", "filex", "deterministic"]\n\n'
         "[verifier]\n"
-        "timeout_sec = 600.0\n\n"
+        "timeout_sec = 600.0\n"
+        'environment_mode = "separate"\n\n'
+        "[verifier.environment]\n"
+        "build_timeout_sec = 600.0\n"
+        'network_mode = "no-network"\n'
+        "cpus = 2\n"
+        "memory_mb = 4096\n"
+        "storage_mb = 8192\n\n"
         "[agent]\n"
         "timeout_sec = 1800.0\n\n"
         "[environment]\n"
-        f"image = {image}\n"
+        'network_mode = "public"\n'
+        'workdir = "/workspace"\n'
         "cpus = 4\n"
         "memory_mb = 8192\n"
         "storage_mb = 16384\n"
@@ -726,7 +912,17 @@ def _dockerfile(*, runtime_image: str) -> bytes:
         f"FROM {runtime_image}\n"
         "WORKDIR /workspace\n"
         "COPY input/ /workspace/input/\n"
-        "RUN mkdir -p /workspace/output\n"
+        f"COPY {PARSEBENCH_TASK_FILENAME} {PARSEBENCH_TASK_RUNTIME_PATH}\n"
+        "RUN mkdir -p /logs/artifacts\n"
+    ).encode("utf-8")
+
+
+def _verifier_dockerfile(*, runtime_image: str) -> bytes:
+    return (
+        f"FROM {runtime_image}\n"
+        "WORKDIR /tests\n"
+        "COPY --chmod=755 test.sh /tests/test.sh\n"
+        "COPY --chmod=444 ground_truth.json /tests/ground_truth.json\n"
     ).encode("utf-8")
 
 
@@ -737,7 +933,9 @@ def _verifier_script() -> bytes:
         'script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)\n'
         "exec aworld-cli benchmark parsebench verify-task \\\n"
         '  --ground-truth "$script_dir/ground_truth.json" \\\n'
-        "  --result /workspace/output/result.json \\\n"
+        "  --result /logs/artifacts/result.json \\\n"
+        "  --markdown /logs/artifacts/document.md \\\n"
+        "  --layout /logs/artifacts/layout.json \\\n"
         "  --verifier-output /logs/verifier\n"
     ).encode("utf-8")
 
@@ -817,7 +1015,7 @@ def _write_task_archive(
                 _tar_add_bytes(
                     archive,
                     f"{prefix}/task.toml",
-                    _task_toml(runtime_image=runtime_image),
+                    _task_toml(),
                 )
                 _tar_add_bytes(
                     archive, f"{prefix}/instruction.md", _instruction(execution)
@@ -827,12 +1025,22 @@ def _write_task_archive(
                     f"{prefix}/environment/Dockerfile",
                     _dockerfile(runtime_image=runtime_image),
                 )
+                _tar_add_bytes(
+                    archive,
+                    f"{prefix}/environment/{PARSEBENCH_TASK_FILENAME}",
+                    _public_task_contract(execution),
+                )
                 _tar_add_file(
                     archive,
                     f"{prefix}/environment/input/document{suffix}",
                     execution.source_file,
                     expected_size=execution.source_size,
                     expected_sha256=execution.source_sha256,
+                )
+                _tar_add_bytes(
+                    archive,
+                    f"{prefix}/tests/Dockerfile",
+                    _verifier_dockerfile(runtime_image=runtime_image),
                 )
                 _tar_add_bytes(
                     archive,
@@ -851,19 +1059,19 @@ def _artifact_specs() -> list[dict[str, str]]:
     return [
         {
             "kind": "deliverable",
-            "source": "/workspace/output/document.md",
+            "source": "/logs/artifacts/document.md",
             "name": "document.md",
             "content_type": "text/markdown",
         },
         {
             "kind": "deliverable",
-            "source": "/workspace/output/layout.json",
+            "source": "/logs/artifacts/layout.json",
             "name": "layout.json",
             "content_type": "application/json",
         },
         {
             "kind": "deliverable",
-            "source": "/workspace/output/result.json",
+            "source": "/logs/artifacts/result.json",
             "name": "result.json",
             "content_type": "application/json",
         },
@@ -880,19 +1088,24 @@ def _catalog_row(
         "dataset_id": dataset_id,
         "sample_id": execution.task_id,
         "task_id": execution.task_id,
-        "source": f"parsebench@{PINNED_PARSEBENCH_CONTRACT.dataset_revision}/{execution.source_path}",
-        "source_path": execution.source_path,
+        "source": (
+            f"parsebench@{PINNED_PARSEBENCH_CONTRACT.dataset_revision}/"
+            f"{execution.task_id}"
+        ),
         "source_size": execution.source_size,
         "source_sha256": execution.source_sha256,
         "source_revision": PINNED_PARSEBENCH_CONTRACT.dataset_revision,
         "scorer_revision": PINNED_PARSEBENCH_CONTRACT.scorer_revision,
-        "dimensions": [dimension.value for dimension in execution.dimensions],
         "page": execution.page,
-        "rule_count": len(execution.rules),
         "instruction": instruction,
         "instruction_source": f"tasks/{execution.task_id}/instruction.md",
         "task_dir": f"tasks/{execution.task_id}.tar.gz",
         "task_material_kind": TASK_ARCHIVE_SCHEMA_VERSION,
+        "task_contract": {
+            "schema_version": PARSEBENCH_TASK_SCHEMA_VERSION,
+            "path": f"environment/{PARSEBENCH_TASK_FILENAME}",
+            "runtime_path": PARSEBENCH_TASK_RUNTIME_PATH,
+        },
         "artifact_specs": _artifact_specs(),
     }
 
@@ -986,8 +1199,9 @@ def _readme(*, selection: SmokeSelection | None) -> bytes:
         "Source documents are placed only in each Task's `environment/` tree. "
         "Rules, tags, and expected Markdown are placed only in verifier-owned "
         "`tests/ground_truth.json`; they are intentionally absent from the catalog, "
-        "instruction, and runtime image context. No network fetch is performed while "
-        "authoring this package.\n"
+        "instruction, and public task contract. Harbor collects agent outputs from "
+        "`/logs/artifacts`, stops the agent environment, and then starts the isolated "
+        "verifier. No network fetch is performed while authoring this package.\n"
     ).encode("utf-8")
 
 
@@ -1013,7 +1227,13 @@ def _provenance(
         "converter": CONVERTER_VERSION,
         "dataset_revision": dataset.dataset_revision,
         "scorer_revision": dataset.scorer_revision,
+        "revision_evidence": dataset.revision_evidence,
         "runtime_image": runtime_image,
+        "task_contract": {
+            "schema_version": PARSEBENCH_TASK_SCHEMA_VERSION,
+            "filename": PARSEBENCH_TASK_FILENAME,
+            "runtime_path": PARSEBENCH_TASK_RUNTIME_PATH,
+        },
         "source_files": [
             {
                 "path": item.relative_path,

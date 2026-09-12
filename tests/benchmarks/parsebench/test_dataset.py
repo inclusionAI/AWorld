@@ -1,17 +1,22 @@
 from __future__ import annotations
 
 from dataclasses import replace
-from hashlib import sha256
+from hashlib import sha1, sha256
 from io import BytesIO
 import json
 import os
 from pathlib import Path
+import subprocess
 import tarfile
+import tomllib
 from zipfile import ZipFile
 
 import pytest
 
 from aworld.benchmarks.parsebench.contracts import (
+    PARSEBENCH_TASK_FILENAME,
+    PARSEBENCH_TASK_RUNTIME_PATH,
+    PARSEBENCH_TASK_SCHEMA_VERSION,
     PINNED_PARSEBENCH_CONTRACT,
     ParseBenchDatasetError,
     ParseBenchDimension,
@@ -63,6 +68,17 @@ def _write_jsonl(path: Path, rows: list[dict[str, object]]) -> None:
     )
 
 
+def _blob_id(content: bytes, *, git_blob: bool) -> str:
+    if not git_blob:
+        return sha256(content).hexdigest()
+    digest = sha1(
+        f"blob {len(content)}\0".encode("ascii"),
+        usedforsecurity=False,
+    )
+    digest.update(content)
+    return digest.hexdigest()
+
+
 def _fixture_contract(*, unique_executions: int = 4):
     one_each = tuple(
         (dimension, 1) for dimension, _ in PINNED_PARSEBENCH_CONTRACT.source_files
@@ -75,16 +91,12 @@ def _fixture_contract(*, unique_executions: int = 4):
     )
 
 
-def _write_fixture(tmp_path: Path) -> Path:
+def _write_export_fixture(tmp_path: Path) -> Path:
     root = tmp_path / "parsebench-checkout"
     (root / "docs" / "chart").mkdir(parents=True)
     (root / "docs" / "layout").mkdir(parents=True)
     (root / "docs" / "table").mkdir(parents=True)
     (root / "docs" / "text").mkdir(parents=True)
-    (root / ".parsebench-revision").write_text(
-        PINNED_PARSEBENCH_CONTRACT.dataset_revision + "\n", encoding="ascii"
-    )
-
     resources = {
         "docs/chart/chart.pdf": b"%PDF-1.4\nsynthetic chart\n%%EOF\n",
         "docs/layout/layout.png": b"synthetic png bytes",
@@ -173,21 +185,55 @@ def _load_fixture(tmp_path: Path):
 
 
 def _write_hf_snapshot_fixture(tmp_path: Path) -> Path:
-    exported = _write_fixture(tmp_path)
+    exported = _write_export_fixture(tmp_path)
     cache_root = tmp_path / "datasets--llamaindex--ParseBench"
     blobs_root = cache_root / "blobs"
     snapshot = cache_root / "snapshots" / PINNED_PARSEBENCH_CONTRACT.dataset_revision
     blobs_root.mkdir(parents=True)
     for source in sorted(path for path in exported.rglob("*") if path.is_file()):
-        if source.name == ".parsebench-revision":
-            continue
         content = source.read_bytes()
-        blob = blobs_root / sha256(content).hexdigest()
+        blob = blobs_root / _blob_id(content, git_blob=source.suffix == ".jsonl")
         blob.write_bytes(content)
         destination = snapshot / source.relative_to(exported)
         destination.parent.mkdir(parents=True, exist_ok=True)
         destination.symlink_to(os.path.relpath(blob, destination.parent))
     return snapshot
+
+
+def _write_fixture(tmp_path: Path) -> Path:
+    return _write_hf_snapshot_fixture(tmp_path)
+
+
+def _readdress_snapshot_file(path: Path) -> None:
+    content = path.read_bytes()
+    blobs_root = next(parent for parent in path.parents if parent.name == "snapshots")
+    blobs_root = blobs_root.parent / "blobs"
+    blob = blobs_root / _blob_id(content, git_blob=path.suffix == ".jsonl")
+    blob.write_bytes(content)
+    path.unlink()
+    path.symlink_to(os.path.relpath(blob, path.parent))
+
+
+def _run_git(root: Path, *arguments: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        ["git", "-C", str(root), *arguments],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+
+def _write_git_fixture(tmp_path: Path, *, track_resources: bool = True):
+    root = _write_export_fixture(tmp_path)
+    _run_git(root, "init", "--quiet")
+    _run_git(root, "config", "user.email", "parsebench-fixture@example.invalid")
+    _run_git(root, "config", "user.name", "ParseBench Fixture")
+    _run_git(root, "add", "*.jsonl")
+    if track_resources:
+        _run_git(root, "add", "docs")
+    _run_git(root, "commit", "--quiet", "-m", "fixture")
+    revision = _run_git(root, "rev-parse", "HEAD").stdout.strip()
+    return root, replace(_fixture_contract(), dataset_revision=revision)
 
 
 def test_loader_validates_decodes_and_groups_shared_parse_execution(
@@ -197,6 +243,7 @@ def test_loader_validates_decodes_and_groups_shared_parse_execution(
 
     assert dataset.dataset_revision == PINNED_PARSEBENCH_CONTRACT.dataset_revision
     assert dataset.scorer_revision == PINNED_PARSEBENCH_CONTRACT.scorer_revision
+    assert dataset.revision_evidence == "huggingface-content-addressed-snapshot"
     assert len(dataset.rules) == 5
     assert len(dataset.executions) == 4
     shared = next(
@@ -236,7 +283,35 @@ def test_loader_accepts_materialized_hugging_face_snapshot_symlinks(
     dataset = load_parsebench_checkout(snapshot, contract=_fixture_contract())
 
     assert dataset.source_root == snapshot
+    assert dataset.revision_evidence == "huggingface-content-addressed-snapshot"
     assert len(dataset.executions) == 4
+
+
+def test_loader_rejects_loose_files_in_revision_named_hf_snapshot(
+    tmp_path: Path,
+) -> None:
+    exported = _write_export_fixture(tmp_path)
+    cache_root = tmp_path / "datasets--llamaindex--ParseBench"
+    snapshot = cache_root / "snapshots" / PINNED_PARSEBENCH_CONTRACT.dataset_revision
+    snapshot.parent.mkdir(parents=True)
+    exported.rename(snapshot)
+    (cache_root / "blobs").mkdir()
+
+    with pytest.raises(ParseBenchDatasetError) as captured:
+        load_parsebench_checkout(snapshot, contract=_fixture_contract())
+
+    assert captured.value.code == "source_revision_unverifiable"
+
+
+def test_loader_accepts_clean_git_checkout_with_all_material_tracked(
+    tmp_path: Path,
+) -> None:
+    root, contract = _write_git_fixture(tmp_path)
+
+    dataset = load_parsebench_checkout(root, contract=contract)
+
+    assert dataset.dataset_revision == contract.dataset_revision
+    assert dataset.revision_evidence == "clean-git-checkout"
 
 
 def test_loader_groups_the_same_document_by_one_indexed_execution_page(
@@ -249,6 +324,7 @@ def test_loader_groups_the_same_document_by_one_indexed_execution_page(
     second["id"] = "layout-rule-page-two"
     second["page"] = 2
     _write_jsonl(layout_path, [rows[0], second])
+    _readdress_snapshot_file(layout_path)
     contract = replace(
         _fixture_contract(),
         rule_counts=tuple(
@@ -326,20 +402,102 @@ def test_loader_rejects_invalid_source_contract(
 
 def test_loader_requires_pinned_revision_and_full_cardinality(tmp_path: Path) -> None:
     root = _write_fixture(tmp_path)
-    (root / ".parsebench-revision").write_text("0" * 40 + "\n", encoding="ascii")
     with pytest.raises(ParseBenchDatasetError) as revision_error:
-        load_parsebench_checkout(root, contract=_fixture_contract())
+        load_parsebench_checkout(
+            root,
+            contract=replace(_fixture_contract(), dataset_revision="0" * 40),
+        )
     assert revision_error.value.code == "source_revision_mismatch"
 
-    (root / ".parsebench-revision").write_text(
-        PINNED_PARSEBENCH_CONTRACT.dataset_revision + "\n", encoding="ascii"
-    )
     with pytest.raises(ParseBenchDatasetError) as cardinality_error:
         load_parsebench_checkout(
             root,
             contract=_fixture_contract(unique_executions=5),
         )
     assert cardinality_error.value.code == "cardinality_mismatch"
+
+
+def test_loader_rejects_forgeable_export_revision_marker(tmp_path: Path) -> None:
+    root = _write_export_fixture(tmp_path)
+    (root / ".parsebench-revision").write_text(
+        PINNED_PARSEBENCH_CONTRACT.dataset_revision + "\n",
+        encoding="ascii",
+    )
+
+    with pytest.raises(ParseBenchDatasetError) as captured:
+        load_parsebench_checkout(root, contract=_fixture_contract())
+
+    assert captured.value.code == "source_revision_marker_unsupported"
+
+
+@pytest.mark.parametrize("relative_path", ("chart.jsonl", "docs/chart/chart.pdf"))
+def test_loader_rejects_same_cardinality_hf_blob_tampering(
+    tmp_path: Path,
+    relative_path: str,
+) -> None:
+    root = _write_fixture(tmp_path)
+    target = root / relative_path
+    if target.suffix == ".jsonl":
+        rows = [json.loads(line) for line in target.read_text().splitlines()]
+        rows[0]["rule"] = json.dumps({"labels": ["Revenue"], "value": "TAMPERED"})
+        _write_jsonl(target, rows)
+    else:
+        target.write_bytes(target.read_bytes() + b"tampered")
+
+    with pytest.raises(ParseBenchDatasetError) as captured:
+        load_parsebench_checkout(root, contract=_fixture_contract())
+
+    assert captured.value.code == "source_content_mismatch"
+
+
+@pytest.mark.parametrize("relative_path", ("chart.jsonl", "docs/chart/chart.pdf"))
+def test_loader_rejects_same_cardinality_git_checkout_tampering(
+    tmp_path: Path,
+    relative_path: str,
+) -> None:
+    root, contract = _write_git_fixture(tmp_path)
+    target = root / relative_path
+    if target.suffix == ".jsonl":
+        rows = [json.loads(line) for line in target.read_text().splitlines()]
+        rows[0]["rule"] = json.dumps({"labels": ["Revenue"], "value": "TAMPERED"})
+        _write_jsonl(target, rows)
+    else:
+        target.write_bytes(target.read_bytes() + b"tampered")
+
+    with pytest.raises(ParseBenchDatasetError) as captured:
+        load_parsebench_checkout(root, contract=contract)
+
+    assert captured.value.code == "source_revision_dirty"
+
+
+def test_loader_rejects_untracked_git_source_material(tmp_path: Path) -> None:
+    root, contract = _write_git_fixture(tmp_path, track_resources=False)
+
+    with pytest.raises(ParseBenchDatasetError) as captured:
+        load_parsebench_checkout(root, contract=contract)
+
+    assert captured.value.code == "source_revision_dirty"
+
+
+@pytest.mark.parametrize(
+    "index_flag",
+    ("--assume-unchanged", "--skip-worktree"),
+)
+def test_loader_rejects_git_index_flags_that_can_hide_material_changes(
+    tmp_path: Path,
+    index_flag: str,
+) -> None:
+    root, contract = _write_git_fixture(tmp_path)
+    target = root / "chart.jsonl"
+    _run_git(root, "update-index", index_flag, "chart.jsonl")
+    rows = [json.loads(line) for line in target.read_text().splitlines()]
+    rows[0]["rule"] = json.dumps({"labels": ["Revenue"], "value": "TAMPERED"})
+    _write_jsonl(target, rows)
+
+    with pytest.raises(ParseBenchDatasetError) as captured:
+        load_parsebench_checkout(root, contract=contract)
+
+    assert captured.value.code == "source_revision_dirty"
 
 
 def test_loader_requires_every_dimension_file(tmp_path: Path) -> None:
@@ -475,21 +633,32 @@ def test_converter_builds_deterministic_private_harbor_package(tmp_path: Path) -
         assert provenance["selected_rule_count"] == 5
         assert provenance["selected_execution_count"] == 4
         assert provenance["runtime_image"] == "aworld-filex-parsebench:test"
+        assert provenance["revision_evidence"] == (
+            "huggingface-content-addressed-snapshot"
+        )
+        assert provenance["task_contract"] == {
+            "filename": PARSEBENCH_TASK_FILENAME,
+            "runtime_path": PARSEBENCH_TASK_RUNTIME_PATH,
+            "schema_version": PARSEBENCH_TASK_SCHEMA_VERSION,
+        }
         assert len(provenance["source_files"]) == 5
 
         for row in catalog:
-            assert row["task_id"] == task_id_for_source(
-                row["source_path"], page=row["page"]
-            )
             assert row["task_dir"] == f"tasks/{row['task_id']}.tar.gz"
-            assert set(row["dimensions"]) <= {
-                item.value for item in ParseBenchDimension
-            }
+            assert row["source"].endswith("/" + row["task_id"])
+            assert "source_path" not in row
+            assert "dimensions" not in row
+            assert "rule_count" not in row
             assert "rules" not in row
             assert "rule_ids" not in row
             assert "expected_markdown" not in row
             assert "tags" not in row
             assert _PRIVATE_TEXT not in json.dumps(row)
+            assert row["task_contract"] == {
+                "path": f"environment/{PARSEBENCH_TASK_FILENAME}",
+                "runtime_path": PARSEBENCH_TASK_RUNTIME_PATH,
+                "schema_version": PARSEBENCH_TASK_SCHEMA_VERSION,
+            }
 
             archive_bytes = package.read(row["task_dir"])
             declared = next(
@@ -505,6 +674,10 @@ def test_converter_builds_deterministic_private_harbor_package(tmp_path: Path) -
                 assert f"{prefix}/task.toml" in members
                 assert f"{prefix}/instruction.md" in members
                 assert f"{prefix}/environment/Dockerfile" in members
+                assert (
+                    f"{prefix}/environment/{PARSEBENCH_TASK_FILENAME}" in members
+                )
+                assert f"{prefix}/tests/Dockerfile" in members
                 assert f"{prefix}/tests/test.sh" in members
                 assert f"{prefix}/tests/ground_truth.json" in members
                 environment_files = {
@@ -519,16 +692,79 @@ def test_converter_builds_deterministic_private_harbor_package(tmp_path: Path) -
                 dockerfile = (
                     task.extractfile(f"{prefix}/environment/Dockerfile").read().decode()
                 )
+                verifier_dockerfile = (
+                    task.extractfile(f"{prefix}/tests/Dockerfile").read().decode()
+                )
+                verifier_script = (
+                    task.extractfile(f"{prefix}/tests/test.sh").read().decode()
+                )
+                task_toml_text = (
+                    task.extractfile(f"{prefix}/task.toml").read().decode()
+                )
+                task_config = tomllib.loads(task_toml_text)
+                public_task = json.load(
+                    task.extractfile(
+                        f"{prefix}/environment/{PARSEBENCH_TASK_FILENAME}"
+                    )
+                )
                 ground_truth = json.load(
                     task.extractfile(f"{prefix}/tests/ground_truth.json")
                 )
                 assert _PRIVATE_TEXT not in instruction
                 assert _PRIVATE_TEXT not in dockerfile
+                assert _PRIVATE_TEXT not in json.dumps(public_task)
+                assert set(public_task) == {
+                    "schema_version",
+                    "task_id",
+                    "source",
+                    "dataset_revision",
+                    "scorer_revision",
+                }
+                assert set(public_task["source"]) == {
+                    "runtime_path",
+                    "sha256",
+                    "size",
+                    "page",
+                }
+                assert public_task["schema_version"] == PARSEBENCH_TASK_SCHEMA_VERSION
+                assert public_task["task_id"] == row["task_id"]
+                assert public_task["source"] == {
+                    "runtime_path": ground_truth["source"]["runtime_path"],
+                    "sha256": row["source_sha256"],
+                    "size": row["source_size"],
+                    "page": ground_truth["source"]["page"],
+                }
+                assert public_task["dataset_revision"] == row["source_revision"]
+                assert public_task["scorer_revision"] == row["scorer_revision"]
+                assert (
+                    f"COPY {PARSEBENCH_TASK_FILENAME} {PARSEBENCH_TASK_RUNTIME_PATH}"
+                    in dockerfile
+                )
+                assert "COPY --chmod=755 test.sh /tests/test.sh" in verifier_dockerfile
+                assert (
+                    "COPY --chmod=444 ground_truth.json /tests/ground_truth.json"
+                    in verifier_dockerfile
+                )
+                assert task_config["artifacts"] == ["/logs/artifacts"]
+                assert task_config["verifier"]["environment_mode"] == "separate"
+                assert (
+                    task_config["verifier"]["environment"]["network_mode"]
+                    == "no-network"
+                )
+                assert "docker_image" not in task_config["environment"]
+                assert "image" not in task_config["environment"]
+                assert "/workspace/output" not in instruction
+                assert "/workspace/output" not in task_toml_text
+                assert "/workspace/output" not in verifier_script
+                for artifact_name in ("result.json", "document.md", "layout.json"):
+                    artifact_path = f"/logs/artifacts/{artifact_name}"
+                    assert artifact_path in instruction
+                    assert artifact_path in verifier_script
                 assert (
                     ground_truth["schema_version"]
                     == "aworld-parsebench-ground-truth/v1"
                 )
                 assert ground_truth["task_id"] == row["task_id"]
                 assert ground_truth["source"]["sha256"] == row["source_sha256"]
-                assert len(ground_truth["rules"]) == row["rule_count"]
+                assert ground_truth["rules"]
                 assert _PRIVATE_TEXT in json.dumps(ground_truth)

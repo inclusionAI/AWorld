@@ -18,6 +18,9 @@ TASK_ARCHIVE_SCHEMA_VERSION = "lingguang-task-archive/v1"
 GROUND_TRUTH_SCHEMA_VERSION = "aworld-parsebench-ground-truth/v1"
 PROVENANCE_SCHEMA_VERSION = "aworld-parsebench-provenance/v1"
 CONVERTER_VERSION = "aworld-parsebench-dataset/v1"
+PARSEBENCH_TASK_SCHEMA_VERSION = "aworld-parsebench-task/v1"
+PARSEBENCH_TASK_FILENAME = "parsebench-task.json"
+PARSEBENCH_TASK_RUNTIME_PATH = "/workspace/parsebench-task.json"
 
 EXPECTED_SOURCE_FIELDS = frozenset(
     {
@@ -200,6 +203,7 @@ class ParseBenchSourceDataset:
     source_root: Path
     dataset_revision: str
     scorer_revision: str
+    revision_evidence: str
     source_files: tuple[FileEvidence, ...]
     rules: tuple[ParseBenchRule, ...]
     executions: tuple[ParseBenchExecution, ...]
@@ -251,6 +255,9 @@ __all__ = (
     "JsonScalar",
     "JsonValue",
     "MATERIAL_MANIFEST_SCHEMA_VERSION",
+    "PARSEBENCH_TASK_FILENAME",
+    "PARSEBENCH_TASK_RUNTIME_PATH",
+    "PARSEBENCH_TASK_SCHEMA_VERSION",
     "PINNED_PARSEBENCH_CONTRACT",
     "PROVENANCE_SCHEMA_VERSION",
     "PackageBuildResult",
