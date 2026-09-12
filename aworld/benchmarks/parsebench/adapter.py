@@ -27,7 +27,6 @@ from urllib.parse import urlsplit
 
 from aworld.benchmarks.parsebench.contracts import DATASET_REVISION, SCORER_REVISION
 
-
 TASK_SPEC_SCHEMA_VERSION = "aworld-parsebench-task/v1"
 RESULT_SCHEMA_VERSION = "aworld-parsebench-filex-result/v1"
 FILEX_DOCUMENT_IR_SCHEMA_VERSION = "filex-document-ir-v2"
@@ -45,6 +44,8 @@ _SOURCE_FIELDS = frozenset({"runtime_path", "size", "sha256", "page"})
 _TASK_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 _SHA256_PATTERN = re.compile(r"^sha256:[0-9a-f]{64}$")
 _PROVIDER_PATTERN = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
+_PROVIDER_VERSION_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+-]{0,127}$")
+_REQUESTED_PROVIDER_VERSIONS = {"paddle_ocr": "paddleocr-vl-1.6"}
 _MAX_TASK_SPEC_BYTES = 64 * 1024
 _MAX_RUNNER_OUTPUT_BYTES = 4 * 1024 * 1024
 _MAX_RUNNER_ERROR_BYTES = 4 * 1024 * 1024
@@ -784,14 +785,21 @@ def _validate_execution_identity(
             "provider_fallback", "FileX provider fallback is forbidden"
         )
     provider_version = metrics.get("provider_version")
-    if not isinstance(provider_version, str) or not provider_version.strip():
+    if (
+        not isinstance(provider_version, str)
+        or _PROVIDER_VERSION_PATTERN.fullmatch(provider_version) is None
+    ):
         raise FileXAdapterError(
             "missing_provenance", "FileX did not emit a provider version"
         )
-    if metrics.get("requested_provider_version") != provider_version:
+    requested_provider_version = _REQUESTED_PROVIDER_VERSIONS.get(requested_provider)
+    if (
+        requested_provider_version is None
+        or metrics.get("requested_provider_version") != requested_provider_version
+    ):
         raise FileXAdapterError(
             "provider_version_mismatch",
-            "FileX actual provider version does not match the requested version",
+            "FileX requested provider contract version is not pinned",
         )
     cache = metrics.get("cache")
     if not isinstance(cache, Mapping) or cache.get("status") != "bypass":
@@ -833,8 +841,18 @@ def _validate_execution_identity(
 
 
 def _validated_source(spec: ParseBenchTaskSpec, workspace_root: Path) -> Path:
+    declared_path = spec.source.runtime_path
     try:
-        source_path = spec.source.runtime_path.resolve(strict=True)
+        workspace_relative = declared_path.relative_to(DEFAULT_TASK_SPEC_PATH.parent)
+    except ValueError:
+        candidate = declared_path
+    else:
+        # Authored Dataset tasks use container-stable /workspace paths.  Map
+        # those paths onto an explicitly selected local workspace for bounded
+        # smoke diagnostics without rewriting the signed public task contract.
+        candidate = workspace_root / workspace_relative
+    try:
+        source_path = candidate.resolve(strict=True)
     except OSError as exc:
         raise FileXAdapterError(
             "invalid_source", "ParseBench source is unreadable"

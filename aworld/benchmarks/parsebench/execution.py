@@ -29,7 +29,6 @@ from aworld.benchmarks.parsebench.adapter import (
     load_parsebench_task_spec,
 )
 
-
 ATIF_SCHEMA_VERSION = "ATIF-v1.7"
 DEFAULT_PARSEBENCH_MODEL_PROFILE = DEFAULT_VLM_MODEL_PROFILE
 DEFAULT_PARSEBENCH_WORKSPACE_ROOT = Path("/workspace")

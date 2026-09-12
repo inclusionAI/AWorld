@@ -45,7 +45,6 @@ from aworld.benchmarks.parsebench.scoring import (
     validate_official_scorer,
 )
 
-
 _PINNED_FAILURE_CLASSIFICATION = {
     "provider": "official_failure",
     "worker": "execution_failed",
@@ -161,8 +160,7 @@ def test_upstream_revisions_and_primary_metrics_are_pinned() -> None:
         == "AWORLD_SCORER_BUNDLE_MANIFEST.json"
     )
     assert (
-        PARSEBENCH_SCORER_BUNDLE_MANIFEST_SCHEMA
-        == "aworld.parsebench.scorer-bundle/v1"
+        PARSEBENCH_SCORER_BUNDLE_MANIFEST_SCHEMA == "aworld.parsebench.scorer-bundle/v1"
     )
     assert (
         PARSEBENCH_SCORER_BUNDLE_MANIFEST_SHA256
@@ -921,7 +919,7 @@ def test_verifier_result_contract_emits_bounded_harbor_rewards_and_details() -> 
     )
 
     reward = result.reward_payload()
-    assert list(reward)[0] == "reward"
+    assert next(iter(reward)) == "reward"
     assert reward == {
         "reward": pytest.approx(0.4),
         "parsebench_table_score": pytest.approx(0.8),
@@ -1019,7 +1017,7 @@ def test_verifier_reward_mapping_has_exact_five_dimension_maximum() -> None:
 
     reward = result.reward_payload()
 
-    assert list(reward)[0] == PARSEBENCH_REWARD_KEY
+    assert next(iter(reward)) == PARSEBENCH_REWARD_KEY
     assert len(reward) == 31
 
 

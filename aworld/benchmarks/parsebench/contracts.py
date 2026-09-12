@@ -2,17 +2,16 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
-import re
 from typing import TypeAlias
 
 from aworld.benchmarks.parsebench._material_manifest import (
     PINNED_MATERIAL_MANIFEST_SHA256,
     PINNED_PARSEBENCH_MATERIAL_DIGESTS,
 )
-
 
 DATASET_REVISION = "2805a1d940f95a203e0ae4b88be9934f7765b3fc"
 SCORER_REVISION = "34b73455032797754f6ed62e14c27a8b5423d11e"
@@ -29,7 +28,14 @@ PARSEBENCH_TASK_RUNTIME_PATH = "/workspace/parsebench-task.json"
 PARSEBENCH_SCOPE_SCHEMA_VERSION = "aworld-parsebench-scope/v1"
 PARSEBENCH_SCOPE_FILENAME = "parsebench-scope.json"
 PARSEBENCH_SCOPE_RUNTIME_PATH = "/workspace/parsebench-scope.json"
-SELECTION_MANIFEST_SCHEMA_VERSION = "aworld-parsebench-selection-manifest/v1"
+SELECTION_MANIFEST_SCHEMA_VERSION = "aworld-parsebench-selection-manifest/v2"
+PINNED_FULL_SELECTION_MANIFEST_SHA256 = (
+    "sha256:66fc68ad1f912ab3b5b03239ae76f4330ebcb801a1578a53913ff3231ab18f62"
+)
+# Publication stays fail-closed until the matching Runtime image is built,
+# independently audited, pushed, and this exact digest reference is released.
+# Local/smoke/full execution remains available while this is ``None``.
+PINNED_PARSEBENCH_RUNTIME_IMAGE: str | None = None
 
 EXPECTED_SOURCE_FIELDS = frozenset(
     {
@@ -284,21 +290,26 @@ __all__ = (
     "DATASET_PACKAGE_SCHEMA_VERSION",
     "DATASET_REVISION",
     "EXPECTED_SOURCE_FIELDS",
-    "FileEvidence",
     "GROUND_TRUTH_SCHEMA_VERSION",
-    "JsonScalar",
-    "JsonValue",
     "MATERIAL_MANIFEST_SCHEMA_VERSION",
-    "PARSEBENCH_TASK_FILENAME",
-    "PARSEBENCH_TASK_RUNTIME_PATH",
-    "PARSEBENCH_TASK_SCHEMA_VERSION",
     "PARSEBENCH_SCOPE_FILENAME",
     "PARSEBENCH_SCOPE_RUNTIME_PATH",
     "PARSEBENCH_SCOPE_SCHEMA_VERSION",
+    "PARSEBENCH_TASK_FILENAME",
+    "PARSEBENCH_TASK_RUNTIME_PATH",
+    "PARSEBENCH_TASK_SCHEMA_VERSION",
+    "PINNED_FULL_SELECTION_MANIFEST_SHA256",
     "PINNED_MATERIAL_MANIFEST_SHA256",
-    "PINNED_PARSEBENCH_MATERIAL_DIGESTS",
     "PINNED_PARSEBENCH_CONTRACT",
+    "PINNED_PARSEBENCH_MATERIAL_DIGESTS",
+    "PINNED_PARSEBENCH_RUNTIME_IMAGE",
     "PROVENANCE_SCHEMA_VERSION",
+    "SCORER_REVISION",
+    "SELECTION_MANIFEST_SCHEMA_VERSION",
+    "TASK_ARCHIVE_SCHEMA_VERSION",
+    "FileEvidence",
+    "JsonScalar",
+    "JsonValue",
     "PackageBuildResult",
     "ParseBenchContract",
     "ParseBenchDatasetError",
@@ -306,8 +317,5 @@ __all__ = (
     "ParseBenchExecution",
     "ParseBenchRule",
     "ParseBenchSourceDataset",
-    "SCORER_REVISION",
-    "SELECTION_MANIFEST_SCHEMA_VERSION",
     "SmokeSelection",
-    "TASK_ARCHIVE_SCHEMA_VERSION",
 )

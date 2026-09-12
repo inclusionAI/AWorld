@@ -46,12 +46,8 @@ PARSEBENCH_SCORER_SOURCE_MANIFEST_SHA256 = (
 PARSEBENCH_SCORER_VENDORED_METADATA_SHA256 = (
     "4ae6f99eb61da04f9995bab3ed4d94e2e8b9f299a7fd737607e8f6512049e21b"
 )
-PARSEBENCH_SCORER_BUNDLE_MANIFEST_FILENAME = (
-    "AWORLD_SCORER_BUNDLE_MANIFEST.json"
-)
-PARSEBENCH_SCORER_BUNDLE_MANIFEST_SCHEMA = (
-    "aworld.parsebench.scorer-bundle/v1"
-)
+PARSEBENCH_SCORER_BUNDLE_MANIFEST_FILENAME = "AWORLD_SCORER_BUNDLE_MANIFEST.json"
+PARSEBENCH_SCORER_BUNDLE_MANIFEST_SCHEMA = "aworld.parsebench.scorer-bundle/v1"
 PARSEBENCH_SCORER_BUNDLE_MANIFEST_SIZE = 32_520
 PARSEBENCH_SCORER_BUNDLE_MANIFEST_SHA256 = (
     "6a3e317b5b10cdbbb684cc6a519e819af70bfe24646b1de871b2a9b95d7e800e"
@@ -1983,7 +1979,7 @@ def _validate_vendored_bundle_tree(
                 if stat.S_ISLNK(mode) or not stat.S_ISDIR(mode):
                     raise OfficialScorerValidationError(
                         "official scorer .venv must be a real directory"
-                )
+                    )
                 directory_names.remove(".venv")
 
             # The pinned scorer creates one empty cache directory even with

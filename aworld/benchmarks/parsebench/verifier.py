@@ -44,7 +44,6 @@ from aworld.benchmarks.parsebench.scoring import (
     validate_official_scorer,
 )
 
-
 DEFAULT_GROUND_TRUTH_PATH = Path("/tests/ground_truth.json")
 DEFAULT_SCOPE_PATH = Path("/tests/parsebench-scope.json")
 DEFAULT_RESULT_PATH = Path("/logs/artifacts/result.json")
@@ -53,6 +52,7 @@ DEFAULT_LAYOUT_PATH = Path("/logs/artifacts/layout.json")
 DEFAULT_VERIFIER_OUTPUT = Path("/logs/verifier")
 DEFAULT_SCORER_CHECKOUT = Path("/opt/parsebench-scorer")
 DEFAULT_SCORER_PYTHON = DEFAULT_SCORER_CHECKOUT / ".venv" / "bin" / "python"
+DEFAULT_VERIFIER_WORKSPACE_ROOT = Path("/workspace")
 
 _ROOT_FIELDS = frozenset(
     {
@@ -583,10 +583,20 @@ def _sha256(content: bytes) -> str:
     return hashlib.sha256(content).hexdigest()
 
 
-def _validate_source_integrity(source: _GroundTruthSource) -> None:
+def _validate_source_integrity(
+    source: _GroundTruthSource,
+    *,
+    workspace_root: Path = DEFAULT_VERIFIER_WORKSPACE_ROOT,
+) -> None:
     """Re-hash the verifier-owned source copy bound by trusted ground truth."""
 
-    path = source.runtime_path
+    declared_path = source.runtime_path
+    try:
+        workspace_relative = declared_path.relative_to(DEFAULT_VERIFIER_WORKSPACE_ROOT)
+    except ValueError:
+        path = declared_path
+    else:
+        path = Path(workspace_root) / workspace_relative
     try:
         if (
             path.is_symlink()
@@ -913,6 +923,7 @@ def verify_parsebench_task(
     markdown_path: Path = DEFAULT_MARKDOWN_PATH,
     layout_path: Path = DEFAULT_LAYOUT_PATH,
     verifier_output: Path = DEFAULT_VERIFIER_OUTPUT,
+    workspace_root: Path = DEFAULT_VERIFIER_WORKSPACE_ROOT,
     scorer_checkout: Path = DEFAULT_SCORER_CHECKOUT,
     scorer_python: Path = DEFAULT_SCORER_PYTHON,
     scorer_timeout_seconds: float = 8 * 60,
@@ -938,7 +949,7 @@ def verify_parsebench_task(
     )
     scope = _load_scope(scope_file)
     ground_truth = _load_ground_truth(ground_truth_file)
-    _validate_source_integrity(ground_truth.source)
+    _validate_source_integrity(ground_truth.source, workspace_root=workspace_root)
     snapshot = _snapshot_artifacts(
         ground_truth=ground_truth,
         result_path=Path(result_path),
@@ -989,7 +1000,7 @@ def verify_parsebench_task(
                     dimension=dimension,
                     result=dimension_result,
                 )
-            except Exception:
+            except Exception:  # noqa: BLE001 - scorer output is an untrusted boundary
                 # An exception is infrastructure failure, never an official zero.
                 case_result = ParseBenchCaseResult.execution_failed(
                     case_id=ground_truth.task_id,
@@ -1013,10 +1024,11 @@ __all__ = (
     "DEFAULT_LAYOUT_PATH",
     "DEFAULT_MARKDOWN_PATH",
     "DEFAULT_RESULT_PATH",
+    "DEFAULT_SCOPE_PATH",
     "DEFAULT_SCORER_CHECKOUT",
     "DEFAULT_SCORER_PYTHON",
-    "DEFAULT_SCOPE_PATH",
     "DEFAULT_VERIFIER_OUTPUT",
+    "DEFAULT_VERIFIER_WORKSPACE_ROOT",
     "ParseBenchVerificationError",
     "ParseBenchVerificationOutcome",
     "verify_parsebench_task",

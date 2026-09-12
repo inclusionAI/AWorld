@@ -10,6 +10,9 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "aworld-cli" / "src"))
 
+from aworld_cli.core.top_level_command_system import TopLevelCommandRegistry
+from aworld_cli.plugin_capabilities.cli_commands import sync_plugin_cli_commands
+
 from aworld.benchmarks.parsebench.adapter import FileXRunRequest, FileXRunResult
 from aworld.benchmarks.parsebench.contracts import (
     DATASET_REVISION,
@@ -33,8 +36,6 @@ from aworld.benchmarks.parsebench.verifier import (
     verify_parsebench_task,
 )
 from aworld.plugins.discovery import discover_plugins
-from aworld_cli.core.top_level_command_system import TopLevelCommandRegistry
-from aworld_cli.plugin_capabilities.cli_commands import sync_plugin_cli_commands
 
 
 def _canonical_bytes(value: object) -> bytes:
@@ -109,7 +110,7 @@ class _FakeFileXRunner:
                 "provider": request.provider,
                 "provider_version": "paddleocr-vl-test",
                 "requested_provider": request.provider,
-                "requested_provider_version": "paddleocr-vl-test",
+                "requested_provider_version": "paddleocr-vl-1.6",
                 "status": "success",
                 "cache": {"status": "bypass"},
                 "work": {"failed": 0},
@@ -454,7 +455,7 @@ def test_verify_task_builds_official_inputs_for_every_dimension_and_rewards(
     assert outcome.result.diagnostic_reward == pytest.approx(0.6)
     reward_bytes = (verifier_output / "reward.json").read_bytes()
     reward = json.loads(reward_bytes)
-    assert list(reward)[0] == "reward"
+    assert next(iter(reward)) == "reward"
     assert reward["reward"] == pytest.approx(0.6)
     assert len(reward) == 31
     assert reward["parsebench_layout_score"] == 1.0
@@ -770,4 +771,4 @@ def test_builtin_benchmark_plugin_is_discoverable_and_exposes_help(
         lambda **_: smoke_outcome,
     )
     assert command.run(verify_args, None) == 0
-    assert "publishable\":false" in capsys.readouterr().out
+    assert 'publishable":false' in capsys.readouterr().out

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from hashlib import sha256
 import json
+from hashlib import sha256
 
 from aworld.benchmarks.parsebench.contracts import (
     DATASET_REVISION,
@@ -9,9 +9,12 @@ from aworld.benchmarks.parsebench.contracts import (
     PARSEBENCH_TASK_FILENAME,
     PARSEBENCH_TASK_RUNTIME_PATH,
     PARSEBENCH_TASK_SCHEMA_VERSION,
+    PINNED_FULL_SELECTION_MANIFEST_SHA256,
     PINNED_MATERIAL_MANIFEST_SHA256,
     PINNED_PARSEBENCH_CONTRACT,
+    PINNED_PARSEBENCH_RUNTIME_IMAGE,
     SCORER_REVISION,
+    SELECTION_MANIFEST_SCHEMA_VERSION,
     ParseBenchDimension,
 )
 
@@ -22,6 +25,15 @@ def test_pinned_parsebench_contract_models_all_upstream_dimensions() -> None:
     assert PARSEBENCH_TASK_SCHEMA_VERSION == "aworld-parsebench-task/v1"
     assert PARSEBENCH_TASK_FILENAME == "parsebench-task.json"
     assert PARSEBENCH_TASK_RUNTIME_PATH == "/workspace/parsebench-task.json"
+    assert (
+        SELECTION_MANIFEST_SCHEMA_VERSION == "aworld-parsebench-selection-manifest/v2"
+    )
+    assert (
+        PINNED_FULL_SELECTION_MANIFEST_SHA256
+        == "sha256:66fc68ad1f912ab3b5b03239ae76f4330ebcb801a1578a53913ff3231ab18f62"
+    )
+    assert PINNED_FULL_SELECTION_MANIFEST_SHA256 != "sha256:" + "0" * 64
+    assert PINNED_PARSEBENCH_RUNTIME_IMAGE is None
     assert EXPECTED_SOURCE_FIELDS == frozenset(
         {
             "pdf",
@@ -57,10 +69,10 @@ def test_pinned_parsebench_contract_models_all_upstream_dimensions() -> None:
     )
     assert PINNED_PARSEBENCH_CONTRACT.total_rule_count == 169_011
     assert PINNED_PARSEBENCH_CONTRACT.unique_execution_count == 2_078
-    material_digests = dict(
-        (path, (size, digest))
+    material_digests = {
+        path: (size, digest)
         for path, size, digest in PINNED_PARSEBENCH_CONTRACT.material_digests
-    )
+    }
     assert len(material_digests) == 2_083
     assert sum(path.startswith("docs/") for path in material_digests) == 2_078
     assert material_digests["chart.jsonl"] == (

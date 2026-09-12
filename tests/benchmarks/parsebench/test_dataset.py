@@ -1,25 +1,26 @@
 from __future__ import annotations
 
+import json
+import os
+import subprocess
+import tarfile
 from dataclasses import replace
 from hashlib import sha1, sha256
 from io import BytesIO
-import json
-import os
 from pathlib import Path
-import subprocess
-import tarfile
-import tomllib
 from zipfile import ZipFile
 
 import pytest
+import tomllib
 
+from aworld.benchmarks.parsebench import dataset as dataset_module
 from aworld.benchmarks.parsebench.contracts import (
-    PARSEBENCH_TASK_FILENAME,
-    PARSEBENCH_TASK_RUNTIME_PATH,
-    PARSEBENCH_TASK_SCHEMA_VERSION,
     PARSEBENCH_SCOPE_FILENAME,
     PARSEBENCH_SCOPE_RUNTIME_PATH,
     PARSEBENCH_SCOPE_SCHEMA_VERSION,
+    PARSEBENCH_TASK_FILENAME,
+    PARSEBENCH_TASK_RUNTIME_PATH,
+    PARSEBENCH_TASK_SCHEMA_VERSION,
     PINNED_PARSEBENCH_CONTRACT,
     ParseBenchDatasetError,
     ParseBenchDimension,
@@ -29,12 +30,13 @@ from aworld.benchmarks.parsebench.contracts import (
 )
 from aworld.benchmarks.parsebench.dataset import (
     _package_scope,
+    _selection_manifest,
+    _selection_manifest_sha256,
     build_parsebench_executable_dataset,
     load_parsebench_checkout,
     select_smoke_executions,
     task_id_for_source,
 )
-
 
 _PRIVATE_TEXT = "PRIVATE_EXPECTATION_DO_NOT_EXPOSE"
 
@@ -420,7 +422,7 @@ def test_loader_rejects_invalid_source_contract(
         resource.unlink()
         resource.symlink_to(outside)
     elif mutation == "duplicate_rule_id":
-        rows[0]["id"] = "table-rule"
+        rows.append(dict(rows[0]))
     _write_jsonl(root / "chart.jsonl", rows)
 
     with pytest.raises(ParseBenchDatasetError) as captured:
@@ -428,6 +430,24 @@ def test_loader_rejects_invalid_source_contract(
 
     assert captured.value.code == code
     assert not hasattr(captured.value, "row")
+
+
+def test_loader_allows_rule_id_reuse_across_distinct_executions(
+    tmp_path: Path,
+) -> None:
+    """Upstream hashes rule content, so two documents may legitimately share an ID."""
+
+    root = _write_fixture(tmp_path)
+    rows = [
+        json.loads(line) for line in (root / "chart.jsonl").read_text().splitlines()
+    ]
+    rows[0]["id"] = "table-rule"
+    _write_jsonl(root / "chart.jsonl", rows)
+    _readdress_snapshot_file(root / "chart.jsonl")
+
+    dataset = load_parsebench_checkout(root, contract=_fixture_contract(root))
+
+    assert sum(rule.rule_id == "table-rule" for rule in dataset.rules) == 2
 
 
 def test_loader_requires_pinned_revision_and_full_cardinality(tmp_path: Path) -> None:
@@ -721,14 +741,16 @@ def test_smoke_default_dataset_identity_is_scope_specific(tmp_path: Path) -> Non
         )
 
 
-def test_only_complete_pinned_contract_can_be_publishable() -> None:
+def test_only_content_attested_complete_pinned_contract_can_be_publishable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     memberships = [set() for _ in range(2_078)]
     assignments = {
-        ParseBenchDimension.CHART: range(0, 568),
+        ParseBenchDimension.CHART: range(568),
         ParseBenchDimension.LAYOUT: range(568, 1_068),
         ParseBenchDimension.TABLE: range(1_068, 1_571),
         ParseBenchDimension.TEXT_CONTENT: range(1_571, 2_077),
-        ParseBenchDimension.TEXT_FORMATTING: (*range(0, 475), 2_077),
+        ParseBenchDimension.TEXT_FORMATTING: (*range(475), 2_077),
     }
     for dimension, ordinals in assignments.items():
         for ordinal in ordinals:
@@ -761,7 +783,7 @@ def test_only_complete_pinned_contract_can_be_publishable() -> None:
     )
     immutable_image = "registry.example/parsebench@sha256:" + "3" * 64
 
-    official = _package_scope(
+    cardinality_only = _package_scope(
         dataset,
         executions,
         contract=PINNED_PARSEBENCH_CONTRACT,
@@ -781,12 +803,69 @@ def test_only_complete_pinned_contract_can_be_publishable() -> None:
         immutable_runtime_image=True,
     )
 
-    assert official.publishable is True
-    assert official.kind == "official-full"
-    assert official.non_publishable_reasons == ()
+    assert cardinality_only.publishable is False
+    assert cardinality_only.kind == "official-full"
+    assert cardinality_only.non_publishable_reasons == (
+        "unpinned_selection_manifest",
+        "unapproved_verifier_runtime",
+    )
+
+    synthetic_digest = _selection_manifest_sha256(dataset, executions)
+    monkeypatch.setattr(
+        dataset_module,
+        "PINNED_FULL_SELECTION_MANIFEST_SHA256",
+        synthetic_digest,
+    )
+    monkeypatch.setattr(
+        dataset_module,
+        "PINNED_PARSEBENCH_RUNTIME_IMAGE",
+        immutable_image,
+    )
+    attested = _package_scope(
+        dataset,
+        executions,
+        contract=PINNED_PARSEBENCH_CONTRACT,
+        selection=None,
+        runtime_image=immutable_image,
+        immutable_runtime_image=True,
+    )
+
+    assert attested.publishable is True
+    assert attested.kind == "official-full"
+    assert attested.non_publishable_reasons == ()
     assert custom.publishable is False
     assert custom.kind == "custom"
     assert custom.non_publishable_reasons == ("noncanonical_contract",)
+
+
+def test_selection_manifest_digest_binds_private_ground_truth_rules(
+    tmp_path: Path,
+) -> None:
+    source = _write_fixture(tmp_path)
+    dataset = load_parsebench_checkout(source, contract=_fixture_contract(source))
+    execution = dataset.executions[0]
+    original = _selection_manifest(dataset, (execution,))
+    changed_rule = replace(
+        execution.rules[0],
+        rule_payload={**execution.rules[0].rule_payload, "tampered": True},
+    )
+    changed_execution = replace(
+        execution,
+        rules=(changed_rule, *execution.rules[1:]),
+    )
+    changed = _selection_manifest(dataset, (changed_execution,))
+
+    original_case = original["cases"][0]
+    changed_case = changed["cases"][0]
+    assert original_case["task_id"] == changed_case["task_id"]
+    assert original_case["source_sha256"] == changed_case["source_sha256"]
+    assert (
+        original_case["materials"]["tests/ground_truth.json"]
+        != changed_case["materials"]["tests/ground_truth.json"]
+    )
+    assert _selection_manifest_sha256(dataset, (execution,)) != (
+        _selection_manifest_sha256(dataset, (changed_execution,))
+    )
 
 
 def test_converter_builds_deterministic_private_harbor_package(tmp_path: Path) -> None:
@@ -836,6 +915,10 @@ def test_converter_builds_deterministic_private_harbor_package(tmp_path: Path) -
         }
         selection_manifest = material_manifest["selection_manifest"]
         assert (
+            selection_manifest["schema_version"]
+            == "aworld-parsebench-selection-manifest/v2"
+        )
+        assert (
             "sha256:"
             + sha256(
                 json.dumps(
@@ -850,6 +933,17 @@ def test_converter_builds_deterministic_private_harbor_package(tmp_path: Path) -
         assert {case["task_id"] for case in selection_manifest["cases"]} == {
             row["task_id"] for row in catalog
         }
+        assert all(
+            set(case["materials"])
+            == {
+                "task.toml",
+                "instruction.md",
+                f"environment/{PARSEBENCH_TASK_FILENAME}",
+                "tests/test.sh",
+                "tests/ground_truth.json",
+            }
+            for case in selection_manifest["cases"]
+        )
         assert set(selection_manifest["dimension_task_ids"]) == {
             dimension.value for dimension in ParseBenchDimension
         }

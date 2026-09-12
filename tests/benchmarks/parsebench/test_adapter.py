@@ -116,7 +116,7 @@ class FakeRunner:
             "metrics": {
                 "schema_version": "1.0",
                 "provider": self.provider,
-                "provider_version": "paddleocr-vl-1.6",
+                "provider_version": "3.7.0",
                 "requested_provider": request.provider,
                 "requested_provider_version": "paddleocr-vl-1.6",
                 "status": "success",
@@ -157,6 +157,34 @@ def test_task_spec_loader_is_versioned_strict_and_ground_truth_blind(
             load_parsebench_task_spec(
                 _write_task_spec(workspace, source, **{field: []})
             )
+
+
+def test_executor_maps_container_runtime_path_to_explicit_local_workspace(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    source = workspace / "input" / "document.pdf"
+    source.parent.mkdir(parents=True)
+    source.write_bytes(b"fake-pdf")
+    task_path = _write_task_spec(workspace, source, page=None)
+    payload = json.loads(task_path.read_text(encoding="utf-8"))
+    payload["source"]["runtime_path"] = "/workspace/input/document.pdf"
+    task_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    runner = FakeRunner(document_ir=_document_ir())
+    result = execute_filex_parsebench(
+        load_parsebench_task_spec(task_path),
+        options=FileXExecutionOptions(
+            workspace_root=workspace,
+            artifacts_root=tmp_path / "logs" / "artifacts",
+        ),
+        runner=runner,
+    )
+
+    assert runner.requests[0].source_path == source.resolve()
+    assert result["provenance"]["source"]["runtime_path"] == (
+        "/workspace/input/document.pdf"
+    )
 
 
 def test_executor_emits_pixel_xywh_lowercase_labels_and_valid_commit(
@@ -289,7 +317,12 @@ def test_executor_fails_closed_for_bbox_fallback_cache_model_and_partial(
         runner = FakeRunner(document_ir=_document_ir())
         original = runner.run
 
-        def changed(request: FileXRunRequest, path=path, value=value) -> FileXRunResult:
+        def changed(
+            request: FileXRunRequest,
+            path=path,
+            value=value,
+            original=original,
+        ) -> FileXRunResult:
             result = original(request)
             target = result.payload["metrics"]
             for key in path[:-1]:
@@ -311,7 +344,11 @@ def test_executor_requires_complete_pinned_metrics(tmp_path: Path) -> None:
         runner = FakeRunner(document_ir=_document_ir())
         original = runner.run
 
-        def missing(request: FileXRunRequest, key=key) -> FileXRunResult:
+        def missing(
+            request: FileXRunRequest,
+            key=key,
+            original=original,
+        ) -> FileXRunResult:
             result = original(request)
             del result.payload["metrics"][key]
             return result

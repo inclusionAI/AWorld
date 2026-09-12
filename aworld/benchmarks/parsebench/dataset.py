@@ -3,20 +3,21 @@
 from __future__ import annotations
 
 import argparse
-from collections import Counter, defaultdict
-from dataclasses import dataclass
 import gzip
-from hashlib import sha1, sha256
-from io import BytesIO
 import json
 import math
 import os
-from pathlib import Path, PurePosixPath
 import re
 import subprocess
 import tarfile
 import tempfile
-from typing import Any, Iterable, Sequence, cast
+from collections import Counter, defaultdict
+from collections.abc import Iterable, Sequence
+from dataclasses import dataclass
+from hashlib import sha1, sha256
+from io import BytesIO
+from pathlib import Path, PurePosixPath
+from typing import Any, cast
 from zipfile import ZIP_DEFLATED, ZIP_STORED, ZipFile, ZipInfo
 
 from aworld.benchmarks.parsebench.contracts import (
@@ -26,13 +27,14 @@ from aworld.benchmarks.parsebench.contracts import (
     GROUND_TRUTH_SCHEMA_VERSION,
     MATERIAL_MANIFEST_SCHEMA_VERSION,
     PARSEBENCH_SCOPE_FILENAME,
-    PARSEBENCH_SCOPE_RUNTIME_PATH,
     PARSEBENCH_SCOPE_SCHEMA_VERSION,
     PARSEBENCH_TASK_FILENAME,
     PARSEBENCH_TASK_RUNTIME_PATH,
     PARSEBENCH_TASK_SCHEMA_VERSION,
+    PINNED_FULL_SELECTION_MANIFEST_SHA256,
     PINNED_MATERIAL_MANIFEST_SHA256,
     PINNED_PARSEBENCH_CONTRACT,
+    PINNED_PARSEBENCH_RUNTIME_IMAGE,
     PROVENANCE_SCHEMA_VERSION,
     SELECTION_MANIFEST_SCHEMA_VERSION,
     TASK_ARCHIVE_SCHEMA_VERSION,
@@ -47,7 +49,33 @@ from aworld.benchmarks.parsebench.contracts import (
     ParseBenchSourceDataset,
     SmokeSelection,
 )
-
+from aworld.benchmarks.parsebench.package_contract import (
+    agent_dockerfile as _render_agent_dockerfile,
+)
+from aworld.benchmarks.parsebench.package_contract import (
+    artifact_specs as _render_artifact_specs,
+)
+from aworld.benchmarks.parsebench.package_contract import (
+    canonical_json as _canonical_json,
+)
+from aworld.benchmarks.parsebench.package_contract import (
+    instruction as _render_instruction,
+)
+from aworld.benchmarks.parsebench.package_contract import (
+    public_scope_contract as _render_public_scope_contract,
+)
+from aworld.benchmarks.parsebench.package_contract import (
+    public_task_contract as _render_public_task_contract,
+)
+from aworld.benchmarks.parsebench.package_contract import (
+    task_toml as _render_task_toml,
+)
+from aworld.benchmarks.parsebench.package_contract import (
+    verifier_dockerfile as _render_verifier_dockerfile,
+)
+from aworld.benchmarks.parsebench.package_contract import (
+    verifier_script as _render_verifier_script,
+)
 
 DEFAULT_DATASET_ID = "parsebench-2805a1d9"
 DEFAULT_SERVICE_NAME = "aworld-filex-parsebench"
@@ -683,7 +711,7 @@ def task_id_for_source(source_path: str, *, page: int | None = None) -> str:
     """Return a stable gateway-safe Task identity for one ParseBench execution."""
 
     page_key = "all" if page is None else str(page)
-    digest = sha256(f"{source_path}\0page:{page_key}".encode("utf-8")).hexdigest()[:32]
+    digest = sha256(f"{source_path}\0page:{page_key}".encode()).hexdigest()[:32]
     return f"pb-{digest}"
 
 
@@ -731,6 +759,15 @@ def _build_executions(
                 ),
             )
         )
+        scoped_rule_ids: set[tuple[ParseBenchDimension, str]] = set()
+        for rule in source_rules:
+            scoped_rule_id = (rule.dimension, rule.rule_id)
+            if scoped_rule_id in scoped_rule_ids:
+                raise ParseBenchDatasetError(
+                    "duplicate_rule_id",
+                    "ParseBench execution contains a duplicate dimension rule identity",
+                )
+            scoped_rule_ids.add(scoped_rule_id)
         source_sha256 = _sha256_file(source_file)
         if _SHA256_PATTERN.fullmatch(source_sha256) is None:
             raise AssertionError("internal checksum is not canonical")
@@ -798,20 +835,12 @@ def load_parsebench_checkout(
     all_rules: list[ParseBenchRule] = []
     all_resources: dict[str, Path] = {}
     source_evidence: list[FileEvidence] = []
-    rule_ids: set[str] = set()
     for dimension, relative_path in contract.source_files:
         rules, resources, evidence = _read_jsonl_rules(
             source_root / relative_path,
             source_root=source_root,
             dimension=dimension,
         )
-        for rule in rules:
-            if rule.rule_id in rule_ids:
-                raise ParseBenchDatasetError(
-                    "duplicate_rule_id",
-                    "ParseBench checkout contains a duplicate rule identity",
-                )
-            rule_ids.add(rule.rule_id)
         all_rules.extend(rules)
         all_resources.update(resources)
         source_evidence.append(evidence)
@@ -869,7 +898,7 @@ def select_smoke_executions(
                     (
                         f"{selection.seed}\0{dimension.value}\0"
                         f"{execution.source_path}\0{execution.page}"
-                    ).encode("utf-8")
+                    ).encode()
                 ).hexdigest(),
                 execution.task_id,
             )
@@ -883,15 +912,36 @@ def select_smoke_executions(
     return tuple(by_task_id[task_id] for task_id in sorted(selected))
 
 
-def _canonical_json(value: object, *, newline: bool = False) -> bytes:
-    content = json.dumps(
-        value,
-        ensure_ascii=False,
-        sort_keys=True,
-        separators=(",", ":"),
-        allow_nan=False,
-    ).encode("utf-8")
-    return content + (b"\n" if newline else b"")
+def _content_attestation(content: bytes) -> dict[str, object]:
+    return {
+        "size": len(content),
+        "sha256": "sha256:" + sha256(content).hexdigest(),
+    }
+
+
+def _selection_case(execution: ParseBenchExecution) -> dict[str, object]:
+    source_runtime_path = (
+        f"/workspace/input/document{execution.source_file.suffix.lower()}"
+    )
+    return {
+        "task_id": execution.task_id,
+        "source_runtime_path": source_runtime_path,
+        "source_sha256": execution.source_sha256,
+        "source_size": execution.source_size,
+        "page": execution.page,
+        "dimensions": [dimension.value for dimension in execution.dimensions],
+        "materials": {
+            "task.toml": _content_attestation(_task_toml()),
+            "instruction.md": _content_attestation(_instruction(execution)),
+            f"environment/{PARSEBENCH_TASK_FILENAME}": _content_attestation(
+                _public_task_contract(execution)
+            ),
+            "tests/test.sh": _content_attestation(_verifier_script()),
+            "tests/ground_truth.json": _content_attestation(
+                _private_ground_truth(execution)
+            ),
+        },
+    }
 
 
 def _selection_manifest(
@@ -903,16 +953,7 @@ def _selection_manifest(
         "schema_version": SELECTION_MANIFEST_SCHEMA_VERSION,
         "dataset_revision": dataset.dataset_revision,
         "scorer_revision": dataset.scorer_revision,
-        "cases": [
-            {
-                "task_id": execution.task_id,
-                "source_sha256": execution.source_sha256,
-                "source_size": execution.source_size,
-                "page": execution.page,
-                "dimensions": [dimension.value for dimension in execution.dimensions],
-            }
-            for execution in ordered
-        ],
+        "cases": [_selection_case(execution) for execution in ordered],
         "dimension_task_ids": {
             dimension.value: [
                 execution.task_id
@@ -973,6 +1014,10 @@ def _package_scope(
         contract=contract,
         selection=selection,
     )
+    selection_manifest_sha256 = _selection_manifest_sha256(dataset, selected)
+    pinned_selection = (
+        selection_manifest_sha256 == PINNED_FULL_SELECTION_MANIFEST_SHA256
+    )
     reasons: list[str] = []
     if selection is not None:
         reasons.append("smoke_selection")
@@ -980,6 +1025,15 @@ def _package_scope(
         reasons.append("noncanonical_contract")
     elif selection is None and not complete_release:
         reasons.append("incomplete_official_selection")
+    elif selection is None and not pinned_selection:
+        reasons.append("unpinned_selection_manifest")
+    if (
+        selection is None
+        and contract == PINNED_PARSEBENCH_CONTRACT
+        and complete_release
+        and runtime_image != PINNED_PARSEBENCH_RUNTIME_IMAGE
+    ):
+        reasons.append("unapproved_verifier_runtime")
     if not immutable_runtime_image:
         reasons.append("mutable_runtime_image")
     kind = (
@@ -989,8 +1043,8 @@ def _package_scope(
     )
     return _PackageScope(
         kind=kind,
-        selection_manifest_sha256=_selection_manifest_sha256(dataset, selected),
-        publishable=not reasons and complete_release,
+        selection_manifest_sha256=selection_manifest_sha256,
+        publishable=not reasons and complete_release and pinned_selection,
         non_publishable_reasons=tuple(reasons),
         selected_execution_count=len(selected),
         runtime_image=runtime_image,
@@ -1032,116 +1086,44 @@ def _private_ground_truth(execution: ParseBenchExecution) -> bytes:
 
 
 def _public_task_contract(execution: ParseBenchExecution) -> bytes:
-    document = {
-        "schema_version": PARSEBENCH_TASK_SCHEMA_VERSION,
-        "task_id": execution.task_id,
-        "source": {
-            "runtime_path": (
-                f"/workspace/input/document{execution.source_file.suffix.lower()}"
-            ),
-            "sha256": execution.source_sha256,
-            "size": execution.source_size,
-            "page": execution.page,
-        },
-        "dataset_revision": PINNED_PARSEBENCH_CONTRACT.dataset_revision,
-        "scorer_revision": PINNED_PARSEBENCH_CONTRACT.scorer_revision,
-    }
-    return _canonical_json(document, newline=True)
+    return _render_public_task_contract(
+        task_id=execution.task_id,
+        source_runtime_path=(
+            f"/workspace/input/document{execution.source_file.suffix.lower()}"
+        ),
+        source_sha256=execution.source_sha256,
+        source_size=execution.source_size,
+        page=execution.page,
+    )
 
 
 def _public_scope_contract(scope: _PackageScope) -> bytes:
-    return _canonical_json(scope.to_dict(), newline=True)
+    return _render_public_scope_contract(scope.to_dict())
 
 
 def _instruction(execution: ParseBenchExecution) -> bytes:
-    source_name = f"document{execution.source_file.suffix.lower()}"
-    scope = (
-        "the complete document"
-        if execution.page is None
-        else f"one-indexed page {execution.page}"
+    return _render_instruction(
+        source_runtime_path=(
+            f"/workspace/input/document{execution.source_file.suffix.lower()}"
+        ),
+        page=execution.page,
     )
-    return (
-        "# FileX ParseBench task\n\n"
-        f"Parse {scope} from `/workspace/input/{source_name}` with the configured deterministic "
-        "FileX benchmark adapter.\n\n"
-        "Write exactly these output artifacts:\n\n"
-        "- `/logs/artifacts/document.md`: parsed Markdown.\n"
-        "- `/logs/artifacts/layout.json`: normalized per-page layout evidence.\n"
-        "- `/logs/artifacts/result.json`: parser/provider identity, timing, status, "
-        "and output paths.\n\n"
-        "The authored task is no-network. A production runtime may add only its "
-        "explicit model-proxy host. Do not fetch dataset or ground-truth material; "
-        "local connectivity requires an explicit non-publishable mode and an "
-        "external/model proxy.\n\n"
-        "Do not inspect or depend on verifier-only files. Fail explicitly if the "
-        "configured provider falls back or cannot emit required output.\n"
-    ).encode("utf-8")
 
 
 def _task_toml() -> bytes:
-    return (
-        'schema_version = "1.4"\n\n'
-        'artifacts = ["/logs/artifacts"]\n\n'
-        "[metadata]\n"
-        'author_name = "inclusionAI/AWorld"\n'
-        'difficulty = "benchmark"\n'
-        'category = "parsebench"\n'
-        'tags = ["parsebench", "filex", "deterministic"]\n\n'
-        "[verifier]\n"
-        "timeout_sec = 600.0\n"
-        'environment_mode = "separate"\n\n'
-        "[verifier.environment]\n"
-        "build_timeout_sec = 600.0\n"
-        'network_mode = "no-network"\n'
-        "cpus = 2\n"
-        "memory_mb = 4096\n"
-        "storage_mb = 8192\n\n"
-        "[agent]\n"
-        "timeout_sec = 1800.0\n\n"
-        "[environment]\n"
-        'network_mode = "no-network"\n'
-        'workdir = "/workspace"\n'
-        "cpus = 4\n"
-        "memory_mb = 8192\n"
-        "storage_mb = 16384\n"
-    ).encode("utf-8")
+    return _render_task_toml()
 
 
 def _dockerfile(*, runtime_image: str) -> bytes:
-    return (
-        f"FROM {runtime_image}\n"
-        "WORKDIR /workspace\n"
-        "COPY input/ /workspace/input/\n"
-        f"COPY {PARSEBENCH_TASK_FILENAME} {PARSEBENCH_TASK_RUNTIME_PATH}\n"
-        f"COPY {PARSEBENCH_SCOPE_FILENAME} {PARSEBENCH_SCOPE_RUNTIME_PATH}\n"
-        "RUN mkdir -p /logs/artifacts\n"
-    ).encode("utf-8")
+    return _render_agent_dockerfile(runtime_image=runtime_image)
 
 
 def _verifier_dockerfile(*, runtime_image: str) -> bytes:
-    return (
-        f"FROM {runtime_image}\n"
-        "WORKDIR /tests\n"
-        "COPY input/ /workspace/input/\n"
-        f"COPY {PARSEBENCH_SCOPE_FILENAME} {PARSEBENCH_SCOPE_RUNTIME_PATH}\n"
-        "COPY --chmod=755 test.sh /tests/test.sh\n"
-        "COPY --chmod=444 ground_truth.json /tests/ground_truth.json\n"
-    ).encode("utf-8")
+    return _render_verifier_dockerfile(runtime_image=runtime_image)
 
 
 def _verifier_script() -> bytes:
-    return (
-        "#!/bin/sh\n"
-        "set -eu\n"
-        'script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)\n'
-        "exec aworld-cli benchmark parsebench verify-task \\\n"
-        '  --ground-truth "$script_dir/ground_truth.json" \\\n'
-        f'  --scope "$script_dir/{PARSEBENCH_SCOPE_FILENAME}" \\\n'
-        "  --result /logs/artifacts/result.json \\\n"
-        "  --markdown /logs/artifacts/document.md \\\n"
-        "  --layout /logs/artifacts/layout.json \\\n"
-        "  --verifier-output /logs/verifier\n"
-    ).encode("utf-8")
+    return _render_verifier_script()
 
 
 def _tar_add_directory(archive: tarfile.TarFile, name: str) -> None:
@@ -1205,7 +1187,9 @@ def _write_task_archive(
 ) -> None:
     prefix = execution.task_id
     suffix = execution.source_file.suffix.lower()
-    with destination.open("wb") as raw:
+    # Keep dependent compression streams nested so each one is finalized before
+    # its backing stream exits.
+    with destination.open("wb") as raw:  # noqa: SIM117
         with gzip.GzipFile(filename="", mode="wb", fileobj=raw, mtime=0) as compressed:
             with tarfile.open(
                 fileobj=compressed, mode="w", format=tarfile.PAX_FORMAT
@@ -1279,26 +1263,7 @@ def _write_task_archive(
 
 
 def _artifact_specs() -> list[dict[str, str]]:
-    return [
-        {
-            "kind": "deliverable",
-            "source": "/logs/artifacts/document.md",
-            "name": "document.md",
-            "content_type": "text/markdown",
-        },
-        {
-            "kind": "deliverable",
-            "source": "/logs/artifacts/layout.json",
-            "name": "layout.json",
-            "content_type": "application/json",
-        },
-        {
-            "kind": "deliverable",
-            "source": "/logs/artifacts/result.json",
-            "name": "result.json",
-            "content_type": "application/json",
-        },
-    ]
+    return _render_artifact_specs()
 
 
 def _catalog_row(
@@ -1473,7 +1438,7 @@ def _readme(
         "runs that need connectivity must use an explicit non-publishable mode and "
         "an external/model proxy. No network fetch is performed while authoring "
         "this package.\n"
-    ).encode("utf-8")
+    ).encode()
 
 
 def _provenance(
