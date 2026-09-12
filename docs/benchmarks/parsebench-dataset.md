@@ -142,6 +142,12 @@ revalidates those files before every FileX invocation and records model
 in the version-2 result provenance. A missing or changed model fails before
 FileX starts; it never falls back to a registry download.
 
+The protected execution profile keeps layout detection and chart recognition
+enabled. Chart regions are routed to the same approved remote VLM so the
+official ParseBench chart dimension is scored from structured chart content;
+orientation, document unwarping, seal recognition, and all runtime model
+downloads remain disabled.
+
 For a local diagnostic outside the Runtime image, set the non-secret
 `AWORLD_PARSEBENCH_LAYOUT_MODEL_DIR` to an absolute, non-symlinked directory
 containing that exact extracted model. This variable selects only local model

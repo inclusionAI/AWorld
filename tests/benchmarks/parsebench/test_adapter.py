@@ -19,6 +19,7 @@ from aworld.benchmarks.parsebench.adapter import (
     FileXRunRequest,
     FileXRunResult,
     SubprocessFileXRunner,
+    _canonical_label,
     _run_bounded_process,
     _validated_layout_model_dir,
     execute_filex_parsebench,
@@ -27,6 +28,42 @@ from aworld.benchmarks.parsebench.adapter import (
     validate_parsebench_artifacts,
 )
 from aworld.benchmarks.parsebench.contracts import DATASET_REVISION, SCORER_REVISION
+
+
+@pytest.mark.parametrize(
+    ("raw_label", "canonical_label"),
+    [
+        ("abstract", "text"),
+        ("algorithm", "code"),
+        ("aside_text", "text"),
+        ("chart", "picture"),
+        ("content", "text"),
+        ("display_formula", "formula"),
+        ("doc_title", "title"),
+        ("figure_title", "caption"),
+        ("footer", "page-footer"),
+        ("footer_image", "page-footer"),
+        ("footnote", "footnote"),
+        ("formula_number", "text"),
+        ("header", "page-header"),
+        ("header_image", "page-header"),
+        ("image", "picture"),
+        ("inline_formula", "formula"),
+        ("number", "text"),
+        ("paragraph_title", "section-header"),
+        ("reference", "text"),
+        ("reference_content", "text"),
+        ("seal", "picture"),
+        ("table", "table"),
+        ("text", "text"),
+        ("vertical_text", "text"),
+        ("vision_footnote", "footnote"),
+    ],
+)
+def test_adapter_accepts_every_pinned_pp_doclayout_v3_label(
+    raw_label: str, canonical_label: str
+) -> None:
+    assert _canonical_label(raw_label) == canonical_label
 
 
 def _write_task_spec(
@@ -468,7 +505,7 @@ def test_subprocess_runner_binds_protected_gateway_without_secret_in_argv(
     assert inline["paddle_ocr_use_layout_detection"] is True
     assert inline["paddle_ocr_use_doc_orientation_classify"] is False
     assert inline["paddle_ocr_use_doc_unwarping"] is False
-    assert inline["paddle_ocr_use_chart_recognition"] is False
+    assert inline["paddle_ocr_use_chart_recognition"] is True
     assert inline["paddle_ocr_use_seal_recognition"] is False
     child_env = seen["environment"]
     assert child_env["GATEWAY_VLLM_API_KEY"] == secret

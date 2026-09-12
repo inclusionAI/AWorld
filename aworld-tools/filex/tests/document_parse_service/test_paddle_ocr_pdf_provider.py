@@ -414,3 +414,132 @@ def test_replace_markdown_asset_references_prefers_remote_url() -> None:
         in updated
     )
     assert '<img src="https://mdn.example/file.jpg" data-file-id="A*remote">' in updated
+
+
+def test_chart_block_uses_vlm_recognition_and_survives_markdown_and_ir(
+    monkeypatch, tmp_path
+) -> None:
+    """Exercise FileX through PaddleOCR-VL's real chart routing/formatting seam."""
+
+    monkeypatch.setenv("PADDLE_PDX_CACHE_HOME", str(tmp_path / "paddlex-cache"))
+    from paddlex.inference.pipelines.paddleocr_vl.pipeline import (
+        _PaddleOCRVLPipeline,
+    )
+    from paddlex.inference.pipelines.paddleocr_vl.result import (
+        PaddleOCRVLBlock,
+        PaddleOCRVLResult,
+    )
+
+    module = _load_provider_module()
+    recognized_chart = (
+        "| Quarter | Revenue |\n"
+        "| --- | ---: |\n"
+        "| Q1 | 42 |"
+    )
+
+    class _ChartPipeline:
+        vlm_prompts: list[str]
+
+        def __init__(self) -> None:
+            self.vlm_prompts = []
+
+        def predict(self, _input_path, **kwargs):
+            assert kwargs["use_chart_recognition"] is True
+            chart_block = {
+                "img": object(),
+                "label": "chart",
+                "box": [10, 20, 310, 220],
+            }
+            entries, _has_spotting, _drop_figures = (
+                _PaddleOCRVLPipeline._paddleocr_vl_collect_page_vlm_entries_core(
+                    None,
+                    0,
+                    [chart_block],
+                    [],
+                    {
+                        "image_labels": [],
+                        "use_chart_recognition": True,
+                        "use_seal_recognition": False,
+                        "ocr_min_pixels": 1,
+                        "ocr_max_pixels": 1000,
+                        "table_min_pixels": 1,
+                        "table_max_pixels": 1000,
+                        "chart_min_pixels": 2,
+                        "chart_max_pixels": 900,
+                        "formula_min_pixels": 1,
+                        "formula_max_pixels": 1000,
+                        "seal_min_pixels": 1,
+                        "seal_max_pixels": 1000,
+                    },
+                )
+            )
+            self.vlm_prompts = [entry[3] for entry in entries]
+
+            yield PaddleOCRVLResult(
+                {
+                    "input_path": "chart.pdf",
+                    "page_index": 0,
+                    "page_count": 1,
+                    "width": 400,
+                    "height": 300,
+                    "model_settings": {
+                        "use_doc_preprocessor": False,
+                        "use_layout_detection": True,
+                        "use_chart_recognition": True,
+                        "use_seal_recognition": False,
+                        "use_ocr_for_image_block": False,
+                        "format_block_content": False,
+                        "markdown_ignore_labels": [],
+                    },
+                    "parsing_res_list": [
+                        PaddleOCRVLBlock(
+                            label="chart",
+                            bbox=chart_block["box"],
+                            content=recognized_chart,
+                        )
+                    ],
+                    "imgs_in_doc": [],
+                    "doc_preprocessor_res": {},
+                    "layout_det_res": {},
+                    "table_res_list": [],
+                    "spotting_res": None,
+                }
+            )
+
+        @staticmethod
+        def concatenate_markdown_pages(markdown_list):
+            return "\n\n".join(item["markdown_texts"] for item in markdown_list)
+
+    pipeline = _ChartPipeline()
+    provider = module.PaddleOcrPdfProvider(
+        env_content={"paddle_ocr_use_chart_recognition": True},
+        pipeline=pipeline,
+    )
+
+    result = asyncio.run(
+        provider.understand_pdf(
+            file_path=Path("/tmp/chart.pdf"),
+            task_id="task-chart",
+            source_file_name="chart",
+        )
+    )
+    artifact = provider.to_markdown_artifact(result)
+
+    assert pipeline.vlm_prompts == ["Chart Recognition:"]
+    assert "<table" in artifact.markdown_text
+    assert "Quarter" in artifact.markdown_text
+    assert "Revenue" in artifact.markdown_text
+    assert "Q1" in artifact.markdown_text
+    assert "42" in artifact.markdown_text
+    assert "![" not in artifact.markdown_text
+    assert artifact.assets == []
+    assert artifact.document_ir["pages"][0]["elements"] == [
+        {
+            "id": "p0-b1",
+            "type": "chart",
+            "bbox": [10.0, 20.0, 310.0, 220.0],
+            "text": recognized_chart,
+            "reading_order": None,
+            "group_id": 0,
+        }
+    ]
