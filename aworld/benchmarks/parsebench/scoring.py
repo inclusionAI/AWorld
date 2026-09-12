@@ -21,22 +21,18 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import Any
 
+from aworld.benchmarks.parsebench.contracts import (
+    DATASET_REVISION,
+    SCORER_REVISION,
+    ParseBenchDimension,
+)
+
 PARSEBENCH_DATASET_ID = "llamaindex/ParseBench"
-PARSEBENCH_DATA_REVISION = "2805a1d940f95a203e0ae4b88be9934f7765b3fc"
+PARSEBENCH_DATA_REVISION = DATASET_REVISION
 PARSEBENCH_SCORER_REPOSITORY = "https://github.com/run-llama/ParseBench.git"
-PARSEBENCH_SCORER_REVISION = "34b73455032797754f6ed62e14c27a8b5423d11e"
+PARSEBENCH_SCORER_REVISION = SCORER_REVISION
 PARSEBENCH_CASE_RESULT_SCHEMA = "aworld.parsebench.case-result/v1"
 PARSEBENCH_REPORT_SCHEMA = "aworld.parsebench.report/v1"
-
-
-class ParseBenchDimension(str, Enum):
-    """The five official ParseBench leaderboard dimensions."""
-
-    TABLE = "table"
-    CHART = "chart"
-    TEXT_CONTENT = "text_content"
-    TEXT_FORMATTING = "text_formatting"
-    LAYOUT = "layout"
 
 
 PARSEBENCH_DIMENSIONS = (
