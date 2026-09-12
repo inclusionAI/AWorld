@@ -1,8 +1,0 @@
-{
-  "schema_version": "aworld.local-tool-verifier/v1",
-  "reward": 1,
-  "artifact": "result.json",
-  "expected_hash": "sha256:ece7bb6c336d5bdd615efb079cc99b9155cd84e680df6e4c9912fcb699fe8122",
-  "actual_hash": "sha256:ece7bb6c336d5bdd615efb079cc99b9155cd84e680df6e4c9912fcb699fe8122",
-  "errors": []
-}
