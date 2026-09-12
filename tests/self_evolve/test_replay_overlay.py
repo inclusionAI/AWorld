@@ -8524,6 +8524,9 @@ async def test_aworld_cli_replay_executor_requests_machine_readable_trajectory_a
     assert captured["kwargs"]["env"]["AWORLD_REPLAY_ARTIFACT_DIR"] == str(
         tmp_path / "artifacts" / "evidence"
     )
+    assert captured["kwargs"]["env"]["AWORLD_REPLAY_EVIDENCE_MANIFEST"] == str(
+        tmp_path / "artifacts" / "evidence" / "evidence_manifest.jsonl"
+    )
     assert captured["kwargs"]["env"]["AWORLD_SELF_EVOLVE_EVIDENCE_MANIFEST"] == str(
         tmp_path / "artifacts" / "evidence" / "evidence_manifest.jsonl"
     )
@@ -8581,7 +8584,8 @@ async def test_aworld_cli_replay_executor_requests_machine_readable_trajectory_a
     )
     assert captured["runtime_paths_existed"] is True
     assert not runtime_root.exists()
-    assert "AWORLD_SELF_EVOLVE_REPLAY_ARTIFACT_DIR" in task_text
+    assert "AWORLD_REPLAY_ARTIFACT_DIR" in task_text
+    assert "AWORLD_REPLAY_EVIDENCE_MANIFEST" in task_text
     assert str(tmp_path / "artifacts") in task_text
     assert str(
         tmp_path / "artifacts" / "evidence" / "evidence_manifest.jsonl"

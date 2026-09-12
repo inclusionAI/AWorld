@@ -1,5 +1,20 @@
 # Project Progress
 
+## Self-evolve acceptance follow-up (2026-09-13)
+
+**Status:** harness fix implemented; fresh acceptance rerun pending
+
+- The exact `skill:agent-browser` acceptance campaign reached authoritative paired replay and removed the prior
+  `focused_budget_denied`, fixture-bind, and zero-candidate materialization failures.
+- A case-9 candidate failure was traced to the stdio MCP environment boundary: the replay prompt required
+  `AWORLD_SELF_EVOLVE_REPLAY_ARTIFACT_DIR` and `AWORLD_SELF_EVOLVE_EVIDENCE_MANIFEST`, but terminal servers inherited only
+  `AWORLD_REPLAY_*`. The candidate produced the requested artifact, yet the evidence finalizer could not resolve it.
+- The replay prompt now uses task-scoped `AWORLD_REPLAY_ARTIFACT_DIR` and `AWORLD_REPLAY_EVIDENCE_MANIFEST` aliases that are
+  already inside the stdio allowlist, while private `AWORLD_SELF_EVOLVE_*` orchestration state remains parent-only. Focused
+  environment/replay regressions pass 7/7.
+- Next gate: complete the full self-evolve regression suite, commit the harness repair, then rerun the exact user acceptance
+  command from a fresh campaign until it reports `Status: success`.
+
 ## Current Status
 
 **Phase:** Milestone 9/10 default-on evidence completion

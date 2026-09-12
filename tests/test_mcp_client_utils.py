@@ -72,3 +72,32 @@ def test_stdio_server_environment_preserves_legacy_explicit_only_behavior(monkey
     assert utils._stdio_server_environment({"env": {"ONLY": "this"}}) == {
         "ONLY": "this"
     }
+
+
+def test_stdio_server_environment_inherits_replay_evidence_bindings(monkeypatch):
+    monkeypatch.setenv(
+        "AWORLD_MCP_STDIO_INHERIT_ENV_PREFIXES",
+        "AWORLD_REPLAY_",
+    )
+    monkeypatch.setenv("AWORLD_REPLAY_ENDPOINT_BROWSER", "http://127.0.0.1:54321")
+    monkeypatch.setenv("AWORLD_REPLAY_ARTIFACT_DIR", "/evidence")
+    monkeypatch.setenv(
+        "AWORLD_REPLAY_EVIDENCE_MANIFEST",
+        "/evidence/evidence_manifest.jsonl",
+    )
+    monkeypatch.setenv("AWORLD_SELF_EVOLVE_REPLAY_ARTIFACT_DIR", "/private/evidence")
+    monkeypatch.setenv(
+        "AWORLD_SELF_EVOLVE_EVIDENCE_MANIFEST",
+        "/private/evidence/evidence_manifest.jsonl",
+    )
+    monkeypatch.setenv("AWORLD_SELF_EVOLVE_ISOLATED_SKILL_ROOTS", "/private/skill")
+
+    environment = utils._stdio_server_environment({"env": {}})
+
+    assert environment == {
+        "AWORLD_REPLAY_ARTIFACT_DIR": "/evidence",
+        "AWORLD_REPLAY_ENDPOINT_BROWSER": "http://127.0.0.1:54321",
+        "AWORLD_REPLAY_EVIDENCE_MANIFEST": (
+            "/evidence/evidence_manifest.jsonl"
+        ),
+    }

@@ -8258,6 +8258,7 @@ class AWorldCliReplayExecutor:
                     "1" if trust_context is not None else "0"
                 ),
                 "AWORLD_REPLAY_ARTIFACT_DIR": str(evidence_dir),
+                "AWORLD_REPLAY_EVIDENCE_MANIFEST": str(evidence_manifest),
                 "AWORLD_SELF_EVOLVE_REPLAY_ARTIFACT_DIR": str(evidence_dir),
                 "AWORLD_SELF_EVOLVE_EVIDENCE_MANIFEST": str(evidence_manifest),
                 "AWORLD_SELF_EVOLVE_TASK_RESPONSE_PATH": str(
@@ -12319,10 +12320,10 @@ def _task_text(task_input: Any) -> str:
 _REPLAY_EVIDENCE_POLICY = """
 
 Self-evolve replay evidence requirements:
-- Preserve the user task and use artifact-first evidence. Save large or unknown-size output under AWORLD_SELF_EVOLVE_REPLAY_ARTIFACT_DIR ({artifact_dir}); never stream full pages, documents, JSON, or logs.
-- In every shell command, use the literal quoted variables "$AWORLD_SELF_EVOLVE_REPLAY_ARTIFACT_DIR" and "$AWORLD_SELF_EVOLVE_EVIDENCE_MANIFEST". Never paste their resolved parenthetical paths: replay workspaces can change after a resume.
+- Preserve the user task and use artifact-first evidence. Save large or unknown-size output under AWORLD_REPLAY_ARTIFACT_DIR ({artifact_dir}); never stream full pages, documents, JSON, or logs.
+- In every shell command, use the literal quoted variables "$AWORLD_REPLAY_ARTIFACT_DIR" and "$AWORLD_REPLAY_EVIDENCE_MANIFEST". Never paste their resolved parenthetical paths: replay workspaces can change after a resume.
 - Inspect only explicit byte-bounded excerpts or selected fields; `head -N` is not a byte bound.
-- Append one compact JSON line per source to AWORLD_SELF_EVOLVE_EVIDENCE_MANIFEST ({evidence_manifest}). For a file use exactly {{"source_id":"...","extraction_method":"...","artifact_path":"...","selected_fields":{{"field":"bounded value"}}}}; for non-file evidence use exactly {{"source_id":"...","evidence_type":"metadata","extraction_method":"...","metadata":{{"field":"bounded value"}}}}.
+- Append one compact JSON line per source to AWORLD_REPLAY_EVIDENCE_MANIFEST ({evidence_manifest}). For a file use exactly {{"source_id":"...","extraction_method":"...","artifact_path":"...","selected_fields":{{"field":"bounded value"}}}}; for non-file evidence use exactly {{"source_id":"...","evidence_type":"metadata","extraction_method":"...","metadata":{{"field":"bounded value"}}}}.
 - Reject compacted, truncated, invalid, or unbounded evidence; retry once with a narrower extraction.
 - Persist every valid artifact-backed sample and its manifest entry immediately. Continue only until every evidence subject required by the user task is covered (for example, every item in a comparison), or until one materially different bounded attempt establishes that a subject is unavailable. Then stop collecting and return the answer with artifact paths, subject coverage counts, explicit missing subjects, and a concise claim ledger. Omit unsupported claims.
 """.strip()
@@ -12350,11 +12351,11 @@ def _replay_task_text(
         task_text,
         workspace_root=workspace_root,
     )
-    artifact_dir_text = str(artifact_dir) if artifact_dir is not None else "AWORLD_SELF_EVOLVE_REPLAY_ARTIFACT_DIR"
+    artifact_dir_text = str(artifact_dir) if artifact_dir is not None else "AWORLD_REPLAY_ARTIFACT_DIR"
     evidence_manifest_text = (
         str(evidence_manifest)
         if evidence_manifest is not None
-        else "AWORLD_SELF_EVOLVE_EVIDENCE_MANIFEST"
+        else "AWORLD_REPLAY_EVIDENCE_MANIFEST"
     )
     policies: list[str] = []
     if "Self-evolve replay evidence requirements:" not in task_text:
