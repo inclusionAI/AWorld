@@ -1,9 +1,13 @@
 from __future__ import annotations
 
 import argparse
+import os
 import socketserver
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+
+
+_PARENT_POLL_INTERVAL_SECONDS = 0.1
 
 
 def main() -> int:
@@ -15,17 +19,54 @@ def main() -> int:
         required=True,
     )
     parser.add_argument("--fixture", required=True)
+    parser.add_argument("--parent-pid", type=int)
     args = parser.parse_args()
+    if args.parent_pid is not None and args.parent_pid <= 1:
+        parser.error("--parent-pid must identify a live parent process")
     fixture = Path(args.fixture).read_bytes()
     if args.transport == "http_fixture":
         server = _http_server(args.port, fixture)
     else:
         server = _tcp_server(args.port, fixture)
     try:
-        server.serve_forever()
+        _serve(server, parent_pid=args.parent_pid)
     finally:
         server.server_close()
     return 0
+
+
+def _serve(
+    server: socketserver.BaseServer,
+    *,
+    parent_pid: int | None,
+) -> None:
+    if parent_pid is None:
+        server.serve_forever()
+        return
+
+    # Framework-owned fixture services run directly instead of behind the
+    # replay service supervisor.  Keep parent liveness checks in this process
+    # so a hard-killed optimize run cannot leave an orphaned listener behind.
+    # A short handle_request timeout bounds cleanup latency even when the
+    # fixture receives no traffic.
+    server.timeout = _PARENT_POLL_INTERVAL_SECONDS
+    while _parent_is_alive(parent_pid):
+        server.handle_request()
+
+
+def _parent_is_alive(parent_pid: int) -> bool:
+    # The ppid check prevents PID reuse from attaching an orphaned fixture to
+    # an unrelated process.  kill(pid, 0) also catches a missing parent before
+    # reparenting becomes visible to this process.
+    if os.getppid() != parent_pid:
+        return False
+    try:
+        os.kill(parent_pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
 
 
 def _http_server(port: int, fixture: bytes) -> ThreadingHTTPServer:

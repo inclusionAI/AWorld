@@ -5946,9 +5946,149 @@ HTTPServer(('127.0.0.1', args.port), Handler).serve_forever()
     ]
     assert launch_diagnostics
     assert all(
-        "--parent-pid" not in diagnostic["command"]
+        "AWORLD_REPLAY_TASK_ENTRY_PATH" in diagnostic["environment_keys"]
         for diagnostic in launch_diagnostics
     )
+    assert all(
+        any("--parent-pid" in argument for argument in diagnostic["command"])
+        for diagnostic in launch_diagnostics
+    )
+    assert all(
+        "--parent-pid" not in diagnostic["command"]
+        and "--" not in diagnostic["command"]
+        for diagnostic in launch_diagnostics
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.replay_sandbox
+async def test_skill_runtime_keeps_parent_bound_supervisor(
+    tmp_path: Path,
+) -> None:
+    frozen_root = tmp_path / "frozen"
+    runtime = frozen_root / "runtime" / "replay" / "runtime.py"
+    runtime.parent.mkdir(parents=True)
+    runtime.write_text(
+        """
+import argparse
+import json
+import os
+from http.server import BaseHTTPRequestHandler, HTTPServer
+from pathlib import Path
+
+parser = argparse.ArgumentParser()
+parser.add_argument('--port', required=True, type=int)
+parser.add_argument('--fixture', required=True)
+parser.add_argument('--scratch', required=True)
+args = parser.parse_args()
+if os.environ.get('AWORLD_REPLAY_TASK_ENTRY_PATH') != '/recorded-entry':
+    raise SystemExit(2)
+Path(args.scratch, 'protocol_trace.jsonl').write_text(
+    json.dumps({
+        'direction': 'inbound',
+        'sequence': 1,
+        'kind': 'request',
+        'fields': ['readiness'],
+        'correlation': {'id': 'readiness'},
+    }) + '\\n' + json.dumps({
+        'direction': 'outbound',
+        'sequence': 2,
+        'kind': 'response',
+        'fields': ['ready'],
+        'correlation': {'id': 'readiness'},
+    }) + '\\n',
+    encoding='utf-8',
+)
+
+class Handler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(b'ok')
+    def log_message(self, *args):
+        pass
+
+HTTPServer(('127.0.0.1', args.port), Handler).serve_forever()
+""",
+        encoding="utf-8",
+    )
+    fixture = frozen_root / "fixtures" / "fixture.json"
+    fixture.parent.mkdir(parents=True)
+    fixture.write_text("{}\n", encoding="utf-8")
+    runtime_file = FrozenReplayFile(
+        path="replay/runtime.py",
+        sha256="sha256:" + hashlib.sha256(runtime.read_bytes()).hexdigest(),
+        size=runtime.stat().st_size,
+    )
+    fixture_file = FrozenReplayFile(
+        path="fixture.json",
+        sha256="sha256:" + hashlib.sha256(fixture.read_bytes()).hexdigest(),
+        size=fixture.stat().st_size,
+    )
+    service = ReplayServiceSpec(
+        service_id="service-0",
+        requirement_id="req-1",
+        transport="skill_runtime",
+        response_fixture="fixture.json",
+        runtime_entrypoint="replay/runtime.py",
+        readiness=ReplayReadinessProbe(kind="tcp", timeout_seconds=2),
+        task_entry_path="/recorded-entry",
+    )
+    manifest_payload = {
+        "schema_version": "aworld.replay.capability_result.v1",
+        "capability_id": "parent-bound-runtime",
+        "capability_package_fingerprint": "sha256:package",
+        "request_fingerprint": "sha256:request",
+        "handled_requirements": ["req-1"],
+        "unhandled_requirements": [],
+        "evidence_refs": {},
+        "fixture_evidence_refs": {},
+        "fixtures": [asdict(fixture_file)],
+        "runtime_files": [asdict(runtime_file)],
+        "endpoint_replacements": {},
+        "services": [asdict(service)],
+        "deterministic": True,
+    }
+    fingerprint = "sha256:" + hashlib.sha256(
+        json.dumps(
+            manifest_payload,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+    (frozen_root / "frozen_manifest.json").write_text(
+        json.dumps({**manifest_payload, "fingerprint": fingerprint}),
+        encoding="utf-8",
+    )
+    capability = FrozenReplayCapability(
+        capability_id="parent-bound-runtime",
+        capability_package_fingerprint="sha256:package",
+        request_fingerprint="sha256:request",
+        frozen_root=str(frozen_root),
+        handled_requirements=("req-1",),
+        unhandled_requirements=(),
+        evidence_refs={},
+        fixture_evidence_refs={},
+        fixtures=(fixture_file,),
+        runtime_files=(runtime_file,),
+        endpoint_replacements={},
+        services=(service,),
+        deterministic=True,
+        fingerprint=fingerprint,
+        ready=True,
+    )
+
+    endpoints = await replay_module.preflight_frozen_replay_capability(
+        capability,
+        artifact_dir=tmp_path / "preflight",
+    )
+
+    assert endpoints.keys() == {"service-0"}
+    diagnostic_path = next((tmp_path / "preflight").rglob("launch.json"))
+    command = json.loads(diagnostic_path.read_text(encoding="utf-8"))["command"]
+    assert "--parent-pid" in command
+    assert "--" in command
 
 
 def test_paired_replay_dataset_maps_baseline_and_candidate_trajectories() -> None:
@@ -8360,6 +8500,8 @@ async def test_aworld_cli_replay_executor_requests_machine_readable_trajectory_a
     assert "artifact-first" in task_text
     assert "`head -N` is not a byte bound" in task_text
     assert "explicit byte-bounded excerpts or selected fields" in task_text
+    assert "use the literal quoted variables" in task_text
+    assert '"selected_fields"' in task_text
     assert "compacted" in task_text
     assert "Self-evolve replay runtime contract" in task_text
     assert "Required task-plane actions are allowed" in task_text
@@ -9971,6 +10113,63 @@ def test_evidence_manifest_normalizes_bounded_excerpt_fields(
     assert bundle["entries"][0]["bounded_evidence"] == {
         "bounded_excerpts": excerpts,
     }
+
+
+def test_evidence_manifest_normalizes_bounded_metadata_fields(
+    tmp_path: Path,
+) -> None:
+    artifact_dir = tmp_path / "artifacts"
+    artifact_dir.mkdir()
+    manifest = artifact_dir / "evidence_manifest.jsonl"
+    fields = {
+        "operation": "inspect_recorded_response",
+        "status": "available",
+    }
+    manifest.write_text(
+        json.dumps(
+            {
+                "source_id": "recorded-response",
+                "evidence_type": "metadata",
+                "extraction_method": "selected_fields",
+                "bounded_fields": fields,
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    metrics = _evidence_manifest_metrics(
+        artifact_dir=artifact_dir,
+        evidence_manifest=manifest,
+        workspace_root=tmp_path,
+    )
+    bundle = json.loads((artifact_dir / "evidence_bundle.json").read_text())
+
+    assert metrics["evidence_manifest_valid"] is True
+    assert metrics["evidence_bundle_valid"] is True
+    assert bundle["entries"][0]["metadata"] == {"selected_fields": fields}
+
+
+def test_bounded_fields_alias_cannot_trust_external_artifact_path(
+    tmp_path: Path,
+) -> None:
+    artifact_dir = tmp_path / "artifacts"
+    artifact_dir.mkdir()
+    outside_artifact = tmp_path / "outside.json"
+    outside_artifact.write_text('{"claim":"untrusted"}\n', encoding="utf-8")
+
+    reason = _invalid_evidence_manifest_entry_reason(
+        {
+            "source_id": "outside",
+            "evidence_type": "artifact",
+            "extraction_method": "selected_fields",
+            "artifact_path": str(outside_artifact),
+            "bounded_fields": {"claim": "untrusted"},
+        },
+        artifact_dir=artifact_dir,
+    )
+
+    assert reason == "artifact_path is outside trusted replay/workspace directories"
 
 
 @pytest.mark.asyncio

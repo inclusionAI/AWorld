@@ -71,6 +71,7 @@ REPLAY_CAPABILITY_MAX_PROTOCOL_PROBES = 16
 REPLAY_CAPABILITY_MAX_RESPONSE_CONTAINS_CHARS = 4_096
 REPLAY_RESPONSE_INDEX_ENV = "AWORLD_REPLAY_RESPONSE_INDEX"
 REPLAY_RESPONSE_RECORD_ID_ENV = "AWORLD_REPLAY_RESPONSE_RECORD_ID"
+REPLAY_TASK_ENTRY_PATH_ENV = "AWORLD_REPLAY_TASK_ENTRY_PATH"
 REPLAY_RESPONSE_REQUIREMENT_ID_ENV = "AWORLD_REPLAY_REQUIREMENT_ID"
 REPLAY_RESPONSE_SERVICE_ID_ENV = "AWORLD_REPLAY_SERVICE_ID"
 REPLAY_RESPONSE_INDEX_CONSUMER = "json_sidecar_record_value_projector"
@@ -4980,6 +4981,26 @@ def _framework_bind_http_requirement_probe_path(
     if parsed.scheme not in {"http", "https"} or not parsed.netloc:
         return tuple(probes)
     expected_path = parsed.path or "/"
+    decoded_path = unquote(expected_path)
+    if "\\" in decoded_path or any(
+        part == ".." for part in PurePosixPath(decoded_path).parts
+    ):
+        _raise_schema_field_error(
+            "HTTP replay requirement path must be canonical before probe binding",
+            (
+                _schema_field_violation(
+                    schema_layer="replay_requirement",
+                    field_path="identifier.path",
+                    rule="enum",
+                    expected=("canonical_absolute_path",),
+                    value=expected_path,
+                ),
+            ),
+            extra_details={
+                "code": "http_requirement_path_not_canonical",
+                "requirement_id": requirement.requirement_id,
+            },
+        )
     data_plane_indexes = [
         index
         for index, probe in enumerate(probes)

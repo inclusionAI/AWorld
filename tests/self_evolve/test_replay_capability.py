@@ -1871,6 +1871,41 @@ def test_framework_binds_generic_http_probe_to_requirement_path() -> None:
     ) == (explicit,)
 
 
+@pytest.mark.parametrize(
+    "path",
+    (
+        "/foo/../",
+        "/foo/%2e%2e/",
+        "/foo/%5cbar/",
+    ),
+)
+def test_framework_rejects_noncanonical_bound_requirement_path(path: str) -> None:
+    requirement = ReplayCapabilityRequirement(
+        requirement_id="requirement-http",
+        kind="http_resource",
+        identifier=f"https://example.test{path}",
+        case_ids=("case-1",),
+        evidence_refs=("evidence-1",),
+        status="runtime_required",
+        detail="recorded HTTP resource",
+    )
+    root_probe = ReplayProtocolProbe(
+        kind="http",
+        path="/",
+        timeout_seconds=10,
+        response_contains="framework-placeholder",
+    )
+
+    with pytest.raises(ReplayCapabilityError) as error:
+        replay_capability_module._framework_bind_http_requirement_probe_path(
+            (root_probe,),
+            requirement=requirement,
+        )
+
+    assert error.value.code == "schema_field_validation_failed"
+    assert error.value.details["code"] == "http_requirement_path_not_canonical"
+
+
 def test_service_schema_error_aggregates_all_invalid_field_instances(
     tmp_path: Path,
 ) -> None:

@@ -83,7 +83,10 @@ from aworld.self_evolve.types import CandidateVariant, GateResult
 
 
 _DEFAULT_AUTHORITATIVE_REPLAY_MAX_STEPS = 12
-_DEFAULT_AUTHORITATIVE_REPLAY_TOOL_CALL_LIMIT = 32
+# Complex browser evidence cases can legitimately issue several bounded calls
+# per reasoning step.  Keep screening cheaper, but leave authoritative replay
+# enough headroom to reach terminal synthesis instead of censoring a 33rd call.
+_DEFAULT_AUTHORITATIVE_REPLAY_TOOL_CALL_LIMIT = 48
 _REPLAY_PROGRESS_HEARTBEAT_SECONDS = 30.0
 
 
@@ -368,7 +371,7 @@ class PairedReplayExecutionController:
             if request.max_tool_calls is not None
             else min(
                 _DEFAULT_AUTHORITATIVE_REPLAY_TOOL_CALL_LIMIT,
-                max(8, effective_max_steps * 3),
+                max(12, effective_max_steps * 4),
             )
         )
         baseline_replay_dir = find_reusable_baseline_replay_dir(

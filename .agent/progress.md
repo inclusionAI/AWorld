@@ -770,3 +770,26 @@ receipt yet, and no externally bound rollback/canary receipt. Focused regression
   fixture services cannot fork and now run directly in their sandbox/resource-limited process group, while untrusted
   skill runtimes retain the parent-bound descendant supervisor. The exact frozen capability passed 12 consecutive
   five-service preflights with zero residual processes, and the full self-evolve suite passes 2532 tests with 1 skipped.
+- Resuming that campaign proved the startup fix in live use and advanced through two timeout checkpoints. Repair candidate
+  `llm-mutator-f1d5825c90de` fixed the prior evidence-production failure on `task_20260522110125` and completed 10/11
+  candidate arms, but its final arm exhausted the fixed replay tool-call budget at 33/32 without terminal synthesis.
+  Subsequent prose-only repairs either repeated exhaustion during screening or increased calls/tokens while retaining a
+  path-insensitive replay runtime. The final cycle was interrupted before charging another uninformative authoritative
+  candidate; the campaign remains recoverable at cycle 5 with no replay service processes left behind. Parallel diagnosis
+  also found the evidence prompt permits `bounded_fields` while the validator rejects that alias, and lifecycle review
+  requires direct fixture services to monitor the optimize parent PID themselves before the single-process change is safe.
+- The follow-up repair binds agent-browser replay to the exact framework-selected response record and URL task path;
+  alternate `/html`, `/pdf`, and favicon requests now fail deterministically instead of replaying the same payload with
+  HTTP 200. The compiler selects the richest recorded-response derivation and publishes the original URL path. Direct
+  framework fixtures now monitor the optimize parent in-process, while skill runtimes keep their descendant supervisor.
+- Evidence manifests normalize `bounded_fields` as `selected_fields`, and the replay prompt supplies exact accepted JSON
+  shapes while prohibiting hard-coded resumed-workspace paths. Security review found and closed an alias trust-boundary
+  bypass: `bounded_fields` participates in schema normalization but cannot authorize an external artifact path.
+- Screening and authoritative replay use staged 12/48 tool-call envelopes so cheap qualification remains bounded while the
+  observed 33rd-call browser case can reach synthesis. Focused capability/conformance/lifecycle coverage passes 185/185;
+  after updating the control-identity fixture for the new screening envelope, the complete self-evolve suite passes
+  2536 tests with 1 skipped.
+- Final review extended URL-path coverage: safe trailing-slash requirements retain their exact task entry through typed
+  binding, while decoded traversal and backslash paths are rejected before binding. The final focused set passes 191/191,
+  the complete self-evolve suite passes 2540 tests with 1 skipped, both requested input files are present, and no stale
+  optimize/replay-service process remains. A fresh exact-command acceptance run has not started yet.

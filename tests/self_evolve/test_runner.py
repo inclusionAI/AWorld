@@ -16301,7 +16301,7 @@ async def test_candidate_support_attribution_preserves_raw_timeout_escalation(
         replay_adaptation=adaptation,
         timeout_seconds=120,
         max_steps=4,
-        max_tool_calls=8,
+        max_tool_calls=12,
     )
     counterfactual_identity = {
         **current_identity,
@@ -17772,9 +17772,9 @@ async def test_runner_screens_population_on_representative_member_before_full_re
 
     assert result.run.status.value == "rejected"
     assert replay_backend.calls == [
-        ("candidate-1", ("task-a",), 90, 8),
-        ("candidate-2", ("task-a",), 90, 8),
-        ("candidate-1", ("task-a", "task-b"), 600, 32),
+        ("candidate-1", ("task-a",), 90, 12),
+        ("candidate-2", ("task-a",), 90, 12),
+        ("candidate-1", ("task-a", "task-b"), 600, 48),
     ]
     report = json.loads(
         (tmp_path / ".aworld" / "self_evolve" / "run-population-screening" / "report.json").read_text(
@@ -17798,7 +17798,7 @@ async def test_runner_screens_population_on_representative_member_before_full_re
     assert report["population"]["screening_execution"]["strategy_counts"] == {
         "adaptive_qualification_then_authoritative": 1
     }
-    assert report["population"]["screening"]["max_tool_calls"] == 8
+    assert report["population"]["screening"]["max_tool_calls"] == 12
     stage_counts = report["population"]["lifecycle"]["stage_counts"]
     assert stage_counts["representative_screening"] == 2
     assert stage_counts["paired_replay_started"] == 1

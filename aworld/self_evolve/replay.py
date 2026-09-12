@@ -110,6 +110,7 @@ from aworld.self_evolve.replay_capability import (
     REPLAY_RESPONSE_RECORD_ID_ENV,
     REPLAY_RESPONSE_REQUIREMENT_ID_ENV,
     REPLAY_RESPONSE_SERVICE_ID_ENV,
+    REPLAY_TASK_ENTRY_PATH_ENV,
     build_replay_resource_limited_command,
     build_replay_sandboxed_command,
     FrozenReplayFile,
@@ -9777,6 +9778,8 @@ async def _start_replay_services(
                     sys.executable,
                     "-I",
                     str(fixture_service),
+                    "--parent-pid",
+                    str(os.getpid()),
                     "--port",
                     str(port),
                     "--transport",
@@ -9844,6 +9847,9 @@ async def _start_replay_services(
                 service_environment[REPLAY_RESPONSE_RECORD_ID_ENV] = (
                     response_record_ids[0]
                 )
+            service_environment[REPLAY_TASK_ENTRY_PATH_ENV] = (
+                service.task_entry_path or "/"
+            )
             service_environment[REPLAY_RESPONSE_REQUIREMENT_ID_ENV] = (
                 service.requirement_id
             )
@@ -12314,8 +12320,9 @@ _REPLAY_EVIDENCE_POLICY = """
 
 Self-evolve replay evidence requirements:
 - Preserve the user task and use artifact-first evidence. Save large or unknown-size output under AWORLD_SELF_EVOLVE_REPLAY_ARTIFACT_DIR ({artifact_dir}); never stream full pages, documents, JSON, or logs.
+- In every shell command, use the literal quoted variables "$AWORLD_SELF_EVOLVE_REPLAY_ARTIFACT_DIR" and "$AWORLD_SELF_EVOLVE_EVIDENCE_MANIFEST". Never paste their resolved parenthetical paths: replay workspaces can change after a resume.
 - Inspect only explicit byte-bounded excerpts or selected fields; `head -N` is not a byte bound.
-- Append one compact JSON line per source to AWORLD_SELF_EVOLVE_EVIDENCE_MANIFEST ({evidence_manifest}). Include source_id, extraction_method, bounded fields/excerpt, and artifact_path for files; use evidence_type="metadata" plus one object for non-file evidence.
+- Append one compact JSON line per source to AWORLD_SELF_EVOLVE_EVIDENCE_MANIFEST ({evidence_manifest}). For a file use exactly {{"source_id":"...","extraction_method":"...","artifact_path":"...","selected_fields":{{"field":"bounded value"}}}}; for non-file evidence use exactly {{"source_id":"...","evidence_type":"metadata","extraction_method":"...","metadata":{{"field":"bounded value"}}}}.
 - Reject compacted, truncated, invalid, or unbounded evidence; retry once with a narrower extraction.
 - Persist every valid artifact-backed sample and its manifest entry immediately. Continue only until every evidence subject required by the user task is covered (for example, every item in a comparison), or until one materially different bounded attempt establishes that a subject is unavailable. Then stop collecting and return the answer with artifact paths, subject coverage counts, explicit missing subjects, and a concise claim ledger. Omit unsupported claims.
 """.strip()
@@ -13471,12 +13478,13 @@ _MANIFEST_EVIDENCE_PAYLOAD_KEYS = (
 )
 
 
-# Generated skills sometimes describe a list of bounded excerpts as the fields
-# selected from an artifact.  Normalize that structurally equivalent spelling
-# into the canonical bundle schema so downstream judges consume the explicit
-# evidence instead of falling back to a truncated artifact preview.
+# Generated skills sometimes use equivalent bounded-field spellings for file
+# or metadata evidence. Normalize them into the canonical bundle schema so
+# downstream judges consume explicit evidence instead of rejecting the entry
+# or falling back to a truncated artifact preview.
 _MANIFEST_EVIDENCE_PAYLOAD_ALIASES = {
     "bounded_excerpt_fields": "bounded_excerpts",
+    "bounded_fields": "selected_fields",
 }
 
 
@@ -13489,7 +13497,10 @@ _MANIFEST_INLINE_BOUNDED_EVIDENCE_KEYS = (
     "claims_supported_by",
     "summary",
     "structured_summary",
-    *_MANIFEST_EVIDENCE_PAYLOAD_ALIASES,
+    # This legacy alias is excerpt-bearing and therefore safe to evaluate as
+    # an inline bounded payload. ``bounded_fields`` is normalization-only: it
+    # must not make an out-of-namespace artifact path trusted.
+    "bounded_excerpt_fields",
 )
 
 
