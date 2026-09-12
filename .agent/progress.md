@@ -755,3 +755,18 @@ receipt yet, and no externally bound rollback/canary receipt. Focused regression
   producing provider requests with `messages: []`. The default judge executor now calls the configured LLM directly with
   a fresh explicit system/user pair on every initial, artifact-read, and schema-repair round. A two-call regression proves
   request isolation, and the combined self-evolve/evaluation suite passes 2610 tests with 1 skipped.
+- Acceptance campaign `campaign-8d67ebbd5f359e60731b` then produced an 11/11 candidate and completed both paired
+  validation and held-out judging. It stopped at campaign candidate 11/12 because disposition was derived from the
+  run-local `1/1` authoritative slice before the controller projected the cumulative `11/12` frontier. The controller now
+  projects post-run cumulative campaign capacity before deriving disposition, so the remaining bounded repair slot is
+  retained. The same campaign also exposed a materialization error in a consolidation patch: a replacement body containing
+  canonical peer sections was inserted ahead of their stale originals, duplicating Debugging and Large-response handling
+  and inflating the Skill to 23,892 characters. Peer sections supplied by a replacement now supersede every matching
+  downstream copy. The focused regressions pass 6/6 and the full self-evolve suite passes 2532 tests with 1 skipped.
+- Fresh acceptance campaign `campaign-9aa6215c1242714129ed` crossed the repaired frontier and checkpointed an 11/11
+  candidate, but later continuation preflights repeatedly timed out before the first framework-owned HTTP fixture bound
+  its loopback port. Diagnostics showed a live outer supervisor with no child output; the identical frozen capability
+  passed immediately after host restart, isolating accumulated process pressure rather than candidate behavior. Framework
+  fixture services cannot fork and now run directly in their sandbox/resource-limited process group, while untrusted
+  skill runtimes retain the parent-bound descendant supervisor. The exact frozen capability passed 12 consecutive
+  five-service preflights with zero residual processes, and the full self-evolve suite passes 2532 tests with 1 skipped.

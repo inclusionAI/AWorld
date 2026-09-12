@@ -5940,6 +5940,15 @@ HTTPServer(('127.0.0.1', args.port), Handler).serve_forever()
     for port in observed_ports:
         with pytest.raises(OSError):
             socket.create_connection(("127.0.0.1", port), timeout=0.1)
+    launch_diagnostics = [
+        json.loads(path.read_text(encoding="utf-8"))
+        for path in tmp_path.rglob("launch.json")
+    ]
+    assert launch_diagnostics
+    assert all(
+        "--parent-pid" not in diagnostic["command"]
+        for diagnostic in launch_diagnostics
+    )
 
 
 def test_paired_replay_dataset_maps_baseline_and_candidate_trajectories() -> None:

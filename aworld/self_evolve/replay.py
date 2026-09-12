@@ -9797,19 +9797,25 @@ async def _start_replay_services(
                 max_memory_bytes=512 * 1024 * 1024,
                 cpu_seconds=600,
             )
-            # A replay runtime can spawn descendants and outlive a hard-killed
-            # optimize process.  Keep the sandbox/resource-limited command as
-            # the supervised child; the small framework supervisor binds its
-            # lifetime to this process and owns descendant cleanup.
-            command = [
-                sys.executable,
-                "-I",
-                str(service_supervisor),
-                "--parent-pid",
-                str(os.getpid()),
-                "--",
-                *command,
-            ]
+            if service.transport == "skill_runtime":
+                # Candidate-owned runtimes may spawn descendants and outlive a
+                # hard-killed optimize process.  Keep those runtimes behind the
+                # parent-bound supervisor so it owns descendant cleanup.
+                command = [
+                    sys.executable,
+                    "-I",
+                    str(service_supervisor),
+                    "--parent-pid",
+                    str(os.getpid()),
+                    "--",
+                    *command,
+                ]
+            # Framework-owned fixture services do not spawn subprocesses.  Run
+            # them directly in their sandbox/resource-limited process group.
+            # The extra supervisor used to double the process count for every
+            # fixture and, after a long replay campaign, could remain alive
+            # while its inner fixture never reached bind(), producing repeated
+            # startup timeouts with an otherwise healthy candidate.
             service_environment = {
                 "PATH": os.environ.get("PATH", ""),
                 "PYTHONIOENCODING": "utf-8",
