@@ -1,11 +1,15 @@
 from __future__ import annotations
 
+from hashlib import sha256
+import json
+
 from aworld.benchmarks.parsebench.contracts import (
     DATASET_REVISION,
     EXPECTED_SOURCE_FIELDS,
     PARSEBENCH_TASK_FILENAME,
     PARSEBENCH_TASK_RUNTIME_PATH,
     PARSEBENCH_TASK_SCHEMA_VERSION,
+    PINNED_MATERIAL_MANIFEST_SHA256,
     PINNED_PARSEBENCH_CONTRACT,
     SCORER_REVISION,
     ParseBenchDimension,
@@ -53,3 +57,44 @@ def test_pinned_parsebench_contract_models_all_upstream_dimensions() -> None:
     )
     assert PINNED_PARSEBENCH_CONTRACT.total_rule_count == 169_011
     assert PINNED_PARSEBENCH_CONTRACT.unique_execution_count == 2_078
+    material_digests = dict(
+        (path, (size, digest))
+        for path, size, digest in PINNED_PARSEBENCH_CONTRACT.material_digests
+    )
+    assert len(material_digests) == 2_083
+    assert sum(path.startswith("docs/") for path in material_digests) == 2_078
+    assert material_digests["chart.jsonl"] == (
+        1_591_287,
+        "sha256:82eb2d660b286a5e1b8bd57f3f159a722b13849834561211dc1ccd5c5a39582b",
+    )
+    assert material_digests["layout.jsonl"] == (
+        9_567_215,
+        "sha256:97ddd0aa9b194a3082fcaa9172b562e32f4e6d1beeaa707a0fb3bf11731e68ef",
+    )
+    assert material_digests["table.jsonl"] == (
+        3_087_333,
+        "sha256:66129fcc9e68ae0bf40e7d41f540002ceff9bedf46d6dafff2321ba2b7ab5231",
+    )
+    assert material_digests["text_content.jsonl"] == (
+        55_407_895,
+        "sha256:cb16f70704fce569ee6f9ddff471735b17e3337d56e3958deaa4ebd6f93b5b37",
+    )
+    assert material_digests["text_formatting.jsonl"] == (
+        1_785_910,
+        "sha256:4f00200322cfe0bb7199f7a0a85e04e9df3964e06882e3703faf40bb1103098d",
+    )
+    assert all(
+        digest.startswith("sha256:") for _size, digest in material_digests.values()
+    )
+    assert (
+        PINNED_MATERIAL_MANIFEST_SHA256
+        == "sha256:a8485efeeb8a82161fc449a09ed846b4fe6353d62d34457bb7f249bff6ee8d3f"
+    )
+    canonical_materials = json.dumps(
+        PINNED_PARSEBENCH_CONTRACT.material_digests,
+        ensure_ascii=False,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    assert PINNED_MATERIAL_MANIFEST_SHA256 == (
+        "sha256:" + sha256(canonical_materials).hexdigest()
+    )

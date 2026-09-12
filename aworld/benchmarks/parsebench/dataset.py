@@ -25,11 +25,16 @@ from aworld.benchmarks.parsebench.contracts import (
     EXPECTED_SOURCE_FIELDS,
     GROUND_TRUTH_SCHEMA_VERSION,
     MATERIAL_MANIFEST_SCHEMA_VERSION,
+    PARSEBENCH_SCOPE_FILENAME,
+    PARSEBENCH_SCOPE_RUNTIME_PATH,
+    PARSEBENCH_SCOPE_SCHEMA_VERSION,
     PARSEBENCH_TASK_FILENAME,
     PARSEBENCH_TASK_RUNTIME_PATH,
     PARSEBENCH_TASK_SCHEMA_VERSION,
+    PINNED_MATERIAL_MANIFEST_SHA256,
     PINNED_PARSEBENCH_CONTRACT,
     PROVENANCE_SCHEMA_VERSION,
+    SELECTION_MANIFEST_SCHEMA_VERSION,
     TASK_ARCHIVE_SCHEMA_VERSION,
     FileEvidence,
     JsonValue,
@@ -52,6 +57,9 @@ _ZIP_TIMESTAMP = (1980, 1, 1, 0, 0, 0)
 _SHA256_PATTERN = re.compile(r"^sha256:[0-9a-f]{64}$")
 _IDENTITY_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,254}$")
 _RUNTIME_IMAGE_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/@:-]{0,510}$")
+_IMMUTABLE_RUNTIME_IMAGE_PATTERN = re.compile(
+    r"^[A-Za-z0-9][A-Za-z0-9._/:-]{0,430}@sha256:[0-9a-f]{64}$"
+)
 _SUPPORTED_SOURCE_SUFFIXES = frozenset(
     {".pdf", ".png", ".jpg", ".jpeg", ".jfif", ".docx"}
 )
@@ -67,6 +75,29 @@ class _RevisionEvidence:
     revision: str
     kind: str
     blobs_root: Path | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class _PackageScope:
+    kind: str
+    selection_manifest_sha256: str
+    publishable: bool
+    non_publishable_reasons: tuple[str, ...]
+    selected_execution_count: int
+    runtime_image: str
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "schema_version": PARSEBENCH_SCOPE_SCHEMA_VERSION,
+            "kind": self.kind,
+            "selection_manifest_sha256": self.selection_manifest_sha256,
+            "publishable": self.publishable,
+            "non_publishable_reasons": list(self.non_publishable_reasons),
+            "selected_execution_count": self.selected_execution_count,
+            "runtime_image": self.runtime_image,
+            "dataset_revision": PINNED_PARSEBENCH_CONTRACT.dataset_revision,
+            "scorer_revision": PINNED_PARSEBENCH_CONTRACT.scorer_revision,
+        }
 
 
 class _DuplicateJsonKey(ValueError):
@@ -303,6 +334,28 @@ def _validate_clean_git_material(
             )
 
 
+def _reject_git_material_symlinks(
+    source_root: Path,
+    relative_paths: Sequence[str],
+) -> None:
+    for relative_path in relative_paths:
+        candidate = source_root
+        for part in PurePosixPath(relative_path).parts:
+            candidate /= part
+            try:
+                is_symlink = candidate.is_symlink()
+            except OSError:
+                raise ParseBenchDatasetError(
+                    "source_revision_unverifiable",
+                    "ParseBench Git material state could not be verified",
+                ) from None
+            if is_symlink:
+                raise ParseBenchDatasetError(
+                    "source_revision_dirty",
+                    "ParseBench Git material must not contain symlinks",
+                )
+
+
 def _git_blob_sha1_file(path: Path) -> str:
     try:
         size = path.stat().st_size
@@ -356,17 +409,46 @@ def _validate_revision_materials(
     source_root: Path,
     revision_evidence: _RevisionEvidence,
     material_paths: dict[str, Path],
+    expected_materials: tuple[tuple[str, int, str], ...],
 ) -> None:
     logical_paths = tuple(sorted(material_paths))
+    expected = {
+        relative_path: (size, digest)
+        for relative_path, size, digest in expected_materials
+    }
+    if set(logical_paths) != set(expected):
+        raise ParseBenchDatasetError(
+            "source_material_manifest_mismatch",
+            "ParseBench source paths do not match the pinned material manifest",
+        )
     if revision_evidence.kind == "clean-git-checkout":
+        _reject_git_material_symlinks(source_root, logical_paths)
         _validate_clean_git_material(source_root, logical_paths)
-        return
-    if revision_evidence.blobs_root is None:
-        raise AssertionError("snapshot revision evidence has no blob root")
-    _validate_hf_blob_material(
-        revision_evidence.blobs_root,
-        material_paths.values(),
-    )
+    else:
+        if revision_evidence.blobs_root is None:
+            raise AssertionError("snapshot revision evidence has no blob root")
+        _validate_hf_blob_material(
+            revision_evidence.blobs_root,
+            material_paths.values(),
+        )
+    for relative_path in logical_paths:
+        expected_size, expected_sha256 = expected[relative_path]
+        material_path = source_root.joinpath(*PurePosixPath(relative_path).parts)
+        try:
+            actual_size = material_path.stat().st_size
+        except OSError:
+            raise ParseBenchDatasetError(
+                "source_revision_unverifiable",
+                "ParseBench source material could not be verified",
+            ) from None
+        if (
+            actual_size != expected_size
+            or _sha256_file(material_path) != expected_sha256
+        ):
+            raise ParseBenchDatasetError(
+                "source_content_mismatch",
+                "ParseBench source material does not match the pinned revision",
+            )
 
 
 def _validate_resource_path(source_root: Path, value: object) -> tuple[str, Path]:
@@ -403,7 +485,9 @@ def _validate_resource_path(source_root: Path, value: object) -> tuple[str, Path
             "resource_unmaterialized",
             "ParseBench source resource is an unmaterialized LFS pointer",
         )
-    return source_path, resolved
+    # Keep the logical checkout path so the source suffix survives Hugging Face's
+    # extensionless blob symlink. Revision validation separately binds its target.
+    return source_path, candidate
 
 
 def _validate_page(value: object) -> int | None:
@@ -739,7 +823,12 @@ def load_parsebench_checkout(
             for item in source_evidence
         }
     )
-    _validate_revision_materials(source_root, revision_evidence, material_paths)
+    _validate_revision_materials(
+        source_root,
+        revision_evidence,
+        material_paths,
+        contract.material_digests,
+    )
     dataset = ParseBenchSourceDataset(
         source_root=source_root,
         dataset_revision=revision_evidence.revision,
@@ -805,6 +894,109 @@ def _canonical_json(value: object, *, newline: bool = False) -> bytes:
     return content + (b"\n" if newline else b"")
 
 
+def _selection_manifest(
+    dataset: ParseBenchSourceDataset,
+    selected: Sequence[ParseBenchExecution],
+) -> dict[str, object]:
+    ordered = sorted(selected, key=lambda item: item.task_id)
+    return {
+        "schema_version": SELECTION_MANIFEST_SCHEMA_VERSION,
+        "dataset_revision": dataset.dataset_revision,
+        "scorer_revision": dataset.scorer_revision,
+        "cases": [
+            {
+                "task_id": execution.task_id,
+                "source_sha256": execution.source_sha256,
+                "source_size": execution.source_size,
+                "page": execution.page,
+                "dimensions": [dimension.value for dimension in execution.dimensions],
+            }
+            for execution in ordered
+        ],
+        "dimension_task_ids": {
+            dimension.value: [
+                execution.task_id
+                for execution in ordered
+                if dimension in execution.dimensions
+            ]
+            for dimension in ParseBenchDimension
+        },
+    }
+
+
+def _selection_manifest_sha256(
+    dataset: ParseBenchSourceDataset,
+    selected: Sequence[ParseBenchExecution],
+) -> str:
+    return (
+        "sha256:"
+        + sha256(_canonical_json(_selection_manifest(dataset, selected))).hexdigest()
+    )
+
+
+def _is_complete_pinned_release(
+    dataset: ParseBenchSourceDataset,
+    selected: Sequence[ParseBenchExecution],
+    *,
+    contract: ParseBenchContract,
+    selection: SmokeSelection | None,
+) -> bool:
+    if (
+        selection is not None
+        or contract != PINNED_PARSEBENCH_CONTRACT
+        or tuple(selected) != dataset.executions
+        or len(selected) != PINNED_PARSEBENCH_CONTRACT.unique_execution_count
+    ):
+        return False
+    execution_counts = Counter(
+        dimension for execution in selected for dimension in execution.dimensions
+    )
+    return all(
+        execution_counts[dimension]
+        == PINNED_PARSEBENCH_CONTRACT.expected_executions_for(dimension)
+        for dimension in ParseBenchDimension
+    )
+
+
+def _package_scope(
+    dataset: ParseBenchSourceDataset,
+    selected: Sequence[ParseBenchExecution],
+    *,
+    contract: ParseBenchContract,
+    selection: SmokeSelection | None,
+    runtime_image: str,
+    immutable_runtime_image: bool,
+) -> _PackageScope:
+    complete_release = _is_complete_pinned_release(
+        dataset,
+        selected,
+        contract=contract,
+        selection=selection,
+    )
+    reasons: list[str] = []
+    if selection is not None:
+        reasons.append("smoke_selection")
+    if contract != PINNED_PARSEBENCH_CONTRACT:
+        reasons.append("noncanonical_contract")
+    elif selection is None and not complete_release:
+        reasons.append("incomplete_official_selection")
+    if not immutable_runtime_image:
+        reasons.append("mutable_runtime_image")
+    kind = (
+        "smoke"
+        if selection is not None
+        else ("official-full" if contract == PINNED_PARSEBENCH_CONTRACT else "custom")
+    )
+    return _PackageScope(
+        kind=kind,
+        selection_manifest_sha256=_selection_manifest_sha256(dataset, selected),
+        publishable=not reasons and complete_release,
+        non_publishable_reasons=tuple(reasons),
+        selected_execution_count=len(selected),
+        runtime_image=runtime_image,
+    )
+
+
 def _private_ground_truth(execution: ParseBenchExecution) -> bytes:
     document = {
         "schema_version": GROUND_TRUTH_SCHEMA_VERSION,
@@ -857,6 +1049,10 @@ def _public_task_contract(execution: ParseBenchExecution) -> bytes:
     return _canonical_json(document, newline=True)
 
 
+def _public_scope_contract(scope: _PackageScope) -> bytes:
+    return _canonical_json(scope.to_dict(), newline=True)
+
+
 def _instruction(execution: ParseBenchExecution) -> bytes:
     source_name = f"document{execution.source_file.suffix.lower()}"
     scope = (
@@ -873,6 +1069,10 @@ def _instruction(execution: ParseBenchExecution) -> bytes:
         "- `/logs/artifacts/layout.json`: normalized per-page layout evidence.\n"
         "- `/logs/artifacts/result.json`: parser/provider identity, timing, status, "
         "and output paths.\n\n"
+        "The authored task is no-network. A production runtime may add only its "
+        "explicit model-proxy host. Do not fetch dataset or ground-truth material; "
+        "local connectivity requires an explicit non-publishable mode and an "
+        "external/model proxy.\n\n"
         "Do not inspect or depend on verifier-only files. Fail explicitly if the "
         "configured provider falls back or cannot emit required output.\n"
     ).encode("utf-8")
@@ -899,7 +1099,7 @@ def _task_toml() -> bytes:
         "[agent]\n"
         "timeout_sec = 1800.0\n\n"
         "[environment]\n"
-        'network_mode = "public"\n'
+        'network_mode = "no-network"\n'
         'workdir = "/workspace"\n'
         "cpus = 4\n"
         "memory_mb = 8192\n"
@@ -913,6 +1113,7 @@ def _dockerfile(*, runtime_image: str) -> bytes:
         "WORKDIR /workspace\n"
         "COPY input/ /workspace/input/\n"
         f"COPY {PARSEBENCH_TASK_FILENAME} {PARSEBENCH_TASK_RUNTIME_PATH}\n"
+        f"COPY {PARSEBENCH_SCOPE_FILENAME} {PARSEBENCH_SCOPE_RUNTIME_PATH}\n"
         "RUN mkdir -p /logs/artifacts\n"
     ).encode("utf-8")
 
@@ -921,6 +1122,8 @@ def _verifier_dockerfile(*, runtime_image: str) -> bytes:
     return (
         f"FROM {runtime_image}\n"
         "WORKDIR /tests\n"
+        "COPY input/ /workspace/input/\n"
+        f"COPY {PARSEBENCH_SCOPE_FILENAME} {PARSEBENCH_SCOPE_RUNTIME_PATH}\n"
         "COPY --chmod=755 test.sh /tests/test.sh\n"
         "COPY --chmod=444 ground_truth.json /tests/ground_truth.json\n"
     ).encode("utf-8")
@@ -933,6 +1136,7 @@ def _verifier_script() -> bytes:
         'script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)\n'
         "exec aworld-cli benchmark parsebench verify-task \\\n"
         '  --ground-truth "$script_dir/ground_truth.json" \\\n'
+        f'  --scope "$script_dir/{PARSEBENCH_SCOPE_FILENAME}" \\\n'
         "  --result /logs/artifacts/result.json \\\n"
         "  --markdown /logs/artifacts/document.md \\\n"
         "  --layout /logs/artifacts/layout.json \\\n"
@@ -997,6 +1201,7 @@ def _write_task_archive(
     destination: Path,
     *,
     runtime_image: str,
+    scope: _PackageScope,
 ) -> None:
     prefix = execution.task_id
     suffix = execution.source_file.suffix.lower()
@@ -1010,6 +1215,7 @@ def _write_task_archive(
                     f"{prefix}/environment",
                     f"{prefix}/environment/input",
                     f"{prefix}/tests",
+                    f"{prefix}/tests/input",
                 ):
                     _tar_add_directory(archive, directory)
                 _tar_add_bytes(
@@ -1030,6 +1236,11 @@ def _write_task_archive(
                     f"{prefix}/environment/{PARSEBENCH_TASK_FILENAME}",
                     _public_task_contract(execution),
                 )
+                _tar_add_bytes(
+                    archive,
+                    f"{prefix}/environment/{PARSEBENCH_SCOPE_FILENAME}",
+                    _public_scope_contract(scope),
+                )
                 _tar_add_file(
                     archive,
                     f"{prefix}/environment/input/document{suffix}",
@@ -1041,6 +1252,18 @@ def _write_task_archive(
                     archive,
                     f"{prefix}/tests/Dockerfile",
                     _verifier_dockerfile(runtime_image=runtime_image),
+                )
+                _tar_add_bytes(
+                    archive,
+                    f"{prefix}/tests/{PARSEBENCH_SCOPE_FILENAME}",
+                    _public_scope_contract(scope),
+                )
+                _tar_add_file(
+                    archive,
+                    f"{prefix}/tests/input/document{suffix}",
+                    execution.source_file,
+                    expected_size=execution.source_size,
+                    expected_sha256=execution.source_sha256,
                 )
                 _tar_add_bytes(
                     archive,
@@ -1083,6 +1306,7 @@ def _catalog_row(
     *,
     dataset_id: str,
     instruction: str,
+    scope: _PackageScope,
 ) -> dict[str, object]:
     return {
         "dataset_id": dataset_id,
@@ -1101,6 +1325,7 @@ def _catalog_row(
         "instruction_source": f"tasks/{execution.task_id}/instruction.md",
         "task_dir": f"tasks/{execution.task_id}.tar.gz",
         "task_material_kind": TASK_ARCHIVE_SCHEMA_VERSION,
+        "benchmark_scope": scope.to_dict(),
         "task_contract": {
             "schema_version": PARSEBENCH_TASK_SCHEMA_VERSION,
             "path": f"environment/{PARSEBENCH_TASK_FILENAME}",
@@ -1139,13 +1364,23 @@ def _validate_identity(value: str, *, field: str) -> str:
     return value
 
 
-def _validate_runtime_image(value: str) -> str:
+def _validate_runtime_image(
+    value: str,
+    *,
+    allow_mutable_local_image: bool,
+) -> tuple[str, bool]:
     if _RUNTIME_IMAGE_PATTERN.fullmatch(value) is None:
         raise ParseBenchDatasetError(
             "runtime_image_invalid",
             "ParseBench runtime image reference is invalid",
         )
-    return value
+    immutable = _IMMUTABLE_RUNTIME_IMAGE_PATTERN.fullmatch(value) is not None
+    if not immutable and not allow_mutable_local_image:
+        raise ParseBenchDatasetError(
+            "runtime_image_mutable",
+            "ParseBench runtime image must be pinned by sha256 digest",
+        )
+    return value, immutable
 
 
 def _dataset_yaml(
@@ -1154,8 +1389,13 @@ def _dataset_yaml(
     service_name: str,
     runtime_image: str,
     selection: SmokeSelection | None,
+    scope: _PackageScope,
 ) -> bytes:
-    selection_kind = "smoke" if selection is not None else "full"
+    selection_kind = (
+        "smoke"
+        if selection is not None
+        else ("full" if scope.kind == "official-full" else "custom")
+    )
     lines = [
         f"schema_version: {json.dumps(DATASET_PACKAGE_SCHEMA_VERSION)}",
         f"dataset_id: {json.dumps(dataset_id)}",
@@ -1170,6 +1410,13 @@ def _dataset_yaml(
         f"  converter: {json.dumps(CONVERTER_VERSION)}",
         f"  runtime_image: {json.dumps(runtime_image)}",
         f"  selection: {json.dumps(selection_kind)}",
+        f"  scope: {json.dumps(scope.kind)}",
+        "  selection_manifest_sha256: " + json.dumps(scope.selection_manifest_sha256),
+        f"  publishable: {str(scope.publishable).lower()}",
+        "  non_publishable_reasons: " + json.dumps(list(scope.non_publishable_reasons)),
+        "  pinned_material_manifest_sha256: "
+        + json.dumps(PINNED_MATERIAL_MANIFEST_SHA256),
+        '  agent_network_mode: "no-network"',
     ]
     if selection is not None:
         lines.extend(
@@ -1181,27 +1428,51 @@ def _dataset_yaml(
     return ("\n".join(lines) + "\n").encode("utf-8")
 
 
-def _readme(*, selection: SmokeSelection | None) -> bytes:
-    selection_text = (
-        "the complete 2,078-execution release"
-        if selection is None
-        else (
+def _readme(
+    *,
+    selection: SmokeSelection | None,
+    scope: _PackageScope,
+) -> bytes:
+    if selection is not None:
+        selection_text = (
             "a deterministic five-dimension smoke subset "
             f"({selection.per_dimension} hash-ranked execution(s) per dimension, "
             f"seed `{selection.seed}`)"
+        )
+    elif scope.kind == "official-full":
+        selection_text = "the complete 2,078-execution release"
+    else:
+        selection_text = (
+            f"a noncanonical custom selection ({scope.selected_execution_count} "
+            "execution(s))"
+        )
+    publication = (
+        "This is a publishable official-full package."
+        if scope.publishable
+        else (
+            "This package is not publishable (`publishable=false`): "
+            + ", ".join(scope.non_publishable_reasons)
+            + "."
         )
     )
     return (
         "# ParseBench executable Dataset\n\n"
         f"This package contains {selection_text} from ParseBench dataset revision "
         f"`{PINNED_PARSEBENCH_CONTRACT.dataset_revision}` and binds scorer revision "
-        f"`{PINNED_PARSEBENCH_CONTRACT.scorer_revision}`.\n\n"
-        "Source documents are placed only in each Task's `environment/` tree. "
+        f"`{PINNED_PARSEBENCH_CONTRACT.scorer_revision}`. {publication}\n\n"
+        f"Selection manifest: `{scope.selection_manifest_sha256}`.\n\n"
+        "Source documents are copied into each Task's public `environment/input/` "
+        "and isolated verifier `tests/input/` trees so both containers see the same "
+        "pinned bytes. "
         "Rules, tags, and expected Markdown are placed only in verifier-owned "
         "`tests/ground_truth.json`; they are intentionally absent from the catalog, "
         "instruction, and public task contract. Harbor collects agent outputs from "
         "`/logs/artifacts`, stops the agent environment, and then starts the isolated "
-        "verifier. No network fetch is performed while authoring this package.\n"
+        "verifier. Both authored environments default to `no-network`; production "
+        "may add only an explicit model-proxy host at deployment time. Local smoke "
+        "runs that need connectivity must use an explicit non-publishable mode and "
+        "an external/model proxy. No network fetch is performed while authoring "
+        "this package.\n"
     ).encode("utf-8")
 
 
@@ -1211,11 +1482,14 @@ def _provenance(
     *,
     runtime_image: str,
     selection: SmokeSelection | None,
+    scope: _PackageScope,
 ) -> dict[str, object]:
     selected_execution_counts = Counter(
         dimension for execution in selected for dimension in execution.dimensions
     )
-    selection_payload: dict[str, object] = {"kind": "full"}
+    selection_payload: dict[str, object] = {
+        "kind": "full" if scope.kind == "official-full" else "custom"
+    }
     if selection is not None:
         selection_payload = {
             "kind": "balanced-smoke",
@@ -1229,6 +1503,9 @@ def _provenance(
         "scorer_revision": dataset.scorer_revision,
         "revision_evidence": dataset.revision_evidence,
         "runtime_image": runtime_image,
+        "pinned_material_manifest_sha256": PINNED_MATERIAL_MANIFEST_SHA256,
+        "pinned_material_count": len(PINNED_PARSEBENCH_CONTRACT.material_digests),
+        "benchmark_scope": scope.to_dict(),
         "task_contract": {
             "schema_version": PARSEBENCH_TASK_SCHEMA_VERSION,
             "filename": PARSEBENCH_TASK_FILENAME,
@@ -1261,9 +1538,10 @@ def build_parsebench_executable_dataset(
     *,
     contract: ParseBenchContract = PINNED_PARSEBENCH_CONTRACT,
     selection: SmokeSelection | None = None,
-    dataset_id: str = DEFAULT_DATASET_ID,
+    dataset_id: str | None = None,
     service_name: str = DEFAULT_SERVICE_NAME,
     runtime_image: str = DEFAULT_RUNTIME_IMAGE,
+    allow_mutable_local_image: bool = False,
 ) -> PackageBuildResult:
     """Build one deterministic ``yolo-dataset-package/v2`` ZIP entirely offline."""
 
@@ -1275,9 +1553,13 @@ def build_parsebench_executable_dataset(
             "authoring_contract_unpinned",
             "Executable ParseBench authoring only supports the pinned release",
         )
-    dataset_id = _validate_identity(dataset_id, field="dataset_id")
     service_name = _validate_identity(service_name, field="service_name")
-    runtime_image = _validate_runtime_image(runtime_image)
+    if not isinstance(allow_mutable_local_image, bool):
+        raise TypeError("allow_mutable_local_image must be a bool")
+    runtime_image, immutable_runtime_image = _validate_runtime_image(
+        runtime_image,
+        allow_mutable_local_image=allow_mutable_local_image,
+    )
     dataset = load_parsebench_checkout(source_root, contract=contract)
     selected = (
         dataset.executions
@@ -1289,6 +1571,27 @@ def build_parsebench_executable_dataset(
             "selection_empty",
             "ParseBench package selection contains no executions",
         )
+    scope = _package_scope(
+        dataset,
+        selected,
+        contract=contract,
+        selection=selection,
+        runtime_image=runtime_image,
+        immutable_runtime_image=immutable_runtime_image,
+    )
+    if dataset_id is None:
+        if scope.publishable:
+            dataset_id = DEFAULT_DATASET_ID
+        else:
+            scope_suffix = scope.selection_manifest_sha256.removeprefix("sha256:")[:12]
+            qualifier = "smoke" if scope.kind == "smoke" else "local"
+            dataset_id = f"{DEFAULT_DATASET_ID}-{qualifier}-{scope_suffix}"
+    elif not scope.publishable and dataset_id == DEFAULT_DATASET_ID:
+        raise ParseBenchDatasetError(
+            "dataset_id_scope_mismatch",
+            "A non-publishable ParseBench package cannot use the official dataset_id",
+        )
+    dataset_id = _validate_identity(dataset_id, field="dataset_id")
     output = Path(output).expanduser().resolve()
     output.parent.mkdir(parents=True, exist_ok=True)
     source_paths = {item.source_file.resolve() for item in dataset.executions} | {
@@ -1314,6 +1617,7 @@ def build_parsebench_executable_dataset(
                 execution,
                 archive_file,
                 runtime_image=runtime_image,
+                scope=scope,
             )
             digest = _sha256_file(archive_file)
             instruction = _instruction(execution).decode("utf-8")
@@ -1327,6 +1631,7 @@ def build_parsebench_executable_dataset(
                         execution,
                         dataset_id=dataset_id,
                         instruction=instruction,
+                        scope=scope,
                     ),
                 )
             )
@@ -1335,6 +1640,8 @@ def build_parsebench_executable_dataset(
         )
         manifest = {
             "schema_version": MATERIAL_MANIFEST_SCHEMA_VERSION,
+            "benchmark_scope": scope.to_dict(),
+            "selection_manifest": _selection_manifest(dataset, selected),
             "catalog": {
                 "path": "dataset.jsonl",
                 "size": len(catalog),
@@ -1354,6 +1661,7 @@ def build_parsebench_executable_dataset(
                 selected,
                 runtime_image=runtime_image,
                 selection=selection,
+                scope=scope,
             ),
         }
         temporary_output = work_root / "package.zip"
@@ -1366,11 +1674,16 @@ def build_parsebench_executable_dataset(
                     service_name=service_name,
                     runtime_image=runtime_image,
                     selection=selection,
+                    scope=scope,
                 ),
             )
             _zip_bytes(package, "dataset.jsonl", catalog)
             _zip_bytes(package, "manifest.json", _canonical_json(manifest))
-            _zip_bytes(package, "README.md", _readme(selection=selection))
+            _zip_bytes(
+                package,
+                "README.md",
+                _readme(selection=selection, scope=scope),
+            )
             for execution, archive_file, _digest, _size, _row in built_tasks:
                 _zip_file(
                     package,
@@ -1391,6 +1704,8 @@ def build_parsebench_executable_dataset(
         rule_count=sum(len(item.rules) for item in selected),
         dimensions=dimensions,
         selection=selection,
+        publishable=scope.publishable,
+        selection_manifest_sha256=scope.selection_manifest_sha256,
     )
 
 
@@ -1403,9 +1718,14 @@ def main(argv: Sequence[str] | None = None) -> None:
     )
     parser.add_argument("--source", required=True, type=Path)
     parser.add_argument("--output", required=True, type=Path)
-    parser.add_argument("--dataset-id", default=DEFAULT_DATASET_ID)
+    parser.add_argument("--dataset-id")
     parser.add_argument("--service-name", default=DEFAULT_SERVICE_NAME)
     parser.add_argument("--runtime-image", default=DEFAULT_RUNTIME_IMAGE)
+    parser.add_argument(
+        "--allow-mutable-local-image",
+        action="store_true",
+        help="allow a mutable tagged image and mark the package non-publishable",
+    )
     parser.add_argument("--smoke-per-dimension", type=int)
     parser.add_argument("--smoke-seed", default="parsebench-smoke-v1")
     arguments = parser.parse_args(argv)
@@ -1422,6 +1742,7 @@ def main(argv: Sequence[str] | None = None) -> None:
         dataset_id=arguments.dataset_id,
         service_name=arguments.service_name,
         runtime_image=arguments.runtime_image,
+        allow_mutable_local_image=arguments.allow_mutable_local_image,
     )
     print(
         json.dumps(
@@ -1431,6 +1752,8 @@ def main(argv: Sequence[str] | None = None) -> None:
                 "task_count": result.task_count,
                 "rule_count": result.rule_count,
                 "dimensions": [dimension.value for dimension in result.dimensions],
+                "publishable": result.publishable,
+                "selection_manifest_sha256": result.selection_manifest_sha256,
             },
             ensure_ascii=False,
             sort_keys=True,

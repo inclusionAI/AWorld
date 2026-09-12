@@ -17,13 +17,18 @@ from aworld.benchmarks.parsebench.contracts import (
     PARSEBENCH_TASK_FILENAME,
     PARSEBENCH_TASK_RUNTIME_PATH,
     PARSEBENCH_TASK_SCHEMA_VERSION,
+    PARSEBENCH_SCOPE_FILENAME,
+    PARSEBENCH_SCOPE_RUNTIME_PATH,
+    PARSEBENCH_SCOPE_SCHEMA_VERSION,
     PINNED_PARSEBENCH_CONTRACT,
     ParseBenchDatasetError,
     ParseBenchDimension,
     ParseBenchExecution,
+    ParseBenchSourceDataset,
     SmokeSelection,
 )
 from aworld.benchmarks.parsebench.dataset import (
+    _package_scope,
     build_parsebench_executable_dataset,
     load_parsebench_checkout,
     select_smoke_executions,
@@ -79,7 +84,28 @@ def _blob_id(content: bytes, *, git_blob: bool) -> str:
     return digest.hexdigest()
 
 
-def _fixture_contract(*, unique_executions: int = 4):
+def _fixture_material_digests(source_root: Path) -> tuple[tuple[str, int, str], ...]:
+    logical_paths = {
+        relative_path
+        for _dimension, relative_path in PINNED_PARSEBENCH_CONTRACT.source_files
+    }
+    for _dimension, relative_path in PINNED_PARSEBENCH_CONTRACT.source_files:
+        for line in (
+            (source_root / relative_path).read_text(encoding="utf-8").splitlines()
+        ):
+            if line:
+                logical_paths.add(json.loads(line)["pdf"])
+    return tuple(
+        (
+            relative_path,
+            (source_root / relative_path).stat().st_size,
+            "sha256:" + sha256((source_root / relative_path).read_bytes()).hexdigest(),
+        )
+        for relative_path in sorted(logical_paths)
+    )
+
+
+def _fixture_contract(source_root: Path, *, unique_executions: int = 4):
     one_each = tuple(
         (dimension, 1) for dimension, _ in PINNED_PARSEBENCH_CONTRACT.source_files
     )
@@ -88,6 +114,7 @@ def _fixture_contract(*, unique_executions: int = 4):
         rule_counts=one_each,
         dimension_execution_counts=one_each,
         unique_execution_count=unique_executions,
+        material_digests=_fixture_material_digests(source_root),
     )
 
 
@@ -181,7 +208,7 @@ def _write_export_fixture(tmp_path: Path) -> Path:
 
 def _load_fixture(tmp_path: Path):
     root = _write_fixture(tmp_path)
-    return root, load_parsebench_checkout(root, contract=_fixture_contract())
+    return root, load_parsebench_checkout(root, contract=_fixture_contract(root))
 
 
 def _write_hf_snapshot_fixture(tmp_path: Path) -> Path:
@@ -225,6 +252,7 @@ def _run_git(root: Path, *arguments: str) -> subprocess.CompletedProcess[str]:
 
 def _write_git_fixture(tmp_path: Path, *, track_resources: bool = True):
     root = _write_export_fixture(tmp_path)
+    contract = _fixture_contract(root)
     _run_git(root, "init", "--quiet")
     _run_git(root, "config", "user.email", "parsebench-fixture@example.invalid")
     _run_git(root, "config", "user.name", "ParseBench Fixture")
@@ -233,7 +261,7 @@ def _write_git_fixture(tmp_path: Path, *, track_resources: bool = True):
         _run_git(root, "add", "docs")
     _run_git(root, "commit", "--quiet", "-m", "fixture")
     revision = _run_git(root, "rev-parse", "HEAD").stdout.strip()
-    return root, replace(_fixture_contract(), dataset_revision=revision)
+    return root, replace(contract, dataset_revision=revision)
 
 
 def test_loader_validates_decodes_and_groups_shared_parse_execution(
@@ -280,7 +308,7 @@ def test_loader_accepts_materialized_hugging_face_snapshot_symlinks(
 ) -> None:
     snapshot = _write_hf_snapshot_fixture(tmp_path)
 
-    dataset = load_parsebench_checkout(snapshot, contract=_fixture_contract())
+    dataset = load_parsebench_checkout(snapshot, contract=_fixture_contract(snapshot))
 
     assert dataset.source_root == snapshot
     assert dataset.revision_evidence == "huggingface-content-addressed-snapshot"
@@ -291,6 +319,7 @@ def test_loader_rejects_loose_files_in_revision_named_hf_snapshot(
     tmp_path: Path,
 ) -> None:
     exported = _write_export_fixture(tmp_path)
+    contract = _fixture_contract(exported)
     cache_root = tmp_path / "datasets--llamaindex--ParseBench"
     snapshot = cache_root / "snapshots" / PINNED_PARSEBENCH_CONTRACT.dataset_revision
     snapshot.parent.mkdir(parents=True)
@@ -298,7 +327,7 @@ def test_loader_rejects_loose_files_in_revision_named_hf_snapshot(
     (cache_root / "blobs").mkdir()
 
     with pytest.raises(ParseBenchDatasetError) as captured:
-        load_parsebench_checkout(snapshot, contract=_fixture_contract())
+        load_parsebench_checkout(snapshot, contract=contract)
 
     assert captured.value.code == "source_revision_unverifiable"
 
@@ -326,14 +355,14 @@ def test_loader_groups_the_same_document_by_one_indexed_execution_page(
     _write_jsonl(layout_path, [rows[0], second])
     _readdress_snapshot_file(layout_path)
     contract = replace(
-        _fixture_contract(),
+        _fixture_contract(root),
         rule_counts=tuple(
             (dimension, 2 if dimension is ParseBenchDimension.LAYOUT else count)
-            for dimension, count in _fixture_contract().rule_counts
+            for dimension, count in _fixture_contract(root).rule_counts
         ),
         dimension_execution_counts=tuple(
             (dimension, 2 if dimension is ParseBenchDimension.LAYOUT else count)
-            for dimension, count in _fixture_contract().dimension_execution_counts
+            for dimension, count in _fixture_contract(root).dimension_execution_counts
         ),
         unique_execution_count=5,
     )
@@ -369,6 +398,7 @@ def test_loader_rejects_invalid_source_contract(
     tmp_path: Path, mutation: str, code: str
 ) -> None:
     root = _write_fixture(tmp_path)
+    contract = _fixture_contract(root)
     rows = [
         json.loads(line) for line in (root / "chart.jsonl").read_text().splitlines()
     ]
@@ -394,7 +424,7 @@ def test_loader_rejects_invalid_source_contract(
     _write_jsonl(root / "chart.jsonl", rows)
 
     with pytest.raises(ParseBenchDatasetError) as captured:
-        load_parsebench_checkout(root, contract=_fixture_contract())
+        load_parsebench_checkout(root, contract=contract)
 
     assert captured.value.code == code
     assert not hasattr(captured.value, "row")
@@ -402,30 +432,32 @@ def test_loader_rejects_invalid_source_contract(
 
 def test_loader_requires_pinned_revision_and_full_cardinality(tmp_path: Path) -> None:
     root = _write_fixture(tmp_path)
+    contract = _fixture_contract(root)
     with pytest.raises(ParseBenchDatasetError) as revision_error:
         load_parsebench_checkout(
             root,
-            contract=replace(_fixture_contract(), dataset_revision="0" * 40),
+            contract=replace(contract, dataset_revision="0" * 40),
         )
     assert revision_error.value.code == "source_revision_mismatch"
 
     with pytest.raises(ParseBenchDatasetError) as cardinality_error:
         load_parsebench_checkout(
             root,
-            contract=_fixture_contract(unique_executions=5),
+            contract=replace(contract, unique_execution_count=5),
         )
     assert cardinality_error.value.code == "cardinality_mismatch"
 
 
 def test_loader_rejects_forgeable_export_revision_marker(tmp_path: Path) -> None:
     root = _write_export_fixture(tmp_path)
+    contract = _fixture_contract(root)
     (root / ".parsebench-revision").write_text(
         PINNED_PARSEBENCH_CONTRACT.dataset_revision + "\n",
         encoding="ascii",
     )
 
     with pytest.raises(ParseBenchDatasetError) as captured:
-        load_parsebench_checkout(root, contract=_fixture_contract())
+        load_parsebench_checkout(root, contract=contract)
 
     assert captured.value.code == "source_revision_marker_unsupported"
 
@@ -436,6 +468,7 @@ def test_loader_rejects_same_cardinality_hf_blob_tampering(
     relative_path: str,
 ) -> None:
     root = _write_fixture(tmp_path)
+    contract = _fixture_contract(root)
     target = root / relative_path
     if target.suffix == ".jsonl":
         rows = [json.loads(line) for line in target.read_text().splitlines()]
@@ -445,7 +478,29 @@ def test_loader_rejects_same_cardinality_hf_blob_tampering(
         target.write_bytes(target.read_bytes() + b"tampered")
 
     with pytest.raises(ParseBenchDatasetError) as captured:
-        load_parsebench_checkout(root, contract=_fixture_contract())
+        load_parsebench_checkout(root, contract=contract)
+
+    assert captured.value.code == "source_content_mismatch"
+
+
+@pytest.mark.parametrize("relative_path", ("chart.jsonl", "docs/chart/chart.pdf"))
+def test_loader_rejects_readdressed_hf_material_with_self_consistent_blob(
+    tmp_path: Path,
+    relative_path: str,
+) -> None:
+    root = _write_fixture(tmp_path)
+    contract = _fixture_contract(root)
+    target = root / relative_path
+    if target.suffix == ".jsonl":
+        rows = [json.loads(line) for line in target.read_text().splitlines()]
+        rows[0]["rule"] = json.dumps({"labels": ["Revenue"], "value": "RE-ADDRESSED"})
+        _write_jsonl(target, rows)
+    else:
+        target.write_bytes(target.read_bytes() + b"re-addressed")
+    _readdress_snapshot_file(target)
+
+    with pytest.raises(ParseBenchDatasetError) as captured:
+        load_parsebench_checkout(root, contract=contract)
 
     assert captured.value.code == "source_content_mismatch"
 
@@ -479,6 +534,34 @@ def test_loader_rejects_untracked_git_source_material(tmp_path: Path) -> None:
     assert captured.value.code == "source_revision_dirty"
 
 
+@pytest.mark.parametrize("dirty_target", (False, True))
+def test_loader_rejects_tracked_git_material_symlink_and_dirty_target(
+    tmp_path: Path,
+    dirty_target: bool,
+) -> None:
+    root = _write_export_fixture(tmp_path)
+    source = root / "docs/chart/chart.pdf"
+    target = root / "docs/chart/tracked-target.pdf"
+    target.write_bytes(source.read_bytes())
+    source.unlink()
+    source.symlink_to(target.name)
+    contract = _fixture_contract(root)
+    _run_git(root, "init", "--quiet")
+    _run_git(root, "config", "user.email", "parsebench-fixture@example.invalid")
+    _run_git(root, "config", "user.name", "ParseBench Fixture")
+    _run_git(root, "add", ".")
+    _run_git(root, "commit", "--quiet", "-m", "symlink fixture")
+    revision = _run_git(root, "rev-parse", "HEAD").stdout.strip()
+    contract = replace(contract, dataset_revision=revision)
+    if dirty_target:
+        target.write_bytes(target.read_bytes() + b"dirty")
+
+    with pytest.raises(ParseBenchDatasetError) as captured:
+        load_parsebench_checkout(root, contract=contract)
+
+    assert captured.value.code == "source_revision_dirty"
+
+
 @pytest.mark.parametrize(
     "index_flag",
     ("--assume-unchanged", "--skip-worktree"),
@@ -502,10 +585,11 @@ def test_loader_rejects_git_index_flags_that_can_hide_material_changes(
 
 def test_loader_requires_every_dimension_file(tmp_path: Path) -> None:
     root = _write_fixture(tmp_path)
+    contract = _fixture_contract(root)
     (root / "layout.jsonl").unlink()
 
     with pytest.raises(ParseBenchDatasetError) as captured:
-        load_parsebench_checkout(root, contract=_fixture_contract())
+        load_parsebench_checkout(root, contract=contract)
 
     assert captured.value.code == "source_file_missing"
 
@@ -514,6 +598,7 @@ def test_loader_rejects_dimension_jsonl_symlink_outside_checkout(
     tmp_path: Path,
 ) -> None:
     root = _write_fixture(tmp_path)
+    contract = _fixture_contract(root)
     source = root / "chart.jsonl"
     outside = root.parent / "chart.jsonl"
     outside.write_bytes(source.read_bytes())
@@ -521,7 +606,7 @@ def test_loader_rejects_dimension_jsonl_symlink_outside_checkout(
     source.symlink_to(outside)
 
     with pytest.raises(ParseBenchDatasetError) as captured:
-        load_parsebench_checkout(root, contract=_fixture_contract())
+        load_parsebench_checkout(root, contract=contract)
 
     assert captured.value.code == "source_file_unsafe"
 
@@ -530,13 +615,14 @@ def test_loader_fails_closed_on_deterministic_task_id_collision(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     root = _write_fixture(tmp_path)
+    contract = _fixture_contract(root)
     monkeypatch.setattr(
         "aworld.benchmarks.parsebench.dataset.task_id_for_source",
         lambda _source_path, *, page=None: "pb-" + "0" * 32,
     )
 
     with pytest.raises(ParseBenchDatasetError) as captured:
-        load_parsebench_checkout(root, contract=_fixture_contract())
+        load_parsebench_checkout(root, contract=contract)
 
     assert captured.value.code == "task_id_collision"
 
@@ -580,16 +666,140 @@ def test_smoke_selection_reduces_each_dimension_by_stable_hash() -> None:
     assert {item.dimensions[0] for item in chosen} == set(ParseBenchDimension)
 
 
+def test_converter_rejects_mutable_runtime_image_without_explicit_local_opt_in(
+    tmp_path: Path,
+) -> None:
+    root = _write_fixture(tmp_path)
+
+    with pytest.raises(ParseBenchDatasetError) as captured:
+        build_parsebench_executable_dataset(
+            root,
+            tmp_path / "parsebench.zip",
+            contract=_fixture_contract(root),
+            selection=SmokeSelection(per_dimension=1),
+            runtime_image="aworld-filex-parsebench:latest",
+        )
+
+    assert captured.value.code == "runtime_image_mutable"
+
+
+def test_smoke_package_cannot_reuse_official_dataset_identity(tmp_path: Path) -> None:
+    root = _write_fixture(tmp_path)
+
+    with pytest.raises(ParseBenchDatasetError) as captured:
+        build_parsebench_executable_dataset(
+            root,
+            tmp_path / "parsebench.zip",
+            contract=_fixture_contract(root),
+            selection=SmokeSelection(per_dimension=1),
+            dataset_id="parsebench-2805a1d9",
+            runtime_image="registry.example/parsebench@sha256:" + "1" * 64,
+        )
+
+    assert captured.value.code == "dataset_id_scope_mismatch"
+
+
+def test_smoke_default_dataset_identity_is_scope_specific(tmp_path: Path) -> None:
+    root = _write_fixture(tmp_path)
+    output = tmp_path / "parsebench.zip"
+
+    result = build_parsebench_executable_dataset(
+        root,
+        output,
+        contract=_fixture_contract(root),
+        selection=SmokeSelection(per_dimension=1, seed="identity-v1"),
+        runtime_image="registry.example/parsebench@sha256:" + "2" * 64,
+    )
+
+    assert result.publishable is False
+    with ZipFile(output) as package:
+        descriptor = package.read("dataset.yaml").decode("utf-8")
+        assert 'dataset_id: "parsebench-2805a1d9-smoke-' in descriptor
+        assert (
+            'non_publishable_reasons: ["smoke_selection", "noncanonical_contract"]'
+            in descriptor
+        )
+
+
+def test_only_complete_pinned_contract_can_be_publishable() -> None:
+    memberships = [set() for _ in range(2_078)]
+    assignments = {
+        ParseBenchDimension.CHART: range(0, 568),
+        ParseBenchDimension.LAYOUT: range(568, 1_068),
+        ParseBenchDimension.TABLE: range(1_068, 1_571),
+        ParseBenchDimension.TEXT_CONTENT: range(1_571, 2_077),
+        ParseBenchDimension.TEXT_FORMATTING: (*range(0, 475), 2_077),
+    }
+    for dimension, ordinals in assignments.items():
+        for ordinal in ordinals:
+            memberships[ordinal].add(dimension)
+    executions = tuple(
+        ParseBenchExecution(
+            task_id=f"pb-{ordinal:032x}",
+            source_path=f"docs/full/{ordinal}.pdf",
+            source_file=Path(f"/full/{ordinal}.pdf"),
+            source_size=1,
+            source_sha256="sha256:" + f"{ordinal:064x}",
+            page=None,
+            dimensions=tuple(
+                dimension
+                for dimension in ParseBenchDimension
+                if dimension in memberships[ordinal]
+            ),
+            rules=(),
+        )
+        for ordinal in range(2_078)
+    )
+    dataset = ParseBenchSourceDataset(
+        source_root=Path("/pinned"),
+        dataset_revision=PINNED_PARSEBENCH_CONTRACT.dataset_revision,
+        scorer_revision=PINNED_PARSEBENCH_CONTRACT.scorer_revision,
+        revision_evidence="test",
+        source_files=(),
+        rules=(),
+        executions=executions,
+    )
+    immutable_image = "registry.example/parsebench@sha256:" + "3" * 64
+
+    official = _package_scope(
+        dataset,
+        executions,
+        contract=PINNED_PARSEBENCH_CONTRACT,
+        selection=None,
+        runtime_image=immutable_image,
+        immutable_runtime_image=True,
+    )
+    custom = _package_scope(
+        dataset,
+        executions,
+        contract=replace(
+            PINNED_PARSEBENCH_CONTRACT,
+            unique_execution_count=2_077,
+        ),
+        selection=None,
+        runtime_image=immutable_image,
+        immutable_runtime_image=True,
+    )
+
+    assert official.publishable is True
+    assert official.kind == "official-full"
+    assert official.non_publishable_reasons == ()
+    assert custom.publishable is False
+    assert custom.kind == "custom"
+    assert custom.non_publishable_reasons == ("noncanonical_contract",)
+
+
 def test_converter_builds_deterministic_private_harbor_package(tmp_path: Path) -> None:
     root = _write_fixture(tmp_path)
     output_one = tmp_path / "one" / "parsebench.zip"
     output_two = tmp_path / "two" / "parsebench.zip"
     kwargs = {
-        "contract": _fixture_contract(),
+        "contract": _fixture_contract(root),
         "selection": SmokeSelection(per_dimension=1, seed="fixture-smoke-v1"),
         "dataset_id": "yes",
         "service_name": "null",
         "runtime_image": "aworld-filex-parsebench:test",
+        "allow_mutable_local_image": True,
     }
 
     result_one = build_parsebench_executable_dataset(root, output_one, **kwargs)
@@ -600,6 +810,8 @@ def test_converter_builds_deterministic_private_harbor_package(tmp_path: Path) -
     assert result_one.task_count == 4
     assert result_one.rule_count == 5
     assert result_one.dimensions == tuple(ParseBenchDimension)
+    assert result_one.publishable is False
+    assert result_one.selection_manifest_sha256.startswith("sha256:")
 
     with ZipFile(output_one) as package:
         names = set(package.namelist())
@@ -607,6 +819,8 @@ def test_converter_builds_deterministic_private_harbor_package(tmp_path: Path) -
         descriptor = package.read("dataset.yaml").decode()
         assert 'dataset_id: "yes"' in descriptor
         assert 'service_name: "null"' in descriptor
+        assert "publishable: false" in descriptor
+        assert 'agent_network_mode: "no-network"' in descriptor
         task_names = sorted(name for name in names if name.startswith("tasks/"))
         assert len(task_names) == 4
         catalog_bytes = package.read("dataset.jsonl")
@@ -620,6 +834,33 @@ def test_converter_builds_deterministic_private_harbor_package(tmp_path: Path) -
             "size": len(catalog_bytes),
             "sha256": "sha256:" + sha256(catalog_bytes).hexdigest(),
         }
+        selection_manifest = material_manifest["selection_manifest"]
+        assert (
+            "sha256:"
+            + sha256(
+                json.dumps(
+                    selection_manifest,
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ).encode("utf-8")
+            ).hexdigest()
+            == result_one.selection_manifest_sha256
+        )
+        assert {case["task_id"] for case in selection_manifest["cases"]} == {
+            row["task_id"] for row in catalog
+        }
+        assert set(selection_manifest["dimension_task_ids"]) == {
+            dimension.value for dimension in ParseBenchDimension
+        }
+        assert not any(
+            forbidden in json.dumps(selection_manifest)
+            for forbidden in ("rules", "tags", "expected_markdown")
+        )
+        assert (
+            material_manifest["benchmark_scope"]
+            == material_manifest["provenance"]["benchmark_scope"]
+        )
         provenance = material_manifest["provenance"]
         assert (
             provenance["dataset_revision"]
@@ -633,6 +874,16 @@ def test_converter_builds_deterministic_private_harbor_package(tmp_path: Path) -
         assert provenance["selected_rule_count"] == 5
         assert provenance["selected_execution_count"] == 4
         assert provenance["runtime_image"] == "aworld-filex-parsebench:test"
+        assert provenance["benchmark_scope"]["publishable"] is False
+        assert provenance["benchmark_scope"]["non_publishable_reasons"] == [
+            "smoke_selection",
+            "noncanonical_contract",
+            "mutable_runtime_image",
+        ]
+        assert (
+            provenance["benchmark_scope"]["selection_manifest_sha256"]
+            == result_one.selection_manifest_sha256
+        )
         assert provenance["revision_evidence"] == (
             "huggingface-content-addressed-snapshot"
         )
@@ -675,7 +926,18 @@ def test_converter_builds_deterministic_private_harbor_package(tmp_path: Path) -
                 assert f"{prefix}/instruction.md" in members
                 assert f"{prefix}/environment/Dockerfile" in members
                 assert f"{prefix}/environment/{PARSEBENCH_TASK_FILENAME}" in members
+                assert f"{prefix}/environment/{PARSEBENCH_SCOPE_FILENAME}" in members
+                environment_source = next(
+                    name
+                    for name in members
+                    if name.startswith(f"{prefix}/environment/input/document.")
+                )
+                verifier_source = environment_source.replace(
+                    f"{prefix}/environment/input/", f"{prefix}/tests/input/"
+                )
+                assert verifier_source in members
                 assert f"{prefix}/tests/Dockerfile" in members
+                assert f"{prefix}/tests/{PARSEBENCH_SCOPE_FILENAME}" in members
                 assert f"{prefix}/tests/test.sh" in members
                 assert f"{prefix}/tests/ground_truth.json" in members
                 environment_files = {
@@ -696,6 +958,8 @@ def test_converter_builds_deterministic_private_harbor_package(tmp_path: Path) -
                 verifier_script = (
                     task.extractfile(f"{prefix}/tests/test.sh").read().decode()
                 )
+                environment_source_bytes = task.extractfile(environment_source).read()
+                verifier_source_bytes = task.extractfile(verifier_source).read()
                 task_toml_text = task.extractfile(f"{prefix}/task.toml").read().decode()
                 task_config = tomllib.loads(task_toml_text)
                 assert task_config["schema_version"] == "1.4"
@@ -703,10 +967,20 @@ def test_converter_builds_deterministic_private_harbor_package(tmp_path: Path) -
                 public_task = json.load(
                     task.extractfile(f"{prefix}/environment/{PARSEBENCH_TASK_FILENAME}")
                 )
+                public_scope = json.load(
+                    task.extractfile(
+                        f"{prefix}/environment/{PARSEBENCH_SCOPE_FILENAME}"
+                    )
+                )
+                verifier_scope = json.load(
+                    task.extractfile(f"{prefix}/tests/{PARSEBENCH_SCOPE_FILENAME}")
+                )
                 ground_truth = json.load(
                     task.extractfile(f"{prefix}/tests/ground_truth.json")
                 )
                 assert _PRIVATE_TEXT not in instruction
+                assert "no-network" in instruction
+                assert "non-publishable" in instruction
                 assert _PRIVATE_TEXT not in dockerfile
                 assert _PRIVATE_TEXT not in json.dumps(public_task)
                 assert set(public_task) == {
@@ -732,14 +1006,42 @@ def test_converter_builds_deterministic_private_harbor_package(tmp_path: Path) -
                 }
                 assert public_task["dataset_revision"] == row["source_revision"]
                 assert public_task["scorer_revision"] == row["scorer_revision"]
+                assert public_scope == verifier_scope
+                assert public_scope == row["benchmark_scope"]
+                assert public_scope["schema_version"] == PARSEBENCH_SCOPE_SCHEMA_VERSION
+                assert public_scope["publishable"] is False
+                assert (
+                    public_scope["selection_manifest_sha256"]
+                    == result_one.selection_manifest_sha256
+                )
                 assert (
                     f"COPY {PARSEBENCH_TASK_FILENAME} {PARSEBENCH_TASK_RUNTIME_PATH}"
                     in dockerfile
                 )
+                assert (
+                    f"COPY {PARSEBENCH_SCOPE_FILENAME} {PARSEBENCH_SCOPE_RUNTIME_PATH}"
+                    in dockerfile
+                )
+                assert (
+                    f'--scope "$script_dir/{PARSEBENCH_SCOPE_FILENAME}"'
+                    in verifier_script
+                )
+                assert "dimensions" not in json.dumps(public_scope)
+                assert "rule_count" not in json.dumps(public_scope)
                 assert "COPY --chmod=755 test.sh /tests/test.sh" in verifier_dockerfile
                 assert (
                     "COPY --chmod=444 ground_truth.json /tests/ground_truth.json"
                     in verifier_dockerfile
+                )
+                assert "COPY input/ /workspace/input/" in verifier_dockerfile
+                assert verifier_source_bytes == environment_source_bytes
+                assert (
+                    "sha256:" + sha256(verifier_source_bytes).hexdigest()
+                    == ground_truth["source"]["sha256"]
+                )
+                assert (
+                    ground_truth["source"]["runtime_path"]
+                    == "/workspace/input/" + Path(verifier_source).name
                 )
                 assert task_config["artifacts"] == ["/logs/artifacts"]
                 assert task_config["verifier"]["environment_mode"] == "separate"
@@ -747,6 +1049,7 @@ def test_converter_builds_deterministic_private_harbor_package(tmp_path: Path) -
                     task_config["verifier"]["environment"]["network_mode"]
                     == "no-network"
                 )
+                assert task_config["environment"]["network_mode"] == "no-network"
                 assert "docker_image" not in task_config["environment"]
                 assert "image" not in task_config["environment"]
                 assert "/workspace/output" not in instruction

@@ -8,6 +8,11 @@ from pathlib import Path
 import re
 from typing import TypeAlias
 
+from aworld.benchmarks.parsebench._material_manifest import (
+    PINNED_MATERIAL_MANIFEST_SHA256,
+    PINNED_PARSEBENCH_MATERIAL_DIGESTS,
+)
+
 
 DATASET_REVISION = "2805a1d940f95a203e0ae4b88be9934f7765b3fc"
 SCORER_REVISION = "34b73455032797754f6ed62e14c27a8b5423d11e"
@@ -21,6 +26,10 @@ CONVERTER_VERSION = "aworld-parsebench-dataset/v1"
 PARSEBENCH_TASK_SCHEMA_VERSION = "aworld-parsebench-task/v1"
 PARSEBENCH_TASK_FILENAME = "parsebench-task.json"
 PARSEBENCH_TASK_RUNTIME_PATH = "/workspace/parsebench-task.json"
+PARSEBENCH_SCOPE_SCHEMA_VERSION = "aworld-parsebench-scope/v1"
+PARSEBENCH_SCOPE_FILENAME = "parsebench-scope.json"
+PARSEBENCH_SCOPE_RUNTIME_PATH = "/workspace/parsebench-scope.json"
+SELECTION_MANIFEST_SCHEMA_VERSION = "aworld-parsebench-selection-manifest/v1"
 
 EXPECTED_SOURCE_FIELDS = frozenset(
     {
@@ -39,6 +48,7 @@ JsonScalar: TypeAlias = str | int | float | bool | None
 JsonValue: TypeAlias = JsonScalar | list["JsonValue"] | dict[str, "JsonValue"]
 
 _REVISION_PATTERN = re.compile(r"^[0-9a-f]{40}$")
+_SHA256_PATTERN = re.compile(r"^sha256:[0-9a-f]{64}$")
 
 
 class ParseBenchDimension(str, Enum):
@@ -87,6 +97,7 @@ class ParseBenchContract:
     rule_counts: tuple[tuple[ParseBenchDimension, int], ...]
     dimension_execution_counts: tuple[tuple[ParseBenchDimension, int], ...]
     unique_execution_count: int
+    material_digests: tuple[tuple[str, int, str], ...]
 
     def __post_init__(self) -> None:
         if _REVISION_PATTERN.fullmatch(self.dataset_revision) is None:
@@ -121,6 +132,26 @@ class ParseBenchContract:
             or self.unique_execution_count <= 0
         ):
             raise ValueError("unique_execution_count must be positive")
+        material_paths: set[str] = set()
+        for relative_path, size, digest in self.material_digests:
+            posix_path = Path(relative_path)
+            if (
+                not relative_path
+                or "\\" in relative_path
+                or posix_path.is_absolute()
+                or posix_path.as_posix() != relative_path
+                or any(part in {"", ".", ".."} for part in posix_path.parts)
+            ):
+                raise ValueError("material_digests contains an invalid path")
+            if relative_path in material_paths:
+                raise ValueError("material_digests contains a duplicate path")
+            if isinstance(size, bool) or not isinstance(size, int) or size <= 0:
+                raise ValueError("material_digests contains an invalid size")
+            if not isinstance(digest, str) or _SHA256_PATTERN.fullmatch(digest) is None:
+                raise ValueError("material_digests contains an invalid digest")
+            material_paths.add(relative_path)
+        if not file_names <= material_paths:
+            raise ValueError("material_digests must bind every dimension JSONL")
 
     @property
     def total_rule_count(self) -> int:
@@ -161,6 +192,7 @@ PINNED_PARSEBENCH_CONTRACT = ParseBenchContract(
         (ParseBenchDimension.TEXT_FORMATTING, 476),
     ),
     unique_execution_count=2_078,
+    material_digests=PINNED_PARSEBENCH_MATERIAL_DIGESTS,
 )
 
 
@@ -243,6 +275,8 @@ class PackageBuildResult:
     rule_count: int
     dimensions: tuple[ParseBenchDimension, ...]
     selection: SmokeSelection | None
+    publishable: bool
+    selection_manifest_sha256: str
 
 
 __all__ = (
@@ -258,6 +292,11 @@ __all__ = (
     "PARSEBENCH_TASK_FILENAME",
     "PARSEBENCH_TASK_RUNTIME_PATH",
     "PARSEBENCH_TASK_SCHEMA_VERSION",
+    "PARSEBENCH_SCOPE_FILENAME",
+    "PARSEBENCH_SCOPE_RUNTIME_PATH",
+    "PARSEBENCH_SCOPE_SCHEMA_VERSION",
+    "PINNED_MATERIAL_MANIFEST_SHA256",
+    "PINNED_PARSEBENCH_MATERIAL_DIGESTS",
     "PINNED_PARSEBENCH_CONTRACT",
     "PROVENANCE_SCHEMA_VERSION",
     "PackageBuildResult",
@@ -268,6 +307,7 @@ __all__ = (
     "ParseBenchRule",
     "ParseBenchSourceDataset",
     "SCORER_REVISION",
+    "SELECTION_MANIFEST_SCHEMA_VERSION",
     "SmokeSelection",
     "TASK_ARCHIVE_SCHEMA_VERSION",
 )
