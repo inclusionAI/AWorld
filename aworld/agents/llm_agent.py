@@ -13,7 +13,12 @@ from datetime import datetime
 from typing import Dict, Any, List, Callable, Optional, Union
 
 import aworld.trace as trace
-from aworld.config.conf import AgentConfig, TaskConfig, TaskRunMode
+from aworld.config.conf import (
+    AgentConfig,
+    TaskConfig,
+    TaskRunMode,
+    resolve_provider_native_cache_intent,
+)
 from aworld.core.agent.agent_desc import get_agent_desc
 from aworld.core.agent.base import (
     BaseAgent,
@@ -769,17 +774,10 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             return False
         agent_config = self._get_agent_context_cache_config(context)
         model_config = self._get_model_context_cache_config()
-        agent_enabled = (
-            True
-            if agent_config is None
-            else bool(getattr(agent_config, "allow_provider_native_cache", True))
+        configs = tuple(
+            config for config in (agent_config, model_config) if config is not None
         )
-        model_enabled = (
-            True
-            if model_config is None
-            else bool(getattr(model_config, "allow_provider_native_cache", True))
-        )
-        return agent_enabled and model_enabled
+        return resolve_provider_native_cache_intent(configs)
 
     def _usage_has_cache_tokens(self, usage: Dict[str, Any] | None) -> bool:
         if not isinstance(usage, dict):
@@ -797,9 +795,14 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         *,
         stable_prefix_hash: str | None = None,
     ) -> bool:
-        if not self._allow_provider_native_cache(context):
-            return False
         if not supports_provider_native_prompt_cache(provider_name):
+            return False
+        # A caller-provided OpenAI cache key is itself an explicit per-request
+        # opt-in. Framework-derived stable hashes still require the typed
+        # Context policy opt-in below.
+        if resolve_provider_prompt_cache_key(provider_name, request_kwargs):
+            return True
+        if not self._allow_provider_native_cache(context):
             return False
         return should_request_provider_native_cache(
             provider_name,
@@ -838,10 +841,14 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             stable_prefix_hash=stable_hash,
         )
         metadata["provider_native_cache"] = provider_native_cache
-        prompt_cache_key = resolve_provider_prompt_cache_key(
-            provider_name,
-            request_kwargs,
-            stable_prefix_hash=stable_hash,
+        prompt_cache_key = (
+            resolve_provider_prompt_cache_key(
+                provider_name,
+                request_kwargs,
+                stable_prefix_hash=stable_hash,
+            )
+            if provider_native_cache
+            else None
         )
         if prompt_cache_key:
             metadata["prompt_cache_key"] = prompt_cache_key

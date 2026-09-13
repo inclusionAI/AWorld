@@ -306,7 +306,7 @@ def test_prompt_assembly_observability_uses_injected_prompt_assembly_provider():
     assert observability["provider_native_cache"] is True
 
 
-def test_openai_prompt_assembly_observability_enables_native_cache_from_stable_prefix():
+def test_openai_stable_prefix_requires_explicit_native_cache_opt_in():
     class CustomPromptAssemblyProvider:
         def build_plan(self, *, messages, tools=None, metadata=None):
             observability = dict(metadata or {})
@@ -318,7 +318,15 @@ def test_openai_prompt_assembly_observability_enables_native_cache_from_stable_p
                 metadata=dict(metadata or {}),
             )
 
-    agent = _build_agent()
+    agent = Agent(
+        name="Aworld",
+        conf=AgentConfig(
+            llm_provider="openai",
+            llm_model_name="fake-model",
+            llm_api_key="fake-key",
+            context_cache={"allow_provider_native_cache": True},
+        ),
+    )
     agent.prompt_assembly_provider = CustomPromptAssemblyProvider()
 
     observability = agent._build_prompt_assembly_observability(
@@ -836,16 +844,16 @@ async def test_async_policy_raises_cancelled_error_when_context_is_interrupted_a
         )
 
 
-def test_context_cache_effective_enablement_defaults_to_true_without_amni_context():
+def test_context_cache_defaults_on_without_enabling_provider_native_controls():
     agent = _build_agent()
     context = _build_context()
 
     assert agent._is_context_cache_enabled(context) is True
-    assert agent._allow_provider_native_cache(context) is True
+    assert agent._allow_provider_native_cache(context) is False
 
 
-def test_provider_native_cache_requested_defaults_on_for_anthropic_when_allowed():
-    agent = Agent(
+def test_provider_native_cache_requested_requires_explicit_opt_in_for_anthropic():
+    default_agent = Agent(
         name="Aworld",
         conf=AgentConfig(
             llm_provider="anthropic",
@@ -853,8 +861,28 @@ def test_provider_native_cache_requested_defaults_on_for_anthropic_when_allowed(
             llm_api_key="fake-key",
         ),
     )
+    opted_in_agent = Agent(
+        name="AworldOptedIn",
+        conf=AgentConfig(
+            llm_provider="anthropic",
+            llm_model_name="claude-3-5-sonnet-20241022",
+            llm_api_key="fake-key",
+            context_cache={"allow_provider_native_cache": True},
+        ),
+    )
 
-    assert agent._provider_native_cache_requested(_build_context(), "anthropic", {}) is True
+    assert (
+        default_agent._provider_native_cache_requested(
+            _build_context(), "anthropic", {}
+        )
+        is False
+    )
+    assert (
+        opted_in_agent._provider_native_cache_requested(
+            _build_context(), "anthropic", {}
+        )
+        is True
+    )
 
 
 def test_context_cache_effective_enablement_respects_agent_and_model_opt_out():

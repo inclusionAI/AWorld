@@ -2,7 +2,11 @@ import pytest
 
 from aworld.agents.audio_agent import AudioAgent
 from aworld.agents.image_agent import ImageAgent
-from aworld.config.conf import AgentConfig, ModelConfig
+from aworld.config.conf import (
+    AgentConfig,
+    ModelConfig,
+    resolve_provider_native_cache_intent,
+)
 from aworld.core.context.amni.config import (
     AgentContextConfig,
     AmniConfigFactory,
@@ -12,19 +16,42 @@ from aworld.core.context.amni import ApplicationContext
 from aworld.core.context.compiler import CacheBreakReason, LifecycleAction
 
 
-def test_context_cache_defaults_are_enabled():
+def test_context_cache_defaults_keep_framework_cache_on_and_native_controls_off():
     agent_context_config = AgentContextConfig()
     model_config = ModelConfig()
 
     assert isinstance(agent_context_config.context_cache, ContextCacheConfig)
     assert agent_context_config.context_cache.enabled is True
-    assert agent_context_config.context_cache.allow_provider_native_cache is True
+    assert agent_context_config.context_cache.allow_provider_native_cache is None
 
     assert isinstance(model_config.context_cache, ContextCacheConfig)
     assert model_config.context_cache.enabled is True
-    assert model_config.context_cache.allow_provider_native_cache is True
+    assert model_config.context_cache.allow_provider_native_cache is None
     assert model_config.context_cache.provider_cache_namespace is None
     assert model_config.provider_native_cache_capability == "auto"
+
+
+@pytest.mark.parametrize(
+    ("declarations", "expected"),
+    [
+        ([], False),
+        ([None, None], False),
+        ([True, None], True),
+        ([None, True], True),
+        ([True, True], True),
+        ([True, False], False),
+        ([False, None], False),
+    ],
+)
+def test_provider_native_cache_intent_requires_opt_in_and_respects_veto(
+    declarations, expected
+):
+    configs = [
+        ContextCacheConfig(allow_provider_native_cache=value)
+        for value in declarations
+    ]
+
+    assert resolve_provider_native_cache_intent(configs) is expected
 
 
 def test_adaptive_context_is_default_on_with_explicit_rollback_modes():
@@ -67,7 +94,7 @@ def test_amni_config_factory_preserves_default_context_cache():
     config = AmniConfigFactory.create()
 
     assert config.agent_config.context_cache.enabled is True
-    assert config.agent_config.context_cache.allow_provider_native_cache is True
+    assert config.agent_config.context_cache.allow_provider_native_cache is None
 
 
 def test_model_config_preserves_context_cache_model_when_initialized_from_dict():

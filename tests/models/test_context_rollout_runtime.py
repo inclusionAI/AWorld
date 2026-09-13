@@ -707,7 +707,8 @@ async def test_anthropic_universal_cache_plan_lowers_native_boundary_all_paths()
     provider, calls = _anthropic_without_transport()
     model = LLMModel(
         conf=ModelConfig(
-            context_compiler={"mode": "enforce", "universal_final": True}
+            context_cache={"allow_provider_native_cache": True},
+            context_compiler={"mode": "enforce", "universal_final": True},
         ),
         custom_provider=provider,
     )
@@ -752,12 +753,44 @@ async def test_anthropic_universal_cache_plan_lowers_native_boundary_all_paths()
         assert context.get_pending_cache_break_reasons() == ()
 
 
+def test_anthropic_universal_cache_plan_keeps_native_control_off_by_default():
+    provider, calls = _anthropic_without_transport()
+    model = LLMModel(
+        conf=ModelConfig(
+            context_compiler={"mode": "enforce", "universal_final": True},
+        ),
+        custom_provider=provider,
+    )
+    model.provider_name = "anthropic"
+    context = Context(task_id="anthropic-cache-default-off")
+    context.trace_id = ""
+
+    model.completion(
+        [
+            {"role": "system", "content": "stable rules"},
+            {"role": "user", "content": "dynamic request"},
+        ],
+        context=context,
+    )
+
+    assert calls[-1]["system"] == "stable rules"
+    record = context.get_llm_calls()[0]
+    cache_plan = record["context_rollout"]["final_compile"]["cache_plan"]
+    assert cache_plan["native_cache_requested"] is False
+    assert cache_plan["stable_message_count"] == 1
+    assert cache_plan["logical_stable_prefix_hash"]
+    lowering = record["context_rollout"]["provider_lowering"]
+    assert lowering["cache_lowering_status"] == "disabled"
+    assert lowering["cache_lowering_strategy"] == "explicit_opt_out"
+
+
 def test_custom_anthropic_endpoint_requires_native_cache_capability():
     provider, calls = _anthropic_without_transport()
     provider.base_url = "https://anthropic-compatible.example.test/v1"
     model = LLMModel(
         conf=ModelConfig(
-            context_compiler={"mode": "enforce", "universal_final": True}
+            context_cache={"allow_provider_native_cache": True},
+            context_compiler={"mode": "enforce", "universal_final": True},
         ),
         custom_provider=provider,
     )
