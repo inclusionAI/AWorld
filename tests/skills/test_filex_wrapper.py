@@ -29,11 +29,18 @@ if args[0] == "parse":
     result = workspace / "document_parse" / "fake-task" / "result.md"
     result.parent.mkdir(parents=True, exist_ok=True)
     result.write_text("# Parsed by FileX\\n", encoding="utf-8")
+    document = result.with_suffix(".document.json")
+    document.write_text(json.dumps({
+        "schema_version": "filex.document-ir/v1",
+        "coordinate_system": "pixel_xyxy",
+        "pages": [{"page_index": 0, "width": 100, "height": 200, "elements": []}],
+    }), encoding="utf-8")
     payload = {
         "success": True,
         "task_id": "fake-task",
         "file_path": str(result.relative_to(workspace)),
-        "metrics": {"provider": "python_docx"},
+        "document_file_path": str(document.relative_to(workspace)),
+        "metrics": {"provider": "python_docx", "provider_version": "1"},
     }
 elif args[0] == "inspect":
     payload = {
@@ -163,6 +170,42 @@ def test_filex_wrapper_reads_batch_status(tmp_path: Path) -> None:
     cli_args = json.loads(args_log.read_text(encoding="utf-8"))
     assert cli_args[:3] == ["status", "--batch-resume-id", "stable-id"]
     assert "--include-results" in cli_args
+
+
+def test_filex_wrapper_exports_generic_artifact_bundle(tmp_path: Path) -> None:
+    workspace, _, env = _environment(tmp_path)
+    source = workspace / "input.pdf"
+    source.write_bytes(b"%PDF-test")
+    artifacts = tmp_path / "logs" / "artifacts"
+    env["FILEX_ARTIFACTS_ROOT"] = str(artifacts)
+
+    completed = subprocess.run(
+        [
+            sys.executable,
+            str(FILEX_SCRIPT),
+            "parse",
+            "--input",
+            str(source),
+            "--artifacts-dir",
+            str(artifacts),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+
+    assert completed.returncode == 0, completed.stdout
+    result = json.loads((artifacts / "result.json").read_text())
+    assert result["schema_version"] == "filex.skill.parse-result/v1"
+    assert result["source"]["sha256"].startswith("sha256:")
+    assert result["artifacts"]["document"]["path"] == str(
+        artifacts / "document.md"
+    )
+    assert (artifacts / "document.md").read_text() == "# Parsed by FileX\n"
+    assert json.loads((artifacts / "layout.json").read_text())["pages"][0][
+        "page_index"
+    ] == 0
 
 
 def test_filex_wrapper_inspects_youtube_without_media_download(tmp_path: Path) -> None:

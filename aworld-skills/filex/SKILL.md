@@ -27,6 +27,21 @@ FileX supports:
 
 Omit `--output` to keep FileX's generated Markdown path. Use `--file-type` only when extension or content detection is insufficient. Parse stdout as JSON and continue only when `success` is `true`.
 
+When a task requires durable, machine-verifiable output, use `--artifacts-dir`. The
+directory must be under `FILEX_ARTIFACTS_ROOT` (normally `/logs/artifacts`):
+
+```bash
+python3 /skills/filex/scripts/filex.py parse \
+  --input /workspace/input/report.pdf \
+  --no-cache \
+  --artifacts-dir /logs/artifacts
+```
+
+This atomically writes `document.md`, the original FileX Document IR as
+`layout.json`, and `result.json` with source/output hashes plus the unmodified
+FileX response. This is a generic FileX artifact contract; benchmark-specific
+normalization and scoring remain the dataset verifier's responsibility.
+
 ## Select a provider
 
 Use `--provider` when the provider needs no credentials on the command line:

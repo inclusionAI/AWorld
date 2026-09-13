@@ -4,10 +4,12 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import shutil
 import subprocess
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -34,6 +36,13 @@ def _parser() -> argparse.ArgumentParser:
     source.add_argument("--url", help="HTTP(S) file URL")
     parse.add_argument(
         "--output", help="Optional Markdown destination inside the workspace"
+    )
+    parse.add_argument(
+        "--artifacts-dir",
+        help=(
+            "Optional directory for a self-verifying FileX artifact bundle. "
+            "Must be inside FILEX_ARTIFACTS_ROOT (default: /logs/artifacts)."
+        ),
     )
     parse.add_argument(
         "--file-type", help="Explicit source type; otherwise infer from the file"
@@ -114,6 +123,108 @@ def _result_path(payload: dict[str, Any], workspace: Path) -> Path:
     return _inside_workspace(str(result), workspace, must_exist=True)
 
 
+def _workspace_artifact_path(
+    payload: dict[str, Any], key: str, workspace: Path, label: str
+) -> Path:
+    raw_path = str(payload.get(key) or "").strip()
+    if not raw_path:
+        raise ValueError(f"FileX succeeded without a {label} path")
+    path = Path(raw_path).expanduser()
+    if not path.is_absolute():
+        path = workspace / path
+    return _inside_workspace(str(path), workspace, must_exist=True)
+
+
+def _sha256(content: bytes) -> str:
+    return "sha256:" + hashlib.sha256(content).hexdigest()
+
+
+def _atomic_write(path: Path, content: bytes) -> None:
+    descriptor, temporary_name = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+    temporary = Path(temporary_name)
+    try:
+        with os.fdopen(descriptor, "wb") as destination:
+            destination.write(content)
+            destination.flush()
+            os.fsync(destination.fileno())
+        os.replace(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def _export_artifact_bundle(
+    *,
+    artifacts_dir: str,
+    source: Path,
+    markdown: Path,
+    payload: dict[str, Any],
+    workspace: Path,
+) -> dict[str, Any]:
+    root = Path(
+        os.environ.get("FILEX_ARTIFACTS_ROOT", "/logs/artifacts")
+    ).expanduser().resolve()
+    destination = Path(artifacts_dir).expanduser().resolve()
+    try:
+        destination.relative_to(root)
+    except ValueError as exc:
+        raise ValueError(
+            f"Artifact directory must be inside FILEX_ARTIFACTS_ROOT {root}: {destination}"
+        ) from exc
+    if destination.exists() and (destination.is_symlink() or not destination.is_dir()):
+        raise ValueError(f"Artifact destination is not a regular directory: {destination}")
+    destination.mkdir(parents=True, exist_ok=True)
+
+    document_ir = _workspace_artifact_path(
+        payload, "document_file_path", workspace, "Document IR"
+    )
+    source_bytes = source.read_bytes()
+    markdown_bytes = markdown.read_bytes()
+    layout_bytes = document_ir.read_bytes()
+    try:
+        layout = json.loads(layout_bytes)
+    except (UnicodeError, json.JSONDecodeError) as exc:
+        raise ValueError("FileX Document IR is not valid JSON") from exc
+    if not isinstance(layout, dict):
+        raise TypeError("FileX Document IR must be a JSON object")
+    layout_bytes = (
+        json.dumps(layout, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        + "\n"
+    ).encode("utf-8")
+
+    document_output = destination / "document.md"
+    layout_output = destination / "layout.json"
+    result_output = destination / "result.json"
+    result = {
+        "schema_version": "filex.skill.parse-result/v1",
+        "status": "succeeded",
+        "source": {
+            "path": str(source),
+            "size": len(source_bytes),
+            "sha256": _sha256(source_bytes),
+        },
+        "artifacts": {
+            "document": {
+                "path": str(document_output),
+                "size": len(markdown_bytes),
+                "sha256": _sha256(markdown_bytes),
+            },
+            "layout": {
+                "path": str(layout_output),
+                "size": len(layout_bytes),
+                "sha256": _sha256(layout_bytes),
+            },
+        },
+        "filex": payload,
+    }
+    _atomic_write(document_output, markdown_bytes)
+    _atomic_write(layout_output, layout_bytes)
+    _atomic_write(
+        result_output,
+        (json.dumps(result, ensure_ascii=False, sort_keys=True, separators=(",", ":")) + "\n").encode("utf-8"),
+    )
+    return {"artifacts_dir": str(destination), "artifact_result": str(result_output)}
+
+
 def _run(command: list[str]) -> tuple[int, dict[str, Any]]:
     try:
         completed = subprocess.run(command, check=False, capture_output=True, text=True)
@@ -126,8 +237,8 @@ def _run(command: list[str]) -> tuple[int, dict[str, Any]]:
     try:
         payload = json.loads(completed.stdout)
         if not isinstance(payload, dict):
-            raise ValueError("JSON result is not an object")
-    except (json.JSONDecodeError, ValueError) as exc:
+            raise TypeError("JSON result is not an object")
+    except (json.JSONDecodeError, TypeError, ValueError) as exc:
         detail = completed.stderr.strip()
         return 2, {
             "success": False,
@@ -143,6 +254,11 @@ def _parse(args: argparse.Namespace, executable: str, workspace: Path) -> int:
         return _fail(
             "Use --provider without --env-file, or put filex_parse_provider "
             "in the env file.",
+            error_type="InputError",
+        )
+    if args.artifacts_dir and (not args.input or args.sync_mode != "sync"):
+        return _fail(
+            "--artifacts-dir requires synchronous parsing of a local --input",
             error_type="InputError",
         )
     for name in ("page_batch_size", "first_batch_pages"):
@@ -219,6 +335,19 @@ def _parse(args: argparse.Namespace, executable: str, workspace: Path) -> int:
         return _fail(str(exc), error_type="OutputError")
     payload["input_path"] = str(source_path) if source_path else args.url
     payload["output_path"] = str(output)
+    if args.artifacts_dir:
+        try:
+            payload.update(
+                _export_artifact_bundle(
+                    artifacts_dir=args.artifacts_dir,
+                    source=source_path,
+                    markdown=output,
+                    payload=payload,
+                    workspace=workspace,
+                )
+            )
+        except (OSError, TypeError, ValueError) as exc:
+            return _fail(str(exc), error_type="OutputError")
     _emit(payload)
     return 0
 
