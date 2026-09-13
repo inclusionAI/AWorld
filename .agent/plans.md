@@ -2,28 +2,26 @@
 
 ## Architecture Overview
 
-The corrected integration keeps four ownership boundaries.
-lingguang-bench-client owns ParseBench source synchronization, task authoring,
-the private verifier, deterministic executable Dataset ZIP construction, and
-the upload/run user workflow. AWorld/FileX owns only the independent FileX CLI
-and its reusable skill. mcpgateway owns executable-dataset validation,
-publication, and Harbor/Arca orchestration without learning ParseBench scoring
-semantics. lingguang-bench-runtime owns the immutable AWorld/FileX runtime,
-generic AWorld harness, protected model-profile injection, and artifact
-collection.
+The corrected integration keeps four ownership boundaries. The independent
+`benchmark-datasets/parsebench` project owns ParseBench conversion, private
+verification, and scoring. Unmodified lingguang-bench-client owns standard
+project validation, ZIP construction, and its existing upload workflow.
+Unmodified mcpgateway owns Dataset validation, publication, and Harbor/Arca
+orchestration. AWorld/FileX owns generic CLI and skill behavior, while
+lingguang-bench-runtime owns the execution adapter and immutable dependencies.
 
 The full data flow is:
 
-`ParseBench@pinned revision -> lingguang-bench-client Dataset project -> yolo-dataset-package/v2 -> mcpgateway upload/publish -> Harbor immutable plan -> Arca agent_only runtime -> generic aworld-cli + packaged FileX skill -> FileX CLI -> private Dataset verifier -> detailed metric artifact + scalar reward -> mcpgateway generic results`.
+`ParseBench@pinned revision -> independent standard Dataset project -> stock lingguang-bench-client package -> stock mcpgateway upload/publish -> Arca Runtime -> generic aworld-cli + FileX skill -> Dataset verifier -> generic results`.
 
 ## Branch and Worktree Matrix
 
 | Repository | Base | Feature branch | Worktree |
 | --- | --- | --- | --- |
 | AWorld | `origin/main` at `b4d24300` | `codex/filex-parsebench-benchmark` | `/private/tmp/aworld-filex-parsebench` |
-| mcpgateway | `origin/codex/fix-harbor-runner-readiness-db-pool` at `b9f54ffe` | `codex/filex-parsebench-benchmark` | `/private/tmp/mcpgateway-filex-parsebench` |
+| mcpgateway (net diff zero) | `origin/codex/fix-harbor-runner-readiness-db-pool` at `b9f54ffe` | `codex/filex-parsebench-benchmark` | `/private/tmp/mcpgateway-filex-parsebench` |
 | lingguang-bench-runtime | `origin/codex/fix-arca-task-upload` at `8b28a35` | `codex/filex-parsebench-benchmark` | `/private/tmp/runtime-filex-parsebench` |
-| lingguang-bench-client | `origin/master` at `c3cdc378` | `codex/filex-parsebench-benchmark` | `/private/tmp/lingguang-bench-client-filex-parsebench` |
+| lingguang-bench-client (net diff zero) | `origin/master` at `c3cdc378` | `codex/filex-parsebench-benchmark` | `/private/tmp/lingguang-bench-client-filex-parsebench` |
 
 ## Milestones
 
@@ -35,7 +33,7 @@ The full data flow is:
 #### Task 1.1: Pin and model the upstream contracts
 
 - **Parallel:** yes.
-- **Files:** new AWorld ParseBench package, provenance manifest, tests.
+- **Files:** independent `benchmark-datasets/parsebench` tooling, provenance manifest, tests.
 - **Approach:** Encode the pinned HF/scorer revisions, eight-field source schema, rule decoding, page numbering, five score groups, and overall aggregation contract.
 - **Tests:** schema validation, invalid rule JSON, missing resource, stable provenance, dimension completeness.
 - **Acceptance criteria:** no network or model call is needed to validate the contract on local fixtures.
@@ -44,11 +42,11 @@ The full data flow is:
 #### Task 1.2: Build the executable dataset converter
 
 - **Parallel:** no, depends on Task 1.1.
-- **Files:** converter CLI/library, package templates, tests, docs.
+- **Files:** independent project generator, package templates, tests, docs.
 - **Approach:** Group by normalized source document/page execution key, generate deterministic task IDs, place source inputs in `environment/`, private rules in `tests/`, and produce `dataset.yaml`, `dataset.jsonl`, `manifest.json`, and task archives with checksums.
 - **Tests:** idempotent output, 2,078 expected full cardinality from metadata, 169,011 preserved rules, path traversal rejection, duplicate IDs, archive layout, smoke selection.
 - **Acceptance criteria:** generated fixtures pass mcpgateway package validation.
-- **Status:** completed; deterministic package authoring, smoke selection, checksums, and private verifier boundaries are implemented.
+- **Status:** completed; the generator emits a standard project consumed by the unmodified client's existing packager.
 
 #### Task 1.3: Vendor or bind the pinned official scorer
 
@@ -94,7 +92,7 @@ The full data flow is:
 - **Approach:** Start from the published Harbor readiness branch, import the smoke package, and identify the smallest generic contract change needed.
 - **Tests:** package validation/publish, managed locator binding, immutable planning.
 - **Acceptance criteria:** no modifications under `mcp_gateway/src/mcp_gateway`.
-- **Status:** completed; the smoke package is accepted by the real generic gateway package parser without ParseBench semantics leaking into the gateway.
+- **Status:** completed; the smoke package is accepted by the unmodified generic gateway package parser, and the Gateway net source diff is zero.
 
 #### Task 3.2: Preserve detailed benchmark metrics and dual model profiles
 

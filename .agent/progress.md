@@ -2,69 +2,64 @@
 
 ## Final Status
 
-**Phase:** implementation complete; local bounded acceptance complete.
+**Phase:** minimal-boundary implementation complete; bounded local acceptance complete.
 
-The final architecture is:
+The final data flow is:
 
-`ParseBench checkout -> lingguang-bench-client -> standalone yolo-dataset-package/v2 ZIP -> mcpgateway upload/publish/batch -> Arca Runtime AWorld harness -> aworld-cli run + FileX skill -> generic FileX artifacts -> Dataset-owned verifier + official scorer -> generic Gateway result`.
+`ParseBench checkout -> independent Dataset generator -> standard lingguang Dataset project -> unmodified lingguang-bench-client package -> unmodified mcpgateway upload/publish/dispatch -> Arca Runtime AWorld harness -> generic aworld-cli + FileX skill -> Dataset verifier -> Gateway result`.
 
-No ParseBench-specific command, dataset loader, gateway client, verifier, or scorer remains in AWorld CLI. Local validation intentionally used fixtures and a four-task package rather than a full 2,078-execution campaign.
+## Repository State
 
-## Branches and Revisions
+| Repository | Branch | State |
+| --- | --- | --- |
+| AWorld | `codex/filex-parsebench-benchmark` | Generic AWorld/FileX changes plus independent `benchmark-datasets/parsebench` tooling |
+| lingguang-bench-runtime | `codex/filex-parsebench-benchmark` | Generic AWorld/FileX Runtime harness and immutable dependencies |
+| lingguang-bench-client | `codex/filex-parsebench-benchmark` | Net source diff is exactly zero against latest-master base `c3cdc378` |
+| mcpgateway | `codex/filex-parsebench-benchmark` | Net source diff is exactly zero against integration base `b9f54ffe` |
 
-| Repository | Branch | Implementation commit | Worktree |
-| --- | --- | --- | --- |
-| AWorld | `codex/filex-parsebench-benchmark` | `6296fe98` | `/private/tmp/aworld-filex-parsebench` |
-| lingguang-bench-client | `codex/filex-parsebench-benchmark` | `e212a2b0` | `/private/tmp/lingguang-bench-client-filex-parsebench` |
-| mcpgateway | `codex/filex-parsebench-benchmark` | `4c8cfcaf` | `/private/tmp/mcpgateway-filex-parsebench` |
-| lingguang-bench-runtime | `codex/filex-parsebench-benchmark` | `be8330e` | `/private/tmp/runtime-filex-parsebench` |
+The client and Gateway branches contain explicit revert history for auditability, but their final trees are byte-for-byte identical to their bases.
 
-## Delivered Boundaries
+## Delivered Capabilities
 
-### lingguang-bench-client: Dataset owner
+### Independent ParseBench Dataset project
 
-- Pins ParseBench dataset revision `2805a1d940f95a203e0ae4b88be9934f7765b3fc` and scorer revision `34b73455032797754f6ed62e14c27a8b5423d11e`.
-- Validates source material, groups rules into deterministic executions, supports bounded smoke selection, and emits a deterministic standalone `yolo-dataset-package/v2` ZIP.
-- Provides `lingbench-parsebench` for package creation and generic `lingbench upload-package` for uploading and publishing the exact ZIP bytes.
-- Embeds private ground truth and a self-contained verifier in each task archive; verifier execution has no AWorld import or AWorld benchmark command.
-- Consumes `filex.skill.parse-result/v1`, validates source/output hashes, normalizes raw FileX Document IR, and invokes the pinned official scorer.
+- `benchmark-datasets/parsebench` owns the pinned ParseBench schema, source validation, deterministic execution grouping, task instructions, private ground truth, verifier, scorer bridge, and project generator.
+- The generator produces ordinary `bench.toml`, `dataset/dataset.yaml`, `dataset/samples.jsonl`, and `tasks/<task-id>` inputs accepted by stock lingguang-bench-client.
+- `package_with_lingguang.py` imports only the stock client's `BenchConfig.load` and `build_gateway_package` to emit the manual-upload ZIP. It does not implement or patch the client package protocol.
+- Smoke selection is explicit; omitting it creates the full pinned Dataset.
 
-### AWorld and FileX: generic agent/skill capability
+### AWorld/FileX
 
-- Retains reusable FileX parsing, chart recognition, provider/model evidence, independent `filex` CLI, and the first-party FileX skill.
-- Adds generic `aworld-cli run --trajectory-output ... --trajectory-format atif`; it contains no ParseBench semantics.
-- FileX skill supports `--artifacts-dir` and atomically commits `document.md`, raw `layout.json` Document IR, and `result.json` with source/output hashes and the original FileX response.
-- The artifact schema is generic (`filex.skill.parse-result/v1`); benchmark normalization remains in the Dataset verifier.
+- AWorld CLI remains benchmark-neutral and supports generic skill loading plus optional ATIF trajectory output.
+- FileX remains an independent CLI and reusable skill. Its generic `--artifacts-dir` mode atomically writes Markdown, raw Document IR, and hash-bound result evidence.
+- No ParseBench lifecycle, upload, scheduling, or scorer command exists in AWorld CLI.
 
-### mcpgateway: Dataset lifecycle and scheduling
+### Runtime/Arca
 
-- Validates/imports executable Dataset ZIPs, uploads/publishes them, binds immutable package identity to plans/results, and dispatches generic Harbor/Arca batches.
-- Supports protected model profiles, idempotent lifecycle operations, artifact projection, and distinct zero/not-scored/failure states.
-- Contains no ParseBench scorer or FileX output-normalization implementation.
+- Runtime owns the execution adapter: generic `aworld-cli run --skill filex`, skill path, model environment, workspace/artifact roots, and trajectory output.
+- The immutable image supplies AWorld/FileX and the pinned scorer executable required by Dataset-owned verifier code; the harness contains no ParseBench task detection or scoring branch.
 
-### Runtime/Arca: execution adapter
+### Unmodified platform systems
 
-- The AWorld Harbor harness runs generic `aworld-cli run --skill filex`, injects the FileX skill path, model proxy environment, ATIF trajectory output, workspace root, and `/logs/artifacts` root.
-- Runtime images bundle pinned AWorld, aworld-cli, and FileX wheels plus the FileX skill and required Paddle/OpenCV assets.
-- The immutable Runtime image also supplies one pinned official scorer executable as a verifier dependency; Dataset-owned code fixes its identity and invokes it. This avoids duplicating the scorer in every Task archive and does not add scoring branches to the harness.
-- The harness does not detect ParseBench tasks and does not import Dataset/verifier code.
+- Stock lingguang-bench-client validates the generated project and builds its executable ZIP.
+- Stock mcpgateway validates/uploads/publishes the ZIP, dispatches Arca work, and stores artifacts/rewards.
 
-## Local Verification
+## Verification Evidence
 
-- AWorld FileX wrapper: `7 passed`; generic CLI/skill selection: `83 passed` with one unrelated pre-existing serve-dispatch expectation failure when that neighboring suite is included.
-- lingguang-bench-client complete suite: all `197` tests passed outside the filesystem sandbox so its localhost protocol fixtures could bind; Ruff passed for `src` and `tests`.
-- Runtime focused wheel/Dockerfile/source-overlay/FileX health suite passed (`240` tests in the main selection); Ruff passed for changed files.
-- mcpgateway focused Dataset/Harbor/Arca selection: `435 passed`; one stale disabled-environment API test expects a custom body for a path value now rejected earlier by the enum, and one separate legacy Harbor import test cannot collect against the installed Harbor version.
-- Cross-repository package smoke: a four-task fixture ZIP was produced by lingguang-bench-client and accepted by mcpgateway's production parser with all four tasks plus `agent=aworld` and `required_skill=filex` preserved.
-- Generic artifact smoke: FileX skill output was hash-validated and normalized by the Dataset verifier into `filex/paddle_ocr@1.6` scorer input.
-- `git diff --check` passed in all four repositories.
+- Independent generator test: `1 passed`; Ruff passed for the complete Dataset tooling directory.
+- Generated four-task smoke project validated successfully using unmodified lingguang-bench-client.
+- The same stock client produced a 173,439-byte `yolo-dataset-package/v2` ZIP with SHA-256 `sha256:26b7b28e3b917cd7227892277e4deced44408eb985668e1f64fc00ff439158db`.
+- Unmodified mcpgateway production parser accepted all four tasks and preserved `agent=aworld`, `required_skill=filex`, model profile, dataset/scorer revisions, and smoke scope.
+- Manual-upload sample ZIP: `/private/tmp/parsebench-manual-upload-smoke.zip`.
+- AWorld FileX wrapper: `7 passed`; Runtime focused wheel/Dockerfile/source-overlay/FileX health selection: `240 passed`.
+- Client and Gateway net diffs were verified with `git diff --quiet <base>..HEAD` returning zero.
 
 ## External Gates
 
-- A live upload/publish was not attempted because no target mcpgateway endpoint/credential was supplied; the client upload protocol is covered by localhost tests.
-- A live Arca container run was not attempted because Docker/Arca and the internal immutable model asset were not available locally. Static image contracts, wheel health, harness routing, and bounded artifact flow are covered.
-- A full ParseBench campaign was deliberately not run. Production publication still requires an immutable Runtime image digest, configured model profile/secrets, reachable scorer asset, and Gateway/Arca deployment credentials.
+- The smoke package is non-publishable by design because it uses synthetic fixtures and a placeholder Runtime digest.
+- No live Gateway upload or Arca run was attempted; manual upload was explicitly allowed and no production endpoint/credential was supplied.
+- A full ParseBench package requires a local checkout of the pinned Hugging Face revision and the real immutable Runtime image digest. A complete 2,078-task run was deliberately not performed.
 
 ## Review Conclusion
 
-The earlier architecture that put ParseBench lifecycle commands in AWorld CLI was removed. Execution adaptation now belongs to Runtime; ParseBench task/scoring adaptation belongs to the standalone Dataset ZIP; AWorld/FileX remains generic. No unresolved critical or important cross-boundary issue remains in the implemented local scope.
+The two platform systems identified by the user are now reused without source modifications. ParseBench-specific behavior is isolated in the Dataset project; Runtime owns only execution adaptation; AWorld/FileX remains generic.

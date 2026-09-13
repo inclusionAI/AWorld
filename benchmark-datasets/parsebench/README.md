@@ -1,0 +1,46 @@
+# ParseBench Dataset Project Generator
+
+This directory is independent from AWorld CLI, lingguang-bench-client, and
+mcpgateway implementation code. It converts the pinned ParseBench checkout into
+a normal executable Dataset project understood by an unmodified
+lingguang-bench-client.
+
+Generate a small local project:
+
+```bash
+PYTHONPATH=benchmark-datasets/parsebench/tools \
+python -m parsebench_dataset.project \
+  --source /path/to/ParseBench \
+  --output /tmp/parsebench-smoke \
+  --runtime-service YOUR_RUNTIME_SERVICE \
+  --runtime-image registry.example/aworld-filex@sha256:YOUR_DIGEST \
+  --smoke-per-dimension 1
+```
+
+Validate and package it with the stock client from its latest master branch:
+
+```bash
+cd /Users/wuman/Documents/workspace/lingguang-bench-client
+.venv/bin/lingbench --config /tmp/parsebench-smoke/bench.toml validate
+.venv/bin/python \
+  /path/to/aworld/benchmark-datasets/parsebench/package_with_lingguang.py \
+  --project /tmp/parsebench-smoke \
+  --output /tmp/parsebench-smoke.zip
+```
+
+The helper only calls the stock client's `BenchConfig.load` and
+`build_gateway_package`; it contains no package implementation of its own. The
+resulting ZIP can be uploaded manually through mcpgateway. Alternatively run
+the stock client's `publish` command to package and upload in one step. Do not
+include `.env` or Gateway tokens in the Dataset directory. Omit
+`--smoke-per-dimension` only when intentionally building the complete pinned
+Dataset.
+
+Ownership remains strict:
+
+- this Dataset project owns ParseBench conversion, private ground truth,
+  verifier, and scorer invocation;
+- Runtime owns the generic AWorld/FileX execution adapter and immutable binary
+  dependencies;
+- AWorld/FileX owns only generic CLI and skill behavior;
+- stock mcpgateway owns upload, publication, scheduling, and result storage.
