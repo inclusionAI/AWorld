@@ -8509,6 +8509,8 @@ async def test_aworld_cli_replay_executor_requests_machine_readable_trajectory_a
     assert "use the literal quoted variables" in task_text
     assert '"selected_fields"' in task_text
     assert "compacted" in task_text
+    assert "recorded prior task context fully answers a follow-up" in task_text
+    assert "Do not re-fetch sources already summarized" in task_text
     assert "Self-evolve replay runtime contract" in task_text
     assert "Required task-plane actions are allowed" in task_text
     assert "control-plane actions require explicit task authorization" in task_text

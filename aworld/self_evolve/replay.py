@@ -12320,15 +12320,16 @@ def _task_text(task_input: Any) -> str:
 _REPLAY_EVIDENCE_POLICY = """
 
 Self-evolve replay evidence requirements:
-- Preserve the user task and use artifact-first evidence. Save large or unknown-size output under AWORLD_REPLAY_ARTIFACT_DIR ({artifact_dir}); never stream full pages, documents, JSON, or logs.
-- In every shell command, use the literal quoted variables "$AWORLD_REPLAY_ARTIFACT_DIR" and "$AWORLD_REPLAY_EVIDENCE_MANIFEST". Never paste their resolved parenthetical paths: replay workspaces can change after a resume.
+- Preserve the task and use artifact-first evidence. Save large/unknown output under AWORLD_REPLAY_ARTIFACT_DIR ({artifact_dir}); never stream full pages, documents, JSON, or logs.
+- In shell, use the literal quoted variables "$AWORLD_REPLAY_ARTIFACT_DIR" and "$AWORLD_REPLAY_EVIDENCE_MANIFEST"; replay paths change after resume.
 - Before parsing an HTTP or browser response, redirect the complete response to a regular local file under "$AWORLD_REPLAY_ARTIFACT_DIR"; derive every bounded excerpt or selected field from that saved file.
 - Inspect only explicit byte-bounded excerpts or selected fields; `head -N` is not a byte bound.
 - Append one compact JSON line per source to AWORLD_REPLAY_EVIDENCE_MANIFEST ({evidence_manifest}). For a file use exactly {{"source_id":"...","extraction_method":"...","artifact_path":"...","selected_fields":{{"field":"bounded value"}}}}; for non-file evidence use exactly {{"source_id":"...","evidence_type":"metadata","extraction_method":"...","metadata":{{"field":"bounded value"}}}}.
 - Every `artifact_path` must name an existing regular local file under "$AWORLD_REPLAY_ARTIFACT_DIR". Never put a URL, an `AWORLD_REPLAY_ENDPOINT_*` value, or a shell-variable placeholder in `artifact_path`.
 - A replay endpoint body is the complete captured source. If abrupt or truncated, record the missing remainder, not a transport failure. After one narrower retry, never refetch it or switch to a browser; finalize supported claims and gaps. Source incompleteness is terminal.
 - Reject compacted, invalid, or unbounded tool output; retry narrowly.
-- Persist every valid artifact-backed sample and its manifest entry immediately. Continue only until every evidence subject required by the user task is covered (for example, every item in a comparison), or until one materially different bounded attempt establishes that a subject is unavailable. Then stop collecting and return the answer with artifact paths, subject coverage counts, explicit missing subjects, and a concise claim ledger. Omit unsupported claims.
+- If recorded prior task context fully answers a follow-up, treat it as evidence and finalize without tools. Do not re-fetch sources already summarized there unless freshness is requested.
+- Persist valid samples and manifest entries immediately. Stop when all required subjects are covered or one different bounded attempt proves one unavailable. Return artifact paths, coverage counts, missing subjects, and a claim ledger; omit unsupported claims.
 """.strip()
 
 
