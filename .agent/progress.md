@@ -2,7 +2,7 @@
 
 ## Final Status
 
-**Phase:** minimal-boundary implementation complete; bounded local acceptance complete.
+**Phase:** minimal-boundary implementation complete; real-VLM and Docker local acceptance complete.
 
 The final data flow is:
 
@@ -47,17 +47,20 @@ The client and Gateway branches contain explicit revert history for auditability
 ## Verification Evidence
 
 - Independent generator test: `1 passed`; Ruff passed for the complete Dataset tooling directory.
-- Generated four-task smoke project validated successfully using unmodified lingguang-bench-client.
-- The same stock client produced a 173,439-byte `yolo-dataset-package/v2` ZIP with SHA-256 `sha256:26b7b28e3b917cd7227892277e4deced44408eb985668e1f64fc00ff439158db`.
-- Unmodified mcpgateway production parser accepted all four tasks and preserved `agent=aworld`, `required_skill=filex`, model profile, dataset/scorer revisions, and smoke scope.
-- Manual-upload sample ZIP: `/private/tmp/parsebench-manual-upload-smoke.zip`.
-- AWorld FileX wrapper: `7 passed`; Runtime focused wheel/Dockerfile/source-overlay/FileX health selection: `240 passed`.
+- Generated five-task real-data smoke project validated successfully using unmodified lingguang-bench-client.
+- The same stock client produced a 3,045,005-byte `yolo-dataset-package/v2` ZIP with SHA-256 `sha256:2350f5f6747c258380832fa45d3875989e9de0a6817686102c272eb094e1b8c1`.
+- Unmodified mcpgateway production parser accepted all five tasks.
+- Real Gemini/PaddleOCR-VL calls plus the pinned scorer covered all five dimensions. The diagnostic equal-weight smoke score is `0.3010371995915193`, with positive text-content (`0.86351933129093`), text-formatting (`0.14166666666666666`), and layout (`0.5`) scores and no missing/unscored/execution-failed/official-failure result.
+- A real `aworld-cli run --skill filex` text task made 15 VLM calls with zero retries/timeouts and received positive official scores, proving the CLI-to-skill-to-model-to-scorer path.
+- DockerSandbox: three real Docker integration tests passed; a copied task source hash matched inside the container and an artifact was recovered.
+- AWorld focused tests: `31 passed`; Runtime focused tests: `54 passed`; Docker integration: `3 passed`.
+- Sanitized evidence: `benchmark-datasets/parsebench/evidence/local-vlm-smoke-20260913/acceptance.json`.
 - Client and Gateway net diffs were verified with `git diff --quiet <base>..HEAD` returning zero.
 
 ## External Gates
 
-- The smoke package is non-publishable by design because it uses synthetic fixtures and a placeholder Runtime digest.
-- No live Gateway upload or Arca run was attempted; manual upload was explicitly allowed and no production endpoint/credential was supplied.
+- The smoke package is non-publishable by design because it is an incomplete selection and uses a mutable local Runtime image tag.
+- No live Gateway upload or Arca run was attempted; the user explicitly separated those concerns from local VLM and Docker validation.
 - A full ParseBench package requires a local checkout of the pinned Hugging Face revision and the real immutable Runtime image digest. A complete 2,078-task run was deliberately not performed.
 
 ## Review Conclusion

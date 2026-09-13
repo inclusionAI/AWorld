@@ -147,7 +147,7 @@ The full data flow is:
 - **Approach:** If credentials and a reachable service are available, run one or a few representative real Arca tasks; otherwise provide exact commands and a blocker report. Do not expand into a full benchmark campaign.
 - **Tests:** input mount, FileX invocation, artifact collection, metric parity, cleanup.
 - **Acceptance criteria:** either the live smoke passes or the only blockers are external access/cost, with all local contracts proven.
-- **Status:** completed with external gates; local contracts pass, while the unavailable Docker daemon, required internal Arca model artifact, independently configured dataset-image S2S trust domain, `reward_server` source-digest attestation support, and signed per-task image acceptance receipt are recorded as deployment prerequisites. Formal publication stays disabled until those gates pass.
+- **Status:** excluded from this local acceptance at the user's direction. Real VLM credibility and Docker sandbox behavior were validated independently; no Arca claim is made.
 
 #### Task 5.3: Architectural review cycles
 
