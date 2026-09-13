@@ -2012,13 +2012,21 @@ cache 准出采用 capability-aware 双层证据，不能混为一个结论：
    一律触发 `cache_causal_evidence_incomplete`，不得用随机 Reward 改善绕过。
 
 `OpenAI-compatible` 只表示 wire protocol 兼容，不表示任意网关都支持 `prompt_cache_key`。官方 OpenAI endpoint
-可以由 reviewed adapter 在 `auto` capability 下启用；自定义 base URL 默认产生
+可由 reviewed adapter 在 `auto` 下确认 capability，但仍须调用方显式授权 native control；自定义 base URL 默认产生
 `unsupported:provider_capability_not_declared` 并保持请求语义不变，部署方只有在独立 conformance/canary 后才能用
 `provider_native_cache_capability=supported` 显式开启。该声明由 `LLMProviderBase` 的共同 capability contract
 统一解析，而不是 OpenAI/GLM 特有开关；Anthropic adapter 也采用相同 fail-safe 规则：官方已审查 endpoint 可在
 `auto` 下启用，自定义 Anthropic-compatible base URL 默认只保留精确稳定前缀并产生
 `unsupported:provider_capability_not_declared`。其他 Provider 仍由各自 adapter 声明是否存在原生控制，核心
 Compiler 不检查 provider、模型或 endpoint 名称。
+
+默认用户路径不要求理解或配置 provider cache namespace。`context_cache.enabled=true` 继续默认开启稳定前缀、
+Context 生命周期和 usage 观测，但 `allow_provider_native_cache=null` 表示未授权，默认不发送任何 Provider 专属
+cache-control；`true` 是显式 opt-in，`false` 是多层配置合并时的显式 veto。`provider_cache_namespace` 默认保持
+`null`。只有部署方确认 Provider 存在对应 wire contract，并完成 conformance/canary 验证后，才显式打开
+`allow_provider_native_cache`；OpenAI 类 adapter 还需要非空 namespace，自定义 endpoint 还需
+`provider_native_cache_capability=supported`。namespace 只是可能被 adapter 映射为 `prompt_cache_key` 的高级路由提示，
+不是 AWorld 内容缓存键，也不是当前无此概念的模型网关必须补造的配置。
 
 这一区分不是降低门槛：通用层仍要求至少 10 个完整 pair、两类 workload、Reward 95% CI 非退化、完整 capture、
 rollback 与 canary；原生层在此基础上额外要求 lowering 因果链和 exact usage。没有原生控制的 Provider 不会因为

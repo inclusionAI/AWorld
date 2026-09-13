@@ -831,6 +831,7 @@ def test_universal_final_http_enforce_records_serialized_cache_continuity():
 
     assert len(sent) == 2
     assert all(serialized_body for _, serialized_body in sent)
+    assert all("prompt_cache_key" not in data for data, _ in sent)
     first, second = context.get_llm_calls()
     verified_first = VerifiedContextEntrypointParityReceipt.from_llm_call_record(first)
     assert verified_first.receipt.provider_binding is not None
@@ -846,6 +847,10 @@ def test_universal_final_http_enforce_records_serialized_cache_continuity():
     assert second["request_trace_match"] is True
     assert first["context_observe"]["request"]["capture_stage"] == "model_boundary"
     assert first["context_rollout"]["final_compile"]["enforce"]["ready"]
+    cache_plan = first["context_rollout"]["final_compile"]["cache_plan"]
+    assert cache_plan["native_cache_requested"] is False
+    assert cache_plan["stable_message_count"] == 1
+    assert cache_plan["logical_stable_prefix_hash"]
     assert (
         first["context_rollout"]["provider_lowering"]["cache_continuity"]["status"]
         == "initialized"
@@ -858,8 +863,8 @@ def test_universal_final_http_enforce_records_serialized_cache_continuity():
     lowering = first["context_rollout"]["provider_lowering"]
     assert lowering["cache_plan_fingerprint"] == candidate["cache_plan_fingerprint"]
     assert lowering["candidate_contract_hash"] == candidate["candidate_contract_hash"]
-    assert lowering["cache_lowering_status"] == "preserved"
-    assert lowering["cache_lowering_strategy"] == "exact_prefix_no_hint"
+    assert lowering["cache_lowering_status"] == "disabled"
+    assert lowering["cache_lowering_strategy"] == "explicit_opt_out"
 
 
 def test_openai_cache_plan_preserves_explicit_namespace_and_opt_out():
@@ -867,7 +872,10 @@ def test_openai_cache_plan_preserves_explicit_namespace_and_opt_out():
     namespaced = LLMModel(
         conf=ModelConfig(
             max_tokens=321,
-            context_cache={"provider_cache_namespace": "tenant-session"},
+            context_cache={
+                "allow_provider_native_cache": True,
+                "provider_cache_namespace": "tenant-session",
+            },
             context_compiler={"mode": "enforce", "universal_final": True},
         ),
         custom_provider=provider,
@@ -928,7 +936,10 @@ def test_custom_openai_compatible_endpoint_requires_native_cache_capability():
     provider.base_url = "https://compatible.example.test/v1"
     model = LLMModel(
         conf=ModelConfig(
-            context_cache={"provider_cache_namespace": "tenant-session"},
+            context_cache={
+                "allow_provider_native_cache": True,
+                "provider_cache_namespace": "tenant-session",
+            },
             context_compiler={"mode": "enforce", "universal_final": True},
         ),
         custom_provider=provider,

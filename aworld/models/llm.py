@@ -17,7 +17,11 @@ from typing import (
     Optional,
 )
 from aworld.config import ConfigDict, ModelConfig
-from aworld.config.conf import AgentConfig, ClientType
+from aworld.config.conf import (
+    AgentConfig,
+    ClientType,
+    resolve_provider_native_cache_intent,
+)
 from aworld.core.model_output_parser.default_parsers import (
     ToolParser,
     ReasoningParser,
@@ -967,10 +971,12 @@ class LLMModel:
                 if agent_cache is not None:
                     configs.append(agent_cache)
                     break
-        native_requested = all(
+        cache_enabled = bool(configs) and all(
             bool(config_value(config, "enabled", True))
-            and bool(config_value(config, "allow_provider_native_cache", True))
             for config in configs
+        )
+        native_requested = cache_enabled and resolve_provider_native_cache_intent(
+            configs
         )
         namespaces = {
             str(value)

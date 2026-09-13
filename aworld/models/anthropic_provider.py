@@ -605,8 +605,12 @@ class AnthropicProvider(LLMProviderBase):
         **kwargs,
     ) -> Dict[str, Any]:
         prompt_assembly_plan = kwargs.pop("prompt_assembly_plan", None)
-        provider_native_prompt_cache = bool(
+        provider_native_prompt_cache_requested = bool(
             kwargs.pop("provider_native_prompt_cache", False)
+        )
+        provider_native_prompt_cache = (
+            provider_native_prompt_cache_requested
+            and self._supports_native_prompt_cache_control()
         )
         lowered_request_kwargs = {}
         if prompt_assembly_plan is not None:
