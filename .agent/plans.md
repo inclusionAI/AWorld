@@ -23,6 +23,7 @@ The full data flow is:
 | AWorld | `origin/main` at `b4d24300` | `codex/filex-parsebench-benchmark` | `/private/tmp/aworld-filex-parsebench` |
 | mcpgateway | `origin/codex/fix-harbor-runner-readiness-db-pool` at `b9f54ffe` | `codex/filex-parsebench-benchmark` | `/private/tmp/mcpgateway-filex-parsebench` |
 | lingguang-bench-runtime | `origin/codex/fix-arca-task-upload` at `8b28a35` | `codex/filex-parsebench-benchmark` | `/private/tmp/runtime-filex-parsebench` |
+| lingguang-bench-client | `origin/master` at `c3cdc378` | `codex/filex-parsebench-benchmark` | `/private/tmp/lingguang-bench-client-filex-parsebench` |
 
 ## Milestones
 
@@ -63,14 +64,14 @@ The full data flow is:
 **Goal:** Run and report ParseBench deterministically through FileX.
 **Depends on:** Milestone 1.
 
-#### Task 2.1: Implement the FileX ParseBench adapter
+#### Task 2.1: Stabilize generic FileX artifacts for Dataset verification
 
 - **Parallel:** yes.
-- **Files:** FileX adapter/provider, output models, layout normalizer, tests.
-- **Approach:** Call FileX directly or via its HTTP service, record provider/model/revision/cache identity, emit document/page Markdown and normalized layout elements, and fail closed on fallback or incomplete required outputs.
+- **Files:** FileX CLI/provider, reusable FileX skill, Dataset verifier, tests.
+- **Approach:** Have the skill emit a generic content-addressed artifact bundle; validate and normalize it inside the Dataset-owned verifier.
 - **Tests:** Markdown, table HTML, page index conversion, bbox normalization/clipping, label mapping, cache isolation, retry/error classification.
 - **Acceptance criteria:** each fixture yields scorer-compatible output and reproducible metadata.
-- **Status:** completed; FileX emits versioned Markdown/layout/provider provenance and preserves chart-recognition output.
+- **Status:** completed; FileX emits generic hashed Markdown/raw Document IR/provider evidence and the Dataset verifier performs ParseBench normalization.
 
 #### Task 2.2: Integrate FileX through the generic AWorld skill interface
 
@@ -122,7 +123,7 @@ The full data flow is:
 
 - **Parallel:** yes after contracts stabilize.
 - **Files:** AWorld adapter, model-profile mapping, artifact collector, tests.
-- **Approach:** Run the dedicated benchmark command/task entrypoint, inject protected LLM/VLM bindings, redact signed URLs, and collect Markdown/layout/detailed metrics.
+- **Approach:** Run the generic AWorld task entrypoint, inject the FileX skill and protected LLM/VLM bindings, redact signed URLs, and collect standard trajectories/artifacts.
 - **Tests:** command construction, environment mapping, secret redaction, synthetic task prepare/start/collect.
 - **Acceptance criteria:** a synthetic ParseBench task completes in local runtime mode with standard Harbor outputs.
 - **Status:** completed; the Harbor AWorld adapter installs/exposes both CLIs, uses Python 3.12 constraints, mounts the offline model, and collects standard artifacts.
