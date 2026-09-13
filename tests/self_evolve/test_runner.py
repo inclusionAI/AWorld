@@ -7541,6 +7541,41 @@ def test_candidate_repair_prompt_explains_fixture_conformance_violation() -> Non
     ] == conformance.failure_fingerprint
 
 
+def test_candidate_repair_hints_preserve_source_behavior_operations() -> None:
+    conformance = RepairConformanceResult(
+        passed=False,
+        code="source_behavior_proof_failed",
+        reason="source proof is incomplete",
+        details={
+            "missing_operations": ["project_record_value_field_directly"],
+            "unsupported_boundary_kinds": ["instance_attribute"],
+            "source_behavior_proofs": [
+                {
+                    "operation_status": {
+                        "read_environment_binding_as_path": True,
+                        "project_record_value_field_directly": False,
+                    }
+                }
+            ],
+        },
+    )
+
+    hints = llm_mutator_module._executable_conformance_repair_hints(
+        conformance
+    )
+
+    assert hints["missing_operations"] == [
+        "project_record_value_field_directly"
+    ]
+    assert hints["unsupported_boundary_kinds"] == ["instance_attribute"]
+    assert hints["operation_status"] == [
+        {
+            "read_environment_binding_as_path": True,
+            "project_record_value_field_directly": False,
+        }
+    ]
+
+
 def test_candidate_materialization_frontier_identity_is_typed_and_stable() -> None:
     failures = (
         {

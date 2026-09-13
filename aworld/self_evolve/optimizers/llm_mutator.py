@@ -1909,6 +1909,35 @@ def _executable_conformance_repair_hints(
             required_change,
             max_chars=2_000,
         )
+    for key in ("missing_operations", "unsupported_boundary_kinds"):
+        raw_items = details.get(key)
+        if not isinstance(raw_items, (list, tuple)):
+            continue
+        items = [
+            sanitize_text(item, max_chars=240)
+            for item in raw_items[:32]
+            if isinstance(item, str) and item.strip()
+        ]
+        if items:
+            hints[key] = list(dict.fromkeys(items))
+    raw_proofs = details.get("source_behavior_proofs")
+    proof_statuses: list[dict[str, object]] = []
+    if isinstance(raw_proofs, (list, tuple)):
+        for proof in raw_proofs[:16]:
+            if not isinstance(proof, Mapping):
+                continue
+            operation_status = proof.get("operation_status")
+            if not isinstance(operation_status, Mapping):
+                continue
+            status = {
+                sanitize_text(str(operation), max_chars=120): passed
+                for operation, passed in list(operation_status.items())[:32]
+                if isinstance(passed, bool)
+            }
+            if status and status not in proof_statuses:
+                proof_statuses.append(status)
+    if proof_statuses:
+        hints["operation_status"] = proof_statuses
     raw_violations = details.get("violations")
     violation_locations: list[dict[str, object]] = []
     violation_constructs: list[str] = []

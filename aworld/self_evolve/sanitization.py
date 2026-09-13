@@ -171,6 +171,13 @@ def _project_public_diagnostic(
     max_chars: int,
     max_depth: int,
 ) -> Any:
+    source_behavior_proof = _source_behavior_proof_public_projection(value)
+    if source_behavior_proof is not None:
+        # Source-behavior proofs are executable repair feedback.  Their useful
+        # fields are boolean operation results and symbolic operation names,
+        # so retain that allowlisted view even when the proof is nested below
+        # the generic diagnostic depth budget.
+        return source_behavior_proof
     typed_recovery = _typed_recovery_public_projection(value)
     if typed_recovery is not None:
         return typed_recovery
@@ -261,6 +268,65 @@ def _project_public_diagnostic(
         "type": f"{type(value).__module__}.{type(value).__qualname__}",
         "fingerprint": _stable_public_fingerprint(value),
     }
+
+
+def _source_behavior_proof_public_projection(
+    value: Any,
+) -> Mapping[str, Any] | None:
+    """Return a bounded, payload-free view of a static source proof."""
+
+    if not isinstance(value, Mapping) or value.get("schema_version") != (
+        "aworld.self_evolve.source_behavior_proof.v1"
+    ):
+        return None
+
+    projected: dict[str, Any] = {
+        "schema_version": "aworld.self_evolve.source_behavior_proof.v1",
+        "proven": value.get("proven") is True,
+    }
+    for key in (
+        "analyzer",
+        "expected_behavior",
+        "predicate",
+        "proof_fingerprint",
+        "path",
+    ):
+        item = value.get(key)
+        if isinstance(item, str) and item.strip():
+            projected[key] = sanitize_text(item, max_chars=240)
+
+    operation_status = value.get("operation_status")
+    if isinstance(operation_status, Mapping):
+        projected["operation_status"] = {
+            sanitize_text(str(operation), max_chars=120): status
+            for operation, status in list(operation_status.items())[:32]
+            if isinstance(status, bool)
+        }
+    for key in (
+        "missing_operations",
+        "repair_guidance",
+        "unsupported_boundary_kinds",
+    ):
+        items = value.get(key)
+        if isinstance(items, (list, tuple)):
+            projected[key] = [
+                sanitize_text(item, max_chars=240)
+                for item in items[:32]
+                if isinstance(item, str) and item.strip()
+            ]
+
+    boundaries = value.get("unsupported_boundaries")
+    if isinstance(boundaries, (list, tuple)):
+        kinds = [
+            boundary.get("kind")
+            for boundary in boundaries[:32]
+            if isinstance(boundary, Mapping)
+            and isinstance(boundary.get("kind"), str)
+            and boundary.get("kind", "").strip()
+        ]
+        if kinds:
+            projected["unsupported_boundary_kinds"] = list(dict.fromkeys(kinds))
+    return projected
 
 
 def _typed_recovery_public_projection(
