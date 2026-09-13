@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+from pathlib import Path
 
 from aworld_cli.runtime_bootstrap import RuntimeBootstrapError, bootstrap_runtime
 
@@ -35,6 +36,17 @@ def _register_run_options(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--judge-backend-ref", type=str)
     parser.add_argument("--judge-model-profile", type=str)
     parser.add_argument("--emit-trajectory", action="store_true")
+    parser.add_argument(
+        "--trajectory-output",
+        type=Path,
+        help="Write the final ATIF trajectory JSON to this path",
+    )
+    parser.add_argument(
+        "--trajectory-format",
+        choices=("atif",),
+        default="atif",
+        help="Trajectory output format (default: atif)",
+    )
 
 
 def _parse_global_evolve_options(argv) -> argparse.Namespace:
@@ -159,19 +171,23 @@ class RunTopLevelCommand:
         )
         if summary is False:
             return 1
-        if getattr(args, "emit_trajectory", False):
+        trajectory_output = getattr(args, "trajectory_output", None)
+        if getattr(args, "emit_trajectory", False) or trajectory_output is not None:
             from aworld_cli.main import _trajectory_payload_from_direct_run_summary
 
-            print(
-                json.dumps(
-                    _trajectory_payload_from_direct_run_summary(
-                        summary,
-                        prompt=args.task,
-                        agent_name=agent_name,
-                    ),
-                    ensure_ascii=False,
-                )
+            trajectory = json.dumps(
+                _trajectory_payload_from_direct_run_summary(
+                    summary,
+                    prompt=args.task,
+                    agent_name=agent_name,
+                ),
+                ensure_ascii=False,
             )
+            if trajectory_output is not None:
+                trajectory_output.parent.mkdir(parents=True, exist_ok=True)
+                trajectory_output.write_text(trajectory + "\n", encoding="utf-8")
+            if getattr(args, "emit_trajectory", False):
+                print(trajectory)
         return 0
 
     def _resolve_agent_name(self, args) -> str | None:

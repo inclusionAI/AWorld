@@ -1588,3 +1588,50 @@ async def test_run_chat_session_starts_goal_prompt_in_a_new_session(
         == "Build a REST API"
     )
     assert runtime._plugin_state_store.handle(old_session_state_path).read() == {}
+
+
+def test_run_top_level_command_writes_atif_trajectory(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    async def fake_run_direct_mode(**kwargs):
+        return {
+            "results": [
+                {
+                    "iteration": 1,
+                    "response": "parsed",
+                    "completed": True,
+                    "success": True,
+                }
+            ]
+        }
+
+    monkeypatch.setattr(
+        "aworld_cli.top_level_commands.run_cmd.bootstrap_runtime", lambda **kwargs: None
+    )
+    monkeypatch.setattr(main_module, "_resolve_agent_dirs", lambda agent_dirs: [])
+    monkeypatch.setattr(main_module, "_run_direct_mode", fake_run_direct_mode)
+    output = tmp_path / "agent" / "trajectory.json"
+    args = SimpleNamespace(
+        task="Parse with FileX",
+        agent="Aworld",
+        skill=["filex"],
+        max_runs=1,
+        max_cost=None,
+        max_duration=None,
+        completion_signal=None,
+        completion_threshold=3,
+        non_interactive=True,
+        session_id=None,
+        remote_backend=None,
+        agent_dir=None,
+        agent_file=None,
+        skill_path=["/opt/runtime-agent/skills"],
+        env_file=".env",
+        emit_trajectory=False,
+        trajectory_output=output,
+        trajectory_format="atif",
+    )
+
+    assert RunTopLevelCommand().run(args, SimpleNamespace(argv=["aworld-cli", "run"])) == 0
+    payload = json.loads(output.read_text(encoding="utf-8"))
+    assert payload["trajectory"][0]["action"]["content"] == "parsed"
