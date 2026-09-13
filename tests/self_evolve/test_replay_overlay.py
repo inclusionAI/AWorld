@@ -8509,8 +8509,10 @@ async def test_aworld_cli_replay_executor_requests_machine_readable_trajectory_a
     assert "use the literal quoted variables" in task_text
     assert '"selected_fields"' in task_text
     assert "compacted" in task_text
-    assert "recorded prior task context fully answers a follow-up" in task_text
-    assert "Do not re-fetch sources already summarized" in task_text
+    assert "Metadata-only entries are advisory" in task_text
+    assert "cannot be the sole evidence" in task_text
+    assert "recorded prior context answers a follow-up" in task_text
+    assert "Do not re-fetch summarized sources" in task_text
     assert "Self-evolve replay runtime contract" in task_text
     assert "Required task-plane actions are allowed" in task_text
     assert "control-plane actions require explicit task authorization" in task_text
@@ -8532,6 +8534,10 @@ async def test_aworld_cli_replay_executor_requests_machine_readable_trajectory_a
     assert captured["kwargs"]["env"]["AWORLD_REPLAY_ARTIFACT_DIR"] == str(
         tmp_path / "artifacts" / "evidence"
     )
+    assert captured["kwargs"]["env"]["AGENT_BROWSER_SESSION"].startswith(
+        "aworld-replay-"
+    )
+    assert captured["kwargs"]["env"]["AGENT_BROWSER_IDLE_TIMEOUT_MS"] == "10000"
     assert captured["kwargs"]["env"]["AWORLD_REPLAY_EVIDENCE_MANIFEST"] == str(
         tmp_path / "artifacts" / "evidence" / "evidence_manifest.jsonl"
     )

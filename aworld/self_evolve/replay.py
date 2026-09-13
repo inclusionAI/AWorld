@@ -8259,6 +8259,14 @@ class AWorldCliReplayExecutor:
                 ),
                 "AWORLD_REPLAY_ARTIFACT_DIR": str(evidence_dir),
                 "AWORLD_REPLAY_EVIDENCE_MANIFEST": str(evidence_manifest),
+                # Browser daemons outlive the one-shot CLI that launches them.
+                # Isolate every replay and make abandoned sessions self-cleaning
+                # so cancelled campaigns cannot exhaust host process resources.
+                "AGENT_BROWSER_SESSION": (
+                    "aworld-replay-"
+                    + hashlib.sha256(str(artifact_dir).encode("utf-8")).hexdigest()[:20]
+                ),
+                "AGENT_BROWSER_IDLE_TIMEOUT_MS": "10000",
                 "AWORLD_SELF_EVOLVE_REPLAY_ARTIFACT_DIR": str(evidence_dir),
                 "AWORLD_SELF_EVOLVE_EVIDENCE_MANIFEST": str(evidence_manifest),
                 "AWORLD_SELF_EVOLVE_TASK_RESPONSE_PATH": str(
@@ -12324,11 +12332,11 @@ Self-evolve replay evidence requirements:
 - In shell, use the literal quoted variables "$AWORLD_REPLAY_ARTIFACT_DIR" and "$AWORLD_REPLAY_EVIDENCE_MANIFEST"; replay paths change after resume.
 - Before parsing an HTTP or browser response, redirect the complete response to a regular local file under "$AWORLD_REPLAY_ARTIFACT_DIR"; derive every bounded excerpt or selected field from that saved file.
 - Inspect only explicit byte-bounded excerpts or selected fields; `head -N` is not a byte bound.
-- Append one compact JSON line per source to AWORLD_REPLAY_EVIDENCE_MANIFEST ({evidence_manifest}). For a file use exactly {{"source_id":"...","extraction_method":"...","artifact_path":"...","selected_fields":{{"field":"bounded value"}}}}; for non-file evidence use exactly {{"source_id":"...","evidence_type":"metadata","extraction_method":"...","metadata":{{"field":"bounded value"}}}}.
+- Append one JSON line/source to AWORLD_REPLAY_EVIDENCE_MANIFEST ({evidence_manifest}). File form: {{"source_id":"...","extraction_method":"...","artifact_path":"...","selected_fields":{{"field":"bounded value"}}}}. Metadata-only entries are advisory and cannot be the sole evidence; persist and manifest a bounded source/context/claim file.
 - Every `artifact_path` must name an existing regular local file under "$AWORLD_REPLAY_ARTIFACT_DIR". Never put a URL, an `AWORLD_REPLAY_ENDPOINT_*` value, or a shell-variable placeholder in `artifact_path`.
 - A replay endpoint body is the complete captured source. If abrupt or truncated, record the missing remainder, not a transport failure. After one narrower retry, never refetch it or switch to a browser; finalize supported claims and gaps. Source incompleteness is terminal.
 - Reject compacted, invalid, or unbounded tool output; retry narrowly.
-- If recorded prior task context fully answers a follow-up, treat it as evidence and finalize without tools. Do not re-fetch sources already summarized there unless freshness is requested.
+- If recorded prior context answers a follow-up, persist a bounded context/claim file, manifest it, and finalize without retrieval. Do not re-fetch summarized sources unless freshness is requested.
 - Persist valid samples and manifest entries immediately. Stop when all required subjects are covered or one different bounded attempt proves one unavailable. Return artifact paths, coverage counts, missing subjects, and a claim ledger; omit unsupported claims.
 """.strip()
 
