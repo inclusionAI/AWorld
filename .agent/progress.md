@@ -46,6 +46,7 @@ No ParseBench-specific command, dataset loader, gateway client, verifier, or sco
 
 - The AWorld Harbor harness runs generic `aworld-cli run --skill filex`, injects the FileX skill path, model proxy environment, ATIF trajectory output, workspace root, and `/logs/artifacts` root.
 - Runtime images bundle pinned AWorld, aworld-cli, and FileX wheels plus the FileX skill and required Paddle/OpenCV assets.
+- The immutable Runtime image also supplies one pinned official scorer executable as a verifier dependency; Dataset-owned code fixes its identity and invokes it. This avoids duplicating the scorer in every Task archive and does not add scoring branches to the harness.
 - The harness does not detect ParseBench tasks and does not import Dataset/verifier code.
 
 ## Local Verification
