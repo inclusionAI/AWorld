@@ -2,14 +2,19 @@
 
 ## Architecture Overview
 
-The integration keeps three ownership boundaries.
-AWorld owns ParseBench download/prepare logic, the FileX inference adapter, official score reduction, and the user-facing CLI.
-mcpgateway owns executable-dataset validation and Harbor/Arca orchestration without learning ParseBench-specific scoring semantics.
-lingguang-bench-runtime owns the immutable AWorld/FileX runtime image, harness configuration, protected model-profile injection, and artifact collection.
+The corrected integration keeps four ownership boundaries.
+lingguang-bench-client owns ParseBench source synchronization, task authoring,
+the private verifier, deterministic executable Dataset ZIP construction, and
+the upload/run user workflow. AWorld/FileX owns only the independent FileX CLI
+and its reusable skill. mcpgateway owns executable-dataset validation,
+publication, and Harbor/Arca orchestration without learning ParseBench scoring
+semantics. lingguang-bench-runtime owns the immutable AWorld/FileX runtime,
+generic AWorld harness, protected model-profile injection, and artifact
+collection.
 
 The full data flow is:
 
-`ParseBench@pinned revision -> offline converter -> yolo-dataset-package/v2 -> mcpgateway catalog/publish -> Harbor immutable plan -> Arca agent_only runtime -> aworld-cli/FileX -> private official verifier -> detailed metric artifact + scalar reward -> mcpgateway results -> aworld-cli official reducer/report`.
+`ParseBench@pinned revision -> lingguang-bench-client Dataset project -> yolo-dataset-package/v2 -> mcpgateway upload/publish -> Harbor immutable plan -> Arca agent_only runtime -> generic aworld-cli + packaged FileX skill -> FileX CLI -> private Dataset verifier -> detailed metric artifact + scalar reward -> mcpgateway generic results`.
 
 ## Branch and Worktree Matrix
 
@@ -53,7 +58,7 @@ The full data flow is:
 - **Acceptance criteria:** local verifier and official scorer produce identical fixture results.
 - **Status:** completed; the locked external scorer boundary and exact dimension-first reducer parity are implemented.
 
-### Milestone 2: FileX and aworld-cli benchmark workflow
+### Milestone 2: FileX capability and generic AWorld skill workflow
 
 **Goal:** Run and report ParseBench deterministically through FileX.
 **Depends on:** Milestone 1.
@@ -67,14 +72,14 @@ The full data flow is:
 - **Acceptance criteria:** each fixture yields scorer-compatible output and reproducible metadata.
 - **Status:** completed; FileX emits versioned Markdown/layout/provider provenance and preserves chart-recognition output.
 
-#### Task 2.2: Add `aworld-cli benchmark parsebench`
+#### Task 2.2: Integrate FileX through the generic AWorld skill interface
 
 - **Parallel:** yes after the adapter interface is fixed.
-- **Files:** CLI command/plugin, local runner, gateway client, checkpoint/report modules, tests/docs.
-- **Approach:** Provide `prepare`, `run`, `resume/status`, and `report` behavior with local and gateway backends; keep this separate from the generic LLM-judge evaluator.
-- **Tests:** parser behavior, invalid option combinations, checkpoint/resume, mocked gateway pagination/failures, report schema and exit codes.
-- **Acceptance criteria:** a local fixture run and mocked gateway run produce the same official report.
-- **Status:** completed; `prepare`, `submit`, `status`, `report`, `run-task`, and `verify-task` are available under `aworld-cli benchmark parsebench`.
+- **Files:** existing `aworld-skills/filex`, generic AWorld CLI surface, Runtime AWorld harness.
+- **Approach:** Keep FileX as an independent CLI and reusable skill; invoke it through `aworld-cli run --skill filex` without teaching AWorld about ParseBench.
+- **Tests:** skill discovery, CLI availability, generic harness command construction, protected model environment mapping.
+- **Acceptance criteria:** Arca's AWorld harness can load the FileX skill and run a Dataset-authored instruction.
+- **Status:** completed; the dedicated ParseBench CLI was removed and Runtime now uses only the generic skill path.
 
 ### Milestone 3: mcpgateway Harbor/Arca integration
 

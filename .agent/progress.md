@@ -2,8 +2,28 @@
 
 ## Current Status
 
-**Phase:** Complete; ready for handoff.
-**Outcome:** The ParseBench dataset, FileX execution, aworld-cli lifecycle, generic mcpgateway orchestration, and Runtime/Arca packaging capabilities are implemented on three independent branches. Local acceptance intentionally used fixtures and a few representative tasks rather than the full 2,078-task campaign.
+**Phase:** Architecture correction implemented; validation and final review in progress.
+**Outcome:** The first implementation proved the underlying contracts, but its
+ParseBench-specific `aworld-cli benchmark` surface crossed the clarified module
+boundary. The accepted target is now: lingguang-bench-client authors the
+standalone executable Dataset ZIP, mcpgateway uploads/publishes and dispatches
+it, and a generic AWorld harness in Arca discovers the packaged FileX skill and
+invokes the independent FileX CLI. Local acceptance remains intentionally
+bounded to fixtures and representative tasks rather than the full 2,078-task
+campaign.
+
+### Decision: move ParseBench ownership out of aworld-cli
+
+- **Options considered:** retain the dedicated CLI workflow; wrap it with a
+  FileX skill; or move dataset/verifier ownership to lingguang-bench-client and
+  use the generic AWorld harness.
+- **Chose:** the client-owned Dataset ZIP plus generic AWorld/FileX skill path.
+- **Rationale:** mcpgateway already defines and implements the executable
+  Dataset protocol, while lingguang-bench-client latest `origin/master` already
+  provides deterministic v2 packaging, upload, publication, submission, and
+  result commands. ParseBench is a Dataset concern, not an aworld-cli command.
+- **Trade-off:** deterministic scorer/authoring code must move into the Dataset
+  project, and Runtime health checks must stop importing AWorld benchmark code.
 
 ## Frozen Implementation Revisions
 
@@ -17,14 +37,20 @@ The final AWorld documentation commit is intentionally allowed to follow the imp
 
 ## Delivered Capabilities
 
-### AWorld, FileX, and aworld-cli
+### lingguang-bench-client
 
 - Pinned ParseBench dataset revision `2805a1d940f95a203e0ae4b88be9934f7765b3fc` and scorer revision `34b73455032797754f6ed62e14c27a8b5423d11e`.
 - Validated the eight-field upstream schema and content-bound revision evidence.
 - Aggregated 169,011 rules into 2,078 deterministic parse executions while preserving private rules, dimensions, source identity, checksums, and task provenance.
 - Added fixture, smoke, explicit task/dimension selection, and full package modes; smoke remains the default.
-- Added `aworld-cli benchmark parsebench` lifecycle commands: `prepare`, `submit`, `status`, `report`, `run-task`, and `verify-task`.
-- Added durable idempotency/resume state, exact dataset-acceptance binding, paginated gateway collection, and fail-closed publication provenance.
+- Owns the pinned ParseBench converter, task contracts, private verifier, scorer bridge, and deterministic standalone `yolo-dataset-package/v2` ZIP.
+- Added `lingbench-parsebench` for offline ZIP authoring and generic `lingbench upload-package` for uploading and publishing those exact bytes.
+- Embeds the verifier runtime into each Task archive, so verifier execution does not import AWorld or call an AWorld benchmark command.
+
+### AWorld, FileX, and aworld-cli
+
+- Removed the ParseBench-specific AWorld package, benchmark plugin, lifecycle commands, and gateway client after migrating Dataset-owned logic to lingguang-bench-client.
+- Retained only reusable FileX parsing improvements, output evidence, chart support, the independent FileX CLI, and the existing first-party FileX skill.
 - Added FileX result schema v2 with provider/version/model identity, immutable input/output digests, Markdown, Document IR/layout sidecar, and official verifier artifacts.
 - Enabled chart recognition for ParseBench and mapped the complete PP-DocLayoutV3 output-label set, including chart, formula, image, header/footer, footnote, and vertical-text variants.
 - Selected protected logical VLM profile `default__gemini-3.1-pro-preview`, resolving to `gemini-3.1-pro-preview`; model credentials remain environment-only.
@@ -41,7 +67,8 @@ The final AWorld documentation commit is intentionally allowed to follow the imp
 - Bundled AWorld, aworld-cli, and FileX wheels built from AWorld implementation commit `3b1bfec7937a0fe2f0da2fc817b15e118b43a5c7`.
 - Recorded wheel SHA-256 values and a Python 3.12 resolver constraint set for MCP, FastMCP, PaddleOCR/PaddleX/PaddlePaddle, OpenCV, NumPy, Pillow, and aiohttp.
   The final wheel hashes are `f88a1c3823d59ec439d1c82ca75f28ffe32e2303b7431e1e569d370e0319d2db` (AWorld), `e2696363f7540560be1f29f21e85f9102dc0b7680ce6c3a3871caf8998013689` (aworld-cli), and `0068691d0d840653bb5538ad45722e5868a3bdeeb2326e577a16a53659e53020` (FileX).
-- Installed both `aworld-cli` and `filex` wrappers in normal and Arca images and extended the Harbor AWorld adapter to verify both surfaces.
+- Installed both `aworld-cli` and `filex` wrappers plus the FileX skill in normal and Arca images.
+- The Harbor AWorld adapter now always uses the generic `aworld-cli run --skill filex` path; it has no ParseBench task detection or benchmark subcommand.
 - Added required native OpenCV/Paddle libraries and a build-time import plus no-download PaddleOCR-VL initialization health check with chart recognition enabled.
 - Added a reviewed PP-DocLayoutV3 model manifest with exact archive/member sizes and hashes. The 126 MiB model archive remains ignored by Git.
 - Normal releases materialize and inject only that exact verified archive into the immutable source ZIP. Clean ACI builds require an internal non-secret HTTPS artifact URL and fail closed if it is absent or does not match the manifest.
