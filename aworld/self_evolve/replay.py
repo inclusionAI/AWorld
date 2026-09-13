@@ -6904,7 +6904,7 @@ def _timeout_termination_diagnostics(
     request: ReplayExecutionRequest,
     evidence_metrics: Mapping[str, Any],
     *,
-    default_tool_call_limit: int,
+    max_tool_calls: int,
 ) -> dict[str, Any]:
     """Describe the exhausted execution envelope without inferring blame."""
 
@@ -6916,7 +6916,6 @@ def _timeout_termination_diagnostics(
         if isinstance(raw_used, (int, float)) and not isinstance(raw_used, bool)
         else 0
     )
-    max_tool_calls = request.max_tool_calls or default_tool_call_limit
     evidence_phase = str(
         evidence_metrics.get("evidence_runtime_policy_phase") or "collecting"
     )
@@ -8138,6 +8137,7 @@ def _replay_execution_variant_role(request: ReplayExecutionRequest) -> str:
 
 class AWorldCliReplayExecutor:
     _DEFAULT_TOOL_CALL_LIMIT = 24
+    _MAX_COLLECTION_TOOL_CALL_LIMIT = 8
     _DEFAULT_RESERVED_OUTPUT_TOKENS = 4096
     _DEFAULT_ARTIFACT_FILE_LIMIT = 8
     _DEFAULT_ARTIFACT_BYTE_LIMIT = 2_000_000
@@ -8245,6 +8245,10 @@ class AWorldCliReplayExecutor:
         if request.max_cost_usd is not None:
             command.extend(["--max-cost", str(request.max_cost_usd)])
 
+        effective_tool_call_limit = min(
+            request.max_tool_calls or self._DEFAULT_TOOL_CALL_LIMIT,
+            self._MAX_COLLECTION_TOOL_CALL_LIMIT,
+        )
         execution_environment = _with_loopback_proxy_bypass(
             {
                 **os.environ,
@@ -8266,7 +8270,7 @@ class AWorldCliReplayExecutor:
                     "aworld-replay-"
                     + hashlib.sha256(str(artifact_dir).encode("utf-8")).hexdigest()[:20]
                 ),
-                "AGENT_BROWSER_IDLE_TIMEOUT_MS": "10000",
+                "AGENT_BROWSER_IDLE_TIMEOUT_MS": "60000",
                 "AWORLD_SELF_EVOLVE_REPLAY_ARTIFACT_DIR": str(evidence_dir),
                 "AWORLD_SELF_EVOLVE_EVIDENCE_MANIFEST": str(evidence_manifest),
                 "AWORLD_SELF_EVOLVE_TASK_RESPONSE_PATH": str(
@@ -8298,12 +8302,14 @@ class AWorldCliReplayExecutor:
                 "AWORLD_LOG_PATH": str(artifact_dir / "logs"),
                 "AWORLD_TRAJECTORY_LOG_DISABLED": "1",
                 "AWORLD_TOOL_CALL_LIMIT": str(
-                    request.max_tool_calls or self._DEFAULT_TOOL_CALL_LIMIT
+                    effective_tool_call_limit
                 ),
                 "AWORLD_PROMPT_BUDGET_RESERVED_OUTPUT_TOKENS": str(
                     self._DEFAULT_RESERVED_OUTPUT_TOKENS
                 ),
-                "AWORLD_MCP_STDIO_INHERIT_ENV_PREFIXES": "AWORLD_REPLAY_",
+                "AWORLD_MCP_STDIO_INHERIT_ENV_PREFIXES": (
+                    "AWORLD_REPLAY_,AGENT_BROWSER_"
+                ),
             }
         )
         for reserved_name in _REPLAY_TRUST_RESERVED_ENV:
@@ -8387,7 +8393,7 @@ class AWorldCliReplayExecutor:
             termination_diagnostics = _timeout_termination_diagnostics(
                 request,
                 evidence_metrics,
-                default_tool_call_limit=self._DEFAULT_TOOL_CALL_LIMIT,
+                max_tool_calls=effective_tool_call_limit,
             )
             if getattr(exc, "evidence_finalization_deadline", False):
                 termination_diagnostics.update(
@@ -12330,12 +12336,13 @@ _REPLAY_EVIDENCE_POLICY = """
 Self-evolve replay evidence requirements:
 - Preserve the task and use artifact-first evidence. Save large/unknown output under AWORLD_REPLAY_ARTIFACT_DIR ({artifact_dir}); never stream full pages, documents, JSON, or logs.
 - In shell, use the literal quoted variables "$AWORLD_REPLAY_ARTIFACT_DIR" and "$AWORLD_REPLAY_EVIDENCE_MANIFEST"; replay paths change after resume.
-- Before parsing an HTTP or browser response, redirect the complete response to a regular local file under "$AWORLD_REPLAY_ARTIFACT_DIR"; derive every bounded excerpt or selected field from that saved file.
+- In one tool call, redirect the complete response to a local artifact and append its file manifest entry; then parse bounded fields. Never generate helper scripts.
 - Inspect only explicit byte-bounded excerpts or selected fields; `head -N` is not a byte bound.
 - Append one JSON line/source to AWORLD_REPLAY_EVIDENCE_MANIFEST ({evidence_manifest}). File form: {{"source_id":"...","extraction_method":"...","artifact_path":"...","selected_fields":{{"field":"bounded value"}}}}. Metadata-only entries are advisory and cannot be the sole evidence; persist and manifest a bounded source/context/claim file.
 - Every `artifact_path` must name an existing regular local file under "$AWORLD_REPLAY_ARTIFACT_DIR". Never put a URL, an `AWORLD_REPLAY_ENDPOINT_*` value, or a shell-variable placeholder in `artifact_path`.
 - A replay endpoint body is the complete captured source. If abrupt or truncated, record the missing remainder, not a transport failure. After one narrower retry, never refetch it or switch to a browser; finalize supported claims and gaps. Source incompleteness is terminal.
 - Reject compacted, invalid, or unbounded tool output; retry narrowly.
+- Collection hard limit: 8 tool calls. Persist evidence and finalize before call 8; do not chase optional completeness.
 - If recorded prior context answers a follow-up, persist a bounded context/claim file, manifest it, and finalize without retrieval. Do not re-fetch summarized sources unless freshness is requested.
 - Persist valid samples and manifest entries immediately. Stop when all required subjects are covered or one different bounded attempt proves one unavailable. Return artifact paths, coverage counts, missing subjects, and a claim ledger; omit unsupported claims.
 """.strip()

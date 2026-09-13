@@ -8482,7 +8482,7 @@ async def test_aworld_cli_replay_executor_requests_machine_readable_trajectory_a
             artifact_dir=str(tmp_path / "artifacts"),
             skill_names=("demo",),
             agent="Aworld",
-            max_tool_calls=8,
+            max_tool_calls=48,
         )
     )
 
@@ -8498,7 +8498,9 @@ async def test_aworld_cli_replay_executor_requests_machine_readable_trajectory_a
     assert task_text.startswith("Replay this task")
     assert "Self-evolve replay evidence requirements" in task_text
     assert "artifact-first" in task_text
-    assert "redirect the complete response to a regular local file" in task_text
+    assert "redirect the complete response to a local artifact" in task_text
+    assert "append its file manifest entry" in task_text
+    assert "Never generate helper scripts" in task_text
     assert "Never put a URL" in task_text
     assert "AWORLD_REPLAY_ENDPOINT_*" in task_text
     assert "complete captured source" in task_text
@@ -8513,6 +8515,7 @@ async def test_aworld_cli_replay_executor_requests_machine_readable_trajectory_a
     assert "cannot be the sole evidence" in task_text
     assert "recorded prior context answers a follow-up" in task_text
     assert "Do not re-fetch summarized sources" in task_text
+    assert "Collection hard limit: 8 tool calls" in task_text
     assert "Self-evolve replay runtime contract" in task_text
     assert "Required task-plane actions are allowed" in task_text
     assert "control-plane actions require explicit task authorization" in task_text
@@ -8537,7 +8540,7 @@ async def test_aworld_cli_replay_executor_requests_machine_readable_trajectory_a
     assert captured["kwargs"]["env"]["AGENT_BROWSER_SESSION"].startswith(
         "aworld-replay-"
     )
-    assert captured["kwargs"]["env"]["AGENT_BROWSER_IDLE_TIMEOUT_MS"] == "10000"
+    assert captured["kwargs"]["env"]["AGENT_BROWSER_IDLE_TIMEOUT_MS"] == "60000"
     assert captured["kwargs"]["env"]["AWORLD_REPLAY_EVIDENCE_MANIFEST"] == str(
         tmp_path / "artifacts" / "evidence" / "evidence_manifest.jsonl"
     )
@@ -8563,7 +8566,7 @@ async def test_aworld_cli_replay_executor_requests_machine_readable_trajectory_a
     ] == "4096"
     assert captured["kwargs"]["env"][
         "AWORLD_MCP_STDIO_INHERIT_ENV_PREFIXES"
-    ] == "AWORLD_REPLAY_"
+    ] == "AWORLD_REPLAY_,AGENT_BROWSER_"
     assert captured["kwargs"]["start_new_session"] is True
     runtime_root = captured["runtime_root"]
     assert isinstance(runtime_root, Path)
@@ -11341,7 +11344,7 @@ async def test_aworld_cli_replay_executor_decodes_timeout_output_bytes(
         "termination_budget_axis": "wall_time",
         "timeout_seconds": 1,
         "max_steps": None,
-        "max_tool_calls": 24,
+        "max_tool_calls": 8,
         "tool_calls_used": 0,
         "terminal_synthesis_attempted": False,
         "evidence_phase": "collecting",
@@ -11361,7 +11364,7 @@ async def test_aworld_cli_replay_executor_decodes_timeout_output_bytes(
             "termination_budget_axis": "wall_time",
             "timeout_seconds": 1,
             "max_steps": None,
-            "max_tool_calls": 24,
+            "max_tool_calls": 8,
             "tool_calls_used": 0,
             "terminal_synthesis_attempted": False,
             "evidence_phase": "collecting",
