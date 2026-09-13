@@ -173,6 +173,27 @@ class PairedReplayExecutionResult:
         return self.replay_result, self.replay_dataset, self.gate
 
 
+def _candidate_requires_service_intervention_for_stage(
+    candidate: CandidateVariant,
+    *,
+    progress_stage: str,
+) -> bool:
+    """Require support-service exercise only in candidate qualification.
+
+    Authoritative candidate replay must prove that candidate-owned replay
+    support is actually used.  Independent regression suites instead verify
+    the already-qualified candidate on synthetic target-contract cases, which
+    may intentionally need no external service.  Requiring a service trace in
+    those cases turns successful, skill-attested regression executions into a
+    framework-owned false rejection.
+    """
+
+    return bool(
+        progress_stage != "regression_replay"
+        and _candidate_requires_task_plane_intervention(candidate)
+    )
+
+
 @dataclass(frozen=True)
 class PairedReplayExecutionController:
     """Executes paired replay without reading Runner state."""
@@ -209,7 +230,10 @@ class PairedReplayExecutionController:
             else config.replay_backend
         )
         candidate_requires_service_intervention = (
-            _candidate_requires_task_plane_intervention(selected_candidate)
+            _candidate_requires_service_intervention_for_stage(
+                selected_candidate,
+                progress_stage=progress_stage,
+            )
         )
         candidate_requires_skill_activation = bool(
             _candidate_changes_target_behavior(selected_candidate)

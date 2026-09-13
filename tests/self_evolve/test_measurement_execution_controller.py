@@ -36,7 +36,11 @@ from aworld.self_evolve.measurement import MeasurementPolicyMode
 from aworld.self_evolve.optimizers.base import CandidateSourceDisposition
 from aworld.self_evolve.replay import CandidateReplayRequest
 from aworld.self_evolve.store import FilesystemSelfEvolveStore
-from aworld.self_evolve.types import CandidateVariant, SelfEvolveTargetRef
+from aworld.self_evolve.types import (
+    CandidateFileDelta,
+    CandidateVariant,
+    SelfEvolveTargetRef,
+)
 
 
 def _config(*, replay_enabled: bool) -> PairedReplayExecutionConfig:
@@ -71,6 +75,31 @@ def _request() -> PairedReplayExecutionRequest:
         ),
         apply_policy="proposal",
         source_disposition=CandidateSourceDisposition(),
+    )
+
+
+def test_regression_replay_does_not_require_support_service_intervention() -> None:
+    candidate = CandidateVariant(
+        candidate_id="candidate-support-only",
+        target=SelfEvolveTargetRef("skill", "demo", None),
+        content="# Demo\n",
+        rationale="change replay support",
+        files=(
+            CandidateFileDelta(
+                path="replay/runtime.py",
+                operation="upsert",
+                content="print('runtime')\n",
+            ),
+        ),
+    )
+
+    assert execution_module._candidate_requires_service_intervention_for_stage(
+        candidate,
+        progress_stage="candidate_replay",
+    )
+    assert not execution_module._candidate_requires_service_intervention_for_stage(
+        candidate,
+        progress_stage="regression_replay",
     )
 
 
