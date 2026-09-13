@@ -107,6 +107,22 @@ This model choice is aligned with the evaluator configuration in
 YAML value: the mcpgateway service process must receive it through
 `MATRIXLLM_API_KEY`. A missing credential fails route deployment closed.
 
+The deployed image-transfer `reward_server` is also part of the trusted
+boundary even though its implementation is not stored in these three
+repositories. It must accept the private, attempt-bound dataset-image
+capability, fetch the content-addressed `oss://` source itself, verify the
+declared source-material SHA-256, and echo that exact digest in its READY
+result. mcpgateway rejects a missing or different attestation and does not
+persist a presigned source URL. Public run, result, report, event, cancel, and
+dashboard APIs must not expose or control these internal transfer runs.
+
+Caller and receiver deployments must inject the same dedicated
+`DATASET_IMAGE_S2S_CAPABILITY_SECRET` and
+`DATASET_IMAGE_S2S_CAPABILITY_ISSUER`. The secret must be at least 32 bytes,
+must not reuse `JWT_SECRET`, and is intentionally blank in local, pre, and
+production YAML. Enabling Dataset image builds without a valid binding stops
+service startup instead of falling back to public authentication.
+
 The CLI reads its control-plane connection values from environment variables:
 
 ```bash
@@ -270,6 +286,13 @@ verifier-capable image is built, audited, and pushed, so all current full
 packages and reports fail closed as non-publishable. They remain suitable for
 bounded integration runs. A package made with `--allow-mutable-local-image` is
 also permanently non-publishable.
+
+Before setting `PINNED_PARSEBENCH_RUNTIME_IMAGE`, the deployment acceptance
+receipt must additionally be versioned to bind every selected task's actual
+immutable image digest and runtime type, not only the canonical plan checksum.
+Until that signed per-task binding and the image-transfer attestation above are
+deployed and audited, formal publication remains disabled even when a local or
+staging campaign completes successfully.
 
 Submitting every task in the full package has a second, independent opt-in:
 
