@@ -8501,6 +8501,9 @@ async def test_aworld_cli_replay_executor_requests_machine_readable_trajectory_a
     assert "redirect the complete response to a regular local file" in task_text
     assert "Never put a URL" in task_text
     assert "AWORLD_REPLAY_ENDPOINT_*" in task_text
+    assert "complete captured source" in task_text
+    assert "Source incompleteness is terminal" in task_text
+    assert "switch to a browser" in task_text
     assert "`head -N` is not a byte bound" in task_text
     assert "explicit byte-bounded excerpts or selected fields" in task_text
     assert "use the literal quoted variables" in task_text

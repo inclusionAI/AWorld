@@ -12326,7 +12326,8 @@ Self-evolve replay evidence requirements:
 - Inspect only explicit byte-bounded excerpts or selected fields; `head -N` is not a byte bound.
 - Append one compact JSON line per source to AWORLD_REPLAY_EVIDENCE_MANIFEST ({evidence_manifest}). For a file use exactly {{"source_id":"...","extraction_method":"...","artifact_path":"...","selected_fields":{{"field":"bounded value"}}}}; for non-file evidence use exactly {{"source_id":"...","evidence_type":"metadata","extraction_method":"...","metadata":{{"field":"bounded value"}}}}.
 - Every `artifact_path` must name an existing regular local file under "$AWORLD_REPLAY_ARTIFACT_DIR". Never put a URL, an `AWORLD_REPLAY_ENDPOINT_*` value, or a shell-variable placeholder in `artifact_path`.
-- Reject compacted, truncated, invalid, or unbounded evidence; retry once with a narrower extraction.
+- A replay endpoint body is the complete captured source. If abrupt or truncated, record the missing remainder, not a transport failure. After one narrower retry, never refetch it or switch to a browser; finalize supported claims and gaps. Source incompleteness is terminal.
+- Reject compacted, invalid, or unbounded tool output; retry narrowly.
 - Persist every valid artifact-backed sample and its manifest entry immediately. Continue only until every evidence subject required by the user task is covered (for example, every item in a comparison), or until one materially different bounded attempt establishes that a subject is unavailable. Then stop collecting and return the answer with artifact paths, subject coverage counts, explicit missing subjects, and a concise claim ledger. Omit unsupported claims.
 """.strip()
 
