@@ -5,9 +5,9 @@ from __future__ import annotations
 import asyncio
 import importlib.metadata
 import json
-import re
 import logging
 import os
+import re
 import threading
 import time
 from dataclasses import dataclass, field
@@ -366,7 +366,7 @@ class PaddleOcrPdfProvider:
                             (time.monotonic() - started_at) * 1000, 2
                         )
                 return raw_results, retry_count, first_batch_elapsed_ms
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:
                 if retry_count >= max_retries or not self._is_retryable_error(exc):
                     raise
                 retry_count += 1
@@ -470,7 +470,7 @@ class PaddleOcrPdfProvider:
                     return merged.strip()
                 if isinstance(merged, dict):
                     return str(merged.get("markdown_texts") or "").strip()
-            except Exception:  # noqa: BLE001
+            except Exception:
                 logger.debug(
                     "paddle_ocr_vl concatenate_markdown_pages failed", exc_info=True
                 )
@@ -705,6 +705,12 @@ class PaddleOcrPdfProvider:
                 "",
             ):
                 return self._env_content[candidate]
+        environment_value = os.getenv(f"FILEX_PADDLE_OCR_{key.upper()}")
+        if environment_value not in (None, ""):
+            try:
+                return json.loads(environment_value)
+            except json.JSONDecodeError:
+                return environment_value
         return None
 
     def _str_option(self, key: str, default: str) -> str:
@@ -723,7 +729,15 @@ class PaddleOcrPdfProvider:
 
     def _gateway_vllm_config(self) -> dict[str, Any]:
         config = self._env_content.get("gateway_vllm")
-        return config if isinstance(config, dict) else {}
+        resolved = dict(config) if isinstance(config, dict) else {}
+        for key, environment_name in (
+            ("base_url", "GATEWAY_VLLM_BASE_URL"),
+            ("model_name", "GATEWAY_VLLM_MODEL_NAME"),
+        ):
+            environment_value = os.getenv(environment_name)
+            if key not in resolved and environment_value:
+                resolved[key] = environment_value
+        return resolved
 
     @staticmethod
     def _resolve_gateway_vllm_api_key() -> str:

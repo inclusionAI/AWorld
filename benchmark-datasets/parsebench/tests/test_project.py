@@ -8,7 +8,6 @@ from pathlib import Path
 
 import tomllib
 import yaml
-
 from parsebench_dataset.contracts import PINNED_PARSEBENCH_CONTRACT
 from parsebench_dataset.project import materialize_project
 
@@ -103,9 +102,7 @@ def _fixture(tmp_path: Path) -> tuple[Path, object]:
     for source in sorted(path for path in exported.rglob("*") if path.is_file()):
         content = source.read_bytes()
         if source.suffix == ".jsonl":
-            digest = sha1(
-                f"blob {len(content)}\0".encode(), usedforsecurity=False
-            )
+            digest = sha1(f"blob {len(content)}\0".encode(), usedforsecurity=False)
             digest.update(content)
             blob_name = digest.hexdigest()
         else:
@@ -163,3 +160,35 @@ def test_materializes_stock_lingguang_project(tmp_path: Path) -> None:
     assert metadata["agent_dataset"]["params"]["required_skill"] == "filex"
     assert len(samples) == 4
     assert len(list((output / "tasks").iterdir())) == 4
+    instructions = [
+        path.read_text(encoding="utf-8")
+        for path in (output / "tasks").glob("*/instruction.md")
+    ]
+    assert instructions
+    assert all("--provider paddle_ocr --no-cache" in text for text in instructions)
+
+
+def test_local_mutable_image_is_explicitly_non_publishable(tmp_path: Path) -> None:
+    source, contract = _fixture(tmp_path)
+    output = tmp_path / "local-project"
+
+    materialize_project(
+        source,
+        output,
+        runtime_image="aworld-filex-parsebench:local",
+        runtime_service="local-docker-sandbox",
+        gateway_base_url="http://127.0.0.1:8100",
+        model_name="default__gemini-3.1-pro-preview",
+        smoke_per_dimension=1,
+        smoke_seed="local-v1",
+        allow_mutable_local_image=True,
+        contract=contract,
+    )
+
+    rows = [
+        json.loads(line)
+        for line in (output / "dataset/samples.jsonl").read_text().splitlines()
+    ]
+    scope = rows[0]["benchmark_scope"]
+    assert scope["publishable"] is False
+    assert "mutable_runtime_image" in scope["non_publishable_reasons"]

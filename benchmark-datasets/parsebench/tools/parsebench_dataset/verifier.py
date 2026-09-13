@@ -21,6 +21,8 @@ from pathlib import Path, PurePosixPath
 from typing import Any
 
 from .artifacts import (
+    DEFAULT_PROVIDER,
+    FILEX_METRICS_SCHEMA_VERSION,
     FileXAdapterError,
     ParseBenchTaskSource,
     normalize_filex_document_ir,
@@ -78,6 +80,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     print(json.dumps(outcome.result.reward_payload(), sort_keys=True))
     return 0
+
 
 _ROOT_FIELDS = frozenset(
     {
@@ -656,6 +659,7 @@ def _snapshot_artifacts(
     result_path: Path,
     markdown_path: Path,
     layout_path: Path,
+    workspace_root: Path,
 ) -> _ArtifactSnapshot:
     expected_source = ParseBenchTaskSource(
         runtime_path=ground_truth.source.runtime_path,
@@ -675,6 +679,7 @@ def _snapshot_artifacts(
                 result_bytes=initial_result_bytes,
                 markdown_path=markdown_path,
                 layout_path=layout_path,
+                workspace_root=workspace_root,
             )
         validated = validate_parsebench_artifacts(
             result_path=result_path,
@@ -730,6 +735,7 @@ def _snapshot_filex_skill_artifacts(
     result_bytes: bytes,
     markdown_path: Path,
     layout_path: Path,
+    workspace_root: Path,
 ) -> _ArtifactSnapshot:
     """Validate the generic FileX skill bundle and normalize it for ParseBench."""
 
@@ -742,8 +748,16 @@ def _snapshot_filex_skill_artifacts(
             "artifact_validation_failed", "FileX skill result is not successful"
         )
     source = result["source"]
+    try:
+        workspace_relative = ground_truth.source.runtime_path.relative_to(
+            DEFAULT_VERIFIER_WORKSPACE_ROOT
+        )
+    except ValueError:
+        expected_source_path = ground_truth.source.runtime_path
+    else:
+        expected_source_path = Path(workspace_root) / workspace_relative
     expected_source = {
-        "path": str(ground_truth.source.runtime_path),
+        "path": str(expected_source_path),
         "size": ground_truth.source.size,
         "sha256": ground_truth.source.sha256,
     }
@@ -785,10 +799,41 @@ def _snapshot_filex_skill_artifacts(
             raise TypeError("FileX metrics are missing")
         provider = metrics.get("provider")
         provider_version = metrics.get("provider_version")
-        if not isinstance(provider, str) or not provider.strip():
-            raise TypeError("FileX provider is missing")
+        if (
+            provider != DEFAULT_PROVIDER
+            or metrics.get("requested_provider") != DEFAULT_PROVIDER
+        ):
+            raise TypeError("FileX did not use the required VLM provider")
         if not isinstance(provider_version, str) or not provider_version.strip():
             raise TypeError("FileX provider version is missing")
+        if metrics.get("schema_version") != FILEX_METRICS_SCHEMA_VERSION:
+            raise TypeError("FileX metrics schema is not supported")
+        if metrics.get("requested_provider_version") != "paddleocr-vl-1.6":
+            raise TypeError("FileX provider contract is not pinned")
+        cache = metrics.get("cache")
+        if not isinstance(cache, Mapping) or cache.get("status") != "bypass":
+            raise TypeError("FileX benchmark cache was not bypassed")
+        model = metrics.get("model")
+        if (
+            not isinstance(model, Mapping)
+            or not isinstance(model.get("name"), str)
+            or not model["name"].strip()
+            or isinstance(model.get("call_count"), bool)
+            or not isinstance(model.get("call_count"), int)
+            or model["call_count"] < 1
+            or model.get("timeout_count") != 0
+        ):
+            raise TypeError("FileX did not prove a successful VLM call")
+        work = metrics.get("work")
+        error = metrics.get("error")
+        if (
+            metrics.get("status") != "success"
+            or not isinstance(work, Mapping)
+            or work.get("failed") != 0
+            or not isinstance(error, Mapping)
+            or error.get("count") != 0
+        ):
+            raise TypeError("FileX reported an incomplete VLM parse")
         normalized = normalize_filex_document_ir(
             document_ir,
             markdown=markdown,
@@ -1081,6 +1126,7 @@ def verify_parsebench_task(
         result_path=Path(result_path),
         markdown_path=Path(markdown_path),
         layout_path=Path(layout_path),
+        workspace_root=Path(workspace_root),
     )
 
     try:

@@ -11,12 +11,12 @@ from zipfile import ZipFile
 
 import yaml
 
+from .contracts import PINNED_PARSEBENCH_CONTRACT, ParseBenchContract
 from .dataset import (
     DEFAULT_RUNTIME_IMAGE,
     SmokeSelection,
     build_parsebench_executable_dataset,
 )
-from .contracts import PINNED_PARSEBENCH_CONTRACT, ParseBenchContract
 
 
 def _extract_task(content: bytes, destination: Path, expected_task_id: str) -> None:
@@ -29,7 +29,9 @@ def _extract_task(content: bytes, destination: Path, expected_task_id: str) -> N
             for member in members:
                 if member.issym() or member.islnk():
                     raise ValueError("ParseBench task archives must not contain links")
-                if member.name != expected_task_id and not member.name.startswith(prefix):
+                if member.name != expected_task_id and not member.name.startswith(
+                    prefix
+                ):
                     raise ValueError("ParseBench task archive has an invalid root")
             archive.extractall(destination.parent, filter="data")
     finally:
@@ -46,6 +48,7 @@ def materialize_project(
     model_name: str,
     smoke_per_dimension: int | None,
     smoke_seed: str,
+    allow_mutable_local_image: bool = False,
     contract: ParseBenchContract = PINNED_PARSEBENCH_CONTRACT,
 ) -> Path:
     """Create a project consumed by stock ``lingbench validate/publish/run``."""
@@ -69,6 +72,7 @@ def materialize_project(
             contract=contract,
             selection=selection,
             runtime_image=runtime_image,
+            allow_mutable_local_image=allow_mutable_local_image,
         )
         dataset_directory = output / "dataset"
         tasks_directory = output / "tasks"
@@ -171,6 +175,11 @@ def main() -> None:
     parser.add_argument("--runtime-service", required=True)
     parser.add_argument("--gateway-base-url", default="http://127.0.0.1:8100")
     parser.add_argument("--model-name", default="default__gemini-3.1-pro-preview")
+    parser.add_argument(
+        "--allow-mutable-local-image",
+        action="store_true",
+        help="allow a tagged local Runtime image and mark the Dataset non-publishable",
+    )
     parser.add_argument("--smoke-per-dimension", type=int)
     parser.add_argument("--smoke-seed", default="parsebench-smoke-v1")
     arguments = parser.parse_args()
@@ -183,6 +192,7 @@ def main() -> None:
         model_name=arguments.model_name,
         smoke_per_dimension=arguments.smoke_per_dimension,
         smoke_seed=arguments.smoke_seed,
+        allow_mutable_local_image=arguments.allow_mutable_local_image,
     )
 
 

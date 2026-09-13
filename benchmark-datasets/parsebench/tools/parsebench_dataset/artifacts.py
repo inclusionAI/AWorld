@@ -732,7 +732,9 @@ def normalize_filex_document_ir(
                 order_key = float(exposed_order)
             segment = {**bbox, "label": label}
             confidence = raw_element.get("confidence")
-            if confidence is not None:
+            if confidence is None:
+                segment["confidence"] = 1.0
+            else:
                 score = _finite_number(confidence, "confidence")
                 if not 0 <= score <= 1:
                     raise FileXAdapterError(

@@ -229,6 +229,47 @@ def test_paddle_ocr_metrics_report_effective_gateway_model() -> None:
     assert provider._model_info()["vl_rec_api_model_name"] == ("gemini-3.1-pro-preview")
 
 
+def test_paddle_ocr_uses_protected_runtime_environment(monkeypatch) -> None:
+    module = _load_provider_module()
+    monkeypatch.setenv("GATEWAY_VLLM_BASE_URL", "https://gateway.example/v1")
+    monkeypatch.setenv("GATEWAY_VLLM_MODEL_NAME", "gemini-3.1-pro-preview")
+    monkeypatch.setenv("GATEWAY_VLLM_API_KEY", "protected-key")
+    monkeypatch.setenv(
+        "FILEX_PADDLE_OCR_LAYOUT_DETECTION_MODEL_DIR", "/opt/models/layout"
+    )
+    monkeypatch.setenv("FILEX_PADDLE_OCR_USE_CHART_RECOGNITION", "true")
+    provider = module.PaddleOcrPdfProvider(env_content={}, pipeline=object())
+
+    options = provider._pipeline_kwargs()
+
+    assert options["vl_rec_server_url"] == "https://gateway.example/v1"
+    assert options["vl_rec_api_model_name"] == "gemini-3.1-pro-preview"
+    assert options["vl_rec_api_key"] == "protected-key"
+    assert options["layout_detection_model_dir"] == "/opt/models/layout"
+    assert options["use_chart_recognition"] is True
+    assert provider._model_info()["vl_rec_api_model_name"] == ("gemini-3.1-pro-preview")
+
+
+def test_request_config_takes_precedence_over_runtime_environment(monkeypatch) -> None:
+    module = _load_provider_module()
+    monkeypatch.setenv("GATEWAY_VLLM_BASE_URL", "https://runtime.example/v1")
+    monkeypatch.setenv("GATEWAY_VLLM_MODEL_NAME", "runtime-model")
+    provider = module.PaddleOcrPdfProvider(
+        env_content={
+            "gateway_vllm": {
+                "base_url": "https://request.example/v1",
+                "model_name": "request-model",
+            }
+        },
+        pipeline=object(),
+    )
+
+    options = provider._pipeline_kwargs()
+
+    assert options["vl_rec_server_url"] == "https://request.example/v1"
+    assert options["vl_rec_api_model_name"] == "request-model"
+
+
 def test_text_layer_formatting_recovers_sparse_bold_title() -> None:
     module = _load_provider_module()
     formatting = sys.modules[f"{module.__package__}.pdf.text_layer_formatting"]
@@ -431,11 +472,7 @@ def test_chart_block_uses_vlm_recognition_and_survives_markdown_and_ir(
     )
 
     module = _load_provider_module()
-    recognized_chart = (
-        "| Quarter | Revenue |\n"
-        "| --- | ---: |\n"
-        "| Q1 | 42 |"
-    )
+    recognized_chart = "| Quarter | Revenue |\n| --- | ---: |\n| Q1 | 42 |"
 
     class _ChartPipeline:
         vlm_prompts: list[str]
