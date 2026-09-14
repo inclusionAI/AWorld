@@ -420,6 +420,21 @@ def _framework_shared_failure_candidate_id(
             and details.get("failure_scope") == "shared_run"
         ):
             return None
+        raw_suite_failures = details.get("suite_failures")
+        if isinstance(raw_suite_failures, list) and any(
+            isinstance(item, Mapping)
+            and isinstance(item.get("details"), Mapping)
+            and (
+                item["details"].get("failure_class") == "candidate"
+                or item["details"].get("failure_owner") == "candidate"
+            )
+            for item in raw_suite_failures
+        ):
+            # Older aggregate regression reports could be marked framework-
+            # owned when one inconclusive suite accompanied a confirmed
+            # candidate regression.  The nested fresh negative evidence must
+            # veto an evaluator retry of that immutable candidate.
+            return None
     return candidate_id
 
 

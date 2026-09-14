@@ -7088,6 +7088,18 @@ def test_framework_retry_requires_pure_shared_evaluator_failure() -> None:
         "candidate"
     )
     assert _framework_shared_failure_candidate_id(candidate_failure) is None
+    stale_mixed_regression = json.loads(json.dumps(report))
+    stale_mixed_regression["gate_results"][1]["details"]["suite_failures"] = [
+        {
+            "suite_id": "challenger-suite",
+            "details": {
+                "failure_class": "candidate",
+                "failure_owner": "candidate",
+                "code": "score_regression",
+            },
+        }
+    ]
+    assert _framework_shared_failure_candidate_id(stale_mixed_regression) is None
     mixed_failure = json.loads(json.dumps(report))
     mixed_failure["gate_results"].append(
         {"gate_name": "cost", "passed": False, "details": {}}
