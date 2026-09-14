@@ -1678,14 +1678,36 @@ class GlobalRegressionBenchmarkGate:
             for gate in result.gate_results
             if not gate.passed
         ]
-        shared_failure = any(
+        hard_shared_failure = any(
             not result.fresh_execution
             for result in evidence.suite_results
         ) or any(
             isinstance(gate.details, Mapping)
             and gate.details.get("failure_class")
-            in {"infrastructure", "budget", "framework"}
+            in {"infrastructure", "budget"}
             for _, gate in failed_suite_gates
+        )
+        candidate_failure = any(
+            isinstance(gate.details, Mapping)
+            and (
+                gate.details.get("failure_class") == "candidate"
+                or gate.details.get("failure_owner") == "candidate"
+            )
+            for _, gate in failed_suite_gates
+        )
+        framework_failure = any(
+            isinstance(gate.details, Mapping)
+            and (
+                gate.details.get("failure_class") == "framework"
+                or gate.details.get("failure_owner") == "framework"
+            )
+            for _, gate in failed_suite_gates
+        )
+        # A confirmed candidate regression remains actionable even when a
+        # different fresh suite is merely statistically inconclusive.  Only a
+        # hard shared failure makes the entire regression batch unreliable.
+        shared_failure = hard_shared_failure or (
+            framework_failure and not candidate_failure
         )
         failure_code = (
             next(

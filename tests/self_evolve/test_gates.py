@@ -1566,6 +1566,48 @@ def test_held_out_and_global_regression_gates_require_independent_verification()
     assert candidate_regression.passed is False
     assert candidate_regression.details["failure_owner"] == "candidate"
     assert candidate_regression.details["repairable"] is True
+    mixed_regression = regression_gate.evaluate(
+        _candidate("x"),
+        replace(
+            evidence,
+            suite_results=(
+                replace(
+                    evidence.suite_results[0],
+                    gate_results=(
+                        GateResult(
+                            gate_name="score_improvement",
+                            passed=False,
+                            reason="fresh suite is inconclusive",
+                            details={
+                                "failure_class": "framework",
+                                "failure_owner": "framework",
+                                "code": "score_improvement_inconclusive",
+                            },
+                        ),
+                    ),
+                ),
+                replace(
+                    evidence.suite_results[0],
+                    spec=replace(suite, suite_id="challenger-suite"),
+                    gate_results=(
+                        GateResult(
+                            gate_name="score_improvement",
+                            passed=False,
+                            reason="candidate regressed",
+                            details={
+                                "failure_class": "candidate",
+                                "failure_owner": "candidate",
+                                "code": "score_regression",
+                            },
+                        ),
+                    ),
+                ),
+            ),
+        ),
+    )
+    assert mixed_regression.details["failure_owner"] == "candidate"
+    assert mixed_regression.details["repairable"] is True
+    assert mixed_regression.details["code"] == "independent_regression_failed"
     infrastructure_regression = regression_gate.evaluate(
         _candidate("x"),
         replace(
