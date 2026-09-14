@@ -6519,10 +6519,18 @@ def _receive_task_response_capability(
         temporary = destination.with_name(
             f".{destination.name}.{uuid.uuid4().hex}.tmp"
         )
-        temporary.write_text(
-            json.dumps(attested, ensure_ascii=False) + "\n",
-            encoding="utf-8",
-        )
+        encoded_attested = (
+            json.dumps(
+                attested,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+            + "\n"
+        ).encode("utf-8")
+        if len(encoded_attested) > max_bytes:
+            return
+        temporary.write_bytes(encoded_attested)
         os.replace(temporary, destination)
     except (OSError, TypeError, ValueError, json.JSONDecodeError):
         return
@@ -6780,6 +6788,7 @@ def _run_replay_cli(
 
 _SELF_EVOLVE_TASK_RESPONSE_SCHEMA = "aworld.self_evolve.task_response.v1"
 _MAX_SELF_EVOLVE_TASK_RESPONSE_BYTES = 8_000_000
+_TASK_RESPONSE_ATTESTATION_ENVELOPE_BYTES = 512
 _EVIDENCE_FINALIZATION_GRACE_SECONDS = 45.0
 _DEFAULT_TRUSTED_EVIDENCE_SOURCE_BYTE_LIMIT = 64_000_000
 _DEFAULT_EVIDENCE_SCRATCH_FILE_LIMIT = 64
@@ -8277,7 +8286,11 @@ class AWorldCliReplayExecutor:
                     task_response_path
                 ),
                 "AWORLD_SELF_EVOLVE_TASK_RESPONSE_CAPABILITY_MAX_BYTES": str(
-                    task_response_max_bytes
+                    max(
+                        task_response_max_bytes
+                        - _TASK_RESPONSE_ATTESTATION_ENVELOPE_BYTES,
+                        1_024,
+                    )
                 ),
                 # This root is already copied into a private replay workspace.
                 # Mark it as the only unpublished candidate source that the

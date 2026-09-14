@@ -5038,6 +5038,77 @@ def test_replay_confidence_preserves_physical_framework_failure_ownership() -> N
     assert "candidate_validation_diagnostics" not in feedback
 
 
+def test_replay_confidence_preserves_shared_evidence_finalization_failure() -> None:
+    dataset = SelfEvolveDataset(
+        cases=(EvalCase(case_id="task-a", input="task A"),),
+        recipe=DatasetRecipe(
+            source={"kind": "test", "case_count": 1},
+            split_seed="seed",
+            splits={"train": ["task-a"], "validation": [], "held_out": []},
+        ),
+    )
+    request = CandidateReplayRequest(
+        run_id="run-evidence-finalization-failure",
+        task_id="task-a",
+        workspace_root="/tmp/workspace",
+        target=SelfEvolveTargetRef(target_type="skill", target_id="demo"),
+        candidate_id="candidate-1",
+        overlay_skill_root="/tmp/overlay",
+        task_input="task A",
+    )
+    baseline = ReplayVariantResult(
+        variant_id="baseline",
+        status=ReplayExecutionStatus.SUCCEEDED,
+        trajectory=[{"action": {"content": "completed"}}],
+    )
+    evidence_failure = ReplayVariantResult(
+        variant_id="candidate-1",
+        status=ReplayExecutionStatus.FAILED,
+        trajectory=[],
+        metrics={
+            "repetition_count": 1,
+            "successful_repetition_count": 0,
+            "failed_repetition_count": 1,
+        },
+        failure=ReplayFailureEvent(
+            code="evidence_policy_v2_attestation_failed",
+            owner=FailureOwner.FRAMEWORK,
+            stage=FailureStage.EVIDENCE_FINALIZATION,
+            scope=FailureScope.SHARED_RUN,
+            repairable=True,
+            summary="replay evidence could not be finalized",
+        ),
+    )
+    replay = _CandidateReplayResult(
+        request=request,
+        baseline=baseline,
+        candidate=evidence_failure,
+        member_results=(
+            CandidateReplayMemberResult(
+                case_id="task-a",
+                request=request,
+                baseline=baseline,
+                candidate=evidence_failure,
+            ),
+        ),
+    )
+
+    gate = _replay_confidence_gate(
+        replay,
+        dataset=dataset,
+        apply_policy="auto_verified",
+    )
+
+    assert gate is not None
+    assert gate.passed is False
+    assert gate.details["code"] == "evidence_policy_v2_attestation_failed"
+    assert gate.details["failure_owner"] == "framework"
+    assert gate.details["failure_scope"] == "shared_run"
+    assert gate.details["failure_stage"] == "evidence_finalization"
+    assert gate.details["repairable"] is True
+    assert _gate_has_typed_shared_measurement_failure(gate) is True
+
+
 def test_replay_confidence_attributes_partial_startup_failures_to_infrastructure() -> None:
     dataset = SelfEvolveDataset(
         cases=(EvalCase(case_id="task-a", input="task A"),),

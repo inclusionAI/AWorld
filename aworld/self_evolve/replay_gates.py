@@ -249,6 +249,47 @@ def _replay_confidence_gate(
         actionable_incomparable_pair_count
     )
     if actionable_incomparable_pair_count > 0:
+        system_failures = tuple(
+            event
+            for event in causal_failures
+            if event.owner
+            in {FailureOwner.FRAMEWORK, FailureOwner.INFRASTRUCTURE}
+        )
+        candidate_or_task_failures = tuple(
+            event
+            for event in causal_failures
+            if event.owner in {FailureOwner.CANDIDATE, FailureOwner.TASK}
+        )
+        if (
+            "failure_owner" not in base_details
+            and system_failures
+            and not candidate_or_task_failures
+        ):
+            primary_failure = next(
+                (
+                    event
+                    for event in system_failures
+                    if event.scope is FailureScope.SHARED_RUN
+                ),
+                system_failures[0],
+            )
+            event_payloads = [event.to_dict() for event in system_failures]
+            base_details.update(
+                {
+                    "code": primary_failure.code,
+                    "failure_class": primary_failure.owner.value,
+                    "failure_owner": primary_failure.owner.value,
+                    "failure_scope": primary_failure.scope.value,
+                    "failure_stage": primary_failure.stage.value,
+                    "repairable": any(
+                        event.repairable for event in system_failures
+                    ),
+                    "next_action": "repair_measurement",
+                    "failure_event": primary_failure.to_dict(),
+                    "causal_failure_events": event_payloads,
+                    "observed_replay_failure_events": event_payloads,
+                }
+            )
         return GateResult(
             gate_name="replay_confidence",
             passed=False,

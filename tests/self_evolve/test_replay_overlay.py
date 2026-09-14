@@ -12181,6 +12181,7 @@ def test_replay_cli_parent_attests_response_received_over_capability_fd(
         response_path, attestation_key=key
     )
     assert attested is not None
+    assert response_path.stat().st_size <= 8_000_000
     assert attested["trajectory"] == payload["trajectory"]
     assert _trusted_task_response_usage_metrics(attested) == {
         "total_tokens": 321,
