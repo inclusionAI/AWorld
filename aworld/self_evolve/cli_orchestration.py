@@ -369,6 +369,161 @@ class _StoredCandidateReplayBackend:
         return self.replay_result
 
 
+@dataclass(frozen=True)
+class _FrameworkEvaluatorRetryCandidate:
+    """A candidate whose only authoritative failure was evaluator-owned."""
+
+    candidate: CandidateVariant
+    source_run_id: str
+
+
+def _framework_shared_failure_candidate_id(
+    report: Mapping[str, Any],
+) -> str | None:
+    """Return a retryable candidate only for a pure shared evaluator failure."""
+
+    if report.get("status") != SelfEvolveRunStatus.REJECTED.value:
+        return None
+    attribution = report.get("rejection_attribution")
+    if not isinstance(attribution, Mapping):
+        return None
+    if not (
+        attribution.get("failure_class") == "framework"
+        and attribution.get("failure_owner")
+        in {"framework", "infrastructure", "evaluation_harness"}
+        and attribution.get("failure_scope") == "shared_run"
+    ):
+        return None
+    candidate_id = attribution.get("candidate_id")
+    if not isinstance(candidate_id, str) or not candidate_id:
+        return None
+    if report.get("selected_candidate_id") != candidate_id:
+        return None
+    raw_gates = report.get("gate_results")
+    if not isinstance(raw_gates, list):
+        return None
+    failed_gates = tuple(
+        gate
+        for gate in raw_gates
+        if isinstance(gate, Mapping) and gate.get("passed") is False
+    )
+    if not failed_gates:
+        return None
+    for gate in failed_gates:
+        details = gate.get("details")
+        if not (
+            isinstance(details, Mapping)
+            and details.get("failure_class") == "framework"
+            and details.get("failure_owner")
+            in {"framework", "infrastructure", "evaluation_harness"}
+            and details.get("failure_scope") == "shared_run"
+        ):
+            return None
+    return candidate_id
+
+
+def _dataset_recipe_matches_candidate_source(
+    current: DatasetRecipe,
+    source: DatasetRecipe,
+) -> bool:
+    """Compare frozen source authority while ignoring campaign-local pointers."""
+
+    current_source = current.source
+    source_source = source.source
+    authority_keys = ("kind", "content_fingerprint", "fingerprint", "case_count")
+    return (
+        all(current_source.get(key) == source_source.get(key) for key in authority_keys)
+        and current.split_seed == source.split_seed
+        and current.splits == source.splits
+        and current.trainable_case_ids == source.trainable_case_ids
+        and current.held_out_case_ids == source.held_out_case_ids
+    )
+
+
+def _discover_framework_evaluator_retry_candidate(
+    *,
+    store: FilesystemSelfEvolveStore,
+    target: SelfEvolveTarget,
+    dataset: SelfEvolveDataset,
+) -> _FrameworkEvaluatorRetryCandidate | None:
+    """Find a fully replayed candidate blocked solely by an old evaluator bug.
+
+    Replay evidence is used only to prove historical qualification.  The caller
+    deliberately keeps its current replay backend so the candidate is measured
+    again against the current runtime and Adaptive Context implementation.
+    """
+
+    report_paths = sorted(
+        (
+            path / "report.json"
+            for path in store.artifact_root.iterdir()
+            if path.is_dir() and not path.is_symlink()
+        ),
+        key=lambda path: path.stat().st_mtime if path.is_file() else 0.0,
+        reverse=True,
+    )
+    current_target_fingerprint = target.fingerprint_current_content()
+    for report_path in report_paths:
+        if not report_path.is_file() or report_path.is_symlink():
+            continue
+        try:
+            report = _load_json_mapping(report_path)
+        except (OSError, TypeError, ValueError, json.JSONDecodeError):
+            continue
+        candidate_id = _framework_shared_failure_candidate_id(report)
+        if candidate_id is None or not _report_matches_target(
+            report, target.identity
+        ):
+            continue
+        source_run_id = report_path.parent.name
+        checkpoint = load_paired_replay_resume_checkpoint(
+            store,
+            run_id=source_run_id,
+            report=report,
+        )
+        if (
+            checkpoint is None
+            or checkpoint.candidate_id != candidate_id
+            or checkpoint.pending_case_ids
+        ):
+            continue
+        try:
+            candidate = _load_candidate_variant(
+                report_path.parent / "candidates" / f"{candidate_id}.json"
+            )
+            source_dataset = _load_stored_campaign_dataset(
+                store=store,
+                source_run_path=report_path.parent,
+            )
+            replay_result = load_candidate_replay_result(
+                report_path.parent / checkpoint.replay_dir
+            )
+        except (OSError, TypeError, ValueError, json.JSONDecodeError):
+            continue
+        if source_dataset is None:
+            continue
+        actual_candidate_fingerprint = candidate_package_fingerprint(candidate)
+        if not (
+            candidate.target == target.identity
+            and candidate.target_fingerprint == current_target_fingerprint
+            and checkpoint.candidate_fingerprint == actual_candidate_fingerprint
+            and _dataset_recipe_matches_candidate_source(
+                dataset.recipe, source_dataset.recipe
+            )
+            and candidate_replay_is_comparable(
+                dataset=source_dataset,
+                replay_result=replay_result,
+                require_adapted=True,
+            )
+        ):
+            continue
+        return _FrameworkEvaluatorRetryCandidate(
+            candidate=candidate,
+            source_run_id=source_run_id,
+        )
+    return None
+
+
 def _default_iteration_budget(
     *,
     apply_policy: str,
@@ -3672,7 +3827,10 @@ def execute_cli_optimization(
         runtime_registry_compensator = _default_new_skill_registry_compensator(
             target_adapter
         )
-    if replay_enabled and candidate_replay_backend is None:
+    using_default_candidate_replay_backend = bool(
+        replay_enabled and candidate_replay_backend is None
+    )
+    if using_default_candidate_replay_backend:
         candidate_replay_backend = runtime.replay_backend_type()
         if hasattr(candidate_replay_backend, "concurrency_policy"):
             candidate_replay_backend.concurrency_policy = (
@@ -3680,6 +3838,7 @@ def execute_cli_optimization(
             )
 
     measurement_pending_candidate: CandidateVariant | None = None
+    measurement_pending_source_run_id: str | None = None
     measurement_resume_replay_dir: Path | None = None
     authoritative_measurement_resume = False
     pending_measurement_values = (
@@ -3733,6 +3892,9 @@ def execute_cli_optimization(
         measurement_pending_candidate = _load_candidate_variant(
             pending_candidate_path
         )
+        measurement_pending_source_run_id = (
+            campaign_measurement_pending_run_id
+        )
         expected_pending_fingerprint = pending_source_report.get(
             "measurement_pending_candidate_fingerprint"
         )
@@ -3769,6 +3931,31 @@ def execute_cli_optimization(
             ),
         )
 
+    if (
+        measurement_pending_candidate is None
+        and using_default_candidate_replay_backend
+        and _is_verified_apply_policy(apply_policy)
+        and campaign_id is not None
+        and campaign_cycle == 1
+    ):
+        framework_retry = _discover_framework_evaluator_retry_candidate(
+            store=store,
+            target=target_adapter,
+            dataset=built_dataset,
+        )
+        if framework_retry is not None:
+            measurement_pending_candidate = framework_retry.candidate
+            measurement_pending_source_run_id = framework_retry.source_run_id
+            _emit_progress(
+                progress_callback,
+                "resume",
+                (
+                    "Re-evaluating framework-blocked candidate "
+                    f"{framework_retry.candidate.candidate_id} from "
+                    f"{framework_retry.source_run_id} with fresh replay evidence"
+                ),
+            )
+
     mutation_optimizer = TraceReflectiveLLMMutator(
         mutate_text=_cli_default_mutation,
         population_callable=(
@@ -3781,7 +3968,7 @@ def execute_cli_optimization(
     optimizer: CandidateOptimizer = (
         _MeasurementResumeThenRepairOptimizer(
             candidate=measurement_pending_candidate,
-            source_run_id=str(campaign_measurement_pending_run_id),
+            source_run_id=str(measurement_pending_source_run_id),
             delegate=mutation_optimizer,
         )
         if measurement_pending_candidate is not None

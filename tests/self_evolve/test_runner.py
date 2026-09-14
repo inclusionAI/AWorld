@@ -137,7 +137,9 @@ from aworld.self_evolve.cli_orchestration import (
     _StoredCandidateReplayBackend,
     _aggregate_target_selection_decisions,
     _candidate_mutation_repair_prompt,
+    _dataset_recipe_matches_candidate_source,
     _default_iteration_budget,
+    _framework_shared_failure_candidate_id,
     _include_prior_run_cases,
     _parse_candidate_mutation_model_output,
     _trajectory_group_rank_key,
@@ -6982,6 +6984,79 @@ async def test_measurement_resume_optimizer_opens_real_repair_frontier() -> None
     second = await optimizer.propose(SimpleNamespace())
     assert second.candidates == (repaired,)
     assert optimizer.stored_candidate_admission_reason() is None
+
+
+def test_framework_retry_requires_pure_shared_evaluator_failure() -> None:
+    report = {
+        "status": "rejected",
+        "selected_candidate_id": "candidate-1",
+        "rejection_attribution": {
+            "candidate_id": "candidate-1",
+            "failure_class": "framework",
+            "failure_owner": "framework",
+            "failure_scope": "shared_run",
+        },
+        "gate_results": [
+            {"gate_name": "score_improvement", "passed": True},
+            {
+                "gate_name": "global_regression_benchmark",
+                "passed": False,
+                "details": {
+                    "failure_class": "framework",
+                    "failure_owner": "evaluation_harness",
+                    "failure_scope": "shared_run",
+                },
+            },
+        ],
+    }
+
+    assert _framework_shared_failure_candidate_id(report) == "candidate-1"
+    candidate_failure = json.loads(json.dumps(report))
+    candidate_failure["gate_results"][1]["details"]["failure_class"] = (
+        "candidate"
+    )
+    assert _framework_shared_failure_candidate_id(candidate_failure) is None
+    mixed_failure = json.loads(json.dumps(report))
+    mixed_failure["gate_results"].append(
+        {"gate_name": "cost", "passed": False, "details": {}}
+    )
+    assert _framework_shared_failure_candidate_id(mixed_failure) is None
+
+
+def test_framework_retry_recipe_ignores_only_campaign_local_snapshot() -> None:
+    base = DatasetRecipe(
+        source={
+            "kind": "trajectory_log",
+            "content_fingerprint": "sha256:source",
+            "fingerprint": "sha256:request",
+            "case_count": 2,
+            "campaign_dataset_snapshot": {
+                "campaign_id": "old",
+                "snapshot_fingerprint": "sha256:old",
+            },
+        },
+        split_seed="seed",
+        splits={"train": ["case-1"], "held_out": ["case-2"]},
+        trainable_case_ids=("case-1",),
+        held_out_case_ids=("case-2",),
+    )
+    current = replace(
+        base,
+        source={
+            **base.source,
+            "campaign_dataset_snapshot": {
+                "campaign_id": "new",
+                "snapshot_fingerprint": "sha256:new",
+            },
+        },
+    )
+
+    assert _dataset_recipe_matches_candidate_source(current, base)
+    changed = replace(
+        current,
+        source={**current.source, "content_fingerprint": "sha256:changed"},
+    )
+    assert not _dataset_recipe_matches_candidate_source(changed, base)
 
 
 @pytest.mark.asyncio
