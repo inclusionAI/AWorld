@@ -109,6 +109,41 @@ def test_skill_evolution_contract_enters_generation_context() -> None:
     assert "Preserve existing navigation" in payload["preserved_behaviors"]
 
 
+def test_existing_replay_manifest_fields_are_bound_in_authoring_contract() -> None:
+    request = replace(
+        _request(),
+        target_package_inventory=("SKILL.md", "replay/capability.json"),
+        target_package_sources={
+            "replay/capability.json": {
+                "content": json.dumps(
+                    {
+                        "schema_version": "aworld.skill.replay_capability.v1",
+                        "capability_id": "demo-replay",
+                        "protocol": "aworld.replay.subprocess.v1",
+                        "entrypoint": "replay/compiler.py",
+                        "handles": ["stateful_tool"],
+                        "concurrency_mode": "isolated",
+                    }
+                ),
+                "executable": False,
+            }
+        },
+    )
+
+    context = compile_evolution_context(request)
+
+    manifest = context.capability_contracts[0]["manifest"]
+    assert manifest["preserved_existing_fields"] == {
+        "capability_id": "demo-replay",
+        "protocol": "aworld.replay.subprocess.v1",
+        "concurrency_mode": "isolated",
+    }
+    assert manifest["field_constraints"]["capability_id"] == {
+        "enum": ["demo-replay"],
+        "preserve_existing": True,
+    }
+
+
 def test_lesson_context_ranks_unique_repairable_cause_without_occurrence_bias() -> None:
     low_value = tuple(
         LessonRecord(

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ast
 import inspect
+import json
 from dataclasses import fields, is_dataclass
 from pathlib import Path
 from types import SimpleNamespace
@@ -18,6 +19,7 @@ from aworld.self_evolve.controllers.run_capability_validation import (
     CapabilityValidationPolicy,
     CapabilityValidationRequest,
     CapabilityValidationRuntime,
+    _replay_manifest_compatibility_gate,
     validate_candidate_capabilities,
 )
 from aworld.self_evolve.controllers.run_repair_conformance import (
@@ -689,6 +691,47 @@ async def test_capability_compile_failure_preserves_candidate_vs_shared_cause(
 
     assert result.gates[0].passed is False
     assert result.gates[0].details["failure_class"] == failure_class
+
+
+def test_replay_manifest_compatibility_rejects_identity_and_isolation_downgrade(
+    tmp_path: Path,
+) -> None:
+    baseline_root = tmp_path / "baseline"
+    candidate_root = tmp_path / "candidate"
+    for root, capability_id, concurrency_mode in (
+        (baseline_root, "demo-replay", "isolated"),
+        (candidate_root, "demo", "exclusive"),
+    ):
+        replay_root = root / "replay"
+        replay_root.mkdir(parents=True)
+        (root / "SKILL.md").write_text("# Demo\n", encoding="utf-8")
+        (replay_root / "compiler.py").write_text("pass\n", encoding="utf-8")
+        (replay_root / "capability.json").write_text(
+            json.dumps(
+                {
+                    "schema_version": "aworld.skill.replay_capability.v1",
+                    "capability_id": capability_id,
+                    "protocol": "aworld.replay.subprocess.v1",
+                    "entrypoint": "replay/compiler.py",
+                    "handles": ["stateful_tool"],
+                    "concurrency_mode": concurrency_mode,
+                }
+            ),
+            encoding="utf-8",
+        )
+
+    gate = _replay_manifest_compatibility_gate(
+        target_skill_path=baseline_root / "SKILL.md",
+        candidate_skill_root=candidate_root,
+    )
+
+    assert gate is not None
+    assert gate.passed is False
+    assert gate.details["failure_class"] == "candidate"
+    assert {item["code"] for item in gate.details["diagnostics"]} == {
+        "replay_manifest_identity_changed",
+        "replay_manifest_concurrency_weakened",
+    }
 
 
 @pytest.mark.asyncio

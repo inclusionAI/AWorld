@@ -56,6 +56,49 @@ MAX_REPAIR_PROMPT_SOURCE_CHARS = 40_000
 MAX_PROMPT_FEEDBACK_CHARS = 16_000
 
 
+def _bind_existing_replay_manifest_contract(
+    contracts: Sequence[Mapping[str, object]],
+    target_package_sources: Mapping[str, Mapping[str, object]],
+) -> tuple[Mapping[str, object], ...]:
+    """Keep generated replay packages compatible with the installed package."""
+
+    source = target_package_sources.get("replay/capability.json")
+    content = source.get("content") if isinstance(source, Mapping) else None
+    if not isinstance(content, str):
+        return tuple(contracts)
+    try:
+        existing = json.loads(content)
+    except (TypeError, json.JSONDecodeError):
+        return tuple(contracts)
+    if not isinstance(existing, Mapping):
+        return tuple(contracts)
+    preserved = {
+        key: existing.get(key)
+        for key in ("capability_id", "protocol", "concurrency_mode")
+        if isinstance(existing.get(key), str) and existing.get(key)
+    }
+    if not preserved:
+        return tuple(contracts)
+    bound: list[Mapping[str, object]] = []
+    for raw_contract in contracts:
+        contract = dict(raw_contract)
+        if contract.get("capability_type") != "replay":
+            bound.append(contract)
+            continue
+        manifest = dict(contract.get("manifest") or {})
+        constraints = dict(manifest.get("field_constraints") or {})
+        for field_name, value in preserved.items():
+            constraints[field_name] = {
+                "enum": [value],
+                "preserve_existing": True,
+            }
+        manifest["field_constraints"] = constraints
+        manifest["preserved_existing_fields"] = preserved
+        contract["manifest"] = manifest
+        bound.append(contract)
+    return tuple(bound)
+
+
 @dataclass(frozen=True)
 class EvolutionContext:
     schema_version: str
@@ -1031,8 +1074,9 @@ def compile_evolution_context(request: OptimizerRequest) -> EvolutionContext:
         (*current_feedback, *prior_feedback)
     )
     feedback = _merge_typed_repair_constraints_across_feedback(feedback)
-    contracts = discover_applicable_capability_contracts(
-        request.replay_requirements
+    contracts = _bind_existing_replay_manifest_contract(
+        discover_applicable_capability_contracts(request.replay_requirements),
+        request.target_package_sources,
     )
     observed_failures = _feedback_string_values(feedback, "failed_gates")
     contract_payload = dict(request.skill_evolution_contract or {})

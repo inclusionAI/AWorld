@@ -26,6 +26,10 @@ from aworld.self_evolve.replay import (
     _replay_service_start_failure_details,
     preflight_frozen_replay_capability,
 )
+from aworld.self_evolve.replay_capability import (
+    ReplayCapabilityError,
+    discover_replay_capability,
+)
 from aworld.self_evolve.replay_adaptation import ReplayCapabilityRequirement
 from aworld.self_evolve.sanitization import sanitize_path_ref, sanitize_text
 from aworld.self_evolve.store import FilesystemSelfEvolveStore
@@ -70,6 +74,92 @@ class CapabilityValidationResult:
 
     def as_list(self) -> list[GateResult]:
         return list(self.gates)
+
+
+def _replay_manifest_compatibility_gate(
+    *,
+    target_skill_path: Path,
+    candidate_skill_root: Path,
+) -> GateResult | None:
+    """Reject candidate packages that silently change replay identity/safety."""
+
+    try:
+        baseline = discover_replay_capability(target_skill_path.parent)
+        candidate = discover_replay_capability(candidate_skill_root)
+    except (ReplayCapabilityError, OSError, ValueError):
+        return None
+    if baseline is None or candidate is None:
+        return None
+    violations: list[dict[str, object]] = []
+    expected = baseline.manifest
+    actual = candidate.manifest
+    for field_name in ("capability_id", "protocol"):
+        expected_value = getattr(expected, field_name)
+        actual_value = getattr(actual, field_name)
+        if actual_value != expected_value:
+            violations.append(
+                {
+                    "code": "replay_manifest_identity_changed",
+                    "stage": "capability_manifest",
+                    "failure_class": "candidate",
+                    "repairable": True,
+                    "field_path": f"replay/capability.json:{field_name}",
+                    "expected": expected_value,
+                    "actual": actual_value,
+                    "schema_field_constraint": {
+                        "schema_layer": "manifest",
+                        "field_path": field_name,
+                        "rule": "enum",
+                        "expected": [expected_value],
+                        "actual": actual_value,
+                    },
+                }
+            )
+    if expected.concurrency_mode == "isolated" and actual.concurrency_mode != "isolated":
+        violations.append(
+            {
+                "code": "replay_manifest_concurrency_weakened",
+                "stage": "capability_manifest",
+                "failure_class": "candidate",
+                "repairable": True,
+                "field_path": "replay/capability.json:concurrency_mode",
+                "expected": "isolated",
+                "actual": actual.concurrency_mode,
+                "schema_field_constraint": {
+                    "schema_layer": "manifest",
+                    "field_path": "concurrency_mode",
+                    "rule": "enum",
+                    "expected": ["isolated"],
+                    "actual": actual.concurrency_mode,
+                },
+            }
+        )
+    if not violations:
+        return None
+    event = ReplayFailureEvent(
+        code=str(violations[0]["code"]),
+        owner=FailureOwner.CANDIDATE,
+        stage=FailureStage.CAPABILITY_COMPILE,
+        scope=FailureScope.CANDIDATE,
+        repairable=True,
+        category="candidate_capability_manifest_compatibility",
+        summary="candidate replay manifest changed installed package invariants",
+        diagnostics={"violations": violations},
+    )
+    return GateResult(
+        gate_name="candidate_capability_replay",
+        passed=False,
+        reason="candidate replay manifest changed installed package invariants",
+        details={
+            "capability_type": "replay",
+            "code": event.code,
+            "failure_class": "candidate",
+            "repairable": True,
+            "diagnostics": violations,
+            "failure_event": event.to_dict(),
+            "causal_failure_events": [event.to_dict()],
+        },
+    )
 
 
 def _persistent_preflight_diagnostic_refs(
@@ -132,6 +222,12 @@ async def validate_candidate_capabilities(
         target_skill_path=request.target.identity.path,
         baseline_skill_roots=getattr(request.target, "baseline_skill_roots", ()),
     )
+    compatibility_gate = _replay_manifest_compatibility_gate(
+        target_skill_path=Path(request.target.identity.path),
+        candidate_skill_root=overlay.candidate_skill_path.parent,
+    )
+    if compatibility_gate is not None:
+        return CapabilityValidationResult((compatibility_gate,))
     results = runtime.validate_applicable_capabilities(
         requirements=request.requirements,
         candidate=request.candidate,
