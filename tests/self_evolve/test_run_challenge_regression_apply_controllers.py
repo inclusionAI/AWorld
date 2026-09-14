@@ -993,7 +993,10 @@ async def test_successful_regression_persists_evidence_schema_despite_observer_f
     skill_path.write_text("# Demo\n", encoding="utf-8")
     target = SkillTextTarget(skill_path)
 
-    async def evaluate_pair(*_args: object, **_kwargs: object) -> tuple[EvaluationSummary, EvaluationSummary]:
+    async def evaluate_pair(*_args: object, **kwargs: object) -> tuple[EvaluationSummary, EvaluationSummary]:
+        evaluation_dataset = kwargs["dataset"]
+        assert isinstance(evaluation_dataset, SelfEvolveDataset)
+        assert evaluation_dataset.recipe.splits["regression"] == ["case-2"]
         return (
             EvaluationSummary(
                 "baseline",

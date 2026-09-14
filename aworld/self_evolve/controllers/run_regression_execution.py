@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import time
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from aworld.self_evolve.budget import BudgetDecision, BudgetStage
 from aworld.self_evolve.challenger import ChallengeReport
@@ -314,6 +314,24 @@ async def _execute_regression_suite(
                 )
             regression_dataset = replay_result.dataset
 
+        # Regression suites are resolved from ordinary dataset sources, whose
+        # cases normally live in the ``train`` split.  The evaluator is asked
+        # for the semantically distinct ``regression`` split, so project the
+        # suite's already-independent case panel onto that split explicitly.
+        # Without this projection the production evaluator selects zero cases
+        # and reports ``evaluation_agent_signal_missing`` even after every
+        # regression replay succeeded.
+        regression_case_ids = [case.case_id for case in regression_dataset.cases]
+        regression_dataset = replace(
+            regression_dataset,
+            recipe=replace(
+                regression_dataset.recipe,
+                splits={
+                    **dict(regression_dataset.recipe.splits),
+                    "regression": regression_case_ids,
+                },
+            ),
+        )
         baseline_summary, candidate_summary = await runtime.evaluate_pair(
             runtime.regression_backend,
             dataset=regression_dataset,
