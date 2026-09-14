@@ -251,20 +251,48 @@ def evidence_repair_constraints_from_metrics(
     incomplete = _metric_bool(metrics.get("evidence_incomplete")) is True
     bundle_valid = _metric_bool(metrics.get("evidence_bundle_valid")) is True
     if compacted and (incomplete or not bundle_valid):
-        framework_projection = bundle_valid
+        projection_incomplete = _metric_bool(
+            metrics.get("judge_artifact_projection_incomplete")
+        )
+        # A valid bundle was historically enough to infer that an incomplete
+        # judgment was caused by framework compaction.  Modern evaluator
+        # diagnostics can explicitly disprove that inference: when the judge
+        # reports a complete artifact projection, the remaining unsupported
+        # claims belong to the candidate response and should enter focused
+        # repair instead of pausing the campaign for framework work.
+        complete_projection_with_valid_bundle = (
+            bundle_valid and projection_incomplete is False
+        )
+        framework_projection = bundle_valid and not complete_projection_with_valid_bundle
         constraints.append(
             EvidenceRepairConstraint(
-                subject_kind="artifact",
-                failure_mode="projection_compacted",
+                subject_kind=(
+                    "general_claim"
+                    if complete_projection_with_valid_bundle
+                    else "artifact"
+                ),
+                failure_mode=(
+                    "support_incomplete"
+                    if complete_projection_with_valid_bundle
+                    else "projection_compacted"
+                ),
                 source_layer=(
                     "artifact_projection"
                     if framework_projection
-                    else "artifact_capture"
+                    else (
+                        "candidate_output"
+                        if complete_projection_with_valid_bundle
+                        else "artifact_capture"
+                    )
                 ),
                 required_action=(
                     "expand_bounded_projection"
                     if framework_projection
-                    else "capture_artifact"
+                    else (
+                        "support_or_omit"
+                        if complete_projection_with_valid_bundle
+                        else "capture_artifact"
+                    )
                 ),
                 owner=(
                     FailureOwner.FRAMEWORK

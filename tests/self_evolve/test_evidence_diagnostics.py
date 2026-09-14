@@ -83,6 +83,25 @@ def test_valid_bundle_compaction_is_owned_by_framework_projection() -> None:
     assert constraints[0].owner is FailureOwner.FRAMEWORK
 
 
+def test_complete_judge_projection_keeps_incomplete_claim_candidate_owned() -> None:
+    constraints = evidence_repair_constraints_from_metrics(
+        {
+            "has_evidence": 1.0,
+            "evidence_compacted": True,
+            "evidence_incomplete": True,
+            "evidence_bundle_valid": True,
+            "judge_artifact_projection_incomplete": False,
+        }
+    )
+
+    assert len(constraints) == 1
+    assert constraints[0].subject_kind == "general_claim"
+    assert constraints[0].failure_mode == "support_incomplete"
+    assert constraints[0].source_layer == "candidate_output"
+    assert constraints[0].required_action == "support_or_omit"
+    assert constraints[0].owner is FailureOwner.CANDIDATE
+
+
 def test_incomplete_uncompacted_claim_support_remains_candidate_owned() -> None:
     constraints = evidence_repair_constraints_from_metrics(
         {
