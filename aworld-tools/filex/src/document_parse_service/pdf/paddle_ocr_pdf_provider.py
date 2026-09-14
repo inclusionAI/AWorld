@@ -337,7 +337,7 @@ class PaddleOcrPdfProvider:
         kwargs.setdefault("vl_rec_server_url", gateway_vllm.get("base_url"))
         kwargs.setdefault(
             "vl_rec_api_model_name",
-            gateway_vllm.get("model_name") or gateway_vllm.get("http_model_name"),
+            gateway_vllm.get("http_model_name") or gateway_vllm.get("model_name"),
         )
         kwargs.setdefault(
             "vl_rec_api_key",
@@ -686,8 +686,8 @@ class PaddleOcrPdfProvider:
         }
         gateway_vllm = self._gateway_vllm_config()
         if "vl_rec_api_model_name" not in info:
-            model_name = gateway_vllm.get("model_name") or gateway_vllm.get(
-                "http_model_name"
+            model_name = gateway_vllm.get("http_model_name") or gateway_vllm.get(
+                "model_name"
             )
             if model_name not in (None, ""):
                 info["vl_rec_api_model_name"] = str(model_name)
@@ -733,6 +733,7 @@ class PaddleOcrPdfProvider:
         for key, environment_name in (
             ("base_url", "GATEWAY_VLLM_BASE_URL"),
             ("model_name", "GATEWAY_VLLM_MODEL_NAME"),
+            ("http_model_name", "GATEWAY_VLLM_HTTP_MODEL_NAME"),
         ):
             environment_value = os.getenv(environment_name)
             if key not in resolved and environment_value:

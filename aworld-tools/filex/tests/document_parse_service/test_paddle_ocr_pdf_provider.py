@@ -233,6 +233,7 @@ def test_paddle_ocr_uses_protected_runtime_environment(monkeypatch) -> None:
     module = _load_provider_module()
     monkeypatch.setenv("GATEWAY_VLLM_BASE_URL", "https://gateway.example/v1")
     monkeypatch.setenv("GATEWAY_VLLM_MODEL_NAME", "gemini-3.1-pro-preview")
+    monkeypatch.setenv("GATEWAY_VLLM_HTTP_MODEL_NAME", "gemini-http-model")
     monkeypatch.setenv("GATEWAY_VLLM_API_KEY", "protected-key")
     monkeypatch.setenv(
         "FILEX_PADDLE_OCR_LAYOUT_DETECTION_MODEL_DIR", "/opt/models/layout"
@@ -243,11 +244,11 @@ def test_paddle_ocr_uses_protected_runtime_environment(monkeypatch) -> None:
     options = provider._pipeline_kwargs()
 
     assert options["vl_rec_server_url"] == "https://gateway.example/v1"
-    assert options["vl_rec_api_model_name"] == "gemini-3.1-pro-preview"
+    assert options["vl_rec_api_model_name"] == "gemini-http-model"
     assert options["vl_rec_api_key"] == "protected-key"
     assert options["layout_detection_model_dir"] == "/opt/models/layout"
     assert options["use_chart_recognition"] is True
-    assert provider._model_info()["vl_rec_api_model_name"] == ("gemini-3.1-pro-preview")
+    assert provider._model_info()["vl_rec_api_model_name"] == "gemini-http-model"
 
 
 def test_request_config_takes_precedence_over_runtime_environment(monkeypatch) -> None:
@@ -268,6 +269,29 @@ def test_request_config_takes_precedence_over_runtime_environment(monkeypatch) -
 
     assert options["vl_rec_server_url"] == "https://request.example/v1"
     assert options["vl_rec_api_model_name"] == "request-model"
+
+
+def test_paddle_ocr_uses_dedicated_recognition_model_and_secret(monkeypatch) -> None:
+    module = _load_provider_module()
+    monkeypatch.setenv("GATEWAY_VLLM_BASE_URL", "https://gateway.example/v1")
+    monkeypatch.setenv("GATEWAY_VLLM_HTTP_MODEL_NAME", "kimi-http-model")
+    monkeypatch.setenv("GATEWAY_VLLM_API_KEY", "gateway-protected-key")
+    monkeypatch.setenv(
+        "FILEX_PADDLE_OCR_VL_REC_SERVER_URL", "https://paddle.example/v1"
+    )
+    monkeypatch.setenv(
+        "FILEX_PADDLE_OCR_VL_REC_API_MODEL_NAME", "paddle-recognition-model"
+    )
+    monkeypatch.setenv(
+        "FILEX_PADDLE_OCR_VL_REC_API_KEY", "paddle-protected-key"
+    )
+    provider = module.PaddleOcrPdfProvider(env_content={}, pipeline=object())
+
+    options = provider._pipeline_kwargs()
+
+    assert options["vl_rec_server_url"] == "https://paddle.example/v1"
+    assert options["vl_rec_api_model_name"] == "paddle-recognition-model"
+    assert options["vl_rec_api_key"] == "paddle-protected-key"
 
 
 def test_text_layer_formatting_recovers_sparse_bold_title() -> None:

@@ -34,7 +34,7 @@ FILEX_COORDINATE_SYSTEM = "pixel_top_left_xyxy"
 DEFAULT_TASK_SPEC_PATH = Path("/workspace/parsebench-task.json")
 DEFAULT_ARTIFACTS_ROOT = Path("/logs/artifacts")
 DEFAULT_PROVIDER = "paddle_ocr"
-DEFAULT_VLM_MODEL_PROFILE = "default__gemini-3.1-pro-preview"
+DEFAULT_VLM_MODEL_PROFILE = "ai_cloud_Kimi_k26_pgc"
 DEFAULT_LAYOUT_MODEL_DIR = Path(
     "/opt/skillsbench-agent-frameworks/paddlex-models/PP-DocLayoutV3"
 )
@@ -184,7 +184,13 @@ class SubprocessFileXRunner:
         process_env = (
             os.environ.copy() if self._environment is None else dict(self._environment)
         )
-        base_url, model_name, api_key = _resolved_gateway_vllm(process_env)
+        base_url, model_name, http_model_name, api_key = _resolved_gateway_vllm(
+            process_env
+        )
+        paddle_model_name = str(
+            process_env.get("FILEX_PADDLE_OCR_VL_REC_API_MODEL_NAME")
+            or http_model_name
+        ).strip()
         layout_model_dir = _validated_layout_model_dir(process_env)
         process_env.pop("LLM_API_KEY", None)
         process_env["PADDLE_PDX_CACHE_HOME"] = "/tmp/filex-paddlex-cache"
@@ -196,6 +202,10 @@ class SubprocessFileXRunner:
             "paddle_ocr_layout_detection_model_name": LAYOUT_MODEL_NAME,
             "paddle_ocr_layout_detection_model_dir": str(layout_model_dir),
             "paddle_ocr_vl_rec_backend": "vllm-server",
+            "paddle_ocr_vl_rec_max_concurrency": 1,
+            "paddle_ocr_vlm_max_retries": 3,
+            "paddle_ocr_vlm_retry_base_delay_ms": 500,
+            "paddle_ocr_vlm_retry_max_delay_ms": 8000,
             "paddle_ocr_use_doc_orientation_classify": False,
             "paddle_ocr_use_doc_unwarping": False,
             "paddle_ocr_use_layout_detection": True,
@@ -205,12 +215,14 @@ class SubprocessFileXRunner:
             # data from the generated markdown.
             "paddle_ocr_use_chart_recognition": True,
             "paddle_ocr_use_seal_recognition": False,
+            "paddle_ocr_use_ocr_for_image_block": True,
             "paddle_ocr_format_block_content": False,
             "paddle_ocr_merge_layout_blocks": True,
             "paddle_ocr_use_queues": False,
             "gateway_vllm": {
                 "base_url": base_url,
                 "model_name": model_name,
+                "http_model_name": http_model_name,
             },
         }
         command = _filex_command(self._executable, request, env_content)
@@ -242,7 +254,7 @@ class SubprocessFileXRunner:
             )
         return FileXRunResult(
             payload=payload,
-            resolved_model_name=model_name,
+            resolved_model_name=paddle_model_name,
             layout_model_name=LAYOUT_MODEL_NAME,
             layout_model_manifest_sha256=LAYOUT_MODEL_MANIFEST_SHA256,
         )
@@ -277,10 +289,27 @@ def _filex_command(
     return command
 
 
-def _resolved_gateway_vllm(environment: Mapping[str, str]) -> tuple[str, str, str]:
-    base_url = str(environment.get("LLM_BASE_URL") or "").strip()
-    model_name = str(environment.get("LLM_MODEL_NAME") or "").strip()
-    api_key = str(environment.get("LLM_API_KEY") or "")
+def _resolved_gateway_vllm(
+    environment: Mapping[str, str],
+) -> tuple[str, str, str, str]:
+    base_url = str(
+        environment.get("GATEWAY_VLLM_BASE_URL")
+        or environment.get("LLM_BASE_URL")
+        or ""
+    ).strip()
+    model_name = str(
+        environment.get("GATEWAY_VLLM_MODEL_NAME")
+        or environment.get("LLM_MODEL_NAME")
+        or ""
+    ).strip()
+    http_model_name = str(
+        environment.get("GATEWAY_VLLM_HTTP_MODEL_NAME") or model_name
+    ).strip()
+    api_key = str(
+        environment.get("GATEWAY_VLLM_API_KEY")
+        or environment.get("LLM_API_KEY")
+        or ""
+    )
     if not base_url or not model_name or not api_key.strip():
         raise FileXAdapterError(
             "missing_model_configuration",
@@ -300,13 +329,14 @@ def _resolved_gateway_vllm(environment: Mapping[str, str]) -> tuple[str, str, st
         )
     try:
         _validate_logical_profile(model_name, "LLM_MODEL_NAME")
+        _validate_logical_profile(http_model_name, "GATEWAY_VLLM_HTTP_MODEL_NAME")
     except ValueError as exc:
         raise FileXAdapterError(
             "invalid_model_configuration", "LLM_MODEL_NAME is invalid"
         ) from exc
     if len(api_key) > 16_384 or any(ord(character) < 32 for character in api_key):
         raise FileXAdapterError("invalid_model_configuration", "LLM_API_KEY is invalid")
-    return base_url, model_name, api_key
+    return base_url, model_name, http_model_name, api_key
 
 
 def _validated_layout_model_dir(environment: Mapping[str, str]) -> Path:

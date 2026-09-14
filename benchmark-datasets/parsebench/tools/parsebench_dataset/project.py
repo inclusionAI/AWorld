@@ -174,7 +174,7 @@ def main() -> None:
     parser.add_argument("--runtime-image", default=DEFAULT_RUNTIME_IMAGE)
     parser.add_argument("--runtime-service", required=True)
     parser.add_argument("--gateway-base-url", default="http://127.0.0.1:8100")
-    parser.add_argument("--model-name", default="default__gemini-3.1-pro-preview")
+    parser.add_argument("--model-name", default="ai_cloud_Kimi_k26_pgc")
     parser.add_argument(
         "--allow-mutable-local-image",
         action="store_true",

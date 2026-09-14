@@ -44,3 +44,10 @@ Ownership remains strict:
   dependencies;
 - AWorld/FileX owns only generic CLI and skill behavior;
 - stock mcpgateway owns upload, publication, scheduling, and result storage.
+
+The Runtime injects the credential-free FileX model identity used by this
+project: `ai_cloud_Kimi_k26_pgc` maps to HTTP model `kimi_k26_pc`, while the
+PaddleOCR-VL provider uses `aisearch_paaldocr_vl_16`. Credentials must remain
+Runtime Secrets (`GATEWAY_VLLM_API_KEY` and
+`FILEX_PADDLE_OCR_VL_REC_API_KEY`); never place them in the generated Dataset
+project or ZIP.
