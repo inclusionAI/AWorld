@@ -1030,7 +1030,16 @@ def _split_case_ids(case_ids: tuple[str, ...], *, split_seed: str) -> Mapping[st
     # substitute them without reusing search-visible cases.
     held_out_count = 4 if count >= 8 else max(1, count // 5)
     held_out_count = min(held_out_count, count - 2)
-    validation_count = max(1, count // 5)
+    # Judge variance is dominated by differences between trajectory cases, not
+    # by repeated scoring of the same output.  Keep a broader selection panel
+    # once the dataset is large enough to retain the four-case release reserve;
+    # bounded judge tie-breaks can then add repetitions without pretending that
+    # two heterogeneous cases provide a well-powered paired estimate.
+    validation_count = (
+        min(4, count - held_out_count - 1)
+        if count >= 8
+        else max(1, count // 5)
+    )
     train_count = count - validation_count - held_out_count
     return {
         "train": ordered[:train_count],

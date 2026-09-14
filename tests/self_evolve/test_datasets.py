@@ -134,8 +134,8 @@ def test_broad_recipe_reserves_authoritative_replacement_controls() -> None:
     )
 
     assert len(recipe.splits["held_out"]) == 4
-    assert len(recipe.splits["validation"]) == 2
-    assert len(recipe.splits["train"]) == 5
+    assert len(recipe.splits["validation"]) == 4
+    assert len(recipe.splits["train"]) == 3
     assert recipe.held_out_case_ids == tuple(recipe.splits["held_out"])
 
 
