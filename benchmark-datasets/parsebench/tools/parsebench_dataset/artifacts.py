@@ -35,29 +35,7 @@ DEFAULT_TASK_SPEC_PATH = Path("/workspace/parsebench-task.json")
 DEFAULT_ARTIFACTS_ROOT = Path("/logs/artifacts")
 DEFAULT_PROVIDER = "paddle_ocr"
 DEFAULT_VLM_MODEL_PROFILE = "ai_cloud_Kimi_k26_pgc"
-DEFAULT_LAYOUT_MODEL_DIR = Path(
-    "/opt/skillsbench-agent-frameworks/paddlex-models/PP-DocLayoutV3"
-)
-LAYOUT_MODEL_NAME = "PP-DocLayoutV3"
-LAYOUT_MODEL_MANIFEST_SHA256 = (
-    "sha256:effeb59959c7da305dd1d0e74382e82dfa82f10b8ffb9be25b20a2b21d5bad6f"
-)
 FILEX_METRICS_SCHEMA_VERSION = "1.0"
-
-_LAYOUT_MODEL_FILES = {
-    "inference.json": (
-        1_196_890,
-        "sha256:2b68367c5b312a03de5a6e1642c597c8f95165a7e40cd59c6700cf4a5042f4fd",
-    ),
-    "inference.pdiparams": (
-        130_806_572,
-        "sha256:70bd316b0582769ec968829fd1feb1a6a58b7c941b938327e551b6b12b45c137",
-    ),
-    "inference.yml": (
-        1_482,
-        "sha256:506fcfac13b3b546ae40d7886b44126420f392adb694e3f8bb6a6286a1f90fdc",
-    ),
-}
 
 _TASK_FIELDS = frozenset(
     {"schema_version", "task_id", "dataset_revision", "scorer_revision", "source"}
@@ -150,8 +128,6 @@ class FileXRunRequest:
 class FileXRunResult:
     payload: Mapping[str, object]
     resolved_model_name: str
-    layout_model_name: str = LAYOUT_MODEL_NAME
-    layout_model_manifest_sha256: str = LAYOUT_MODEL_MANIFEST_SHA256
 
 
 class FileXRunner(Protocol):
@@ -191,7 +167,6 @@ class SubprocessFileXRunner:
             process_env.get("FILEX_PADDLE_OCR_VL_REC_API_MODEL_NAME")
             or http_model_name
         ).strip()
-        layout_model_dir = _validated_layout_model_dir(process_env)
         process_env.pop("LLM_API_KEY", None)
         process_env["PADDLE_PDX_CACHE_HOME"] = "/tmp/filex-paddlex-cache"
         env_content: dict[str, object] = {
@@ -199,8 +174,6 @@ class SubprocessFileXRunner:
             "filex_cache_enabled": False,
             "filex_no_cache": True,
             "paddle_ocr_pipeline_version": "v1.6",
-            "paddle_ocr_layout_detection_model_name": LAYOUT_MODEL_NAME,
-            "paddle_ocr_layout_detection_model_dir": str(layout_model_dir),
             "paddle_ocr_vl_rec_backend": "vllm-server",
             "paddle_ocr_vl_rec_max_concurrency": 1,
             "paddle_ocr_vlm_max_retries": 3,
@@ -208,7 +181,7 @@ class SubprocessFileXRunner:
             "paddle_ocr_vlm_retry_max_delay_ms": 8000,
             "paddle_ocr_use_doc_orientation_classify": False,
             "paddle_ocr_use_doc_unwarping": False,
-            "paddle_ocr_use_layout_detection": True,
+            "paddle_ocr_use_layout_detection": False,
             # ParseBench's chart dimension requires chart blocks to be sent to
             # the protected remote VLM.  Disabling this makes PaddleOCR-VL
             # classify charts as image-only blocks and drops their structured
@@ -255,8 +228,6 @@ class SubprocessFileXRunner:
         return FileXRunResult(
             payload=payload,
             resolved_model_name=paddle_model_name,
-            layout_model_name=LAYOUT_MODEL_NAME,
-            layout_model_manifest_sha256=LAYOUT_MODEL_MANIFEST_SHA256,
         )
 
 
@@ -337,49 +308,6 @@ def _resolved_gateway_vllm(
     if len(api_key) > 16_384 or any(ord(character) < 32 for character in api_key):
         raise FileXAdapterError("invalid_model_configuration", "LLM_API_KEY is invalid")
     return base_url, model_name, http_model_name, api_key
-
-
-def _validated_layout_model_dir(environment: Mapping[str, str]) -> Path:
-    configured = str(
-        environment.get("AWORLD_PARSEBENCH_LAYOUT_MODEL_DIR")
-        or DEFAULT_LAYOUT_MODEL_DIR
-    ).strip()
-    candidate = Path(configured)
-    if not candidate.is_absolute():
-        raise FileXAdapterError(
-            "invalid_layout_model", "ParseBench layout model path must be absolute"
-        )
-    try:
-        resolved = candidate.resolve(strict=True)
-    except OSError as exc:
-        raise FileXAdapterError(
-            "missing_layout_model", "pinned ParseBench layout model is unavailable"
-        ) from exc
-    if candidate != resolved or not resolved.is_dir():
-        raise FileXAdapterError(
-            "invalid_layout_model", "pinned ParseBench layout model path is unsafe"
-        )
-    for name, (expected_size, expected_sha256) in _LAYOUT_MODEL_FILES.items():
-        artifact = resolved / name
-        try:
-            artifact_stat = artifact.lstat()
-            if (
-                not stat.S_ISREG(artifact_stat.st_mode)
-                or artifact_stat.st_size != expected_size
-                or _sha256_file(artifact) != expected_sha256
-            ):
-                raise FileXAdapterError(
-                    "layout_model_mismatch",
-                    "pinned ParseBench layout model failed integrity validation",
-                )
-        except FileXAdapterError:
-            raise
-        except OSError as exc:
-            raise FileXAdapterError(
-                "layout_model_mismatch",
-                "pinned ParseBench layout model failed integrity validation",
-            ) from exc
-    return resolved
 
 
 def _run_bounded_process(
@@ -664,10 +592,7 @@ def execute_filex_parsebench(
                 "cache": cache_status,
                 "requested_model_profile": options.vlm_model_profile,
                 "resolved_model_name": model_name,
-                "layout_model_name": run_result.layout_model_name,
-                "layout_model_manifest_sha256": (
-                    run_result.layout_model_manifest_sha256
-                ),
+                "layout_detection": "remote_vlm_only",
                 "document_ir_schema_version": FILEX_DOCUMENT_IR_SCHEMA_VERSION,
                 "coordinate_transform": "pixel-xyxy-to-pixel-xywh",
                 "bbox_policy": "clip" if options.clip_bboxes else "fail_closed",
@@ -1186,8 +1111,7 @@ def validate_parsebench_artifacts(
             "cache",
             "requested_model_profile",
             "resolved_model_name",
-            "layout_model_name",
-            "layout_model_manifest_sha256",
+            "layout_detection",
             "document_ir_schema_version",
             "coordinate_transform",
             "bbox_policy",
@@ -1199,18 +1123,14 @@ def validate_parsebench_artifacts(
         "provider_version",
         "requested_model_profile",
         "resolved_model_name",
-        "layout_model_name",
     ):
         if not isinstance(filex[identity_key], str) or not filex[identity_key].strip():
             raise FileXAdapterError(
                 "invalid_result_artifact", "FileX identity is incomplete"
             )
-    if (
-        filex["layout_model_name"] != LAYOUT_MODEL_NAME
-        or filex["layout_model_manifest_sha256"] != LAYOUT_MODEL_MANIFEST_SHA256
-    ):
+    if filex["layout_detection"] != "remote_vlm_only":
         raise FileXAdapterError(
-            "invalid_result_artifact", "FileX layout model identity is invalid"
+            "invalid_result_artifact", "FileX layout mode is invalid"
         )
     if filex["fallback_allowed"] is not False or filex["cache"] != "bypass":
         raise FileXAdapterError(
