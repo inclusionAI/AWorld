@@ -65,14 +65,16 @@ class ToolCall(BaseModel):
 
     id: str
     type: str = "function"
-    function: Function = None
+    function: Optional[Function] = None
     extra_content: Optional[dict] = None
 
     # name: str = None
     # arguments: str = None
 
     @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> 'ToolCall':
+    def from_dict(
+        cls, data: Dict[str, Any], *, preserve_missing: bool = False
+    ) -> 'ToolCall':
         """
         Create ToolCall from dictionary representation
 
@@ -82,27 +84,37 @@ class ToolCall(BaseModel):
         Returns:
             ToolCall object
         """
-        if not data:
+        if not data and not preserve_missing:
             return None
 
         tool_id = data.get('id')
         if not tool_id:
-            tool_id = f"call_{hash(str(data)) & 0xffffffff:08x}"
+            tool_id = (
+                ""
+                if preserve_missing
+                else f"call_{hash(str(data)) & 0xffffffff:08x}"
+            )
         tool_type = data.get('type')
         if not tool_type:
             tool_type = 'function'
 
-        function_data = data.get('function', {})
+        raw_function_data = data.get('function')
+        function_missing = not isinstance(raw_function_data, dict)
+        function_data = raw_function_data if not function_missing else {}
         name = function_data.get('name')
         if not name:
-            name = "unknown"
+            name = "" if preserve_missing else "unknown"
 
         arguments = function_data.get('arguments')
         # Ensure arguments is a string
         if arguments is not None and not isinstance(arguments, str):
             arguments = json.dumps(arguments, ensure_ascii=False)
 
-        function = Function(name=name, arguments=arguments)
+        function = (
+            None
+            if preserve_missing and function_missing
+            else Function(name=name, arguments=arguments)
+        )
         if 'model_extra' in data and 'extra_content' in data['model_extra']:
             extra_content = data['model_extra']['extra_content']
         else:
@@ -129,10 +141,14 @@ class ToolCall(BaseModel):
         return {
             "id": self.id,
             "type": self.type,
-            "function": {
-                "name": self.function.name,
-                "arguments": self.function.arguments
-            },
+            "function": (
+                {
+                    "name": self.function.name,
+                    "arguments": self.function.arguments,
+                }
+                if self.function is not None
+                else None
+            ),
             "extra_content": self.extra_content
         }
 
@@ -408,34 +424,33 @@ class ModelResponse:
         if raw_tool_calls:
             for tool_call in raw_tool_calls:
                 if isinstance(tool_call, dict):
-                    if tool_call.get("id") is None and tool_call.get("function",{}).get("name") is None:
-                        logger.warning(f"Invalid tool call: {tool_call}")
-                        continue
-                    processed_tool_calls.append(ToolCall.from_dict(tool_call))
+                    processed_tool_calls.append(
+                        ToolCall.from_dict(tool_call, preserve_missing=True)
+                    )
                 else:
                     # Handle OpenAI object
-                    if (tool_call.id is None and hasattr(tool_call, 'function')
-                            and (tool_call.function is None
-                                 or (hasattr(tool_call.function, 'name') and tool_call.function.name is None))):
-                        logger.warning(f"Invalid tool call: {tool_call}")
-                        continue
                     tool_call_dict = {
-                        "id": tool_call.id if hasattr(tool_call,
-                                                      'id') else f"call_{hash(str(tool_call)) & 0xffffffff:08x}",
+                        "id": getattr(tool_call, 'id', None),
                         "type": tool_call.type if hasattr(tool_call, 'type') else "function"
                     }
 
                     if hasattr(tool_call, 'function'):
                         function = tool_call.function
-                        tool_call_dict["function"] = {
-                            "name": function.name if hasattr(function, 'name') else None,
-                            "arguments": function.arguments if hasattr(function, 'arguments') else None
-                        }
+                        tool_call_dict["function"] = (
+                            {
+                                "name": function.name if hasattr(function, 'name') else None,
+                                "arguments": function.arguments if hasattr(function, 'arguments') else None
+                            }
+                            if function is not None
+                            else None
+                        )
                     if hasattr(tool_call, 'model_extra'):
                         model_extra = tool_call.model_extra
                         if model_extra:
                             tool_call_dict["model_extra"] = model_extra
-                    processed_tool_calls.append(ToolCall.from_dict(tool_call_dict))
+                    processed_tool_calls.append(
+                        ToolCall.from_dict(tool_call_dict, preserve_missing=True)
+                    )
 
         if message_dict and processed_tool_calls:
             message_dict["tool_calls"] = [tool_call.to_dict() for tool_call in processed_tool_calls]

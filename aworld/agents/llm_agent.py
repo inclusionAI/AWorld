@@ -3,13 +3,16 @@
 import time
 
 import asyncio
+import copy
 import json
 import os
 import re
 import traceback
 import uuid
 from collections import OrderedDict
+from dataclasses import dataclass
 from datetime import datetime
+from enum import Enum
 from typing import Dict, Any, List, Callable, Optional, Union
 
 import aworld.trace as trace
@@ -129,6 +132,41 @@ from aworld.memory.tool_result_compaction import compact_tool_result_for_memory
 import aworld.runners.hook.agent_hooks
 
 
+class ToolCallParseIssueCode(str, Enum):
+    """Provider-neutral reasons why a declared tool call cannot be executed."""
+
+    MISSING_CALL_ID = "missing_call_id"
+    DUPLICATE_CALL_ID = "duplicate_call_id"
+    MISSING_FUNCTION = "missing_function"
+    MISSING_TOOL_NAME = "missing_tool_name"
+    EMPTY_ARGUMENTS = "empty_arguments"
+    INVALID_ARGUMENTS_JSON = "invalid_arguments_json"
+    ARGUMENTS_NOT_OBJECT = "arguments_not_object"
+
+
+@dataclass(frozen=True)
+class ToolCallParseIssue:
+    """Structured evidence for one malformed tool call in a model response."""
+
+    call_index: int
+    call_id: Optional[str]
+    code: ToolCallParseIssueCode
+
+
+class ToolCallBatchParseError(AWorldRuntimeException):
+    """Raised when a declared tool-call batch cannot be parsed atomically."""
+
+    def __init__(self, issues: List[ToolCallParseIssue]):
+        self.issues = tuple(issues)
+        summary = ", ".join(
+            f"#{issue.call_index + 1}:{issue.code.value}" for issue in self.issues
+        )
+        super().__init__(
+            "Malformed tool-call batch; no tool calls were emitted "
+            f"({summary})"
+        )
+
+
 class LlmOutputParser(ModelOutputParser[ModelResponse, AgentResult]):
     async def parse(self, resp: ModelResponse, **kwargs) -> AgentResult:
         """Parse agent result based ModelResponse."""
@@ -155,11 +193,49 @@ class LlmOutputParser(ModelOutputParser[ModelResponse, AgentResult]):
             logger.info(
                 f"🛠️ [Agent:{agent_id}] Processing {len(resp.tool_calls)} tool call(s)"
             )
+            parsed_tool_calls = []
+            parse_issues = []
+            seen_call_ids = set()
             for idx, tool_call in enumerate(resp.tool_calls):
-                full_name: str = tool_call.function.name
-                if not full_name:
-                    logger.warning(
-                        f"⚠️ [Agent:{agent_id}] Tool call #{idx + 1} has no tool name, skipping."
+                call_id = getattr(tool_call, "id", None)
+                function = getattr(tool_call, "function", None)
+                if not isinstance(call_id, str) or not call_id.strip():
+                    parse_issues.append(
+                        ToolCallParseIssue(
+                            call_index=idx,
+                            call_id=call_id,
+                            code=ToolCallParseIssueCode.MISSING_CALL_ID,
+                        )
+                    )
+                    continue
+                if call_id in seen_call_ids:
+                    parse_issues.append(
+                        ToolCallParseIssue(
+                            call_index=idx,
+                            call_id=call_id,
+                            code=ToolCallParseIssueCode.DUPLICATE_CALL_ID,
+                        )
+                    )
+                    continue
+                seen_call_ids.add(call_id)
+                if function is None:
+                    parse_issues.append(
+                        ToolCallParseIssue(
+                            call_index=idx,
+                            call_id=call_id,
+                            code=ToolCallParseIssueCode.MISSING_FUNCTION,
+                        )
+                    )
+                    continue
+
+                full_name = getattr(function, "name", None)
+                if not isinstance(full_name, str) or not full_name.strip():
+                    parse_issues.append(
+                        ToolCallParseIssue(
+                            call_index=idx,
+                            call_id=call_id,
+                            code=ToolCallParseIssueCode.MISSING_TOOL_NAME,
+                        )
                     )
                     continue
 
@@ -167,24 +243,54 @@ class LlmOutputParser(ModelOutputParser[ModelResponse, AgentResult]):
                     f"🔧 [Agent:{agent_id}] Processing tool call #{idx + 1}: {full_name}, call_id={tool_call.id}"
                 )
 
-                try:
-                    raw_arguments = tool_call.function.arguments
-                    if not isinstance(raw_arguments, str) or not raw_arguments.strip():
-                        logger.warning(
-                            f"⚠️ [Agent:{agent_id}] Tool call #{idx + 1} for {full_name} has invalid arguments: {raw_arguments!r}, skipping."
+                raw_arguments = getattr(function, "arguments", None)
+                if not isinstance(raw_arguments, str) or not raw_arguments.strip():
+                    parse_issues.append(
+                        ToolCallParseIssue(
+                            call_index=idx,
+                            call_id=call_id,
+                            code=ToolCallParseIssueCode.EMPTY_ARGUMENTS,
                         )
-                        continue
-
-                    params = json.loads(raw_arguments)
-                    logger.debug(
-                        f"✅ [Agent:{agent_id}] Successfully parsed tool arguments for {full_name}: {len(params)} param(s)"
-                    )
-                except Exception as e:
-                    logger.warning(
-                        f"⚠️ [Agent:{agent_id}] Failed to parse tool arguments for {full_name}: {tool_call.function.arguments}, error={str(e)}"
                     )
                     continue
 
+                try:
+                    params = json.loads(raw_arguments)
+                except (json.JSONDecodeError, TypeError, ValueError):
+                    parse_issues.append(
+                        ToolCallParseIssue(
+                            call_index=idx,
+                            call_id=call_id,
+                            code=ToolCallParseIssueCode.INVALID_ARGUMENTS_JSON,
+                        )
+                    )
+                    continue
+                if not isinstance(params, dict):
+                    parse_issues.append(
+                        ToolCallParseIssue(
+                            call_index=idx,
+                            call_id=call_id,
+                            code=ToolCallParseIssueCode.ARGUMENTS_NOT_OBJECT,
+                        )
+                    )
+                    continue
+
+                parsed_tool_calls.append((tool_call, full_name, params))
+                logger.debug(
+                    f"✅ [Agent:{agent_id}] Successfully parsed tool arguments for {full_name}: {len(params)} param(s)"
+                )
+
+            if parse_issues:
+                logger.warning(
+                    f"⚠️ [Agent:{agent_id}] Rejected malformed tool-call batch: "
+                    + ", ".join(
+                        f"#{issue.call_index + 1}:{issue.code.value}"
+                        for issue in parse_issues
+                    )
+                )
+                raise ToolCallBatchParseError(parse_issues)
+
+            for tool_call, full_name, params in parsed_tool_calls:
                 # format in framework
                 # agent_info = AgentFactory.agent_instance(agent_id)
                 agent_info = kwargs.get("agent")
@@ -537,6 +643,10 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                 "error_type": type(exc).__name__,
                 "message": str(exc)[:500],
             }
+        finally:
+            context.context_info[
+                f"completion_evidence_resolved_this_turn:{self.id()}"
+            ] = context.get_agent_step(self.id())
         assessment = context.assess_completion_contract(agent_claimed_finished=True)
         if (
             assessment is None
@@ -2255,6 +2365,67 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         )
         return compacted
 
+    @staticmethod
+    def _coerce_loop_budget_final_response(
+        response: ModelResponse,
+    ) -> ModelResponse:
+        """Remove executable intent from the one tool-free finalization response."""
+        sanitized = copy.copy(response)
+        content = (response.content or "").strip()
+        if response.tool_calls:
+            logger.warning(
+                "Model returned %s tool call(s) during a tool-free budget "
+                "finalization turn; executable intent was discarded",
+                len(response.tool_calls),
+            )
+        sanitized.content = content
+        sanitized.tool_calls = []
+        if isinstance(response.message, dict):
+            sanitized.message = dict(response.message)
+            sanitized.message["content"] = content
+            sanitized.message.pop("tool_calls", None)
+        return sanitized
+
+    async def async_finalize_at_loop_budget(
+        self, message: Message, **kwargs
+    ) -> Message | None:
+        """Use the configured boundary step for one tool-free synthesis turn."""
+        try:
+            await self.async_pre_run(message)
+            policy_result = await self.async_policy(
+                message.payload,
+                message=message,
+                _loop_budget_finalization=True,
+                **kwargs,
+            )
+            if not any(
+                str(getattr(action, "policy_info", "") or "").strip()
+                for action in policy_result or []
+            ):
+                raise AWorldRuntimeException(
+                    "bounded finalization returned no textual response"
+                )
+            final_result = await self.async_post_run(
+                policy_result, message.payload, message
+            )
+            message.context.context_info[
+                f"agent_loop_budget_finalized:{self.id()}"
+            ] = True
+            return final_result
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            message.context.context_info[
+                f"agent_loop_budget_finalization_error:{self.id()}"
+            ] = {"error_type": type(exc).__name__}
+            logger.warning(
+                "Bounded finalization failed for agent %s; preserving hard-stop "
+                "behavior (error_type=%s)",
+                self.id(),
+                type(exc).__name__,
+            )
+            return None
+
     async def async_policy(
         self,
         observation: Observation,
@@ -2272,6 +2443,9 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             ActionModel sequence from agent policy
         """
         logger.info(f"Agent{type(self)}#{self.id()}: async_policy start")
+        loop_budget_finalization = bool(
+            kwargs.pop("_loop_budget_finalization", False)
+        )
         # temporary state context
         self.context = message.context
         self._install_runtime_completion_contract(message.context)
@@ -2315,7 +2489,24 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             messages=raw_messages,
             context_compiler_mode=context_compiler_mode,
         )
-        tools = await self._filter_tools(message.context)
+        if loop_budget_finalization:
+            raw_messages = list(raw_messages)
+            raw_messages.append(
+                {
+                    "role": "user",
+                    "content": (
+                        "The execution step budget has been reached. This is the "
+                        "bounded finalization turn and no tools are available. "
+                        "Using only the task and observations already present, "
+                        "produce the best complete final response now. Report "
+                        "verified outcomes and artifacts, state uncertainty instead "
+                        "of inventing results, and do not request another tool call."
+                    ),
+                }
+            )
+            tools = None
+        else:
+            tools = await self._filter_tools(message.context)
         progressive_tool_base_tools = getattr(
             self.llm, "_context_progressive_tool_base_tools", None
         )
@@ -2335,7 +2526,8 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             getattr(self.llm, "_context_task_catalog_policy", "sticky") == "sticky"
         )
         if (
-            getattr(self.llm, "_context_progressive_skills", True)
+            not loop_budget_finalization
+            and getattr(self.llm, "_context_progressive_skills", True)
             and context_compiler_mode != "off"
         ):
             from aworld.skills.progressive_context import (
@@ -2371,7 +2563,9 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                     "Progressive Skill publication failed in non-enforce mode; "
                     f"traceback={traceback.format_exc()}"
                 )
-        if not tools:
+        if loop_budget_finalization:
+            tools = None
+        elif not tools:
             tools = None
             if explicit_progressive_catalog and context_compiler_mode == "enforce":
                 from aworld.core.context.compiler import (
@@ -2692,6 +2886,8 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             raise AWorldRuntimeException(str(e)) from e
         finally:
             self._safe_record_llm_call_response(message, llm_call_id, llm_response)
+            if loop_budget_finalization and llm_response:
+                llm_response = self._coerce_loop_budget_final_response(llm_response)
             if not invoke_completed:
                 raise
             if llm_response:
@@ -2733,6 +2929,22 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                             agent=self,
                             use_tools_in_prompt=self.use_tools_in_prompt,
                         )
+                    if loop_budget_finalization and agent_result.is_call_tool:
+                        logger.warning(
+                            "Agent %s attempted tool work during its bounded "
+                            "finalization turn; returning the textual response only",
+                            self.id(),
+                        )
+                        agent_result = AgentResult(
+                            actions=[
+                                ActionModel(
+                                    agent_name=self.id(),
+                                    policy_info=llm_response.content or "",
+                                )
+                            ],
+                            current_state=agent_result.current_state,
+                            is_call_tool=False,
+                        )
                     candidate_finished = not agent_result.is_call_tool
                     if candidate_finished:
                         validation_feedback = (
@@ -2748,6 +2960,31 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                                 final_response_text=llm_response.content or "",
                             )
                         )
+                    if loop_budget_finalization and validation_feedback:
+                        final_text = (llm_response.content or "").strip()
+                        final_text = (
+                            f"{final_text}\n\n"
+                            "The completion contract remains unsatisfied, so I "
+                            "cannot confirm that the task is complete."
+                        ).strip()
+                        llm_response.content = final_text
+                        if isinstance(llm_response.message, dict):
+                            llm_response.message = dict(llm_response.message)
+                            llm_response.message["content"] = final_text
+                        agent_result = AgentResult(
+                            actions=[
+                                ActionModel(
+                                    agent_name=self.id(),
+                                    policy_info=final_text,
+                                )
+                            ],
+                            current_state=agent_result.current_state,
+                            is_call_tool=False,
+                        )
+                        message.context.context_info[
+                            f"agent_loop_budget_validation_blocked:{self.id()}"
+                        ] = True
+                        validation_feedback = None
                     # skip summary on final round
                     await self._add_message_to_memory(
                         payload=llm_response,

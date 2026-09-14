@@ -6,8 +6,6 @@ import asyncio
 
 from typing import Any, Dict, List, Tuple, Union
 
-from mcp.types import TextContent, ImageContent
-
 from aworld.core.common import ActionModel, ActionResult, Observation
 from aworld.core.tool.base import ToolActionExecutor, Tool, AsyncTool
 from aworld.logs.util import logger
@@ -17,6 +15,7 @@ from aworld.memory.tool_call_compaction import (
     compacted_replay_execution_error,
 )
 import aworld.mcp_client.utils as mcp_utils
+from aworld.mcp_client.utils import lower_mcp_call_result
 from aworld.utils.common import sync_exec, find_file
 
 
@@ -183,11 +182,30 @@ class MCPToolExecutor(ToolActionExecutor):
             # Get server and operation information
             server_name = action.tool_name
             if not server_name:
-                raise ValueError("Missing tool_name in action model")
+                results.append(
+                    ActionResult(
+                        success=False,
+                        content="Error executing tool: Missing tool_name in action model",
+                        error="Missing tool_name in action model",
+                        keep=True,
+                        parameter=action.params or {},
+                    )
+                )
+                continue
 
             action_name = action.action_name
             if not action_name:
-                raise ValueError("Missing action_name in action model")
+                results.append(
+                    ActionResult(
+                        success=False,
+                        tool_name=server_name,
+                        content="Error executing tool: Missing action_name in action model",
+                        error="Missing action_name in action model",
+                        keep=True,
+                        parameter=action.params or {},
+                    )
+                )
+                continue
 
             params = action.params or {}
             replay_error = compacted_replay_execution_error(
@@ -198,12 +216,15 @@ class MCPToolExecutor(ToolActionExecutor):
                 logger.warning(f"Blocking replay-compacted MCP tool call: {replay_error}")
                 results.append(
                     ActionResult(
+                        tool_name=server_name,
+                        action_name=action_name,
                         content=f"{REPLAY_COMPACTED_ARGUMENT_FAILURE}: {replay_error}",
                         keep=True,
                         is_done=True,
                         success=False,
                         error=REPLAY_COMPACTED_ARGUMENT_FAILURE,
                         metadata={"failure_type": REPLAY_COMPACTED_ARGUMENT_FAILURE},
+                        parameter=params,
                     )
                 )
                 continue
@@ -218,29 +239,14 @@ class MCPToolExecutor(ToolActionExecutor):
                 try:
                     result = await server.call_tool(action_name, params)
 
-                    if result and result.content:
-                        if isinstance(result.content[0], TextContent):
-                            action_result = ActionResult(
-                                content=result.content[0].text,
-                                keep=True
-                            )
-                        elif isinstance(result.content[0], ImageContent):
-                            action_result = ActionResult(
-                                content=f"data:image/jpeg;base64,{result.content[0].data}",
-                                keep=True
-                            )
-                        else:
-                            action_result = ActionResult(
-                                content="",
-                                keep=True
-                            )
-                            logger.warning("Unsupported content type is error:")
-                    else:
-                        action_result = ActionResult(
-                            content="",
-                            keep=True
-                        )
-                        logger.warning("mcp result is null")
+                    if result is None:
+                        raise RuntimeError("MCP tool returned no protocol result")
+                    action_result = lower_mcp_call_result(
+                        result,
+                        server_name=server_name,
+                        tool_name=action_name,
+                        parameter=params,
+                    )
 
                     results.append(action_result)
                 except asyncio.CancelledError:
@@ -265,8 +271,13 @@ class MCPToolExecutor(ToolActionExecutor):
                 error_msg = str(e)
                 logger.error(f"Error executing MCP action: {error_msg}")
                 action_result = ActionResult(
+                    success=False,
+                    tool_name=server_name,
+                    action_name=action_name,
                     content=f"Error executing tool: {error_msg}",
-                    keep=True
+                    error=error_msg,
+                    keep=True,
+                    parameter=params,
                 )
                 results.append(action_result)
 

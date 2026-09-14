@@ -304,7 +304,11 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
     def run(self, message: Message, **kwargs) -> Message:
         message.context.update_agent_step(self.id())
         task = message.context.get_task()
-        if task.conf.get("run_mode") == TaskRunMode.INTERACTIVE:
+        if (
+            task
+            and task.conf
+            and task.conf.get("run_mode") == TaskRunMode.INTERACTIVE
+        ):
             agent = task.swarm.ordered_agents[0] if task.agent is None else task.agent
             message.context.new_trajectory_step(agent.id())
         caller = message.caller
@@ -314,8 +318,13 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
             self.loop_step = 0
         should_term = self.sync_should_terminate_loop(message)
         if should_term:
+            final_result = sync_exec(
+                self.async_finalize_at_loop_budget, message, **kwargs
+            )
             sync_exec(self._resolve_completion_at_loop_budget, message)
             self.postprocess_terminate_loop(message)
+            if final_result is not None:
+                return final_result
             return Message(
                 category=Constants.TASK,
                 payload=TaskItem(
@@ -400,8 +409,13 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
                 self.loop_step = 0
             should_term = await self.should_terminate_loop(message)
             if should_term:
+                final_result = await self.async_finalize_at_loop_budget(
+                    message, **kwargs
+                )
                 await self._resolve_completion_at_loop_budget(message)
                 self.postprocess_terminate_loop(message)
+                if final_result is not None:
+                    return final_result
                 return Message(
                     category=Constants.TASK,
                     payload=TaskItem(
@@ -728,6 +742,17 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
             return get_agent_step(self.id()) >= self.max_loop_steps
         return self.loop_step >= self.max_loop_steps
 
+    async def async_finalize_at_loop_budget(
+        self, message: Message, **kwargs
+    ) -> Message | None:
+        """Optionally consume the boundary step as a bounded finalization turn.
+
+        Generic agents retain the historical hard-stop behavior. Agents whose
+        policy can synthesize a user-facing result may override this hook, but
+        must not start additional environment work from the boundary turn.
+        """
+        return None
+
     async def _resolve_completion_at_loop_budget(self, message: Message) -> None:
         context = getattr(message, "context", None)
         if context is None:
@@ -740,6 +765,11 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
                 else None
             ),
             "max_loop_steps": self.max_loop_steps,
+            "finalization_performed": bool(
+                context.context_info.get(
+                    f"agent_loop_budget_finalized:{self.id()}", False
+                )
+            ),
         }
         event_manager = getattr(context, "event_manager", None)
         state_context = (
@@ -760,7 +790,20 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
                 dict(exhaustion)
             )
         resolver = getattr(context, "resolve_completion_evidence", None)
-        if callable(resolver):
+        resolved_step = context.context_info.pop(
+            f"completion_evidence_resolved_this_turn:{self.id()}", None
+        )
+        current_step = (
+            context.get_agent_step(self.id())
+            if callable(getattr(context, "get_agent_step", None))
+            else None
+        )
+        already_resolved = (
+            isinstance(resolved_step, int)
+            and not isinstance(resolved_step, bool)
+            and resolved_step == current_step
+        )
+        if callable(resolver) and not already_resolved:
             await resolver()
 
     def postprocess_terminate_loop(self, message: Message):
