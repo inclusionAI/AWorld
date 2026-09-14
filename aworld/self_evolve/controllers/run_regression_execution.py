@@ -48,6 +48,13 @@ from aworld.self_evolve.targets import SelfEvolveTarget
 from aworld.self_evolve.types import CandidateVariant, EvaluationSummary, GateResult
 
 
+# Regression panels verify preservation after the separate selection panel has
+# already established improvement.  A three-percent practical margin prevents
+# high-scoring (90+) two-case contract panels from demanding a statistically
+# significant additional gain merely to prove non-regression.
+_REGRESSION_SCORE_NONINFERIORITY_MARGIN = 0.03
+
+
 @dataclass(frozen=True)
 class RegressionExecutionRequest:
     run_id: str
@@ -350,7 +357,12 @@ async def _execute_regression_suite(
                 EvaluationRuntimeHealthGate().evaluate(
                     (baseline_summary, candidate_summary)
                 ),
-                ScoreImprovementGate(min_delta=0.0).evaluate(
+                ScoreImprovementGate(
+                    min_delta=0.0,
+                    minimum_relative_margin=(
+                        _REGRESSION_SCORE_NONINFERIORITY_MARGIN
+                    ),
+                ).evaluate(
                     baseline=baseline_summary,
                     candidate=candidate_summary,
                 ),

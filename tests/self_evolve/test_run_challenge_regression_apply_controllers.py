@@ -1046,6 +1046,70 @@ async def test_successful_regression_persists_evidence_schema_despite_observer_f
 
 
 @pytest.mark.asyncio
+async def test_regression_uses_practical_noninferiority_for_preservation_panel(
+    tmp_path: Path,
+) -> None:
+    skill_path = tmp_path / "skills" / "demo" / "SKILL.md"
+    skill_path.parent.mkdir(parents=True)
+    skill_path.write_text("# Demo\n", encoding="utf-8")
+    target = SkillTextTarget(skill_path)
+    common = {
+        "judge_attempt_count": 6,
+        "judge_success_count": 6,
+        "judge_failure_count": 0,
+        "comparison_plan_fingerprint": "sha256:regression-plan",
+        "comparison_cardinality_preserved": True,
+        "comparison_effective_case_count": 1,
+        "comparison_case_ids": ["case-2"],
+    }
+
+    async def evaluate_pair(*_args: object, **_kwargs: object) -> tuple[EvaluationSummary, EvaluationSummary]:
+        return (
+            EvaluationSummary(
+                "baseline",
+                {
+                    **common,
+                    "score": 93.0,
+                    "score_samples": [97.0, 89.0, 97.0, 89.0, 97.0, 89.0],
+                },
+                "regression",
+            ),
+            EvaluationSummary(
+                "candidate-1",
+                {
+                    **common,
+                    "score": 93.0,
+                    "score_samples": [99.0, 87.0, 99.0, 87.0, 99.0, 87.0],
+                },
+                "regression",
+            ),
+        )
+
+    result = await execute_independent_regression(
+        RegressionExecutionRequest(
+            "run-regression-noninferiority",
+            target,
+            _dataset(),
+            _skill_candidate(target),
+            "proposal",
+            None,
+        ),
+        RegressionExecutionPolicy(False, 1, 1, (_suite(_dataset("case-2")),)),
+        _regression_runtime(tmp_path, evaluate_pair=evaluate_pair),
+    )
+
+    assert result.evidence is not None
+    assert result.evidence.passed is True
+    score_gate = next(
+        gate
+        for gate in result.evidence.suite_results[0].gate_results
+        if gate.gate_name == "score_improvement"
+    )
+    assert score_gate.details["code"] == "score_improvement_paired_noninferior"
+    assert score_gate.details["noninferiority_margin"] == pytest.approx(2.79)
+
+
+@pytest.mark.asyncio
 async def test_verified_only_source_drift_removes_shadow_and_terminalizes_journal(
     tmp_path: Path,
 ) -> None:
