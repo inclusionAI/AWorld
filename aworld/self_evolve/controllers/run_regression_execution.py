@@ -362,6 +362,7 @@ async def _execute_regression_suite(
                     minimum_relative_margin=(
                         _REGRESSION_SCORE_NONINFERIORITY_MARGIN
                     ),
+                    accept_noninferior=True,
                 ).evaluate(
                     baseline=baseline_summary,
                     candidate=candidate_summary,

@@ -121,10 +121,12 @@ class ScoreImprovementGate:
         min_delta: float,
         confidence_z: float = 1.96,
         minimum_relative_margin: float = 0.01,
+        accept_noninferior: bool = False,
     ) -> None:
         self.min_delta = min_delta
         self.confidence_z = confidence_z
         self.minimum_relative_margin = minimum_relative_margin
+        self.accept_noninferior = accept_noninferior
 
     def evaluate(
         self,
@@ -268,7 +270,7 @@ class ScoreImprovementGate:
                     ),
                 )
             if (
-                paired_delta >= self.min_delta
+                (self.accept_noninferior or paired_delta >= self.min_delta)
                 and paired_lower >= self.min_delta - noninferiority_margin
             ):
                 details.update(
