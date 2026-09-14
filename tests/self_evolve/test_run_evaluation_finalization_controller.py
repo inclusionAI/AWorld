@@ -177,12 +177,14 @@ def _request(
     evaluation: CandidateEvaluationRequest | None = None,
     execution: CandidateEvaluationExecutionResult | None = None,
     measurement_experiment: ControlledExperimentSpec | None = None,
+    evaluation_dataset: SelfEvolveDataset | None = None,
 ) -> CandidateEvaluationFinalizationRequest:
     return CandidateEvaluationFinalizationRequest(
         evaluation=evaluation or _evaluation_request(),
         replay=_replay(),
         execution=execution or _execution(),
         measurement_experiment=measurement_experiment,
+        evaluation_dataset=evaluation_dataset,
     )
 
 
@@ -281,6 +283,7 @@ def test_verified_apply_rejects_non_allowlisted_target_type() -> None:
 def test_required_measurement_is_attached_to_state_and_report() -> None:
     experiment = object.__new__(ControlledExperimentSpec)
     materialization_calls: list[dict[str, object]] = []
+    evaluation_dataset = _dataset()
 
     def materialize(**kwargs):
         materialization_calls.append(kwargs)
@@ -290,12 +293,14 @@ def test_required_measurement_is_attached_to_state_and_report() -> None:
         _request(
             evaluation=_evaluation_request(apply_policy="verified_only"),
             measurement_experiment=experiment,
+            evaluation_dataset=evaluation_dataset,
         ),
         _policy(MeasurementPolicyMode.REQUIRED),
         _runtime(materialize),
     )
 
     assert len(materialization_calls) == 1
+    assert materialization_calls[0]["replay_dataset"] is evaluation_dataset
     assert result.state.status == "accepted"
     assert result.state.payload["measurement_summary"].promotion_eligible
     assert result.report_item["measurement"]["promotion_eligible"] is True

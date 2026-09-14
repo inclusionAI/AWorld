@@ -25,6 +25,7 @@ from aworld.self_evolve.controllers.run_execution import (
 from aworld.self_evolve.controllers.run_replay_execution import (
     CandidateReplayExecutionResult,
 )
+from aworld.self_evolve.datasets import SelfEvolveDataset
 from aworld.self_evolve.measurement import (
     ControlledExperimentSpec,
     MeasurementPolicyMode,
@@ -46,6 +47,7 @@ class CandidateEvaluationFinalizationRequest:
     replay: CandidateReplayExecutionResult
     execution: CandidateEvaluationExecutionResult
     measurement_experiment: ControlledExperimentSpec | None = None
+    evaluation_dataset: SelfEvolveDataset | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.evaluation, CandidateEvaluationRequest):
@@ -61,6 +63,11 @@ class CandidateEvaluationFinalizationRequest:
             ControlledExperimentSpec,
         ):
             raise TypeError("measurement_experiment must be typed when present")
+        if self.evaluation_dataset is not None and not isinstance(
+            self.evaluation_dataset,
+            SelfEvolveDataset,
+        ):
+            raise TypeError("evaluation_dataset must be typed when present")
 
 
 @dataclass(frozen=True)
@@ -157,7 +164,9 @@ def finalize_candidate_evaluation(
                 candidate=evaluation.candidate,
                 dataset=evaluation.dataset,
                 replay_result=replay.replay_result,
-                replay_dataset=replay.replay_dataset,
+                replay_dataset=(
+                    request.evaluation_dataset or replay.replay_dataset
+                ),
                 baseline_summary=execution.baseline_summary,
                 candidate_summary=execution.candidate_summary,
                 candidate_count=evaluation.candidate_count,

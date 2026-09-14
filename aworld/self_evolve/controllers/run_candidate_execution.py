@@ -321,6 +321,7 @@ async def execute_iteration_candidate(
             replay_execution,
             evaluation_execution,
             measurement_experiment,
+            evaluation_admission.evaluation_dataset,
         ),
         CandidateEvaluationFinalizationPolicy(
             measurement_mode=policy.measurement_mode,
