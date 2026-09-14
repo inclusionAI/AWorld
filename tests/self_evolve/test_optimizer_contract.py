@@ -100,6 +100,29 @@ def _trace_pack():
     )
 
 
+def test_focused_score_regression_can_replace_unverified_parent_delta() -> None:
+    instructions = _focused_repair_prompt_instructions(
+        {
+            "repair_conformance": {},
+            "validation_feedback": [
+                {
+                    "failed_gates": ["score_improvement"],
+                    "metrics": {
+                        "baseline_score": 86.5,
+                        "candidate_score": 79.6,
+                        "score_delta": -6.9,
+                    },
+                }
+            ],
+        }
+    )
+
+    assert "score-regressed and is not verified behavior" in instructions
+    assert "Do not preserve its SKILL.md delta" in instructions
+    assert "Rebase target prose on current_content" in instructions
+    assert "blanket claim ledgers" in instructions
+
+
 def _evaluation_support_prerequisite_feedback(
     current_content: str,
 ) -> EvaluationSummary:
