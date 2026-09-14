@@ -140,6 +140,7 @@ from aworld.self_evolve.cli_orchestration import (
     _dataset_recipe_matches_candidate_source,
     _default_iteration_budget,
     _framework_shared_failure_candidate_id,
+    _has_later_conclusive_negative_measurement,
     _include_prior_run_cases,
     _parse_candidate_mutation_model_output,
     _trajectory_group_rank_key,
@@ -7092,6 +7093,49 @@ def test_framework_retry_requires_pure_shared_evaluator_failure() -> None:
         {"gate_name": "cost", "passed": False, "details": {}}
     )
     assert _framework_shared_failure_candidate_id(mixed_failure) is None
+
+
+def test_framework_retry_is_superseded_by_later_negative_measurement(
+    tmp_path: Path,
+) -> None:
+    old_run = tmp_path / "old-run"
+    old_run.mkdir()
+    old_report = old_run / "report.json"
+    old_report.write_text("{}", encoding="utf-8")
+    cutoff = old_report.stat().st_mtime
+    experiment = tmp_path / "new-run" / "experiments" / "experiment-1"
+    experiment.mkdir(parents=True)
+    (experiment / "experiment.json").write_text(
+        json.dumps(
+            {
+                "treatment": {"fingerprint": "sha256:candidate"},
+                "frozen_identities": {"dataset": "sha256:dataset"},
+            }
+        ),
+        encoding="utf-8",
+    )
+    (experiment / "attribution_report.json").write_text(
+        json.dumps(
+            {
+                "decision": {"reason": "conclusive_negative_effect"},
+                "effect": {"direction": "negative"},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    assert _has_later_conclusive_negative_measurement(
+        artifact_root=tmp_path,
+        candidate_fingerprint="sha256:candidate",
+        dataset_fingerprint="sha256:dataset",
+        after_mtime=cutoff,
+    )
+    assert not _has_later_conclusive_negative_measurement(
+        artifact_root=tmp_path,
+        candidate_fingerprint="sha256:other",
+        dataset_fingerprint="sha256:dataset",
+        after_mtime=cutoff,
+    )
 
 
 def test_framework_retry_recipe_ignores_only_campaign_local_snapshot() -> None:

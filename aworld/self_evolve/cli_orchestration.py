@@ -167,6 +167,7 @@ from aworld.self_evolve.replay import (
     ReplayEvidenceReuseDisposition,
     candidate_replay_is_comparable,
     load_candidate_replay_result,
+    replay_dataset_fingerprint,
 )
 from aworld.self_evolve.run_history import (
     _load_candidate_variant,
@@ -440,6 +441,64 @@ def _dataset_recipe_matches_candidate_source(
     )
 
 
+def _has_later_conclusive_negative_measurement(
+    *,
+    artifact_root: Path,
+    candidate_fingerprint: str,
+    dataset_fingerprint: str,
+    after_mtime: float,
+) -> bool:
+    """Do not endlessly retry a candidate disproved by a fresher measurement.
+
+    Interrupted campaigns may have completed and persisted an authoritative
+    attribution experiment before their final report is written.  Those
+    experiments remain valid negative evidence and must supersede an older
+    framework-blocked report for the same immutable candidate and dataset.
+    """
+
+    for run_path in artifact_root.iterdir():
+        if (
+            not run_path.is_dir()
+            or run_path.is_symlink()
+            or run_path.stat().st_mtime <= after_mtime
+        ):
+            continue
+        experiments = run_path / "experiments"
+        if not experiments.is_dir() or experiments.is_symlink():
+            continue
+        for experiment_path in experiments.iterdir():
+            if not experiment_path.is_dir() or experiment_path.is_symlink():
+                continue
+            specification_path = experiment_path / "experiment.json"
+            attribution_path = experiment_path / "attribution_report.json"
+            if not specification_path.is_file() or not attribution_path.is_file():
+                continue
+            try:
+                specification = _load_json_mapping(specification_path)
+                attribution = _load_json_mapping(attribution_path)
+            except (OSError, TypeError, ValueError, json.JSONDecodeError):
+                continue
+            treatment = specification.get("treatment")
+            frozen = specification.get("frozen_identities")
+            decision = attribution.get("decision")
+            effect = attribution.get("effect")
+            if not (
+                isinstance(treatment, Mapping)
+                and treatment.get("fingerprint") == candidate_fingerprint
+                and isinstance(frozen, Mapping)
+                and frozen.get("dataset") == dataset_fingerprint
+                and (
+                    isinstance(decision, Mapping)
+                    and decision.get("reason") == "conclusive_negative_effect"
+                    or isinstance(effect, Mapping)
+                    and effect.get("direction") == "negative"
+                )
+            ):
+                continue
+            return True
+    return False
+
+
 def _discover_framework_evaluator_retry_candidate(
     *,
     store: FilesystemSelfEvolveStore,
@@ -515,6 +574,13 @@ def _discover_framework_evaluator_retry_candidate(
                 replay_result=replay_result,
                 require_adapted=True,
             )
+        ):
+            continue
+        if _has_later_conclusive_negative_measurement(
+            artifact_root=store.artifact_root,
+            candidate_fingerprint=actual_candidate_fingerprint,
+            dataset_fingerprint=replay_dataset_fingerprint(dataset),
+            after_mtime=report_path.stat().st_mtime,
         ):
             continue
         return _FrameworkEvaluatorRetryCandidate(
