@@ -145,3 +145,45 @@ def test_run_command_returns_nonzero_when_direct_run_does_not_start(
     )
 
     assert exit_code == 1
+
+
+@pytest.mark.asyncio
+async def test_direct_run_defaults_to_one_complete_agent_run(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    selected_agent = SimpleNamespace(name="Aworld")
+    executor = SimpleNamespace()
+
+    class DummyRuntime:
+        def __init__(self, *args, **kwargs) -> None:
+            self._scheduler = None
+
+        async def _load_agents(self):
+            return [selected_agent]
+
+        def _bind_scheduler_default_agent(self, _agent_name: str) -> None:
+            pass
+
+        async def _create_executor(self, _agent):
+            return executor
+
+        def _restore_executor_session(self, *_args, **_kwargs) -> None:
+            pass
+
+    captured = {}
+
+    class DummyContinuousExecutor:
+        def __init__(self, *_args, **_kwargs) -> None:
+            pass
+
+        async def run_continuous(self, **kwargs):
+            captured.update(kwargs)
+            return {"results": []}
+
+    monkeypatch.setattr(main_module, "CliRuntime", DummyRuntime)
+    monkeypatch.setattr(main_module, "ContinuousExecutor", DummyContinuousExecutor)
+    monkeypatch.setattr("aworld.core.scheduler.get_scheduler", lambda: object())
+
+    await main_module._run_direct_mode(prompt="test", agent_name="Aworld")
+
+    assert captured["max_runs"] == 1

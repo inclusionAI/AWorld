@@ -1271,9 +1271,12 @@ async def _run_direct_mode(
             # If restore fails, session_id was already set during executor creation
             pass
     
-    # Default to 10 runs if max_runs is not specified (allow multi-step tasks)
+    # One direct CLI invocation represents one agent task. The agent owns its
+    # internal multi-step tool loop; repeating the original prompt here starts
+    # the whole task again and can duplicate side effects. Continuous execution
+    # remains available when callers explicitly pass --max-runs.
     if max_runs is None:
-        max_runs = 10
+        max_runs = 1
     
     # File parsing is now handled by FileParseHook automatically
     # Just pass the prompt as-is, the hook will process @filename references

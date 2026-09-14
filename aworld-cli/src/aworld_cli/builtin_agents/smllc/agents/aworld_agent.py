@@ -10,11 +10,10 @@ or coordinated multi-agent collaboration.
 """
 import os
 import sys
-import traceback
 from datetime import datetime, timedelta, timezone
 from importlib import import_module
 from pathlib import Path
-from typing import Callable, Optional, List
+from typing import Callable, Optional, List, Sequence
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from aworld.core.context.amni import AgentContextConfig
@@ -35,7 +34,7 @@ from .mac_ui_automation import (
 )
 
 # Import SpawnSubagentTool to ensure it's registered in ToolFactory
-from aworld.core.tool.builtin import SpawnSubagentTool
+from aworld.core.tool.builtin import SpawnSubagentTool  # noqa: F401
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -106,7 +105,12 @@ def resolve_aworld_prompt_budget() -> Optional[PromptBudgetPolicy]:
     return PromptBudgetPolicy(reserved_output_tokens=reserved_output_tokens)
 
 
-def render_aworld_system_prompt(now: Optional[datetime] = None) -> str:
+def render_aworld_system_prompt(
+    now: Optional[datetime] = None,
+    *,
+    available_tools: Sequence[str] = (),
+    available_subagents: Sequence[str] = (),
+) -> str:
     prompt_template = (Path(__file__).resolve().parent / "prompt.txt").read_text(encoding="utf-8")
     current = now or datetime.now(_BEIJING_TZ)
     if current.tzinfo is None:
@@ -115,6 +119,19 @@ def render_aworld_system_prompt(now: Optional[datetime] = None) -> str:
     replacements = {
         "{{current_date}}": current.strftime("%Y-%m-%d"),
         "{{current_datetime}}": current.strftime("%Y-%m-%d %H:%M:%S"),
+        "{{available_tools}}": (
+            ", ".join(sorted(set(available_tools))) or "none"
+        ),
+        "{{available_subagents}}": (
+            ", ".join(sorted(set(available_subagents))) or "none"
+        ),
+        "{{delegation_guidance}}": (
+            "Delegate only when a listed subagent is materially better suited "
+            "to an independent subtask. Use its exact listed name."
+            if available_subagents
+            else "No subagents are available in this run. Execute the task "
+            "directly and do not attempt delegation."
+        ),
     }
     rendered = prompt_template
     for placeholder, value in replacements.items():
@@ -122,8 +139,29 @@ def render_aworld_system_prompt(now: Optional[datetime] = None) -> str:
     return rendered
 
 
-def load_aworld_system_prompt() -> str:
-    return render_aworld_system_prompt()
+def load_aworld_system_prompt(
+    *,
+    available_tools: Sequence[str] = (),
+    available_subagents: Sequence[str] = (),
+) -> str:
+    return render_aworld_system_prompt(
+        available_tools=available_tools,
+        available_subagents=available_subagents,
+    )
+
+
+def resolve_aworld_max_loop_steps() -> int:
+    """Resolve the bounded soft limit for one Aworld agent task."""
+
+    raw_value = os.environ.get("AWORLD_MAX_LOOP_STEPS", "40")
+    try:
+        max_loop_steps = int(raw_value)
+    except ValueError as exc:
+        raise ValueError("AWORLD_MAX_LOOP_STEPS must be a positive integer") from exc
+    if max_loop_steps <= 0:
+        raise ValueError("AWORLD_MAX_LOOP_STEPS must be a positive integer")
+    return max_loop_steps
+
 
 def extract_agents_from_swarm(swarm: Swarm) -> List[BaseAgent]:
     """
@@ -203,6 +241,46 @@ def extract_agents_from_swarm(swarm: Swarm) -> List[BaseAgent]:
     except Exception as e:
         logger.warning(f"⚠️ Failed to extract agents from swarm: {e}")
         return []
+
+
+def _subagent_names(sub_agents: Sequence[BaseAgent]) -> List[str]:
+    return sorted({agent.name() for agent in sub_agents})
+
+
+def _build_aworld_sub_agents(sandbox) -> List[BaseAgent]:
+    """Build optional collaborators before publishing root capabilities."""
+
+    builders = []
+    if _CAST_TOOLS_AVAILABLE:
+        builders.extend(
+            [
+                ("developer", lambda: build_developer_swarm(sandbox=sandbox)),
+                ("evaluator", build_evaluator_swarm),
+            ]
+        )
+    else:
+        logger.warning(
+            "Developer and evaluator sub-agents are disabled because CAST "
+            f"dependencies are unavailable: {_CAST_TOOLS_UNAVAILABLE_REASON}"
+        )
+    builders.extend(
+        [
+            ("diffusion", build_diffusion_swarm),
+            ("avatar", build_avatar_swarm),
+            ("audio", build_audio_swarm),
+            ("image", build_image_swarm),
+        ]
+    )
+
+    sub_agents = []
+    for label, builder in builders:
+        try:
+            sub_agents.extend(extract_agents_from_swarm(builder()))
+        except Exception as exc:
+            logger.warning(
+                f"Optional Aworld {label} sub-agent is unavailable: {exc}"
+            )
+    return sub_agents
 
 
 def build_context_config(debug_mode):
@@ -311,9 +389,20 @@ def build_aworld_agent(include_skills: Optional[str] = None):
     )
     sandbox.reuse = True
 
-    # Create the Aworld agent with filesystem and terminal tools enabled
-    # Note: Aworld is a coordinator with lightweight tool access for information gathering
-    # Complex development tasks are delegated to sub-agents (e.g., Developer)
+    # Resolve optional collaborators before constructing the root agent so its
+    # prompt and tool catalog describe capabilities that actually exist.
+    sub_agents = _build_aworld_sub_agents(sandbox)
+    subagent_names = _subagent_names(sub_agents)
+    root_tool_names = [
+        CONTEXT_TOOL,
+        *([CAST_SEARCH] if _CAST_TOOLS_AVAILABLE else []),
+        *(["async_spawn_subagent"] if sub_agents else []),
+        "cron",
+    ]
+    prompt_capabilities = [*root_tool_names, *builtin_tools]
+
+    # Create the root as a direct executor. Delegation is an optional capability,
+    # not its identity, and is exposed only when collaborators were initialized.
     agent_class = PromptBudgetedAgent if prompt_budget_policy is not None else Agent
     budgeted_agent_kwargs = (
         {"prompt_budget_policy": prompt_budget_policy}
@@ -324,53 +413,22 @@ def build_aworld_agent(include_skills: Optional[str] = None):
         name="Aworld",
         desc="Aworld - A versatile AI assistant capable of executing tasks directly or delegating to agent teams",
         conf=agent_config,
-        system_prompt=load_aworld_system_prompt(),
+        system_prompt=load_aworld_system_prompt(
+            available_tools=prompt_capabilities,
+            available_subagents=subagent_names,
+        ),
         mcp_servers=aworld_mcp_servers,  # Keep default terminal access and opt-in macOS UI automation when enabled
         sandbox=sandbox,  # Shared sandbox (tools filtered by agent's mcp_servers config)
-        tool_names=[
-            CONTEXT_TOOL,      # Core: Context management
-            *([CAST_SEARCH] if _CAST_TOOLS_AVAILABLE else []),
-            'async_spawn_subagent',  # Core: Dynamic subagent delegation (AsyncTool, needs async_ prefix)
-            'cron',            # Core: Scheduled task management
-        ],
-        enable_subagent=True,  # Enable subagent capability (Aworld-specific default)
+        tool_names=root_tool_names,
+        enable_subagent=bool(sub_agents),
+        max_loop_steps=resolve_aworld_max_loop_steps(),
         **budgeted_agent_kwargs,
     )
 
-    # Directly instantiate developer, evaluator, and diffusion as sub-agents
-    # Pass shared sandbox to enable resource sharing while maintaining tool access control
-    try:
-        cast_sub_agents = []
-        if _CAST_TOOLS_AVAILABLE:
-            developer_swarm = build_developer_swarm(sandbox=sandbox)  # ✅ Share sandbox
-            evaluator_swarm = build_evaluator_swarm()  # TODO: Add sandbox parameter
-            cast_sub_agents = (
-                extract_agents_from_swarm(developer_swarm)
-                + extract_agents_from_swarm(evaluator_swarm)
-            )
-        else:
-            logger.warning(
-                "Developer and evaluator sub-agents are disabled because CAST "
-                f"dependencies are unavailable: {_CAST_TOOLS_UNAVAILABLE_REASON}"
-            )
-        diffusion_swarm = build_diffusion_swarm()  # TODO: Add sandbox parameter
-        avatar_swarm = build_avatar_swarm()
-        audio_swarm = build_audio_swarm()  # TODO: Add sandbox parameter
-        image_swarm = build_image_swarm()
-        sub_agents = (
-            cast_sub_agents
-            + extract_agents_from_swarm(diffusion_swarm)
-            + extract_agents_from_swarm(avatar_swarm)
-            + extract_agents_from_swarm(audio_swarm)
-            + extract_agents_from_swarm(image_swarm)
+    if sub_agents:
+        logger.info(
+            f"Adding {len(sub_agents)} initialized sub-agent(s) to Aworld TeamSwarm"
         )
-
-        if sub_agents:
-            logger.info(f"🤝 Adding {len(sub_agents)} sub-agent(s) to Aworld TeamSwarm (developer, evaluator, diffusion)")
-            return TeamSwarm(aworld_agent, *sub_agents, max_steps=100)
-        else:
-            logger.info("ℹ️ No sub-agents extracted, creating Aworld TeamSwarm without sub-agents")
-            return TeamSwarm(aworld_agent)
-    except Exception as e:
-        logger.warning(f"⚠️ Failed to instantiate sub-agents: {e}, creating Aworld TeamSwarm without sub-agents {traceback.format_exc()}")
-        return TeamSwarm(aworld_agent)
+        return TeamSwarm(aworld_agent, *sub_agents, max_steps=100)
+    logger.info("No sub-agents initialized; Aworld will execute directly")
+    return TeamSwarm(aworld_agent)
