@@ -308,7 +308,6 @@ def test_workflow_estimation_compiles_bound_budget_item_factory() -> None:
             replayable_dataset=lambda dataset: dataset,
         )
     )
-
     assert result.iteration_budget == 8
     assert result.estimated_baseline_repetitions == 1
     assert result.estimated_candidate_repetitions == 2
@@ -318,6 +317,17 @@ def test_workflow_estimation_compiles_bound_budget_item_factory() -> None:
         (BudgetStage.EVALUATION, "iteration-3-workflow-evaluation", 40),
         (BudgetStage.JUDGE, "iteration-3-workflow-judge", 120),
     )
+
+
+def test_campaign_bootstrap_uses_bounded_extended_repair_patience() -> None:
+    one_shot = _bootstrap_request()
+    one_shot_result = bootstrap_explicit_target_run(one_shot)
+    assert one_shot_result.scheduler.max_stalled_frontier_schedules == 1
+
+    campaign = _bootstrap_request()
+    campaign.run.campaign_id = "campaign-1"
+    campaign_result = bootstrap_explicit_target_run(campaign)
+    assert campaign_result.scheduler.max_stalled_frontier_schedules == 3
 
 
 def test_run_bootstrap_owns_observation_budget_and_scheduler_initialization() -> None:

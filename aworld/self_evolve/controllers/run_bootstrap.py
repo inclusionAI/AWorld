@@ -221,7 +221,14 @@ def bootstrap_explicit_target_run(request: RunBootstrapRequest) -> RunBootstrapR
     scheduler = StageAwareCandidateScheduler(
         exploration_population=runtime.candidate_generation_limit(
             replay_candidate_limit=policy.replay_candidate_limit
-        )
+        ),
+        # Candidate quality/evidence repairs are stochastic.  Campaigns can
+        # afford four focused schedules under their independent cycle and
+        # candidate ceilings; one-shot runner calls retain the conservative
+        # local default.
+        max_stalled_frontier_schedules=(
+            3 if getattr(run, "campaign_id", None) else 1
+        ),
     )
     scheduler_state = runtime.load_prior_scheduler_state(
         runtime.store,
