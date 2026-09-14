@@ -704,6 +704,14 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
                 if isinstance(progress_by_agent, dict)
                 else {}
             )
+            raw_goal_progress_observable = progress.get(
+                "goal_progress_observable"
+            )
+            goal_progress_observable = (
+                raw_goal_progress_observable
+                if isinstance(raw_goal_progress_observable, bool)
+                else None
+            )
             raw_goal_progress_count = progress.get("goal_progress_count", 0)
             goal_progress_count = (
                 raw_goal_progress_count
@@ -729,6 +737,7 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
                 policy=self._elastic_step_budget_policy,
                 observed_goal_progress_count=goal_progress_count,
                 last_goal_progress_agent_step=last_goal_step,
+                goal_progress_observable=goal_progress_observable,
             )
             state_context.context_info[f"agent_step_budget:{self.id()}"] = (
                 decision.to_dict()

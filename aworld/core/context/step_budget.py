@@ -9,6 +9,9 @@ from enum import Enum
 class StepBudgetDecisionCode(str, Enum):
     WITHIN_CURRENT_LIMIT = "within_current_limit"
     PROGRESS_EXTENSION_GRANTED = "progress_extension_granted"
+    UNOBSERVABLE_PROGRESS_EXTENSION_GRANTED = (
+        "unobservable_progress_extension_granted"
+    )
     NO_NEW_GOAL_PROGRESS = "no_new_goal_progress"
     GOAL_PROGRESS_EVIDENCE_MISSING = "goal_progress_evidence_missing"
     GOAL_PROGRESS_STALE = "goal_progress_stale"
@@ -81,6 +84,7 @@ def evaluate_elastic_step_budget(
     current_step: int,
     observed_goal_progress_count: int,
     last_goal_progress_agent_step: int | None,
+    goal_progress_observable: bool | None = None,
     state: ElasticStepBudgetState | None = None,
 ) -> tuple[ElasticStepBudgetDecision, ElasticStepBudgetState]:
     """Evaluate one budget boundary without interpreting task or Tool content."""
@@ -98,6 +102,10 @@ def evaluate_elastic_step_budget(
         raise ValueError(
             "last_goal_progress_agent_step must be a non-negative integer or None"
         )
+    if goal_progress_observable is not None and not isinstance(
+        goal_progress_observable, bool
+    ):
+        raise ValueError("goal_progress_observable must be a boolean or None")
     state = state or ElasticStepBudgetState(effective_limit=policy.soft_limit)
     if current_step < state.effective_limit:
         code = StepBudgetDecisionCode.WITHIN_CURRENT_LIMIT
@@ -107,6 +115,19 @@ def evaluate_elastic_step_budget(
         code = StepBudgetDecisionCode.HARD_LIMIT_REACHED
         terminate = True
         next_state = state
+    elif goal_progress_observable is False:
+        effective_limit = min(
+            state.effective_limit + policy.extension_steps,
+            policy.hard_limit,
+        )
+        next_state = ElasticStepBudgetState(
+            effective_limit=effective_limit,
+            consumed_goal_progress_count=state.consumed_goal_progress_count,
+            extension_count=state.extension_count + 1,
+            total_extended_steps=effective_limit - policy.soft_limit,
+        )
+        code = StepBudgetDecisionCode.UNOBSERVABLE_PROGRESS_EXTENSION_GRANTED
+        terminate = current_step >= effective_limit
     elif observed_goal_progress_count <= state.consumed_goal_progress_count:
         code = StepBudgetDecisionCode.NO_NEW_GOAL_PROGRESS
         terminate = True

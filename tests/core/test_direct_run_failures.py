@@ -187,3 +187,119 @@ async def test_direct_run_defaults_to_one_complete_agent_run(
     await main_module._run_direct_mode(prompt="test", agent_name="Aworld")
 
     assert captured["max_runs"] == 1
+
+
+@pytest.mark.asyncio
+async def test_noninteractive_aworld_retries_zero_provider_capture_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    selected_agent = SimpleNamespace(name="Aworld")
+    executor = SimpleNamespace()
+
+    class DummyRuntime:
+        def __init__(self, *args, **kwargs) -> None:
+            self._scheduler = None
+
+        async def _load_agents(self):
+            return [selected_agent]
+
+        def _bind_scheduler_default_agent(self, _agent_name: str) -> None:
+            pass
+
+        async def _create_executor(self, _agent):
+            return executor
+
+        def _restore_executor_session(self, *_args, **_kwargs) -> None:
+            pass
+
+    calls = 0
+
+    class DummyContinuousExecutor:
+        def __init__(self, *_args, **_kwargs) -> None:
+            pass
+
+        async def run_continuous(self, **_kwargs):
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                return {"results": [{"response": "", "success": True}]}
+            return {
+                "results": [
+                    {
+                        "response": "done",
+                        "success": True,
+                        "trajectory": [{"meta": {"step": 1}}],
+                        "llm_calls": [{"request_id": "request-1"}],
+                    }
+                ]
+            }
+
+    monkeypatch.setattr(main_module, "CliRuntime", DummyRuntime)
+    monkeypatch.setattr(main_module, "ContinuousExecutor", DummyContinuousExecutor)
+    monkeypatch.setattr("aworld.core.scheduler.get_scheduler", lambda: object())
+
+    summary = await main_module._run_direct_mode(
+        prompt="test",
+        agent_name="Aworld",
+        non_interactive=True,
+    )
+
+    assert calls == 2
+    assert summary["results"][0]["response"] == "done"
+
+
+@pytest.mark.asyncio
+async def test_noninteractive_aworld_fails_after_zero_provider_capture_retries(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    selected_agent = SimpleNamespace(name="Aworld")
+    executor = SimpleNamespace()
+
+    class DummyRuntime:
+        def __init__(self, *args, **kwargs) -> None:
+            self._scheduler = None
+
+        async def _load_agents(self):
+            return [selected_agent]
+
+        def _bind_scheduler_default_agent(self, _agent_name: str) -> None:
+            pass
+
+        async def _create_executor(self, _agent):
+            return executor
+
+        def _restore_executor_session(self, *_args, **_kwargs) -> None:
+            pass
+
+    calls = 0
+
+    class DummyContinuousExecutor:
+        def __init__(self, *_args, **_kwargs) -> None:
+            pass
+
+        async def run_continuous(self, **_kwargs):
+            nonlocal calls
+            calls += 1
+            return {"results": [{"response": "", "success": True}]}
+
+    monkeypatch.setattr(main_module, "CliRuntime", DummyRuntime)
+    monkeypatch.setattr(main_module, "ContinuousExecutor", DummyContinuousExecutor)
+    monkeypatch.setattr("aworld.core.scheduler.get_scheduler", lambda: object())
+
+    succeeded = await main_module._run_direct_mode(
+        prompt="test",
+        agent_name="Aworld",
+        non_interactive=True,
+    )
+
+    assert succeeded is False
+    assert calls == 2
+    payload = _failure_payload(capsys.readouterr().err)
+    assert payload["stage"] == "provider_start"
+    assert payload["error_code"] == "provider_call_not_captured"
+    assert payload["llm_call_count"] == 0
+    assert payload["details"] == {
+        "attempts": 2,
+        "trajectory_capture_mode": "summary_synthetic",
+    }

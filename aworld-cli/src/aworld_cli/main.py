@@ -16,6 +16,25 @@ from typing import Optional
 from aworld.plugins.discovery import discover_plugins
 
 
+_AWORLD_PRE_PROVIDER_MAX_ATTEMPTS = 2
+
+
+def _direct_run_has_provider_evidence(summary: dict | None) -> bool:
+    """Return whether a direct run captured evidence that execution reached the model."""
+    if not isinstance(summary, dict):
+        return False
+    for result in summary.get("results") or []:
+        if not isinstance(result, dict):
+            continue
+        trajectory = result.get("trajectory")
+        if isinstance(trajectory, list) and trajectory:
+            return True
+        llm_calls = result.get("llm_calls")
+        if isinstance(llm_calls, list) and llm_calls:
+            return True
+    return False
+
+
 def _trajectory_from_direct_run_summary(
     summary: dict | None,
     *,
@@ -1293,20 +1312,48 @@ async def _run_direct_mode(
     continuous_executor = ContinuousExecutor(agent_executor, console=console)
     
     # Run task execution
-    summary = await continuous_executor.run_continuous(
-        prompt=multimodal_prompt,
-        agent_name=agent_name,
-        requested_skill_names=requested_skill_names,
-        non_interactive=non_interactive,
-        max_runs=max_runs,
-        max_cost=max_cost,
-        max_duration=max_duration,
-        completion_signal=completion_signal,
-        completion_threshold=completion_threshold,
-        show_start_banner=show_start_banner,
-        show_iteration_header=show_iteration_header,
-        echo_prompt_as_turn=echo_prompt_as_turn,
+    require_provider_evidence = (
+        non_interactive and agent_name.casefold() == "aworld"
     )
+    max_provider_attempts = (
+        _AWORLD_PRE_PROVIDER_MAX_ATTEMPTS if require_provider_evidence else 1
+    )
+    summary = None
+    for provider_attempt in range(1, max_provider_attempts + 1):
+        summary = await continuous_executor.run_continuous(
+            prompt=multimodal_prompt,
+            agent_name=agent_name,
+            requested_skill_names=requested_skill_names,
+            non_interactive=non_interactive,
+            max_runs=max_runs,
+            max_cost=max_cost,
+            max_duration=max_duration,
+            completion_signal=completion_signal,
+            completion_threshold=completion_threshold,
+            show_start_banner=show_start_banner,
+            show_iteration_header=show_iteration_header,
+            echo_prompt_as_turn=echo_prompt_as_turn,
+        )
+        if not require_provider_evidence or _direct_run_has_provider_evidence(summary):
+            break
+        if provider_attempt < max_provider_attempts:
+            print(
+                "⚠️ Aworld produced no provider-call evidence; retrying task "
+                f"startup ({provider_attempt}/{max_provider_attempts})",
+                file=sys.stderr,
+            )
+            await asyncio.sleep(0)
+    else:
+        _emit_direct_run_failure(
+            stage="provider_start",
+            error_code="provider_call_not_captured",
+            agent_name=agent_name,
+            details={
+                "attempts": max_provider_attempts,
+                "trajectory_capture_mode": "summary_synthetic",
+            },
+        )
+        return False
     drain_pending_self_evolve_jobs = getattr(
         runtime,
         "_drain_pending_self_evolve_jobs",

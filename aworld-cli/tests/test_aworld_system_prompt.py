@@ -41,10 +41,10 @@ def test_render_aworld_system_prompt_disables_unavailable_delegation() -> None:
     assert "developer" not in prompt
 
 
-def test_aworld_max_loop_steps_defaults_to_40(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_aworld_max_loop_steps_defaults_to_120(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("AWORLD_MAX_LOOP_STEPS", raising=False)
 
-    assert resolve_aworld_max_loop_steps() == 40
+    assert resolve_aworld_max_loop_steps() == 120
 
 
 @pytest.mark.parametrize("value", ["0", "-1", "invalid"])
@@ -55,6 +55,15 @@ def test_aworld_max_loop_steps_rejects_invalid_values(
     monkeypatch.setenv("AWORLD_MAX_LOOP_STEPS", value)
 
     with pytest.raises(ValueError, match="positive integer"):
+        resolve_aworld_max_loop_steps()
+
+
+def test_aworld_max_loop_steps_cannot_exceed_hard_limit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("AWORLD_MAX_LOOP_STEPS", "241")
+
+    with pytest.raises(ValueError, match="hard limit of 240"):
         resolve_aworld_max_loop_steps()
 
 

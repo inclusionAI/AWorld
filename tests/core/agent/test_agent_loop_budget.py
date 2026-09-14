@@ -576,6 +576,57 @@ async def test_elastic_budget_grants_only_recent_new_goal_progress():
 
 
 @pytest.mark.asyncio
+async def test_elastic_budget_extends_when_goal_progress_is_unobservable():
+    agent = LoopBudgetAgent(
+        name="elastic-unobservable",
+        conf=AgentConfig(llm_provider="mock", llm_model_name="mock-model"),
+        max_loop_steps=3,
+        loop_step_extension_steps=2,
+        max_extended_loop_steps=7,
+        loop_step_progress_window=2,
+    )
+    context = Context(task_id="elastic-unobservable-task")
+    context.context_info["context_semantic_progress"] = {
+        agent.id(): {
+            "goal_progress_count": 0,
+            "goal_progress_observable": False,
+            "last_goal_progress_agent_step": None,
+        }
+    }
+    message = Message(
+        category=Constants.AGENT,
+        payload="observation",
+        sender="tool",
+        caller=agent.id(),
+        session_id="session",
+        headers={"context": context},
+    )
+
+    for _ in range(3):
+        context.update_agent_step(agent.id())
+    assert await agent.should_terminate_loop(message) is False
+    receipt = context.context_info[f"agent_step_budget:{agent.id()}"]
+    assert receipt["decision"] == "unobservable_progress_extension_granted"
+    assert receipt["effective_limit"] == 5
+
+    context.update_agent_step(agent.id())
+    context.update_agent_step(agent.id())
+    assert await agent.should_terminate_loop(message) is False
+    assert (
+        context.context_info[f"agent_step_budget:{agent.id()}"]["effective_limit"]
+        == 7
+    )
+
+    context.update_agent_step(agent.id())
+    context.update_agent_step(agent.id())
+    assert await agent.should_terminate_loop(message) is True
+    assert (
+        context.context_info[f"agent_step_budget:{agent.id()}"]["decision"]
+        == "hard_limit_reached"
+    )
+
+
+@pytest.mark.asyncio
 async def test_elastic_budget_rejects_stale_progress_at_soft_limit():
     agent = LoopBudgetAgent(
         name="elastic-stale",

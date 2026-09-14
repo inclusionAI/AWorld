@@ -49,6 +49,7 @@ from aworld.config import AgentConfig, ModelConfig
 CAST_ANALYSIS = "CAST_ANALYSIS"
 CAST_CODER = "CAST_CODER"
 CAST_SEARCH = "CAST_SEARCH"
+AWORLD_MAX_LOOP_STEPS_HARD_LIMIT = 240
 
 
 def _register_optional_cast_tools(
@@ -153,13 +154,18 @@ def load_aworld_system_prompt(
 def resolve_aworld_max_loop_steps() -> int:
     """Resolve the bounded soft limit for one Aworld agent task."""
 
-    raw_value = os.environ.get("AWORLD_MAX_LOOP_STEPS", "40")
+    raw_value = os.environ.get("AWORLD_MAX_LOOP_STEPS", "120")
     try:
         max_loop_steps = int(raw_value)
     except ValueError as exc:
         raise ValueError("AWORLD_MAX_LOOP_STEPS must be a positive integer") from exc
     if max_loop_steps <= 0:
         raise ValueError("AWORLD_MAX_LOOP_STEPS must be a positive integer")
+    if max_loop_steps > AWORLD_MAX_LOOP_STEPS_HARD_LIMIT:
+        raise ValueError(
+            "AWORLD_MAX_LOOP_STEPS must not exceed the hard limit of "
+            f"{AWORLD_MAX_LOOP_STEPS_HARD_LIMIT}"
+        )
     return max_loop_steps
 
 
