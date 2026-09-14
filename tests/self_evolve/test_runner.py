@@ -7105,6 +7105,21 @@ def test_framework_retry_is_superseded_by_later_negative_measurement(
     cutoff = old_report.stat().st_mtime
     experiment = tmp_path / "new-run" / "experiments" / "experiment-1"
     experiment.mkdir(parents=True)
+    recipe = DatasetRecipe(
+        source={
+            "kind": "trajectory_log",
+            "content_fingerprint": "sha256:content",
+            "fingerprint": "sha256:request",
+            "case_count": 1,
+        },
+        split_seed="seed",
+        splits={"train": ["case-1"], "validation": [], "held_out": []},
+        trainable_case_ids=("case-1",),
+    )
+    (experiment.parents[1] / "dataset_recipe.json").write_text(
+        json.dumps(to_json_dict(recipe)),
+        encoding="utf-8",
+    )
     (experiment / "experiment.json").write_text(
         json.dumps(
             {
@@ -7127,13 +7142,13 @@ def test_framework_retry_is_superseded_by_later_negative_measurement(
     assert _has_later_conclusive_negative_measurement(
         artifact_root=tmp_path,
         candidate_fingerprint="sha256:candidate",
-        dataset_fingerprint="sha256:dataset",
+        dataset_recipe=recipe,
         after_mtime=cutoff,
     )
     assert not _has_later_conclusive_negative_measurement(
         artifact_root=tmp_path,
         candidate_fingerprint="sha256:other",
-        dataset_fingerprint="sha256:dataset",
+        dataset_recipe=recipe,
         after_mtime=cutoff,
     )
 

@@ -97,6 +97,7 @@ from aworld.self_evolve.datasets import (
     build_dataset_from_source,
     build_dataset_recipe,
 )
+from aworld.self_evolve.dataset_snapshot import dataset_recipe_from_dict
 from aworld.self_evolve.evaluation import (
     AWorldTrajectoryEvaluatorBackend,
     EvaluationBackend,
@@ -167,7 +168,6 @@ from aworld.self_evolve.replay import (
     ReplayEvidenceReuseDisposition,
     candidate_replay_is_comparable,
     load_candidate_replay_result,
-    replay_dataset_fingerprint,
 )
 from aworld.self_evolve.run_history import (
     _load_candidate_variant,
@@ -445,7 +445,7 @@ def _has_later_conclusive_negative_measurement(
     *,
     artifact_root: Path,
     candidate_fingerprint: str,
-    dataset_fingerprint: str,
+    dataset_recipe: DatasetRecipe,
     after_mtime: float,
 ) -> bool:
     """Do not endlessly retry a candidate disproved by a fresher measurement.
@@ -464,7 +464,19 @@ def _has_later_conclusive_negative_measurement(
         ):
             continue
         experiments = run_path / "experiments"
+        recipe_path = run_path / "dataset_recipe.json"
         if not experiments.is_dir() or experiments.is_symlink():
+            continue
+        try:
+            measured_recipe = dataset_recipe_from_dict(
+                _load_json_mapping(recipe_path)
+            )
+        except (OSError, TypeError, ValueError, json.JSONDecodeError):
+            continue
+        if not _dataset_recipe_matches_candidate_source(
+            dataset_recipe,
+            measured_recipe,
+        ):
             continue
         for experiment_path in experiments.iterdir():
             if not experiment_path.is_dir() or experiment_path.is_symlink():
@@ -479,14 +491,11 @@ def _has_later_conclusive_negative_measurement(
             except (OSError, TypeError, ValueError, json.JSONDecodeError):
                 continue
             treatment = specification.get("treatment")
-            frozen = specification.get("frozen_identities")
             decision = attribution.get("decision")
             effect = attribution.get("effect")
             if not (
                 isinstance(treatment, Mapping)
                 and treatment.get("fingerprint") == candidate_fingerprint
-                and isinstance(frozen, Mapping)
-                and frozen.get("dataset") == dataset_fingerprint
                 and (
                     isinstance(decision, Mapping)
                     and decision.get("reason") == "conclusive_negative_effect"
@@ -579,7 +588,7 @@ def _discover_framework_evaluator_retry_candidate(
         if _has_later_conclusive_negative_measurement(
             artifact_root=store.artifact_root,
             candidate_fingerprint=actual_candidate_fingerprint,
-            dataset_fingerprint=replay_dataset_fingerprint(dataset),
+            dataset_recipe=dataset.recipe,
             after_mtime=report_path.stat().st_mtime,
         ):
             continue
