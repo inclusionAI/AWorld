@@ -2831,15 +2831,20 @@ def observations_from_evaluation(
         for case in getattr(dataset, "cases", ())
         if str(getattr(case, "case_id", ""))
     }
-    case_ids = tuple(
+    experiment_case_ids = tuple(
         case_id
         for case_id in experiment.sampling.independent_case_ids
         if case_id in cases_by_id
     )
-    if not case_ids:
-        return ()
     baseline_metrics = _evaluation_metrics(baseline_summary)
     candidate_metrics = _evaluation_metrics(candidate_summary)
+    case_ids = _ordered_evaluation_case_ids(
+        experiment_case_ids,
+        baseline_metrics=baseline_metrics,
+        candidate_metrics=candidate_metrics,
+    )
+    if not case_ids:
+        return ()
     baseline_samples = _ordered_evaluation_samples(
         baseline_metrics,
         metric=experiment.outcomes.primary_metric,
@@ -2940,6 +2945,42 @@ def observations_from_evaluation(
                     )
                 )
     return tuple(observations)
+
+
+def _ordered_evaluation_case_ids(
+    experiment_case_ids: Sequence[str],
+    *,
+    baseline_metrics: Mapping[str, object],
+    candidate_metrics: Mapping[str, object],
+) -> tuple[str, ...]:
+    """Resolve the evaluator's exact ordered panel without inferring samples.
+
+    Evaluation summaries may describe a validation subset of the larger replay
+    experiment.  Both arms must attest the same unique ordered case list before
+    score samples can be mapped onto replay observation coordinates.
+    """
+
+    baseline_raw = baseline_metrics.get("comparison_case_ids")
+    candidate_raw = candidate_metrics.get("comparison_case_ids")
+    if baseline_raw is None and candidate_raw is None:
+        return tuple(experiment_case_ids)
+    if not (
+        isinstance(baseline_raw, (list, tuple))
+        and isinstance(candidate_raw, (list, tuple))
+    ):
+        return ()
+    baseline_ids = tuple(baseline_raw)
+    candidate_ids = tuple(candidate_raw)
+    admitted = set(experiment_case_ids)
+    if not (
+        baseline_ids
+        and baseline_ids == candidate_ids
+        and all(isinstance(case_id, str) and case_id for case_id in baseline_ids)
+        and len(baseline_ids) == len(set(baseline_ids))
+        and set(baseline_ids) <= admitted
+    ):
+        return ()
+    return baseline_ids
 
 
 def observations_with_usage_fallback(

@@ -1211,6 +1211,64 @@ def test_evaluation_adapter_preserves_repetition_major_case_coordinates() -> Non
     )
 
 
+def test_evaluation_adapter_uses_attested_validation_subset_coordinates() -> None:
+    spec = _spec(
+        case_ids=("case-a", "case-b", "case-c"),
+        repetitions=1,
+        minimum_cases=2,
+        primary_metric="score",
+    )
+    dataset = SelfEvolveDataset(
+        cases=tuple(
+            EvalCase(case_id=case_id, input={"task": case_id})
+            for case_id in ("case-a", "case-b", "case-c")
+        ),
+        recipe=DatasetRecipe(
+            source={"kind": "jsonl"},
+            split_seed="seed",
+            splits={
+                "train": ["case-a"],
+                "validation": ["case-b", "case-c"],
+            },
+        ),
+    )
+    baseline = SimpleNamespace(
+        metrics={
+            "comparison_case_ids": ["case-b", "case-c"],
+            "score_samples": [70.0, 80.0],
+        }
+    )
+    candidate = SimpleNamespace(
+        metrics={
+            "comparison_case_ids": ["case-b", "case-c"],
+            "score_samples": [75.0, 82.0],
+        }
+    )
+
+    observations = observations_from_evaluation(
+        spec,
+        dataset=dataset,
+        baseline_summary=baseline,
+        candidate_summary=candidate,
+    )
+
+    treatment = [item for item in observations if item.arm is ArmRole.TREATMENT]
+    assert [item.case_id for item in treatment] == ["case-b", "case-c"]
+    assert [item.metrics["score"] for item in treatment] == [75.0, 82.0]
+    mismatched = observations_from_evaluation(
+        spec,
+        dataset=dataset,
+        baseline_summary=baseline,
+        candidate_summary=SimpleNamespace(
+            metrics={
+                "comparison_case_ids": ["case-a", "case-c"],
+                "score_samples": [75.0, 82.0],
+            }
+        ),
+    )
+    assert mismatched == ()
+
+
 def test_evaluation_observations_use_exact_replay_coordinate_usage_fallback() -> None:
     spec = _spec(
         case_ids=("case-a", "case-b"),
