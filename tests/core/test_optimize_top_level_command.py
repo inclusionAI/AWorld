@@ -120,7 +120,7 @@ def test_exact_user_argv_reaches_outer_task_without_external_execution(
     assert run_kwargs["campaign_cycle"] == 1
     assert run_kwargs["campaign_prior_run_ids"] == ()
     assert runner.replay_enabled is True
-    assert runner.judge_repetitions == 1
+    assert runner.judge_repetitions == 3
     assert runner.baseline_replay_repetitions == 2
     assert runner.candidate_replay_repetitions == 3
     assert runner.replay_repetitions_explicit is False
@@ -1174,7 +1174,7 @@ def test_run_optimize_cli_uses_interactive_auto_verified_defaults(
         judge_agent="agent.md",
     )
 
-    assert calls["judge_repetitions"] == 1
+    assert calls["judge_repetitions"] == 3
     assert calls["judge_timeout_seconds"] == 120
     assert calls["baseline_replay_repetitions"] == 2
     assert calls["candidate_replay_repetitions"] == 3
@@ -1219,7 +1219,7 @@ def test_run_optimize_cli_uses_verified_defaults_without_publish(
 
     assert calls["apply_policy"] == "verified_only"
     assert calls["replay_enabled"] is True
-    assert calls["judge_repetitions"] == 1
+    assert calls["judge_repetitions"] == 3
     assert calls["baseline_replay_repetitions"] == 2
     assert calls["candidate_replay_repetitions"] == 3
     assert calls["replay_repetitions_explicit"] is False
