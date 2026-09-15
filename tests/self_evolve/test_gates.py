@@ -384,6 +384,79 @@ def test_score_improvement_gate_uses_paired_case_deltas_for_noninferiority() -> 
     assert result.details["delta"] == pytest.approx(0.8666666667)
 
 
+def test_score_improvement_gate_accepts_small_positive_delta_with_noisy_judge() -> None:
+    """A positive point estimate may use the 2% practical margin.
+
+    Small trajectory sets make a 95% confidence interval wider than a useful
+    browser-skill improvement.  The primary gate must still require a positive
+    point estimate; the margin only prevents judge variance from making such an
+    improvement permanently unverifiable.
+    """
+    result = ScoreImprovementGate(min_delta=0.0).evaluate(
+        baseline=EvaluationSummary(
+            variant_id="baseline",
+            metrics={
+                "score": 87.8333,
+                "score_samples": [87.8333] * 12,
+                "judge_success_count": 12,
+            },
+        ),
+        candidate=EvaluationSummary(
+            variant_id="candidate",
+            metrics={
+                "score": 88.8,
+                "score_samples": [
+                    81.8333,
+                    83.8333,
+                    85.8333,
+                    86.8333,
+                    87.8333,
+                    88.8333,
+                    89.8333,
+                    90.8333,
+                    91.8333,
+                    92.8333,
+                    92.8333,
+                    91.8333,
+                ],
+                "judge_success_count": 12,
+            },
+        ),
+    )
+
+    assert result.passed is True
+    assert result.details["code"] == "score_improvement_paired_noninferior"
+    assert result.details["delta"] > 0
+    assert result.details["noninferiority_margin"] == pytest.approx(1.776)
+
+
+def test_score_improvement_gate_does_not_use_practical_margin_for_negative_delta() -> None:
+    result = ScoreImprovementGate(min_delta=0.0).evaluate(
+        baseline=EvaluationSummary(
+            variant_id="baseline",
+            metrics={
+                "score": 88.0,
+                "score_samples": [88.0, 86.0, 90.0, 88.0],
+                "judge_success_count": 4,
+            },
+        ),
+        candidate=EvaluationSummary(
+            variant_id="candidate",
+            metrics={
+                "score": 87.9,
+                "score_samples": [88.0, 86.0, 90.0, 87.6],
+                "judge_success_count": 4,
+            },
+        ),
+    )
+
+    assert result.passed is False
+    assert result.details["tiebreak_eligible"] is False
+    assert result.details["tiebreak_ineligible_reason"] == (
+        "point_estimate_below_minimum_delta"
+    )
+
+
 def test_score_improvement_gate_rejects_paired_material_regression() -> None:
     result = ScoreImprovementGate(min_delta=0.0).evaluate(
         baseline=EvaluationSummary(
