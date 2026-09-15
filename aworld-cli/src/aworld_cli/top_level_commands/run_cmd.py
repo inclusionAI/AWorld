@@ -173,6 +173,22 @@ class RunTopLevelCommand:
                 outcome=outcome,
             )
 
+        checkpoint_receipt = self._write_initial_atif_checkpoint(
+            args=args,
+            agent_name=agent_name,
+        )
+        if checkpoint_receipt is not None and checkpoint_receipt.status.value == "failed":
+            outcome = _direct_run_failure_outcome(
+                stage=DirectRunStage.ORCHESTRATION,
+                error_code=DirectRunErrorCode.ATIF_EXPORT_FAILED,
+                agent_name=agent_name,
+            )
+            return self._finalize_outcome(
+                args=args,
+                agent_name=agent_name,
+                outcome=outcome,
+            )
+
         try:
             direct_run_result = asyncio.run(
                 _run_direct_mode(
@@ -228,6 +244,64 @@ class RunTopLevelCommand:
             args=args,
             agent_name=agent_name,
             outcome=outcome,
+        )
+
+    @staticmethod
+    def _write_initial_atif_checkpoint(*, args, agent_name: str):
+        """Atomically seed a valid incomplete ATIF before provider execution.
+
+        A final outcome replaces this checkpoint.  If the enclosing container
+        is killed before Python can run ``finally`` logic, Harbor still has a
+        schema-valid record showing that completion was not established.
+        """
+
+        trajectory_output = getattr(args, "trajectory_output", None)
+        if not trajectory_output:
+            return None
+        from aworld_cli.atif import build_atif_trajectory, try_write_atif_trajectory
+
+        try:
+            import aworld
+
+            agent_version = getattr(aworld, "__version__", "unknown")
+        except Exception:
+            agent_version = "unknown"
+        try:
+            trajectory = build_atif_trajectory(
+                {
+                    "trajectory": [],
+                    "trajectory_capture_mode": "pre_execution_checkpoint",
+                    "trajectory_fidelity": "partial",
+                    "llm_call_count": 0,
+                    "tool_call_count": 0,
+                    "action_count": 0,
+                },
+                prompt=args.task,
+                agent_name=agent_name,
+                agent_version=agent_version,
+                model_name=os.environ.get("LLM_MODEL_NAME"),
+                run_outcome={
+                    "semantic_status": "in_progress",
+                    "process_exit_code": 1,
+                    "trajectory_fidelity": "partial",
+                    "llm_call_count": 0,
+                    "tool_call_count": 0,
+                    "action_count": 0,
+                },
+            )
+        except Exception as exc:
+            from aworld_cli.atif import AtifExportReceipt, AtifExportStatus
+
+            return AtifExportReceipt(
+                status=AtifExportStatus.FAILED,
+                trajectory_fidelity="partial",
+                error_code="atif_checkpoint_build_failed",
+                error_type=type(exc).__name__,
+            )
+        return try_write_atif_trajectory(
+            trajectory_output,
+            trajectory,
+            trajectory_fidelity="partial",
         )
 
     @staticmethod

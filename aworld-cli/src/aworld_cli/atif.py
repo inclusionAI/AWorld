@@ -348,7 +348,11 @@ def try_write_atif_trajectory(
     *,
     trajectory_fidelity: str,
 ) -> AtifExportReceipt:
-    """Persist ATIF without allowing sink failure to alter run semantics."""
+    """Persist ATIF and return a sanitized receipt instead of raising.
+
+    The CLI boundary decides whether a requested sink failure changes the
+    effective process outcome; this low-level helper only reports persistence.
+    """
 
     try:
         write_atif_trajectory(path, trajectory)

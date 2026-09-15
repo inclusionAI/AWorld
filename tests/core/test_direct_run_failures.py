@@ -203,6 +203,30 @@ def test_run_command_returns_nonzero_when_direct_run_does_not_start(
     assert exit_code == 1
 
 
+def test_run_command_seeds_incomplete_atif_before_execution(tmp_path) -> None:
+    output_path = tmp_path / "trajectory.json"
+    args = SimpleNamespace(
+        task="perform a long task",
+        trajectory_output=str(output_path),
+    )
+
+    receipt = RunTopLevelCommand._write_initial_atif_checkpoint(
+        args=args,
+        agent_name="Aworld",
+    )
+
+    assert receipt.status.value == "persisted"
+    trajectory = json.loads(output_path.read_text(encoding="utf-8"))
+    assert trajectory["schema_version"] == "ATIF-v1.7"
+    assert trajectory["steps"] == [
+        {"step_id": 1, "source": "user", "message": "perform a long task"}
+    ]
+    aworld = trajectory["extra"]["aworld"]
+    assert aworld["completion_state"] == "incomplete"
+    assert aworld["trajectory_fidelity"] == "partial"
+    assert aworld["run_outcome"]["semantic_status"] == "in_progress"
+
+
 def test_run_command_writes_minimal_atif_for_pre_execution_failure(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
