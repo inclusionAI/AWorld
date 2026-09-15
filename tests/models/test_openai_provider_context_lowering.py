@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from dataclasses import replace
 from datetime import datetime, timezone
 from types import MethodType, SimpleNamespace
 from typing import Any
@@ -17,6 +18,7 @@ from aworld.core.context.compiler import (
     CandidateCompilePolicy,
     CandidateRequestNotEnforceable,
     ContextLifecycleState,
+    LifecycleAction,
     ContextEntrypointParityReceipt,
     ReadinessStatus,
     RollbackBundle,
@@ -597,9 +599,12 @@ async def test_openai_enforce_lowers_same_candidate_once_across_all_paths():
 
 @pytest.mark.asyncio
 async def test_provider_verified_parity_distinguishes_all_call_shapes():
-    provider, _, _ = _provider()
+    provider, sync_calls, async_calls = _provider()
     model = LLMModel(
-        conf=ModelConfig(context_compiler={"mode": "enforce", "universal_final": True}),
+        conf=ModelConfig(
+            max_tokens=321,
+            context_compiler={"mode": "enforce", "universal_final": True},
+        ),
         custom_provider=provider,
     )
     model.provider_name = "openai"
@@ -610,6 +615,11 @@ async def test_provider_verified_parity_distinguishes_all_call_shapes():
     model.completion(messages, context=contexts[1])
     list(model.stream_completion(messages, context=contexts[2]))
     [chunk async for chunk in model.astream_completion(messages, context=contexts[3])]
+
+    assert [
+        call["max_tokens"]
+        for call in (async_calls[0], sync_calls[0], sync_calls[1], async_calls[1])
+    ] == [321, 321, 321, 321]
 
     assert [
         VerifiedContextEntrypointParityReceipt.from_llm_call_record(
@@ -636,6 +646,45 @@ def test_openai_enforce_fails_closed_when_receipt_cannot_be_persisted():
     assert raised.value.reason_code == "provider_lowering_receipt_failed"
     assert sync_calls == []
     assert "private-storage-error" not in str(raised.value)
+
+
+def test_tampered_cache_plan_receipt_fails_before_provider_send():
+    provider, sync_calls, _ = _provider()
+    original_commit = provider.commit_provider_prepared_attempt
+
+    def tampered_commit(self, **kwargs):
+        receipt = kwargs["receipt"]
+        kwargs["receipt"] = replace(
+            receipt,
+            cache_plan_fingerprint="sha256:" + "f" * 64,
+        )
+        return original_commit(**kwargs)
+
+    provider.commit_provider_prepared_attempt = MethodType(tampered_commit, provider)
+    model = LLMModel(
+        conf=ModelConfig(
+            context_compiler={"mode": "enforce", "universal_final": True}
+        ),
+        custom_provider=provider,
+    )
+    model.provider_name = "openai"
+    context = Context(task_id="tampered-cache-plan-receipt")
+    context.trace_id = ""
+
+    with pytest.raises(CandidateRequestNotEnforceable) as raised:
+        model.completion(
+            [
+                {"role": "system", "content": "stable rules"},
+                {"role": "user", "content": "go"},
+            ],
+            context=context,
+        )
+
+    assert raised.value.reason_code == "provider_lowering_receipt_failed"
+    assert sync_calls == []
+    record = context.get_llm_calls()[0]
+    assert record["provider_invoked"] is False
+    assert record.get("provider_attempt_status") is None
 
 
 def test_prepared_receipt_mutation_failure_does_not_send_or_mark_invoked():
@@ -782,6 +831,7 @@ def test_universal_final_http_enforce_records_serialized_cache_continuity():
 
     assert len(sent) == 2
     assert all(serialized_body for _, serialized_body in sent)
+    assert all("prompt_cache_key" not in data for data, _ in sent)
     first, second = context.get_llm_calls()
     verified_first = VerifiedContextEntrypointParityReceipt.from_llm_call_record(first)
     assert verified_first.receipt.provider_binding is not None
@@ -797,6 +847,10 @@ def test_universal_final_http_enforce_records_serialized_cache_continuity():
     assert second["request_trace_match"] is True
     assert first["context_observe"]["request"]["capture_stage"] == "model_boundary"
     assert first["context_rollout"]["final_compile"]["enforce"]["ready"]
+    cache_plan = first["context_rollout"]["final_compile"]["cache_plan"]
+    assert cache_plan["native_cache_requested"] is False
+    assert cache_plan["stable_message_count"] == 1
+    assert cache_plan["logical_stable_prefix_hash"]
     assert (
         first["context_rollout"]["provider_lowering"]["cache_continuity"]["status"]
         == "initialized"
@@ -805,6 +859,181 @@ def test_universal_final_http_enforce_records_serialized_cache_continuity():
         second["context_rollout"]["provider_lowering"]["cache_continuity"]["status"]
         == "continued"
     )
+    candidate = first["context_rollout"]["candidate_snapshot"]
+    lowering = first["context_rollout"]["provider_lowering"]
+    assert lowering["cache_plan_fingerprint"] == candidate["cache_plan_fingerprint"]
+    assert lowering["candidate_contract_hash"] == candidate["candidate_contract_hash"]
+    assert lowering["cache_lowering_status"] == "disabled"
+    assert lowering["cache_lowering_strategy"] == "explicit_opt_out"
+
+
+def test_openai_cache_plan_preserves_explicit_namespace_and_opt_out():
+    provider, sent, _ = _provider()
+    namespaced = LLMModel(
+        conf=ModelConfig(
+            max_tokens=321,
+            context_cache={
+                "allow_provider_native_cache": True,
+                "provider_cache_namespace": "tenant-session",
+            },
+            context_compiler={"mode": "enforce", "universal_final": True},
+        ),
+        custom_provider=provider,
+    )
+    namespaced.provider_name = "openai"
+    namespace_context = Context(task_id="cache-plan-namespace")
+    namespace_context.trace_id = ""
+
+    namespaced.completion(
+        [
+            {"role": "system", "content": "stable rules"},
+            {"role": "user", "content": "go"},
+        ],
+        context=namespace_context,
+    )
+
+    assert sent[-1]["prompt_cache_key"] == "tenant-session"
+    assert sent[-1]["max_tokens"] == 321
+    namespace_lowering = namespace_context.get_llm_calls()[0]["context_rollout"][
+        "provider_lowering"
+    ]
+    assert namespace_lowering["cache_lowering_status"] == "applied"
+    assert namespace_lowering["cache_lowering_strategy"] == "prompt_cache_key"
+    inspected_plan = namespace_context.get_llm_calls()[0]["context_rollout"][
+        "final_compile"
+    ]["cache_plan"]
+    assert "provider_cache_namespace" not in inspected_plan
+    assert inspected_plan["provider_cache_namespace_hash"] is not None
+
+    opted_out = LLMModel(
+        conf=ModelConfig(
+            context_cache={"allow_provider_native_cache": False},
+            context_compiler={"mode": "enforce", "universal_final": True},
+        ),
+        custom_provider=provider,
+    )
+    opted_out.provider_name = "openai"
+    opt_out_context = Context(task_id="cache-plan-opt-out")
+    opt_out_context.trace_id = ""
+    opted_out.completion(
+        [
+            {"role": "system", "content": "stable rules"},
+            {"role": "user", "content": "go"},
+        ],
+        context=opt_out_context,
+    )
+
+    assert "prompt_cache_key" not in sent[-1]
+    opt_out_lowering = opt_out_context.get_llm_calls()[0]["context_rollout"][
+        "provider_lowering"
+    ]
+    assert opt_out_lowering["cache_lowering_status"] == "disabled"
+    assert opt_out_lowering["cache_lowering_strategy"] == "explicit_opt_out"
+
+
+def test_custom_openai_compatible_endpoint_requires_native_cache_capability():
+    provider, sent, _ = _provider()
+    provider.base_url = "https://compatible.example.test/v1"
+    model = LLMModel(
+        conf=ModelConfig(
+            context_cache={
+                "allow_provider_native_cache": True,
+                "provider_cache_namespace": "tenant-session",
+            },
+            context_compiler={"mode": "enforce", "universal_final": True},
+        ),
+        custom_provider=provider,
+    )
+    model.provider_name = "openai"
+    context = Context(task_id="custom-cache-capability")
+    context.trace_id = ""
+
+    model.completion(
+        [
+            {"role": "system", "content": "stable rules"},
+            {"role": "user", "content": "go"},
+        ],
+        context=context,
+    )
+
+    assert "prompt_cache_key" not in sent[-1]
+    lowering = context.get_llm_calls()[0]["context_rollout"]["provider_lowering"]
+    assert lowering["cache_lowering_status"] == "unsupported"
+    assert lowering["cache_lowering_strategy"] == "provider_capability_not_declared"
+
+    provider.kwargs["provider_native_cache_capability"] = "supported"
+    supported_context = Context(task_id="custom-cache-capability-opt-in")
+    supported_context.trace_id = ""
+    model.completion(
+        [
+            {"role": "system", "content": "stable rules"},
+            {"role": "user", "content": "go"},
+        ],
+        context=supported_context,
+    )
+    assert sent[-1]["prompt_cache_key"] == "tenant-session"
+    supported = supported_context.get_llm_calls()[0]["context_rollout"][
+        "provider_lowering"
+    ]
+    assert supported["cache_lowering_status"] == "applied"
+
+
+def test_openai_explicit_cache_key_wins_over_compiled_namespace():
+    provider, sent, _ = _provider()
+    model = LLMModel(
+        conf=ModelConfig(
+            context_cache={"provider_cache_namespace": "compiled-key"},
+            context_compiler={"mode": "enforce", "universal_final": True},
+        ),
+        custom_provider=provider,
+    )
+    model.provider_name = "openai"
+    context = Context(task_id="cache-plan-explicit-key")
+    context.trace_id = ""
+
+    model.completion(
+        [
+            {"role": "system", "content": "stable rules"},
+            {"role": "user", "content": "go"},
+        ],
+        context=context,
+        prompt_cache_key="caller-key",
+    )
+
+    assert sent[-1]["prompt_cache_key"] == "caller-key"
+    lowering = context.get_llm_calls()[0]["context_rollout"]["provider_lowering"]
+    assert lowering["cache_lowering_status"] == "explicit_override"
+    assert lowering["cache_lowering_strategy"] == "prompt_cache_key"
+
+
+def test_context_lifecycle_checkpoint_is_frozen_into_cache_plan():
+    provider, sent, _ = _provider()
+    model = LLMModel(
+        conf=ModelConfig(
+            context_compiler={"mode": "enforce", "universal_final": True}
+        ),
+        custom_provider=provider,
+    )
+    model.provider_name = "openai"
+    context = Context(task_id="cache-plan-checkpoint")
+    context.trace_id = ""
+    context.advance_context_lifecycle(LifecycleAction.CHECKPOINT)
+
+    model.completion(
+        [
+            {"role": "system", "content": "stable rules"},
+            {"role": "user", "content": "go"},
+        ],
+        context=context,
+    )
+
+    assert len(sent) == 1
+    cache_plan = context.get_llm_calls()[0]["context_rollout"]["final_compile"][
+        "cache_plan"
+    ]
+    assert cache_plan["cache_epoch"] == 1
+    assert cache_plan["break_reasons"] == ["history_compaction"]
+    assert context.get_pending_cache_break_reasons() == ()
 
 
 def test_universal_final_enforce_lowers_verified_tool_result_boundary():

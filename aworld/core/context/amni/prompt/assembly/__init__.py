@@ -1,4 +1,10 @@
-from .plan import PromptAssemblyPlan, PromptSection, ToolSectionHint
+from .plan import (
+    AMNI_SYSTEM_SECTIONS_SCHEMA_VERSION,
+    PromptAssemblyPlan,
+    PromptSection,
+    ToolSectionHint,
+    validated_amni_system_sections,
+)
 from .provider import (
     PromptAssemblyProvider,
     DefaultPromptAssemblyProvider,
@@ -17,7 +23,9 @@ from .budget import (
 
 __all__ = [
     "PromptAssemblyPlan",
+    "AMNI_SYSTEM_SECTIONS_SCHEMA_VERSION",
     "PromptSection",
+    "validated_amni_system_sections",
     "ToolSectionHint",
     "PromptAssemblyProvider",
     "DefaultPromptAssemblyProvider",

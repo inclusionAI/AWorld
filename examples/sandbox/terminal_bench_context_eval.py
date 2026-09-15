@@ -48,6 +48,7 @@ from aworld.evaluations.context_benefit import (  # noqa: E402
 )
 from aworld.core.llm_call_journal import read_llm_call_journal  # noqa: E402
 from aworld.core.tool_action_journal import read_tool_action_journal  # noqa: E402
+from aworld.models.usage import reconcile_cache_usage_receipt  # noqa: E402
 from examples.sandbox.docker_terminal_bench import (  # noqa: E402
     load_external_mcp_config,
     run_python_function_verifier_sidecar,
@@ -56,7 +57,29 @@ from examples.sandbox.docker_terminal_bench import (  # noqa: E402
 
 RUNNER = Path(__file__).with_name("docker_terminal_bench.py")
 MODEL_PREFLIGHT = Path(__file__).with_name("model_preflight.py")
+CACHE_USAGE_PREFLIGHT = Path(__file__).with_name("cache_usage_preflight.py")
 _VERIFIER_ENV_EXPRESSION = re.compile(r"^\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-([^}]*))?\}$")
+
+
+def ensure_fresh_execution_output(output_dir: Path) -> None:
+    """Refuse to overwrite evidence from an earlier execution attempt.
+
+    A dry run may have materialized only the fixture and manifest in the target
+    directory. Provider probes and rollout artifacts are immutable attempt
+    evidence and require a new directory.
+    """
+    collision_paths = (
+        output_dir / "model-preflight.json",
+        output_dir / "cache-usage-preflight.json",
+        output_dir / "results.json",
+        output_dir / "summary.json",
+        output_dir / "runs",
+    )
+    if any(path.exists() for path in collision_paths):
+        raise FileExistsError(
+            "evaluation output already contains execution evidence; use a new "
+            f"immutable --output-dir: {output_dir}"
+        )
 
 
 def sha256_file(path: Path) -> str:
@@ -211,6 +234,22 @@ def parse_model_preflight(*streams: str) -> dict | None:
     return None
 
 
+def parse_cache_usage_preflight(*streams: str) -> dict | None:
+    for stream in streams:
+        for line in reversed(str(stream or "").splitlines()):
+            try:
+                value = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if (
+                isinstance(value, dict)
+                and value.get("schema_version")
+                == "aworld.cache-conformance-preflight/v1"
+            ):
+                return value
+    return None
+
+
 def model_preflight_allows_benchmark(receipt: dict) -> bool:
     """Require both transport reachability and a complete semantic response."""
     status = receipt.get("status")
@@ -222,6 +261,16 @@ def model_preflight_allows_benchmark(receipt: dict) -> bool:
         and receipt.get("semantic_probe_complete") is True
         and receipt.get("tool_call_probe_complete") is True
         and receipt.get("response_quality") == "complete"
+    )
+
+
+def cache_usage_preflight_allows_benchmark(receipt: dict) -> bool:
+    """Require exact accounting and observed prefix reuse/invalidation."""
+    return bool(
+        receipt.get("status") == "passed"
+        and receipt.get("cache_capability_observed") is True
+        and receipt.get("exact_usage_coverage") == 1.0
+        and receipt.get("observation_count", 0) > 0
     )
 
 
@@ -286,6 +335,106 @@ def run_model_preflight(
     receipt["process_exit_code"] = returncode
     write_json(output_dir / "model-preflight.json", receipt)
     return receipt
+
+
+def run_cache_usage_preflight(
+    output_dir: Path,
+    *,
+    timeout_sec: float,
+    model_seed: int,
+    artifact_stem: str = "cache-usage-preflight",
+) -> dict:
+    """Run the provider-neutral cache behavior contract before cache claims."""
+    command = [
+        sys.executable,
+        str(CACHE_USAGE_PREFLIGHT),
+        "--timeout-sec",
+        str(timeout_sec),
+        "--model-seed",
+        str(model_seed),
+    ]
+    try:
+        # The probe performs eight sequential calls (four each for stream and
+        # non-stream).  Each call owns the configured timeout independently.
+        result = run_command(
+            command,
+            capture_output=True,
+            timeout=timeout_sec * 8 + 30,
+            env=os.environ.copy(),
+        )
+        stdout, stderr = result.stdout or "", result.stderr or ""
+        returncode = result.returncode
+    except subprocess.TimeoutExpired as exc:
+        stdout = timeout_output(exc, "stdout")
+        stderr = timeout_output(exc, "stderr")
+        returncode = None
+    (output_dir / f"{artifact_stem}.stdout.log").write_text(
+        stdout, encoding="utf-8"
+    )
+    (output_dir / f"{artifact_stem}.stderr.log").write_text(
+        stderr, encoding="utf-8"
+    )
+    receipt = parse_cache_usage_preflight(stderr, stdout) or {
+        "schema_version": "aworld.cache-conformance-preflight/v1",
+        "status": "failed",
+        "reason_code": (
+            "cache_preflight_timeout"
+            if returncode is None
+            else "cache_preflight_receipt_missing"
+        ),
+    }
+    receipt["process_exit_code"] = returncode
+    write_json(output_dir / f"{artifact_stem}.json", receipt)
+    return receipt
+
+
+def run_cache_usage_preflight_with_retries(
+    output_dir: Path,
+    *,
+    timeout_sec: float,
+    model_seed: int,
+    attempts: int,
+) -> dict:
+    """Require one complete contract pass while preserving every attempt.
+
+    Provider cache population can be eventually consistent.  Retries are
+    whole independent eight-call probes: observations are never combined or
+    cherry-picked across attempts.
+    """
+    if attempts < 1:
+        raise ValueError("cache usage preflight attempts must be positive")
+    summaries = []
+    selected = None
+    for attempt in range(1, attempts + 1):
+        receipt = run_cache_usage_preflight(
+            output_dir,
+            timeout_sec=timeout_sec,
+            model_seed=model_seed,
+            artifact_stem=f"cache-usage-preflight-attempt-{attempt:02d}",
+        )
+        summaries.append(
+            {
+                "attempt": attempt,
+                "status": receipt.get("status"),
+                "exact_usage_coverage": receipt.get("exact_usage_coverage"),
+                "failure_codes": list(receipt.get("failure_codes") or ()),
+                "receipt_hash": canonical_json_digest(receipt),
+            }
+        )
+        selected = receipt
+        if cache_usage_preflight_allows_benchmark(receipt):
+            break
+    assert selected is not None
+    result = dict(selected)
+    result["attempt_policy"] = {
+        "maximum_attempts": attempts,
+        "completed_attempts": len(summaries),
+        "selected_attempt": len(summaries),
+        "whole_probe_only": True,
+        "attempts": summaries,
+    }
+    write_json(output_dir / "cache-usage-preflight.json", result)
+    return result
 
 
 class VerifierEnvironmentUnavailable(ValueError):
@@ -585,6 +734,7 @@ def load_variant(path: Path | None) -> tuple[str, Path | None, dict]:
             "schema_version": "aworld.context-eval-variant/v1",
             "name": "baseline",
             "agent_memory_config": {},
+            "context_cache": {},
             "context_compiler": {},
             "docker_output_policy": {},
         }
@@ -626,6 +776,7 @@ def load_ablation_plan(
                 key: variant_payload.get(key, {})
                 for key in (
                     "agent_memory_config",
+                    "context_cache",
                     "context_compiler",
                     "docker_output_policy",
                 )
@@ -681,6 +832,29 @@ def parse_args() -> argparse.Namespace:
         help="Fail-fast provider connectivity timeout before Docker image work starts.",
     )
     parser.add_argument(
+        "--require-cache-usage-preflight",
+        action="store_true",
+        help=(
+            "Require provider-neutral stream/non-stream cache conformance before "
+            "starting jobs whose conclusions include cache economics."
+        ),
+    )
+    parser.add_argument(
+        "--cache-usage-preflight-timeout-sec",
+        type=float,
+        default=180,
+        help="Per-call timeout for the optional cache usage conformance probe.",
+    )
+    parser.add_argument(
+        "--cache-usage-preflight-attempts",
+        type=int,
+        default=3,
+        help=(
+            "Maximum complete provider-neutral cache probes; every failed "
+            "attempt remains in the evidence bundle."
+        ),
+    )
+    parser.add_argument(
         "--minimum-host-available-memory-mb",
         type=int,
         default=2048,
@@ -710,6 +884,25 @@ def parse_args() -> argparse.Namespace:
         type=float,
         default=10.0,
         help="Invariant base delay for exponential LLM transport retry backoff.",
+    )
+    parser.add_argument(
+        "--llm-stream-call",
+        action="store_true",
+        help="Use one invariant generic streaming call shape for both variants.",
+    )
+    parser.add_argument(
+        "--llm-max-tokens",
+        type=int,
+        help="Invariant per-turn output-token limit for both paired variants.",
+    )
+    parser.add_argument(
+        "--provider-native-cache-capability",
+        choices=("auto", "supported", "unsupported"),
+        default="auto",
+        help=(
+            "Invariant provider-declared native cache-control capability. Custom "
+            "compatible endpoints must explicitly opt in after conformance validation."
+        ),
     )
     parser.add_argument(
         "--use-declared-image",
@@ -1172,7 +1365,18 @@ def collect_context_metrics(run_dir: Path) -> dict:
 
     def provider_metrics(calls: object) -> dict[str, Any]:
         prompt_tokens = completion_tokens = cache_read_tokens = 0
+        exact_input_tokens = uncached_input_tokens = 0
         provider_request_bytes = trace_match_count = 0
+        cache_fidelity_counts = {
+            fidelity: 0
+            for fidelity in (
+                "exact",
+                "bounded",
+                "conflicting",
+                "invalid",
+                "unavailable",
+            )
+        }
         provider_prefix_hashes: list[str] = []
         values = calls if isinstance(calls, list) else []
         for call in values:
@@ -1197,26 +1401,34 @@ def collect_context_metrics(run_dir: Path) -> dict:
                 ).encode("utf-8")
             )
             usage = call.get("usage_normalized") or call.get("usage") or {}
-            raw_usage = call.get("usage_raw") or usage
-            prompt_details = raw_usage.get("prompt_tokens_details") or {}
             prompt_tokens += int(
                 usage.get("prompt_tokens") or usage.get("input_tokens") or 0
             )
             completion_tokens += int(
                 usage.get("completion_tokens") or usage.get("output_tokens") or 0
             )
-            cache_read_tokens += int(
-                raw_usage.get("cache_hit_tokens")
-                or raw_usage.get("cache_read_input_tokens")
-                or prompt_details.get("cached_tokens")
-                or 0
+            receipt = reconcile_cache_usage_receipt(
+                captured_receipt=call.get("cache_usage_receipt"),
+                raw_usage=call.get("usage_raw"),
+                normalized_usage=usage,
             )
+            cache_fidelity_counts[receipt.fidelity.value] += 1
+            if receipt.fidelity.value == "exact":
+                cache_read_tokens += int(receipt.cache_read_tokens or 0)
+                exact_input_tokens += int(receipt.input_tokens or 0)
+                uncached_input_tokens += int(receipt.uncached_input_tokens or 0)
             trace_match_count += int(call.get("request_trace_match") is True)
+        exact_count = cache_fidelity_counts["exact"]
         return {
             "provider_request_bytes": provider_request_bytes,
             "prompt_tokens": prompt_tokens,
             "completion_tokens": completion_tokens,
             "cache_read_tokens": cache_read_tokens,
+            "cache_usage_exact_call_count": exact_count,
+            "cache_usage_exact_coverage": exact_count / len(values) if values else 0.0,
+            "cache_usage_exact_input_tokens": exact_input_tokens,
+            "uncached_input_tokens_exact": uncached_input_tokens,
+            "cache_usage_fidelity_counts": cache_fidelity_counts,
             "provider_prefix_unique_count": len(set(provider_prefix_hashes)),
             "provider_prefix_stable": bool(
                 provider_prefix_hashes and len(set(provider_prefix_hashes)) == 1
@@ -1360,6 +1572,14 @@ def summarize_results(results: list[dict], baseline_variant: str) -> dict:
             for result in variant_results
             if result.get("reward") not in (None, "")
         ]
+        provider_call_count = sum(
+            int(result["context_metrics"].get("provider_call_count", 0))
+            for result in variant_results
+        )
+        exact_cache_call_count = sum(
+            int(result["context_metrics"].get("cache_usage_exact_call_count", 0))
+            for result in variant_results
+        )
         aggregates[variant] = {
             "run_count": len(variant_results),
             "reward_mean": statistics.fmean(numeric_rewards)
@@ -1385,6 +1605,19 @@ def summarize_results(results: list[dict], baseline_variant: str) -> dict:
                 for result in variant_results
             )
             / len(variant_results),
+            "cache_usage_exact_coverage": (
+                exact_cache_call_count / provider_call_count
+                if provider_call_count
+                else 0.0
+            ),
+            "uncached_input_tokens_exact": sum(
+                int(
+                    result["context_metrics"].get(
+                        "uncached_input_tokens_exact", 0
+                    )
+                )
+                for result in variant_results
+            ),
             "median_provider_request_bytes": statistics.median(
                 result["context_metrics"]["provider_request_bytes"]
                 for result in variant_results
@@ -1461,11 +1694,30 @@ def summarize_results(results: list[dict], baseline_variant: str) -> dict:
                     candidate["context_metrics"]["prompt_tokens"]
                     - baseline["context_metrics"]["prompt_tokens"]
                 ),
+                "provider_call_count_delta": (
+                    candidate["context_metrics"].get("provider_call_count", 0)
+                    - baseline["context_metrics"].get("provider_call_count", 0)
+                ),
+                "cache_read_tokens_delta": (
+                    candidate["context_metrics"].get("cache_read_tokens", 0)
+                    - baseline["context_metrics"].get("cache_read_tokens", 0)
+                ),
                 "offloaded_artifact_bytes_delta": (
                     candidate["context_metrics"]["offloaded_artifact_bytes"]
                     - baseline["context_metrics"]["offloaded_artifact_bytes"]
                 ),
             }
+            exact_cache_pair = all(
+                result["context_metrics"].get("cache_usage_exact_coverage") == 1.0
+                for result in (baseline, candidate)
+            )
+            pair_record["cache_usage_exact_pair"] = exact_cache_pair
+            pair_record["uncached_input_tokens_exact_delta"] = (
+                candidate["context_metrics"].get("uncached_input_tokens_exact", 0)
+                - baseline["context_metrics"].get("uncached_input_tokens_exact", 0)
+                if exact_cache_pair
+                else None
+            )
             if isinstance(candidate.get("model_seed"), int):
                 pair_record["model_seed"] = candidate["model_seed"]
             paired.append(pair_record)
@@ -1516,6 +1768,9 @@ def execute_job(
     # for callers that construct a single evaluation job directly.
     llm_max_attempts: int = 3,
     llm_retry_delay_sec: float = 10.0,
+    llm_stream_call: bool = False,
+    llm_max_tokens: int | None = None,
+    provider_native_cache_capability: str = "auto",
     agent_timeout_sec_override: float | None = None,
     verifier_timeout_sec_override: float | None = None,
     external_mcp_config_path: Path | None = None,
@@ -1601,6 +1856,16 @@ def execute_job(
             "--llm-retry-delay-sec",
             str(llm_retry_delay_sec),
         ]
+        if llm_stream_call:
+            agent_command.append("--llm-stream-call")
+        if llm_max_tokens is not None:
+            agent_command.extend(["--llm-max-tokens", str(llm_max_tokens)])
+        agent_command.extend(
+            [
+                "--provider-native-cache-capability",
+                provider_native_cache_capability,
+            ]
+        )
         if model_seed is not None:
             agent_command.extend(["--model-seed", str(model_seed)])
         if variant_path:
@@ -1912,6 +2177,10 @@ def main() -> None:
         raise ValueError("--repeat must be positive")
     if args.llm_max_attempts < 1:
         raise ValueError("--llm-max-attempts must be positive")
+    if args.llm_max_tokens is not None and args.llm_max_tokens < 1:
+        raise ValueError("--llm-max-tokens must be positive")
+    if args.cache_usage_preflight_attempts < 1:
+        raise ValueError("--cache-usage-preflight-attempts must be positive")
     if args.llm_retry_delay_sec < 0:
         raise ValueError("--llm-retry-delay-sec must be non-negative")
     if args.minimum_host_available_memory_mb < 1:
@@ -1926,6 +2195,10 @@ def main() -> None:
         ("--agent-timeout-sec", args.agent_timeout_sec),
         ("--verifier-timeout-sec", args.verifier_timeout_sec),
         ("--model-preflight-timeout-sec", args.model_preflight_timeout_sec),
+        (
+            "--cache-usage-preflight-timeout-sec",
+            args.cache_usage_preflight_timeout_sec,
+        ),
     ):
         if value is not None and (not math.isfinite(value) or value <= 0):
             raise ValueError(f"{option_name} must be positive")
@@ -1946,6 +2219,8 @@ def main() -> None:
     _, external_mcp_evidence = load_external_mcp_config(args.mcp_config)
     output_dir = args.output_dir.resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
+    if not args.dry_run:
+        ensure_fresh_execution_output(output_dir)
     fixture_root = output_dir / "fixture"
     fixtures = [extract_task(dataset, name, fixture_root / name) for name in args.tasks]
     image_build_plans = {
@@ -2014,6 +2289,14 @@ def main() -> None:
             "base_delay_seconds": args.llm_retry_delay_sec,
             "variant_invariant": True,
         },
+        "llm_call_shape": {
+            "stream": args.llm_stream_call,
+            "max_tokens": args.llm_max_tokens,
+            "provider_native_cache_capability": (
+                args.provider_native_cache_capability
+            ),
+            "variant_invariant": True,
+        },
         "verifier_timeout_sec_override": args.verifier_timeout_sec,
         "external_mcp": external_mcp_evidence,
         "verifier_environment_contracts": {
@@ -2028,6 +2311,15 @@ def main() -> None:
         "image_build_plans": image_build_plans,
         "image_resolution": {"status": "not_attempted", "images": {}},
         "model_preflight": {"status": "not_attempted"},
+        "cache_usage_preflight": {
+            "schema_version": "aworld.cache-conformance-preflight/v1",
+            "status": (
+                "not_attempted"
+                if args.require_cache_usage_preflight
+                else "not_required"
+            ),
+            "maximum_attempts": args.cache_usage_preflight_attempts,
+        },
         "resource_policy": {
             "execution": "strictly_serial",
             "maximum_active_aworld_eval_containers": 1,
@@ -2060,6 +2352,21 @@ def main() -> None:
             "Model readiness preflight did not produce a complete semantic response; "
             "benchmark jobs were not started"
         )
+    if args.require_cache_usage_preflight:
+        experiment["cache_usage_preflight"] = run_cache_usage_preflight_with_retries(
+            output_dir,
+            timeout_sec=args.cache_usage_preflight_timeout_sec,
+            model_seed=args.seed,
+            attempts=args.cache_usage_preflight_attempts,
+        )
+        write_json(output_dir / "experiment_manifest.json", experiment)
+        if not cache_usage_preflight_allows_benchmark(
+            experiment["cache_usage_preflight"]
+        ):
+            raise RuntimeError(
+                "Cache usage preflight did not prove exact accounting and prefix "
+                "reuse/invalidation; benchmark jobs were not started"
+            )
 
     assert docker is not None
     images: dict[str, str] = {}
@@ -2138,6 +2445,11 @@ def main() -> None:
             max_steps=args.max_steps,
             llm_max_attempts=args.llm_max_attempts,
             llm_retry_delay_sec=args.llm_retry_delay_sec,
+            llm_stream_call=args.llm_stream_call,
+            llm_max_tokens=args.llm_max_tokens,
+            provider_native_cache_capability=(
+                args.provider_native_cache_capability
+            ),
             keep_container=args.keep_containers,
             verifier_mode=args.verifier_mode,
             agent_timeout_sec_override=args.agent_timeout_sec,

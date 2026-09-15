@@ -15,7 +15,6 @@ import random
 import shutil
 import subprocess
 import sys
-import tempfile
 import time
 import uuid
 from pathlib import Path
@@ -30,10 +29,14 @@ if str(SANDBOX_EXAMPLES) not in sys.path:
 
 from docker_terminal_bench import _load_variant  # noqa: E402
 from terminal_bench_context_eval import (  # noqa: E402
+    cache_usage_preflight_allows_benchmark,
     collect_context_metrics,
+    ensure_fresh_execution_output,
     finalized_capture_allows_independent_verifier,
+    load_ablation_plan,
     provider_attempts_exhausted,
     recover_inflight_capture,
+    run_cache_usage_preflight_with_retries,
     run_model_preflight,
     summarize_results,
     wait_for_local_capacity,
@@ -132,7 +135,13 @@ def load_case(case_dir: Path) -> dict:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("--case-dir", action="append", type=Path, required=True)
-    parser.add_argument("--variant-config", action="append", type=Path, required=True)
+    variants = parser.add_mutually_exclusive_group(required=True)
+    variants.add_argument("--variant-config", action="append", type=Path)
+    variants.add_argument(
+        "--ablation-plan",
+        type=Path,
+        help="Pre-frozen Context component ablation plan shared with benchmark runners.",
+    )
     parser.add_argument("--repeat", type=int, default=1)
     parser.add_argument("--seed", type=int, default=20260901)
     parser.add_argument("--output-dir", required=True, type=Path)
@@ -140,8 +149,18 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-steps", type=int, default=8)
     parser.add_argument("--agent-timeout-sec", type=float, default=14400)
     parser.add_argument("--model-preflight-timeout-sec", type=float, default=120)
+    parser.add_argument("--require-cache-usage-preflight", action="store_true")
+    parser.add_argument("--cache-usage-preflight-timeout-sec", type=float, default=180)
+    parser.add_argument("--cache-usage-preflight-attempts", type=int, default=3)
     parser.add_argument("--llm-max-attempts", type=int, default=3)
     parser.add_argument("--llm-retry-delay-sec", type=float, default=10.0)
+    parser.add_argument("--llm-stream-call", action="store_true")
+    parser.add_argument("--llm-max-tokens", type=int)
+    parser.add_argument(
+        "--provider-native-cache-capability",
+        choices=("auto", "supported", "unsupported"),
+        default="auto",
+    )
     parser.add_argument("--minimum-host-available-memory-mb", type=int, default=2048)
     parser.add_argument("--resource-wait-timeout-sec", type=float, default=900)
     parser.add_argument("--dry-run", action="store_true")
@@ -162,6 +181,9 @@ def execute_job(
     agent_timeout_sec: float,
     llm_max_attempts: int,
     llm_retry_delay_sec: float,
+    llm_stream_call: bool,
+    llm_max_tokens: int | None,
+    provider_native_cache_capability: str = "auto",
 ) -> dict:
     run_dir = output_dir / "runs" / case["case_id"] / variant_name / f"repeat-{repetition:02d}"
     run_dir.mkdir(parents=True, exist_ok=True)
@@ -210,6 +232,16 @@ def execute_job(
             "--llm-retry-delay-sec",
             str(llm_retry_delay_sec),
         ]
+        if llm_stream_call:
+            command.append("--llm-stream-call")
+        if llm_max_tokens is not None:
+            command.extend(["--llm-max-tokens", str(llm_max_tokens)])
+        command.extend(
+            [
+                "--provider-native-cache-capability",
+                provider_native_cache_capability,
+            ]
+        )
         environment = os.environ.copy()
         environment["PYTHONPATH"] = str(REPO_ROOT) + os.pathsep + environment.get("PYTHONPATH", "")
         started_at = time.time()
@@ -326,11 +358,21 @@ def main() -> None:
         raise ValueError("--repeat must be positive")
     if args.llm_max_attempts < 1:
         raise ValueError("--llm-max-attempts must be positive")
+    if args.llm_max_tokens is not None and args.llm_max_tokens < 1:
+        raise ValueError("--llm-max-tokens must be positive")
+    if args.cache_usage_preflight_timeout_sec <= 0:
+        raise ValueError("--cache-usage-preflight-timeout-sec must be positive")
+    if args.cache_usage_preflight_attempts < 1:
+        raise ValueError("--cache-usage-preflight-attempts must be positive")
     cases = [load_case(path) for path in args.case_dir]
-    variants = [
-        (_load_variant(path)["name"], path.resolve(), _load_variant(path))
-        for path in args.variant_config
-    ]
+    ablation_receipt = None
+    if args.ablation_plan is not None:
+        variants, ablation_receipt = load_ablation_plan(args.ablation_plan)
+    else:
+        variants = [
+            (_load_variant(path)["name"], path.resolve(), _load_variant(path))
+            for path in args.variant_config
+        ]
     if len({name for name, _, _ in variants}) != len(variants):
         raise ValueError("variant names must be unique")
     jobs = [
@@ -342,6 +384,8 @@ def main() -> None:
     random.Random(args.seed).shuffle(jobs)
     output_dir = args.output_dir.resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
+    if not args.dry_run:
+        ensure_fresh_execution_output(output_dir)
     manifest = {
         "schema_version": "aworld.context-eval-experiment/v1",
         "hypothesis": (
@@ -359,6 +403,7 @@ def main() -> None:
             for case in cases
         ],
         "variants": [payload for _, _, payload in variants],
+        "ablation_plan": ablation_receipt,
         "image": args.image,
         "repeat": args.repeat,
         "seed": args.seed,
@@ -381,11 +426,28 @@ def main() -> None:
             "base_delay_seconds": args.llm_retry_delay_sec,
             "variant_invariant": True,
         },
+        "llm_call_shape": {
+            "stream": args.llm_stream_call,
+            "max_tokens": args.llm_max_tokens,
+            "provider_native_cache_capability": (
+                args.provider_native_cache_capability
+            ),
+            "variant_invariant": True,
+        },
         "resource_policy": {
             "execution": "strictly_serial",
             "maximum_active_aworld_eval_containers": 1,
             "minimum_host_available_memory_mb": args.minimum_host_available_memory_mb,
             "wait_timeout_seconds": args.resource_wait_timeout_sec,
+        },
+        "cache_usage_preflight": {
+            "schema_version": "aworld.cache-conformance-preflight/v1",
+            "status": (
+                "not_attempted"
+                if args.require_cache_usage_preflight
+                else "not_required"
+            ),
+            "maximum_attempts": args.cache_usage_preflight_attempts,
         },
         "created_at_epoch": time.time(),
     }
@@ -411,6 +473,28 @@ def main() -> None:
             "status": "provider_preflight_failed",
         }, ensure_ascii=False))
         return
+    if args.require_cache_usage_preflight:
+        cache_preflight = run_cache_usage_preflight_with_retries(
+            output_dir,
+            timeout_sec=args.cache_usage_preflight_timeout_sec,
+            model_seed=args.seed,
+            attempts=args.cache_usage_preflight_attempts,
+        )
+        manifest["cache_usage_preflight"] = cache_preflight
+        write_json(output_dir / "experiment_manifest.json", manifest)
+        if not cache_usage_preflight_allows_benchmark(cache_preflight):
+            write_json(output_dir / "results.json", [])
+            print(
+                json.dumps(
+                    {
+                        "runs": 0,
+                        "output_dir": str(output_dir),
+                        "status": "cache_usage_preflight_failed",
+                    },
+                    ensure_ascii=False,
+                )
+            )
+            return
     docker = shutil.which("docker")
     if not docker:
         raise RuntimeError("Docker is required")
@@ -439,6 +523,11 @@ def main() -> None:
             agent_timeout_sec=args.agent_timeout_sec,
             llm_max_attempts=args.llm_max_attempts,
             llm_retry_delay_sec=args.llm_retry_delay_sec,
+            llm_stream_call=args.llm_stream_call,
+            llm_max_tokens=args.llm_max_tokens,
+            provider_native_cache_capability=(
+                args.provider_native_cache_capability
+            ),
         )
         result["resource_admission"] = capacity
         write_json(

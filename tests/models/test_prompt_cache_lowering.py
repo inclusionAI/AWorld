@@ -1,5 +1,8 @@
+from typing import Any, get_type_hints
+
 from aworld.core.context.amni.prompt.assembly import PromptAssemblyPlan, ToolSectionHint
 from aworld.models.anthropic_provider import AnthropicProvider
+from aworld.models.openai_provider import OpenAIProvider
 from aworld.models.prompt_cache import (
     AnthropicPromptAssemblyLowerer,
     DefaultPromptAssemblyLowerer,
@@ -88,6 +91,28 @@ def test_openai_prompt_assembly_lowerer_preserves_explicit_prompt_cache_key():
     assert result.request_kwargs["prompt_cache_key"] == "explicit-cache-key"
 
 
+def test_openai_legacy_lowering_requires_custom_endpoint_capability():
+    provider = OpenAIProvider.__new__(OpenAIProvider)
+    provider.model_name = "compatible-model"
+    provider.base_url = "https://compatible.example.test/v1"
+    provider.kwargs = {}
+
+    unsupported = provider.get_openai_params(
+        messages=[{"role": "user", "content": "hello"}],
+        prompt_assembly_plan=_build_plan(),
+        provider_native_prompt_cache=True,
+    )
+    assert "prompt_cache_key" not in unsupported
+
+    provider.kwargs["provider_native_cache_capability"] = "supported"
+    supported = provider.get_openai_params(
+        messages=[{"role": "user", "content": "hello"}],
+        prompt_assembly_plan=_build_plan(),
+        provider_native_prompt_cache=True,
+    )
+    assert supported["prompt_cache_key"] == "stable-hash-1"
+
+
 def test_anthropic_prompt_assembly_lowerer_adds_top_level_cache_control():
     plan = _build_plan()
 
@@ -132,4 +157,27 @@ def test_anthropic_provider_skips_native_cache_lowering_when_disabled():
     )
 
     assert "cache_control" not in params
-from typing import Any, get_type_hints
+
+
+def test_anthropic_legacy_lowering_requires_custom_endpoint_capability():
+    provider = AnthropicProvider.__new__(AnthropicProvider)
+    provider.model_name = "compatible-model"
+    provider.base_url = "https://anthropic-compatible.example.test/v1"
+    provider.kwargs = {}
+
+    unsupported = provider.get_anthropic_params(
+        messages=[{"role": "user", "content": "hello"}],
+        system="rules",
+        prompt_assembly_plan=_build_plan(),
+        provider_native_prompt_cache=True,
+    )
+    assert "cache_control" not in unsupported
+
+    provider.kwargs["provider_native_cache_capability"] = "supported"
+    supported = provider.get_anthropic_params(
+        messages=[{"role": "user", "content": "hello"}],
+        system="rules",
+        prompt_assembly_plan=_build_plan(),
+        provider_native_prompt_cache=True,
+    )
+    assert supported["cache_control"] == {"type": "ephemeral"}

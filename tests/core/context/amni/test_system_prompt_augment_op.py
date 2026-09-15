@@ -255,3 +255,68 @@ async def test_system_prompt_augment_op_uses_injected_prompt_assembly_provider()
         {"role": "system", "content": "memory chunk"},
     ]
     assert command.item.content == "assembled rules\n\nassembled memory"
+
+
+@pytest.mark.asyncio
+async def test_system_prompt_augment_persists_ordered_stable_dynamic_sections(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    published = []
+
+    class IdentityTemplate:
+        def __init__(self, template):
+            self.template = template
+
+        async def async_format(self, **kwargs):
+            return self.template
+
+    class FakeContext:
+        task_id = "task-1"
+        task_epoch = 2
+
+        def get_prompt_assembly_provider(self, agent=None):
+            return CacheAwarePromptAssemblyProvider()
+
+        def get_task(self):
+            return SimpleNamespace(
+                session_id="session-1", id="task-1", user_id="user-1"
+            )
+
+        def publish_context_observation(self, sidecar):
+            published.append(sidecar)
+
+    monkeypatch.setattr(
+        "aworld.core.context.amni.processor.op.system_prompt_augment_op.ContextPromptTemplate",
+        IdentityTemplate,
+    )
+    command = await SystemPromptAugmentOp().build_system_command(
+        FakeContext(),
+        SimpleNamespace(
+            agent_id="agent-1",
+            agent_name="Agent One",
+            user_query="hello",
+            system_prompt="stable rules",
+        ),
+        {"relevant_memory": "dynamic memory"},
+    )
+
+    assert command.item.content == "stable rules\n\ndynamic memory"
+    sections = command.item.metadata["ext_info"][
+        "aworld_context_system_sections"
+    ]["sections"]
+    assert [(item["stability"], item["content"]) for item in sections] == [
+        ("stable", "stable rules"),
+        ("dynamic", "dynamic memory"),
+    ]
+    assert [sidecar.owner for sidecar in published] == [
+        "amni.folded_system",
+        "amni.system_sections",
+    ]
+    from aworld.agents.llm_agent import Agent
+
+    assert Agent._amni_system_section_messages(command.item) == [
+        {"role": "system", "content": "stable rules"},
+        {"role": "system", "content": "dynamic memory"},
+    ]
+    command.item.content = "tampered"
+    assert Agent._amni_system_section_messages(command.item) is None

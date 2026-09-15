@@ -571,6 +571,9 @@ async def test_memory_plugin_cache_reports_request_linked_cache_observability(tm
                                     ]
                                 },
                                 "usage_raw": {
+                                    "prompt_tokens": 100,
+                                    "completion_tokens": 5,
+                                    "total_tokens": 105,
                                     "cache_hit_tokens": 80,
                                     "cache_write_tokens": 20,
                                     "prompt_tokens_details": {"cached_tokens": 80},
@@ -589,6 +592,9 @@ async def test_memory_plugin_cache_reports_request_linked_cache_observability(tm
                                     ]
                                 },
                                 "usage_raw": {
+                                    "prompt_tokens": 100,
+                                    "completion_tokens": 5,
+                                    "total_tokens": 105,
                                     "cache_hit_tokens": 40,
                                     "prompt_tokens_details": {"cached_tokens": 40},
                                 },
@@ -616,10 +622,13 @@ async def test_memory_plugin_cache_reports_request_linked_cache_observability(tm
         assert "Cache observability summary" in result
         assert "LLM calls analyzed: 2" in result
         assert "Calls with cache usage: 2" in result
+        assert "Exact cache usage coverage: 2/2 (100.0%)" in result
+        assert "Total uncached input tokens from exact calls: 80" in result
+        assert "Cache usage fidelity: exact=2" in result
         assert "Total cache hit tokens: 120" in result
         assert "llm_req_2" in result
         assert "req_provider_2" in result
-        assert "Stable cacheable prefix candidates" in result
+        assert "Heuristic stable-prefix candidates" in result
         assert "You are Aworld" in result
     finally:
         CommandRegistry.restore(snapshot)

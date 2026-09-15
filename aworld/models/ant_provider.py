@@ -19,6 +19,7 @@ from binascii import b2a_hex
 from aworld.config.conf import ClientType
 from aworld.core.llm_provider import LLMProviderBase
 from aworld.core.context.compiler import (
+    CachePlan,
     AttributionCollectionShape,
     CandidateRequestNotEnforceable,
     ProviderLoweringCapability,
@@ -151,7 +152,9 @@ class AntProvider(LLMProviderBase):
         standard: Dict[str, Any],
         request_kwargs: Dict[str, Any],
         stream: bool,
+        cache_plan: CachePlan | None,
     ) -> ProviderWireProjection:
+        _ = cache_plan
         params = standard["params"]
         messages = copy.deepcopy(standard["messages"])
         tools = copy.deepcopy(standard["tools"])

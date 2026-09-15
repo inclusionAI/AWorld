@@ -23,6 +23,9 @@ def test_cli_and_acp_publish_distinct_entrypoint_labels() -> None:
     assert local._context_entry_point() == "cli"
     local._aworld_cli_resumed = True
     assert local._context_entry_point() == "resume"
+    local._aworld_cli_resumed = False
+    local._context_checkpoint_restored_for_task = True
+    assert local._context_entry_point() == "resume"
     assert acp._context_entry_point() == "acp"
 
     context = Context(task_id="entrypoint-label")

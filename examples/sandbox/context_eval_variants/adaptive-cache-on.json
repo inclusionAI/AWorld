@@ -1,0 +1,13 @@
+{
+  "schema_version": "aworld.context-eval-variant/v1",
+  "name": "adaptive-cache-on",
+  "agent_memory_config": {},
+  "context_cache": {
+    "enabled": true,
+    "allow_provider_native_cache": true
+  },
+  "context_compiler": {
+    "mode": "enforce"
+  },
+  "docker_output_policy": {}
+}

@@ -268,6 +268,23 @@ async def test_acompletion_appends_llm_call_with_final_messages_and_usage(monkey
         "prompt_tokens_details": {"cached_tokens": 5},
         "cache_hit_tokens": 5,
     }
+    assert llm_call["cache_usage_receipt"] == {
+        "schema_version": "aworld.cache-usage-receipt.v1",
+        "fidelity": "exact",
+        "reason_code": None,
+        "input_tokens": 11,
+        "output_tokens": 7,
+        "cache_read_tokens": 5,
+        "cache_write_tokens": None,
+        "cache_read_lower_bound": 5,
+        "cache_read_upper_bound": 5,
+        "reported_input_tokens": 11,
+        "input_token_accounting": "inclusive",
+        "uncached_input_tokens": 6,
+        "cache_read_ratio": 5 / 11,
+        "raw_cache_sources": ["cache_hit_tokens", "prompt_tokens_details.cached_tokens"],
+        "normalized_cache_sources": [],
+    }
     assert llm_call["turn_economics"]["turn_kind"] == "model"
     assert llm_call["turn_economics"]["cause"] == "initial_input"
 
