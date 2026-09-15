@@ -99,6 +99,7 @@ async def _parse_in_worker(
     limits: FilesystemLimits,
     sidecar_dir: Path,
 ) -> str:
+    _validate_ooxml_archive(file_path, file_type, limits)
     parser = _get_parser(file_type)
     if not parser:
         raise ValueError(
@@ -176,6 +177,8 @@ async def _run_worker(
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise RuntimeError("Document parser worker returned invalid output") from exc
     if "error" in decoded:
+        if decoded.get("error_type") == "ValueError":
+            raise ValueError(decoded["error"])
         raise RuntimeError(decoded["error"])
     return str(decoded["file_path"])
 
@@ -190,7 +193,12 @@ async def parse_to_path(
     source = Path(file_path).resolve()
     destination = Path(output_path).resolve()
     limits = FilesystemLimits.from_env()
-    _validate_ooxml_archive(source, file_type, limits)
+    source_size = source.stat().st_size
+    if source_size > limits.max_parse_bytes:
+        raise ValueError(
+            "Document exceeds the parse size limit: "
+            f"{source_size}; limit={limits.max_parse_bytes}"
+        )
     destination.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.NamedTemporaryFile(
         dir=destination.parent,
@@ -233,6 +241,13 @@ async def parse_to_path(
             markdown = staged_output.read_text(encoding="utf-8")
             markdown = markdown.replace(staged_sidecar.name, published_sidecar.name)
             staged_output.write_text(markdown, encoding="utf-8")
+            rewritten_size = staged_output.stat().st_size
+            if rewritten_size > limits.max_parse_output_bytes:
+                raise ValueError(
+                    "Parsed Markdown exceeds the output size limit after asset "
+                    f"publication: {rewritten_size}; "
+                    f"limit={limits.max_parse_output_bytes}"
+                )
             os.replace(staged_sidecar, published_sidecar)
 
         os.replace(staged_output, destination)
@@ -269,7 +284,12 @@ def _parse_worker_main() -> int:
         sys.stdout.write(json.dumps({"file_path": result}, ensure_ascii=False))
         return 0
     except Exception as exc:
-        sys.stdout.write(json.dumps({"error": str(exc)}, ensure_ascii=False))
+        sys.stdout.write(
+            json.dumps(
+                {"error": str(exc), "error_type": type(exc).__name__},
+                ensure_ascii=False,
+            )
+        )
         return 0
 
 

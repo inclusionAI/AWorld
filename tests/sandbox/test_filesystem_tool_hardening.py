@@ -24,6 +24,9 @@ parse_module = importlib.import_module(
 excel_module = importlib.import_module(
     "aworld.sandbox.tool_servers.filesystem.src.utils.document_processor.parsers.excel_parser"
 )
+file_ops_module = importlib.import_module(
+    "aworld.sandbox.tool_servers.filesystem.src.utils.file_ops"
+)
 
 
 def _json(result) -> dict:
@@ -34,7 +37,11 @@ def test_explicit_limit_configuration_is_forwarded_to_stdio_server(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("AWORLD_FILESYSTEM_MAX_READ_BYTES", "2097152")
+    monkeypatch.setenv("AWORLD_FILESYSTEM_MAX_COPY_BYTES", "67108864")
+    monkeypatch.setenv("AWORLD_FILESYSTEM_COPY_TIMEOUT_SECONDS", "30")
     assert get_server_env()["AWORLD_FILESYSTEM_MAX_READ_BYTES"] == "2097152"
+    assert get_server_env()["AWORLD_FILESYSTEM_MAX_COPY_BYTES"] == "67108864"
+    assert get_server_env()["AWORLD_FILESYSTEM_COPY_TIMEOUT_SECONDS"] == "30"
 
 
 def test_terminal_policy_configuration_is_forwarded_to_stdio_server(
@@ -192,6 +199,55 @@ async def test_read_rejects_special_files_and_upload_preserves_server_import_sem
 
 
 @pytest.mark.asyncio
+async def test_upload_copy_limit_preserves_existing_target(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("AWORLD_FILESYSTEM_MAX_COPY_BYTES", "4096")
+    await filesystem.set_allowed_directories([str(tmp_path)])
+    source = tmp_path.parent / f"{tmp_path.name}-large-source.bin"
+    source.write_bytes(b"x" * 4097)
+    target = tmp_path / "target.bin"
+    target.write_bytes(b"original")
+    try:
+        with pytest.raises(ValueError, match="too large to copy safely"):
+            await filesystem.upload_file(None, str(source), str(target))
+        assert target.read_bytes() == b"original"
+        assert not list(tmp_path.glob(".*.tmp"))
+    finally:
+        source.unlink(missing_ok=True)
+
+
+@pytest.mark.asyncio
+async def test_cancelled_copy_signals_worker_and_returns_promptly(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    started = __import__("threading").Event()
+    stopped = __import__("threading").Event()
+
+    def cancellable_copy(source, target, *, limits, cancelled):
+        del source, target, limits
+        started.set()
+        while not cancelled.wait(0.01):
+            pass
+        stopped.set()
+        raise asyncio.CancelledError
+
+    monkeypatch.setattr(
+        file_ops_module, "_copy_file_binary_sync", cancellable_copy
+    )
+    task = asyncio.create_task(
+        file_ops_module.copy_file_binary(str(tmp_path / "a"), str(tmp_path / "b"))
+    )
+    assert await asyncio.to_thread(started.wait, 1)
+    task.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(task, timeout=1)
+
+    assert stopped.is_set()
+
+
+@pytest.mark.asyncio
 async def test_parse_failure_is_an_mcp_error_not_nested_false_success(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -221,6 +277,29 @@ async def test_document_archive_ratio_is_rejected_before_parsing(
         archive.writestr("word/document.xml", b"0" * (2 * 1024 * 1024))
 
     with pytest.raises(ValueError, match="compression ratio is unsafe"):
+        await parse_module.parse_to_path(source, tmp_path / "output.md", "docx")
+
+    assert not (tmp_path / "output.md").exists()
+
+
+@pytest.mark.asyncio
+async def test_document_archive_metadata_preflight_runs_in_bounded_worker(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("AWORLD_FILESYSTEM_MAX_ARCHIVE_MEMBERS", "8")
+    source = tmp_path / "many-members.docx"
+    with zipfile.ZipFile(source, "w") as archive:
+        for index in range(9):
+            archive.writestr(f"word/empty-{index}.xml", b"")
+
+    def fail_if_called_in_mcp_process(*_args, **_kwargs):
+        raise AssertionError("archive metadata expanded in the MCP process")
+
+    monkeypatch.setattr(
+        parse_module, "_validate_ooxml_archive", fail_if_called_in_mcp_process
+    )
+
+    with pytest.raises(ValueError, match="too many members"):
         await parse_module.parse_to_path(source, tmp_path / "output.md", "docx")
 
     assert not (tmp_path / "output.md").exists()

@@ -22,6 +22,7 @@ import signal
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 from typing import Optional
 from difflib import unified_diff
@@ -570,20 +571,47 @@ async def apply_edits_range(path: str, start: int, end: int, new_content: str) -
     )
 
 
-def _copy_file_binary_sync(source: str, target: str) -> None:
-    """Stream source -> target and atomically replace the target."""
+def _copy_file_binary_sync(
+    source: str,
+    target: str,
+    *,
+    limits: FilesystemLimits,
+    cancelled: threading.Event,
+) -> None:
+    """Stream source -> target with finite budgets and atomic replacement."""
+    source_size = os.path.getsize(source)
+    if source_size > limits.max_copy_bytes:
+        raise ValueError(
+            f"File is too large to copy safely: {source_size} bytes; "
+            f"limit={limits.max_copy_bytes}"
+        )
+    deadline = time.monotonic() + limits.copy_timeout_seconds
     target_parent = Path(target).parent
     target_parent.mkdir(parents=True, exist_ok=True)
     with tempfile.NamedTemporaryFile(mode="wb", dir=target_parent, delete=False) as tmp:
         tmp_path = tmp.name
         try:
+            copied = 0
             with open(source, "rb") as source_stream:
                 while True:
+                    if cancelled.is_set():
+                        raise asyncio.CancelledError
+                    if time.monotonic() >= deadline:
+                        raise TimeoutError(
+                            "File copy timed out after "
+                            f"{limits.copy_timeout_seconds:g}s"
+                        )
                     chunk = source_stream.read(1024 * 1024)
                     if not chunk:
                         break
+                    copied += len(chunk)
+                    if copied > limits.max_copy_bytes:
+                        raise ValueError(
+                            "File grew beyond the safe copy limit: "
+                            f"{copied} bytes; limit={limits.max_copy_bytes}"
+                        )
                     tmp.write(chunk)
-        except Exception:
+        except BaseException:
             Path(tmp_path).unlink(missing_ok=True)
             raise
     try:
@@ -594,9 +622,37 @@ def _copy_file_binary_sync(source: str, target: str) -> None:
 
 
 async def copy_file_binary(source: str, target: str) -> None:
-    """Asynchronously copy binary file source -> target."""
-    loop = asyncio.get_event_loop()
-    await loop.run_in_executor(None, _copy_file_binary_sync, source, target)
+    """Copy a regular file without unbounded producer work or partial targets."""
+    limits = FilesystemLimits.from_env()
+    cancelled = threading.Event()
+    worker = asyncio.create_task(
+        asyncio.to_thread(
+            _copy_file_binary_sync,
+            source,
+            target,
+            limits=limits,
+            cancelled=cancelled,
+        )
+    )
+    try:
+        await asyncio.shield(worker)
+    except asyncio.CancelledError:
+        cancelled.set()
+        try:
+            await asyncio.wait_for(asyncio.shield(worker), timeout=0.25)
+        except (asyncio.CancelledError, asyncio.TimeoutError, Exception):
+            pass
+        if not worker.done():
+            worker.add_done_callback(_consume_background_task_result)
+        raise
+
+
+def _consume_background_task_result(task: asyncio.Task[None]) -> None:
+    """Retrieve a detached copy-worker result after bounded cancellation."""
+    try:
+        task.exception()
+    except (asyncio.CancelledError, Exception):
+        pass
 
 
 async def apply_edits(path: str, edits: list[dict], dry_run: bool = False) -> str:

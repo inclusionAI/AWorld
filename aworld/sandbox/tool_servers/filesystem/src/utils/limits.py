@@ -52,6 +52,8 @@ class FilesystemLimits:
     max_search_depth: int
     search_timeout_seconds: float
     max_edit_bytes: int
+    max_copy_bytes: int
+    copy_timeout_seconds: float
     max_parse_bytes: int
     max_parse_output_bytes: int
     max_parse_memory_bytes: int
@@ -110,6 +112,18 @@ class FilesystemLimits:
             ),
             max_edit_bytes=_env_int(
                 "AWORLD_FILESYSTEM_MAX_EDIT_BYTES", 16 * mib, minimum=4096, maximum=256 * mib
+            ),
+            max_copy_bytes=_env_int(
+                "AWORLD_FILESYSTEM_MAX_COPY_BYTES",
+                1024 * mib,
+                minimum=4096,
+                maximum=16 * 1024 * mib,
+            ),
+            copy_timeout_seconds=_env_float(
+                "AWORLD_FILESYSTEM_COPY_TIMEOUT_SECONDS",
+                300.0,
+                minimum=0.1,
+                maximum=3600.0,
             ),
             max_parse_bytes=_env_int(
                 "AWORLD_FILESYSTEM_MAX_PARSE_BYTES", 64 * mib, minimum=4096, maximum=1024 * mib
