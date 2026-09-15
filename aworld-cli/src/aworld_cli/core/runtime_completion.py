@@ -65,6 +65,35 @@ _NEGATED_OUTPUT_CUE_RE = re.compile(
     r"save|write|export|generate|create|produce|store|place|submit)",
     re.IGNORECASE,
 )
+_INSTRUCTIONAL_OUTPUT_CONTEXT_RE = re.compile(
+    r"(?:"
+    r"\bhow\s+(?:to|do|can|would|should)\b"
+    r"|\b(?:explain|describe|tell|show|give|provide|document|demonstrate)\b"
+    r"[^.!?\n]{0,48}?"
+    r"(?:\bhow\s+to\b|\bcommands?\s+to\b|\binstructions?\s+(?:to|for)\b|\bsteps?\s+to\b)"
+    r"|\b(?:what\s+happens\s+if|should\s+i|do\s+i\s+need\s+to)\b"
+    r"|(?:如何|怎样|怎么)"
+    r"|(?:解释|说明|告诉我|展示|演示|描述|给出|提供)"
+    r"[^。！？\n]{0,36}?(?:如何|怎样|怎么|命令|指令|步骤|方法)"
+    r")",
+    re.IGNORECASE,
+)
+_OUTPUT_CLAUSE_BOUNDARY_RE = re.compile(
+    r"(?:[。！？.!?;；]\s*|(?:,\s*)?(?:\b(?:and\s+then|then|next)\b|然后|随后|接着|再)\s*)",
+    re.IGNORECASE,
+)
+_CAPABILITY_OR_QUESTION_CONTEXT_RE = re.compile(
+    r"(?:"
+    r"\b(?:can|could)\s+(?:this|that|the|it|i|we)\b"
+    r"|\bdoes?\s+(?:this|that|the|it|application|tool|program|system)\b"
+    r"|\bwhether\b"
+    r"|\b(?:verify|check|determine|test)\b[^.!?\n]{0,48}?"
+    r"(?:\bwhether\b|\bif\b|\bcan\b|\bcould\b|\bdoes?\b)"
+    r"|(?:是否|能否|可否|会不会)"
+    r"|(?:验证|检查|确认|判断)[^。！？\n]{0,36}?(?:是否|能否|可否|会不会)"
+    r")",
+    re.IGNORECASE,
+)
 
 
 def _truthy_env(value: str | None) -> bool:
@@ -110,6 +139,20 @@ def _last_output_cue(prefix: str) -> re.Match[str] | None:
     # ``write``/``保存`` while its negation necessarily appears just before it.
     cue_window = prefix[max(0, cue.start() - 16) :]
     if _NEGATED_OUTPUT_CUE_RE.search(cue_window):
+        return None
+    # A filename used in a tutorial/capability question is not a declared
+    # output artifact.  Only inspect the cue's current clause: an earlier
+    # explanatory sentence must not contaminate a later direct imperative.
+    leading_context = prefix[: cue.start()]
+    boundaries = list(_OUTPUT_CLAUSE_BOUNDARY_RE.finditer(leading_context))
+    clause_prefix = (
+        leading_context[boundaries[-1].end() :]
+        if boundaries
+        else leading_context
+    )
+    if _INSTRUCTIONAL_OUTPUT_CONTEXT_RE.search(
+        clause_prefix
+    ) or _CAPABILITY_OR_QUESTION_CONTEXT_RE.search(clause_prefix):
         return None
     return cue
 

@@ -60,6 +60,35 @@ def test_inference_ignores_paths_in_code_blocks_and_read_only_requests() -> None
     assert infer_declared_output_paths(request) == ()
 
 
+@pytest.mark.parametrize(
+    "task_text",
+    (
+        "Explain how to export a report to out/report.xlsx.",
+        "Tell me the command to create foo.txt.",
+        "请解释如何把数据保存到 output.csv。",
+        "What happens if I write the answer to result.json?",
+        "Can this tool export reports to result.csv?",
+        "Does this application save the report to result.json?",
+        "Verify whether the application can write data to result.json.",
+        "Can I save the report to output.csv?",
+        "Tell me whether to save the report to answer.csv.",
+        "请确认这个工具是否能把结果导出到 result.csv。",
+    ),
+)
+def test_inference_rejects_instructional_output_examples(task_text: str) -> None:
+    assert infer_declared_output_paths(task_text) == ()
+
+
+def test_inference_keeps_direct_output_clause_after_explanation() -> None:
+    for task_text in (
+        "Explain the source schema, then save the converted data to output.csv.",
+        "How to transform the input? Then save the result to output.csv.",
+        "Explain how to parse the input, then save the result to output.csv.",
+        "解释如何转换输入，然后保存到 output.csv。",
+    ):
+        assert infer_declared_output_paths(task_text) == ("output.csv",)
+
+
 def test_contract_resolves_relative_paths_against_task_workspace(tmp_path: Path) -> None:
     contract = build_runtime_completion_contract(
         "Save it to ./answer.json",
