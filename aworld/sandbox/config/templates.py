@@ -31,6 +31,22 @@ ENV_DOCKER_SHELL = "AWORLD_DOCKER_SHELL"
 ENV_DOCKER_MAX_OUTPUT_BYTES = "AWORLD_DOCKER_MAX_OUTPUT_BYTES"
 ENV_DOCKER_OUTPUT_HEAD_BYTES = "AWORLD_DOCKER_OUTPUT_HEAD_BYTES"
 ENV_DOCKER_ARTIFACT_DIRECTORY = "AWORLD_DOCKER_ARTIFACT_DIRECTORY"
+ENV_FILESYSTEM_LIMITS = (
+    "AWORLD_FILESYSTEM_MAX_READ_BYTES",
+    "AWORLD_FILESYSTEM_MAX_BINARY_BYTES",
+    "AWORLD_FILESYSTEM_MAX_LINE_BYTES",
+    "AWORLD_FILESYSTEM_MAX_SCAN_BYTES",
+    "AWORLD_FILESYSTEM_MAX_RESULT_LINES",
+    "AWORLD_FILESYSTEM_MAX_LIST_ENTRIES",
+    "AWORLD_FILESYSTEM_MAX_SEARCH_MATCHES",
+    "AWORLD_FILESYSTEM_MAX_SEARCH_PER_FILE",
+    "AWORLD_FILESYSTEM_MAX_SEARCH_FILES",
+    "AWORLD_FILESYSTEM_MAX_SEARCH_OUTPUT_BYTES",
+    "AWORLD_FILESYSTEM_MAX_SEARCH_DEPTH",
+    "AWORLD_FILESYSTEM_SEARCH_TIMEOUT_SECONDS",
+    "AWORLD_FILESYSTEM_MAX_EDIT_BYTES",
+    "AWORLD_FILESYSTEM_MAX_PARSE_BYTES",
+)
 
 # Server type and timeouts
 STREAMABLE_HTTP_TYPE = "streamable-http"
@@ -81,6 +97,14 @@ def get_server_env() -> Dict[str, str]:
     v = os.environ.get(ENV_WORKSPACE, "").strip()
     if v:
         env[ENV_WORKSPACE] = v
+
+    # Built-in stdio servers receive an explicit environment rather than the
+    # controller's full process environment. Forward only explicitly configured
+    # filesystem policy knobs so general CLI users can tune finite hard limits.
+    for name in ENV_FILESYSTEM_LIMITS:
+        value = os.environ.get(name, "").strip()
+        if value:
+            env[name] = value
 
     mac_ui_enabled = os.environ.get(ENV_MAC_UI_AUTOMATION_ENABLED, "").strip()
     if mac_ui_enabled:

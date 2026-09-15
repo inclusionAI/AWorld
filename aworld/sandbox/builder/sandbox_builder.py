@@ -227,10 +227,25 @@ class SandboxBuilder:
 
     # ==================== Tool namespace proxies (for IDE completion) ====================
 
-    async def read_file(self, path: str, head: Optional[int] = None, tail: Optional[int] = None, output: str = "text"):
+    async def read_file(
+        self,
+        path: str,
+        head: Optional[int] = None,
+        tail: Optional[int] = None,
+        output: str = "text",
+        offset: int = 0,
+        limit: Optional[int] = None,
+    ):
         """Proxy to Sandbox.file.read_file for IDE completion."""
         instance = self.build()
-        return await instance.file.read_file(path=path, head=head, tail=tail, output=output)
+        return await instance.file.read_file(
+            path=path,
+            head=head,
+            tail=tail,
+            output=output,
+            offset=offset,
+            limit=limit,
+        )
 
     async def write_file(self, path: str, content: str):
         """Proxy to Sandbox.file.write_file for IDE completion."""
@@ -260,15 +275,25 @@ class SandboxBuilder:
         instance = self.build()
         return await instance.file.upload_file(source_path=source_path, target_path=target_path)
 
-    async def download_file(self, path: str):
+    async def download_file(
+        self,
+        path: str,
+        offset: int = 0,
+        limit: Optional[int] = None,
+    ):
         """Proxy to Sandbox.file.download_file for IDE completion."""
         instance = self.build()
-        return await instance.file.download_file(path=path)
+        return await instance.file.download_file(path=path, offset=offset, limit=limit)
 
-    async def read_media_file(self, path: str):
+    async def read_media_file(
+        self,
+        path: str,
+        offset: int = 0,
+        limit: Optional[int] = None,
+    ):
         """Proxy to Sandbox.file.read_media_file for IDE completion. Read image or audio as base64."""
         instance = self.build()
-        return await instance.file.read_media_file(path=path)
+        return await instance.file.read_media_file(path=path, offset=offset, limit=limit)
 
     async def parse_file(self, file_path: str, file_type: str, output_path: Optional[str] = None):
         """Proxy to Sandbox.file.parse_file for IDE completion."""
@@ -420,4 +445,3 @@ class SandboxBuilder:
         # For any other attribute/method (Sandbox methods), auto-build and forward
         instance = self.build()
         return getattr(instance, name)
-

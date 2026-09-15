@@ -1,11 +1,12 @@
 """Filesystem MCP Server - powered by FastMCP"""
 
+import asyncio
 import os
 import sys
 import json
 import logging
 from pathlib import Path
-from typing import Literal, Optional
+from typing import Annotated, Literal, Optional
 from fnmatch import fnmatch
 
 from mcp.server import FastMCP
@@ -13,30 +14,62 @@ from mcp.server.fastmcp import Context
 from mcp.types import TextContent
 from pydantic import Field
 
-from utils.path_utils import validate_path, normalize_path, resolve_and_require_file
-from utils.document_processor import (
-    parse_to_path as parse_file_to_path,
-    verify_file_type as parse_verify_file_type,
-)
-from utils.file_ops import (
-    read_file as read_file_content,
-    write_file as write_file_content,
-    write_file_base64 as write_file_base64_content,
-    head_file,
-    tail_file,
-    read_file_lines,
-    read_file_binary,
-    is_text_file,
-    get_mime_and_filename,
-    apply_edits,
-    apply_edits_range,
-    copy_file_binary,
-    read_media_file as read_media_file_content,
-    get_file_stats,
-    format_size,
-    edit_file_by_line_range,
-    search_content as search_content_impl,
-)
+try:  # Package import (tests / installed wheel).
+    from .utils.path_utils import (
+        validate_path,
+        normalize_path,
+        resolve_and_require_file,
+        require_directory,
+        require_regular_file,
+    )
+    from .utils.document_processor import (
+        parse_to_path as parse_file_to_path,
+        verify_file_type as parse_verify_file_type,
+    )
+    from .utils.file_ops import (
+        read_file as read_file_content,
+        write_file as write_file_content,
+        write_file_base64 as write_file_base64_content,
+        read_binary_chunk,
+        read_text_bounded,
+        is_text_file,
+        get_mime_and_filename,
+        copy_file_binary,
+        get_file_stats,
+        format_size,
+        edit_file_by_line_range,
+        search_content as search_content_impl,
+        search_files_bounded,
+    )
+    from .utils.limits import FilesystemLimits, truncation_notice
+except ImportError:  # Direct execution by the stdio MCP launcher.
+    from utils.path_utils import (
+        validate_path,
+        normalize_path,
+        resolve_and_require_file,
+        require_directory,
+        require_regular_file,
+    )
+    from utils.document_processor import (
+        parse_to_path as parse_file_to_path,
+        verify_file_type as parse_verify_file_type,
+    )
+    from utils.file_ops import (
+        read_file as read_file_content,
+        write_file as write_file_content,
+        write_file_base64 as write_file_base64_content,
+        read_binary_chunk,
+        read_text_bounded,
+        is_text_file,
+        get_mime_and_filename,
+        copy_file_binary,
+        get_file_stats,
+        format_size,
+        edit_file_by_line_range,
+        search_content as search_content_impl,
+        search_files_bounded,
+    )
+    from utils.limits import FilesystemLimits, truncation_notice
 
 # List of allowed directories for all tools
 allowed_directories: list[str] = []
@@ -51,6 +84,59 @@ async def set_allowed_directories(dirs: list[str]) -> None:
 def get_allowed_directories() -> list[str]:
     """Return a copy of the currently allowed directories."""
     return allowed_directories.copy()
+
+
+def _partial_read_metadata(read_result) -> dict:
+    """Return additive metadata only when a legacy read is incomplete."""
+
+    if read_result.complete:
+        return {}
+    return {
+        "complete": False,
+        "returnedBytes": read_result.returned_bytes,
+        "totalBytes": read_result.total_bytes,
+        "truncationReason": read_result.truncation_reason,
+        "nextLine": read_result.next_line,
+    }
+
+
+def _binary_read_metadata(read_result) -> dict:
+    """Return paging metadata for a partial binary result."""
+
+    if read_result.complete and read_result.offset == 0:
+        return {}
+    return {
+        "complete": read_result.complete,
+        "offset": read_result.offset,
+        "nextOffset": read_result.next_offset,
+        "returnedBytes": len(read_result.data),
+        "totalBytes": read_result.total_bytes,
+        "truncated": not read_result.complete,
+    }
+
+
+def _list_directory_bounded(path: str, limit: int) -> tuple[list[str], bool]:
+    """List at most ``limit`` children without following symlinks."""
+
+    rendered: list[str] = []
+    truncated = False
+    with os.scandir(path) as entries:
+        for entry in entries:
+            if len(rendered) >= limit:
+                truncated = True
+                break
+            try:
+                if entry.is_symlink():
+                    prefix = "[SYMLINK]"
+                elif entry.is_dir(follow_symlinks=False):
+                    prefix = "[DIR]"
+                else:
+                    prefix = "[FILE]"
+            except OSError:
+                prefix = "[FILE]"
+            rendered.append(f"{prefix} {entry.name}")
+    rendered.sort(key=str.casefold)
+    return rendered, truncated
 
 
 # Initialize FastMCP server
@@ -69,6 +155,7 @@ mcp = FastMCP(
 @mcp.tool(
     description="Read file content. Use output='text' for text (supports head/tail); use output='base64' for binary. "
     "head: first N lines; tail: last N lines; both: lines head to tail (1-based inclusive). "
+    "Binary reads support offset/limit paging. Large results include completeness metadata. "
     "Returns JSON: {\"type\":\"text\",\"content\":\"...\"} or {\"type\":\"base64\",\"base64\":\"...\",\"mimeType\":\"...\",\"fileName\":\"...\"}."
 )
 async def read_file(
@@ -77,49 +164,46 @@ async def read_file(
     head: Optional[int] = Field(None, description="First N lines, or start line when used with tail"),
     tail: Optional[int] = Field(None, description="Last N lines, or end line when used with head"),
     output: str = Field("text", description="Output format: 'text' or 'base64'"),
+    offset: Annotated[int, Field(description="Binary byte offset; only used with output='base64'")] = 0,
+    limit: Annotated[Optional[int], Field(description="Binary bytes to return; capped by server policy")] = None,
 ) -> TextContent:
     """Read file as text or base64; head/tail apply only when file is text (content-based detection)."""
     import base64 as b64
     valid_path = await validate_path(path, allowed_directories)
+    require_regular_file(valid_path)
     if output not in ("text", "base64"):
         raise ValueError("output must be 'text' or 'base64'")
 
     if output == "text":
+        if offset != 0 or limit is not None:
+            raise ValueError("offset and limit are only supported with output='base64'")
         if not await is_text_file(valid_path):
             raise ValueError("File is not valid UTF-8 text; use output='base64' for binary files")
-        if tail and head:
-            if head > tail:
-                raise ValueError("head must be <= tail when both are specified")
-            content = await read_file_lines(valid_path, head, tail)
-        elif tail:
-            content = await tail_file(valid_path, tail)
-        elif head:
-            content = await head_file(valid_path, head)
-        else:
-            content = await read_file_content(valid_path)
-        return TextContent(type="text", text=json.dumps({"type": "text", "content": content}))
+        read_result = await read_text_bounded(valid_path, head=head, tail=tail)
+        payload = {"type": "text", "content": read_result.content}
+        payload.update(_partial_read_metadata(read_result))
+        return TextContent(type="text", text=json.dumps(payload))
 
     # output == "base64"
     is_text = await is_text_file(valid_path)
-    if is_text and (head or tail):
-        if head and tail:
-            if head > tail:
-                raise ValueError("head must be <= tail when both are specified")
-            text_content = await read_file_lines(valid_path, head, tail)
-        elif head:
-            text_content = await head_file(valid_path, head)
-        else:
-            text_content = await tail_file(valid_path, tail)
-        b64_data = b64.b64encode(text_content.encode("utf-8")).decode("ascii")
+    if is_text and (head is not None or tail is not None):
+        if offset != 0 or limit is not None:
+            raise ValueError("offset/limit cannot be combined with head/tail")
+        read_result = await read_text_bounded(valid_path, head=head, tail=tail)
+        b64_data = b64.b64encode(read_result.content.encode("utf-8")).decode("ascii")
         mime_type = "text/plain; charset=utf-8"
         file_name = Path(valid_path).name
+        payload = {"type": "base64", "base64": b64_data, "mimeType": mime_type, "fileName": file_name}
+        payload.update(_partial_read_metadata(read_result))
     else:
-        data = await read_file_binary(valid_path)
-        b64_data = b64.b64encode(data).decode("ascii")
+        binary_result = await read_binary_chunk(valid_path, offset=offset, limit=limit)
+        b64_data = b64.b64encode(binary_result.data).decode("ascii")
         mime_type, file_name = get_mime_and_filename(valid_path)
+        payload = {"type": "base64", "base64": b64_data, "mimeType": mime_type, "fileName": file_name}
+        payload.update(_binary_read_metadata(binary_result))
     return TextContent(
         type="text",
-        text=json.dumps({"type": "base64", "base64": b64_data, "mimeType": mime_type, "fileName": file_name}),
+        text=json.dumps(payload),
     )
 
 
@@ -163,17 +247,22 @@ async def create_directory(
     return TextContent(type="text", text=f"Successfully created directory {path}")
 
 
-@mcp.tool(description="List directory contents. Shows files and directories with [FILE] and [DIR] prefixes to distinguish types.")
+@mcp.tool(description="List directory contents with file, directory, and symlink prefixes. Large directories are producer-bounded and return an explicit truncation marker.")
 async def list_directory(
     ctx: Context,
     path: str = Field(description="Directory path to list"),
 ) -> TextContent:
     """List directory contents"""
     valid_path = await validate_path(path, allowed_directories)
-    entries = []
-    for entry in Path(valid_path).iterdir():
-        prefix = "[DIR]" if entry.is_dir() else "[FILE]"
-        entries.append(f"{prefix} {entry.name}")
+    require_directory(valid_path)
+    limits = FilesystemLimits.from_env()
+    entries, truncated = await asyncio.to_thread(
+        _list_directory_bounded, valid_path, limits.max_list_entries
+    )
+    if truncated:
+        entries.append(
+            truncation_notice(reason="list_entries", limit=limits.max_list_entries)
+        )
     return TextContent(type="text", text="\n".join(entries))
 
 
@@ -216,6 +305,14 @@ async def edit_file(
 ) -> TextContent:
     """Edit file by line range: replace lines [start_line, end_line] with new_content."""
     valid_path = await validate_path(path, allowed_directories)
+    require_regular_file(valid_path)
+    max_edit_bytes = FilesystemLimits.from_env().max_edit_bytes
+    file_size = Path(valid_path).stat().st_size
+    if file_size > max_edit_bytes:
+        raise ValueError(
+            f"File is too large for an atomic line edit: {file_size} bytes; "
+            f"limit={max_edit_bytes}. Use a streaming command or split the file."
+        )
     diff_text = await edit_file_by_line_range(
         valid_path,
         start_line=start_line,
@@ -226,15 +323,16 @@ async def edit_file(
     return TextContent(type="text", text=diff_text)
 
 @mcp.tool(
-    description="Copy file from source_path to target_path (server-side). source_path can be any readable path; target_path must be inside allowed directories. Overwrites if target exists."
+    description="Copy a regular server-side file into an allowed workspace path. source_path may be any readable path on this server; target_path must be allowed. Overwrites if target exists."
 )
 async def upload_file(
     ctx: Context,
-    source_path: str = Field(description="Source file path (any readable path on server)"),
+    source_path: str = Field(description="Source file path readable by the filesystem server"),
     target_path: str = Field(description="Target path inside allowed directories; overwrites if exists"),
 ) -> TextContent:
-    """Copy file from source to target (target must be in allowed directories)."""
+    """Import a server-local file into the configured workspace authority."""
     source_resolved = resolve_and_require_file(source_path)
+    require_regular_file(source_resolved)
     valid_target = await validate_path(target_path, allowed_directories)
     if Path(valid_target).exists() and Path(valid_target).is_dir():
         raise ValueError(f"Target path is a directory: {target_path}")
@@ -242,10 +340,12 @@ async def upload_file(
     return TextContent(type="text", text=f"Successfully uploaded {source_path} to {target_path}")
 
 
-@mcp.tool(description="Download file by path. Returns JSON with base64 content, mimeType, and fileName.")
+@mcp.tool(description="Download a bounded binary chunk by path. Returns base64, MIME metadata, and paging metadata when more bytes remain.")
 async def download_file(
     ctx: Context,
     path: str = Field(description="Full path to file to download"),
+    offset: Annotated[int, Field(description="Zero-based byte offset")] = 0,
+    limit: Annotated[Optional[int], Field(description="Bytes to return; capped by server policy")] = None,
 ) -> TextContent:
     """Download file as base64 + metadata."""
     import base64 as b64
@@ -254,17 +354,20 @@ async def download_file(
         raise ValueError(f"Path does not exist: {path}")
     if not Path(valid_path).is_file():
         raise ValueError(f"Path is not a file: {path}")
-    data = await read_file_binary(valid_path)
-    b64_data = b64.b64encode(data).decode("ascii")
+    require_regular_file(valid_path)
+    read_result = await read_binary_chunk(valid_path, offset=offset, limit=limit)
+    b64_data = b64.b64encode(read_result.data).decode("ascii")
     mime_type, file_name = get_mime_and_filename(valid_path)
+    payload = {"type": "base64", "base64": b64_data, "mimeType": mime_type, "fileName": file_name}
+    payload.update(_binary_read_metadata(read_result))
     return TextContent(
         type="text",
-        text=json.dumps({"type": "base64", "base64": b64_data, "mimeType": mime_type, "fileName": file_name}),
+        text=json.dumps(payload),
     )
 
 
 @mcp.tool(
-    description="Parse document to Markdown. file_path: any readable path. output_path: optional, must be in allowed dirs; default is workspace / {stem}.md. file_type: pdf, txt, md, doc, docx, xlsx, xls, csv, ppt, pptx."
+    description="Parse a readable server-side document to Markdown. output_path must be in allowed dirs and defaults to workspace/{stem}.md. file_type: pdf, txt, md, doc, docx, xlsx, xls, csv, ppt, pptx."
 )
 async def parse_file(
     ctx: Context,
@@ -276,6 +379,14 @@ async def parse_file(
 ) -> TextContent:
     """Parse document to Markdown and write to output_path."""
     source_resolved = resolve_and_require_file(file_path)
+    require_regular_file(source_resolved)
+    max_parse_bytes = FilesystemLimits.from_env().max_parse_bytes
+    source_size = Path(source_resolved).stat().st_size
+    if source_size > max_parse_bytes:
+        raise ValueError(
+            f"Document is too large to parse safely: {source_size} bytes; "
+            f"limit={max_parse_bytes}"
+        )
     if not allowed_directories:
         raise ValueError("No allowed directories configured")
     if output_path is None or not output_path.strip():
@@ -294,15 +405,11 @@ async def parse_file(
             text=json.dumps({"success": True, "message": "Document parsed successfully", "output_path": result_path}),
         )
     except NotImplementedError as e:
-        return TextContent(
-            type="text",
-            text=json.dumps({"success": False, "message": str(e)}),
-        )
+        # Raising makes MCP's isError flag truthful; a nested success=false in a
+        # successful TextContent was previously lowered to ActionResult.success.
+        raise RuntimeError(str(e)) from e
     except Exception as e:
-        return TextContent(
-            type="text",
-            text=json.dumps({"success": False, "message": str(e)}),
-        )
+        raise RuntimeError(f"Document parsing failed: {e}") from e
 
 
 @mcp.tool(
@@ -310,7 +417,8 @@ async def parse_file(
         "Search file or directory for lines matching a pattern (regex). "
         "path can be a file or directory; if directory, recurses. "
         "Returns one line per match: absolute_path:line_number:line_content. "
-        "Optional max_matches / max_per_file cap the number of matches. "
+        "Optional max_matches / max_per_file lower the server's finite safety caps. "
+        "Searches have byte/file/output/deadline budgets and report truncation explicitly. "
         "Use before/after to include context lines around each match."
     )
 )
@@ -318,8 +426,8 @@ async def search_content(
     ctx: Context,
     path: str = Field(description="File or directory path to search"),
     pattern: str = Field(description="Regex pattern to match in line content (e.g. keyword or full regex)"),
-    max_matches: Optional[int] = Field(None, description="Maximum total matching lines to return; default no limit"),
-    max_per_file: Optional[int] = Field(None, description="Maximum matching lines per file; default no limit"),
+    max_matches: Optional[int] = Field(None, description="Maximum total matching lines; default uses server safety cap"),
+    max_per_file: Optional[int] = Field(None, description="Maximum matching lines per file; default uses server safety cap"),
     before: int = Field(0, description="Number of context lines to include before each match"),
     after: int = Field(0, description="Number of context lines to include after each match"),
 ) -> TextContent:
@@ -327,6 +435,8 @@ async def search_content(
     valid_path = await validate_path(path, allowed_directories)
     if not Path(valid_path).exists():
         raise ValueError(f"Path does not exist: {path}")
+    if not (Path(valid_path).is_file() or Path(valid_path).is_dir()):
+        raise ValueError(f"Path must be a regular file or directory: {path}")
     text = await search_content_impl(
         valid_path,
         pattern=pattern,
@@ -338,22 +448,35 @@ async def search_content(
     return TextContent(type="text", text=text)
 
 
-# ==================== Disabled MCP tools (not exposed) ====================
+# ==================== Additional MCP tools ====================
 
-@mcp.tool(description="Read image or audio file as base64 encoded data. Returns base64 data, MIME type, and media type (image/audio/blob).")
+@mcp.tool(description="Read a bounded image/audio/blob chunk as base64. Partial results include byte paging metadata.")
 async def read_media_file(
     ctx: Context,
     path: str = Field(description="Media file path"),
+    offset: Annotated[int, Field(description="Zero-based byte offset")] = 0,
+    limit: Annotated[Optional[int], Field(description="Bytes to return; capped by server policy")] = None,
 ) -> TextContent:
     """Read image or audio file as base64"""
+    import base64 as b64
+
     valid_path = await validate_path(path, allowed_directories)
-    data, mime_type, media_type = await read_media_file_content(valid_path)
+    require_regular_file(valid_path)
+    read_result = await read_binary_chunk(valid_path, offset=offset, limit=limit)
+    mime_type, _ = get_mime_and_filename(valid_path)
+    if mime_type.startswith("image/"):
+        media_type = "image"
+    elif mime_type.startswith("audio/"):
+        media_type = "audio"
+    else:
+        media_type = "blob"
 
     result = {
         "type": media_type,
-        "data": data,
+        "data": b64.b64encode(read_result.data).decode("ascii"),
         "mimeType": mime_type
     }
+    result.update(_binary_read_metadata(read_result))
     return TextContent(type="text", text=json.dumps(result))
 
 
@@ -463,7 +586,7 @@ async def directory_tree(
     return TextContent(type="text", text=json.dumps(tree_data, indent=2))
 
 
-@mcp.tool(description="Search for files matching pattern. Uses glob pattern matching. Recursively searches subdirectories. Supports exclude patterns. Returns list of full paths to matching files.")
+@mcp.tool(description="Search for paths matching a glob pattern. Recurses without following symlinks and applies finite traversal/output/deadline budgets. Truncation is reported explicitly.")
 async def search_files(
     ctx: Context,
     path: str = Field(description="Search root path"),
@@ -472,35 +595,27 @@ async def search_files(
 ) -> TextContent:
     """Search for files matching pattern"""
     valid_path = await validate_path(path, allowed_directories)
-    results = []
-    root = Path(valid_path)
-
-    def should_exclude(relative: str) -> bool:
-        for pattern in excludePatterns:
-            if fnmatch(relative, pattern) or fnmatch(relative, f"**/{pattern}"):
-                return True
-        return False
-
-    async def search(current: Path):
-        try:
-            for entry in current.iterdir():
-                full_path = current / entry.name
-                try:
-                    await validate_path(str(full_path), allowed_directories)
-                    relative = str(full_path.relative_to(root))
-                    if should_exclude(relative):
-                        continue
-                    if fnmatch(relative, pattern) or fnmatch(entry.name, pattern):
-                        results.append(str(full_path))
-                    if entry.is_dir():
-                        await search(full_path)
-                except (ValueError, PermissionError):
-                    continue
-        except (PermissionError, OSError):
-            pass
-
-    await search(root)
-    text = "\n".join(results) if results else "No matches found"
+    require_directory(valid_path)
+    limits = FilesystemLimits.from_env()
+    result = await asyncio.to_thread(
+        search_files_bounded,
+        valid_path,
+        pattern=pattern,
+        exclude_patterns=excludePatterns,
+        limits=limits,
+    )
+    text = "\n".join(result.paths) if result.paths else "No matches found"
+    if not result.complete:
+        reason = result.truncation_reason or "unknown"
+        text += "\n" + truncation_notice(
+            reason=reason,
+            limit={
+                "search_files": limits.max_search_files,
+                "search_output_bytes": limits.max_search_output_bytes,
+                "search_depth": limits.max_search_depth,
+                "timeout": limits.search_timeout_seconds,
+            }.get(reason, 0),
+        )
     return TextContent(type="text", text=text)
 
 

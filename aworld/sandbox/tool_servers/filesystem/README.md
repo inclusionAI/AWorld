@@ -37,7 +37,42 @@ uv run python -m src [ALLOWED_DIR] [OTHER_DIR ...]
 python -m src [ALLOWED_DIR] [OTHER_DIR ...]
 ```
 
-Each argument is treated as an allowed root directory; all file operations must stay under at least one of them.
+Each argument is treated as an allowed root directory. Direct reads, searches,
+and mutation targets must stay under one of them. For backward-compatible import
+workflows, `upload_file.source_path` and `parse_file.file_path` may name another
+regular file readable in the filesystem server's own execution environment;
+their destination remains confined to an allowed root.
+
+`local` describes where the MCP process runs; it does not create a container. If
+the CLI runs directly on a workstation, filesystem operations run on that
+workstation. If the CLI itself runs in a benchmark task container, they run in
+that task container. In both cases, `AWORLD_WORKSPACE` is the filesystem authority.
+
+## Producer-side safety limits
+
+Reads, directory listings, and searches use finite producer-side limits so a
+result cannot exhaust the MCP server before client-side output compaction runs.
+Small results retain their original response shape. Partial text/binary reads add
+`complete` and continuation metadata; legacy plain-text list/search results append
+an explicit `[TRUNCATED]` line. Binary tools accept optional `offset` and `limit`
+for paging. Recursive operations do not follow symbolic links.
+
+Defaults can be increased or lowered with these environment variables (invalid or
+non-positive values never disable the hard limit):
+
+- `AWORLD_FILESYSTEM_MAX_READ_BYTES` (1 MiB)
+- `AWORLD_FILESYSTEM_MAX_BINARY_BYTES` (4 MiB)
+- `AWORLD_FILESYSTEM_MAX_LINE_BYTES` (256 KiB)
+- `AWORLD_FILESYSTEM_MAX_SCAN_BYTES` (64 MiB)
+- `AWORLD_FILESYSTEM_MAX_LIST_ENTRIES` (2,000)
+- `AWORLD_FILESYSTEM_MAX_SEARCH_MATCHES` (1,000)
+- `AWORLD_FILESYSTEM_MAX_SEARCH_PER_FILE` (200)
+- `AWORLD_FILESYSTEM_MAX_SEARCH_FILES` (10,000)
+- `AWORLD_FILESYSTEM_MAX_SEARCH_OUTPUT_BYTES` (1 MiB)
+- `AWORLD_FILESYSTEM_MAX_SEARCH_DEPTH` (128)
+- `AWORLD_FILESYSTEM_SEARCH_TIMEOUT_SECONDS` (10 seconds)
+- `AWORLD_FILESYSTEM_MAX_EDIT_BYTES` (16 MiB)
+- `AWORLD_FILESYSTEM_MAX_PARSE_BYTES` (64 MiB)
 
 ### MCP client configuration
 
@@ -291,4 +326,3 @@ python -m src [允许的目录] [其他目录...]
 列出允许访问的目录
 - 显示服务器当前允许访问的所有目录
 - 用于了解可访问范围
-
