@@ -38,3 +38,34 @@ def test_production_code_has_no_example_package_dependency() -> None:
     }
 
     assert dependencies == set()
+
+
+def test_runtime_wheel_configuration_excludes_example_packages() -> None:
+    root = Path(__file__).resolve().parents[2]
+    tree = ast.parse((root / "setup.py").read_text(encoding="utf-8"))
+    setup_call = next(
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "setup"
+    )
+    packages_keyword = next(
+        keyword for keyword in setup_call.keywords if keyword.arg == "packages"
+    )
+    assert isinstance(packages_keyword.value, ast.Call)
+    exclude_keyword = next(
+        keyword
+        for keyword in packages_keyword.value.keywords
+        if keyword.arg == "exclude"
+    )
+    assert isinstance(exclude_keyword.value, ast.List)
+    exclusions = {
+        item.value
+        for item in exclude_keyword.value.elts
+        if isinstance(item, ast.Constant) and isinstance(item.value, str)
+    }
+
+    assert {"examples", "examples.*", "train.examples", "train.examples.*"} <= (
+        exclusions
+    )

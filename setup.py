@@ -236,6 +236,8 @@ setup(
             # prevents bundled agents from accidentally importing demo Tools.
             "examples",
             "examples.*",
+            "train.examples",
+            "train.examples.*",
         ],
     ),
     package_data={
