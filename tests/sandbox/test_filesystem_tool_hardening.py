@@ -21,6 +21,9 @@ from aworld.sandbox.config.templates import get_server_env
 parse_module = importlib.import_module(
     "aworld.sandbox.tool_servers.filesystem.src.utils.document_processor.parse_to_path"
 )
+excel_module = importlib.import_module(
+    "aworld.sandbox.tool_servers.filesystem.src.utils.document_processor.parsers.excel_parser"
+)
 
 
 def _json(result) -> dict:
@@ -254,6 +257,34 @@ async def test_extreme_workbook_dimensions_are_rejected_without_iteration(
         await parse_module.parse_to_path(source, tmp_path / "output.md", "xlsx")
 
     assert not (tmp_path / "output.md").exists()
+
+
+@pytest.mark.asyncio
+async def test_workbook_cell_cap_is_applied_inside_parser(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class FakeSheet:
+        max_row = 100
+        max_column = 100
+
+    class FakeWorkbook:
+        sheetnames = ["Huge"]
+        closed = False
+
+        def __getitem__(self, _name):
+            return FakeSheet()
+
+        def close(self):
+            self.closed = True
+
+    workbook = FakeWorkbook()
+    monkeypatch.setattr(excel_module, "load_workbook", lambda *_a, **_k: workbook)
+    monkeypatch.setenv("AWORLD_FILESYSTEM_MAX_WORKBOOK_CELLS", "1000")
+
+    with pytest.raises(ValueError, match="Worksheet cell limit exceeded"):
+        await excel_module.ExcelParser()._extract_xlsx_content(tmp_path / "fake.xlsx")
+
+    assert workbook.closed is True
 
 
 @pytest.mark.asyncio
