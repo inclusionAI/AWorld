@@ -86,11 +86,12 @@ def _direct_run_has_explicit_task_failure(summary: object) -> bool:
     summary = _direct_run_summary(summary)
     if summary is None:
         return False
-    failed_results = [
-        result
-        for result in summary.get("results") or []
-        if isinstance(result, dict) and not bool(result.get("success"))
-    ]
+    results = summary.get("results") or []
+    if not isinstance(results, list) or not results or any(
+        not isinstance(result, dict) for result in results
+    ):
+        return False
+    failed_results = [result for result in results if not bool(result.get("success"))]
     return bool(failed_results) and all(
         result.get("failure_origin") == "task" for result in failed_results
     )

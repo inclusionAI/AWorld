@@ -899,6 +899,9 @@ def test_one_shot_failure_classification_requires_explicit_task_origin() -> None
 
     assert main_module._direct_run_has_explicit_task_failure(untyped) is False
     assert main_module._direct_run_has_explicit_task_failure(typed) is True
+    assert main_module._direct_run_has_explicit_task_failure(
+        {"results": [typed["results"][0], "malformed"]}
+    ) is False
 
 
 def test_cancel_detector_accepts_task_response_control_plane() -> None:

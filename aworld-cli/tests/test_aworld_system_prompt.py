@@ -174,6 +174,38 @@ def test_generation_budget_env_builds_typed_policy(
 
 
 @pytest.mark.parametrize(
+    ("name", "value", "expected"),
+    [
+        ("AWORLD_GENERATION_TOTAL_TIMEOUT_SECONDS", "600", (600.0, None, None, None, False)),
+        ("AWORLD_GENERATION_STREAM_IDLE_TIMEOUT_SECONDS", "45", (360.0, 45.0, None, None, False)),
+        ("AWORLD_GENERATION_ACTIVE_TOOL_FREE_TIMEOUT_SECONDS", "75", (360.0, None, 75.0, None, False)),
+        ("AWORLD_GENERATION_ACTION_REPAIR_TIMEOUT_SECONDS", "30", (360.0, None, None, 30.0, False)),
+        ("AWORLD_GENERATION_ACTION_REPAIR_ENABLED", "true", (360.0, None, None, None, True)),
+    ],
+)
+def test_generation_budget_partial_opt_in_does_not_enable_other_controls(
+    monkeypatch: pytest.MonkeyPatch,
+    name: str,
+    value: str,
+    expected: tuple[float, float | None, float | None, float | None, bool],
+) -> None:
+    for env_name in aworld_agent._GENERATION_BUDGET_ENV_NAMES:
+        monkeypatch.delenv(env_name, raising=False)
+    monkeypatch.setenv(name, value)
+
+    policy = resolve_aworld_generation_budget()
+
+    assert policy is not None
+    assert (
+        policy.total_timeout_seconds,
+        policy.stream_idle_timeout_seconds,
+        policy.active_tool_free_timeout_seconds,
+        policy.action_repair_timeout_seconds,
+        policy.action_repair_enabled,
+    ) == expected
+
+
+@pytest.mark.parametrize(
     ("name", "value", "message"),
     [
         (

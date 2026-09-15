@@ -202,7 +202,16 @@ def resolve_aworld_generation_budget() -> Optional[GenerationBudgetPolicy]:
 
     if not any(name in os.environ for name in _GENERATION_BUDGET_ENV_NAMES):
         return None
-    defaults = GenerationBudgetPolicy()
+    # A single opt-in must not silently enable every optional deadline for a
+    # normal CLI user. Runtime adapters explicitly provide the full benchmark
+    # policy; unspecified general-mode controls stay disabled.
+    defaults = GenerationBudgetPolicy(
+        total_timeout_seconds=360.0,
+        stream_idle_timeout_seconds=None,
+        active_tool_free_timeout_seconds=None,
+        action_repair_timeout_seconds=None,
+        action_repair_enabled=False,
+    )
 
     def optional_seconds(name: str, default: Optional[float]) -> Optional[float]:
         raw = os.environ.get(name)
