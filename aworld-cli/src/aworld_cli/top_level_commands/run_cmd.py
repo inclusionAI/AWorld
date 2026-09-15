@@ -5,6 +5,7 @@ import asyncio
 import json
 import os
 import sys
+from dataclasses import replace
 
 from aworld_cli.runtime_bootstrap import RuntimeBootstrapError, bootstrap_runtime
 
@@ -238,6 +239,11 @@ class RunTopLevelCommand:
             try_write_atif_trajectory,
         )
         from aworld_cli.main import _trajectory_payload_from_direct_run_summary
+        from aworld_cli.run_outcome import (
+            DirectRunErrorCode,
+            DirectRunStage,
+            DirectRunStatus,
+        )
 
         summary = outcome.summary
         trajectory_payload = _trajectory_payload_from_direct_run_summary(
@@ -306,16 +312,31 @@ class RunTopLevelCommand:
                 file=sys.stderr,
             )
 
+        final_outcome = outcome
+        if (
+            trajectory_output
+            and export_receipt.status is AtifExportStatus.FAILED
+        ):
+            final_outcome = replace(
+                outcome,
+                status=DirectRunStatus.INFRASTRUCTURE_FAILED,
+                process_exit_code=outcome.process_exit_code or 1,
+                failure_record={
+                    "stage": DirectRunStage.ORCHESTRATION.value,
+                    "error_code": DirectRunErrorCode.ATIF_EXPORT_FAILED.value,
+                },
+            )
+
         print(
             "AWORLD_RUN_OUTCOME="
             + json.dumps(
-                outcome.to_dict(atif_export=export_receipt.to_dict()),
+                final_outcome.to_dict(atif_export=export_receipt.to_dict()),
                 ensure_ascii=False,
                 sort_keys=True,
             ),
             file=sys.stderr,
         )
-        return outcome.process_exit_code
+        return final_outcome.process_exit_code
 
     def _resolve_agent_name(self, args) -> str | None:
         agent_name = args.agent

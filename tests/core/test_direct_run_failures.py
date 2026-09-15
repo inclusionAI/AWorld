@@ -20,6 +20,20 @@ def _marker_payload(stderr: str, marker: str) -> dict:
     return json.loads(line.removeprefix(marker))
 
 
+def test_typed_outcome_preserves_legacy_truth_value_contract() -> None:
+    successful = DirectRunOutcome.from_summary(
+        {},
+        status=DirectRunStatus.SUCCEEDED,
+    )
+    failed_with_partial_summary = DirectRunOutcome.from_summary(
+        {"results": [{"success": False}]},
+        status=DirectRunStatus.TASK_FAILED,
+    )
+
+    assert bool(successful) is True
+    assert bool(failed_with_partial_summary) is False
+
+
 @pytest.mark.asyncio
 async def test_direct_run_reports_agent_load_failure_and_returns_typed_outcome(
     monkeypatch: pytest.MonkeyPatch,
@@ -377,14 +391,19 @@ def test_run_command_export_failure_does_not_change_success_semantics(
         SimpleNamespace(argv=("aworld-cli", "run")),
     )
 
-    assert exit_code == 0
+    assert exit_code == 1
     stderr = capsys.readouterr().err
     export = _marker_payload(stderr, "AWORLD_ATIF_EXPORT=")
     assert export["status"] == "failed"
     assert export["error_type"] == "OSError"
     assert "private path detail" not in stderr
     final_outcome = _marker_payload(stderr, "AWORLD_RUN_OUTCOME=")
-    assert final_outcome["semantic_status"] == "succeeded"
+    assert final_outcome["semantic_status"] == "infrastructure_failed"
+    assert final_outcome["process_exit_code"] == 1
+    assert final_outcome["failure"] == {
+        "stage": "orchestration",
+        "error_code": "atif_export_failed",
+    }
     assert final_outcome["atif_export"]["status"] == "failed"
 
 

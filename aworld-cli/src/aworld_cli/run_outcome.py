@@ -44,6 +44,7 @@ class DirectRunErrorCode(str, Enum):
     DIRECT_RUN_EXCEPTION = "direct_run_exception"
     DIRECT_RUN_CANCELLED = "direct_run_cancelled"
     DIRECT_RUN_INTERRUPTED = "direct_run_interrupted"
+    ATIF_EXPORT_FAILED = "atif_export_failed"
 
 
 def _as_dict(value: Any) -> dict[str, Any]:
@@ -322,6 +323,11 @@ class DirectRunOutcome(Mapping[str, Any]):
 
     def __len__(self) -> int:
         return len(self.summary or {})
+
+    def __bool__(self) -> bool:
+        """Preserve the legacy helper's success/failure truth-value contract."""
+
+        return self.succeeded
 
 
 def coerce_direct_run_outcome(value: Any) -> DirectRunOutcome:
