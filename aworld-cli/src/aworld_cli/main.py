@@ -9,6 +9,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import sys
 from pathlib import Path
 from typing import Optional
@@ -24,6 +25,7 @@ from .run_outcome import (
 
 
 _AWORLD_PRE_PROVIDER_MAX_ATTEMPTS = 2
+_CONTROL_DETAIL_IDENTIFIER = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
 
 
 def _direct_run_summary(value: object) -> dict | None:
@@ -58,6 +60,19 @@ def _direct_run_succeeded(summary: object) -> bool:
     return bool(results) and all(
         isinstance(result, dict) and bool(result.get("success"))
         for result in results
+    )
+
+
+def _direct_run_cancelled(summary: object) -> bool:
+    """Return whether an executor preserved a typed cancellation signal."""
+
+    summary = _direct_run_summary(summary)
+    if summary is None:
+        return False
+    return any(
+        isinstance(result, dict)
+        and result.get("termination_status") == "cancelled"
+        for result in summary.get("results") or []
     )
 
 
@@ -411,7 +426,10 @@ async def load_all_agents(
             try:
                 init_agent_file(agent_file)
             except Exception as e:
-                print(f"⚠️ Failed to load agent file {agent_file}: {e}")
+                print(
+                    "⚠️ Failed to load an agent file "
+                    f"({type(e).__name__}); path and exception text were omitted"
+                )
     
     # Use a short-lived CliRuntime to load agents from all supported sources.
     runtime = CliRuntime(remote_backends=remote_backends, local_dirs=local_dirs)
@@ -1027,7 +1045,10 @@ async def _run_interactive_mode(
             try:
                 init_agent_file(agent_file)
             except Exception as e:
-                print(f"⚠️ Failed to load agent file {agent_file}: {e}")
+                print(
+                    "⚠️ Failed to load an agent file "
+                    f"({type(e).__name__}); path and exception text were omitted"
+                )
     
     runtime = CliRuntime(
         agent_name=agent_name,
@@ -1086,7 +1107,10 @@ async def _run_serve_mode(
             try:
                 init_agent_file(agent_file)
             except Exception as e:
-                print(f"⚠️ Failed to load agent file {agent_file}: {e}")
+                print(
+                    "⚠️ Failed to load an agent file "
+                    f"({type(e).__name__}); path and exception text were omitted"
+                )
     
     # Load agents to ensure they are registered
     print("🔄 Loading agents...")
@@ -1155,6 +1179,46 @@ async def _run_serve_mode(
         print("✅ All servers stopped")
 
 
+def _direct_run_control_details(details: Optional[dict]) -> dict:
+    """Project diagnostics onto a small, content-free control-plane schema."""
+
+    if not isinstance(details, dict):
+        return {}
+    projected: dict[str, object] = {}
+    for key in ("attempts",):
+        value = details.get(key)
+        if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
+            projected[key] = value
+    for key in ("provider_evidence",):
+        value = details.get(key)
+        if isinstance(value, bool):
+            projected[key] = value
+    for key in ("error_type", "trajectory_capture_mode"):
+        value = details.get(key)
+        if isinstance(value, str) and _CONTROL_DETAIL_IDENTIFIER.fullmatch(value):
+            projected[key] = value
+
+    available_agents = details.get("available_agents")
+    if isinstance(available_agents, (list, tuple)):
+        projected["available_agent_count"] = len(available_agents)
+
+    load_failures = details.get("load_failures")
+    if isinstance(load_failures, (list, tuple)):
+        projected["load_failure_count"] = len(load_failures)
+        error_types = sorted(
+            {
+                item.get("error_type")
+                for item in load_failures
+                if isinstance(item, dict)
+                and isinstance(item.get("error_type"), str)
+                and _CONTROL_DETAIL_IDENTIFIER.fullmatch(item["error_type"])
+            }
+        )
+        if error_types:
+            projected["load_failure_error_types"] = error_types
+    return projected
+
+
 def _emit_direct_run_failure(
     *,
     stage: str,
@@ -1178,8 +1242,9 @@ def _emit_direct_run_failure(
         "action_count": metrics.action_count,
         "last_successful_checkpoint": metrics.last_successful_checkpoint,
     }
-    if details:
-        payload["details"] = details
+    control_details = _direct_run_control_details(details)
+    if control_details:
+        payload["details"] = control_details
     print(
         "AWORLD_RUN_FAILURE=" + json.dumps(payload, ensure_ascii=False, sort_keys=True),
         file=sys.stderr,
@@ -1308,7 +1373,10 @@ async def _run_direct_mode(
             try:
                 init_agent_file(agent_file)
             except Exception as e:
-                print(f"⚠️ Failed to load agent file {agent_file}: {e}")
+                print(
+                    "⚠️ Failed to load an agent file "
+                    f"({type(e).__name__}); path and exception text were omitted"
+                )
     
     # Use CliRuntime to load agents and create executor
     try:
@@ -1334,7 +1402,7 @@ async def _run_direct_mode(
     try:
         all_agents = await runtime._load_agents()
     except Exception as exc:
-        print(f"❌ Error: Failed to load agents: {type(exc).__name__}: {exc}")
+        print(f"❌ Error: Failed to load agents ({type(exc).__name__})")
         return _direct_run_failure_outcome(
             stage=DirectRunStage.AGENT_LOAD,
             error_code=DirectRunErrorCode.AGENT_LOAD_FAILED,
@@ -1376,7 +1444,7 @@ async def _run_direct_mode(
     except Exception as exc:
         print(
             f"❌ Error: Failed to create executor for agent '{agent_name}': "
-            f"{type(exc).__name__}: {exc}"
+            f"{type(exc).__name__}"
         )
         return _direct_run_failure_outcome(
             stage=DirectRunStage.EXECUTOR_CREATE,
@@ -1478,6 +1546,8 @@ async def _run_direct_mode(
                 show_iteration_header=show_iteration_header,
                 echo_prompt_as_turn=echo_prompt_as_turn,
             )
+            if _direct_run_cancelled(summary):
+                break
             if not require_provider_evidence or _direct_run_has_provider_evidence(summary):
                 break
             if provider_attempt < max_provider_attempts:
@@ -1522,6 +1592,15 @@ async def _run_direct_mode(
             agent_name=agent_name,
             details={"error_type": type(exc).__name__},
             summary=summary,
+        )
+    if _direct_run_cancelled(summary):
+        return _direct_run_failure_outcome(
+            stage=DirectRunStage.AGENT_EXECUTION,
+            error_code=DirectRunErrorCode.DIRECT_RUN_CANCELLED,
+            agent_name=agent_name,
+            summary=summary,
+            status=DirectRunStatus.CANCELLED,
+            process_exit_code=130,
         )
     if not _direct_run_succeeded(summary):
         return _direct_run_failure_outcome(

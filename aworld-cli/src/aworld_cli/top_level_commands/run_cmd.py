@@ -348,13 +348,14 @@ class RunTopLevelCommand:
                     agent_name = init_agent_file(args.agent_file[0])
                     if not agent_name:
                         print(
-                            f"❌ Error: Could not extract agent name from {args.agent_file[0]}"
+                            "❌ Error: Could not extract an agent name from the file"
                         )
                         return None
                     print(f"ℹ️  Auto-detected agent name: {agent_name}")
                 except Exception as exc:
                     print(
-                        f"❌ Error: Failed to load agent file {args.agent_file[0]}: {exc}"
+                        "❌ Error: Failed to load the agent file "
+                        f"({type(exc).__name__}); path and exception text were omitted"
                     )
                     return None
             else:

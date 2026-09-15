@@ -58,7 +58,7 @@ async def test_direct_run_reports_agent_load_failure_and_returns_typed_outcome(
     payload = _failure_payload(capsys.readouterr().err)
     assert payload == {
         "agent_name": "Aworld",
-        "details": {"available_agents": ["OtherAgent"]},
+        "details": {"available_agent_count": 1},
         "error_code": "agent_not_found",
         "action_count": 0,
         "last_successful_checkpoint": None,
@@ -130,8 +130,39 @@ async def test_direct_run_classifies_agent_loader_exception(
     assert payload["stage"] == "agent_load"
     assert payload["details"] == {
         "error_type": "ImportError",
-        "message": "native module is incompatible",
     }
+
+
+def test_failure_marker_drops_paths_messages_and_unknown_diagnostics(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    main_module._emit_direct_run_failure(
+        stage="agent_load",
+        error_code="agent_load_failed",
+        agent_name="Aworld",
+        details={
+            "message": "token=secret at /Users/private/plugin.py",
+            "location": "/Users/private/plugin.py",
+            "available_agents": ["private-agent"],
+            "load_failures": [
+                {
+                    "error_type": "ImportError",
+                    "message": "https://example.invalid/?token=secret",
+                    "location": "/Users/private/plugin.py",
+                }
+            ],
+        },
+    )
+
+    stderr = capsys.readouterr().err
+    payload = _failure_payload(stderr)
+    assert payload["details"] == {
+        "available_agent_count": 1,
+        "load_failure_count": 1,
+        "load_failure_error_types": ["ImportError"],
+    }
+    assert "secret" not in stderr
+    assert "/Users/private" not in stderr
 
 
 def test_run_command_returns_nonzero_when_direct_run_does_not_start(
@@ -769,3 +800,66 @@ async def test_direct_run_cancellation_recovers_last_task_response_evidence(
     payload = _failure_payload(capsys.readouterr().err)
     assert payload["error_code"] == "direct_run_cancelled"
     assert payload["llm_call_count"] == 3
+
+
+@pytest.mark.asyncio
+async def test_direct_run_preserves_executor_cancellation_without_retrying(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    selected_agent = SimpleNamespace(name="Aworld")
+    executor = SimpleNamespace(last_task_response=None)
+
+    class DummyRuntime:
+        def __init__(self, *args, **kwargs) -> None:
+            self._scheduler = None
+
+        async def _load_agents(self):
+            return [selected_agent]
+
+        def _bind_scheduler_default_agent(self, _agent_name: str) -> None:
+            pass
+
+        async def _create_executor(self, _agent):
+            return executor
+
+        def _restore_executor_session(self, *_args, **_kwargs) -> None:
+            pass
+
+    class DummyContinuousExecutor:
+        calls = 0
+
+        def __init__(self, *_args, **_kwargs) -> None:
+            pass
+
+        async def run_continuous(self, **_kwargs):
+            type(self).calls += 1
+            return {
+                "total_runs": 1,
+                "successful_runs": 0,
+                "results": [
+                    {
+                        "iteration": 1,
+                        "response": "partial model output",
+                        "success": False,
+                        "completed": False,
+                        "termination_status": "cancelled",
+                    }
+                ],
+            }
+
+    monkeypatch.setattr(main_module, "CliRuntime", DummyRuntime)
+    monkeypatch.setattr(main_module, "ContinuousExecutor", DummyContinuousExecutor)
+    monkeypatch.setattr("aworld.core.scheduler.get_scheduler", lambda: object())
+
+    outcome = await main_module._run_direct_mode(
+        prompt="test",
+        agent_name="Aworld",
+        non_interactive=True,
+    )
+
+    assert outcome.status is DirectRunStatus.CANCELLED
+    assert outcome.process_exit_code == 130
+    assert DummyContinuousExecutor.calls == 1
+    payload = _failure_payload(capsys.readouterr().err)
+    assert payload["error_code"] == "direct_run_cancelled"

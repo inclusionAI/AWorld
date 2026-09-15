@@ -505,6 +505,10 @@ class LocalAgentExecutor(BaseAgentExecutor):
         return should_pause
 
     async def _handle_task_interrupted(self, task: Task, answer: str = "") -> str:
+        # Preserve a typed executor-owned signal.  Returning a partial string is
+        # useful for an interactive session, but it must never be reclassified
+        # as a successful direct/non-interactive task by a higher layer.
+        self.last_task_interrupted = True
         await self._run_plugin_task_hook(
             "task_interrupted",
             {
@@ -973,6 +977,7 @@ class LocalAgentExecutor(BaseAgentExecutor):
                 from .._globals import console as global_console
                 self.console = global_console
             self.last_task_response = None
+            self.last_task_interrupted = False
 
             # 2. Parse message - handle both string and tuple format
             if isinstance(message, tuple):

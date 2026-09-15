@@ -6,6 +6,7 @@ import pytest
 from rich.console import Console
 
 from aworld_cli.executors.continuous import ContinuousExecutor
+from aworld_cli.executors.local import LocalAgentExecutor
 
 
 @pytest.mark.asyncio
@@ -113,6 +114,45 @@ async def test_run_iteration_propagates_failed_task_response() -> None:
     assert result["success"] is False
     assert result["completed"] is False
     assert result["immediate_stop"] is False
+
+
+@pytest.mark.asyncio
+async def test_local_interruption_signal_cannot_be_reclassified_as_success() -> None:
+    executor = object.__new__(LocalAgentExecutor)
+    executor.session_id = "sess-1"
+    executor.last_task_response = None
+    executor.last_task_interrupted = False
+    executor._publish_hud_task_finished = lambda *_args, **_kwargs: None
+
+    async def no_hooks(*_args, **_kwargs):
+        return []
+
+    executor._run_plugin_task_hook = no_hooks
+    task = SimpleNamespace(id="task-1")
+
+    async def interrupted_chat(_prompt: str, **_kwargs):
+        return await executor._handle_task_interrupted(
+            task,
+            answer="partial model output",
+        )
+
+    executor.chat = interrupted_chat
+    continuous = ContinuousExecutor(
+        executor,
+        console=Console(file=StringIO(), force_terminal=False),
+    )
+
+    result = await continuous.run_iteration(
+        1,
+        "hello",
+        agent_name="Aworld",
+        non_interactive=True,
+    )
+
+    assert result["response"] == "partial model output"
+    assert result["success"] is False
+    assert result["completed"] is False
+    assert result["termination_status"] == "cancelled"
 
 
 @pytest.mark.asyncio
