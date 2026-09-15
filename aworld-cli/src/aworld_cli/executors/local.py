@@ -32,6 +32,7 @@ from aworld.memory.main import _default_file_memory_store
 from aworld.runner import Runners
 from aworld.utils.runtime_state import runtime_state_path
 from aworld_cli.core.plugin_manager import PluginManager
+from aworld_cli.core.runtime_completion import configure_runtime_completion
 from aworld_cli.core.skill_activation_resolver import (
     SkillActivationResolver,
     SkillResolverRequest,
@@ -885,6 +886,16 @@ class LocalAgentExecutor(BaseAgentExecutor):
         context = hook_kwargs.get('context', context)
         task_input = hook_kwargs.get('task_input', task_input)
         image_urls = hook_kwargs.get('image_urls', image_urls) or []
+
+        # Direct benchmark callers may opt in to a high-confidence filesystem
+        # completion contract.  This validates declared outputs without changing
+        # the actual CLI/sandbox working directory. Run this after input hooks so
+        # a caller-installed contract always takes precedence.
+        configure_runtime_completion(
+            context,
+            request=str(original_task_content or ""),
+            workspace_path=context.workspace_path,
+        )
 
         # 5. Build observation with images if provided
         # Use task_input.task_content (which may have been updated by FileParseHook) instead of old task_content

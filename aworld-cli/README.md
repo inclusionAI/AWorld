@@ -161,8 +161,17 @@ Place the file in the directory specified by `LOCAL_AGENTS_DIR` or use `--agent-
 - `SKILLS_DIR`: Single skills directory (legacy, for backward compatibility)
 - `SKILLS_CACHE_DIR`: Custom cache directory for GitHub skill repositories (default: ~/.aworld/skills)
 - `AWORLD_DISABLE_CONSOLE_LOG`: Disable console logging (set to 'true')
+- `AWORLD_CONTROL_ROOT`: Optional directory for framework-owned runtime state such as cron state, session workspaces, transcripts, plugin state, and Tool-call logs. It does not change the task working directory.
+- `AWORLD_COMPLETION_MODE`: Optional direct-run completion contract mode: `off` (default), `observe`, or `enforce`.
+- `AWORLD_INFER_REQUIRED_ARTIFACTS`: When true, infer required artifacts only from explicit output-path declarations in the task. Intended for controlled execution runtimes together with `AWORLD_COMPLETION_MODE`.
+- `AWORLD_REQUIRED_ARTIFACTS_JSON`: Optional JSON array of artifact paths supplied by a runtime instead of relying on inference.
 
 **Note:** Built-in agents from `builtin_agents/*/agents` directories are always loaded automatically, regardless of environment variable configuration. Only the `agents` subdirectories are scanned to avoid loading unnecessary files.
+
+The local sandbox always runs in the same operating-system environment as the
+`aworld-cli` process. On a user's workstation that means the workstation; when
+a benchmark runtime launches the CLI inside a task container, it means that task
+container. The local mode itself does not create an additional isolation layer.
 
 ## Installed Skills
 
