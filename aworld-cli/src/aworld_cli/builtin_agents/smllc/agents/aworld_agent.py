@@ -301,11 +301,22 @@ def _aworld_root_tool_policy(
     *,
     has_subagents: bool,
 ) -> tuple[list[str], dict[str, list[str]]]:
-    """Build the root Tool allowlist and action denylist from lifecycle policy."""
+    """Build the root Tool allowlist and action denylist from lifecycle policy.
+
+    The CAST search Tool is an optional in-process development convenience.  It
+    does not share the Sandbox filesystem authority, so it must never be part of
+    the one-shot surface used by an enclosing runtime.  One-shot agents keep
+    filesystem access on the explicitly configured Sandbox/MCP transports (and
+    can always use the required ``run_code`` terminal schema).
+    """
 
     tool_names = [
         CONTEXT_TOOL,
-        *([CAST_SEARCH] if _CAST_TOOLS_AVAILABLE else []),
+        *(
+            [CAST_SEARCH]
+            if _CAST_TOOLS_AVAILABLE and profile.profile_id == "general"
+            else []
+        ),
         *(["async_spawn_subagent"] if has_subagents else []),
     ]
     if ToolLifecycle.DURABLE in profile.allowed_lifecycles:

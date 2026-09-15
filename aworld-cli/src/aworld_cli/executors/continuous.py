@@ -80,6 +80,14 @@ class ContinuousExecutor:
         task_status = getattr(task_response, "status", None)
         if task_status is not None:
             result["task_status"] = to_serializable(task_status)
+        for attribute in ("failure_origin", "failure_code", "error_type"):
+            value = getattr(task_response, attribute, None)
+            if isinstance(value, str) and value:
+                result[attribute] = value
+        if result.get("failure_origin") == "cancelled" or result.get(
+            "task_status"
+        ) in {"cancelled", "interrupted"}:
+            result["termination_status"] = "cancelled"
         return result
 
     def _active_steering_runtime(self, *, non_interactive: bool) -> Any | None:
@@ -370,7 +378,10 @@ class ContinuousExecutor:
                 "response": str(e),
                 "cost": 0.0,
                 "completed": False,
-                "success": False
+                "success": False,
+                "failure_origin": "infrastructure",
+                "failure_code": "executor_exception",
+                "error_type": type(e).__name__,
             }
             return self._attach_task_response_evidence(
                 result,

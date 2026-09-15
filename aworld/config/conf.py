@@ -195,17 +195,17 @@ class ContextCompilerRuntimeConfig(BaseConfig):
     # explicitly disable the total deadline as well.
     generation_total_timeout_seconds: Optional[float] = Field(default=None, gt=0)
     generation_stream_idle_timeout_seconds: Optional[float] = Field(
-        default=120.0, gt=0
+        default=None, gt=0
     )
     generation_active_tool_free_timeout_seconds: Optional[float] = Field(
-        default=240.0, gt=0
+        default=None, gt=0
     )
     generation_action_repair_timeout_seconds: Optional[float] = Field(
-        default=90.0, gt=0
+        default=None, gt=0
     )
     generation_action_repair_max_output_tokens: int = Field(default=1024, gt=0)
     generation_partial_response_context_chars: int = Field(default=8192, gt=0)
-    generation_action_repair_enabled: bool = True
+    generation_action_repair_enabled: bool = False
 
 
 class ModelConfig(BaseConfig):

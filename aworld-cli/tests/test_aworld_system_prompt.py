@@ -78,7 +78,7 @@ def test_one_shot_profile_removes_durable_and_background_actions(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("AWORLD_TOOL_SURFACE_PROFILE", "one_shot")
-    monkeypatch.setattr(aworld_agent, "_CAST_TOOLS_AVAILABLE", False)
+    monkeypatch.setattr(aworld_agent, "_CAST_TOOLS_AVAILABLE", True)
 
     profile = resolve_aworld_tool_surface_profile()
     tool_names, black_actions = _aworld_root_tool_policy(
@@ -88,6 +88,7 @@ def test_one_shot_profile_removes_durable_and_background_actions(
 
     assert profile.allowed_lifecycles == (ToolLifecycle.IMMEDIATE,)
     assert "cron" not in tool_names
+    assert "CAST_SEARCH" not in tool_names
     assert "async_spawn_subagent" in tool_names
     assert black_actions["async_spawn_subagent"] == [
         "spawn_background",
@@ -95,6 +96,20 @@ def test_one_shot_profile_removes_durable_and_background_actions(
         "wait_task",
         "cancel_task",
     ]
+
+
+def test_general_profile_preserves_optional_cast_search(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("AWORLD_TOOL_SURFACE_PROFILE", raising=False)
+    monkeypatch.setattr(aworld_agent, "_CAST_TOOLS_AVAILABLE", True)
+
+    tool_names, _ = _aworld_root_tool_policy(
+        resolve_aworld_tool_surface_profile(),
+        has_subagents=False,
+    )
+
+    assert "CAST_SEARCH" in tool_names
 
 
 @pytest.mark.parametrize("value", ["benchmark", "local", "invalid"])

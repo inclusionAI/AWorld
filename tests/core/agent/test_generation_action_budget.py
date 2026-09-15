@@ -72,6 +72,25 @@ def _message(task_id: str = "generation-budget") -> Message:
     )
 
 
+def test_default_agent_keeps_only_legacy_total_timeout() -> None:
+    agent = _ToolAgent(
+        name="Aworld",
+        conf=AgentConfig(
+            llm_provider="openai",
+            llm_model_name="fake-model",
+            llm_api_key="fake-key",
+        ),
+    )
+
+    policy = agent._resolve_generation_budget_policy()
+
+    assert policy.total_timeout_seconds == 360.0
+    assert policy.stream_idle_timeout_seconds is None
+    assert policy.active_tool_free_timeout_seconds is None
+    assert policy.action_repair_timeout_seconds is None
+    assert policy.action_repair_enabled is False
+
+
 @pytest.fixture(autouse=True)
 def _silence_event_delivery(monkeypatch: pytest.MonkeyPatch):
     async def noop_send_message(*args, **kwargs):

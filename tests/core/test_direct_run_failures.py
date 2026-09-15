@@ -726,9 +726,11 @@ async def test_noninteractive_aworld_propagates_terminal_task_failure(
             return {
                 "results": [
                     {
-                        "response": "Task fail, cause: provider_timeout",
+                        "response": "Task fail, cause: completion contract",
                         "success": False,
                         "trajectory": [{"meta": {"step": 1}}],
+                        "failure_origin": "task",
+                        "failure_code": "completion_contract_unsatisfied",
                     }
                 ]
             }
@@ -736,6 +738,7 @@ async def test_noninteractive_aworld_propagates_terminal_task_failure(
     monkeypatch.setattr(main_module, "CliRuntime", DummyRuntime)
     monkeypatch.setattr(main_module, "ContinuousExecutor", DummyContinuousExecutor)
     monkeypatch.setattr("aworld.core.scheduler.get_scheduler", lambda: object())
+    monkeypatch.setenv("AWORLD_TOOL_SURFACE_PROFILE", "one_shot")
 
     succeeded = await main_module._run_direct_mode(
         prompt="test",
@@ -748,6 +751,168 @@ async def test_noninteractive_aworld_propagates_terminal_task_failure(
     assert payload["stage"] == "agent_execution"
     assert payload["error_code"] == "agent_task_failed"
     assert payload["details"] == {"provider_evidence": True}
+
+
+@pytest.mark.asyncio
+async def test_one_shot_aworld_fails_closed_for_untyped_agent_failure(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    selected_agent = SimpleNamespace(name="Aworld")
+    executor = SimpleNamespace()
+
+    class DummyRuntime:
+        def __init__(self, *args, **kwargs) -> None:
+            self._scheduler = None
+
+        async def _load_agents(self):
+            return [selected_agent]
+
+        def _bind_scheduler_default_agent(self, _agent_name: str) -> None:
+            pass
+
+        async def _create_executor(self, _agent):
+            return executor
+
+        def _restore_executor_session(self, *_args, **_kwargs) -> None:
+            pass
+
+    class DummyContinuousExecutor:
+        def __init__(self, *_args, **_kwargs) -> None:
+            pass
+
+        async def run_continuous(self, **_kwargs):
+            return {
+                "results": [
+                    {
+                        "response": "legacy failure",
+                        "success": False,
+                        "trajectory": [{"meta": {"step": 1}}],
+                        "llm_calls": [{"request_id": "request-1"}],
+                    }
+                ]
+            }
+
+    monkeypatch.setattr(main_module, "CliRuntime", DummyRuntime)
+    monkeypatch.setattr(main_module, "ContinuousExecutor", DummyContinuousExecutor)
+    monkeypatch.setattr("aworld.core.scheduler.get_scheduler", lambda: object())
+    monkeypatch.setenv("AWORLD_TOOL_SURFACE_PROFILE", "one_shot")
+
+    outcome = await main_module._run_direct_mode(
+        prompt="test",
+        agent_name="Aworld",
+        non_interactive=True,
+    )
+
+    assert outcome.status is DirectRunStatus.INFRASTRUCTURE_FAILED
+    payload = _failure_payload(capsys.readouterr().err)
+    assert payload["error_code"] == "agent_execution_untyped_failure"
+    assert payload["details"] == {"provider_evidence": True}
+
+
+@pytest.mark.asyncio
+async def test_noninteractive_aworld_does_not_downgrade_typed_infrastructure_failure(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    selected_agent = SimpleNamespace(name="Aworld")
+    executor = SimpleNamespace()
+
+    class DummyRuntime:
+        def __init__(self, *args, **kwargs) -> None:
+            self._scheduler = None
+
+        async def _load_agents(self):
+            return [selected_agent]
+
+        def _bind_scheduler_default_agent(self, _agent_name: str) -> None:
+            pass
+
+        async def _create_executor(self, _agent):
+            return executor
+
+        def _restore_executor_session(self, *_args, **_kwargs) -> None:
+            pass
+
+    class DummyContinuousExecutor:
+        calls = 0
+
+        def __init__(self, *_args, **_kwargs) -> None:
+            pass
+
+        async def run_continuous(self, **_kwargs):
+            type(self).calls += 1
+            return {
+                "results": [
+                    {
+                        "response": "redacted failure",
+                        "success": False,
+                        "trajectory": [{"meta": {"step": 1}}],
+                        "llm_calls": [{"request_id": "request-1"}],
+                        "failure_origin": "infrastructure",
+                        "failure_code": "provider_timeout",
+                        "error_type": "GenerationBudgetExceeded",
+                    }
+                ]
+            }
+
+    monkeypatch.setattr(main_module, "CliRuntime", DummyRuntime)
+    monkeypatch.setattr(main_module, "ContinuousExecutor", DummyContinuousExecutor)
+    monkeypatch.setattr("aworld.core.scheduler.get_scheduler", lambda: object())
+
+    outcome = await main_module._run_direct_mode(
+        prompt="test",
+        agent_name="Aworld",
+        non_interactive=True,
+    )
+
+    assert outcome.status is DirectRunStatus.INFRASTRUCTURE_FAILED
+    assert DummyContinuousExecutor.calls == 1
+    payload = _failure_payload(capsys.readouterr().err)
+    assert payload["stage"] == "agent_execution"
+    assert payload["error_code"] == "agent_execution_infrastructure_failed"
+    assert payload["details"] == {
+        "error_type": "GenerationBudgetExceeded",
+        "failure_code": "provider_timeout",
+    }
+
+
+def test_one_shot_failure_classification_requires_explicit_task_origin() -> None:
+    untyped = {
+        "results": [
+            {
+                "success": False,
+                "trajectory": [{"meta": {"step": 1}}],
+                "llm_calls": [{"request_id": "request-1"}],
+            }
+        ]
+    }
+    typed = {
+        "results": [
+            {
+                **untyped["results"][0],
+                "failure_origin": "task",
+                "failure_code": "completion_contract_unsatisfied",
+            }
+        ]
+    }
+
+    assert main_module._direct_run_has_explicit_task_failure(untyped) is False
+    assert main_module._direct_run_has_explicit_task_failure(typed) is True
+
+
+def test_cancel_detector_accepts_task_response_control_plane() -> None:
+    assert main_module._direct_run_cancelled(
+        {
+            "results": [
+                {
+                    "success": False,
+                    "failure_origin": "cancelled",
+                    "task_status": "interrupted",
+                }
+            ]
+        }
+    )
 
 
 @pytest.mark.asyncio

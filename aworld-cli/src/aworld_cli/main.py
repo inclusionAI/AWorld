@@ -71,9 +71,49 @@ def _direct_run_cancelled(summary: object) -> bool:
         return False
     return any(
         isinstance(result, dict)
-        and result.get("termination_status") == "cancelled"
+        and (
+            result.get("termination_status") == "cancelled"
+            or result.get("failure_origin") == "cancelled"
+            or result.get("task_status") in {"cancelled", "interrupted"}
+        )
         for result in summary.get("results") or []
     )
+
+
+def _direct_run_has_explicit_task_failure(summary: object) -> bool:
+    """Return whether every failed result is explicitly agent/task-owned."""
+
+    summary = _direct_run_summary(summary)
+    if summary is None:
+        return False
+    failed_results = [
+        result
+        for result in summary.get("results") or []
+        if isinstance(result, dict) and not bool(result.get("success"))
+    ]
+    return bool(failed_results) and all(
+        result.get("failure_origin") == "task" for result in failed_results
+    )
+
+
+def _direct_run_infrastructure_failure(summary: object) -> dict[str, str] | None:
+    """Return typed infrastructure evidence without inspecting response text."""
+
+    summary = _direct_run_summary(summary)
+    if summary is None:
+        return None
+    for result in summary.get("results") or []:
+        if not isinstance(result, dict):
+            continue
+        if result.get("failure_origin") != "infrastructure":
+            continue
+        evidence: dict[str, str] = {}
+        for key in ("failure_code", "error_type"):
+            value = result.get(key)
+            if isinstance(value, str) and _CONTROL_DETAIL_IDENTIFIER.fullmatch(value):
+                evidence[key] = value
+        return evidence
+    return None
 
 
 def _trajectory_from_direct_run_summary(
@@ -1193,7 +1233,7 @@ def _direct_run_control_details(details: Optional[dict]) -> dict:
         value = details.get(key)
         if isinstance(value, bool):
             projected[key] = value
-    for key in ("error_type", "trajectory_capture_mode"):
+    for key in ("error_type", "failure_code", "trajectory_capture_mode"):
         value = details.get(key)
         if isinstance(value, str) and _CONTROL_DETAIL_IDENTIFIER.fullmatch(value):
             projected[key] = value
@@ -1526,6 +1566,11 @@ async def _run_direct_mode(
     require_provider_evidence = (
         non_interactive and agent_name.casefold() == "aworld"
     )
+    require_explicit_failure_origin = (
+        require_provider_evidence
+        and os.environ.get("AWORLD_TOOL_SURFACE_PROFILE", "").strip().lower()
+        == "one_shot"
+    )
     max_provider_attempts = (
         _AWORLD_PRE_PROVIDER_MAX_ATTEMPTS if require_provider_evidence else 1
     )
@@ -1547,6 +1592,8 @@ async def _run_direct_mode(
                 echo_prompt_as_turn=echo_prompt_as_turn,
             )
             if _direct_run_cancelled(summary):
+                break
+            if _direct_run_infrastructure_failure(summary) is not None:
                 break
             if not require_provider_evidence or _direct_run_has_provider_evidence(summary):
                 break
@@ -1602,7 +1649,26 @@ async def _run_direct_mode(
             status=DirectRunStatus.CANCELLED,
             process_exit_code=130,
         )
+    infrastructure_failure = _direct_run_infrastructure_failure(summary)
+    if infrastructure_failure is not None:
+        return _direct_run_failure_outcome(
+            stage=DirectRunStage.AGENT_EXECUTION,
+            error_code=DirectRunErrorCode.AGENT_EXECUTION_INFRASTRUCTURE_FAILED,
+            agent_name=agent_name,
+            details=infrastructure_failure,
+            summary=summary,
+        )
     if not _direct_run_succeeded(summary):
+        if require_explicit_failure_origin and not _direct_run_has_explicit_task_failure(
+            summary
+        ):
+            return _direct_run_failure_outcome(
+                stage=DirectRunStage.AGENT_EXECUTION,
+                error_code=DirectRunErrorCode.AGENT_EXECUTION_UNTYPED_FAILURE,
+                agent_name=agent_name,
+                details={"provider_evidence": _direct_run_has_provider_evidence(summary)},
+                summary=summary,
+            )
         return _direct_run_failure_outcome(
             stage=DirectRunStage.AGENT_EXECUTION,
             error_code=DirectRunErrorCode.AGENT_TASK_FAILED,

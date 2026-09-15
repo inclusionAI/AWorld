@@ -3810,13 +3810,13 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         return GenerationBudgetPolicy(
             total_timeout_seconds=total_timeout,
             stream_idle_timeout_seconds=configured(
-                "generation_stream_idle_timeout_seconds", 120.0
+                "generation_stream_idle_timeout_seconds", None
             ),
             active_tool_free_timeout_seconds=configured(
-                "generation_active_tool_free_timeout_seconds", 240.0
+                "generation_active_tool_free_timeout_seconds", None
             ),
             action_repair_timeout_seconds=configured(
-                "generation_action_repair_timeout_seconds", 90.0
+                "generation_action_repair_timeout_seconds", None
             ),
             action_repair_max_output_tokens=configured(
                 "generation_action_repair_max_output_tokens", 1024
@@ -3825,7 +3825,7 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                 "generation_partial_response_context_chars", 8192
             ),
             action_repair_enabled=configured(
-                "generation_action_repair_enabled", True
+                "generation_action_repair_enabled", False
             ),
         )
 

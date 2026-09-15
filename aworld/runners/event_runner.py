@@ -18,10 +18,15 @@ from aworld.core.agent.base import BaseAgent, is_agent_by_name, AgentFactory
 from aworld.core.common import TaskItem, ActionModel, Observation
 from aworld.core.context.amni import AmniContext, ApplicationContext
 from aworld.core.context.base import Context
+from aworld.core.context.generation_budget import (
+    GenerationBudgetExceeded,
+    GenerationStopReason,
+)
 from aworld.dataset.trajectory_storage import get_storage_instance
 from aworld.core.event.base import Message, Constants, TopicType, ToolMessage, AgentMessage
 from aworld.core.exceptions import AWorldRuntimeException
-from aworld.core.task import Task, TaskResponse, TaskStatusValue
+from aworld.core.task import Task, TaskFailureOrigin, TaskResponse, TaskStatusValue
+from aworld.core.tool.surface import RequiredToolSurfaceUnavailable
 from aworld.core.trajectory import (
     TrajectoryBuildResult,
     TrajectoryBuildStatus,
@@ -57,6 +62,63 @@ from aworld.trace.instrumentation import semconv
 from aworld.models.usage import normalize_usage, summarize_prompt_cache_usage
 from aworld.utils.common import override_in_subclass, new_instance
 from aworld.utils.serialized_util import to_serializable
+
+
+_AGENT_GENERATION_FAILURES = {
+    GenerationStopReason.ACTIVE_STREAM_OVER_BUDGET,
+    GenerationStopReason.ACTION_REPAIR_EXHAUSTED,
+}
+
+
+def classify_task_exception(exc: BaseException) -> dict[str, str]:
+    """Project an execution exception onto a privacy-safe failure plane.
+
+    Active Tool-free generation and an exhausted bounded repair are agent/task
+    outcomes: the provider was live, but the agent failed to produce a usable
+    action. Provider liveness, global deadlines, missing required schemas, and
+    all unknown exceptions are infrastructure failures. Caller cancellation is
+    kept distinct from both.
+    """
+
+    current: BaseException | None = exc
+    seen: set[int] = set()
+    classified = exc
+    # Some legacy Agent boundaries wrap the provider exception in an
+    # AWorldRuntimeException. Follow only the explicit cause chain, with a
+    # small cycle-safe bound, and retain no exception messages.
+    for _ in range(8):
+        if current is None or id(current) in seen:
+            break
+        seen.add(id(current))
+        classified = current
+        if isinstance(current, (GenerationBudgetExceeded, RequiredToolSurfaceUnavailable)):
+            break
+        current = current.__cause__
+
+    error_type = type(classified).__name__
+    if isinstance(classified, GenerationBudgetExceeded):
+        if classified.reason is GenerationStopReason.CALLER_CANCELLED:
+            origin = TaskFailureOrigin.CANCELLED
+        elif classified.reason in _AGENT_GENERATION_FAILURES:
+            origin = TaskFailureOrigin.TASK
+        else:
+            origin = TaskFailureOrigin.INFRASTRUCTURE
+        return {
+            "origin": origin.value,
+            "code": classified.reason.value,
+            "error_type": error_type,
+        }
+    if isinstance(classified, RequiredToolSurfaceUnavailable):
+        return {
+            "origin": TaskFailureOrigin.INFRASTRUCTURE.value,
+            "code": "required_tool_surface_unavailable",
+            "error_type": error_type,
+        }
+    return {
+        "origin": TaskFailureOrigin.INFRASTRUCTURE.value,
+        "code": "runtime_exception",
+        "error_type": error_type,
+    }
 
 
 class TaskEventRunner(TaskRunner):
@@ -745,13 +807,14 @@ class TaskEventRunner(TaskRunner):
                                                                   message=message)
             except Exception as e:
                 logger.warning(f"{handler} process fail. {traceback.format_exc()}")
+                failure = classify_task_exception(e)
                 error_msg = Message(
                     category=Constants.TASK,
                     payload=TaskItem(msg=str(e), data=message),
                     sender=self.name,
                     session_id=self.context.session_id,
                     topic=TopicType.ERROR,
-                    headers={"context": self.context}
+                    headers={"context": self.context, "task_failure": failure}
                 )
                 self.state_manager.save_message_handle_result(name=handler.__name__,
                                                               message=message,
@@ -920,13 +983,14 @@ class TaskEventRunner(TaskRunner):
                 await self._common_process(message)
         except Exception as e:
             logger.error(f"consume message fail. {traceback.format_exc()}")
+            failure = classify_task_exception(e)
             error_msg = Message(
                 category=Constants.TASK,
                 payload=TaskItem(msg=str(e), data=message),
                 sender=self.name,
                 session_id=self.context.session_id,
                 topic=TopicType.ERROR,
-                headers={"context": self.context}
+                headers={"context": self.context, "task_failure": failure}
             )
             self.state_manager.save_message_handle_result(name=TaskEventRunner.__name__,
                                                           message=message,
@@ -1049,7 +1113,9 @@ class TaskEventRunner(TaskRunner):
             self._task_response = TaskResponse(id=self.context.task_id if self.context else "",
                                                success=False,
                                                msg="Task return None.",
-                                               status=TaskStatusValue.FAILED)
+                                               status=TaskStatusValue.FAILED,
+                                               failure_origin=TaskFailureOrigin.INFRASTRUCTURE.value,
+                                               failure_code="task_response_missing")
         task_conf = self.context.get_task().conf if self.context and self.context.get_task() else None
         if task_conf and task_conf.get("resp_carry_context", True) is False:
             self._task_response.context = None
@@ -1337,6 +1403,8 @@ class TaskEventRunner(TaskRunner):
                     success=False,
                     status=TaskStatusValue.FAILED,
                     msg="Task execution did not start.",
+                    failure_origin=TaskFailureOrigin.INFRASTRUCTURE.value,
+                    failure_code="execution_not_started",
                 )
             self._task_response.trajectory = []
             self._task_response.trajectory_build_result = build_result
@@ -1508,7 +1576,9 @@ class TaskEventRunner(TaskRunner):
                 time_cost=(time.time() - self.start_time),
                 usage=self._current_token_usage(),
                 msg=f'Task timeout after {time_cost} seconds.',
-                status=TaskStatusValue.TIMEOUT
+                status=TaskStatusValue.TIMEOUT,
+                failure_origin=TaskFailureOrigin.INFRASTRUCTURE.value,
+                failure_code="task_timeout",
             )
             await self.context.update_task_status(self.task.id, TaskStatusValue.TIMEOUT)
             return True
@@ -1525,7 +1595,13 @@ class TaskEventRunner(TaskRunner):
                 time_cost=time_cost,
                 usage=self._current_token_usage(),
                 msg=f'Task is {task_status}.',
-                status=task_status
+                status=task_status,
+                failure_origin=TaskFailureOrigin.CANCELLED.value,
+                failure_code=(
+                    "cancelled"
+                    if task_status == TaskStatusValue.CANCELLED
+                    else "interrupted"
+                ),
             )
             return True
 
