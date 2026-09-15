@@ -194,3 +194,40 @@ async def test_run_iteration_preserves_control_plane_when_inline_trajectory_is_e
     assert result["trajectory"] == []
     assert len(result["llm_calls"]) == 4
     assert result["trajectory_build_result"]["source_high_watermark"] == "event-8"
+
+
+@pytest.mark.asyncio
+async def test_run_iteration_executor_exception_keeps_fresh_infrastructure_origin() -> None:
+    stale_task_response = SimpleNamespace(
+        success=False,
+        status="failed",
+        failure_origin="task",
+        failure_code="completion_contract_unsatisfied",
+        error_type="CompletionContractError",
+        trajectory=[{"role": "assistant", "content": "partial"}],
+        llm_calls=[{"request_id": "call-1"}],
+        trajectory_build_result={"status": "partial"},
+        trajectory_delivery_receipt={"status": "persisted"},
+    )
+
+    class RaisingExecutor:
+        last_task_response = stale_task_response
+        last_task_interrupted = False
+
+        async def chat(self, *_args, **_kwargs):
+            raise RuntimeError("framework cleanup failed")
+
+    continuous = ContinuousExecutor(
+        RaisingExecutor(),
+        console=Console(file=StringIO(), force_terminal=False),
+    )
+    result = await continuous.run_iteration(1, "hello", agent_name="Aworld")
+
+    assert result["failure_origin"] == "infrastructure"
+    assert result["failure_code"] == "executor_exception"
+    assert result["error_type"] == "RuntimeError"
+    assert result["trajectory"] == [{"role": "assistant", "content": "partial"}]
+    assert result["llm_calls"] == [{"request_id": "call-1"}]
+    assert result["trajectory_build_result"] == {"status": "partial"}
+    assert result["trajectory_delivery_receipt"] == {"status": "persisted"}
+    assert "task_status" not in result

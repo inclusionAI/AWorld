@@ -45,6 +45,8 @@ class ContinuousExecutor:
     def _attach_task_response_evidence(
         result: Dict[str, Any],
         task_response: Any,
+        *,
+        include_control_plane: bool = True,
     ) -> Dict[str, Any]:
         """Attach trajectory control/data planes even when either is empty.
 
@@ -77,17 +79,18 @@ class ContinuousExecutor:
                 to_dict() if callable(to_dict) else record
             )
 
-        task_status = getattr(task_response, "status", None)
-        if task_status is not None:
-            result["task_status"] = to_serializable(task_status)
-        for attribute in ("failure_origin", "failure_code", "error_type"):
-            value = getattr(task_response, attribute, None)
-            if isinstance(value, str) and value:
-                result[attribute] = value
-        if result.get("failure_origin") == "cancelled" or result.get(
-            "task_status"
-        ) in {"cancelled", "interrupted"}:
-            result["termination_status"] = "cancelled"
+        if include_control_plane:
+            task_status = getattr(task_response, "status", None)
+            if task_status is not None:
+                result["task_status"] = to_serializable(task_status)
+            for attribute in ("failure_origin", "failure_code", "error_type"):
+                value = getattr(task_response, attribute, None)
+                if isinstance(value, str) and value:
+                    result[attribute] = value
+            if result.get("failure_origin") == "cancelled" or result.get(
+                "task_status"
+            ) in {"cancelled", "interrupted"}:
+                result["termination_status"] = "cancelled"
         return result
 
     def _active_steering_runtime(self, *, non_interactive: bool) -> Any | None:
@@ -201,7 +204,7 @@ class ContinuousExecutor:
                 self.agent_executor.console = global_console
                 # Verify it was set correctly
                 if self.agent_executor.console is not global_console:
-                    self.console.print(f"[yellow]⚠️ Warning: Failed to set agent_executor.console[/yellow]")
+                    self.console.print("[yellow]⚠️ Warning: Failed to set agent_executor.console[/yellow]")
             
             non_interactive = bool(chat_kwargs.pop("non_interactive", False))
             runtime = self._active_steering_runtime(non_interactive=non_interactive)
@@ -386,6 +389,7 @@ class ContinuousExecutor:
             return self._attach_task_response_evidence(
                 result,
                 getattr(self.agent_executor, "last_task_response", None),
+                include_control_plane=False,
             )
     
     async def run_continuous(
@@ -500,7 +504,7 @@ class ContinuousExecutor:
 
                 # Check for immediate stop (first iteration with definitive answer)
                 if result.get("immediate_stop", False):
-                    self.console.print(f"\n[green]🎉 Task completed successfully![/green]")
+                    self.console.print("\n[green]🎉 Task completed successfully![/green]")
                     break
 
                 # Check completion signal
