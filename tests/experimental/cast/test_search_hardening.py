@@ -179,6 +179,43 @@ async def test_ripgrep_timeout_terminates_the_process(
 
 
 @pytest.mark.asyncio
+async def test_ripgrep_cancellation_terminates_the_process(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    fake_rg = fake_bin / "rg"
+    fake_rg.write_text(
+        "#!/usr/bin/env python3\nimport time\ntime.sleep(30)\n",
+        encoding="utf-8",
+    )
+    fake_rg.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{fake_bin}{os.pathsep}{os.environ.get('PATH', '')}")
+    created = []
+    original_create = asyncio.create_subprocess_exec
+
+    async def recording_create(*args, **kwargs):
+        process = await original_create(*args, **kwargs)
+        created.append(process)
+        return process
+
+    monkeypatch.setattr("asyncio.create_subprocess_exec", recording_create)
+    task = asyncio.create_task(
+        RipgrepSearcher().search(
+            "needle", str(tmp_path), timeout_seconds=10
+        )
+    )
+    await asyncio.sleep(0.1)
+    task.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert len(created) == 1
+    assert created[0].returncode is not None
+
+
+@pytest.mark.asyncio
 async def test_ripgrep_capture_budget_is_observable_and_bounded(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):

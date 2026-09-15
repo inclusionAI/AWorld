@@ -847,6 +847,13 @@ class RipgrepSearcher:
                 raise SearchTimeoutError(
                     f"Ripgrep search timed out after {timeout:.2f}s"
                 ) from exc
+            except asyncio.CancelledError:
+                # Cancellation is a control-flow BaseException, so the outer
+                # ``except Exception`` does not observe it.  Reap rg here to
+                # avoid leaking a search subprocess when an agent/tool call is
+                # cancelled by its caller.
+                await asyncio.shield(self._terminate_process(proc))
+                raise
             finally:
                 if not stderr_task.done():
                     stderr_task.cancel()
