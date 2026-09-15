@@ -303,3 +303,59 @@ async def test_noninteractive_aworld_fails_after_zero_provider_capture_retries(
         "attempts": 2,
         "trajectory_capture_mode": "summary_synthetic",
     }
+
+
+@pytest.mark.asyncio
+async def test_noninteractive_aworld_propagates_terminal_task_failure(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    selected_agent = SimpleNamespace(name="Aworld")
+    executor = SimpleNamespace()
+
+    class DummyRuntime:
+        def __init__(self, *args, **kwargs) -> None:
+            self._scheduler = None
+
+        async def _load_agents(self):
+            return [selected_agent]
+
+        def _bind_scheduler_default_agent(self, _agent_name: str) -> None:
+            pass
+
+        async def _create_executor(self, _agent):
+            return executor
+
+        def _restore_executor_session(self, *_args, **_kwargs) -> None:
+            pass
+
+    class DummyContinuousExecutor:
+        def __init__(self, *_args, **_kwargs) -> None:
+            pass
+
+        async def run_continuous(self, **_kwargs):
+            return {
+                "results": [
+                    {
+                        "response": "Task fail, cause: provider_timeout",
+                        "success": False,
+                        "trajectory": [{"meta": {"step": 1}}],
+                    }
+                ]
+            }
+
+    monkeypatch.setattr(main_module, "CliRuntime", DummyRuntime)
+    monkeypatch.setattr(main_module, "ContinuousExecutor", DummyContinuousExecutor)
+    monkeypatch.setattr("aworld.core.scheduler.get_scheduler", lambda: object())
+
+    succeeded = await main_module._run_direct_mode(
+        prompt="test",
+        agent_name="Aworld",
+        non_interactive=True,
+    )
+
+    assert succeeded is False
+    payload = _failure_payload(capsys.readouterr().err)
+    assert payload["stage"] == "agent_execution"
+    assert payload["error_code"] == "agent_task_failed"
+    assert payload["details"] == {"provider_evidence": True}

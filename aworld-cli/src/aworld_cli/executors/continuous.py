@@ -295,15 +295,22 @@ class ContinuousExecutor:
 
             self.console.print(f"[dim]💰 ({iteration}) Cost: ${cost:.3f}[/dim]")
 
+            task_response = getattr(self.agent_executor, "last_task_response", None)
+            task_succeeded = getattr(task_response, "success", None)
+            if task_succeeded is None:
+                task_succeeded = not (
+                    isinstance(response, str)
+                    and response.strip().lower().startswith("task fail, cause:")
+                )
+
             result = {
                 "iteration": iteration,
                 "response": response,
                 "cost": cost,
-                "completed": is_complete,
-                "immediate_stop": is_complete and iteration == 1,  # First iteration with definitive answer
-                "success": True
+                "completed": is_complete and bool(task_succeeded),
+                "immediate_stop": is_complete and bool(task_succeeded) and iteration == 1,
+                "success": bool(task_succeeded),
             }
-            task_response = getattr(self.agent_executor, "last_task_response", None)
             trajectory = getattr(task_response, "trajectory", None)
             if isinstance(trajectory, list) and trajectory:
                 result["trajectory"] = to_serializable(trajectory)

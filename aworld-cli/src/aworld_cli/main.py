@@ -35,6 +35,17 @@ def _direct_run_has_provider_evidence(summary: dict | None) -> bool:
     return False
 
 
+def _direct_run_succeeded(summary: dict | None) -> bool:
+    """Return whether the direct executor completed at least one successful run."""
+    if not isinstance(summary, dict):
+        return False
+    results = summary.get("results") or []
+    return bool(results) and all(
+        isinstance(result, dict) and bool(result.get("success"))
+        for result in results
+    )
+
+
 def _trajectory_from_direct_run_summary(
     summary: dict | None,
     *,
@@ -1209,7 +1220,6 @@ async def _run_direct_mode(
             },
         )
         return False
-
     # Find the requested agent
     selected_agent = None
     for agent in all_agents:
@@ -1352,6 +1362,14 @@ async def _run_direct_mode(
                 "attempts": max_provider_attempts,
                 "trajectory_capture_mode": "summary_synthetic",
             },
+        )
+        return False
+    if not _direct_run_succeeded(summary):
+        _emit_direct_run_failure(
+            stage="agent_execution",
+            error_code="agent_task_failed",
+            agent_name=agent_name,
+            details={"provider_evidence": True},
         )
         return False
     drain_pending_self_evolve_jobs = getattr(

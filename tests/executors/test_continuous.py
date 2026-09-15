@@ -87,3 +87,29 @@ async def test_run_iteration_carries_task_response_trajectory() -> None:
     assert result["trajectory_capture_mode"] == "task_response"
     assert result["trajectory"] == full_trajectory
     assert result["llm_calls"] == [{"model": "test-model"}]
+
+
+@pytest.mark.asyncio
+async def test_run_iteration_propagates_failed_task_response() -> None:
+    async def fake_chat(prompt: str, **kwargs):
+        return "Task fail, cause: provider_timeout"
+
+    fake_executor = SimpleNamespace(
+        chat=fake_chat,
+        session_id="sess-1",
+        last_task_response=SimpleNamespace(
+            success=False,
+            trajectory=[{"id": "failed-step"}],
+            llm_calls=[{"model": "test-model"}],
+        ),
+    )
+    continuous = ContinuousExecutor(
+        fake_executor,
+        console=Console(file=StringIO(), force_terminal=False),
+    )
+
+    result = await continuous.run_iteration(1, "hello", agent_name="Aworld")
+
+    assert result["success"] is False
+    assert result["completed"] is False
+    assert result["immediate_stop"] is False

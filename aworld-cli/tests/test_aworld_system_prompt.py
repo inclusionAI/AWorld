@@ -6,6 +6,7 @@ import pytest
 from aworld_cli.builtin_agents.smllc.agents import aworld_agent
 from aworld_cli.builtin_agents.smllc.agents.aworld_agent import (
     render_aworld_system_prompt,
+    resolve_aworld_max_completion_tokens,
     resolve_aworld_max_loop_steps,
 )
 
@@ -45,6 +46,34 @@ def test_aworld_max_loop_steps_defaults_to_120(monkeypatch: pytest.MonkeyPatch) 
     monkeypatch.delenv("AWORLD_MAX_LOOP_STEPS", raising=False)
 
     assert resolve_aworld_max_loop_steps() == 120
+
+
+def test_aworld_max_completion_tokens_defaults_to_16384(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("AWORLD_MAX_COMPLETION_TOKENS", raising=False)
+
+    assert resolve_aworld_max_completion_tokens() == 16384
+
+
+@pytest.mark.parametrize("value", ["0", "-1", "invalid"])
+def test_aworld_max_completion_tokens_rejects_invalid_values(
+    monkeypatch: pytest.MonkeyPatch,
+    value: str,
+) -> None:
+    monkeypatch.setenv("AWORLD_MAX_COMPLETION_TOKENS", value)
+
+    with pytest.raises(ValueError, match="positive integer"):
+        resolve_aworld_max_completion_tokens()
+
+
+def test_aworld_max_completion_tokens_cannot_exceed_hard_limit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("AWORLD_MAX_COMPLETION_TOKENS", "64001")
+
+    with pytest.raises(ValueError, match="hard limit of 64000"):
+        resolve_aworld_max_completion_tokens()
 
 
 @pytest.mark.parametrize("value", ["0", "-1", "invalid"])

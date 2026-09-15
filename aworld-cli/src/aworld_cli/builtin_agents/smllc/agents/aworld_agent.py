@@ -50,6 +50,8 @@ CAST_ANALYSIS = "CAST_ANALYSIS"
 CAST_CODER = "CAST_CODER"
 CAST_SEARCH = "CAST_SEARCH"
 AWORLD_MAX_LOOP_STEPS_HARD_LIMIT = 240
+AWORLD_DEFAULT_MAX_COMPLETION_TOKENS = 16384
+AWORLD_MAX_COMPLETION_TOKENS_HARD_LIMIT = 64000
 
 
 def _register_optional_cast_tools(
@@ -104,6 +106,31 @@ def resolve_aworld_prompt_budget() -> Optional[PromptBudgetPolicy]:
             "AWORLD_PROMPT_BUDGET_RESERVED_OUTPUT_TOKENS must be a positive integer"
         )
     return PromptBudgetPolicy(reserved_output_tokens=reserved_output_tokens)
+
+
+def resolve_aworld_max_completion_tokens() -> int:
+    """Resolve a bounded per-turn output budget for the built-in agent."""
+
+    raw_value = os.environ.get(
+        "AWORLD_MAX_COMPLETION_TOKENS",
+        str(AWORLD_DEFAULT_MAX_COMPLETION_TOKENS),
+    )
+    try:
+        max_completion_tokens = int(raw_value)
+    except ValueError as exc:
+        raise ValueError(
+            "AWORLD_MAX_COMPLETION_TOKENS must be a positive integer"
+        ) from exc
+    if max_completion_tokens <= 0:
+        raise ValueError(
+            "AWORLD_MAX_COMPLETION_TOKENS must be a positive integer"
+        )
+    if max_completion_tokens > AWORLD_MAX_COMPLETION_TOKENS_HARD_LIMIT:
+        raise ValueError(
+            "AWORLD_MAX_COMPLETION_TOKENS must not exceed the hard limit of "
+            f"{AWORLD_MAX_COMPLETION_TOKENS_HARD_LIMIT}"
+        )
+    return max_completion_tokens
 
 
 def render_aworld_system_prompt(
@@ -352,7 +379,7 @@ def build_aworld_agent(include_skills: Optional[str] = None):
     max_completion_tokens = (
         prompt_budget_policy.reserved_output_tokens
         if prompt_budget_policy is not None
-        else 64000
+        else resolve_aworld_max_completion_tokens()
     )
 
     # Configure agent: provider/base_url use getenv defaults; model_name/api_key may be None (ModelConfig accepts Optional[str])
@@ -379,7 +406,11 @@ def build_aworld_agent(include_skills: Optional[str] = None):
             "terminal": {
                 "command": sys.executable,
                 "args": ["-m", "examples.gaia.mcp_collections.tools.terminal"],
-                "env": {},
+                # Runtime-mounted CLI processes need to propagate their Python
+                # module path into the MCP stdio child process.
+                "env": {
+                    "PYTHONPATH": os.environ.get("PYTHONPATH", ""),
+                },
                 "client_session_timeout_seconds": 9999.0,
             }
         }
@@ -393,7 +424,10 @@ def build_aworld_agent(include_skills: Optional[str] = None):
         builtin_tools=builtin_tools,
         workspaces=[os.getcwd()]  # Allow current working directory
     )
-    sandbox.reuse = True
+    sandbox.reuse = os.environ.get(
+        "AWORLD_SANDBOX_REUSE",
+        "true",
+    ).lower() in ("true", "1", "yes")
 
     # Resolve optional collaborators before constructing the root agent so its
     # prompt and tool catalog describe capabilities that actually exist.
@@ -427,6 +461,8 @@ def build_aworld_agent(include_skills: Optional[str] = None):
         sandbox=sandbox,  # Shared sandbox (tools filtered by agent's mcp_servers config)
         tool_names=root_tool_names,
         enable_subagent=bool(sub_agents),
+        llm_max_attempts=3,
+        llm_retry_delay=2.0,
         max_loop_steps=resolve_aworld_max_loop_steps(),
         **budgeted_agent_kwargs,
     )

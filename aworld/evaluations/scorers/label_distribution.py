@@ -7,11 +7,6 @@ from aworld.evaluations.base import Scorer, ScorerResult, EvalDataCase, EvalCase
 from aworld.evaluations.scorers import scorer_register
 from aworld.evaluations.types import MetricNames
 
-from aworld.utils.import_package import import_package
-
-import_package('scipy')
-
-
 @scorer_register(MetricNames.LABEL_DISTRIBUTION)
 class LabelDistributionScorer(Scorer[dict]):
 
