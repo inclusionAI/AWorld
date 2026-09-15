@@ -30,6 +30,7 @@ from aworld.core.task import Task, TaskResponse
 from aworld.logs.util import logger
 from aworld.memory.main import _default_file_memory_store
 from aworld.runner import Runners
+from aworld.utils.runtime_state import runtime_state_path
 from aworld_cli.core.plugin_manager import PluginManager
 from aworld_cli.core.skill_activation_resolver import (
     SkillActivationResolver,
@@ -1952,8 +1953,12 @@ class LocalAgentExecutor(BaseAgentExecutor):
         if WorkSpace is None:
             return None
         
-        # Create workspace in current directory under .aworld/workspaces
-        workspace_base = Path.cwd() / ".aworld" / "workspaces"
+        # Keep framework workspace state separate from task artifacts when the
+        # caller supplied an isolated control root.
+        workspace_base = runtime_state_path(
+            "workspaces",
+            default=Path.cwd() / ".aworld" / "workspaces",
+        )
         os.environ['WORKSPACE_PATH'] = str(workspace_base)
         workspace_base.mkdir(parents=True, exist_ok=True)
         

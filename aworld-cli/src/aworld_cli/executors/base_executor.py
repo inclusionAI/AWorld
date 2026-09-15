@@ -21,6 +21,7 @@ from typing import Optional, List, Dict, Any, Union
 from rich.console import Console
 from rich.markup import escape as markup_escape
 from aworld.logs.util import logger
+from aworld.utils.runtime_state import runtime_state_path
 from rich.panel import Panel
 from rich.text import Text
 from rich.markdown import Markdown
@@ -168,7 +169,10 @@ class BaseAgentExecutor(ABC, AgentExecutor):
         Returns:
             Path to session history file
         """
-        workspace_base = Path.cwd() / ".aworld" / "workspaces"
+        workspace_base = runtime_state_path(
+            "workspaces",
+            default=Path.cwd() / ".aworld" / "workspaces",
+        )
         workspace_base.mkdir(parents=True, exist_ok=True)
         return workspace_base / ".session_history.json"
     

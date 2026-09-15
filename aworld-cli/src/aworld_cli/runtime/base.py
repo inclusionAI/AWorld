@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 from typing import List, Optional, Any
 from aworld.logs.util import logger
+from aworld.utils.runtime_state import runtime_state_path
 from ..console import AWorldCLI
 from ..models import AgentInfo
 from ..executors import AgentExecutor
@@ -231,7 +232,12 @@ class BaseCliRuntime:
             }
             for phase in CONTEXT_PHASES:
                 self._plugin_contexts.setdefault(phase, ())
-            self._plugin_state_store = PluginStateStore(Path.cwd() / ".aworld" / "plugin_state")
+            self._plugin_state_store = PluginStateStore(
+                runtime_state_path(
+                    "plugin_state",
+                    default=Path.cwd() / ".aworld" / "plugin_state",
+                )
+            )
             sync_plugin_commands(self._plugins)
         except Exception as exc:
             logger.warning(f"Failed to initialize plugin framework surfaces: {exc}")

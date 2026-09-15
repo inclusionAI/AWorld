@@ -19,6 +19,8 @@ from pathlib import Path
 from typing import Optional, Dict, Any, List
 import time
 
+from aworld.utils.runtime_state import runtime_state_path
+
 
 class ToolCallRecord:
     """
@@ -139,7 +141,14 @@ class ToolLogger:
         Args:
             log_dir: Directory for logs (default: ~/.aworld/tool_calls)
         """
-        self.log_dir = Path(log_dir or "~/.aworld/tool_calls").expanduser()
+        self.log_dir = (
+            Path(log_dir).expanduser()
+            if log_dir is not None
+            else runtime_state_path(
+                "tool_calls",
+                default=Path.home() / ".aworld" / "tool_calls",
+            )
+        )
         self.log_dir.mkdir(parents=True, exist_ok=True)
 
         # Create outputs subdirectory for large results
