@@ -273,8 +273,13 @@ class BuiltinToolRouter:
                     f"Error: Remote tool call failed: {str(e)}",
                 )
 
-        # Unknown mode: treat as local
-        logger.info(f"Unknown mode={mode!r}, using builtin implementation for {service_name}.{tool_name}")
-        raw = await builtin_impl.execute(tool_name, **kwargs)
-        return self._normalize_result(service_name, tool_name, "local", raw)
-
+        # Invalid configuration must not silently acquire process-local command
+        # or filesystem authority.
+        msg = f"Unsupported sandbox mode: {mode!r}; expected 'local' or 'remote'."
+        logger.warning(msg)
+        return self._normalize_result(
+            service_name,
+            tool_name,
+            "unknown",
+            f"Error: {msg}",
+        )

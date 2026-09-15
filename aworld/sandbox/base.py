@@ -155,7 +155,11 @@ class BaseSandbox(SandboxSetup):
         journal(
             "sandbox_call_started",
             "in_progress",
-            metadata={"sandbox_id": self.sandbox_id, "env_type": str(self.env_type)},
+            metadata={
+                "sandbox_id": self.sandbox_id,
+                "env_type": str(self.env_type),
+                "execution_boundaries": self._tool_execution_boundaries(actions),
+            },
         )
         try:
             if hasattr(self, "mcpservers") and self.mcpservers is not None:
@@ -177,6 +181,39 @@ class BaseSandbox(SandboxSetup):
             raise
         journal("sandbox_call_completed", "completed", results=results or [])
         return results
+
+    def _tool_execution_boundaries(self, actions: List[Any]) -> list[dict[str, Any]]:
+        """Return de-duplicated, redacted execution-boundary receipts."""
+
+        resolver = getattr(self, "get_tool_execution_boundary", None)
+        if not callable(resolver):
+            return []
+        server_names: list[str] = []
+        for action in actions:
+            server_name = (
+                action.get("tool_name")
+                if isinstance(action, dict)
+                else getattr(action, "tool_name", None)
+            )
+            if (
+                isinstance(server_name, str)
+                and server_name
+                and server_name not in server_names
+            ):
+                server_names.append(server_name)
+        receipts: list[dict[str, Any]] = []
+        for server_name in server_names:
+            try:
+                receipt = resolver(server_name)
+                to_dict = getattr(receipt, "to_dict", None)
+                if callable(to_dict):
+                    receipts.append(to_dict())
+            except Exception as exc:
+                logger.warning(
+                    "Tool execution-boundary observation failed open; "
+                    f"server={server_name} error_type={type(exc).__name__}"
+                )
+        return receipts
 
     def __del__(self):
         """Ensure resources are cleaned up when the object is garbage collected."""

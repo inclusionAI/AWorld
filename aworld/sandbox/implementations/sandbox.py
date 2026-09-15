@@ -14,6 +14,10 @@ from aworld.sandbox.api.local.sandbox_api import SandboxApi
 from aworld.sandbox.base import BaseSandbox
 from aworld.sandbox.config.manager import ToolConfigManager
 from aworld.sandbox.models import SandboxStatus, SandboxEnvType, SandboxInfo
+from aworld.sandbox.execution_boundary import (
+    ToolExecutionBoundaryReceipt,
+    resolve_tool_execution_boundary,
+)
 from aworld.sandbox.run.mcp_servers import McpServers
 from aworld.sandbox.runtime import SandboxManager
 from aworld.utils.common import sync_exec
@@ -159,6 +163,26 @@ class Sandbox(BaseSandbox, SandboxApi):
             "metadata": self.metadata,
             "env_type": self.env_type,
         }
+
+    def get_tool_execution_boundary(
+        self,
+        server_name: str,
+    ) -> ToolExecutionBoundaryReceipt:
+        """Describe the effective target for one configured Tool server.
+
+        This is intentionally derived from the concrete transport rather than
+        from ``mode`` alone.  The result contains no command, URL, environment
+        value, or container identifier.
+        """
+
+        servers = (self._mcp_config or {}).get("mcpServers") or {}
+        return resolve_tool_execution_boundary(
+            server_name=server_name,
+            server_config=servers.get(server_name),
+            sandbox_mode=self._mode,
+            sandbox_env_type=self._env_type,
+            sandbox_metadata=self._metadata,
+        )
 
     @property
     def mcpservers(self) -> McpServers:
@@ -331,8 +355,7 @@ class Sandbox(BaseSandbox, SandboxApi):
     def mode(self, value: str):
         mode = (value or "local").lower().strip()
         if mode not in ("local", "remote"):
-            logger.warning(f"Unknown mode={value!r}, using 'local'")
-            mode = "local"
+            raise ValueError("sandbox mode must be either 'local' or 'remote'")
         self._mode = mode
 
     @property
