@@ -8,8 +8,10 @@ from aworld_cli.builtin_agents.smllc.agents.aworld_agent import (
     _aworld_root_tool_policy,
     render_aworld_system_prompt,
     resolve_aworld_builtin_subagents,
+    resolve_aworld_generation_budget,
     resolve_aworld_max_completion_tokens,
     resolve_aworld_max_loop_steps,
+    resolve_aworld_tool_surface_enforcement,
     resolve_aworld_tool_surface_profile,
 )
 from aworld.core.tool.surface import ToolLifecycle
@@ -104,6 +106,88 @@ def test_tool_surface_profile_rejects_implicit_or_unknown_modes(
 
     with pytest.raises(ValueError, match="general.*one_shot"):
         resolve_aworld_tool_surface_profile()
+
+
+def test_tool_surface_enforcement_is_opt_in_for_normal_cli(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("AWORLD_TOOL_SURFACE_MODE", raising=False)
+    assert resolve_aworld_tool_surface_enforcement() is False
+
+    monkeypatch.setenv("AWORLD_TOOL_SURFACE_MODE", "enforce")
+    assert resolve_aworld_tool_surface_enforcement() is True
+
+
+def test_tool_surface_enforcement_rejects_unknown_mode(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("AWORLD_TOOL_SURFACE_MODE", "strict-ish")
+
+    with pytest.raises(ValueError, match="observe.*enforce"):
+        resolve_aworld_tool_surface_enforcement()
+
+
+def test_generation_budget_env_is_opt_in(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    for name in aworld_agent._GENERATION_BUDGET_ENV_NAMES:
+        monkeypatch.delenv(name, raising=False)
+
+    assert resolve_aworld_generation_budget() is None
+
+
+def test_generation_budget_env_builds_typed_policy(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("AWORLD_GENERATION_TOTAL_TIMEOUT_SECONDS", "none")
+    monkeypatch.setenv(
+        "AWORLD_GENERATION_ACTIVE_TOOL_FREE_TIMEOUT_SECONDS",
+        "180",
+    )
+    monkeypatch.setenv("AWORLD_GENERATION_ACTION_REPAIR_TIMEOUT_SECONDS", "60")
+    monkeypatch.setenv("AWORLD_GENERATION_ACTION_REPAIR_MAX_OUTPUT_TOKENS", "768")
+    monkeypatch.setenv("AWORLD_GENERATION_ACTION_REPAIR_ENABLED", "false")
+
+    policy = resolve_aworld_generation_budget()
+
+    assert policy is not None
+    assert policy.total_timeout_seconds is None
+    assert policy.active_tool_free_timeout_seconds == 180.0
+    assert policy.action_repair_timeout_seconds == 60.0
+    assert policy.action_repair_max_output_tokens == 768
+    assert policy.action_repair_enabled is False
+
+
+@pytest.mark.parametrize(
+    ("name", "value", "message"),
+    [
+        (
+            "AWORLD_GENERATION_STREAM_IDLE_TIMEOUT_SECONDS",
+            "0",
+            "positive or 'none'",
+        ),
+        (
+            "AWORLD_GENERATION_ACTION_REPAIR_MAX_OUTPUT_TOKENS",
+            "invalid",
+            "positive integer",
+        ),
+        (
+            "AWORLD_GENERATION_ACTION_REPAIR_ENABLED",
+            "sometimes",
+            "boolean",
+        ),
+    ],
+)
+def test_generation_budget_env_rejects_invalid_values(
+    monkeypatch: pytest.MonkeyPatch,
+    name: str,
+    value: str,
+    message: str,
+) -> None:
+    monkeypatch.setenv(name, value)
+
+    with pytest.raises(ValueError, match=message):
+        resolve_aworld_generation_budget()
 
 
 def test_builtin_subagent_allowlist_is_explicit_and_ordered(

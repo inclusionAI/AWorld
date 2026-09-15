@@ -334,6 +334,22 @@ class ToolSurfaceReceipt:
         return receipt
 
 
+class RequiredToolSurfaceUnavailable(RuntimeError):
+    """Raised when an enforce-mode Agent lacks a declared live capability."""
+
+    def __init__(self, receipt: ToolSurfaceReceipt) -> None:
+        self.receipt = receipt
+        failures = tuple(
+            f"{item.capability_id}:{item.status.value}"
+            for item in receipt.evidence
+            if item.required and not item.advertised
+        )
+        super().__init__(
+            "required Tool surface is unavailable"
+            + (f" ({', '.join(failures)})" if failures else "")
+        )
+
+
 def _schema_id(schema: Any) -> str | None:
     if not isinstance(schema, Mapping):
         return None
@@ -502,5 +518,6 @@ __all__ = [
     "ToolLifecycle",
     "ToolSurfaceProfile",
     "ToolSurfaceReceipt",
+    "RequiredToolSurfaceUnavailable",
     "reconcile_tool_surface",
 ]

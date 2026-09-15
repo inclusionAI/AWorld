@@ -1,4 +1,5 @@
 import pytest
+from types import SimpleNamespace
 
 from aworld.agents.llm_agent import (
     LlmOutputParser,
@@ -170,3 +171,68 @@ async def test_parser_keeps_valid_tool_call():
     assert len(result.actions) == 1
     assert result.actions[0].tool_name == "bash"
     assert result.actions[0].params == {"command": "pwd"}
+
+
+@pytest.mark.asyncio
+async def test_parser_uses_agent_scoped_mapping_with_shared_sandbox():
+    shared_mcp = SimpleNamespace(
+        mcp_servers=["alpha", "beta"],
+        # Simulate a later agent overwriting the legacy shared mapping.
+        map_tool_list={"run": "beta__run"},
+    )
+    shared_sandbox = SimpleNamespace(mcpservers=shared_mcp)
+    alpha_agent = SimpleNamespace(
+        sandbox=shared_sandbox,
+        tool_mapping={"run": "alpha__run"},
+    )
+    response = ModelResponse(
+        id="resp_1",
+        model="test-model",
+        tool_calls=[
+            ToolCall(
+                id="call_1",
+                function=Function(name="run", arguments='{"code": "pwd"}'),
+            )
+        ],
+    )
+
+    result = await LlmOutputParser().parse(
+        response,
+        agent_id="alpha-agent",
+        agent=alpha_agent,
+    )
+
+    assert result.actions[0].tool_name == "mcp"
+    assert result.actions[0].action_name == "alpha__run"
+
+
+@pytest.mark.asyncio
+async def test_parser_does_not_fall_back_to_another_agents_shared_mapping():
+    shared_mcp = SimpleNamespace(
+        mcp_servers=["alpha", "beta"],
+        map_tool_list={"run": "beta__run"},
+    )
+    shared_sandbox = SimpleNamespace(mcpservers=shared_mcp)
+    agent_without_registered_tools = SimpleNamespace(
+        sandbox=shared_sandbox,
+        tool_mapping={},
+    )
+    response = ModelResponse(
+        id="resp_1",
+        model="test-model",
+        tool_calls=[
+            ToolCall(
+                id="call_1",
+                function=Function(name="run", arguments="{}"),
+            )
+        ],
+    )
+
+    result = await LlmOutputParser().parse(
+        response,
+        agent_id="empty-agent",
+        agent=agent_without_registered_tools,
+    )
+
+    assert result.actions[0].tool_name == "run"
+    assert result.actions[0].action_name == ""

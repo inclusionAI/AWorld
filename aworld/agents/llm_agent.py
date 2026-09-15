@@ -13,7 +13,7 @@ from collections import OrderedDict
 from dataclasses import dataclass, replace
 from datetime import datetime
 from enum import Enum
-from typing import Dict, Any, List, Callable, Optional, Union
+from typing import Dict, Any, List, Callable, Optional, Sequence, Union
 
 import aworld.trace as trace
 from aworld.config.conf import (
@@ -74,6 +74,13 @@ from aworld.core.event.base import (
 from aworld.core.exceptions import AWorldRuntimeException
 from aworld.core.model_output_parser import ModelOutputParser
 from aworld.core.tool.tool_desc import get_tool_desc
+from aworld.core.tool.surface import (
+    CapabilityProbe,
+    RequiredToolSurfaceUnavailable,
+    ToolCapabilitySpec,
+    ToolSurfaceProfile,
+    reconcile_tool_surface,
+)
 from aworld.events import eventbus
 from aworld.events.util import send_message, send_message_with_future
 from aworld.logs.prompt_log import PromptLogger
@@ -312,16 +319,19 @@ class LlmOutputParser(ModelOutputParser[ModelResponse, AgentResult]):
                     and agent_info.sandbox.mcpservers
                     and agent_info.sandbox.mcpservers.mcp_servers
                 ):
-                    if agent_info.sandbox.mcpservers.map_tool_list:
-                        _original_tool = (
-                            agent_info.sandbox.mcpservers.map_tool_list.get(full_name)
-                        )
+                    # The friendly-name mapping is Agent-scoped.  A shared
+                    # Sandbox can serve multiple agents with disjoint MCP
+                    # allowlists; reading its mutable compatibility mapping
+                    # lets the last initialized agent redirect earlier calls.
+                    agent_tool_mapping = getattr(agent_info, "tool_mapping", {})
+                    if agent_tool_mapping:
+                        _original_tool = agent_tool_mapping.get(full_name)
                         if _original_tool:
                             # map_tool_list maps friendly name to original "server__tool" format
                             # e.g., "bash" → "terminal__mcp_execute_command"
                             full_name = f"mcp__{_original_tool}"
                             logger.info(
-                                f"🔄 [Agent:{agent_id}] Mapped tool name: {original_name} -> {full_name} (via map_tool_list)"
+                                f"🔄 [Agent:{agent_id}] Mapped tool name: {original_name} -> {full_name} (via agent tool_mapping)"
                             )
                     else:
                         tmp_names = full_name.split("__")
@@ -420,6 +430,9 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         llm_max_attempts: int = 2,
         llm_retry_delay: float = 10.0,
         generation_budget_policy: GenerationBudgetPolicy | None = None,
+        tool_surface_specs: Sequence[ToolCapabilitySpec] | None = None,
+        tool_surface_profile: ToolSurfaceProfile | None = None,
+        tool_surface_probes: Sequence[CapabilityProbe] | None = None,
         enable_subagent: bool = False,
         subagent_search_paths: List[str] = None,
         **kwargs,
@@ -527,6 +540,22 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                 "generation_budget_policy must be a GenerationBudgetPolicy or None"
             )
         self._explicit_generation_budget_policy = generation_budget_policy
+        self._tool_surface_specs = tuple(tool_surface_specs or ())
+        self._tool_surface_profile = tool_surface_profile or ToolSurfaceProfile()
+        self._tool_surface_probes = tuple(tool_surface_probes or ())
+        if not all(
+            isinstance(spec, ToolCapabilitySpec)
+            for spec in self._tool_surface_specs
+        ):
+            raise TypeError("tool_surface_specs must contain ToolCapabilitySpec values")
+        if not isinstance(self._tool_surface_profile, ToolSurfaceProfile):
+            raise TypeError("tool_surface_profile must be a ToolSurfaceProfile")
+        if not all(
+            isinstance(probe, CapabilityProbe)
+            for probe in self._tool_surface_probes
+        ):
+            raise TypeError("tool_surface_probes must contain CapabilityProbe values")
+        self.tool_surface_receipt = None
 
         # Initialize subagent capability if enabled
         self.enable_subagent = enable_subagent
@@ -1298,7 +1327,6 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                 processed_tools, tool_mapping = await process_mcp_tools(
                     filtered_mcp_tools
                 )
-                self.sandbox.mcpservers.map_tool_list = tool_mapping
                 self.tools.extend(processed_tools)
                 self.tool_mapping = tool_mapping
 
@@ -1325,6 +1353,36 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             )
 
         await self.process_by_ptc(self.tools, context)
+        self._reconcile_live_tool_surface(context)
+
+    def _reconcile_live_tool_surface(self, context: Context) -> None:
+        """Bind declared capabilities to this Agent's final live schemas."""
+
+        if not self._tool_surface_specs:
+            self.tool_surface_receipt = None
+            return
+        receipt = reconcile_tool_surface(
+            self._tool_surface_specs,
+            live_tool_schemas=tuple(self.tools),
+            probes=self._tool_surface_probes,
+            profile=self._tool_surface_profile,
+        )
+        self.tool_surface_receipt = receipt
+        try:
+            context_info = getattr(context, "context_info", None)
+            if context_info is None:
+                raise TypeError("context has no context_info state")
+            existing = context_info.get("tool_surface_receipts") or {}
+            receipts = dict(existing) if isinstance(existing, dict) else {}
+            receipts[self.id()] = receipt.to_dict()
+            context_info["tool_surface_receipts"] = receipts
+        except Exception as exc:
+            logger.warning(
+                "Failed to record Tool surface receipt; "
+                f"error_type={type(exc).__name__}"
+            )
+        if not receipt.ready:
+            raise RequiredToolSurfaceUnavailable(receipt)
 
     def messages_transform(
         self,
@@ -4928,6 +4986,10 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             attributes["generation_budget_policy"] = (
                 self._explicit_generation_budget_policy
             )
+        if self._tool_surface_specs:
+            attributes["tool_surface_specs"] = self._tool_surface_specs
+            attributes["tool_surface_profile"] = self._tool_surface_profile
+            attributes["tool_surface_probes"] = self._tool_surface_probes
         return attributes
 
     @staticmethod

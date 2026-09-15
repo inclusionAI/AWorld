@@ -19,7 +19,12 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from aworld.core.context.amni import AgentContextConfig
 from aworld.core.context.amni.config import get_default_config, ContextEnvConfig
 from aworld.core.context.amni.prompt.assembly.budget import PromptBudgetPolicy
-from aworld.core.tool.surface import ToolLifecycle, ToolSurfaceProfile
+from aworld.core.context.generation_budget import GenerationBudgetPolicy
+from aworld.core.tool.surface import (
+    ToolCapabilitySpec,
+    ToolLifecycle,
+    ToolSurfaceProfile,
+)
 from aworld.logs.util import logger
 from aworld_cli.core.context_tool import CONTEXT_TOOL
 from aworld_cli.core.skill_registry import build_skill_resolver_inputs
@@ -67,6 +72,15 @@ _BACKGROUND_SUBAGENT_ACTIONS = (
     "check_task",
     "wait_task",
     "cancel_task",
+)
+_GENERATION_BUDGET_ENV_NAMES = (
+    "AWORLD_GENERATION_TOTAL_TIMEOUT_SECONDS",
+    "AWORLD_GENERATION_STREAM_IDLE_TIMEOUT_SECONDS",
+    "AWORLD_GENERATION_ACTIVE_TOOL_FREE_TIMEOUT_SECONDS",
+    "AWORLD_GENERATION_ACTION_REPAIR_TIMEOUT_SECONDS",
+    "AWORLD_GENERATION_ACTION_REPAIR_MAX_OUTPUT_TOKENS",
+    "AWORLD_GENERATION_PARTIAL_RESPONSE_CONTEXT_CHARS",
+    "AWORLD_GENERATION_ACTION_REPAIR_ENABLED",
 )
 
 
@@ -169,6 +183,92 @@ def resolve_aworld_tool_surface_profile() -> ToolSurfaceProfile:
         )
     raise ValueError(
         "AWORLD_TOOL_SURFACE_PROFILE must be either 'general' or 'one_shot'"
+    )
+
+
+def resolve_aworld_tool_surface_enforcement() -> bool:
+    """Return whether missing required live schemas fail the run."""
+
+    mode = os.environ.get("AWORLD_TOOL_SURFACE_MODE", "observe").strip().lower()
+    if mode == "observe":
+        return False
+    if mode == "enforce":
+        return True
+    raise ValueError("AWORLD_TOOL_SURFACE_MODE must be either 'observe' or 'enforce'")
+
+
+def resolve_aworld_generation_budget() -> Optional[GenerationBudgetPolicy]:
+    """Resolve optional runner-owned generation limits without task heuristics."""
+
+    if not any(name in os.environ for name in _GENERATION_BUDGET_ENV_NAMES):
+        return None
+    defaults = GenerationBudgetPolicy()
+
+    def optional_seconds(name: str, default: Optional[float]) -> Optional[float]:
+        raw = os.environ.get(name)
+        if raw is None or not raw.strip():
+            return default
+        normalized = raw.strip().lower()
+        if normalized in {"none", "off", "disabled"}:
+            return None
+        try:
+            value = float(normalized)
+        except ValueError as exc:
+            raise ValueError(f"{name} must be positive or 'none'") from exc
+        if value <= 0:
+            raise ValueError(f"{name} must be positive or 'none'")
+        return value
+
+    def positive_int(name: str, default: int) -> int:
+        raw = os.environ.get(name)
+        if raw is None or not raw.strip():
+            return default
+        try:
+            value = int(raw)
+        except ValueError as exc:
+            raise ValueError(f"{name} must be a positive integer") from exc
+        if value <= 0:
+            raise ValueError(f"{name} must be a positive integer")
+        return value
+
+    repair_raw = os.environ.get("AWORLD_GENERATION_ACTION_REPAIR_ENABLED")
+    if repair_raw is None or not repair_raw.strip():
+        repair_enabled = defaults.action_repair_enabled
+    elif repair_raw.strip().lower() in {"1", "true", "yes"}:
+        repair_enabled = True
+    elif repair_raw.strip().lower() in {"0", "false", "no"}:
+        repair_enabled = False
+    else:
+        raise ValueError(
+            "AWORLD_GENERATION_ACTION_REPAIR_ENABLED must be a boolean"
+        )
+
+    return GenerationBudgetPolicy(
+        total_timeout_seconds=optional_seconds(
+            "AWORLD_GENERATION_TOTAL_TIMEOUT_SECONDS",
+            defaults.total_timeout_seconds,
+        ),
+        stream_idle_timeout_seconds=optional_seconds(
+            "AWORLD_GENERATION_STREAM_IDLE_TIMEOUT_SECONDS",
+            defaults.stream_idle_timeout_seconds,
+        ),
+        active_tool_free_timeout_seconds=optional_seconds(
+            "AWORLD_GENERATION_ACTIVE_TOOL_FREE_TIMEOUT_SECONDS",
+            defaults.active_tool_free_timeout_seconds,
+        ),
+        action_repair_timeout_seconds=optional_seconds(
+            "AWORLD_GENERATION_ACTION_REPAIR_TIMEOUT_SECONDS",
+            defaults.action_repair_timeout_seconds,
+        ),
+        action_repair_max_output_tokens=positive_int(
+            "AWORLD_GENERATION_ACTION_REPAIR_MAX_OUTPUT_TOKENS",
+            defaults.action_repair_max_output_tokens,
+        ),
+        partial_response_context_chars=positive_int(
+            "AWORLD_GENERATION_PARTIAL_RESPONSE_CONTEXT_CHARS",
+            defaults.partial_response_context_chars,
+        ),
+        action_repair_enabled=repair_enabled,
     )
 
 
@@ -503,6 +603,8 @@ def build_aworld_agent(include_skills: Optional[str] = None):
     sandbox = create_agent_sandbox(builtin_tools)
 
     tool_surface_profile = resolve_aworld_tool_surface_profile()
+    enforce_tool_surface = resolve_aworld_tool_surface_enforcement()
+    generation_budget_policy = resolve_aworld_generation_budget()
 
     # Resolve optional collaborators before constructing the root agent so its
     # prompt and tool catalog describe capabilities that actually exist.
@@ -539,9 +641,19 @@ def build_aworld_agent(include_skills: Optional[str] = None):
         sandbox=sandbox,  # Shared sandbox (tools filtered by agent's mcp_servers config)
         tool_names=root_tool_names,
         black_tool_actions=black_tool_actions,
+        tool_surface_specs=(
+            ToolCapabilitySpec(
+                capability_id="terminal",
+                schema_ids=("run_code",),
+                lifecycle=ToolLifecycle.IMMEDIATE,
+                required=enforce_tool_surface,
+            ),
+        ),
+        tool_surface_profile=tool_surface_profile,
         enable_subagent=bool(sub_agents),
         llm_max_attempts=3,
         llm_retry_delay=2.0,
+        generation_budget_policy=generation_budget_policy,
         max_loop_steps=resolve_aworld_max_loop_steps(),
         **budgeted_agent_kwargs,
     )
