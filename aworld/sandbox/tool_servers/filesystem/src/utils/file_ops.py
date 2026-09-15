@@ -19,10 +19,10 @@ import os
 from pathlib import Path
 import re
 import signal
+import stat
 import subprocess
 import sys
 import tempfile
-import threading
 import time
 from typing import Optional
 from difflib import unified_diff
@@ -571,88 +571,141 @@ async def apply_edits_range(path: str, start: int, end: int, new_content: str) -
     )
 
 
-def _copy_file_binary_sync(
-    source: str,
-    target: str,
-    *,
-    limits: FilesystemLimits,
-    cancelled: threading.Event,
-) -> None:
-    """Stream source -> target with finite budgets and atomic replacement."""
-    source_size = os.path.getsize(source)
-    if source_size > limits.max_copy_bytes:
-        raise ValueError(
-            f"File is too large to copy safely: {source_size} bytes; "
-            f"limit={limits.max_copy_bytes}"
-        )
-    deadline = time.monotonic() + limits.copy_timeout_seconds
-    target_parent = Path(target).parent
-    target_parent.mkdir(parents=True, exist_ok=True)
-    with tempfile.NamedTemporaryFile(mode="wb", dir=target_parent, delete=False) as tmp:
-        tmp_path = tmp.name
-        try:
-            copied = 0
-            with open(source, "rb") as source_stream:
+def _copy_source_to_staged_sync(
+    source: str, staged_target: str, *, max_copy_bytes: int
+) -> int:
+    """Copy from a freshly validated fd into a parent-owned staging file."""
+
+    flags = os.O_RDONLY
+    flags |= getattr(os, "O_CLOEXEC", 0)
+    flags |= getattr(os, "O_NOFOLLOW", 0)
+    # Avoid a blocking open if a previously validated path is replaced by a
+    # FIFO or other special file before the worker opens it.
+    flags |= getattr(os, "O_NONBLOCK", 0)
+    source_descriptor = os.open(source, flags)
+    try:
+        source_stat = os.fstat(source_descriptor)
+        if not stat.S_ISREG(source_stat.st_mode):
+            raise ValueError(f"Path is not a regular file: {source}")
+        if source_stat.st_size > max_copy_bytes:
+            raise ValueError(
+                f"File is too large to copy safely: {source_stat.st_size} bytes; "
+                f"limit={max_copy_bytes}"
+            )
+        copied = 0
+        with os.fdopen(source_descriptor, "rb", closefd=False) as source_stream:
+            with open(staged_target, "wb") as target_stream:
                 while True:
-                    if cancelled.is_set():
-                        raise asyncio.CancelledError
-                    if time.monotonic() >= deadline:
-                        raise TimeoutError(
-                            "File copy timed out after "
-                            f"{limits.copy_timeout_seconds:g}s"
-                        )
                     chunk = source_stream.read(1024 * 1024)
                     if not chunk:
                         break
                     copied += len(chunk)
-                    if copied > limits.max_copy_bytes:
+                    if copied > max_copy_bytes:
                         raise ValueError(
                             "File grew beyond the safe copy limit: "
-                            f"{copied} bytes; limit={limits.max_copy_bytes}"
+                            f"{copied} bytes; limit={max_copy_bytes}"
                         )
-                    tmp.write(chunk)
-        except BaseException:
-            Path(tmp_path).unlink(missing_ok=True)
-            raise
+                    target_stream.write(chunk)
+                target_stream.flush()
+                os.fsync(target_stream.fileno())
+        return copied
+    finally:
+        os.close(source_descriptor)
+
+
+async def _kill_async_worker(process: asyncio.subprocess.Process) -> None:
+    if process.returncode is not None:
+        return
     try:
-        Path(tmp_path).replace(target)
-    except Exception:
-        Path(tmp_path).unlink(missing_ok=True)
-        raise
+        if os.name == "posix":
+            os.killpg(process.pid, signal.SIGKILL)
+        else:
+            process.kill()
+    except ProcessLookupError:
+        pass
+    await process.communicate()
 
 
 async def copy_file_binary(source: str, target: str) -> None:
-    """Copy a regular file without unbounded producer work or partial targets."""
+    """Copy in a killable worker, publishing the target only after success."""
     limits = FilesystemLimits.from_env()
-    cancelled = threading.Event()
-    worker = asyncio.create_task(
-        asyncio.to_thread(
-            _copy_file_binary_sync,
-            source,
-            target,
-            limits=limits,
-            cancelled=cancelled,
-        )
+    target_path = Path(target)
+    target_path.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.NamedTemporaryFile(
+        dir=target_path.parent,
+        prefix=f".{target_path.name}.aworld-copy-",
+        suffix=".tmp",
+        delete=False,
+    ) as temporary:
+        staged_target = Path(temporary.name)
+    payload = {
+        "source": source,
+        "staged_target": str(staged_target),
+        "max_copy_bytes": limits.max_copy_bytes,
+    }
+    process = await asyncio.create_subprocess_exec(
+        sys.executable,
+        str(Path(__file__).resolve()),
+        "--copy-worker",
+        stdin=asyncio.subprocess.PIPE,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+        start_new_session=(os.name == "posix"),
     )
     try:
-        await asyncio.shield(worker)
-    except asyncio.CancelledError:
-        cancelled.set()
         try:
-            await asyncio.wait_for(asyncio.shield(worker), timeout=0.25)
-        except (asyncio.CancelledError, asyncio.TimeoutError, Exception):
-            pass
-        if not worker.done():
-            worker.add_done_callback(_consume_background_task_result)
-        raise
+            stdout, stderr = await asyncio.wait_for(
+                process.communicate(json.dumps(payload).encode("utf-8")),
+                timeout=limits.copy_timeout_seconds,
+            )
+        except asyncio.TimeoutError as exc:
+            await _kill_async_worker(process)
+            raise TimeoutError(
+                f"File copy timed out after {limits.copy_timeout_seconds:g}s"
+            ) from exc
+        except BaseException:
+            await asyncio.shield(_kill_async_worker(process))
+            raise
+        if process.returncode != 0:
+            detail = stderr.decode("utf-8", errors="replace").strip()
+            raise RuntimeError(detail or "filesystem copy worker failed")
+        try:
+            decoded = json.loads(stdout.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise RuntimeError("filesystem copy worker returned invalid output") from exc
+        if "error" in decoded:
+            if decoded.get("error_type") == "ValueError":
+                raise ValueError(decoded["error"])
+            raise RuntimeError(decoded["error"])
+        copied = decoded.get("copied")
+        if (
+            isinstance(copied, bool)
+            or not isinstance(copied, int)
+            or copied < 0
+            or copied > limits.max_copy_bytes
+            or staged_target.stat().st_size != copied
+        ):
+            raise RuntimeError("filesystem copy worker returned invalid metadata")
+        os.replace(staged_target, target_path)
+    finally:
+        staged_target.unlink(missing_ok=True)
 
 
-def _consume_background_task_result(task: asyncio.Task[None]) -> None:
-    """Retrieve a detached copy-worker result after bounded cancellation."""
+def _copy_worker_main() -> int:
     try:
-        task.exception()
-    except (asyncio.CancelledError, Exception):
-        pass
+        payload = json.loads(sys.stdin.buffer.read().decode("utf-8"))
+        copied = _copy_source_to_staged_sync(
+            payload["source"],
+            payload["staged_target"],
+            max_copy_bytes=int(payload["max_copy_bytes"]),
+        )
+        sys.stdout.write(json.dumps({"copied": copied}))
+        return 0
+    except Exception as exc:
+        sys.stdout.write(
+            json.dumps({"error": str(exc), "error_type": type(exc).__name__})
+        )
+        return 0
 
 
 async def apply_edits(path: str, edits: list[dict], dry_run: bool = False) -> str:
@@ -1263,5 +1316,8 @@ def _search_worker_main() -> int:
         return 0
 
 
-if __name__ == "__main__" and "--search-worker" in sys.argv:
-    raise SystemExit(_search_worker_main())
+if __name__ == "__main__":
+    if "--copy-worker" in sys.argv:
+        raise SystemExit(_copy_worker_main())
+    if "--search-worker" in sys.argv:
+        raise SystemExit(_search_worker_main())

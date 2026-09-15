@@ -218,33 +218,87 @@ async def test_upload_copy_limit_preserves_existing_target(
 
 
 @pytest.mark.asyncio
-async def test_cancelled_copy_signals_worker_and_returns_promptly(
+async def test_copy_timeout_kills_real_worker_and_preserves_target(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    started = __import__("threading").Event()
-    stopped = __import__("threading").Event()
+    fake_python = tmp_path / "blocking-python"
+    fake_python.write_text("#!/bin/sh\nsleep 30\n", encoding="utf-8")
+    fake_python.chmod(0o755)
+    monkeypatch.setattr(file_ops_module.sys, "executable", str(fake_python))
+    monkeypatch.setenv("AWORLD_FILESYSTEM_COPY_TIMEOUT_SECONDS", "0.1")
+    created = []
+    original_create = asyncio.create_subprocess_exec
 
-    def cancellable_copy(source, target, *, limits, cancelled):
-        del source, target, limits
-        started.set()
-        while not cancelled.wait(0.01):
-            pass
-        stopped.set()
-        raise asyncio.CancelledError
+    async def recording_create(*args, **kwargs):
+        process = await original_create(*args, **kwargs)
+        created.append(process)
+        return process
 
-    monkeypatch.setattr(
-        file_ops_module, "_copy_file_binary_sync", cancellable_copy
-    )
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", recording_create)
+    source = tmp_path / "source.bin"
+    source.write_bytes(b"source")
+    target = tmp_path / "target.bin"
+    target.write_bytes(b"original")
+
+    with pytest.raises(TimeoutError, match="timed out"):
+        await file_ops_module.copy_file_binary(str(source), str(target))
+
+    assert len(created) == 1
+    assert created[0].returncode is not None
+    assert target.read_bytes() == b"original"
+    assert not list(tmp_path.glob(".target.bin.aworld-copy-*.tmp"))
+
+
+@pytest.mark.asyncio
+async def test_cancelled_copy_kills_real_worker(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fake_python = tmp_path / "blocking-python"
+    fake_python.write_text("#!/bin/sh\nsleep 30\n", encoding="utf-8")
+    fake_python.chmod(0o755)
+    monkeypatch.setattr(file_ops_module.sys, "executable", str(fake_python))
+    created = []
+    original_create = asyncio.create_subprocess_exec
+
+    async def recording_create(*args, **kwargs):
+        process = await original_create(*args, **kwargs)
+        created.append(process)
+        return process
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", recording_create)
+    source = tmp_path / "source.bin"
+    source.write_bytes(b"source")
     task = asyncio.create_task(
-        file_ops_module.copy_file_binary(str(tmp_path / "a"), str(tmp_path / "b"))
+        file_ops_module.copy_file_binary(str(source), str(tmp_path / "target.bin"))
     )
-    assert await asyncio.to_thread(started.wait, 1)
+    for _ in range(100):
+        if created:
+            break
+        await asyncio.sleep(0.01)
+    assert created
     task.cancel()
 
     with pytest.raises(asyncio.CancelledError):
         await asyncio.wait_for(task, timeout=1)
 
-    assert stopped.is_set()
+    assert created[0].returncode is not None
+    assert not list(tmp_path.glob(".target.bin.aworld-copy-*.tmp"))
+
+
+@pytest.mark.asyncio
+async def test_copy_rejects_fifo_without_blocking_open(tmp_path: Path) -> None:
+    if not hasattr(os, "mkfifo"):
+        pytest.skip("FIFO is unavailable")
+    fifo = tmp_path / "source.pipe"
+    os.mkfifo(fifo)
+
+    with pytest.raises(ValueError, match="regular file"):
+        await asyncio.wait_for(
+            file_ops_module.copy_file_binary(
+                str(fifo), str(tmp_path / "target.bin")
+            ),
+            timeout=1,
+        )
 
 
 @pytest.mark.asyncio
