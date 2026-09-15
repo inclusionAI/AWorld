@@ -49,6 +49,60 @@ def test_augment_tool_description_leaves_non_terminal_tools_unchanged(monkeypatc
     assert utils._augment_tool_description("filesystem", "read_file", original) == original
 
 
+def test_augment_tool_description_supports_builtin_terminal_tool(monkeypatch):
+    monkeypatch.setattr(
+        utils,
+        "get_obsidian_vault_candidates",
+        lambda: ["/Users/test/Documents/wuman_knowledge"],
+    )
+
+    augmented = utils._augment_tool_description(
+        "terminal",
+        "run_code",
+        "Execute terminal commands safely.",
+    )
+
+    assert "Detected Obsidian vaults" in augmented
+
+
+@pytest.mark.asyncio
+async def test_non_reuse_stdio_discovery_resolves_python_placeholder(monkeypatch):
+    captured = {}
+
+    class _FakeStdioServer:
+        def __init__(self, *, name, params):
+            captured["name"] = name
+            captured["params"] = params
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc_value, traceback):
+            return None
+
+    async def _fake_run(**kwargs):
+        return []
+
+    monkeypatch.setenv("AWORLD_PYTHON_EXECUTABLE", "/opt/aworld/python")
+    monkeypatch.setattr(utils, "MCPServerStdio", _FakeStdioServer)
+    monkeypatch.setattr(utils, "run", _fake_run)
+
+    await utils.mcp_tool_desc_transform_v2(
+        tools=["terminal"],
+        mcp_config={
+            "mcpServers": {
+                "terminal": {
+                    "command": "${PYTHON_CMD}",
+                    "args": ["terminal.py", "--stdio"],
+                }
+            }
+        },
+    )
+
+    assert captured["name"] == "terminal"
+    assert captured["params"]["command"] == "/opt/aworld/python"
+
+
 def test_stdio_server_environment_inherits_only_opted_in_prefixes(monkeypatch):
     monkeypatch.setenv(
         "AWORLD_MCP_STDIO_INHERIT_ENV_PREFIXES",

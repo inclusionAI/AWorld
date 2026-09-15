@@ -15,6 +15,7 @@ from aworld.sandbox import Sandbox
 from aworld_cli.core import agent
 from aworld_cli.core.skill_registry import build_skill_resolver_inputs
 from .mcp_config import mcp_config
+from ..sandbox_factory import create_agent_sandbox
 
 
 @HookFactory.register(name="pre_developer_hook")
@@ -86,18 +87,12 @@ def build_developer_swarm(sandbox: 'Sandbox' = None):
         ext={"skill_resolver_inputs": resolver_inputs},
     )
 
-    # Extract all server keys from mcp_config
-    mcp_servers = list(mcp_config.get("mcpServers", {}).keys())
-
     # Sandbox: reuse shared sandbox if provided, otherwise create new one
     if sandbox is None:
-        # Create sandbox only if not provided (standalone usage)
-        sandbox = Sandbox(
+        sandbox = create_agent_sandbox(
+            ["filesystem", "terminal"],
             mcp_config=mcp_config,
-            builtin_tools=["filesystem", "terminal"],  # Phase 1: Expose filesystem tools
-            workspaces=[os.getcwd()]  # Allow current working directory
         )
-        sandbox.reuse = True
 
     # Developer has full MCP tool access: filesystem + terminal
     # Note: Actual tools exposed are filtered by mcp_servers config

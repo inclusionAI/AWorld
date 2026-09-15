@@ -27,7 +27,11 @@ from aworld.tools import get_function_tools
 
 MCP_SERVERS_CONFIG = {}
 
-_OBSERVATION_HINT_TOOL_NAMES = {"execute_command", "mcp_execute_command"}
+_OBSERVATION_HINT_TOOL_NAMES = {
+    "execute_command",
+    "mcp_execute_command",
+    "run_code",
+}
 _STDIO_INHERIT_ENV_PREFIXES_VARIABLE = (
     "AWORLD_MCP_STDIO_INHERIT_ENV_PREFIXES"
 )
@@ -65,6 +69,32 @@ def _stdio_server_environment(server_config: Dict[str, Any]) -> Dict[str, str]:
     }
     # Explicit server configuration remains authoritative on conflicts.
     return {**inherited, **environment}
+
+
+def _stdio_server_command(
+    server_name: str,
+    server_config: Dict[str, Any],
+) -> str:
+    """Resolve the executable used to start one stdio MCP server.
+
+    Built-in sandbox tools deliberately keep ``${PYTHON_CMD}`` in their
+    serialized configuration so the interpreter can be selected in the
+    environment where the server is actually spawned. Every stdio startup
+    path must therefore resolve the placeholder, including non-reuse tool
+    discovery.
+    """
+
+    command = server_config["command"]
+    try:
+        from aworld.sandbox.config.python_cmd import resolve_command_placeholder
+
+        return resolve_command_placeholder(command, server_name)
+    except Exception as resolve_err:
+        logger.warning(
+            f"Resolve PYTHON_CMD for {server_name}: {resolve_err}, "
+            "using command as-is"
+        )
+        return command
 
 
 def _stringify_tool_argument(value: Any, *, max_length: int = 120) -> str:
@@ -742,7 +772,9 @@ async def mcp_tool_desc_transform_v2(
                         "name": server_name,
                         "type": "stdio",
                         "params": {
-                            "command": server_config["command"],
+                            "command": _stdio_server_command(
+                                server_name, server_config
+                            ),
                             "args": server_config.get("args", []),
                             "env": _stdio_server_environment(server_config),
                             "cwd": server_config.get("cwd"),
@@ -944,7 +976,9 @@ async def mcp_tool_desc_transform_v2_reuse(
                         "name": server_name,
                         "type": "stdio",
                         "params": {
-                            "command": server_config["command"],
+                            "command": _stdio_server_command(
+                                server_name, server_config
+                            ),
                             "args": server_config.get("args", []),
                             "env": _stdio_server_environment(server_config),
                             "cwd": server_config.get("cwd"),
@@ -1230,7 +1264,9 @@ async def mcp_tool_desc_transform(
                         "name": server_name,
                         "type": "stdio",
                         "params": {
-                            "command": server_config["command"],
+                            "command": _stdio_server_command(
+                                server_name, server_config
+                            ),
                             "args": server_config.get("args", []),
                             "env": _stdio_server_environment(server_config),
                             "cwd": server_config.get("cwd"),
@@ -1484,14 +1520,8 @@ async def get_server_instance(
             )
             return server, _SESSION_ID
         else:  # stdio type
-            command = server_config["command"]
-            try:
-                from aworld.sandbox.config.python_cmd import resolve_command_placeholder
-                command = resolve_command_placeholder(command, server_name)
-            except Exception as resolve_err:
-                logger.warning(f"Resolve PYTHON_CMD for {server_name}: {resolve_err}, using command as-is")
             params = {
-                "command": command,
+                "command": _stdio_server_command(server_name, server_config),
                 "args": server_config.get("args", []),
                 "env": _stdio_server_environment(server_config),
                 "cwd": server_config.get("cwd"),

@@ -28,8 +28,9 @@ def test_render_aworld_system_prompt_uses_runtime_capabilities() -> None:
         available_subagents=["developer"],
     )
 
-    assert "Available tool capabilities: cron, terminal" in prompt
+    assert "Configured tool capabilities: cron, terminal" in prompt
     assert "Available subagents: developer" in prompt
+    assert "Capability labels above describe configured providers" in prompt
     assert "Use its exact listed name" in prompt
     assert "one and only one" not in prompt.lower()
 
@@ -106,21 +107,48 @@ def test_optional_subagent_failures_do_not_hide_healthy_subagents(
         def name(self) -> str:
             return self._name
 
+    seen_sandboxes = []
+
+    def successful_builder(name: str):
+        def build(*, sandbox):
+            seen_sandboxes.append(sandbox)
+            return name
+
+        return build
+
+    def failing_builder(*, sandbox):
+        seen_sandboxes.append(sandbox)
+        raise RuntimeError("not configured")
+
     monkeypatch.setattr(aworld_agent, "_CAST_TOOLS_AVAILABLE", False)
     monkeypatch.setattr(
         aworld_agent,
         "extract_agents_from_swarm",
         lambda swarm: [FakeAgent(swarm)],
     )
-    monkeypatch.setattr(aworld_agent, "build_diffusion_swarm", lambda: "diffusion")
+    monkeypatch.setattr(
+        aworld_agent,
+        "build_diffusion_swarm",
+        successful_builder("diffusion"),
+    )
     monkeypatch.setattr(
         aworld_agent,
         "build_avatar_swarm",
-        lambda: (_ for _ in ()).throw(RuntimeError("not configured")),
+        failing_builder,
     )
-    monkeypatch.setattr(aworld_agent, "build_audio_swarm", lambda: "audio")
-    monkeypatch.setattr(aworld_agent, "build_image_swarm", lambda: "image")
+    monkeypatch.setattr(
+        aworld_agent,
+        "build_audio_swarm",
+        successful_builder("audio"),
+    )
+    monkeypatch.setattr(
+        aworld_agent,
+        "build_image_swarm",
+        successful_builder("image"),
+    )
 
-    agents = aworld_agent._build_aworld_sub_agents(sandbox=object())
+    shared_sandbox = object()
+    agents = aworld_agent._build_aworld_sub_agents(sandbox=shared_sandbox)
 
     assert aworld_agent._subagent_names(agents) == ["audio", "diffusion", "image"]
+    assert seen_sandboxes == [shared_sandbox] * 4

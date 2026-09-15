@@ -15,7 +15,7 @@ from aworld.runners.hook.hooks import PreLLMCallHook, PostLLMCallHook
 from aworld.sandbox import Sandbox
 from aworld_cli.core import agent
 from aworld_cli.core.skill_registry import build_skill_resolver_inputs
-from .mcp_config import mcp_config
+from ..sandbox_factory import create_agent_sandbox
 
 
 def _coerce_info_dict(info: Optional[Union[str, Dict[str, Any]]]) -> Dict[str, Any]:
@@ -132,7 +132,7 @@ Optional: `prompt`, `mode` (std|pro), `model_name`, `poll`, `poll_interval`, `po
 Provider: `kling_avatar` (set in config / `AVATAR_PROVIDER`).
 """,
 )
-def build_avatar_swarm():
+def build_avatar_swarm(sandbox: Sandbox = None):
     plugin_base_dir = Path(__file__).resolve().parents[2]
     env_skills_path = os.environ.get("SKILLS_PATH")
     resolver_inputs = build_skill_resolver_inputs(
@@ -155,9 +155,9 @@ def build_avatar_swarm():
         ext={"skill_resolver_inputs": resolver_inputs},
     )
 
-    mcp_servers = list(mcp_config.get("mcpServers", {}).keys())
-    sandbox = Sandbox(mcp_config=mcp_config)
-    sandbox.reuse = True
+    mcp_servers = ["terminal"]
+    if sandbox is None:
+        sandbox = create_agent_sandbox(mcp_servers)
 
     system_prompt = (Path(__file__).resolve().parent / "prompt.txt").read_text(encoding="utf-8")
     avatar_agent = AvatarVideoAgent(
@@ -166,7 +166,6 @@ def build_avatar_swarm():
         conf=agent_config,
         system_prompt=system_prompt,
         mcp_servers=mcp_servers,
-        mcp_config=mcp_config,
         sandbox=sandbox,
     )
     return Swarm(avatar_agent)

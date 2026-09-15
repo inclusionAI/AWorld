@@ -2,12 +2,12 @@ import asyncio
 import json
 import logging
 import platform
+import subprocess
 import time
 import traceback
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Union
-import uuid
 import os
 import re
 import tempfile
@@ -19,16 +19,22 @@ from mcp.server import FastMCP
 from mcp.types import TextContent
 from pydantic import Field, BaseModel
 
-from background_keywords import LONG_RUNNING_KEYWORDS
+try:
+    from .background_keywords import LONG_RUNNING_KEYWORDS
+except ImportError:  # Direct script execution used by the stdio config.
+    from background_keywords import LONG_RUNNING_KEYWORDS
 
 load_dotenv()
-workspace = Path.home() / "workspace"
+workspace = Path.cwd()
 
 # Allow customizing the leading icon in the terminal card output
 TERMINAL_ICON = os.getenv("TERMINAL_ICON", "🖥️")
 
 command_history: list[dict] = []
 max_history_size = 50
+_MAX_INLINE_STREAM_CHARS = 16_384
+_DEFAULT_COMMAND_TIMEOUT_SECONDS = 300
+_MAX_COMMAND_TIMEOUT_SECONDS = 3_600
 
 # Define dangerous commands for safety
 dangerous_commands = [
@@ -87,6 +93,26 @@ class TerminalMetadata(BaseModel):
     output_data: str | None = None
 
 
+def _bounded_inline_stream(
+    value: str,
+    *,
+    max_chars: int = _MAX_INLINE_STREAM_CHARS,
+) -> str:
+    """Keep command output bounded before it enters model context."""
+
+    if len(value) <= max_chars:
+        return value
+    head_chars = max(max_chars // 2, 1)
+    tail_chars = max(max_chars - head_chars, 1)
+    omitted_chars = max(0, len(value) - head_chars - tail_chars)
+    return (
+        f"{value[:head_chars]}\n\n"
+        f"[terminal output truncated: {omitted_chars} chars omitted; "
+        "redirect the complete output to a file and inspect a bounded excerpt]"
+        f"\n\n{value[-tail_chars:]}"
+    )
+
+
 # Read log level from environment variable, default to WARNING for clean CLI output
 _log_level = os.environ.get("MCP_LOG_LEVEL") or os.environ.get("LOG_LEVEL") or os.environ.get("LOGLEVEL") or "WARNING"
 
@@ -103,14 +129,12 @@ It supports command execution with timeout controls and returns LLM-friendly for
 Key features:
 - Execute terminal commands with configurable timeouts
 - Cross-platform command execution support
-- Command history tracking and retrieval
+- Bounded output and command history tracking
 - Safety checks for dangerous commands
 - LLM-optimized output formatting
 
-Main functions:
-- mcp_execute_command: Execute terminal commands with safety checks
-- mcp_get_command_history: Retrieve recent command execution history
-- mcp_get_terminal_capabilities: Get terminal service capabilities
+Main tool:
+- run_code: Execute a terminal command with safety checks
 """,
 )
 
@@ -166,7 +190,8 @@ async def run_code(
     ctx: Context,
     code: str = Field(description="Terminal command to execute"),
     timeout: int = Field(
-        default=30, description="Command timeout in seconds (default: 30)"
+        default=_DEFAULT_COMMAND_TIMEOUT_SECONDS,
+        description="Command timeout in seconds (default: 300, max: 3600)",
     ),
     output_format: str = Field(
         default="markdown", description="Output format: 'markdown', 'json', or 'text'"
@@ -192,9 +217,9 @@ async def run_code(
             timeout = int(env_timeout)
         except ValueError:
             pass  # keep current timeout if env value is not a valid integer
+    timeout = max(1, min(int(timeout), _MAX_COMMAND_TIMEOUT_SECONDS))
 
     output_data = ""
-    command_id = str(uuid.uuid4())
     try:
         # Safety check
         is_safe, safety_reason = _check_command_safety(command)
@@ -239,9 +264,9 @@ async def run_code(
 
         outputs = []
         if result.stderr:
-            outputs.append(result.stderr)
+            outputs.append(_bounded_inline_stream(result.stderr))
         if result.stdout:
-            outputs.append(result.stdout)
+            outputs.append(_bounded_inline_stream(result.stdout))
         output_data = "\n".join(outputs)
 
         # Create metadata
@@ -379,8 +404,15 @@ def _format_command_output(
     Returns:
         Formatted string suitable for LLM consumption
     """
+    stdout = _bounded_inline_stream(result.stdout)
+    stderr = _bounded_inline_stream(result.stderr)
     if output_format == "json":
-        return json.dumps(result.model_dump(), indent=2)
+        return json.dumps(
+            result.model_copy(
+                update={"stdout": stdout, "stderr": stderr}
+            ).model_dump(),
+            indent=2,
+        )
 
     elif output_format == "text":
         output_parts = [
@@ -390,11 +422,11 @@ def _format_command_output(
             f"Return Code: {result.return_code}",
         ]
 
-        if result.stdout:
-            output_parts.extend(["\nOutput:", result.stdout])
+        if stdout:
+            output_parts.extend(["\nOutput:", stdout])
 
-        if result.stderr:
-            output_parts.extend(["\nErrors/Warnings:", result.stderr])
+        if stderr:
+            output_parts.extend(["\nErrors/Warnings:", stderr])
 
         return "\n".join(output_parts)
 
@@ -410,15 +442,31 @@ def _format_command_output(
             f"**Timestamp:** {result.timestamp}",
         ]
 
-        if result.stdout:
-            output_parts.extend(["\n## Output", "```", result.stdout.strip(), "```"])
+        if stdout:
+            output_parts.extend(["\n## Output", "```", stdout.strip(), "```"])
 
-        if result.stderr:
+        if stderr:
             output_parts.extend(
-                ["\n## Errors/Warnings", "```", result.stderr.strip(), "```"]
+                ["\n## Errors/Warnings", "```", stderr.strip(), "```"]
             )
 
         return "\n".join(output_parts)
+
+
+async def _terminate_process(process: asyncio.subprocess.Process) -> None:
+    """Terminate a timed-out shell and its descendants, then reap it."""
+
+    try:
+        if platform_info["system"] != "Windows" and process.pid:
+            os.killpg(os.getpgid(process.pid), 9)
+        else:
+            process.kill()
+    except (ProcessLookupError, OSError):
+        pass
+    try:
+        await asyncio.wait_for(process.wait(), timeout=5)
+    except (asyncio.TimeoutError, ProcessLookupError):
+        pass
 
 
 async def _execute_command_async(command: str, timeout: int) -> CommandResult:
@@ -453,6 +501,7 @@ async def _execute_command_async(command: str, timeout: int) -> CommandResult:
 
                 process = await asyncio.create_subprocess_shell(
                     wrapped_command,
+                    stdin=subprocess.DEVNULL,
                     stdout=asyncio.subprocess.DEVNULL,
                     stderr=asyncio.subprocess.DEVNULL,
                     shell=True,
@@ -470,10 +519,7 @@ async def _execute_command_async(command: str, timeout: int) -> CommandResult:
                         stderr = f.read()
 
                 except asyncio.TimeoutError:
-                    try:
-                        process.kill()
-                    except Exception:
-                        pass
+                    await _terminate_process(process)
                     duration = str(datetime.now() - start_time)
                     return CommandResult(
                         command=command,
@@ -499,6 +545,7 @@ async def _execute_command_async(command: str, timeout: int) -> CommandResult:
             if platform_info["system"] == "Windows":
                 process = await asyncio.create_subprocess_shell(
                     command,
+                    stdin=subprocess.DEVNULL,
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.PIPE,
                     shell=True,
@@ -506,10 +553,12 @@ async def _execute_command_async(command: str, timeout: int) -> CommandResult:
             else:
                 process = await asyncio.create_subprocess_shell(
                     command,
+                    stdin=subprocess.DEVNULL,
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.PIPE,
                     shell=True,
                     executable="/bin/bash",
+                    start_new_session=True,
                 )
 
             try:
@@ -519,10 +568,7 @@ async def _execute_command_async(command: str, timeout: int) -> CommandResult:
                 return_code = process.returncode
 
             except asyncio.TimeoutError:
-                try:
-                    process.kill()
-                except Exception:
-                    pass
+                await _terminate_process(process)
                 duration = str(datetime.now() - start_time)
                 return CommandResult(
                     command=command,

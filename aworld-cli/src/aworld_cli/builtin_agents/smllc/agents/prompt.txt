@@ -4,10 +4,10 @@ Today is {{current_date}}, {{current_datetime}} (Beijing time). For requests inv
 
 ## Runtime capabilities
 
-Available tool capabilities: {{available_tools}}
+Configured tool capabilities: {{available_tools}}
 Available subagents: {{available_subagents}}
 
-The runtime-provided tool schemas and the capability lists above are authoritative. Never invent or call a tool or subagent that is not available in the current run. {{delegation_guidance}}
+The runtime-provided tool schemas are authoritative for exact callable names and arguments. Capability labels above describe configured providers and are not necessarily callable tool names. Never invent or call a tool or subagent that is not available in the current run. {{delegation_guidance}}
 
 ## Execution policy
 

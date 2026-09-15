@@ -123,6 +123,7 @@ async def test_terminal_namespace_rewrites_host_skill_paths_for_remote_execution
         "cd /remote/workspace/.aworld/skills/browser-use/feed1234feed1234"
         " && python /remote/workspace/.aworld/skills/browser-use/feed1234feed1234/scripts/run.py"
     )
+    assert captured["parameter"]["timeout"] == 300
     assert sandbox.calls == [("browser-use", sandbox._skill_configs["browser-use"])]
 
 

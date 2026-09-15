@@ -32,6 +32,7 @@ from .mac_ui_automation import (
     augment_aworld_agent_builtin_tools,
     augment_aworld_agent_mcp_servers,
 )
+from .sandbox_factory import create_agent_sandbox
 
 # Import SpawnSubagentTool to ensure it's registered in ToolFactory
 from aworld.core.tool.builtin import SpawnSubagentTool  # noqa: F401
@@ -288,7 +289,7 @@ def _build_aworld_sub_agents(sandbox) -> List[BaseAgent]:
         builders.extend(
             [
                 ("developer", lambda: build_developer_swarm(sandbox=sandbox)),
-                ("evaluator", build_evaluator_swarm),
+                ("evaluator", lambda: build_evaluator_swarm(sandbox=sandbox)),
             ]
         )
     else:
@@ -298,10 +299,10 @@ def _build_aworld_sub_agents(sandbox) -> List[BaseAgent]:
         )
     builders.extend(
         [
-            ("diffusion", build_diffusion_swarm),
-            ("avatar", build_avatar_swarm),
-            ("audio", build_audio_swarm),
-            ("image", build_image_swarm),
+            ("diffusion", lambda: build_diffusion_swarm(sandbox=sandbox)),
+            ("avatar", lambda: build_avatar_swarm(sandbox=sandbox)),
+            ("audio", lambda: build_audio_swarm(sandbox=sandbox)),
+            ("image", lambda: build_image_swarm(sandbox=sandbox)),
         ]
     )
 
@@ -398,36 +399,11 @@ def build_aworld_agent(include_skills: Optional[str] = None):
         ext={"skill_resolver_inputs": resolver_inputs},
     )
 
-    # Create sandbox with builtin filesystem and terminal tools (Phase 1)
-    from aworld.sandbox import Sandbox
-
-    mcp_config = {
-        "mcpServers": {
-            "terminal": {
-                "command": sys.executable,
-                "args": ["-m", "examples.gaia.mcp_collections.tools.terminal"],
-                # Runtime-mounted CLI processes need to propagate their Python
-                # module path into the MCP stdio child process.
-                "env": {
-                    "PYTHONPATH": os.environ.get("PYTHONPATH", ""),
-                },
-                "client_session_timeout_seconds": 9999.0,
-            }
-        }
-    }
-
+    # Use the packaged Sandbox providers rather than coupling the CLI agent to
+    # a benchmark example MCP server.
     builtin_tools = augment_aworld_agent_builtin_tools(["filesystem", "terminal"])
     aworld_mcp_servers = augment_aworld_agent_mcp_servers(["terminal"])
-
-    sandbox = Sandbox(
-        mcp_config=mcp_config,
-        builtin_tools=builtin_tools,
-        workspaces=[os.getcwd()]  # Allow current working directory
-    )
-    sandbox.reuse = os.environ.get(
-        "AWORLD_SANDBOX_REUSE",
-        "true",
-    ).lower() in ("true", "1", "yes")
+    sandbox = create_agent_sandbox(builtin_tools)
 
     # Resolve optional collaborators before constructing the root agent so its
     # prompt and tool catalog describe capabilities that actually exist.
@@ -439,7 +415,9 @@ def build_aworld_agent(include_skills: Optional[str] = None):
         *(["async_spawn_subagent"] if sub_agents else []),
         "cron",
     ]
-    prompt_capabilities = [*root_tool_names, *builtin_tools]
+    # Advertise only capabilities the root agent is allowed to use. The
+    # Sandbox may host additional providers for specialized subagents.
+    prompt_capabilities = [*root_tool_names, *aworld_mcp_servers]
 
     # Create the root as a direct executor. Delegation is an optional capability,
     # not its identity, and is exposed only when collaborators were initialized.

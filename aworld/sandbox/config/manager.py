@@ -85,6 +85,7 @@ class ToolConfigManager:
             command=PYTHON_CMD_PLACEHOLDER,
             args=[script_path, "--stdio"],
             env=env or None,
+            cwd=self.workspaces[0] if self.workspaces else None,
         )
 
     def _config_for_mac_ui_automation(self) -> Optional[Dict[str, Any]]:

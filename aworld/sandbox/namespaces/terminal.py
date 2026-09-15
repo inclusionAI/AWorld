@@ -21,7 +21,7 @@ class TerminalNamespace(ToolNamespace):
     async def run_code(
         self,
         code: str,
-        timeout: int = 30,
+        timeout: int = 300,
         output_format: str = "markdown",
     ) -> Dict[str, Any]:
         """Execute shell code."""

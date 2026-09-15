@@ -258,10 +258,10 @@ def test_resolve_explicit_skill_sources_uses_isolated_first_wins_registry(
     ("module", "builder_name", "env_name", "env_value", "agent_class_name", "pass_sandbox"),
     [
         (developer_module, "build_developer_swarm", "DEVELOPER_SKILLS_PATH", "/tmp/dev-skills", "DeveloperAgent", True),
-        (evaluator_module, "build_evaluator_swarm", "EVALUATOR_SKILLS_PATH", "/tmp/evaluator-skills", "MultiTaskEvaluatorAgent", False),
-        (audio_module, "build_audio_swarm", "SKILLS_PATH", "/tmp/audio-skills", "AudioCreatorAgent", False),
-        (image_module, "build_image_swarm", "SKILLS_PATH", "/tmp/image-skills", "ImageCreatorAgent", False),
-        (diffusion_module, "build_diffusion_swarm", "SKILLS_PATH", "/tmp/diffusion-skills", "MultiTaskVideoCreatorAgent", False),
+        (evaluator_module, "build_evaluator_swarm", "EVALUATOR_SKILLS_PATH", "/tmp/evaluator-skills", "MultiTaskEvaluatorAgent", True),
+        (audio_module, "build_audio_swarm", "SKILLS_PATH", "/tmp/audio-skills", "AudioCreatorAgent", True),
+        (image_module, "build_image_swarm", "SKILLS_PATH", "/tmp/image-skills", "ImageCreatorAgent", True),
+        (diffusion_module, "build_diffusion_swarm", "SKILLS_PATH", "/tmp/diffusion-skills", "MultiTaskVideoCreatorAgent", True),
     ],
 )
 def test_smllc_builders_publish_skill_resolver_inputs(
