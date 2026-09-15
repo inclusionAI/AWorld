@@ -132,6 +132,9 @@ from aworld.memory.tool_result_compaction import compact_tool_result_for_memory
 import aworld.runners.hook.agent_hooks
 
 
+DEFAULT_LLM_EXECUTION_TIMEOUT_SECONDS = 360.0
+
+
 class ToolCallParseIssueCode(str, Enum):
     """Provider-neutral reasons why a declared tool call cannot be executed."""
 
@@ -407,7 +410,7 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         event_handler_name: str = None,
         event_driven: bool = True,
         skill_configs: Dict[str, Any] = None,
-        llm_max_attempts: int = 3,
+        llm_max_attempts: int = 2,
         llm_retry_delay: float = 10.0,
         enable_subagent: bool = False,
         subagent_search_paths: List[str] = None,
@@ -425,7 +428,7 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             output_converter: Function to convert ModelResponse to AgentResult.
             tool_aggregate_func: Aggregation strategy for multiple tool results.
             event_handler_name: Custom handlers for certain types of events.
-            llm_max_attempts: Maximum number of attempts to call LLM. Default is 3. Includes stream and non-stream retries with exponential backoff.
+            llm_max_attempts: Maximum number of attempts to call LLM. Default is 2. Includes stream and non-stream retries with exponential backoff.
             llm_retry_delay: Base delay in seconds between retry attempts. Default is 10.0s. Uses exponential backoff (10s, 20s, 40s...).
             enable_subagent: Enable subagent delegation capability. When True, agent can spawn specialized subagents
                              to handle subtasks autonomously. Automatically adds spawn_subagent tool and scans for
@@ -3714,6 +3717,29 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         return messages
 
     async def invoke_model(
+        self, messages: List[Dict[str, str]] = [], message: Message = None, **kwargs
+    ) -> ModelResponse:
+        """Run one complete LLM turn within a bounded wall-clock budget."""
+        try:
+            return await asyncio.wait_for(
+                self._invoke_model_with_retries(
+                    messages=messages,
+                    message=message,
+                    **kwargs,
+                ),
+                timeout=DEFAULT_LLM_EXECUTION_TIMEOUT_SECONDS,
+            )
+        except TimeoutError as exc:
+            logger.error(
+                "LLM execution exceeded the "
+                f"{DEFAULT_LLM_EXECUTION_TIMEOUT_SECONDS:.0f}s total timeout"
+            )
+            raise AWorldRuntimeException(
+                "provider_timeout: LLM execution exceeded the "
+                f"{DEFAULT_LLM_EXECUTION_TIMEOUT_SECONDS:.0f}s total timeout"
+            ) from exc
+
+    async def _invoke_model_with_retries(
         self, messages: List[Dict[str, str]] = [], message: Message = None, **kwargs
     ) -> ModelResponse:
         """Perform LLM call with retry mechanism.
