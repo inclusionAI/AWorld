@@ -41,6 +41,47 @@ class ContinuousExecutor:
         self.start_time: Optional[datetime] = None
         self.response_history: List[str] = []  # Track recent responses for repetition detection
 
+    @staticmethod
+    def _attach_task_response_evidence(
+        result: Dict[str, Any],
+        task_response: Any,
+    ) -> Dict[str, Any]:
+        """Attach trajectory control/data planes even when either is empty.
+
+        Failed runs frequently have an empty inline trajectory but a populated
+        LLM journal or TrajectoryBuildResult.  Gating all evidence on a non-empty
+        trajectory loses the exact counters needed by failure-safe exporters.
+        """
+
+        if task_response is None:
+            return result
+        result["trajectory_capture_mode"] = "task_response"
+
+        trajectory = getattr(task_response, "trajectory", None)
+        if isinstance(trajectory, list):
+            result["trajectory"] = to_serializable(trajectory)
+
+        llm_calls = getattr(task_response, "llm_calls", None)
+        if isinstance(llm_calls, list):
+            result["llm_calls"] = to_serializable(llm_calls)
+
+        for attribute in (
+            "trajectory_build_result",
+            "trajectory_delivery_receipt",
+        ):
+            record = getattr(task_response, attribute, None)
+            if record is None:
+                continue
+            to_dict = getattr(record, "to_dict", None)
+            result[attribute] = to_serializable(
+                to_dict() if callable(to_dict) else record
+            )
+
+        task_status = getattr(task_response, "status", None)
+        if task_status is not None:
+            result["task_status"] = to_serializable(task_status)
+        return result
+
     def _active_steering_runtime(self, *, non_interactive: bool) -> Any | None:
         if non_interactive or not sys.stdin.isatty():
             return None
@@ -311,24 +352,21 @@ class ContinuousExecutor:
                 "immediate_stop": is_complete and bool(task_succeeded) and iteration == 1,
                 "success": bool(task_succeeded),
             }
-            trajectory = getattr(task_response, "trajectory", None)
-            if isinstance(trajectory, list) and trajectory:
-                result["trajectory"] = to_serializable(trajectory)
-                result["trajectory_capture_mode"] = "task_response"
-                llm_calls = getattr(task_response, "llm_calls", None)
-                if isinstance(llm_calls, list) and llm_calls:
-                    result["llm_calls"] = to_serializable(llm_calls)
-            return result
+            return self._attach_task_response_evidence(result, task_response)
             
         except Exception as e:
             self.console.print(f"[red]❌ ({iteration}) Error: {e}[/red]")
-            return {
+            result = {
                 "iteration": iteration,
                 "response": str(e),
                 "cost": 0.0,
                 "completed": False,
                 "success": False
             }
+            return self._attach_task_response_evidence(
+                result,
+                getattr(self.agent_executor, "last_task_response", None),
+            )
     
     async def run_continuous(
         self,

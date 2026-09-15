@@ -4,6 +4,7 @@ import argparse
 import asyncio
 import json
 import os
+import sys
 
 from aworld_cli.runtime_bootstrap import RuntimeBootstrapError, bootstrap_runtime
 
@@ -114,11 +115,18 @@ class RunTopLevelCommand:
 
     def run(self, args, context) -> int | None:
         from aworld_cli.main import (
+            _direct_run_failure_outcome,
             _resolve_agent_dirs,
             _run_direct_mode,
             _self_evolve_config_from_cli_mode,
             _show_banner,
             init_middlewares,
+        )
+        from aworld_cli.run_outcome import (
+            DirectRunErrorCode,
+            DirectRunStage,
+            DirectRunStatus,
+            coerce_direct_run_outcome,
         )
 
         try:
@@ -129,8 +137,18 @@ class RunTopLevelCommand:
                 init_middlewares_fn=init_middlewares,
                 show_banner_fn=_show_banner,
             )
-        except RuntimeBootstrapError:
-            return 1
+        except RuntimeBootstrapError as exc:
+            outcome = _direct_run_failure_outcome(
+                stage=DirectRunStage.ORCHESTRATION,
+                error_code=DirectRunErrorCode.DIRECT_RUN_EXCEPTION,
+                agent_name=getattr(args, "agent", None) or "Aworld",
+                details={"error_type": type(exc).__name__},
+            )
+            return self._finalize_outcome(
+                args=args,
+                agent_name=getattr(args, "agent", None) or "Aworld",
+                outcome=outcome,
+            )
 
         local_dirs = _resolve_agent_dirs(args.agent_dir)
         args_evolve = getattr(args, "evolve", None)
@@ -142,69 +160,162 @@ class RunTopLevelCommand:
         judge_model_profile = getattr(args, "judge_model_profile", None) or global_evolve.judge_model_profile
         agent_name = self._resolve_agent_name(args)
         if agent_name is None:
-            return 1
-
-        summary = asyncio.run(
-            _run_direct_mode(
-                prompt=args.task,
-                agent_name=agent_name,
-                requested_skill_names=args.skill,
-                skill_paths=args.skill_path,
-                max_runs=args.max_runs,
-                max_cost=args.max_cost,
-                max_duration=args.max_duration,
-                completion_signal=args.completion_signal,
-                completion_threshold=args.completion_threshold,
-                non_interactive=args.non_interactive,
-                session_id=args.session_id,
-                remote_backends=args.remote_backend,
-                local_dirs=local_dirs,
-                agent_files=args.agent_file,
-                self_evolve_config=_self_evolve_config_from_cli_mode(
-                    evolve_mode,
-                    judge_agent=judge_agent,
-                    judge_agent_name=judge_agent_name,
-                    judge_backend_ref=judge_backend_ref,
-                    judge_model_profile=judge_model_profile,
-                ),
+            outcome = _direct_run_failure_outcome(
+                stage=DirectRunStage.AGENT_LOAD,
+                error_code=DirectRunErrorCode.AGENT_LOAD_FAILED,
+                agent_name=getattr(args, "agent", None) or "unknown",
+                details={"error_type": "AgentResolutionError"},
             )
-        )
-        if summary is False:
-            return 1
-        if getattr(args, "emit_trajectory", False):
-            from aworld_cli.main import _trajectory_payload_from_direct_run_summary
+            return self._finalize_outcome(
+                args=args,
+                agent_name=getattr(args, "agent", None) or "unknown",
+                outcome=outcome,
+            )
 
+        try:
+            direct_run_result = asyncio.run(
+                _run_direct_mode(
+                    prompt=args.task,
+                    agent_name=agent_name,
+                    requested_skill_names=args.skill,
+                    skill_paths=args.skill_path,
+                    max_runs=args.max_runs,
+                    max_cost=args.max_cost,
+                    max_duration=args.max_duration,
+                    completion_signal=args.completion_signal,
+                    completion_threshold=args.completion_threshold,
+                    non_interactive=args.non_interactive,
+                    session_id=args.session_id,
+                    remote_backends=args.remote_backend,
+                    local_dirs=local_dirs,
+                    agent_files=args.agent_file,
+                    self_evolve_config=_self_evolve_config_from_cli_mode(
+                        evolve_mode,
+                        judge_agent=judge_agent,
+                        judge_agent_name=judge_agent_name,
+                        judge_backend_ref=judge_backend_ref,
+                        judge_model_profile=judge_model_profile,
+                    ),
+                )
+            )
+            outcome = coerce_direct_run_outcome(direct_run_result)
+        except KeyboardInterrupt:
+            outcome = _direct_run_failure_outcome(
+                stage=DirectRunStage.AGENT_EXECUTION,
+                error_code=DirectRunErrorCode.DIRECT_RUN_INTERRUPTED,
+                agent_name=agent_name,
+                status=DirectRunStatus.CANCELLED,
+                process_exit_code=130,
+            )
+        except asyncio.CancelledError:
+            outcome = _direct_run_failure_outcome(
+                stage=DirectRunStage.AGENT_EXECUTION,
+                error_code=DirectRunErrorCode.DIRECT_RUN_CANCELLED,
+                agent_name=agent_name,
+                status=DirectRunStatus.CANCELLED,
+                process_exit_code=130,
+            )
+        except Exception as exc:
+            outcome = _direct_run_failure_outcome(
+                stage=DirectRunStage.ORCHESTRATION,
+                error_code=DirectRunErrorCode.DIRECT_RUN_EXCEPTION,
+                agent_name=agent_name,
+                details={"error_type": type(exc).__name__},
+            )
+
+        return self._finalize_outcome(
+            args=args,
+            agent_name=agent_name,
+            outcome=outcome,
+        )
+
+    @staticmethod
+    def _finalize_outcome(*, args, agent_name: str, outcome) -> int:
+        from aworld_cli.atif import (
+            AtifExportReceipt,
+            AtifExportStatus,
+            build_atif_trajectory,
+            try_write_atif_trajectory,
+        )
+        from aworld_cli.main import _trajectory_payload_from_direct_run_summary
+
+        summary = outcome.summary
+        trajectory_payload = _trajectory_payload_from_direct_run_summary(
+            summary,
+            prompt=args.task,
+            agent_name=agent_name,
+        )
+        trajectory_payload.update(
+            {
+                "trajectory_fidelity": outcome.trajectory_fidelity,
+                "llm_call_count": outcome.llm_call_count,
+                "tool_call_count": outcome.tool_call_count,
+                "action_count": outcome.action_count,
+            }
+        )
+
+        if getattr(args, "emit_trajectory", False):
             print(
                 json.dumps(
-                    _trajectory_payload_from_direct_run_summary(
-                        summary,
-                        prompt=args.task,
-                        agent_name=agent_name,
-                    ),
+                    trajectory_payload,
                     ensure_ascii=False,
                 )
             )
+
         trajectory_output = getattr(args, "trajectory_output", None)
+        export_receipt = AtifExportReceipt(
+            status=AtifExportStatus.NOT_REQUESTED,
+            trajectory_fidelity=outcome.trajectory_fidelity,
+        )
         if trajectory_output:
-            import aworld
+            try:
+                try:
+                    import aworld
 
-            from aworld_cli.atif import build_atif_trajectory, write_atif_trajectory
-            from aworld_cli.main import _trajectory_payload_from_direct_run_summary
+                    agent_version = getattr(aworld, "__version__", "unknown")
+                except Exception:
+                    agent_version = "unknown"
+                run_outcome_payload = outcome.to_dict()
+                trajectory = build_atif_trajectory(
+                    trajectory_payload,
+                    prompt=args.task,
+                    agent_name=agent_name,
+                    agent_version=agent_version,
+                    model_name=os.environ.get("LLM_MODEL_NAME"),
+                    run_outcome=run_outcome_payload,
+                )
+                export_receipt = try_write_atif_trajectory(
+                    trajectory_output,
+                    trajectory,
+                    trajectory_fidelity=outcome.trajectory_fidelity,
+                )
+            except Exception as exc:
+                export_receipt = AtifExportReceipt(
+                    status=AtifExportStatus.FAILED,
+                    trajectory_fidelity=outcome.trajectory_fidelity,
+                    error_code="atif_build_failed",
+                    error_type=type(exc).__name__,
+                )
+            print(
+                "AWORLD_ATIF_EXPORT="
+                + json.dumps(
+                    export_receipt.to_dict(),
+                    ensure_ascii=False,
+                    sort_keys=True,
+                ),
+                file=sys.stderr,
+            )
 
-            trajectory_payload = _trajectory_payload_from_direct_run_summary(
-                summary,
-                prompt=args.task,
-                agent_name=agent_name,
-            )
-            trajectory = build_atif_trajectory(
-                trajectory_payload,
-                prompt=args.task,
-                agent_name=agent_name,
-                agent_version=getattr(aworld, "__version__", "unknown"),
-                model_name=os.environ.get("LLM_MODEL_NAME"),
-            )
-            write_atif_trajectory(trajectory_output, trajectory)
-        return 0
+        print(
+            "AWORLD_RUN_OUTCOME="
+            + json.dumps(
+                outcome.to_dict(atif_export=export_receipt.to_dict()),
+                ensure_ascii=False,
+                sort_keys=True,
+            ),
+            file=sys.stderr,
+        )
+        return outcome.process_exit_code
 
     def _resolve_agent_name(self, args) -> str | None:
         agent_name = args.agent

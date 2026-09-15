@@ -6,7 +6,9 @@ import json
 import os
 import re
 import uuid
+from dataclasses import dataclass
 from datetime import datetime, timezone
+from enum import Enum
 from pathlib import Path
 from typing import Any
 
@@ -118,6 +120,73 @@ def _native_agent_step(
     return step
 
 
+def _as_nonnegative_int(value: Any) -> int | None:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        return None
+    return value
+
+
+def _count_tool_calls(native_items: list[dict[str, Any]]) -> int:
+    count = 0
+    for item in native_items:
+        calls = _as_dict(item.get("action")).get("tool_calls")
+        if isinstance(calls, list):
+            count += sum(1 for call in calls if isinstance(call, dict))
+    return count
+
+
+def _run_metric(
+    run_outcome: dict[str, Any],
+    trajectory_payload: dict[str, Any],
+    name: str,
+    fallback: int,
+) -> int:
+    for source in (run_outcome, trajectory_payload):
+        value = _as_nonnegative_int(source.get(name))
+        if value is not None:
+            return value
+    return fallback
+
+
+class AtifExportStatus(str, Enum):
+    PERSISTED = "persisted"
+    FAILED = "failed"
+    NOT_REQUESTED = "not_requested"
+
+
+@dataclass(frozen=True)
+class AtifExportReceipt:
+    """Sanitized control-plane result for one ATIF output sink."""
+
+    status: AtifExportStatus
+    trajectory_fidelity: str
+    error_code: str | None = None
+    error_type: str | None = None
+
+    SCHEMA_VERSION = "aworld.atif.export.v1"
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "status", AtifExportStatus(self.status))
+        if self.status is AtifExportStatus.FAILED and not self.error_code:
+            raise ValueError("failed ATIF export requires error_code")
+        if self.status is not AtifExportStatus.FAILED and (
+            self.error_code is not None or self.error_type is not None
+        ):
+            raise ValueError("ATIF export errors are only valid for failed receipts")
+
+    def to_dict(self) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "schema_version": self.SCHEMA_VERSION,
+            "status": self.status.value,
+            "trajectory_fidelity": self.trajectory_fidelity,
+        }
+        if self.error_code is not None:
+            payload["error_code"] = self.error_code
+        if self.error_type is not None:
+            payload["error_type"] = self.error_type
+        return payload
+
+
 def build_atif_trajectory(
     trajectory_payload: dict[str, Any],
     *,
@@ -125,8 +194,10 @@ def build_atif_trajectory(
     agent_name: str,
     agent_version: str,
     model_name: str | None = None,
+    run_outcome: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Convert AWorld's direct-run trajectory payload to ATIF v1.7."""
+    normalized_outcome = _as_dict(run_outcome)
     native_items = [
         item
         for item in trajectory_payload.get("trajectory") or []
@@ -158,7 +229,10 @@ def build_atif_trajectory(
             )
         )
 
-    if len(steps) == 1:
+    captured_agent_steps = [step for step in steps if step.get("source") == "agent"]
+    semantic_status = str(normalized_outcome.get("semantic_status") or "succeeded")
+    completed = semantic_status == "succeeded"
+    if len(steps) == 1 and completed:
         steps.append(
             {
                 "step_id": 2,
@@ -168,6 +242,38 @@ def build_atif_trajectory(
             }
         )
 
+    inferred_llm_calls = len(trajectory_payload.get("llm_calls") or [])
+    if not inferred_llm_calls:
+        inferred_llm_calls = len(captured_agent_steps)
+    llm_call_count = _run_metric(
+        normalized_outcome,
+        trajectory_payload,
+        "llm_call_count",
+        inferred_llm_calls,
+    )
+    tool_call_count = _run_metric(
+        normalized_outcome,
+        trajectory_payload,
+        "tool_call_count",
+        _count_tool_calls(native_items),
+    )
+    action_count = _run_metric(
+        normalized_outcome,
+        trajectory_payload,
+        "action_count",
+        len(captured_agent_steps),
+    )
+
+    # Native captured steps each represent one provider action.  Reconcile the
+    # per-step ATIF counters to the authoritative control-plane total without
+    # fabricating extra assistant messages on partial failures.
+    remaining_llm_calls = llm_call_count
+    for step in captured_agent_steps:
+        step["llm_call_count"] = 1 if remaining_llm_calls > 0 else 0
+        remaining_llm_calls = max(0, remaining_llm_calls - 1)
+    if captured_agent_steps and remaining_llm_calls:
+        captured_agent_steps[-1]["llm_call_count"] += remaining_llm_calls
+
     agent: dict[str, Any] = {
         "name": agent_name,
         "version": agent_version,
@@ -175,18 +281,45 @@ def build_atif_trajectory(
     if model_name:
         agent["model_name"] = model_name
 
+    trajectory_fidelity = str(
+        normalized_outcome.get("trajectory_fidelity")
+        or trajectory_payload.get("trajectory_fidelity")
+        or ("complete" if completed else "partial")
+    )
+    final_metrics: dict[str, Any] = {
+        "total_steps": len(steps),
+        "extra": {
+            "llm_call_count": llm_call_count,
+            "tool_call_count": tool_call_count,
+            "action_count": action_count,
+        },
+    }
+    aworld_projection: dict[str, Any] = {
+        "completion_state": "complete" if completed else "incomplete",
+        "trajectory_fidelity": trajectory_fidelity,
+        "llm_call_count": llm_call_count,
+        "tool_call_count": tool_call_count,
+        "action_count": action_count,
+        "last_successful_checkpoint": normalized_outcome.get(
+            "last_successful_checkpoint"
+        ),
+    }
+    if normalized_outcome:
+        aworld_projection["run_outcome"] = normalized_outcome
+
     return {
         "schema_version": "ATIF-v1.7",
         "session_id": session_id,
         "agent": agent,
         "steps": steps,
-        "final_metrics": {"total_steps": len(steps)},
+        "final_metrics": final_metrics,
         "extra": {
             "producer": "aworld-cli",
             "trajectory_capture_mode": trajectory_payload.get(
                 "trajectory_capture_mode",
                 "unknown",
             ),
+            "aworld": aworld_projection,
         },
     }
 
@@ -196,8 +329,46 @@ def write_atif_trajectory(path: str | os.PathLike[str], trajectory: dict[str, An
     output_path = Path(path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     temporary_path = output_path.with_name(f".{output_path.name}.{uuid.uuid4().hex}.tmp")
-    temporary_path.write_text(
-        json.dumps(trajectory, ensure_ascii=False, indent=2) + "\n",
-        encoding="utf-8",
+    try:
+        with temporary_path.open("w", encoding="utf-8") as stream:
+            stream.write(json.dumps(trajectory, ensure_ascii=False, indent=2) + "\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+        temporary_path.replace(output_path)
+    finally:
+        try:
+            temporary_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
+def try_write_atif_trajectory(
+    path: str | os.PathLike[str],
+    trajectory: dict[str, Any],
+    *,
+    trajectory_fidelity: str,
+) -> AtifExportReceipt:
+    """Persist ATIF without allowing sink failure to alter run semantics."""
+
+    try:
+        write_atif_trajectory(path, trajectory)
+    except Exception as exc:
+        return AtifExportReceipt(
+            status=AtifExportStatus.FAILED,
+            trajectory_fidelity=trajectory_fidelity,
+            error_code="atif_write_failed",
+            error_type=type(exc).__name__,
+        )
+    return AtifExportReceipt(
+        status=AtifExportStatus.PERSISTED,
+        trajectory_fidelity=trajectory_fidelity,
     )
-    temporary_path.replace(output_path)
+
+
+__all__ = [
+    "AtifExportReceipt",
+    "AtifExportStatus",
+    "build_atif_trajectory",
+    "try_write_atif_trajectory",
+    "write_atif_trajectory",
+]

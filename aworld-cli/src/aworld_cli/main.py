@@ -15,13 +15,27 @@ from typing import Optional
 
 from aworld.plugins.discovery import discover_plugins
 
+from .run_outcome import (
+    DirectRunErrorCode,
+    DirectRunOutcome,
+    DirectRunStage,
+    DirectRunStatus,
+)
+
 
 _AWORLD_PRE_PROVIDER_MAX_ATTEMPTS = 2
 
 
-def _direct_run_has_provider_evidence(summary: dict | None) -> bool:
+def _direct_run_summary(value: object) -> dict | None:
+    if isinstance(value, DirectRunOutcome):
+        return value.summary
+    return value if isinstance(value, dict) else None
+
+
+def _direct_run_has_provider_evidence(summary: object) -> bool:
     """Return whether a direct run captured evidence that execution reached the model."""
-    if not isinstance(summary, dict):
+    summary = _direct_run_summary(summary)
+    if summary is None:
         return False
     for result in summary.get("results") or []:
         if not isinstance(result, dict):
@@ -35,9 +49,10 @@ def _direct_run_has_provider_evidence(summary: dict | None) -> bool:
     return False
 
 
-def _direct_run_succeeded(summary: dict | None) -> bool:
+def _direct_run_succeeded(summary: object) -> bool:
     """Return whether the direct executor completed at least one successful run."""
-    if not isinstance(summary, dict):
+    summary = _direct_run_summary(summary)
+    if summary is None:
         return False
     results = summary.get("results") or []
     return bool(results) and all(
@@ -47,12 +62,13 @@ def _direct_run_succeeded(summary: dict | None) -> bool:
 
 
 def _trajectory_from_direct_run_summary(
-    summary: dict | None,
+    summary: object,
     *,
     prompt: str,
     agent_name: str,
 ) -> list[dict]:
-    if not isinstance(summary, dict):
+    summary = _direct_run_summary(summary)
+    if summary is None:
         return []
     trajectory: list[dict] = []
     for index, result in enumerate(summary.get("results") or [], start=1):
@@ -82,33 +98,59 @@ def _trajectory_from_direct_run_summary(
 
 
 def _trajectory_payload_from_direct_run_summary(
-    summary: dict | None,
+    summary: object,
     *,
     prompt: str,
     agent_name: str,
 ) -> dict:
-    if isinstance(summary, dict):
+    summary = _direct_run_summary(summary)
+    if summary is not None:
         task_response_trajectory: list[dict] = []
         llm_calls: list[dict] = []
+        trajectory_build_results: list[dict] = []
+        saw_task_response_capture = False
+        fidelities: list[str] = []
         for result in summary.get("results") or []:
             if not isinstance(result, dict):
                 continue
             trajectory = result.get("trajectory")
-            if isinstance(trajectory, list) and trajectory:
+            if isinstance(trajectory, list):
+                saw_task_response_capture = True
                 task_response_trajectory.extend(
                     item for item in trajectory if isinstance(item, dict)
                 )
             raw_llm_calls = result.get("llm_calls")
             if isinstance(raw_llm_calls, list):
+                saw_task_response_capture = True
                 llm_calls.extend(item for item in raw_llm_calls if isinstance(item, dict))
+            if result.get("trajectory_capture_mode") == "task_response":
+                saw_task_response_capture = True
+            raw_build_result = result.get("trajectory_build_result")
+            if isinstance(raw_build_result, dict):
+                saw_task_response_capture = True
+                trajectory_build_results.append(raw_build_result)
+                if raw_build_result.get("fidelity"):
+                    fidelities.append(str(raw_build_result["fidelity"]))
+            elif callable(getattr(raw_build_result, "to_dict", None)):
+                saw_task_response_capture = True
+                serialized_build_result = raw_build_result.to_dict()
+                if isinstance(serialized_build_result, dict):
+                    trajectory_build_results.append(serialized_build_result)
+                    if serialized_build_result.get("fidelity"):
+                        fidelities.append(str(serialized_build_result["fidelity"]))
 
-        if task_response_trajectory:
+        if saw_task_response_capture:
             payload = {
                 "trajectory": task_response_trajectory,
                 "trajectory_capture_mode": "task_response",
             }
-            if llm_calls:
-                payload["llm_calls"] = llm_calls
+            payload["llm_calls"] = llm_calls
+            if trajectory_build_results:
+                payload["trajectory_build_results"] = trajectory_build_results
+            if any(value in {"partial", "placeholder", "build_failed"} for value in fidelities):
+                payload["trajectory_fidelity"] = "partial"
+            elif fidelities and all(value == "complete" for value in fidelities):
+                payload["trajectory_fidelity"] = "complete"
             return payload
 
     return {
@@ -1119,16 +1161,22 @@ def _emit_direct_run_failure(
     error_code: str,
     agent_name: str,
     details: Optional[dict] = None,
-) -> None:
+    summary: dict | None = None,
+    status: DirectRunStatus = DirectRunStatus.INFRASTRUCTURE_FAILED,
+) -> dict:
     """Emit a stable failure record that benchmark adapters can preserve."""
+    metrics = DirectRunOutcome.from_summary(summary, status=status)
     payload = {
         "schema_version": "aworld.run.failure.v1",
         "status": "failed",
         "stage": stage,
         "error_code": error_code,
         "agent_name": agent_name,
-        "trajectory_fidelity": "unavailable",
-        "llm_call_count": 0,
+        "trajectory_fidelity": metrics.trajectory_fidelity,
+        "llm_call_count": metrics.llm_call_count,
+        "tool_call_count": metrics.tool_call_count,
+        "action_count": metrics.action_count,
+        "last_successful_checkpoint": metrics.last_successful_checkpoint,
     }
     if details:
         payload["details"] = details
@@ -1136,6 +1184,75 @@ def _emit_direct_run_failure(
         "AWORLD_RUN_FAILURE=" + json.dumps(payload, ensure_ascii=False, sort_keys=True),
         file=sys.stderr,
     )
+    return payload
+
+
+def _direct_run_failure_outcome(
+    *,
+    stage: DirectRunStage | str,
+    error_code: DirectRunErrorCode | str,
+    agent_name: str,
+    details: Optional[dict] = None,
+    summary: dict | None = None,
+    status: DirectRunStatus = DirectRunStatus.INFRASTRUCTURE_FAILED,
+    process_exit_code: int = 1,
+) -> DirectRunOutcome:
+    normalized_stage = stage.value if isinstance(stage, DirectRunStage) else str(stage)
+    normalized_error = (
+        error_code.value if isinstance(error_code, DirectRunErrorCode) else str(error_code)
+    )
+    failure = _emit_direct_run_failure(
+        stage=normalized_stage,
+        error_code=normalized_error,
+        agent_name=agent_name,
+        details=details,
+        summary=summary,
+        status=status,
+    )
+    return DirectRunOutcome.from_summary(
+        summary,
+        status=status,
+        failure_record=failure,
+        process_exit_code=process_exit_code,
+    )
+
+
+def _partial_summary_from_agent_executor(agent_executor: object) -> dict | None:
+    """Recover the latest finalized TaskResponse after orchestration failure."""
+
+    task_response = getattr(agent_executor, "last_task_response", None)
+    if task_response is None:
+        return None
+    result = {
+        "iteration": 1,
+        "response": "",
+        "cost": 0.0,
+        "completed": False,
+        "success": False,
+    }
+    try:
+        ContinuousExecutor._attach_task_response_evidence(result, task_response)
+    except Exception:
+        return None
+    return {
+        "total_runs": 1,
+        "successful_runs": 0,
+        "total_cost": 0.0,
+        "results": [result],
+    }
+
+
+def _prefer_captured_summary(
+    summary: dict | None,
+    *,
+    agent_executor: object,
+) -> dict | None:
+    recovered = _partial_summary_from_agent_executor(agent_executor)
+    if recovered is None:
+        return summary
+    if summary is None or not _direct_run_has_provider_evidence(summary):
+        return recovered
+    return summary
 
 
 async def _run_direct_mode(
@@ -1194,32 +1311,39 @@ async def _run_direct_mode(
                 print(f"⚠️ Failed to load agent file {agent_file}: {e}")
     
     # Use CliRuntime to load agents and create executor
-    runtime = CliRuntime(
-        remote_backends=remote_backends, 
-        local_dirs=local_dirs,
-        session_id=session_id,
-        resume_record=resume_record,
-        session_store=session_store,
-        require_same_resume_agent=require_same_resume_agent,
-        resume_cwd=resume_cwd,
-        fail_on_missing_agent=fail_on_missing_agent,
-        self_evolve_config=self_evolve_config,
-        skill_paths=skill_paths,
-    )
+    try:
+        runtime = CliRuntime(
+            remote_backends=remote_backends,
+            local_dirs=local_dirs,
+            session_id=session_id,
+            resume_record=resume_record,
+            session_store=session_store,
+            require_same_resume_agent=require_same_resume_agent,
+            resume_cwd=resume_cwd,
+            fail_on_missing_agent=fail_on_missing_agent,
+            self_evolve_config=self_evolve_config,
+            skill_paths=skill_paths,
+        )
+    except Exception as exc:
+        return _direct_run_failure_outcome(
+            stage=DirectRunStage.AGENT_LOAD,
+            error_code=DirectRunErrorCode.AGENT_LOAD_FAILED,
+            agent_name=agent_name,
+            details={"error_type": type(exc).__name__, "message": str(exc)[:1000]},
+        )
     try:
         all_agents = await runtime._load_agents()
     except Exception as exc:
         print(f"❌ Error: Failed to load agents: {type(exc).__name__}: {exc}")
-        _emit_direct_run_failure(
-            stage="agent_load",
-            error_code="agent_load_failed",
+        return _direct_run_failure_outcome(
+            stage=DirectRunStage.AGENT_LOAD,
+            error_code=DirectRunErrorCode.AGENT_LOAD_FAILED,
             agent_name=agent_name,
             details={
                 "error_type": type(exc).__name__,
                 "message": str(exc)[:1000],
             },
         )
-        return False
     # Find the requested agent
     selected_agent = None
     for agent in all_agents:
@@ -1235,50 +1359,59 @@ async def _run_direct_mode(
         load_failures = getattr(runtime, "_agent_load_failures", None)
         if load_failures:
             failure_details["load_failures"] = load_failures
-        _emit_direct_run_failure(
-            stage="agent_load",
-            error_code="agent_not_found",
+        return _direct_run_failure_outcome(
+            stage=DirectRunStage.AGENT_LOAD,
+            error_code=DirectRunErrorCode.AGENT_NOT_FOUND,
             agent_name=agent_name,
             details=failure_details,
         )
-        return False
     
     # Create agent executor using CliRuntime (session_id is already passed to runtime)
-    from aworld.core.scheduler import get_scheduler
-    runtime._scheduler = get_scheduler()
-    runtime._bind_scheduler_default_agent(selected_agent.name)
     try:
+        from aworld.core.scheduler import get_scheduler
+
+        runtime._scheduler = get_scheduler()
+        runtime._bind_scheduler_default_agent(selected_agent.name)
         agent_executor = await runtime._create_executor(selected_agent)
     except Exception as exc:
         print(
             f"❌ Error: Failed to create executor for agent '{agent_name}': "
             f"{type(exc).__name__}: {exc}"
         )
-        _emit_direct_run_failure(
-            stage="executor_create",
-            error_code="executor_creation_failed",
+        return _direct_run_failure_outcome(
+            stage=DirectRunStage.EXECUTOR_CREATE,
+            error_code=DirectRunErrorCode.EXECUTOR_CREATION_FAILED,
             agent_name=agent_name,
             details={
                 "error_type": type(exc).__name__,
                 "message": str(exc)[:1000],
             },
         )
-        return False
 
     if not agent_executor:
         print(f"❌ Error: Failed to create executor for agent '{agent_name}'")
-        _emit_direct_run_failure(
-            stage="executor_create",
-            error_code="executor_creation_failed",
+        return _direct_run_failure_outcome(
+            stage=DirectRunStage.EXECUTOR_CREATE,
+            error_code=DirectRunErrorCode.EXECUTOR_CREATION_FAILED,
             agent_name=agent_name,
         )
-        return False
 
     # Match interactive mode so direct runs can access runtime-scoped features
     # such as steering checkpoints and HUD state.
-    agent_executor._base_runtime = runtime
-    agent_executor._session_mode = session_mode
-    runtime._restore_executor_session(agent_executor, current_agent_name=selected_agent.name)
+    try:
+        agent_executor._base_runtime = runtime
+        agent_executor._session_mode = session_mode
+        runtime._restore_executor_session(
+            agent_executor,
+            current_agent_name=selected_agent.name,
+        )
+    except Exception as exc:
+        return _direct_run_failure_outcome(
+            stage=DirectRunStage.EXECUTOR_CREATE,
+            error_code=DirectRunErrorCode.EXECUTOR_CREATION_FAILED,
+            agent_name=agent_name,
+            details={"error_type": type(exc).__name__, "message": str(exc)[:1000]},
+        )
     restored_replay = getattr(agent_executor, "_aworld_cli_restored_transcript", None)
     restored_text = getattr(restored_replay, "rendered_text", None)
     if restored_text:
@@ -1329,57 +1462,96 @@ async def _run_direct_mode(
         _AWORLD_PRE_PROVIDER_MAX_ATTEMPTS if require_provider_evidence else 1
     )
     summary = None
-    for provider_attempt in range(1, max_provider_attempts + 1):
-        summary = await continuous_executor.run_continuous(
-            prompt=multimodal_prompt,
-            agent_name=agent_name,
-            requested_skill_names=requested_skill_names,
-            non_interactive=non_interactive,
-            max_runs=max_runs,
-            max_cost=max_cost,
-            max_duration=max_duration,
-            completion_signal=completion_signal,
-            completion_threshold=completion_threshold,
-            show_start_banner=show_start_banner,
-            show_iteration_header=show_iteration_header,
-            echo_prompt_as_turn=echo_prompt_as_turn,
-        )
-        if not require_provider_evidence or _direct_run_has_provider_evidence(summary):
-            break
-        if provider_attempt < max_provider_attempts:
-            print(
-                "⚠️ Aworld produced no provider-call evidence; retrying task "
-                f"startup ({provider_attempt}/{max_provider_attempts})",
-                file=sys.stderr,
+    try:
+        for provider_attempt in range(1, max_provider_attempts + 1):
+            summary = await continuous_executor.run_continuous(
+                prompt=multimodal_prompt,
+                agent_name=agent_name,
+                requested_skill_names=requested_skill_names,
+                non_interactive=non_interactive,
+                max_runs=max_runs,
+                max_cost=max_cost,
+                max_duration=max_duration,
+                completion_signal=completion_signal,
+                completion_threshold=completion_threshold,
+                show_start_banner=show_start_banner,
+                show_iteration_header=show_iteration_header,
+                echo_prompt_as_turn=echo_prompt_as_turn,
             )
-            await asyncio.sleep(0)
-    else:
-        _emit_direct_run_failure(
-            stage="provider_start",
-            error_code="provider_call_not_captured",
-            agent_name=agent_name,
-            details={
-                "attempts": max_provider_attempts,
-                "trajectory_capture_mode": "summary_synthetic",
-            },
+            if not require_provider_evidence or _direct_run_has_provider_evidence(summary):
+                break
+            if provider_attempt < max_provider_attempts:
+                print(
+                    "⚠️ Aworld produced no provider-call evidence; retrying task "
+                    f"startup ({provider_attempt}/{max_provider_attempts})",
+                    file=sys.stderr,
+                )
+                await asyncio.sleep(0)
+        else:
+            return _direct_run_failure_outcome(
+                stage=DirectRunStage.PROVIDER_START,
+                error_code=DirectRunErrorCode.PROVIDER_CALL_NOT_CAPTURED,
+                agent_name=agent_name,
+                details={
+                    "attempts": max_provider_attempts,
+                    "trajectory_capture_mode": "summary_synthetic",
+                },
+                summary=summary,
+            )
+    except asyncio.CancelledError:
+        summary = _prefer_captured_summary(
+            summary,
+            agent_executor=agent_executor,
         )
-        return False
+        return _direct_run_failure_outcome(
+            stage=DirectRunStage.AGENT_EXECUTION,
+            error_code=DirectRunErrorCode.DIRECT_RUN_CANCELLED,
+            agent_name=agent_name,
+            summary=summary,
+            status=DirectRunStatus.CANCELLED,
+            process_exit_code=130,
+        )
+    except Exception as exc:
+        summary = _prefer_captured_summary(
+            summary,
+            agent_executor=agent_executor,
+        )
+        return _direct_run_failure_outcome(
+            stage=DirectRunStage.AGENT_EXECUTION,
+            error_code=DirectRunErrorCode.DIRECT_RUN_EXCEPTION,
+            agent_name=agent_name,
+            details={"error_type": type(exc).__name__},
+            summary=summary,
+        )
     if not _direct_run_succeeded(summary):
-        _emit_direct_run_failure(
-            stage="agent_execution",
-            error_code="agent_task_failed",
+        return _direct_run_failure_outcome(
+            stage=DirectRunStage.AGENT_EXECUTION,
+            error_code=DirectRunErrorCode.AGENT_TASK_FAILED,
             agent_name=agent_name,
             details={"provider_evidence": True},
+            summary=summary,
+            status=DirectRunStatus.TASK_FAILED,
         )
-        return False
     drain_pending_self_evolve_jobs = getattr(
         runtime,
         "_drain_pending_self_evolve_jobs",
         None,
     )
     if callable(drain_pending_self_evolve_jobs):
-        await drain_pending_self_evolve_jobs()
-    return summary
+        try:
+            await drain_pending_self_evolve_jobs()
+        except Exception as exc:
+            return _direct_run_failure_outcome(
+                stage=DirectRunStage.ORCHESTRATION,
+                error_code=DirectRunErrorCode.DIRECT_RUN_EXCEPTION,
+                agent_name=agent_name,
+                details={"error_type": type(exc).__name__},
+                summary=summary,
+            )
+    return DirectRunOutcome.from_summary(
+        summary,
+        status=DirectRunStatus.SUCCEEDED,
+    )
 
 
 if __name__ == "__main__":

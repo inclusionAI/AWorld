@@ -113,3 +113,44 @@ async def test_run_iteration_propagates_failed_task_response() -> None:
     assert result["success"] is False
     assert result["completed"] is False
     assert result["immediate_stop"] is False
+
+
+@pytest.mark.asyncio
+async def test_run_iteration_preserves_control_plane_when_inline_trajectory_is_empty() -> None:
+    async def fake_chat(prompt: str, **kwargs):
+        return "Task fail, cause: provider_timeout"
+
+    build_result = SimpleNamespace(
+        to_dict=lambda: {
+            "status": "partial",
+            "fidelity": "partial",
+            "llm_call_count": 4,
+            "tool_call_count": 1,
+            "completed_updates": 2,
+            "persisted_items": 0,
+            "source_high_watermark": "event-8",
+        }
+    )
+    fake_executor = SimpleNamespace(
+        chat=fake_chat,
+        session_id="sess-1",
+        last_task_response=SimpleNamespace(
+            success=False,
+            status="failed",
+            trajectory=[],
+            llm_calls=[{"request_id": f"request-{index}"} for index in range(4)],
+            trajectory_build_result=build_result,
+            trajectory_delivery_receipt=None,
+        ),
+    )
+    continuous = ContinuousExecutor(
+        fake_executor,
+        console=Console(file=StringIO(), force_terminal=False),
+    )
+
+    result = await continuous.run_iteration(1, "hello", agent_name="Aworld")
+
+    assert result["trajectory_capture_mode"] == "task_response"
+    assert result["trajectory"] == []
+    assert len(result["llm_calls"]) == 4
+    assert result["trajectory_build_result"]["source_high_watermark"] == "event-8"

@@ -1,9 +1,11 @@
+import asyncio
 import json
 from types import SimpleNamespace
 
 import pytest
 
 from aworld_cli import main as main_module
+from aworld_cli.main import DirectRunOutcome, DirectRunStatus
 from aworld_cli.top_level_commands.run_cmd import RunTopLevelCommand
 
 
@@ -13,8 +15,13 @@ def _failure_payload(stderr: str) -> dict:
     return json.loads(line.removeprefix(marker))
 
 
+def _marker_payload(stderr: str, marker: str) -> dict:
+    line = next(line for line in stderr.splitlines() if line.startswith(marker))
+    return json.loads(line.removeprefix(marker))
+
+
 @pytest.mark.asyncio
-async def test_direct_run_reports_agent_load_failure_and_returns_false(
+async def test_direct_run_reports_agent_load_failure_and_returns_typed_outcome(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
@@ -32,16 +39,20 @@ async def test_direct_run_reports_agent_load_failure_and_returns_false(
         agent_name="Aworld",
     )
 
-    assert succeeded is False
+    assert succeeded.status is DirectRunStatus.INFRASTRUCTURE_FAILED
+    assert succeeded.process_exit_code == 1
     payload = _failure_payload(capsys.readouterr().err)
     assert payload == {
         "agent_name": "Aworld",
         "details": {"available_agents": ["OtherAgent"]},
         "error_code": "agent_not_found",
+        "action_count": 0,
+        "last_successful_checkpoint": None,
         "llm_call_count": 0,
         "schema_version": "aworld.run.failure.v1",
         "stage": "agent_load",
         "status": "failed",
+        "tool_call_count": 0,
         "trajectory_fidelity": "unavailable",
     }
 
@@ -72,7 +83,7 @@ async def test_direct_run_reports_executor_creation_failure(
         agent_name="Aworld",
     )
 
-    assert succeeded is False
+    assert succeeded.status is DirectRunStatus.INFRASTRUCTURE_FAILED
     payload = _failure_payload(capsys.readouterr().err)
     assert payload["error_code"] == "executor_creation_failed"
     assert payload["stage"] == "executor_create"
@@ -99,7 +110,7 @@ async def test_direct_run_classifies_agent_loader_exception(
         agent_name="Aworld",
     )
 
-    assert succeeded is False
+    assert succeeded.status is DirectRunStatus.INFRASTRUCTURE_FAILED
     payload = _failure_payload(capsys.readouterr().err)
     assert payload["error_code"] == "agent_load_failed"
     assert payload["stage"] == "agent_load"
@@ -145,6 +156,310 @@ def test_run_command_returns_nonzero_when_direct_run_does_not_start(
     )
 
     assert exit_code == 1
+
+
+def test_run_command_writes_minimal_atif_for_pre_execution_failure(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    tmp_path,
+) -> None:
+    outcome = DirectRunOutcome.from_summary(
+        None,
+        status=DirectRunStatus.INFRASTRUCTURE_FAILED,
+        failure_record={
+            "stage": "agent_load",
+            "error_code": "agent_not_found",
+        },
+    )
+
+    async def failed_direct_run(**_kwargs):
+        return outcome
+
+    monkeypatch.setattr(main_module, "_run_direct_mode", failed_direct_run)
+    monkeypatch.setattr(
+        "aworld_cli.top_level_commands.run_cmd.bootstrap_runtime",
+        lambda **_kwargs: None,
+    )
+    output_path = tmp_path / "trajectory.json"
+    args = SimpleNamespace(
+        task="test",
+        agent="Aworld",
+        skill=None,
+        max_runs=None,
+        max_cost=None,
+        max_duration=None,
+        completion_signal=None,
+        completion_threshold=3,
+        non_interactive=True,
+        session_id=None,
+        env_file=".env",
+        remote_backend=None,
+        agent_dir=None,
+        agent_file=None,
+        skill_path=None,
+        emit_trajectory=False,
+        trajectory_output=str(output_path),
+    )
+
+    exit_code = RunTopLevelCommand().run(
+        args,
+        SimpleNamespace(argv=("aworld-cli", "run")),
+    )
+
+    assert exit_code == 1
+    trajectory = json.loads(output_path.read_text(encoding="utf-8"))
+    assert trajectory["steps"] == [
+        {"step_id": 1, "source": "user", "message": "test"}
+    ]
+    projection = trajectory["extra"]["aworld"]
+    assert projection["completion_state"] == "incomplete"
+    assert projection["trajectory_fidelity"] == "unavailable"
+    stderr = capsys.readouterr().err
+    assert _marker_payload(stderr, "AWORLD_ATIF_EXPORT=")["status"] == "persisted"
+    assert _marker_payload(stderr, "AWORLD_RUN_OUTCOME=")["process_exit_code"] == 1
+
+
+def test_run_command_writes_partial_atif_before_returning_task_failure(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    tmp_path,
+) -> None:
+    summary = {
+        "results": [
+            {
+                "iteration": 1,
+                "response": "failed",
+                "success": False,
+                "completed": False,
+                "trajectory_capture_mode": "task_response",
+                "trajectory": [
+                    {
+                        "meta": {"session_id": "session-1", "step": 1},
+                        "action": {
+                            "content": "Attempted the task.",
+                            "tool_calls": [
+                                {
+                                    "id": "tool-1",
+                                    "function": {
+                                        "name": "execute_command",
+                                        "arguments": {"command": "false"},
+                                    },
+                                }
+                            ],
+                        },
+                    }
+                ],
+                "llm_calls": [
+                    {"request_id": "request-1"},
+                    {"request_id": "request-2"},
+                ],
+                "trajectory_build_result": {
+                    "fidelity": "partial",
+                    "llm_call_count": 2,
+                    "tool_call_count": 1,
+                },
+            }
+        ]
+    }
+    outcome = DirectRunOutcome.from_summary(
+        summary,
+        status=DirectRunStatus.TASK_FAILED,
+        failure_record={
+            "schema_version": "aworld.run.failure.v1",
+            "status": "failed",
+            "stage": "agent_execution",
+            "error_code": "agent_task_failed",
+            "agent_name": "Aworld",
+        },
+    )
+
+    async def failed_direct_run(**_kwargs):
+        return outcome
+
+    monkeypatch.setattr(main_module, "_run_direct_mode", failed_direct_run)
+    monkeypatch.setattr(
+        "aworld_cli.top_level_commands.run_cmd.bootstrap_runtime",
+        lambda **_kwargs: None,
+    )
+    output_path = tmp_path / "trajectory.json"
+    args = SimpleNamespace(
+        task="test",
+        agent="Aworld",
+        skill=None,
+        max_runs=None,
+        max_cost=None,
+        max_duration=None,
+        completion_signal=None,
+        completion_threshold=3,
+        non_interactive=True,
+        session_id=None,
+        env_file=".env",
+        remote_backend=None,
+        agent_dir=None,
+        agent_file=None,
+        skill_path=None,
+        emit_trajectory=False,
+        trajectory_output=str(output_path),
+    )
+
+    exit_code = RunTopLevelCommand().run(
+        args,
+        SimpleNamespace(argv=("aworld-cli", "run")),
+    )
+
+    assert exit_code == 1
+    trajectory = json.loads(output_path.read_text(encoding="utf-8"))
+    assert trajectory["extra"]["aworld"]["run_outcome"]["semantic_status"] == "task_failed"
+    assert trajectory["extra"]["aworld"]["llm_call_count"] == 2
+    assert trajectory["extra"]["aworld"]["tool_call_count"] == 1
+    stderr = capsys.readouterr().err
+    export = _marker_payload(stderr, "AWORLD_ATIF_EXPORT=")
+    assert export["status"] == "persisted"
+    final_outcome = _marker_payload(stderr, "AWORLD_RUN_OUTCOME=")
+    assert final_outcome["semantic_status"] == "task_failed"
+    assert final_outcome["atif_export"]["status"] == "persisted"
+
+
+def test_run_command_export_failure_does_not_change_success_semantics(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    tmp_path,
+) -> None:
+    outcome = DirectRunOutcome.from_summary(
+        {
+            "results": [
+                {
+                    "success": True,
+                    "completed": True,
+                    "trajectory_capture_mode": "task_response",
+                    "trajectory": [{"meta": {"step": 1}, "action": {"content": "done"}}],
+                    "llm_calls": [{"request_id": "request-1"}],
+                }
+            ]
+        },
+        status=DirectRunStatus.SUCCEEDED,
+    )
+
+    async def successful_direct_run(**_kwargs):
+        return outcome
+
+    def fail_write(*_args, **_kwargs):
+        raise OSError("private path detail")
+
+    monkeypatch.setattr(main_module, "_run_direct_mode", successful_direct_run)
+    monkeypatch.setattr(
+        "aworld_cli.top_level_commands.run_cmd.bootstrap_runtime",
+        lambda **_kwargs: None,
+    )
+    monkeypatch.setattr("aworld_cli.atif.write_atif_trajectory", fail_write)
+    args = SimpleNamespace(
+        task="test",
+        agent="Aworld",
+        skill=None,
+        max_runs=None,
+        max_cost=None,
+        max_duration=None,
+        completion_signal=None,
+        completion_threshold=3,
+        non_interactive=True,
+        session_id=None,
+        env_file=".env",
+        remote_backend=None,
+        agent_dir=None,
+        agent_file=None,
+        skill_path=None,
+        emit_trajectory=False,
+        trajectory_output=str(tmp_path / "trajectory.json"),
+    )
+
+    exit_code = RunTopLevelCommand().run(
+        args,
+        SimpleNamespace(argv=("aworld-cli", "run")),
+    )
+
+    assert exit_code == 0
+    stderr = capsys.readouterr().err
+    export = _marker_payload(stderr, "AWORLD_ATIF_EXPORT=")
+    assert export["status"] == "failed"
+    assert export["error_type"] == "OSError"
+    assert "private path detail" not in stderr
+    final_outcome = _marker_payload(stderr, "AWORLD_RUN_OUTCOME=")
+    assert final_outcome["semantic_status"] == "succeeded"
+    assert final_outcome["atif_export"]["status"] == "failed"
+
+
+def test_summary_payload_preserves_zero_step_task_response_evidence() -> None:
+    payload = main_module._trajectory_payload_from_direct_run_summary(
+        {
+            "results": [
+                {
+                    "success": False,
+                    "trajectory_capture_mode": "task_response",
+                    "trajectory": [],
+                    "llm_calls": [
+                        {"request_id": "request-1"},
+                        {"request_id": "request-2"},
+                    ],
+                    "trajectory_build_result": {
+                        "fidelity": "partial",
+                        "llm_call_count": 2,
+                        "tool_call_count": 0,
+                    },
+                }
+            ]
+        },
+        prompt="test",
+        agent_name="Aworld",
+    )
+
+    assert payload["trajectory"] == []
+    assert len(payload["llm_calls"]) == 2
+    assert payload["trajectory_build_results"][0]["llm_call_count"] == 2
+    assert payload["trajectory_capture_mode"] == "task_response"
+
+
+def test_direct_run_outcome_uses_build_counts_and_last_successful_checkpoint() -> None:
+    outcome = DirectRunOutcome.from_summary(
+        {
+            "results": [
+                {
+                    "iteration": 2,
+                    "success": False,
+                    "trajectory": [{"meta": {"step": 7}, "action": {"content": "working"}}],
+                    "llm_calls": [{"request_id": "only-materialized-journal-row"}],
+                    "trajectory_build_result": {
+                        "status": "partial",
+                        "fidelity": "partial",
+                        "task_id": "task-1",
+                        "session_id": "session-1",
+                        "source_high_watermark": "event-9",
+                        "completed_updates": 3,
+                        "persisted_items": 1,
+                        "source_agent_messages": 4,
+                        "llm_call_count": 5,
+                        "tool_call_count": 2,
+                        "trajectory_checksum": "sha256:" + "a" * 64,
+                    },
+                }
+            ]
+        },
+        status=DirectRunStatus.TASK_FAILED,
+    )
+
+    assert outcome.llm_call_count == 5
+    assert outcome.tool_call_count == 2
+    assert outcome.action_count == 4
+    assert outcome.trajectory_fidelity == "partial"
+    assert outcome.last_successful_checkpoint == {
+        "kind": "trajectory_build",
+        "result_iteration": 2,
+        "task_id": "task-1",
+        "session_id": "session-1",
+        "source_high_watermark": "event-9",
+        "completed_updates": 3,
+        "persisted_items": 1,
+        "trajectory_checksum": "sha256:" + "a" * 64,
+    }
 
 
 @pytest.mark.asyncio
@@ -293,7 +608,7 @@ async def test_noninteractive_aworld_fails_after_zero_provider_capture_retries(
         non_interactive=True,
     )
 
-    assert succeeded is False
+    assert succeeded.status is DirectRunStatus.INFRASTRUCTURE_FAILED
     assert calls == 2
     payload = _failure_payload(capsys.readouterr().err)
     assert payload["stage"] == "provider_start"
@@ -354,8 +669,84 @@ async def test_noninteractive_aworld_propagates_terminal_task_failure(
         non_interactive=True,
     )
 
-    assert succeeded is False
+    assert succeeded.status is DirectRunStatus.TASK_FAILED
     payload = _failure_payload(capsys.readouterr().err)
     assert payload["stage"] == "agent_execution"
     assert payload["error_code"] == "agent_task_failed"
     assert payload["details"] == {"provider_evidence": True}
+
+
+@pytest.mark.asyncio
+async def test_direct_run_cancellation_recovers_last_task_response_evidence(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    selected_agent = SimpleNamespace(name="Aworld")
+    task_response = SimpleNamespace(
+        success=False,
+        status="cancelled",
+        trajectory=[],
+        llm_calls=[{"request_id": f"request-{index}"} for index in range(3)],
+        trajectory_build_result=SimpleNamespace(
+            to_dict=lambda: {
+                "status": "partial",
+                "fidelity": "partial",
+                "llm_call_count": 3,
+                "tool_call_count": 0,
+                "source_agent_messages": 1,
+                "completed_updates": 1,
+                "persisted_items": 0,
+                "source_high_watermark": "event-3",
+                "task_id": "task-1",
+            }
+        ),
+        trajectory_delivery_receipt=None,
+    )
+    executor = SimpleNamespace(last_task_response=task_response)
+
+    class DummyRuntime:
+        def __init__(self, *args, **kwargs) -> None:
+            self._scheduler = None
+
+        async def _load_agents(self):
+            return [selected_agent]
+
+        def _bind_scheduler_default_agent(self, _agent_name: str) -> None:
+            pass
+
+        async def _create_executor(self, _agent):
+            return executor
+
+        def _restore_executor_session(self, *_args, **_kwargs) -> None:
+            pass
+
+    class DummyContinuousExecutor:
+        _attach_task_response_evidence = staticmethod(
+            main_module.ContinuousExecutor._attach_task_response_evidence
+        )
+
+        def __init__(self, *_args, **_kwargs) -> None:
+            pass
+
+        async def run_continuous(self, **_kwargs):
+            raise asyncio.CancelledError
+
+    monkeypatch.setattr(main_module, "CliRuntime", DummyRuntime)
+    monkeypatch.setattr(main_module, "ContinuousExecutor", DummyContinuousExecutor)
+    monkeypatch.setattr("aworld.core.scheduler.get_scheduler", lambda: object())
+
+    outcome = await main_module._run_direct_mode(
+        prompt="test",
+        agent_name="Aworld",
+        non_interactive=True,
+    )
+
+    assert outcome.status is DirectRunStatus.CANCELLED
+    assert outcome.process_exit_code == 130
+    assert outcome.llm_call_count == 3
+    assert outcome.action_count == 1
+    assert outcome.trajectory_fidelity == "partial"
+    assert outcome.last_successful_checkpoint["source_high_watermark"] == "event-3"
+    payload = _failure_payload(capsys.readouterr().err)
+    assert payload["error_code"] == "direct_run_cancelled"
+    assert payload["llm_call_count"] == 3
