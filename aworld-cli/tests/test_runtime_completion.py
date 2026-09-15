@@ -121,6 +121,157 @@ def test_inference_keeps_polite_direct_output_requests(
     assert infer_declared_output_paths(task_text) == expected
 
 
+@pytest.mark.parametrize(
+    "task_text",
+    (
+        "You should not save the report to output.csv.",
+        "Do not attempt to save the report to output.csv.",
+        "No need to save the report to output.csv.",
+        "You may save the report to output.csv.",
+        "If needed, save the report to output.csv.",
+        "I recommend that you save the report to output.csv.",
+        "The application will save the report to output.csv.",
+        "For example, save the report to output.csv.",
+        "If CSV is requested, save to output.csv; otherwise save to output.json.",
+    ),
+)
+def test_inference_rejects_non_obligatory_output_language(task_text: str) -> None:
+    assert infer_declared_output_paths(task_text) == ()
+
+
+@pytest.mark.parametrize(
+    "task_text",
+    (
+        "Can you analyze the data and save the result to output.csv?",
+        "Would you please inspect the input, then export it to output.csv?",
+        "Could you carefully save the report to output.csv?",
+        "Save the report to output.csv. Is that okay?",
+    ),
+)
+def test_inference_keeps_compound_direct_requests(task_text: str) -> None:
+    assert infer_declared_output_paths(task_text) == ("output.csv",)
+
+
+@pytest.mark.parametrize(
+    "task_text",
+    (
+        "Can you not save the report to output.csv?",
+        "Could you please not save the report to output.csv?",
+        "Save to output.csv only if it is needed.",
+        "Save either output.csv or output.json.",
+    ),
+)
+def test_inference_rejects_negated_or_optional_direct_language(
+    task_text: str,
+) -> None:
+    assert infer_declared_output_paths(task_text) == ()
+
+
+@pytest.mark.parametrize(
+    ("task_text", "expected"),
+    (
+        ("Please save report.csv to output.csv.", ("output.csv",)),
+        ("Save source.docx as result.pdf.", ("result.pdf",)),
+        (
+            "Please save input/a.csv and input/b.csv into output.csv.",
+            ("output.csv",),
+        ),
+    ),
+)
+def test_inference_binds_destination_instead_of_source_path(
+    task_text: str, expected: tuple[str, ...]
+) -> None:
+    assert infer_declared_output_paths(task_text) == expected
+
+
+def test_inference_rejects_chinese_alternative_outputs() -> None:
+    request = "请把结果保存到 output.csv 或 output.json。"
+
+    assert infer_declared_output_paths(request) == ()
+
+
+@pytest.mark.parametrize(
+    "task_text",
+    (
+        'Would you say "save the report to output.csv"?',
+        "Can you repeat: save the report to output.csv?",
+        "Can you tell me to save the report to output.csv?",
+        "Could you describe a command that will save to output.csv?",
+        "Can you test whether this command will save to output.csv?",
+        "Would you quote the phrase `save to output.csv`?",
+        "Can you explain why the application will save to output.csv?",
+        "Can you tell me where to save output.csv?",
+    ),
+)
+def test_inference_rejects_nested_output_language_in_direct_questions(
+    task_text: str,
+) -> None:
+    assert infer_declared_output_paths(task_text) == ()
+
+
+@pytest.mark.parametrize(
+    "task_text",
+    (
+        "Please analyze whether to save the result to output.csv.",
+        "Please read: save the result to output.csv.",
+        'Please review the proposed instruction "save the report to output.csv".',
+        'Please open README.md and confirm it says "save to output.csv".',
+        'Please analyze the statement "save to output.csv" for safety.',
+        "Please inspect the text: write output.csv.",
+        "Please process the request `export to output.csv` as text.",
+        'Please convert the sentence "save to output.csv" into French.',
+        'Please extract the phrase "save to output.csv" from this paragraph.',
+    ),
+)
+def test_inference_rejects_nested_output_language_after_work_verbs(
+    task_text: str,
+) -> None:
+    assert infer_declared_output_paths(task_text) == ()
+
+
+@pytest.mark.parametrize(
+    "task_text",
+    (
+        "请分析“保存到 output.csv”这句话。",
+        "请读取并解释保存到 output.csv 这句话。",
+        "请说明保存到 output.csv 的含义。",
+        "请翻译“保存到 output.csv”。",
+        "请讨论保存到 output.csv 的利弊。",
+        "Save to output.csv: explain what this command does.",
+    ),
+)
+def test_inference_rejects_chinese_and_suffix_meta_mentions(
+    task_text: str,
+) -> None:
+    assert infer_declared_output_paths(task_text) == ()
+
+
+@pytest.mark.parametrize(
+    "task_text",
+    (
+        "Please analyze whether the application can process the data and save to output.csv.",
+        "Please review documentation saying to process data and save to output.csv.",
+        "Please analyze why the tool will process input and save to output.csv.",
+        "Please analyze this request: read input and save to output.csv.",
+        "请分析程序读取数据并保存到 output.csv 的行为。",
+        "请分析这个请求：读取数据并保存到 output.csv。",
+    ),
+)
+def test_inference_rejects_meta_coordinated_actions(task_text: str) -> None:
+    assert infer_declared_output_paths(task_text) == ()
+
+
+@pytest.mark.parametrize(
+    "task_text",
+    (
+        "Please analyze the data and save the result to output.csv.",
+        "请分析数据并保存到 output.csv。",
+    ),
+)
+def test_inference_keeps_direct_coordinated_actions(task_text: str) -> None:
+    assert infer_declared_output_paths(task_text) == ("output.csv",)
+
+
 def test_contract_resolves_relative_paths_against_task_workspace(tmp_path: Path) -> None:
     contract = build_runtime_completion_contract(
         "Save it to ./answer.json",
