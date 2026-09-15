@@ -11,8 +11,9 @@ import os
 import re
 import shutil
 import signal
+import sys
 import time
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Dict, List, Optional, Any
 
@@ -173,6 +174,83 @@ class PygrepSearcher:
         return False
 
     async def search(self,
+                    pattern: str,
+                    path: str = ".",
+                    include_patterns: Optional[List[str]] = None,
+                    max_count: Optional[int] = None,
+                    context_lines: int = 0,
+                    case_sensitive: bool = False,
+                    follow_symlinks: bool = True,
+                    search_hidden: bool = True,
+                    timeout_seconds: Optional[float] = None,
+                    max_scan_bytes: Optional[int] = None,
+                    max_line_length: int = DEFAULT_MAX_LINE_LENGTH) -> List[GrepMatch]:
+        """Run the Python regex fallback in a killable subprocess."""
+
+        timeout = min(
+            MAX_SEARCH_TIMEOUT_SECONDS,
+            max(0.01, float(timeout_seconds or DEFAULT_SEARCH_TIMEOUT_SECONDS)),
+        )
+        payload = {
+            "pattern": pattern,
+            "path": path,
+            "include_patterns": include_patterns,
+            "max_count": min(
+                max(1, int(max_count or DEFAULT_MAX_FILE_RESULTS)),
+                DEFAULT_MAX_FILE_RESULTS,
+            ),
+            "context_lines": context_lines,
+            "case_sensitive": case_sensitive,
+            "follow_symlinks": follow_symlinks,
+            "search_hidden": search_hidden,
+            "timeout_seconds": timeout,
+            "max_scan_bytes": max_scan_bytes,
+            "max_line_length": max_line_length,
+        }
+        process = await asyncio.create_subprocess_exec(
+            sys.executable,
+            "-m",
+            "aworld.experimental.cast.searchers.utils",
+            "--pygrep-worker",
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            start_new_session=(os.name == "posix"),
+        )
+        try:
+            stdout, stderr = await asyncio.wait_for(
+                process.communicate(json.dumps(payload).encode("utf-8")),
+                timeout=timeout,
+            )
+        except asyncio.TimeoutError as exc:
+            if process.returncode is None:
+                if os.name == "posix":
+                    try:
+                        os.killpg(process.pid, signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
+                else:
+                    process.kill()
+            await process.communicate()
+            raise SearchTimeoutError(
+                f"Python grep search timed out after {timeout:.2f}s"
+            ) from exc
+        if process.returncode != 0:
+            detail = stderr.decode("utf-8", errors="replace").strip()
+            raise RuntimeError(detail or "Python grep worker failed")
+        try:
+            decoded = json.loads(stdout.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise RuntimeError("Python grep worker returned invalid output") from exc
+        if "error" in decoded:
+            raise ValueError(decoded["error"])
+        return BoundedResults(
+            (GrepMatch(**item) for item in decoded.get("matches", [])),
+            truncated=bool(decoded.get("truncated")),
+            reason=decoded.get("truncation_reason"),
+        )
+
+    async def _search_inline(self,
                     pattern: str,
                     path: str = ".",
                     include_patterns: Optional[List[str]] = None,
@@ -803,3 +881,31 @@ class RipgrepSearcher:
         except (OSError, ProcessLookupError):
             pass
         await proc.wait()
+
+
+def _pygrep_worker_main() -> int:
+    """Subprocess entry point used to make Python ``re`` preemptible."""
+
+    try:
+        payload = json.loads(sys.stdin.buffer.read().decode("utf-8"))
+        results = asyncio.run(PygrepSearcher()._search_inline(**payload))
+        sys.stdout.write(
+            json.dumps(
+                {
+                    "matches": [asdict(item) for item in results],
+                    "truncated": bool(getattr(results, "truncated", False)),
+                    "truncation_reason": getattr(
+                        results, "truncation_reason", None
+                    ),
+                },
+                ensure_ascii=False,
+            )
+        )
+        return 0
+    except Exception as exc:
+        sys.stdout.write(json.dumps({"error": str(exc)}, ensure_ascii=False))
+        return 0
+
+
+if __name__ == "__main__" and "--pygrep-worker" in sys.argv:
+    raise SystemExit(_pygrep_worker_main())

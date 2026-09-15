@@ -72,6 +72,10 @@ def test_inference_ignores_paths_in_code_blocks_and_read_only_requests() -> None
         "Verify whether the application can write data to result.json.",
         "Can I save the report to output.csv?",
         "Tell me whether to save the report to answer.csv.",
+        "Do you recommend I save the report to output.csv?",
+        "Should we save it to output.csv?",
+        "May I save it to output.csv?",
+        "Would it be better to export to result.csv?",
         "请确认这个工具是否能把结果导出到 result.csv。",
     ),
 )
@@ -87,6 +91,19 @@ def test_inference_keeps_direct_output_clause_after_explanation() -> None:
         "解释如何转换输入，然后保存到 output.csv。",
     ):
         assert infer_declared_output_paths(task_text) == ("output.csv",)
+
+
+@pytest.mark.parametrize(
+    ("task_text", "expected"),
+    (
+        ("Can you save the report to output.csv?", ("output.csv",)),
+        ("Would you please export the result to result.csv?", ("result.csv",)),
+    ),
+)
+def test_inference_keeps_polite_direct_output_requests(
+    task_text: str, expected: tuple[str, ...]
+) -> None:
+    assert infer_declared_output_paths(task_text) == expected
 
 
 def test_contract_resolves_relative_paths_against_task_workspace(tmp_path: Path) -> None:

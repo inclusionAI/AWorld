@@ -11,7 +11,11 @@ from aworld.experimental.cast.searchers.searchers import (
     GrepSearcher,
     ReadSearcher,
 )
-from aworld.experimental.cast.searchers.utils import PygrepSearcher, RipgrepSearcher
+from aworld.experimental.cast.searchers.utils import (
+    PygrepSearcher,
+    RipgrepSearcher,
+    SearchTimeoutError,
+)
 
 
 @pytest.mark.asyncio
@@ -87,6 +91,22 @@ async def test_pygrep_does_not_retain_an_unbounded_matching_line(tmp_path: Path)
     assert len(results) == 1
     assert results.truncated is True
     assert len(results[0].line_text) <= 103
+
+
+@pytest.mark.asyncio
+async def test_pygrep_pathological_regex_is_preempted(tmp_path: Path):
+    target = tmp_path / "pathological.txt"
+    target.write_text("a" * 50 + "X\n", encoding="utf-8")
+    started = time.monotonic()
+
+    with pytest.raises(SearchTimeoutError, match="timed out"):
+        await PygrepSearcher().search(
+            "(a|aa)+$",
+            str(target),
+            timeout_seconds=0.2,
+        )
+
+    assert time.monotonic() - started < 2
 
 
 @pytest.mark.asyncio

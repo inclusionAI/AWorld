@@ -85,6 +85,10 @@ _OUTPUT_CLAUSE_BOUNDARY_RE = re.compile(
 _CAPABILITY_OR_QUESTION_CONTEXT_RE = re.compile(
     r"(?:"
     r"\b(?:can|could)\s+(?:this|that|the|it|i|we)\b"
+    r"|\b(?:should|may)\s+(?:i|we)\b"
+    r"|\bwould\s+(?:it|this|that)\b"
+    r"|\bis\s+it\s+(?:possible|better|recommended|advisable)\b"
+    r"|\b(?:recommend|advise)\b[^.!?\n]{0,48}?\b(?:i|we|whether|if)\b"
     r"|\bdoes?\s+(?:this|that|the|it|application|tool|program|system)\b"
     r"|\bwhether\b"
     r"|\b(?:verify|check|determine|test)\b[^.!?\n]{0,48}?"
