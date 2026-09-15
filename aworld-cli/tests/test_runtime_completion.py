@@ -287,7 +287,7 @@ def test_contract_resolves_relative_paths_against_task_workspace(tmp_path: Path)
 
 
 @pytest.mark.asyncio
-async def test_configured_contract_observes_missing_then_created_artifact(
+async def test_inferred_contract_is_advisory_even_when_enforcement_requested(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -307,9 +307,12 @@ async def test_configured_contract_observes_missing_then_created_artifact(
     await context.resolve_completion_evidence()
     missing = context.assess_completion_contract(agent_claimed_finished=True)
     assert missing is not None
-    assert missing.mode is CompletionMode.ENFORCE
-    assert missing.status is CompletionStatus.REPAIR_REQUIRED
+    assert missing.mode is CompletionMode.OBSERVE
+    assert missing.status is CompletionStatus.SATISFIED
     assert missing.reason_codes == ("required_artifact_missing",)
+    assert context.context_info["runtime_completion_contract"]["source"] == (
+        "inferred_advisory"
+    )
 
     output_path.write_text("{}", encoding="utf-8")
     await context.resolve_completion_evidence()
@@ -356,4 +359,35 @@ def test_explicit_artifact_configuration_does_not_require_inference(
     assert context.completion_mode is CompletionMode.OBSERVE
     assert contract.required_artifacts[0].path == str(
         (tmp_path / "declared.bin").resolve()
+    )
+
+
+@pytest.mark.asyncio
+async def test_explicit_structured_artifact_can_enforce_failure(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setenv("AWORLD_COMPLETION_MODE", "enforce")
+    monkeypatch.setenv("AWORLD_INFER_REQUIRED_ARTIFACTS", "true")
+    monkeypatch.setenv("AWORLD_REQUIRED_ARTIFACTS_JSON", '["./declared.bin"]')
+    context = Context(task_id="completion-explicit-enforce")
+
+    contract = configure_runtime_completion(
+        context,
+        request="Please discuss whether to save another.bin.",
+        workspace_path=tmp_path,
+    )
+
+    assert contract is not None
+    assert context.completion_mode is CompletionMode.ENFORCE
+    assert [item.path for item in contract.required_artifacts] == [
+        str((tmp_path / "declared.bin").resolve())
+    ]
+    context.record_completion_final_evidence("agent_final_response")
+    await context.resolve_completion_evidence()
+    assessment = context.assess_completion_contract(agent_claimed_finished=True)
+    assert assessment is not None
+    assert assessment.status is CompletionStatus.REPAIR_REQUIRED
+    assert context.context_info["runtime_completion_contract"]["source"] == (
+        "explicit_structured"
     )

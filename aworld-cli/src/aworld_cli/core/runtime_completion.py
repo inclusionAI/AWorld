@@ -437,11 +437,19 @@ def configure_runtime_completion(
         logger.info("Keeping the completion contract already installed by the caller")
         return context.completion_contract
 
+    explicit_paths = _configured_artifact_paths()
+    inferred_only = not explicit_paths
     contract = build_runtime_completion_contract(
         request,
         workspace_path=workspace_path,
-        explicit_paths=_configured_artifact_paths(),
-        infer_paths=_truthy_env(os.environ.get(INFER_ARTIFACTS_ENV)),
+        explicit_paths=explicit_paths,
+        # A structured contract is authoritative.  Do not silently add natural
+        # language guesses to it, because one ambiguous inferred path could
+        # otherwise turn a successful task into a typed task failure.
+        infer_paths=(
+            inferred_only
+            and _truthy_env(os.environ.get(INFER_ARTIFACTS_ENV))
+        ),
     )
     if contract is None:
         logger.info(
@@ -449,14 +457,20 @@ def configure_runtime_completion(
             mode.value,
         )
         return None
+    effective_mode = (
+        CompletionMode.OBSERVE
+        if inferred_only and mode is CompletionMode.ENFORCE
+        else mode
+    )
     context.configure_completion_contract(
         contract,
-        mode=mode,
+        mode=effective_mode,
         evidence_resolver=resolve_runtime_completion_evidence,
     )
     context.context_info["runtime_completion_contract"] = {
-        "mode": mode.value,
-        "source": "explicit_or_high_confidence_output_paths",
+        "mode": effective_mode.value,
+        "requested_mode": mode.value,
+        "source": "inferred_advisory" if inferred_only else "explicit_structured",
         "required_artifacts": [item.path for item in contract.required_artifacts],
     }
     return contract
