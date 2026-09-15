@@ -3,16 +3,24 @@ from __future__ import annotations
 import asyncio
 import base64
 import inspect
+import importlib
 import json
 import os
 from pathlib import Path
+import sys
 import time
 import tracemalloc
+import zipfile
 
 import pytest
 
 from aworld.sandbox.tool_servers.filesystem.src import main as filesystem
 from aworld.sandbox.config.templates import get_server_env
+
+
+parse_module = importlib.import_module(
+    "aworld.sandbox.tool_servers.filesystem.src.utils.document_processor.parse_to_path"
+)
 
 
 def _json(result) -> dict:
@@ -198,3 +206,90 @@ async def test_parse_failure_is_an_mcp_error_not_nested_false_success(
             await filesystem.parse_file(None, str(source), "txt", None)
     finally:
         source.unlink(missing_ok=True)
+
+
+@pytest.mark.asyncio
+async def test_document_archive_ratio_is_rejected_before_parsing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("AWORLD_FILESYSTEM_MAX_ARCHIVE_COMPRESSION_RATIO", "10")
+    source = tmp_path / "bomb.docx"
+    with zipfile.ZipFile(source, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("word/document.xml", b"0" * (2 * 1024 * 1024))
+
+    with pytest.raises(ValueError, match="compression ratio is unsafe"):
+        await parse_module.parse_to_path(source, tmp_path / "output.md", "docx")
+
+    assert not (tmp_path / "output.md").exists()
+
+
+@pytest.mark.asyncio
+async def test_markdown_parse_atomically_publishes_without_staging_files(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "source.md"
+    destination = tmp_path / "output.md"
+    source.write_text("# bounded\n", encoding="utf-8")
+
+    result = await parse_module.parse_to_path(source, destination, "md")
+
+    assert Path(result) == destination.resolve()
+    assert destination.read_text(encoding="utf-8") == "# bounded\n"
+    assert not list(tmp_path.glob(".output.md.aworld-parse-*"))
+
+
+@pytest.mark.asyncio
+async def test_extreme_workbook_dimensions_are_rejected_without_iteration(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    openpyxl = pytest.importorskip("openpyxl")
+    monkeypatch.setenv("AWORLD_FILESYSTEM_MAX_WORKBOOK_CELLS", "1000")
+    source = tmp_path / "extreme.xlsx"
+    workbook = openpyxl.Workbook()
+    workbook.active["XFD1048576"] = "edge"
+    workbook.save(source)
+    workbook.close()
+
+    with pytest.raises(RuntimeError, match="Worksheet .* limit exceeded"):
+        await parse_module.parse_to_path(source, tmp_path / "output.md", "xlsx")
+
+    assert not (tmp_path / "output.md").exists()
+
+
+@pytest.mark.asyncio
+async def test_document_parse_cancellation_reaps_worker_and_cleans_staging(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = tmp_path / "source.md"
+    destination = tmp_path / "output.md"
+    source.write_text("hello", encoding="utf-8")
+    created = []
+    original_create = asyncio.create_subprocess_exec
+
+    async def sleeping_worker(*_args, **_kwargs):
+        process = await original_create(
+            sys.executable,
+            "-c",
+            "import time; time.sleep(30)",
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            start_new_session=(os.name == "posix"),
+        )
+        created.append(process)
+        return process
+
+    monkeypatch.setattr(parse_module.asyncio, "create_subprocess_exec", sleeping_worker)
+    task = asyncio.create_task(
+        parse_module.parse_to_path(source, destination, "md")
+    )
+    await asyncio.sleep(0.1)
+    task.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert len(created) == 1
+    assert created[0].returncode is not None
+    assert not destination.exists()
+    assert not list(tmp_path.glob(".output.md.aworld-parse-*"))

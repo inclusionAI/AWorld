@@ -53,6 +53,18 @@ class FilesystemLimits:
     search_timeout_seconds: float
     max_edit_bytes: int
     max_parse_bytes: int
+    max_parse_output_bytes: int
+    max_parse_memory_bytes: int
+    parse_timeout_seconds: float
+    max_archive_members: int
+    max_archive_member_bytes: int
+    max_archive_uncompressed_bytes: int
+    max_archive_compression_ratio: int
+    max_workbook_sheets: int
+    max_workbook_rows: int
+    max_workbook_columns: int
+    max_workbook_cells: int
+    max_workbook_merged_cells: int
 
     @classmethod
     def from_env(cls) -> "FilesystemLimits":
@@ -101,6 +113,42 @@ class FilesystemLimits:
             ),
             max_parse_bytes=_env_int(
                 "AWORLD_FILESYSTEM_MAX_PARSE_BYTES", 64 * mib, minimum=4096, maximum=1024 * mib
+            ),
+            max_parse_output_bytes=_env_int(
+                "AWORLD_FILESYSTEM_MAX_PARSE_OUTPUT_BYTES", 16 * mib, minimum=4096, maximum=256 * mib
+            ),
+            max_parse_memory_bytes=_env_int(
+                "AWORLD_FILESYSTEM_MAX_PARSE_MEMORY_BYTES", 1024 * mib, minimum=128 * mib, maximum=4 * 1024 * mib
+            ),
+            parse_timeout_seconds=_env_float(
+                "AWORLD_FILESYSTEM_PARSE_TIMEOUT_SECONDS", 60.0, minimum=1.0, maximum=300.0
+            ),
+            max_archive_members=_env_int(
+                "AWORLD_FILESYSTEM_MAX_ARCHIVE_MEMBERS", 4096, minimum=1, maximum=100_000
+            ),
+            max_archive_member_bytes=_env_int(
+                "AWORLD_FILESYSTEM_MAX_ARCHIVE_MEMBER_BYTES", 32 * mib, minimum=4096, maximum=512 * mib
+            ),
+            max_archive_uncompressed_bytes=_env_int(
+                "AWORLD_FILESYSTEM_MAX_ARCHIVE_UNCOMPRESSED_BYTES", 256 * mib, minimum=4096, maximum=2 * 1024 * mib
+            ),
+            max_archive_compression_ratio=_env_int(
+                "AWORLD_FILESYSTEM_MAX_ARCHIVE_COMPRESSION_RATIO", 200, minimum=1, maximum=10_000
+            ),
+            max_workbook_sheets=_env_int(
+                "AWORLD_FILESYSTEM_MAX_WORKBOOK_SHEETS", 256, minimum=1, maximum=10_000
+            ),
+            max_workbook_rows=_env_int(
+                "AWORLD_FILESYSTEM_MAX_WORKBOOK_ROWS", 100_000, minimum=1, maximum=1_048_576
+            ),
+            max_workbook_columns=_env_int(
+                "AWORLD_FILESYSTEM_MAX_WORKBOOK_COLUMNS", 1_000, minimum=1, maximum=16_384
+            ),
+            max_workbook_cells=_env_int(
+                "AWORLD_FILESYSTEM_MAX_WORKBOOK_CELLS", 2_000_000, minimum=1, maximum=20_000_000
+            ),
+            max_workbook_merged_cells=_env_int(
+                "AWORLD_FILESYSTEM_MAX_WORKBOOK_MERGED_CELLS", 2_000_000, minimum=1, maximum=20_000_000
             ),
         )
 

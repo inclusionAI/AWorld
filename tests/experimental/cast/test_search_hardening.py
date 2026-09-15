@@ -1,3 +1,4 @@
+import asyncio
 import os
 import time
 from pathlib import Path
@@ -107,6 +108,38 @@ async def test_pygrep_pathological_regex_is_preempted(tmp_path: Path):
         )
 
     assert time.monotonic() - started < 2
+
+
+@pytest.mark.asyncio
+async def test_pygrep_cancellation_reaps_pathological_worker(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    target = tmp_path / "cancelled-regex.txt"
+    target.write_text("a" * 50 + "X\n", encoding="utf-8")
+    created = []
+    original_create = asyncio.create_subprocess_exec
+
+    async def recording_create(*args, **kwargs):
+        process = await original_create(*args, **kwargs)
+        created.append(process)
+        return process
+
+    monkeypatch.setattr("asyncio.create_subprocess_exec", recording_create)
+    task = asyncio.create_task(
+        PygrepSearcher().search(
+            "(a|aa)+$",
+            str(target),
+            timeout_seconds=10,
+        )
+    )
+    await asyncio.sleep(0.1)
+    task.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert len(created) == 1
+    assert created[0].returncode is not None
 
 
 @pytest.mark.asyncio

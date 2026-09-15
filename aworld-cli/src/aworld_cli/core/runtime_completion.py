@@ -44,7 +44,7 @@ _OUTPUT_CUE_RE = re.compile(
     r"(?:保存|另存|写入|输出|导出|生成|创建|存储|放置|提交)"
     r"[^。！？\n]{0,36}?(?:到|至|为|在|路径(?:是|为)?|目录(?:是|为)?)"
     r"|"
-    r"(?:save|write|export|generate|create|produce|store|place|submit)"
+    r"\b(?:save|write|export|generate|create|produce|store|place|submit)\b"
     r"[^.!?\n]{0,36}?(?:\bto\b|\bat\b|\bas\b|\bunder\b|\binto\b|\bin\b)"
     r")",
     re.IGNORECASE,
@@ -53,7 +53,7 @@ _DIRECT_OUTPUT_CUE_RE = re.compile(
     r"(?:"
     r"(?:保存|另存|写入|输出|导出|生成|创建|存储|放置|提交)(?:为|到|至|在)?"
     r"|"
-    r"(?:save|write|export|generate|create|produce|store|place|submit)"
+    r"\b(?:save|write|export|generate|create|produce|store|place|submit)\b"
     r"(?:\s+(?:me|us))?"
     r"(?:\s+(?:(?:the|a|an|final|resulting)\s+){0,3})?"
     r")\s*$",
@@ -86,16 +86,27 @@ _CAPABILITY_OR_QUESTION_CONTEXT_RE = re.compile(
     r"(?:"
     r"\b(?:can|could)\s+(?:this|that|the|it|i|we)\b"
     r"|\b(?:should|may)\s+(?:i|we)\b"
+    r"|\b(?:i|we)\s+(?:should|may)\b"
+    r"|\b(?:must\s+i|shall\s+we|would\s+(?:i|we))\b"
+    r"|\bshould\s+(?:the|this|that)\b"
     r"|\bwould\s+(?:it|this|that)\b"
-    r"|\bis\s+it\s+(?:possible|better|recommended|advisable)\b"
+    r"|\bis\s+it\s+(?:possible|better|recommended|advisable|okay|safe)\b"
     r"|\b(?:recommend|advise)\b[^.!?\n]{0,48}?\b(?:i|we|whether|if)\b"
     r"|\bdoes?\s+(?:this|that|the|it|application|tool|program|system)\b"
     r"|\bwhether\b"
     r"|\b(?:verify|check|determine|test)\b[^.!?\n]{0,48}?"
     r"(?:\bwhether\b|\bif\b|\bcan\b|\bcould\b|\bdoes?\b)"
     r"|(?:是否|能否|可否|会不会)"
+    r"|(?:我|我们)?(?:应该|应不应该|要不要|建议|可以)"
     r"|(?:验证|检查|确认|判断)[^。！？\n]{0,36}?(?:是否|能否|可否|会不会)"
     r")",
+    re.IGNORECASE,
+)
+_QUESTION_LINE_RE = re.compile(r"(?:[?？]\s*$|(?:吗|呢)\s*[。！？]?\s*$)")
+_DIRECT_POLITE_QUESTION_RE = re.compile(
+    r"^\s*(?:please\s+)?(?:can|could|would|will)\s+you(?:\s+please)?\s+"
+    r"(?:save|write|export|generate|create|produce|store|place|submit)\b"
+    r"|^\s*please\s+\b(?:save|write|export|generate|create|produce|store|place|submit)\b",
     re.IGNORECASE,
 )
 
@@ -175,6 +186,10 @@ def infer_declared_output_paths(request: str | None) -> tuple[str, ...]:
     for raw_line in natural_text.splitlines():
         line = raw_line.strip()
         if not line:
+            continue
+        if _QUESTION_LINE_RE.search(line) and not _DIRECT_POLITE_QUESTION_RE.search(
+            line
+        ):
             continue
         url_spans = [match.span() for match in _URL_RE.finditer(line)]
         for path_match in _PATH_RE.finditer(line):

@@ -235,6 +235,20 @@ class PygrepSearcher:
             raise SearchTimeoutError(
                 f"Python grep search timed out after {timeout:.2f}s"
             ) from exc
+        except BaseException:
+            # Cancellation is a control-plane stop, but the regex worker may be
+            # stuck inside non-preemptible CPython ``re``. Always reap it before
+            # propagating cancellation or any other caller-side failure.
+            if process.returncode is None:
+                if os.name == "posix":
+                    try:
+                        os.killpg(process.pid, signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
+                else:
+                    process.kill()
+            await asyncio.shield(process.communicate())
+            raise
         if process.returncode != 0:
             detail = stderr.decode("utf-8", errors="replace").strip()
             raise RuntimeError(detail or "Python grep worker failed")
