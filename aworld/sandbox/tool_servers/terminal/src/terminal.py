@@ -24,7 +24,9 @@ try:
 except ImportError:  # Direct script execution used by the stdio config.
     from background_keywords import LONG_RUNNING_KEYWORDS
 
-load_dotenv()
+_disable_auto_dotenv = os.environ.get("AWORLD_DISABLE_AUTO_DOTENV", "").strip().lower()
+if _disable_auto_dotenv not in {"1", "true", "yes", "on"}:
+    load_dotenv()
 workspace = Path.cwd()
 
 # Allow customizing the leading icon in the terminal card output
@@ -990,7 +992,8 @@ async def _execute_command_async(command: str, timeout: int) -> CommandResult:
 if __name__ == "__main__":
     import sys
 
-    load_dotenv(override=True)
+    if _disable_auto_dotenv not in {"1", "true", "yes", "on"}:
+        load_dotenv(override=True)
     logging.info("Starting terminal-server MCP server!")
     # Default streamable-http (compat with start_tool_servers.sh); use stdio when --stdio or MCP_TRANSPORT=stdio
     use_stdio = (
