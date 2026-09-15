@@ -5,9 +5,58 @@ import asyncio
 import json
 import os
 import sys
+import tempfile
 from dataclasses import replace
+from pathlib import Path
 
+from aworld_cli.async_runtime import run_direct_async
 from aworld_cli.runtime_bootstrap import RuntimeBootstrapError, bootstrap_runtime
+
+
+def _write_final_markers(lines: list[str]) -> None:
+    """Flush prior output, then append grouped diagnostic marker lines."""
+
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.flush()
+        except Exception:
+            pass
+    sys.stderr.write("\n" + "\n".join(lines) + "\n")
+    sys.stderr.flush()
+
+
+def _write_outcome_sidecar(path: str, payload: dict) -> None:
+    """Atomically persist the content-free direct-run control record."""
+
+    # Do not resolve the leaf: os.replace must replace a pre-existing symlink,
+    # never follow it and overwrite its target.
+    destination = Path(path).expanduser().absolute()
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    descriptor, temporary_name = tempfile.mkstemp(
+        dir=destination.parent,
+        prefix=f".{destination.name}.",
+        suffix=".tmp",
+    )
+    temporary_path = Path(temporary_name)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+            json.dump(payload, stream, ensure_ascii=False, sort_keys=True)
+            stream.write("\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary_path, destination)
+        try:
+            directory_descriptor = os.open(destination.parent, os.O_RDONLY)
+            try:
+                os.fsync(directory_descriptor)
+            finally:
+                os.close(directory_descriptor)
+        except OSError:
+            # The file itself is already fsynced and atomically installed.
+            # Some filesystems do not permit opening/fsyncing a directory.
+            pass
+    finally:
+        temporary_path.unlink(missing_ok=True)
 
 
 def _register_run_options(parser: argparse.ArgumentParser) -> None:
@@ -48,6 +97,11 @@ def _register_run_options(parser: argparse.ArgumentParser) -> None:
         choices=("atif",),
         default="atif",
         help="Trajectory output format (default: atif).",
+    )
+    parser.add_argument(
+        "--outcome-output",
+        type=str,
+        help="Atomically write the content-free direct-run outcome to this file.",
     )
 
 
@@ -190,7 +244,7 @@ class RunTopLevelCommand:
             )
 
         try:
-            direct_run_result = asyncio.run(
+            direct_run_result = run_direct_async(
                 _run_direct_mode(
                     prompt=args.task,
                     agent_name=agent_name,
@@ -376,15 +430,16 @@ class RunTopLevelCommand:
                     error_code="atif_build_failed",
                     error_type=type(exc).__name__,
                 )
-            print(
+            atif_marker = (
                 "AWORLD_ATIF_EXPORT="
                 + json.dumps(
                     export_receipt.to_dict(),
                     ensure_ascii=False,
                     sort_keys=True,
-                ),
-                file=sys.stderr,
+                )
             )
+        else:
+            atif_marker = None
 
         final_outcome = outcome
         if (
@@ -401,15 +456,46 @@ class RunTopLevelCommand:
                 },
             )
 
-        print(
+        outcome_marker = (
             "AWORLD_RUN_OUTCOME="
             + json.dumps(
                 final_outcome.to_dict(atif_export=export_receipt.to_dict()),
                 ensure_ascii=False,
                 sort_keys=True,
-            ),
-            file=sys.stderr,
+            )
         )
+        outcome_output = getattr(args, "outcome_output", None)
+        if outcome_output:
+            try:
+                _write_outcome_sidecar(
+                    outcome_output,
+                    final_outcome.to_dict(atif_export=export_receipt.to_dict()),
+                )
+            except Exception as exc:
+                final_outcome = replace(
+                    final_outcome,
+                    status=DirectRunStatus.INFRASTRUCTURE_FAILED,
+                    process_exit_code=final_outcome.process_exit_code or 1,
+                    failure_record={
+                        "stage": DirectRunStage.ORCHESTRATION.value,
+                        "error_code": DirectRunErrorCode.DIRECT_RUN_EXCEPTION.value,
+                    },
+                )
+                outcome_marker = (
+                    "AWORLD_RUN_OUTCOME="
+                    + json.dumps(
+                        final_outcome.to_dict(atif_export=export_receipt.to_dict()),
+                        ensure_ascii=False,
+                        sort_keys=True,
+                    )
+                )
+                print(
+                    "Direct-run outcome sidecar write failed; "
+                    f"error_type={type(exc).__name__}",
+                    file=sys.stderr,
+                )
+        markers = [marker for marker in (atif_marker, outcome_marker) if marker]
+        _write_final_markers(markers)
         return final_outcome.process_exit_code
 
     def _resolve_agent_name(self, args) -> str | None:
