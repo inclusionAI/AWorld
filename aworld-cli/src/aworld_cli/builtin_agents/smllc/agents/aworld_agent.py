@@ -19,6 +19,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from aworld.core.context.amni import AgentContextConfig
 from aworld.core.context.amni.config import get_default_config, ContextEnvConfig
 from aworld.core.context.amni.prompt.assembly.budget import PromptBudgetPolicy
+from aworld.core.tool.surface import ToolLifecycle, ToolSurfaceProfile
 from aworld.logs.util import logger
 from aworld_cli.core.context_tool import CONTEXT_TOOL
 from aworld_cli.core.skill_registry import build_skill_resolver_inputs
@@ -53,6 +54,20 @@ CAST_SEARCH = "CAST_SEARCH"
 AWORLD_MAX_LOOP_STEPS_HARD_LIMIT = 240
 AWORLD_DEFAULT_MAX_COMPLETION_TOKENS = 16384
 AWORLD_MAX_COMPLETION_TOKENS_HARD_LIMIT = 64000
+AWORLD_BUILTIN_SUBAGENT_NAMES = (
+    "developer",
+    "evaluator",
+    "diffusion",
+    "avatar",
+    "audio",
+    "image",
+)
+_BACKGROUND_SUBAGENT_ACTIONS = (
+    "spawn_background",
+    "check_task",
+    "wait_task",
+    "cancel_task",
+)
 
 
 def _register_optional_cast_tools(
@@ -132,6 +147,79 @@ def resolve_aworld_max_completion_tokens() -> int:
             f"{AWORLD_MAX_COMPLETION_TOKENS_HARD_LIMIT}"
         )
     return max_completion_tokens
+
+
+def resolve_aworld_tool_surface_profile() -> ToolSurfaceProfile:
+    """Resolve a lifecycle-only Tool policy for the bundled root agent.
+
+    ``general`` preserves the interactive CLI surface. ``one_shot`` is for an
+    enclosing runner that expects the task to finish in this process: durable
+    schedules and background task-management actions are excluded, while
+    ordinary terminal/filesystem work remains process-local.
+    """
+
+    profile_id = os.environ.get("AWORLD_TOOL_SURFACE_PROFILE", "general")
+    profile_id = profile_id.strip().lower()
+    if profile_id == "general":
+        return ToolSurfaceProfile(profile_id="general")
+    if profile_id == "one_shot":
+        return ToolSurfaceProfile(
+            profile_id="one_shot",
+            allowed_lifecycles=(ToolLifecycle.IMMEDIATE,),
+        )
+    raise ValueError(
+        "AWORLD_TOOL_SURFACE_PROFILE must be either 'general' or 'one_shot'"
+    )
+
+
+def resolve_aworld_builtin_subagents() -> tuple[str, ...]:
+    """Resolve an explicit, task-text-independent collaborator allowlist."""
+
+    raw_value = os.environ.get("AWORLD_BUILTIN_SUBAGENTS", "all").strip().lower()
+    if raw_value in {"all", "auto"}:
+        return AWORLD_BUILTIN_SUBAGENT_NAMES
+    if raw_value in {"", "none"}:
+        return ()
+
+    requested = tuple(
+        value.strip() for value in raw_value.split(",") if value.strip()
+    )
+    unknown = sorted(set(requested) - set(AWORLD_BUILTIN_SUBAGENT_NAMES))
+    if unknown:
+        raise ValueError(
+            "AWORLD_BUILTIN_SUBAGENTS contains unknown names: "
+            + ", ".join(unknown)
+        )
+    requested_set = set(requested)
+    return tuple(
+        name for name in AWORLD_BUILTIN_SUBAGENT_NAMES if name in requested_set
+    )
+
+
+def _aworld_root_tool_policy(
+    profile: ToolSurfaceProfile,
+    *,
+    has_subagents: bool,
+) -> tuple[list[str], dict[str, list[str]]]:
+    """Build the root Tool allowlist and action denylist from lifecycle policy."""
+
+    tool_names = [
+        CONTEXT_TOOL,
+        *([CAST_SEARCH] if _CAST_TOOLS_AVAILABLE else []),
+        *(["async_spawn_subagent"] if has_subagents else []),
+    ]
+    if ToolLifecycle.DURABLE in profile.allowed_lifecycles:
+        tool_names.append("cron")
+
+    black_tool_actions: dict[str, list[str]] = {}
+    if (
+        has_subagents
+        and ToolLifecycle.BACKGROUND not in profile.allowed_lifecycles
+    ):
+        black_tool_actions["async_spawn_subagent"] = list(
+            _BACKGROUND_SUBAGENT_ACTIONS
+        )
+    return tool_names, black_tool_actions
 
 
 def render_aworld_system_prompt(
@@ -281,30 +369,39 @@ def _subagent_names(sub_agents: Sequence[BaseAgent]) -> List[str]:
     return sorted({agent.name() for agent in sub_agents})
 
 
-def _build_aworld_sub_agents(sandbox) -> List[BaseAgent]:
+def _build_aworld_sub_agents(
+    sandbox,
+    enabled_names: Optional[Sequence[str]] = None,
+) -> List[BaseAgent]:
     """Build optional collaborators before publishing root capabilities."""
 
+    enabled = set(
+        AWORLD_BUILTIN_SUBAGENT_NAMES
+        if enabled_names is None
+        else enabled_names
+    )
     builders = []
     if _CAST_TOOLS_AVAILABLE:
-        builders.extend(
-            [
-                ("developer", lambda: build_developer_swarm(sandbox=sandbox)),
-                ("evaluator", lambda: build_evaluator_swarm(sandbox=sandbox)),
-            ]
-        )
-    else:
+        if "developer" in enabled:
+            builders.append(
+                ("developer", lambda: build_developer_swarm(sandbox=sandbox))
+            )
+        if "evaluator" in enabled:
+            builders.append(
+                ("evaluator", lambda: build_evaluator_swarm(sandbox=sandbox))
+            )
+    elif {"developer", "evaluator"} & enabled:
         logger.warning(
             "Developer and evaluator sub-agents are disabled because CAST "
             f"dependencies are unavailable: {_CAST_TOOLS_UNAVAILABLE_REASON}"
         )
-    builders.extend(
-        [
-            ("diffusion", lambda: build_diffusion_swarm(sandbox=sandbox)),
-            ("avatar", lambda: build_avatar_swarm(sandbox=sandbox)),
-            ("audio", lambda: build_audio_swarm(sandbox=sandbox)),
-            ("image", lambda: build_image_swarm(sandbox=sandbox)),
-        ]
+    optional_builders = (
+        ("diffusion", lambda: build_diffusion_swarm(sandbox=sandbox)),
+        ("avatar", lambda: build_avatar_swarm(sandbox=sandbox)),
+        ("audio", lambda: build_audio_swarm(sandbox=sandbox)),
+        ("image", lambda: build_image_swarm(sandbox=sandbox)),
     )
+    builders.extend(item for item in optional_builders if item[0] in enabled)
 
     sub_agents = []
     for label, builder in builders:
@@ -405,16 +502,19 @@ def build_aworld_agent(include_skills: Optional[str] = None):
     aworld_mcp_servers = augment_aworld_agent_mcp_servers(["terminal"])
     sandbox = create_agent_sandbox(builtin_tools)
 
+    tool_surface_profile = resolve_aworld_tool_surface_profile()
+
     # Resolve optional collaborators before constructing the root agent so its
     # prompt and tool catalog describe capabilities that actually exist.
-    sub_agents = _build_aworld_sub_agents(sandbox)
+    sub_agents = _build_aworld_sub_agents(
+        sandbox,
+        enabled_names=resolve_aworld_builtin_subagents(),
+    )
     subagent_names = _subagent_names(sub_agents)
-    root_tool_names = [
-        CONTEXT_TOOL,
-        *([CAST_SEARCH] if _CAST_TOOLS_AVAILABLE else []),
-        *(["async_spawn_subagent"] if sub_agents else []),
-        "cron",
-    ]
+    root_tool_names, black_tool_actions = _aworld_root_tool_policy(
+        tool_surface_profile,
+        has_subagents=bool(sub_agents),
+    )
     # Advertise only capabilities the root agent is allowed to use. The
     # Sandbox may host additional providers for specialized subagents.
     prompt_capabilities = [*root_tool_names, *aworld_mcp_servers]
@@ -438,12 +538,14 @@ def build_aworld_agent(include_skills: Optional[str] = None):
         mcp_servers=aworld_mcp_servers,  # Keep default terminal access and opt-in macOS UI automation when enabled
         sandbox=sandbox,  # Shared sandbox (tools filtered by agent's mcp_servers config)
         tool_names=root_tool_names,
+        black_tool_actions=black_tool_actions,
         enable_subagent=bool(sub_agents),
         llm_max_attempts=3,
         llm_retry_delay=2.0,
         max_loop_steps=resolve_aworld_max_loop_steps(),
         **budgeted_agent_kwargs,
     )
+    aworld_agent.tool_surface_profile = tool_surface_profile
 
     if sub_agents:
         logger.info(

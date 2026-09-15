@@ -5,10 +5,14 @@ import pytest
 
 from aworld_cli.builtin_agents.smllc.agents import aworld_agent
 from aworld_cli.builtin_agents.smllc.agents.aworld_agent import (
+    _aworld_root_tool_policy,
     render_aworld_system_prompt,
+    resolve_aworld_builtin_subagents,
     resolve_aworld_max_completion_tokens,
     resolve_aworld_max_loop_steps,
+    resolve_aworld_tool_surface_profile,
 )
+from aworld.core.tool.surface import ToolLifecycle
 
 
 def test_render_aworld_system_prompt_injects_beijing_datetime() -> None:
@@ -55,6 +59,76 @@ def test_aworld_max_completion_tokens_defaults_to_16384(
     monkeypatch.delenv("AWORLD_MAX_COMPLETION_TOKENS", raising=False)
 
     assert resolve_aworld_max_completion_tokens() == 16384
+
+
+def test_tool_surface_profile_defaults_to_general(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("AWORLD_TOOL_SURFACE_PROFILE", raising=False)
+
+    profile = resolve_aworld_tool_surface_profile()
+
+    assert profile.profile_id == "general"
+    assert set(profile.allowed_lifecycles) == set(ToolLifecycle)
+
+
+def test_one_shot_profile_removes_durable_and_background_actions(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("AWORLD_TOOL_SURFACE_PROFILE", "one_shot")
+    monkeypatch.setattr(aworld_agent, "_CAST_TOOLS_AVAILABLE", False)
+
+    profile = resolve_aworld_tool_surface_profile()
+    tool_names, black_actions = _aworld_root_tool_policy(
+        profile,
+        has_subagents=True,
+    )
+
+    assert profile.allowed_lifecycles == (ToolLifecycle.IMMEDIATE,)
+    assert "cron" not in tool_names
+    assert "async_spawn_subagent" in tool_names
+    assert black_actions["async_spawn_subagent"] == [
+        "spawn_background",
+        "check_task",
+        "wait_task",
+        "cancel_task",
+    ]
+
+
+@pytest.mark.parametrize("value", ["benchmark", "local", "invalid"])
+def test_tool_surface_profile_rejects_implicit_or_unknown_modes(
+    monkeypatch: pytest.MonkeyPatch,
+    value: str,
+) -> None:
+    monkeypatch.setenv("AWORLD_TOOL_SURFACE_PROFILE", value)
+
+    with pytest.raises(ValueError, match="general.*one_shot"):
+        resolve_aworld_tool_surface_profile()
+
+
+def test_builtin_subagent_allowlist_is_explicit_and_ordered(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("AWORLD_BUILTIN_SUBAGENTS", "image,developer,image")
+
+    assert resolve_aworld_builtin_subagents() == ("developer", "image")
+
+
+def test_builtin_subagents_can_be_disabled_for_one_shot_runners(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("AWORLD_BUILTIN_SUBAGENTS", "none")
+
+    assert resolve_aworld_builtin_subagents() == ()
+
+
+def test_builtin_subagent_allowlist_rejects_unknown_names(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("AWORLD_BUILTIN_SUBAGENTS", "developer,unknown")
+
+    with pytest.raises(ValueError, match="unknown names: unknown"):
+        resolve_aworld_builtin_subagents()
 
 
 @pytest.mark.parametrize("value", ["0", "-1", "invalid"])
