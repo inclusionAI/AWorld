@@ -972,6 +972,14 @@ def _run_top_level_command(command, args, argv: list[str]) -> bool:
         args,
         TopLevelCommandContext(cwd=str(Path.cwd()), argv=tuple(argv)),
     )
+    normalized_exit_code = 0 if exit_code is None else int(exit_code)
+    if command.name == "run":
+        from aworld_cli.async_runtime import hard_exit_direct_run_if_configured
+
+        # The run command has already finalized its outcome and ATIF before it
+        # returns.  An explicitly configured one-shot runtime may now use the
+        # process boundary to terminate provider-owned non-daemon threads.
+        hard_exit_direct_run_if_configured(normalized_exit_code)
     if exit_code not in (None, 0):
         sys.exit(exit_code)
     return True

@@ -4,9 +4,11 @@ import time
 
 import asyncio
 import copy
+import inspect
 import json
 import os
 import re
+import threading
 import traceback
 import uuid
 from collections import OrderedDict
@@ -144,6 +146,32 @@ from aworld.utils.task_grounding import (
 )
 from aworld.memory.tool_result_compaction import compact_tool_result_for_memory
 import aworld.runners.hook.agent_hooks
+
+
+# Provider SDKs are expected to cooperate with cancellation, but the framework
+# deadline must not depend on that cooperation.  This short grace only gives
+# transports a chance to release resources before their task is detached.
+_GENERATION_CLEANUP_GRACE_SECONDS = 0.1
+_MAX_CONFIGURED_PENDING_GENERATION_TASKS = 256
+_DETACHED_GENERATION_TASKS: set[asyncio.Task] = set()
+_ACTIVE_GENERATION_TASKS: set[asyncio.Task] = set()
+_GENERATION_TASKS_LOCK = threading.Lock()
+
+
+def _one_shot_process_cleanup_enabled() -> bool:
+    value = os.environ.get("AWORLD_DIRECT_RUN_SHUTDOWN_TIMEOUT_SECONDS", "")
+    return bool(value.strip())
+
+
+def _configured_pending_generation_capacity() -> int | None:
+    raw = os.environ.get("AWORLD_MAX_PENDING_GENERATION_TASKS", "").strip()
+    if not raw:
+        return None
+    try:
+        value = int(raw)
+    except ValueError:
+        return None
+    return min(max(1, value), _MAX_CONFIGURED_PENDING_GENERATION_TASKS)
 
 
 DEFAULT_LLM_EXECUTION_TIMEOUT_SECONDS = 360.0
@@ -3920,13 +3948,150 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             )
 
     @staticmethod
-    async def _cancel_generation_task(task: asyncio.Task) -> None:
+    def _consume_generation_task_result(task: asyncio.Task) -> None:
+        with _GENERATION_TASKS_LOCK:
+            _DETACHED_GENERATION_TASKS.discard(task)
+            _ACTIVE_GENERATION_TASKS.discard(task)
+        try:
+            task.exception()
+        except BaseException:
+            pass
+
+    @staticmethod
+    def _discard_active_generation_task(task: asyncio.Task) -> None:
+        with _GENERATION_TASKS_LOCK:
+            _ACTIVE_GENERATION_TASKS.discard(task)
+
+    @classmethod
+    def _create_generation_task(cls, awaitable) -> asyncio.Task | None:
+        with _GENERATION_TASKS_LOCK:
+            for task in tuple(_ACTIVE_GENERATION_TASKS):
+                if task.done():
+                    _ACTIVE_GENERATION_TASKS.discard(task)
+            capacity = _configured_pending_generation_capacity()
+            if capacity is not None and len(_ACTIVE_GENERATION_TASKS) >= capacity:
+                return None
+            task = asyncio.ensure_future(awaitable)
+            _ACTIVE_GENERATION_TASKS.add(task)
+        task.add_done_callback(cls._discard_active_generation_task)
+        return task
+
+    @classmethod
+    def _detach_generation_task(cls, task: asyncio.Task) -> None:
+        if task.done():
+            cls._consume_generation_task_result(task)
+            return
+        with _GENERATION_TASKS_LOCK:
+            _DETACHED_GENERATION_TASKS.add(task)
+        task.add_done_callback(cls._consume_generation_task_result)
+
+    @classmethod
+    def _cleanup_capacity_available(cls) -> bool:
+        with _GENERATION_TASKS_LOCK:
+            for task in tuple(_ACTIVE_GENERATION_TASKS):
+                if task.done():
+                    _ACTIVE_GENERATION_TASKS.discard(task)
+            capacity = _configured_pending_generation_capacity()
+            return capacity is None or len(_ACTIVE_GENERATION_TASKS) < capacity
+
+    @classmethod
+    async def _cancel_generation_task(cls, task: asyncio.Task) -> None:
+        if _one_shot_process_cleanup_enabled():
+            cls._detach_generation_task(task)
+            return
         if not task.done():
             task.cancel()
         try:
-            await task
+            done, _ = await asyncio.wait(
+                {task}, timeout=_GENERATION_CLEANUP_GRACE_SECONDS
+            )
         except BaseException:
-            pass
+            if not task.done():
+                task.cancel()
+                cls._detach_generation_task(task)
+            raise
+        if task in done:
+            cls._consume_generation_task_result(task)
+            return
+        # A provider coroutine may swallow CancelledError.  Do not let its
+        # cooperative cleanup turn a generation deadline into an unbounded
+        # wait.  A second cancel is best effort; the callback safely consumes
+        # any eventual exception from the detached task.
+        task.cancel()
+        cls._detach_generation_task(task)
+        logger.warning(
+            "Model provider cleanup exceeded its bounded grace period; "
+            "the provider task was detached"
+        )
+
+    @classmethod
+    async def _close_generation_stream(cls, resp_stream) -> None:
+        if _one_shot_process_cleanup_enabled():
+            return
+        close_task: asyncio.Task | None = None
+        try:
+            close = getattr(resp_stream, "aclose", None)
+            if not callable(close):
+                return
+            if not cls._cleanup_capacity_available():
+                logger.warning(
+                    "Skipping model stream cleanup because detached provider "
+                    "cleanup capacity is exhausted"
+                )
+                return
+            close_result = close()
+            if not inspect.isawaitable(close_result):
+                logger.debug("Model stream aclose() returned a non-awaitable result")
+                return
+            close_task = cls._create_generation_task(close_result)
+            if close_task is None:
+                close_awaitable = getattr(close_result, "close", None)
+                if callable(close_awaitable):
+                    close_awaitable()
+                logger.warning(
+                    "Skipping model stream cleanup because detached provider "
+                    "cleanup capacity is exhausted"
+                )
+                return
+            done, _ = await asyncio.wait(
+                {close_task}, timeout=_GENERATION_CLEANUP_GRACE_SECONDS
+            )
+        except asyncio.CancelledError as close_exc:
+            if close_task is not None and not close_task.done():
+                close_task.cancel()
+                cls._detach_generation_task(close_task)
+            current_task = asyncio.current_task()
+            if current_task is not None and current_task.cancelling():
+                raise
+            logger.debug(
+                "Model stream cleanup did not complete normally; "
+                f"error_type={type(close_exc).__name__}"
+            )
+            return
+        except BaseException as close_exc:
+            if close_task is not None and not close_task.done():
+                close_task.cancel()
+                cls._detach_generation_task(close_task)
+            logger.debug(
+                "Model stream cleanup did not complete normally; "
+                f"error_type={type(close_exc).__name__}"
+            )
+            return
+        if close_task in done:
+            try:
+                close_task.result()
+            except BaseException as close_exc:
+                logger.debug(
+                    "Model stream cleanup did not complete normally; "
+                    f"error_type={type(close_exc).__name__}"
+                )
+            return
+        close_task.cancel()
+        cls._detach_generation_task(close_task)
+        logger.warning(
+            "Model stream cleanup exceeded its bounded grace period; "
+            "the cleanup task was detached"
+        )
 
     @staticmethod
     def _is_provider_timeout_exception(exc: BaseException) -> bool:
@@ -3951,7 +4116,23 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         streaming: bool,
     ):
         """Await provider work without confusing its timeout with our deadline."""
-        operation = asyncio.ensure_future(awaitable)
+        if not self._cleanup_capacity_available():
+            close = getattr(awaitable, "close", None)
+            if callable(close):
+                close()
+            raise AWorldRuntimeException(
+                "Model generation cannot start because detached provider "
+                "cleanup capacity is exhausted"
+            )
+        operation = self._create_generation_task(awaitable)
+        if operation is None:
+            close = getattr(awaitable, "close", None)
+            if callable(close):
+                close()
+            raise AWorldRuntimeException(
+                "Model generation cannot start because detached provider "
+                "cleanup capacity is exhausted"
+            )
         deadline = controller.next_deadline(streaming=streaming)
         try:
             if deadline is None:
@@ -4139,13 +4320,7 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             controller.cancelled_partial_response = llm_response
             raise
         finally:
-            try:
-                await resp_stream.aclose()
-            except BaseException as close_exc:
-                logger.debug(
-                    "Model stream cleanup did not complete normally; "
-                    f"error_type={type(close_exc).__name__}"
-                )
+            await self._close_generation_stream(resp_stream)
 
     @staticmethod
     def _bounded_partial_for_repair(content: str, *, limit: int) -> str:

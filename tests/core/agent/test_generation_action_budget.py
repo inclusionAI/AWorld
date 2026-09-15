@@ -405,6 +405,414 @@ async def test_caller_cancellation_propagates_and_is_recorded_separately(
 
 
 @pytest.mark.asyncio
+async def test_generation_deadline_does_not_wait_forever_for_provider_cleanup(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    provider_started = asyncio.Event()
+    provider_release = asyncio.Event()
+    provider_tasks: list[asyncio.Task] = []
+
+    async def stubborn_provider(*args, **kwargs):
+        provider_tasks.append(asyncio.current_task())
+        provider_started.set()
+        while not provider_release.is_set():
+            try:
+                await provider_release.wait()
+            except asyncio.CancelledError:
+                continue
+
+    monkeypatch.setattr(llm_agent_module, "acall_llm_model", stubborn_provider)
+    monkeypatch.setattr(
+        llm_agent_module, "_GENERATION_CLEANUP_GRACE_SECONDS", 0.01
+    )
+    agent = _agent(
+        policy=GenerationBudgetPolicy(
+            total_timeout_seconds=0.01,
+            stream_idle_timeout_seconds=None,
+            active_tool_free_timeout_seconds=None,
+            action_repair_timeout_seconds=None,
+            action_repair_enabled=False,
+        ),
+        with_tools=False,
+        attempts=1,
+    )
+
+    try:
+        with pytest.raises(GenerationBudgetExceeded) as raised:
+            await asyncio.wait_for(
+                agent.invoke_model(
+                    messages=[{"role": "user", "content": "hello"}],
+                    message=_message("stubborn-provider"),
+                    stream=False,
+                ),
+                timeout=0.15,
+            )
+        assert raised.value.reason is GenerationStopReason.CALL_DEADLINE_EXCEEDED
+        assert provider_started.is_set()
+    finally:
+        provider_release.set()
+        if provider_tasks:
+            await asyncio.wait_for(provider_tasks[0], timeout=1)
+
+
+@pytest.mark.asyncio
+async def test_caller_cancellation_is_not_blocked_by_provider_cleanup(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    provider_started = asyncio.Event()
+    provider_release = asyncio.Event()
+    provider_tasks: list[asyncio.Task] = []
+
+    async def stubborn_provider(*args, **kwargs):
+        provider_tasks.append(asyncio.current_task())
+        provider_started.set()
+        while not provider_release.is_set():
+            try:
+                await provider_release.wait()
+            except asyncio.CancelledError:
+                continue
+
+    monkeypatch.setattr(llm_agent_module, "acall_llm_model", stubborn_provider)
+    monkeypatch.setattr(
+        llm_agent_module, "_GENERATION_CLEANUP_GRACE_SECONDS", 0.01
+    )
+    agent = _agent(
+        policy=GenerationBudgetPolicy(
+            total_timeout_seconds=1,
+            stream_idle_timeout_seconds=None,
+            active_tool_free_timeout_seconds=None,
+            action_repair_timeout_seconds=None,
+            action_repair_enabled=False,
+        ),
+        with_tools=False,
+    )
+    task = asyncio.create_task(
+        agent.invoke_model(
+            messages=[{"role": "user", "content": "hello"}],
+            message=_message("stubborn-provider-caller-cancel"),
+            stream=False,
+        )
+    )
+    await asyncio.wait_for(provider_started.wait(), timeout=1)
+
+    try:
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(task, timeout=0.15)
+    finally:
+        provider_release.set()
+        if provider_tasks:
+            await asyncio.wait_for(provider_tasks[0], timeout=1)
+
+
+@pytest.mark.asyncio
+async def test_stream_close_is_bounded_when_provider_cleanup_stalls(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    close_started = asyncio.Event()
+    close_release = asyncio.Event()
+    close_tasks: list[asyncio.Task] = []
+
+    class StubbornStream:
+        emitted = False
+
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            if not self.emitted:
+                self.emitted = True
+                return ModelResponse(
+                    id="complete", model="fake-model", content="complete"
+                )
+            raise StopAsyncIteration
+
+        async def aclose(self):
+            close_tasks.append(asyncio.current_task())
+            close_started.set()
+            while not close_release.is_set():
+                try:
+                    await close_release.wait()
+                except asyncio.CancelledError:
+                    continue
+
+    monkeypatch.setattr(
+        llm_agent_module,
+        "acall_llm_model_stream",
+        lambda *args, **kwargs: StubbornStream(),
+    )
+    monkeypatch.setattr(
+        llm_agent_module, "_GENERATION_CLEANUP_GRACE_SECONDS", 0.01
+    )
+    agent = _agent(
+        policy=GenerationBudgetPolicy(
+            total_timeout_seconds=1,
+            stream_idle_timeout_seconds=None,
+            active_tool_free_timeout_seconds=None,
+            action_repair_timeout_seconds=None,
+            action_repair_enabled=False,
+        ),
+        with_tools=False,
+    )
+
+    try:
+        response = await asyncio.wait_for(
+            agent.invoke_model(
+                messages=[{"role": "user", "content": "hello"}],
+                message=_message("stubborn-stream-close"),
+                stream=True,
+            ),
+            timeout=0.15,
+        )
+        assert response.content == "complete"
+        assert close_started.is_set()
+    finally:
+        close_release.set()
+        if close_tasks:
+            await asyncio.wait_for(close_tasks[0], timeout=1)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("close_behavior", ("raise", "non_awaitable"))
+async def test_broken_stream_close_does_not_replace_completed_response(
+    monkeypatch: pytest.MonkeyPatch, close_behavior: str
+):
+    class BrokenCloseStream:
+        emitted = False
+
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            if self.emitted:
+                raise StopAsyncIteration
+            self.emitted = True
+            return ModelResponse(id="ok", model="fake-model", content="complete")
+
+        def aclose(self):
+            if close_behavior == "raise":
+                raise RuntimeError("broken stream cleanup")
+            return None
+
+    monkeypatch.setattr(
+        llm_agent_module,
+        "acall_llm_model_stream",
+        lambda *args, **kwargs: BrokenCloseStream(),
+    )
+    agent = _agent(
+        policy=GenerationBudgetPolicy(
+            total_timeout_seconds=1,
+            stream_idle_timeout_seconds=None,
+            active_tool_free_timeout_seconds=None,
+            action_repair_timeout_seconds=None,
+            action_repair_enabled=False,
+        ),
+        with_tools=False,
+    )
+
+    response = await agent.invoke_model(
+        messages=[{"role": "user", "content": "hello"}],
+        message=_message(f"broken-close-{close_behavior}"),
+        stream=True,
+    )
+
+    assert response.content == "complete"
+
+
+@pytest.mark.asyncio
+async def test_broken_stream_close_does_not_replace_primary_error(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    class BrokenCloseStream:
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            raise RuntimeError("primary provider failure")
+
+        def aclose(self):
+            raise RuntimeError("secondary cleanup failure")
+
+    monkeypatch.setattr(
+        llm_agent_module,
+        "acall_llm_model_stream",
+        lambda *args, **kwargs: BrokenCloseStream(),
+    )
+    agent = _agent(
+        policy=GenerationBudgetPolicy(
+            total_timeout_seconds=1,
+            stream_idle_timeout_seconds=None,
+            active_tool_free_timeout_seconds=None,
+            action_repair_timeout_seconds=None,
+            action_repair_enabled=False,
+        ),
+        with_tools=False,
+        attempts=1,
+    )
+
+    with pytest.raises(Exception, match="primary provider failure") as raised:
+        await agent.invoke_model(
+            messages=[{"role": "user", "content": "hello"}],
+            message=_message("broken-close-primary-error"),
+            stream=True,
+        )
+
+    assert "secondary cleanup failure" not in str(raised.value)
+
+
+@pytest.mark.asyncio
+async def test_detached_provider_cleanup_capacity_is_finite(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    release = asyncio.Event()
+    detached: list[asyncio.Task] = []
+
+    async def stubborn_provider():
+        while not release.is_set():
+            try:
+                await release.wait()
+            except asyncio.CancelledError:
+                continue
+
+    monkeypatch.setenv("AWORLD_MAX_PENDING_GENERATION_TASKS", "3")
+    monkeypatch.setattr(
+        llm_agent_module, "_GENERATION_CLEANUP_GRACE_SECONDS", 0.001
+    )
+    llm_agent_module._DETACHED_GENERATION_TASKS.clear()
+    llm_agent_module._ACTIVE_GENERATION_TASKS.clear()
+    agent = _agent(
+        policy=GenerationBudgetPolicy(
+            total_timeout_seconds=None,
+            stream_idle_timeout_seconds=None,
+            active_tool_free_timeout_seconds=None,
+            action_repair_timeout_seconds=None,
+            action_repair_enabled=False,
+        ),
+        with_tools=False,
+    )
+
+    try:
+        for _ in range(3):
+            task = agent._create_generation_task(stubborn_provider())
+            assert task is not None
+            detached.append(task)
+            await asyncio.sleep(0)
+            await agent._cancel_generation_task(task)
+        assert len(llm_agent_module._DETACHED_GENERATION_TASKS) == 3
+
+        with pytest.raises(
+            Exception, match="cleanup capacity is exhausted"
+        ):
+            await agent._await_generation_operation(
+                stubborn_provider(),
+                controller=llm_agent_module.GenerationBudgetController(
+                    agent._resolve_generation_budget_policy()
+                ),
+                streaming=False,
+            )
+    finally:
+        release.set()
+        await asyncio.wait_for(asyncio.gather(*detached), timeout=1)
+        await asyncio.sleep(0)
+        llm_agent_module._DETACHED_GENERATION_TASKS.clear()
+        llm_agent_module._ACTIVE_GENERATION_TASKS.clear()
+
+
+@pytest.mark.asyncio
+async def test_concurrent_provider_timeouts_cannot_exceed_cleanup_capacity(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    release = asyncio.Event()
+    provider_tasks: list[asyncio.Task] = []
+
+    async def stubborn_provider():
+        provider_tasks.append(asyncio.current_task())
+        while not release.is_set():
+            try:
+                await release.wait()
+            except asyncio.CancelledError:
+                continue
+
+    monkeypatch.setenv("AWORLD_MAX_PENDING_GENERATION_TASKS", "3")
+    monkeypatch.setattr(
+        llm_agent_module, "_GENERATION_CLEANUP_GRACE_SECONDS", 0.001
+    )
+    llm_agent_module._DETACHED_GENERATION_TASKS.clear()
+    llm_agent_module._ACTIVE_GENERATION_TASKS.clear()
+    agent = _agent(
+        policy=GenerationBudgetPolicy(
+            total_timeout_seconds=0.005,
+            stream_idle_timeout_seconds=None,
+            active_tool_free_timeout_seconds=None,
+            action_repair_timeout_seconds=None,
+            action_repair_enabled=False,
+        ),
+        with_tools=False,
+    )
+
+    try:
+        results = await asyncio.gather(
+            *(
+                agent._await_generation_operation(
+                    stubborn_provider(),
+                    controller=llm_agent_module.GenerationBudgetController(
+                        agent._resolve_generation_budget_policy()
+                    ),
+                    streaming=False,
+                )
+                for _ in range(20)
+            ),
+            return_exceptions=True,
+        )
+
+        assert all(isinstance(result, Exception) for result in results)
+        assert len(llm_agent_module._ACTIVE_GENERATION_TASKS) <= 3
+        assert len(llm_agent_module._DETACHED_GENERATION_TASKS) <= 3
+        assert len(provider_tasks) <= 3
+    finally:
+        release.set()
+        if provider_tasks:
+            await asyncio.wait_for(asyncio.gather(*provider_tasks), timeout=1)
+        await asyncio.sleep(0)
+        llm_agent_module._DETACHED_GENERATION_TASKS.clear()
+        llm_agent_module._ACTIVE_GENERATION_TASKS.clear()
+
+
+@pytest.mark.asyncio
+async def test_ordinary_runtime_does_not_cap_healthy_generation_concurrency(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.delenv("AWORLD_MAX_PENDING_GENERATION_TASKS", raising=False)
+    llm_agent_module._DETACHED_GENERATION_TASKS.clear()
+    llm_agent_module._ACTIVE_GENERATION_TASKS.clear()
+    agent = _agent(
+        policy=GenerationBudgetPolicy(
+            total_timeout_seconds=None,
+            stream_idle_timeout_seconds=None,
+            active_tool_free_timeout_seconds=None,
+            action_repair_timeout_seconds=None,
+            action_repair_enabled=False,
+        ),
+        with_tools=False,
+    )
+
+    results = await asyncio.gather(
+        *(
+            agent._await_generation_operation(
+                asyncio.sleep(0.01, result=index),
+                controller=llm_agent_module.GenerationBudgetController(
+                    agent._resolve_generation_budget_policy()
+                ),
+                streaming=False,
+            )
+            for index in range(16)
+        )
+    )
+
+    assert results == list(range(16))
+
+
+@pytest.mark.asyncio
 async def test_action_repair_cannot_repair_itself_in_a_loop(
     monkeypatch: pytest.MonkeyPatch,
 ):
