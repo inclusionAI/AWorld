@@ -186,6 +186,26 @@ class ContextCompilerRuntimeConfig(BaseConfig):
     context_inspector: bool = True
     trace_level: Literal["none", "summary", "decisions", "full_redacted"] = "decisions"
     completion_contract: Literal["off", "observe", "enforce"] = "off"
+    # One model turn shares a hard wall deadline. Streaming additionally has
+    # an idle deadline and an active Tool-free action deadline, leaving a
+    # bounded continuation window instead of spending the whole turn on
+    # provider-visible reasoning. ``None`` disables an individual optional
+    # deadline; for the total config field it inherits the stable public
+    # 360-second default. Direct ``GenerationBudgetPolicy`` construction can
+    # explicitly disable the total deadline as well.
+    generation_total_timeout_seconds: Optional[float] = Field(default=None, gt=0)
+    generation_stream_idle_timeout_seconds: Optional[float] = Field(
+        default=120.0, gt=0
+    )
+    generation_active_tool_free_timeout_seconds: Optional[float] = Field(
+        default=240.0, gt=0
+    )
+    generation_action_repair_timeout_seconds: Optional[float] = Field(
+        default=90.0, gt=0
+    )
+    generation_action_repair_max_output_tokens: int = Field(default=1024, gt=0)
+    generation_partial_response_context_chars: int = Field(default=8192, gt=0)
+    generation_action_repair_enabled: bool = True
 
 
 class ModelConfig(BaseConfig):

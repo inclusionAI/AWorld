@@ -10,7 +10,7 @@ import re
 import traceback
 import uuid
 from collections import OrderedDict
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 from enum import Enum
 from typing import Dict, Any, List, Callable, Optional, Union
@@ -43,6 +43,13 @@ from aworld.core.context.amni.prompt.assembly import (
     validated_amni_system_sections,
 )
 from aworld.core.context.base import Context
+from aworld.core.context.generation_budget import (
+    GenerationBudgetController,
+    GenerationBudgetExceeded,
+    GenerationBudgetPolicy,
+    GenerationPhase,
+    GenerationStopReason,
+)
 from aworld.core.context.compiler.frozen_json import canonical_json_hash
 from aworld.core.context.compiler import CandidateRequestNotEnforceable
 from aworld.core.context.compiler.turn_economics import TurnCauseCode
@@ -412,6 +419,7 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         skill_configs: Dict[str, Any] = None,
         llm_max_attempts: int = 2,
         llm_retry_delay: float = 10.0,
+        generation_budget_policy: GenerationBudgetPolicy | None = None,
         enable_subagent: bool = False,
         subagent_search_paths: List[str] = None,
         **kwargs,
@@ -430,6 +438,9 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             event_handler_name: Custom handlers for certain types of events.
             llm_max_attempts: Maximum number of attempts to call LLM. Default is 2. Includes stream and non-stream retries with exponential backoff.
             llm_retry_delay: Base delay in seconds between retry attempts. Default is 10.0s. Uses exponential backoff (10s, 20s, 40s...).
+            generation_budget_policy: Optional typed model-generation deadline
+                                      policy. By default it is resolved from
+                                      ``llm_config.context_compiler``.
             enable_subagent: Enable subagent delegation capability. When True, agent can spawn specialized subagents
                              to handle subtasks autonomously. Automatically adds spawn_subagent tool and scans for
                              available subagents (TeamSwarm members + agent.md files). Default: False.
@@ -509,6 +520,13 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         )
         self.llm_max_attempts = max(1, llm_max_attempts)  # Ensure at least 1 attempt
         self.llm_retry_delay = llm_retry_delay
+        if generation_budget_policy is not None and not isinstance(
+            generation_budget_policy, GenerationBudgetPolicy
+        ):
+            raise TypeError(
+                "generation_budget_policy must be a GenerationBudgetPolicy or None"
+            )
+        self._explicit_generation_budget_policy = generation_budget_policy
 
         # Initialize subagent capability if enabled
         self.enable_subagent = enable_subagent
@@ -3716,28 +3734,499 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
     ) -> Optional[List[Dict[str, Any]]]:
         return messages
 
+    def _resolve_generation_budget_policy(self) -> GenerationBudgetPolicy:
+        """Resolve one immutable policy for the complete Agent model turn."""
+        if self._explicit_generation_budget_policy is not None:
+            return self._explicit_generation_budget_policy
+        llm_config = getattr(self.conf, "llm_config", None)
+        compiler_config = getattr(llm_config, "context_compiler", None)
+
+        def configured(name: str, default: Any) -> Any:
+            if isinstance(compiler_config, dict):
+                return compiler_config.get(name, default)
+            return getattr(compiler_config, name, default)
+
+        total_timeout = configured("generation_total_timeout_seconds", None)
+        if total_timeout is None:
+            total_timeout = DEFAULT_LLM_EXECUTION_TIMEOUT_SECONDS
+        return GenerationBudgetPolicy(
+            total_timeout_seconds=total_timeout,
+            stream_idle_timeout_seconds=configured(
+                "generation_stream_idle_timeout_seconds", 120.0
+            ),
+            active_tool_free_timeout_seconds=configured(
+                "generation_active_tool_free_timeout_seconds", 240.0
+            ),
+            action_repair_timeout_seconds=configured(
+                "generation_action_repair_timeout_seconds", 90.0
+            ),
+            action_repair_max_output_tokens=configured(
+                "generation_action_repair_max_output_tokens", 1024
+            ),
+            partial_response_context_chars=configured(
+                "generation_partial_response_context_chars", 8192
+            ),
+            action_repair_enabled=configured(
+                "generation_action_repair_enabled", True
+            ),
+        )
+
+    @staticmethod
+    def _generation_partial_counts(
+        response: ModelResponse | None,
+    ) -> tuple[int, int]:
+        if response is None:
+            return 0, 0
+        content = getattr(response, "content", None)
+        content_chars = len(content) if isinstance(content, str) else 0
+        tool_calls = getattr(response, "tool_calls", None)
+        return content_chars, len(tool_calls) if isinstance(tool_calls, list) else 0
+
+    def _with_generation_partial(
+        self,
+        exc: GenerationBudgetExceeded,
+        *,
+        controller: GenerationBudgetController,
+        response: ModelResponse | None,
+    ) -> GenerationBudgetExceeded:
+        content_chars, tool_call_count = self._generation_partial_counts(response)
+        return GenerationBudgetExceeded(
+            controller.receipt(
+                exc.reason,
+                partial_response_chars=content_chars,
+                tool_call_count=tool_call_count,
+                repair_scheduled=exc.receipt.repair_scheduled,
+            ),
+            partial_response=response,
+            source_exception=exc.source_exception,
+        )
+
+    def _record_generation_budget_exception(
+        self,
+        context: Context | None,
+        exc: GenerationBudgetExceeded,
+    ) -> None:
+        """Best-effort privacy-safe projection onto existing runtime metrics."""
+        if exc.recorded:
+            return
+        exc.recorded = True
+        if context is None:
+            return
+        try:
+            event_manager = getattr(context, "event_manager", None)
+            runtime_context = (
+                getattr(event_manager, "context", None)
+                if event_manager is not None
+                else None
+            ) or context
+            events = runtime_context.context_info.get("generation_budget_events")
+            if not isinstance(events, list):
+                events = []
+            events.append(exc.receipt.to_dict())
+            runtime_context.context_info["generation_budget_events"] = events
+            metric_name = {
+                GenerationStopReason.CALLER_CANCELLED: (
+                    "generation_caller_cancelled_count"
+                ),
+                GenerationStopReason.PROVIDER_TIMEOUT: (
+                    "generation_provider_timeout_count"
+                ),
+                GenerationStopReason.PROVIDER_CANCELLED: (
+                    "generation_provider_cancelled_count"
+                ),
+                GenerationStopReason.STREAM_IDLE_TIMEOUT: (
+                    "generation_stream_idle_timeout_count"
+                ),
+                GenerationStopReason.ACTIVE_STREAM_OVER_BUDGET: (
+                    "generation_active_stream_over_budget_count"
+                ),
+                GenerationStopReason.CALL_DEADLINE_EXCEEDED: (
+                    "generation_call_deadline_exceeded_count"
+                ),
+                GenerationStopReason.ACTION_REPAIR_TIMEOUT: (
+                    "generation_action_repair_timeout_count"
+                ),
+                GenerationStopReason.ACTION_REPAIR_EXHAUSTED: (
+                    "generation_action_repair_exhausted_count"
+                ),
+            }[exc.reason]
+            increment_watchdog_metric(context, metric_name)
+            if exc.receipt.repair_scheduled:
+                increment_watchdog_metric(
+                    context, "generation_action_repair_scheduled_count"
+                )
+        except Exception as record_exc:
+            logger.warning(
+                "Generation budget evidence recording failed; "
+                f"error_type={type(record_exc).__name__}"
+            )
+
+    @staticmethod
+    async def _cancel_generation_task(task: asyncio.Task) -> None:
+        if not task.done():
+            task.cancel()
+        try:
+            await task
+        except BaseException:
+            pass
+
+    @staticmethod
+    def _is_provider_timeout_exception(exc: BaseException) -> bool:
+        timeout_type_names = {
+            "TimeoutError",
+            "TimeoutException",
+            "ReadTimeout",
+            "WriteTimeout",
+            "ConnectTimeout",
+            "PoolTimeout",
+            "APITimeoutError",
+        }
+        return any(
+            cls.__name__ in timeout_type_names for cls in type(exc).__mro__
+        )
+
+    async def _await_generation_operation(
+        self,
+        awaitable,
+        *,
+        controller: GenerationBudgetController,
+        streaming: bool,
+    ):
+        """Await provider work without confusing its timeout with our deadline."""
+        operation = asyncio.ensure_future(awaitable)
+        deadline = controller.next_deadline(streaming=streaming)
+        try:
+            if deadline is None:
+                try:
+                    return await operation
+                except Exception as exc:
+                    if self._is_provider_timeout_exception(exc):
+                        raise GenerationBudgetExceeded(
+                            controller.receipt(
+                                GenerationStopReason.PROVIDER_TIMEOUT
+                            ),
+                            source_exception=exc,
+                        ) from exc
+                    raise
+            else:
+                remaining = max(0.0, deadline.expires_at - controller.now())
+                done, _ = await asyncio.wait({operation}, timeout=remaining)
+            if operation not in done:
+                await self._cancel_generation_task(operation)
+                raise GenerationBudgetExceeded(
+                    controller.receipt(deadline.reason)
+                )
+            try:
+                return operation.result()
+            except Exception as exc:
+                if self._is_provider_timeout_exception(exc):
+                    raise GenerationBudgetExceeded(
+                        controller.receipt(GenerationStopReason.PROVIDER_TIMEOUT),
+                        source_exception=exc,
+                    ) from exc
+                raise
+        except asyncio.CancelledError:
+            current_task = asyncio.current_task()
+            if operation.done() and operation.cancelled() and not (
+                current_task and current_task.cancelling()
+            ):
+                raise GenerationBudgetExceeded(
+                    controller.receipt(GenerationStopReason.PROVIDER_CANCELLED)
+                ) from None
+            await self._cancel_generation_task(operation)
+            raise
+
+    async def _consume_model_stream(
+        self,
+        *,
+        messages: List[Dict[str, Any]],
+        message: Message,
+        tools: List[Dict[str, Any]] | None,
+        float_temperature: float,
+        prompt_tokens_est: int,
+        controller: GenerationBudgetController,
+        request_kwargs: Dict[str, Any],
+    ) -> ModelResponse:
+        """Consume one stream while retaining the existing output surfaces."""
+        llm_response = ModelResponse(id="", model="", content="", tool_calls=[])
+        provider_kwargs = {
+            key: value for key, value in request_kwargs.items() if key != "stream"
+        }
+        resp_stream = acall_llm_model_stream(
+            self.llm,
+            messages=messages,
+            model=self.model_name,
+            temperature=float_temperature,
+            tools=tools,
+            stream=True,
+            context=message.context,
+            **provider_kwargs,
+        )
+        controller.begin_stream(action_available=bool(tools))
+        stream_iterator = resp_stream.__aiter__()
+        try:
+            while True:
+                try:
+                    chunk = await self._await_generation_operation(
+                        stream_iterator.__anext__(),
+                        controller=controller,
+                        streaming=True,
+                    )
+                except StopAsyncIteration:
+                    break
+                except GenerationBudgetExceeded as exc:
+                    raise self._with_generation_partial(
+                        exc, controller=controller, response=llm_response
+                    ) from exc
+
+                logger.info(
+                    f"llm_agent chunk [agent_name={self.name()}, agent_id={self.id()}]: {chunk}"
+                )
+                if chunk.content:
+                    llm_response.content += chunk.content
+                if chunk.reasoning_content:
+                    llm_response.reasoning_content = (
+                        (llm_response.reasoning_content or "")
+                        + chunk.reasoning_content
+                    )
+                if chunk.tool_calls:
+                    for tc in chunk.tool_calls:
+                        if (
+                            tc.function is not None
+                            and tc.function.name == "unknown"
+                            and llm_response.tool_calls
+                        ):
+                            last = llm_response.tool_calls[-1]
+                            if last.function is not None:
+                                last.function.arguments = (
+                                    last.function.arguments or ""
+                                ) + (tc.function.arguments or "")
+                        else:
+                            llm_response.tool_calls.append(tc)
+                if chunk.error:
+                    llm_response.error = chunk.error
+                llm_response.id = chunk.id
+                llm_response.model = chunk.model
+                llm_response.usage = nest_dict_counter(
+                    llm_response.usage, chunk.usage, ignore_zero=False
+                )
+                if isinstance(chunk.message, dict):
+                    llm_response.message.update(chunk.message)
+                if llm_response.tool_calls:
+                    llm_response.message["tool_calls"] = [
+                        tc.to_dict() for tc in llm_response.tool_calls
+                    ]
+                controller.observe_stream_activity(
+                    meaningful_content_observed=bool(
+                        chunk.content or chunk.reasoning_content or chunk.tool_calls
+                    ),
+                    tool_call_observed=bool(llm_response.tool_calls),
+                )
+
+                await send_message(
+                    ChunkMessage(
+                        payload=chunk,
+                        source_type="llm",
+                        session_id=message.context.session_id,
+                        headers=message.headers,
+                    )
+                )
+                task = message.context.get_task() if message.context else None
+                if (
+                    task
+                    and hasattr(task, "outputs")
+                    and hasattr(task.outputs, "add_output")
+                ):
+                    from aworld.output.base import ChunkOutput
+
+                    usage = llm_response.usage or {}
+                    output_tokens = usage.get("completion_tokens")
+                    output_estimated = False
+                    if output_tokens is None or output_tokens == 0:
+                        output_tokens = max(0, len(llm_response.content or "") // 4)
+                        output_estimated = True
+                    input_tokens = usage.get("prompt_tokens")
+                    input_estimated = False
+                    if input_tokens is None or input_tokens == 0:
+                        input_tokens = prompt_tokens_est
+                        input_estimated = True
+                    tool_call_count = len(llm_response.tool_calls or [])
+                    tool_call_content_length = sum(
+                        len(
+                            getattr(getattr(tc, "function", None), "arguments", None)
+                            or ""
+                        )
+                        for tc in llm_response.tool_calls or []
+                    )
+                    metadata = {
+                        "output_tokens": output_tokens,
+                        "input_tokens": input_tokens,
+                        "tool_calls_count": tool_call_count,
+                        "tool_calls_content_length": tool_call_content_length,
+                        "output_tokens_estimated": output_estimated,
+                        "input_tokens_estimated": input_estimated,
+                        "tool_calls_count_estimated": True,
+                        "tool_calls_content_estimated": True,
+                        "agent_id": self.id(),
+                        "agent_name": self.name(),
+                        "model_name": getattr(chunk, "model", None)
+                        or getattr(llm_response, "model", None)
+                        or self.model_name,
+                    }
+                    await task.outputs.add_output(
+                        ChunkOutput(data=chunk, metadata=metadata)
+                    )
+            return llm_response
+        except asyncio.CancelledError:
+            controller.cancelled_partial_response = llm_response
+            raise
+        finally:
+            try:
+                await resp_stream.aclose()
+            except BaseException as close_exc:
+                logger.debug(
+                    "Model stream cleanup did not complete normally; "
+                    f"error_type={type(close_exc).__name__}"
+                )
+
+    @staticmethod
+    def _bounded_partial_for_repair(content: str, *, limit: int) -> str:
+        if len(content) <= limit:
+            return content
+        marker = "[Earlier partial response omitted by the runtime action budget.]\n"
+        if limit <= len(marker):
+            return content[-limit:]
+        return marker + content[-(limit - len(marker)) :]
+
+    def _build_action_repair_messages(
+        self,
+        *,
+        messages: List[Dict[str, Any]],
+        partial_response: ModelResponse | None,
+        policy: GenerationBudgetPolicy,
+    ) -> List[Dict[str, Any]]:
+        continuation = copy.deepcopy(messages)
+        partial_content = getattr(partial_response, "content", None)
+        if isinstance(partial_content, str) and partial_content:
+            continuation.append(
+                {
+                    "role": "assistant",
+                    "content": self._bounded_partial_for_repair(
+                        partial_content,
+                        limit=policy.partial_response_context_chars,
+                    ),
+                }
+            )
+        continuation.append(
+            {
+                "role": "user",
+                "content": (
+                    "Runtime action budget reached. Do not expand or repeat the "
+                    "analysis. Continue from the partial response and take the "
+                    "next concrete action now by calling an available tool. If "
+                    "no tool is actually required, return only the concise final "
+                    "answer."
+                ),
+            }
+        )
+        return continuation
+
+    async def _invoke_action_budget_repair(
+        self,
+        *,
+        messages: List[Dict[str, Any]],
+        message: Message,
+        tools: List[Dict[str, Any]],
+        float_temperature: float,
+        controller: GenerationBudgetController,
+        request_kwargs: Dict[str, Any],
+    ) -> ModelResponse:
+        policy = controller.policy
+        repair_kwargs = dict(request_kwargs)
+        configured_max = repair_kwargs.get("max_tokens")
+        if isinstance(configured_max, int) and not isinstance(configured_max, bool):
+            repair_kwargs["max_tokens"] = min(
+                configured_max, policy.action_repair_max_output_tokens
+            )
+        elif isinstance(
+            repair_kwargs.get("max_completion_tokens"), int
+        ) and not isinstance(repair_kwargs.get("max_completion_tokens"), bool):
+            repair_kwargs["max_completion_tokens"] = min(
+                repair_kwargs["max_completion_tokens"],
+                policy.action_repair_max_output_tokens,
+            )
+        else:
+            repair_kwargs["max_tokens"] = policy.action_repair_max_output_tokens
+        repair_kwargs["stream"] = True
+        prompt_tokens_est = 0
+        try:
+            breakdown = ModelUtils.calculate_token_breakdown(
+                messages, self.model_name or "gpt-4o"
+            )
+            prompt_tokens_est = breakdown.get("total", 0) or 0
+        except Exception:
+            pass
+        try:
+            response = await self._consume_model_stream(
+                messages=messages,
+                message=message,
+                tools=tools,
+                float_temperature=float_temperature,
+                prompt_tokens_est=prompt_tokens_est,
+                controller=controller,
+                request_kwargs=repair_kwargs,
+            )
+        except GenerationBudgetExceeded as exc:
+            self._record_generation_budget_exception(message.context, exc)
+            raise
+        if response and (
+            response.content or response.tool_calls or response.reasoning_content
+        ):
+            increment_watchdog_metric(
+                message.context, "generation_action_repair_completed_count"
+            )
+            usage_process(response.usage, message.context)
+            return response
+        exhausted = GenerationBudgetExceeded(
+            controller.receipt(GenerationStopReason.ACTION_REPAIR_EXHAUSTED),
+            partial_response=response,
+        )
+        self._record_generation_budget_exception(message.context, exhausted)
+        raise exhausted
+
     async def invoke_model(
         self, messages: List[Dict[str, str]] = [], message: Message = None, **kwargs
     ) -> ModelResponse:
-        """Run one complete LLM turn within a bounded wall-clock budget."""
+        """Run one LLM turn under typed, composable generation deadlines."""
+        controller = GenerationBudgetController(
+            self._resolve_generation_budget_policy()
+        )
         try:
-            return await asyncio.wait_for(
-                self._invoke_model_with_retries(
-                    messages=messages,
-                    message=message,
-                    **kwargs,
+            return await self._invoke_model_with_retries(
+                messages=messages,
+                message=message,
+                _generation_budget_controller=controller,
+                **kwargs,
+            )
+        except GenerationBudgetExceeded as exc:
+            self._record_generation_budget_exception(
+                message.context if message is not None else None, exc
+            )
+            raise
+        except asyncio.CancelledError:
+            context = message.context if message is not None else None
+            partial = controller.cancelled_partial_response
+            content_chars, tool_call_count = self._generation_partial_counts(partial)
+            cancelled = GenerationBudgetExceeded(
+                controller.receipt(
+                    GenerationStopReason.CALLER_CANCELLED,
+                    partial_response_chars=content_chars,
+                    tool_call_count=tool_call_count,
                 ),
-                timeout=DEFAULT_LLM_EXECUTION_TIMEOUT_SECONDS,
+                partial_response=partial,
             )
-        except TimeoutError as exc:
-            logger.error(
-                "LLM execution exceeded the "
-                f"{DEFAULT_LLM_EXECUTION_TIMEOUT_SECONDS:.0f}s total timeout"
-            )
-            raise AWorldRuntimeException(
-                "provider_timeout: LLM execution exceeded the "
-                f"{DEFAULT_LLM_EXECUTION_TIMEOUT_SECONDS:.0f}s total timeout"
-            ) from exc
+            self._record_generation_budget_exception(context, cancelled)
+            raise
 
     async def _invoke_model_with_retries(
         self, messages: List[Dict[str, str]] = [], message: Message = None, **kwargs
@@ -3755,12 +4244,21 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         llm_response = None
         context = message.context if message else None
         failure_output_sent = False
+        controller = kwargs.pop("_generation_budget_controller", None)
+        if not isinstance(controller, GenerationBudgetController):
+            controller = GenerationBudgetController(
+                self._resolve_generation_budget_policy()
+            )
 
         # Prepare parameters once before retry loop
         try:
             tools = kwargs.pop("prepared_tools", None)
             if tools is None:
-                tools = await self._filter_tools(message.context)
+                tools = await self._await_generation_operation(
+                    self._filter_tools(message.context),
+                    controller=controller,
+                    streaming=False,
+                )
             if not tools:
                 # Some model must be clearly defined as None
                 tools = None
@@ -3824,122 +4322,15 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                             prompt_tokens_est = breakdown.get("total", 0) or 0
                         except Exception:
                             pass
-
-                        llm_response = ModelResponse(
-                            id="", model="", content="", tool_calls=[]
-                        )
-                        resp_stream = acall_llm_model_stream(
-                            self.llm,
+                        llm_response = await self._consume_model_stream(
                             messages=messages,
-                            model=self.model_name,
-                            temperature=float_temperature,
+                            message=message,
                             tools=tools,
-                            stream=True,
-                            context=message.context,
-                            **kwargs,
+                            float_temperature=float_temperature,
+                            prompt_tokens_est=prompt_tokens_est,
+                            controller=controller,
+                            request_kwargs=kwargs,
                         )
-
-                        async for chunk in resp_stream:
-                            logger.info(
-                                f"llm_agent chunk [agent_name={self.name()}, agent_id={self.id()}]: {chunk}"
-                            )
-                            if chunk.content:
-                                llm_response.content += chunk.content
-                            if chunk.tool_calls:
-                                for tc in chunk.tool_calls:
-                                    if (
-                                        tc.function.name == "unknown"
-                                        and llm_response.tool_calls
-                                    ):
-                                        last = llm_response.tool_calls[-1]
-                                        last.function.arguments = (
-                                            last.function.arguments or ""
-                                        ) + (tc.function.arguments or "")
-                                    else:
-                                        llm_response.tool_calls.append(tc)
-                            if chunk.error:
-                                llm_response.error = chunk.error
-                            llm_response.id = chunk.id
-                            llm_response.model = chunk.model
-                            llm_response.usage = nest_dict_counter(
-                                llm_response.usage, chunk.usage, ignore_zero=False
-                            )
-                            llm_response.message.update(chunk.message)
-                            if llm_response.tool_calls:
-                                llm_response.message["tool_calls"] = [
-                                    tc.to_dict() for tc in llm_response.tool_calls
-                                ]
-
-                            await send_message(
-                                ChunkMessage(
-                                    payload=chunk,
-                                    source_type="llm",
-                                    session_id=message.context.session_id,
-                                    headers=message.headers,
-                                )
-                            )
-                            # Add chunk to task outputs for local executor to display (with token/tool_calls stats)
-                            task = (
-                                message.context.get_task() if message.context else None
-                            )
-                            if (
-                                task
-                                and hasattr(task, "outputs")
-                                and hasattr(task.outputs, "add_output")
-                            ):
-                                from aworld.output.base import ChunkOutput
-
-                                u = llm_response.usage or {}
-                                out_tok = u.get("completion_tokens")
-                                out_estimated = False
-                                if out_tok is None or out_tok == 0:
-                                    out_tok = max(
-                                        0, len(llm_response.content or "") // 4
-                                    )
-                                    out_estimated = True
-                                inp_tok = u.get("prompt_tokens")
-                                inp_estimated = False
-                                if inp_tok is None or inp_tok == 0:
-                                    inp_tok = prompt_tokens_est
-                                    inp_estimated = True
-                                tc_count = (
-                                    len(llm_response.tool_calls)
-                                    if llm_response.tool_calls
-                                    else 0
-                                )
-                                tc_estimated = True  # streaming: count may be incomplete until stream ends
-                                tc_content_len = 0
-                                if llm_response.tool_calls:
-                                    tc_content_len = sum(
-                                        len(
-                                            getattr(
-                                                getattr(tc, "function"),
-                                                "arguments",
-                                                None,
-                                            )
-                                            or ""
-                                        )
-                                        for tc in llm_response.tool_calls
-                                    )
-                                meta = {
-                                    "output_tokens": out_tok,
-                                    "input_tokens": inp_tok,
-                                    "tool_calls_count": tc_count,
-                                    "tool_calls_content_length": tc_content_len,
-                                    "output_tokens_estimated": out_estimated,
-                                    "input_tokens_estimated": inp_estimated,
-                                    "tool_calls_count_estimated": tc_estimated,
-                                    "tool_calls_content_estimated": True,  # char count, approx
-                                    "agent_id": self.id(),
-                                    "agent_name": self.name(),
-                                    "model_name": getattr(chunk, "model", None)
-                                    or getattr(llm_response, "model", None)
-                                    or self.model_name,
-                                }
-                                await task.outputs.add_output(
-                                    ChunkOutput(data=chunk, metadata=meta)
-                                )
-
                     else:
                         # Remove stream-only kwargs to avoid leaking stale stream options into fallback calls.
                         non_stream_kwargs = {
@@ -3948,18 +4339,21 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                             if k not in {"stream", "stream_options"}
                         }
                         logger.info(
-                            f"🔀 Using non-stream mode (no timeout limit, relies on httpx client timeout)"
+                            "🔀 Using non-stream mode with the shared generation deadline"
                         )
-
-                        llm_response = await acall_llm_model(
-                            self.llm,
-                            messages=messages,
-                            model=self.model_name,
-                            temperature=float_temperature,
-                            tools=tools,
-                            stream=False,  # Explicitly use non-stream mode
-                            context=message.context,
-                            **non_stream_kwargs,
+                        llm_response = await self._await_generation_operation(
+                            acall_llm_model(
+                                self.llm,
+                                messages=messages,
+                                model=self.model_name,
+                                temperature=float_temperature,
+                                tools=tools,
+                                stream=False,
+                                context=message.context,
+                                **non_stream_kwargs,
+                            ),
+                            controller=controller,
+                            streaming=False,
                         )
 
                     # Check if we got a valid response
@@ -3988,12 +4382,71 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                         )
                         if attempt < self.llm_max_attempts:
                             attempt += 1
-                            await asyncio.sleep(self.llm_retry_delay)
+                            await self._await_generation_operation(
+                                asyncio.sleep(self.llm_retry_delay),
+                                controller=controller,
+                                streaming=False,
+                            )
                             continue
                         else:
                             raise AWorldRuntimeException(error_msg)
 
                 except Exception as e:
+                    if isinstance(e, GenerationBudgetExceeded):
+                        can_repair = (
+                            e.reason
+                            is GenerationStopReason.ACTIVE_STREAM_OVER_BUDGET
+                            and controller.phase is GenerationPhase.PRIMARY
+                            and bool(tools)
+                            and not controller.repair_attempted
+                            and controller.policy.action_repair_enabled
+                        )
+                        if can_repair:
+                            scheduled = GenerationBudgetExceeded(
+                                replace(
+                                    e.receipt,
+                                    repair_attempted=True,
+                                    repair_scheduled=True,
+                                ),
+                                partial_response=e.partial_response,
+                                source_exception=e.source_exception,
+                            )
+                            self._record_generation_budget_exception(
+                                context, scheduled
+                            )
+                            if not controller.begin_action_repair():
+                                raise e
+                            schedule_turn_cause = getattr(
+                                context, "schedule_turn_cause", None
+                            )
+                            if callable(schedule_turn_cause):
+                                try:
+                                    schedule_turn_cause(
+                                        TurnCauseCode.ACTION_BUDGET_REPAIR,
+                                        evidence_hash=canonical_json_hash(
+                                            scheduled.receipt.to_dict()
+                                        ),
+                                    )
+                                except Exception as schedule_exc:
+                                    logger.warning(
+                                        "Failed to type action-budget repair turn; "
+                                        f"error_type={type(schedule_exc).__name__}"
+                                    )
+                            repair_messages = self._build_action_repair_messages(
+                                messages=messages,
+                                partial_response=e.partial_response,
+                                policy=controller.policy,
+                            )
+                            return await self._invoke_action_budget_repair(
+                                messages=repair_messages,
+                                message=message,
+                                tools=tools,
+                                float_temperature=float_temperature,
+                                controller=controller,
+                                request_kwargs=kwargs,
+                            )
+                        self._record_generation_budget_exception(context, e)
+
                     await self._raise_if_task_interrupted(
                         context,
                         reason="LLM call interrupted during provider execution",
@@ -4029,6 +4482,21 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                             )
                         )
                         failure_output_sent = True
+                        raise
+
+                    if isinstance(e, GenerationBudgetExceeded) and e.reason in {
+                        GenerationStopReason.ACTIVE_STREAM_OVER_BUDGET,
+                        GenerationStopReason.CALL_DEADLINE_EXCEEDED,
+                        GenerationStopReason.ACTION_REPAIR_TIMEOUT,
+                        GenerationStopReason.ACTION_REPAIR_EXHAUSTED,
+                    }:
+                        await self._save_failed_request_context(
+                            messages=messages,
+                            tools=tools,
+                            error=str(e),
+                            attempt=attempt,
+                            context=message.context,
+                        )
                         raise
 
                     # Check if this is a context length error - don't retry for these
@@ -4079,7 +4547,11 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                         logger.info(
                             f"⏳ Retrying in {backoff_delay}s (exponential backoff)..."
                         )
-                        await asyncio.sleep(backoff_delay)
+                        await self._await_generation_operation(
+                            asyncio.sleep(backoff_delay),
+                            controller=controller,
+                            streaming=False,
+                        )
 
                         attempt += 1
                         continue
@@ -4430,7 +4902,7 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             )
 
     def to_dict(self):
-        return {
+        attributes = {
             "name": self.name(),
             "conf": self.conf,
             "desc": self.desc(),
@@ -4452,6 +4924,11 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             "event_driven": self.event_driven,
             "skill_configs": self.skill_configs,
         }
+        if self._explicit_generation_budget_policy is not None:
+            attributes["generation_budget_policy"] = (
+                self._explicit_generation_budget_policy
+            )
+        return attributes
 
     @staticmethod
     async def agent_to_dict(agent: "LLMAgent", override: Dict[str, Any] = None):

@@ -47,7 +47,7 @@ def test_agent_defaults_to_two_llm_attempts():
 
 
 @pytest.mark.asyncio
-async def test_invoke_model_cancels_provider_after_total_timeout(
+async def test_invoke_model_types_framework_total_deadline_separately_from_provider_timeout(
     monkeypatch: pytest.MonkeyPatch,
 ):
     class MinimalAgent(Agent):
@@ -87,7 +87,7 @@ async def test_invoke_model_cancels_provider_after_total_timeout(
         headers={"context": context},
     )
 
-    with pytest.raises(AWorldRuntimeException, match="provider_timeout"):
+    with pytest.raises(AWorldRuntimeException, match="call_deadline_exceeded"):
         await agent.invoke_model(
             messages=[{"role": "user", "content": "hello"}],
             message=message,

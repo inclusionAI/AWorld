@@ -741,6 +741,7 @@ class Context:
         if cause not in {
             TurnCauseCode.FRAMEWORK_RETRY,
             TurnCauseCode.VALIDATION_REPAIR,
+            TurnCauseCode.ACTION_BUDGET_REPAIR,
         }:
             raise ValueError("only implemented scheduler causes may be scheduled")
         if evidence_hash is not None and not evidence_hash.startswith("sha256:"):
