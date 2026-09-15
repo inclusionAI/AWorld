@@ -11,7 +11,6 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Union
 import os
-import re
 
 from dotenv import load_dotenv
 from pydantic.fields import FieldInfo
@@ -510,12 +509,43 @@ def _check_command_safety(command: str) -> tuple[bool, str | None]:
     return True, None
 
 
-# Match background-execution ampersand '&', while excluding 2>&1, &&, &>, etc.
-# - `\s+&` ensures there is a space before '&' (excludes 2>&1, &>)
-# - `(?!\s*&)` ensures the '&' is not followed by another '&' (excludes &&)
-# This matches anywhere in the line, including patterns like
-#   "cmd1 & cmd2" or "cmd & echo done".
-_BACKGROUND_AMPERSAND_RE = re.compile(r"\s+&(?!\s*&)")
+def _has_background_operator(command: str) -> bool:
+    """Recognize shell ``&`` operators with or without surrounding spaces.
+
+    Quoted/escaped ampersands remain word content. Redirections (``2>&1``,
+    ``<&``, ``&>``) and ``&&`` are kept distinct from a bare operator.
+    """
+
+    single_quoted = False
+    double_quoted = False
+    escaped = False
+    for index, character in enumerate(command):
+        if escaped:
+            escaped = False
+            continue
+        if character == "\\" and not single_quoted:
+            escaped = True
+            continue
+        if character == "'" and not double_quoted:
+            single_quoted = not single_quoted
+            continue
+        if character == '"' and not single_quoted:
+            double_quoted = not double_quoted
+            continue
+        if single_quoted or double_quoted:
+            continue
+        if character == "#" and (
+            index == 0 or command[index - 1].isspace()
+        ):
+            break
+        if character != "&":
+            continue
+        previous = command[index - 1] if index else ""
+        following = command[index + 1] if index + 1 < len(command) else ""
+        if (previous and previous in "&<>") or (following and following in "&>"):
+            continue
+        return True
+    return False
 
 
 def _is_background_process(command: str) -> bool:
@@ -536,7 +566,7 @@ def _is_background_process(command: str) -> bool:
         process; otherwise False.
     """
     cmd_stripped = command.rstrip()
-    if _BACKGROUND_AMPERSAND_RE.search(cmd_stripped):
+    if _has_background_operator(cmd_stripped):
         return True
     cmd_lower = cmd_stripped.lower()
     for keyword in LONG_RUNNING_KEYWORDS:

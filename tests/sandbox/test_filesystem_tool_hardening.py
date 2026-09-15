@@ -26,6 +26,18 @@ def test_explicit_limit_configuration_is_forwarded_to_stdio_server(
     assert get_server_env()["AWORLD_FILESYSTEM_MAX_READ_BYTES"] == "2097152"
 
 
+def test_terminal_policy_configuration_is_forwarded_to_stdio_server(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("AWORLD_TERMINAL_CAPTURE_MAX_BYTES", "2097152")
+    monkeypatch.setenv("TERMINAL_TIMEOUT", "90")
+
+    env = get_server_env()
+
+    assert env["AWORLD_TERMINAL_CAPTURE_MAX_BYTES"] == "2097152"
+    assert env["TERMINAL_TIMEOUT"] == "90"
+
+
 @pytest.mark.asyncio
 async def test_small_file_contract_and_existing_parameters_remain_compatible(tmp_path: Path) -> None:
     await filesystem.set_allowed_directories([str(tmp_path)])

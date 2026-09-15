@@ -47,6 +47,11 @@ ENV_FILESYSTEM_LIMITS = (
     "AWORLD_FILESYSTEM_MAX_EDIT_BYTES",
     "AWORLD_FILESYSTEM_MAX_PARSE_BYTES",
 )
+ENV_TERMINAL_POLICY = (
+    "AWORLD_TERMINAL_CAPTURE_MAX_BYTES",
+    "TERMINAL_CAPTURE_MAX_BYTES",
+    "TERMINAL_TIMEOUT",
+)
 
 # Server type and timeouts
 STREAMABLE_HTTP_TYPE = "streamable-http"
@@ -102,6 +107,11 @@ def get_server_env() -> Dict[str, str]:
     # controller's full process environment. Forward only explicitly configured
     # filesystem policy knobs so general CLI users can tune finite hard limits.
     for name in ENV_FILESYSTEM_LIMITS:
+        value = os.environ.get(name, "").strip()
+        if value:
+            env[name] = value
+
+    for name in ENV_TERMINAL_POLICY:
         value = os.environ.get(name, "").strip()
         if value:
             env[name] = value

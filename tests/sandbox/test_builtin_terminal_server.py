@@ -16,6 +16,7 @@ from aworld.sandbox.tool_servers.terminal.src.terminal import (
     _execute_command_async,
     _format_command_output,
     _get_total_capture_limit_bytes,
+    _has_background_operator,
     run_code,
 )
 
@@ -216,3 +217,31 @@ async def test_background_inherited_pipes_switch_to_detached_drain() -> None:
 
     await asyncio.sleep(0.6)
     assert not _background_drain_tasks
+
+
+@pytest.mark.asyncio
+async def test_background_operator_without_spaces_returns_promptly() -> None:
+    started_at = time.monotonic()
+
+    result = await _execute_command_async("sleep 0.5&", timeout=0.2)
+
+    assert time.monotonic() - started_at < 0.4
+    assert result.success is True
+    assert result.timed_out is False
+    assert result.background_output_detached is True
+
+
+@pytest.mark.parametrize(
+    ("command", "expected"),
+    (
+        ("sleep 1&", True),
+        ("sleep 1 & echo ready", True),
+        ("echo '&'", False),
+        (r"echo \&", False),
+        ("echo ready && echo done", False),
+        ("echo ready 2>&1", False),
+        ("echo ready &>output.log", False),
+    ),
+)
+def test_background_operator_is_shell_aware(command: str, expected: bool) -> None:
+    assert _has_background_operator(command) is expected
