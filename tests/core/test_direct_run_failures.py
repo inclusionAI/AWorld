@@ -34,6 +34,26 @@ def test_typed_outcome_preserves_legacy_truth_value_contract() -> None:
     assert bool(failed_with_partial_summary) is False
 
 
+def test_task_failure_exit_code_is_opt_in_for_supervised_runtimes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    kwargs = {
+        "stage": "agent_execution",
+        "error_code": "agent_task_failed",
+        "agent_name": "Aworld",
+        "status": DirectRunStatus.TASK_FAILED,
+    }
+
+    monkeypatch.delenv("AWORLD_TASK_FAILURE_EXIT_CODE", raising=False)
+    assert main_module._direct_run_failure_outcome(**kwargs).process_exit_code == 1
+
+    monkeypatch.setenv("AWORLD_TASK_FAILURE_EXIT_CODE", "64")
+    assert main_module._direct_run_failure_outcome(**kwargs).process_exit_code == 64
+
+    monkeypatch.setenv("AWORLD_TASK_FAILURE_EXIT_CODE", "125")
+    assert main_module._direct_run_failure_outcome(**kwargs).process_exit_code == 1
+
+
 @pytest.mark.asyncio
 async def test_direct_run_reports_agent_load_failure_and_returns_typed_outcome(
     monkeypatch: pytest.MonkeyPatch,
@@ -389,7 +409,7 @@ def test_run_command_writes_partial_atif_before_returning_task_failure(
     assert final_outcome["atif_export"]["status"] == "persisted"
 
 
-def test_run_command_export_failure_does_not_change_success_semantics(
+def test_run_command_export_failure_forces_infrastructure_exit(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
     tmp_path,
@@ -406,7 +426,12 @@ def test_run_command_export_failure_does_not_change_success_semantics(
                 }
             ]
         },
-        status=DirectRunStatus.SUCCEEDED,
+        status=DirectRunStatus.TASK_FAILED,
+        failure_record={
+            "stage": "agent_execution",
+            "error_code": "agent_task_failed",
+        },
+        process_exit_code=64,
     )
 
     async def successful_direct_run(**_kwargs):
@@ -460,6 +485,63 @@ def test_run_command_export_failure_does_not_change_success_semantics(
         "error_code": "atif_export_failed",
     }
     assert final_outcome["atif_export"]["status"] == "failed"
+
+
+def test_outcome_sidecar_failure_drops_reserved_task_failure_exit(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    tmp_path,
+) -> None:
+    outcome = DirectRunOutcome.from_summary(
+        {
+            "results": [
+                {
+                    "success": False,
+                    "completed": False,
+                    "trajectory_capture_mode": "task_response",
+                    "trajectory": [
+                        {"meta": {"step": 1}, "action": {"content": "failed"}}
+                    ],
+                    "llm_calls": [{"request_id": "request-1"}],
+                }
+            ]
+        },
+        status=DirectRunStatus.TASK_FAILED,
+        failure_record={
+            "stage": "agent_execution",
+            "error_code": "agent_task_failed",
+        },
+        process_exit_code=64,
+    )
+
+    def fail_sidecar(*_args, **_kwargs):
+        raise OSError("private path detail")
+
+    monkeypatch.setattr(
+        "aworld_cli.top_level_commands.run_cmd._write_outcome_sidecar",
+        fail_sidecar,
+    )
+    args = SimpleNamespace(
+        task="test",
+        emit_trajectory=False,
+        trajectory_output=str(tmp_path / "trajectory.json"),
+        outcome_output=str(tmp_path / "outcome.json"),
+    )
+
+    exit_code = RunTopLevelCommand._finalize_outcome(
+        args=args,
+        agent_name="Aworld",
+        outcome=outcome,
+    )
+
+    assert exit_code == 1
+    final_outcome = _marker_payload(
+        capsys.readouterr().err,
+        "AWORLD_RUN_OUTCOME=",
+    )
+    assert final_outcome["semantic_status"] == "infrastructure_failed"
+    assert final_outcome["process_exit_code"] == 1
+    assert final_outcome["failure"]["error_code"] == "direct_run_exception"
 
 
 def test_summary_payload_preserves_zero_step_task_response_evidence() -> None:

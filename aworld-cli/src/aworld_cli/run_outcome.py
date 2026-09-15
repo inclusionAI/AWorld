@@ -8,6 +8,7 @@ process/trajectory decisions without parsing user-visible text.
 
 from __future__ import annotations
 
+import os
 from collections.abc import Iterator, Mapping
 from dataclasses import dataclass
 from enum import Enum
@@ -47,6 +48,26 @@ class DirectRunErrorCode(str, Enum):
     DIRECT_RUN_CANCELLED = "direct_run_cancelled"
     DIRECT_RUN_INTERRUPTED = "direct_run_interrupted"
     ATIF_EXPORT_FAILED = "atif_export_failed"
+
+
+def task_failure_exit_code() -> int:
+    """Return an optional caller-owned exit code for typed task failures.
+
+    Standalone CLI behavior remains exit code 1. Benchmark supervisors can
+    reserve a distinct low exit code so an agent-writable outcome file cannot
+    relabel an unrelated infrastructure failure as a normal task failure.
+    """
+
+    raw_value = os.environ.get("AWORLD_TASK_FAILURE_EXIT_CODE")
+    if raw_value is None:
+        return 1
+    try:
+        value = int(raw_value)
+    except ValueError:
+        return 1
+    # 124/125 are conventional timeout/supervisor failures and 128+ encodes
+    # signals. Keep the opt-in code in the unambiguous low non-zero range.
+    return value if 1 <= value <= 123 else 1
 
 
 def _as_dict(value: Any) -> dict[str, Any]:
@@ -356,5 +377,6 @@ __all__ = [
     "DirectRunOutcome",
     "DirectRunStage",
     "DirectRunStatus",
+    "task_failure_exit_code",
     "coerce_direct_run_outcome",
 ]

@@ -449,7 +449,10 @@ class RunTopLevelCommand:
             final_outcome = replace(
                 outcome,
                 status=DirectRunStatus.INFRASTRUCTURE_FAILED,
-                process_exit_code=outcome.process_exit_code or 1,
+                # A typed task-failure code is reserved for a completely
+                # finalized run. Export failure is infrastructure failure and
+                # must never retain that trusted supervisor signal.
+                process_exit_code=1,
                 failure_record={
                     "stage": DirectRunStage.ORCHESTRATION.value,
                     "error_code": DirectRunErrorCode.ATIF_EXPORT_FAILED.value,
@@ -475,7 +478,7 @@ class RunTopLevelCommand:
                 final_outcome = replace(
                     final_outcome,
                     status=DirectRunStatus.INFRASTRUCTURE_FAILED,
-                    process_exit_code=final_outcome.process_exit_code or 1,
+                    process_exit_code=1,
                     failure_record={
                         "stage": DirectRunStage.ORCHESTRATION.value,
                         "error_code": DirectRunErrorCode.DIRECT_RUN_EXCEPTION.value,

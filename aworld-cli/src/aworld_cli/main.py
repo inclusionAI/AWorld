@@ -1309,8 +1309,15 @@ def _direct_run_failure_outcome(
     details: Optional[dict] = None,
     summary: dict | None = None,
     status: DirectRunStatus = DirectRunStatus.INFRASTRUCTURE_FAILED,
-    process_exit_code: int = 1,
+    process_exit_code: int | None = None,
 ) -> DirectRunOutcome:
+    if process_exit_code is None:
+        if status is DirectRunStatus.TASK_FAILED:
+            from .run_outcome import task_failure_exit_code
+
+            process_exit_code = task_failure_exit_code()
+        else:
+            process_exit_code = 1
     normalized_stage = stage.value if isinstance(stage, DirectRunStage) else str(stage)
     normalized_error = (
         error_code.value if isinstance(error_code, DirectRunErrorCode) else str(error_code)
