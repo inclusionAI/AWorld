@@ -2,6 +2,17 @@ from pathlib import Path
 
 from aworld.utils.skill_loader import collect_skill_docs
 from aworld_cli.core.skill_registry import resolve_repo_aworld_skills_path
+from aworld_cli.core.skill_activation_resolver import (
+    SkillActivationResolver,
+    SkillResolverRequest,
+)
+
+
+DEFAULT_RUNTIME_SKILLS = {
+    "agent-browser",
+    "filex",
+    "media_comprehension",
+}
 
 
 def test_builtin_self_evolve_skill_is_discoverable_and_operational() -> None:
@@ -63,3 +74,33 @@ def test_builtin_self_evolve_skill_defines_runtime_only_candidate_boundary() -> 
     assert "self-evolve framework control flow" in skill_text
     assert "released `SKILL.md` should contain only runtime" in skill_text
     assert "Internal self-evolve context belongs in report artifacts" in skill_text
+
+
+def test_repo_skill_catalog_exposes_only_general_skills_by_default() -> None:
+    skills_root = resolve_repo_aworld_skills_path()
+    assert skills_root is not None
+
+    resolver = SkillActivationResolver()
+    default_view = resolver.resolve(
+        SkillResolverRequest(
+            plugin_roots=(),
+            runtime_scope="session",
+            compatibility_sources=(str(skills_root),),
+        )
+    )
+    management_view = resolver.resolve(
+        SkillResolverRequest(
+            plugin_roots=(),
+            runtime_scope="session",
+            compatibility_sources=(str(skills_root),),
+            include_default_disabled=True,
+        )
+    )
+
+    assert set(default_view.available_skill_names) == DEFAULT_RUNTIME_SKILLS
+    assert len(management_view.available_skill_names) == 17
+    assert {
+        name
+        for name, config in management_view.skill_configs.items()
+        if config.get("default_enabled", True) is False
+    } == set(management_view.available_skill_names) - DEFAULT_RUNTIME_SKILLS

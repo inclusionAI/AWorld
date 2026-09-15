@@ -1,5 +1,6 @@
 ---
 name: last_7_days_news
+default_enabled: false
 description: Search and summarize the latest 7 days of AI news and X discussions using public sources plus browser-based X collection. Use for recent AI news, trends, X discussions, industry briefs, and summaries organized into hot topics, viewpoints, and opportunity areas.
 ---
 

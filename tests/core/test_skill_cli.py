@@ -233,6 +233,30 @@ def test_skill_disable_and_enable_runtime_skill_cli(
     assert SkillStateManager().is_enabled("youtube_search") is True
 
 
+def test_skill_state_can_override_a_default_disabled_skill(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    manager = SkillStateManager()
+
+    assert manager.is_enabled("video-production", default_enabled=False) is False
+
+    manager.enable_skill("video-production")
+    assert manager.enabled_skill_names() == ("video-production",)
+    assert manager.is_enabled("video-production", default_enabled=False) is True
+
+    manager.disable_skill("video-production")
+    assert manager.enabled_skill_names() == ()
+    assert manager.disabled_skill_names() == ("video-production",)
+    assert manager.is_enabled("video-production", default_enabled=True) is False
+
+    manager.reset_skill("video-production")
+    assert manager.enabled_skill_names() == ()
+    assert manager.disabled_skill_names() == ()
+    assert manager.is_enabled("video-production", default_enabled=False) is False
+
+
 def test_skill_list_cli_shows_enabled_state(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:

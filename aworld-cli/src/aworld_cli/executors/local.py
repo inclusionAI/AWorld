@@ -700,7 +700,9 @@ class LocalAgentExecutor(BaseAgentExecutor):
         )
         requested = self._extract_requested_skill_names(task_input)
         task_text = str(getattr(task_input, "task_content", "") or "")
-        disabled_skill_names = SkillStateManager().disabled_skill_names()
+        skill_state = SkillStateManager()
+        disabled_skill_names = skill_state.disabled_skill_names()
+        enabled_skill_names = skill_state.enabled_skill_names()
 
         for agent in self._iter_swarm_agents():
             agent_name = self._agent_name_for_resolution(agent)
@@ -723,6 +725,7 @@ class LocalAgentExecutor(BaseAgentExecutor):
                 agent_name=agent_name,
                 task_text=task_text,
                 requested_skill_names=requested,
+                enabled_skill_names=enabled_skill_names,
                 disabled_skill_names=disabled_skill_names,
                 compatibility_sources=tuple(
                     str(item)

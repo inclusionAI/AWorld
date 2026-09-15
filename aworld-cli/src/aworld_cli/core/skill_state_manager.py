@@ -19,8 +19,15 @@ class SkillStateManager:
         self.state_path.parent.mkdir(parents=True, exist_ok=True)
 
     def disabled_skill_names(self) -> tuple[str, ...]:
+        return self._skill_names_from_state("disabled_skills")
+
+    def enabled_skill_names(self) -> tuple[str, ...]:
+        """Return explicit opt-ins, including skills disabled by default."""
+        return self._skill_names_from_state("enabled_skills")
+
+    def _skill_names_from_state(self, key: str) -> tuple[str, ...]:
         payload = self._load()
-        raw_names = payload.get("disabled_skills", [])
+        raw_names = payload.get(key, [])
         if not isinstance(raw_names, list):
             return tuple()
 
@@ -34,24 +41,49 @@ class SkillStateManager:
             seen.add(normalized)
         return tuple(ordered)
 
-    def is_enabled(self, skill_name: str) -> bool:
-        return self._normalize_skill_name(skill_name) not in set(
-            self.disabled_skill_names()
-        )
+    def is_enabled(self, skill_name: str, *, default_enabled: bool = True) -> bool:
+        target = self._normalize_skill_name(skill_name)
+        if target in set(self.disabled_skill_names()):
+            return False
+        if target in set(self.enabled_skill_names()):
+            return True
+        return default_enabled
 
     def enable_skill(self, skill_name: str) -> None:
         target = self._normalize_skill_name(skill_name)
-        disabled = [
+        payload = self._load()
+        payload["disabled_skills"] = [
             item for item in self.disabled_skill_names() if item != target
         ]
-        self._save({"disabled_skills": disabled})
+        enabled = list(self.enabled_skill_names())
+        if target and target not in enabled:
+            enabled.append(target)
+        payload["enabled_skills"] = enabled
+        self._save(payload)
 
     def disable_skill(self, skill_name: str) -> None:
         target = self._normalize_skill_name(skill_name)
+        payload = self._load()
         disabled = list(self.disabled_skill_names())
         if target and target not in disabled:
             disabled.append(target)
-        self._save({"disabled_skills": disabled})
+        payload["disabled_skills"] = disabled
+        payload["enabled_skills"] = [
+            item for item in self.enabled_skill_names() if item != target
+        ]
+        self._save(payload)
+
+    def reset_skill(self, skill_name: str) -> None:
+        """Remove user overrides and return a skill to its declared default."""
+        target = self._normalize_skill_name(skill_name)
+        payload = self._load()
+        payload["disabled_skills"] = [
+            item for item in self.disabled_skill_names() if item != target
+        ]
+        payload["enabled_skills"] = [
+            item for item in self.enabled_skill_names() if item != target
+        ]
+        self._save(payload)
 
     def _load(self) -> dict[str, Any]:
         if not self.state_path.exists():

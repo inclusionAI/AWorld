@@ -1,5 +1,6 @@
 ---
 name: tiktok_download
+default_enabled: false
 description: Single-file TikTok/Douyin video download and traffic metrics via TikHub API using only httpx; optional persisted raw API JSON plus a stdlib post-processor emitting CSV and simplified JSON. Supports one URL or concurrent batch (max 10 workers). No dependency on any project codebase.
 ---
 

@@ -1,5 +1,6 @@
 ---
 name: ad_image_create
+default_enabled: false
 description: Create ad-ready product images (single or collage) by back-solving sub-image sizes from target output ratio, grounding scene design with media_comprehension, generating images via image_generator with strict request params and actor-count control, and pairing each deliverable with a short social tagline for 小红书/抖音.
 ---
 

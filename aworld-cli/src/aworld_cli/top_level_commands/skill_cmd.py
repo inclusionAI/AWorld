@@ -48,7 +48,7 @@ class SkillTopLevelCommand:
     def _remove_runtime_skill(self, runtime_skills, skill_name: str) -> Path:
         skill_dir = self._runtime_skill_directory_for_remove(runtime_skills, skill_name)
         shutil.rmtree(skill_dir)
-        SkillStateManager().enable_skill(skill_name)
+        SkillStateManager().reset_skill(skill_name)
         return skill_dir
 
     def _print_runtime_skills(self, runtime_skills) -> None:
@@ -63,8 +63,10 @@ class SkillTopLevelCommand:
             print("🧠 Runtime skills:")
             for skill_name, skill_config in sorted(runtime_skill_configs.items()):
                 skill_path = str(skill_config.get("skill_path", "") or "—")
+                default_enabled = skill_config.get("default_enabled", True) is not False
                 print(
-                    f"  - {skill_name} | enabled={state_manager.is_enabled(skill_name)} | path={skill_path}"
+                    f"  - {skill_name} | enabled={state_manager.is_enabled(skill_name, default_enabled=default_enabled)} "
+                    f"| default_enabled={default_enabled} | path={skill_path}"
                 )
 
     @property

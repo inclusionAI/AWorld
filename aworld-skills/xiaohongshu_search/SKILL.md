@@ -1,5 +1,6 @@
 ---
 name: tikhub-xiaohongshu-search
+default_enabled: false
 description: Lightweight TikHub Xiaohongshu image-search workflow. Prioritizes single-request usage with curl or minimal Python, saves raw API JSON by default, and includes a small stdlib post-processor for CSV and simplified JSON. Use when the user wants Xiaohongshu keyword image search, page-based pagination, or structured note/image metadata from TikHub without a heavy wrapper.
 ---
 

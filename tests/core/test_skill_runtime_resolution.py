@@ -20,6 +20,8 @@ class _DummyContext:
         self.user_id = task_input.user_id
         self.session_id = task_input.session_id
         self.workspace_path = None
+        self.context_info = {}
+        self._state = {}
         self._config = SimpleNamespace(debug_mode=False)
 
     def get_config(self):
@@ -28,11 +30,15 @@ class _DummyContext:
     async def init_swarm_state(self, _swarm):
         return None
 
+    def set_state(self, key, value):
+        self._state[key] = value
+
 
 @pytest.mark.asyncio
 async def test_local_executor_resolves_skills_from_task_input(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
     captured = {}
     (tmp_path / "runtime-plugin").mkdir()
     (tmp_path / "installed-skill").mkdir()
@@ -102,6 +108,7 @@ async def test_local_executor_resolves_skills_from_task_input(
     )
 
     assert captured["request"].requested_skill_names == ("browser-use",)
+    assert captured["request"].enabled_skill_names == ()
     assert captured["request"].task_text == "open docs in browser"
     assert captured["request"].compatibility_sources == (
         str(tmp_path / "compat-skills"),

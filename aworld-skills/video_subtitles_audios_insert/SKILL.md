@@ -1,5 +1,6 @@
 ---
 name: video-subtitles-and-audio-insert-workflow
+default_enabled: false
 description: >-
   Burn hard subtitles from UTF-8 SRT files using moviepy 2.x with CJK-capable system fonts;
   tune font size, placement, stroke, and encode settings (bitrate or CRF) to avoid oversized
