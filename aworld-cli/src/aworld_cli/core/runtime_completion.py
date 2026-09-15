@@ -30,7 +30,14 @@ REQUIRED_ARTIFACTS_ENV = "AWORLD_REQUIRED_ARTIFACTS_JSON"
 _FENCED_CODE_BLOCK_RE = re.compile(r"```.*?```", re.DOTALL)
 _URL_RE = re.compile(r"https?://[^\s`\"'<>]+", re.IGNORECASE)
 _PATH_RE = re.compile(
+    r"(?:"
     r"(?:~/|/|\.\.?/)[^\s`\"'>)，,，。！？；：、”’》」】]+"
+    r"|"
+    # A concrete filename such as ``report.xlsx`` or ``out/result.json``.
+    # Requiring a suffix deliberately excludes ambiguous words/directories.
+    r"(?:[A-Za-z0-9][A-Za-z0-9._-]*/)*"
+    r"[A-Za-z0-9][A-Za-z0-9._-]*\.[A-Za-z0-9][A-Za-z0-9._-]*"
+    r")"
 )
 _OUTPUT_CUE_RE = re.compile(
     r"(?:"
@@ -40,6 +47,22 @@ _OUTPUT_CUE_RE = re.compile(
     r"(?:save|write|export|generate|create|produce|store|place|submit)"
     r"[^.!?\n]{0,36}?(?:\bto\b|\bat\b|\bas\b|\bunder\b|\binto\b|\bin\b)"
     r")",
+    re.IGNORECASE,
+)
+_DIRECT_OUTPUT_CUE_RE = re.compile(
+    r"(?:"
+    r"(?:保存|另存|写入|输出|导出|生成|创建|存储|放置|提交)(?:为|到|至|在)?"
+    r"|"
+    r"(?:save|write|export|generate|create|produce|store|place|submit)"
+    r"(?:\s+(?:me|us))?"
+    r"(?:\s+(?:(?:the|a|an|final|resulting)\s+){0,3})?"
+    r")\s*$",
+    re.IGNORECASE,
+)
+_NEGATED_OUTPUT_CUE_RE = re.compile(
+    r"(?:do\s+not|don't|never|不要|请勿|别)\s*"
+    r"(?:保存|另存|写入|输出|导出|生成|创建|存储|放置|提交|"
+    r"save|write|export|generate|create|produce|store|place|submit)",
     re.IGNORECASE,
 )
 
@@ -67,7 +90,28 @@ def _spans_overlap(left: tuple[int, int], right: tuple[int, int]) -> bool:
 def _looks_like_concrete_path(value: str) -> bool:
     if not value or any(marker in value for marker in ("*", "?", "[", "]", "{", "}")):
         return False
-    return value.startswith(("/", "./", "../", "~/"))
+    if value.startswith(("/", "./", "../", "~/")):
+        return True
+    # Bare relative paths are accepted only when the final component is an
+    # unambiguous filename.  The output-cue check below supplies the semantic
+    # evidence that this is a target rather than an input mention.
+    return bool(Path(value).suffix) and ":" not in value
+
+
+def _last_output_cue(prefix: str) -> re.Match[str] | None:
+    cue_matches = [
+        *list(_OUTPUT_CUE_RE.finditer(prefix)),
+        *list(_DIRECT_OUTPUT_CUE_RE.finditer(prefix)),
+    ]
+    if not cue_matches:
+        return None
+    cue = max(cue_matches, key=lambda match: match.start())
+    # Include a small leading window because the direct cue itself starts at
+    # ``write``/``保存`` while its negation necessarily appears just before it.
+    cue_window = prefix[max(0, cue.start() - 16) :]
+    if _NEGATED_OUTPUT_CUE_RE.search(cue_window):
+        return None
+    return cue
 
 
 def infer_declared_output_paths(request: str | None) -> tuple[str, ...]:
@@ -93,12 +137,12 @@ def infer_declared_output_paths(request: str | None) -> tuple[str, ...]:
             if not _looks_like_concrete_path(candidate):
                 continue
             prefix = line[max(0, path_match.start() - 96) : path_match.start()]
-            cue_matches = list(_OUTPUT_CUE_RE.finditer(prefix))
-            if not cue_matches:
+            cue_match = _last_output_cue(prefix)
+            if cue_match is None:
                 continue
             # Do not let a cue from a previous comma-separated clause govern an
             # input path in the next clause.
-            tail = prefix[cue_matches[-1].start() :]
+            tail = prefix[cue_match.start() :]
             if re.search(r"[。！？.!?\n]", tail):
                 continue
             key = candidate.casefold()
