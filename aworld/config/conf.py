@@ -117,7 +117,40 @@ class BaseConfig(BaseModel):
 
 class ContextCacheConfig(BaseConfig):
     enabled: bool = True
-    allow_provider_native_cache: bool = True
+    # Keep provider-specific cache controls opt-in. Stable-prefix construction
+    # and cache-usage accounting remain enabled without sending optional wire
+    # fields such as OpenAI ``prompt_cache_key`` or Anthropic ``cache_control``.
+    # ``None`` means no declaration, ``True`` is an explicit opt-in, and
+    # ``False`` is an explicit veto when model and per-Agent policy are merged.
+    allow_provider_native_cache: Optional[bool] = None
+    # Optional provider routing hint. Adapters may lower it only when their
+    # reviewed native API supports an explicit cache namespace/key.
+    provider_cache_namespace: Optional[str] = None
+
+
+def resolve_provider_native_cache_intent(configs: Iterable[Any]) -> bool:
+    """Resolve an explicit provider-native cache opt-in across policy layers.
+
+    Missing/``None`` declarations are neutral, at least one explicit ``True``
+    is required, and any explicit ``False`` vetoes the feature. This keeps
+    stable-prefix Context behavior default-on without inventing Provider wire
+    controls for deployments that do not expose them.
+    """
+    declarations: List[bool] = []
+    for config in configs:
+        if config is None:
+            continue
+        value = (
+            config.get("allow_provider_native_cache")
+            if isinstance(config, dict)
+            else getattr(config, "allow_provider_native_cache", None)
+        )
+        if value is None:
+            continue
+        if not isinstance(value, bool):
+            raise TypeError("allow_provider_native_cache must be a boolean or None")
+        declarations.append(value)
+    return bool(declarations) and all(declarations)
 
 
 class ContextCompilerRuntimeConfig(BaseConfig):
@@ -170,6 +203,10 @@ class ModelConfig(BaseConfig):
     llm_stream_call: bool = False
     max_retries: int = 3
     max_model_len: Optional[int] = None  # Maximum model context length
+    max_tokens: Optional[int] = Field(default=None, gt=0)
+    provider_native_cache_capability: Literal[
+        "auto", "supported", "unsupported"
+    ] = "auto"
     model_type: Optional[str] = (
         "qwen"  # Model type determines tokenizer and maximum length
     )

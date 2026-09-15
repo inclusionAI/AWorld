@@ -7,7 +7,10 @@ from aworld.agents.llm_agent import Agent
 from aworld.config.conf import AgentConfig, ModelConfig
 from aworld.core.common import TaskStatusValue
 from aworld.core.context.amni.config import AgentContextConfig, ContextCacheConfig
-from aworld.core.context.amni.prompt.assembly import PromptAssemblyPlan
+from aworld.core.context.amni.prompt.assembly import (
+    CacheAwarePromptAssemblyProvider,
+    PromptAssemblyPlan,
+)
 from aworld.core.context.base import Context
 from aworld.core.context.compiler import (
     ContextObservationSidecar,
@@ -157,6 +160,72 @@ def test_prompt_assembly_observability_includes_only_redacted_owner_sidecars():
     assert "owner://private/neuron/path" not in rendered
 
 
+def test_only_framework_cache_assembly_can_publish_stability_semantics():
+    agent = _build_agent()
+    context = _build_context("task-cache-owner")
+    messages = [
+        {"role": "system", "content": "stable rules"},
+        {"role": "user", "content": "hello"},
+    ]
+    framework_provider = CacheAwarePromptAssemblyProvider()
+    plan = framework_provider.build_plan(messages=messages)
+
+    assert agent._publish_prompt_assembly_system_sections(
+        context=context,
+        plan=plan,
+        messages=messages,
+        provider=framework_provider,
+    )
+    sidecars = context.get_context_observations(
+        owner="agent.prompt_assembly_system_sections",
+        namespace=agent.id(),
+    )
+    assert len(sidecars) == 1
+    assert dict(sidecars[0].result.items[0].payload.items()) == messages[0]
+
+    class CustomProvider:
+        pass
+
+    other_context = _build_context("task-custom-cache-owner")
+    assert not agent._publish_prompt_assembly_system_sections(
+        context=other_context,
+        plan=plan,
+        messages=messages,
+        provider=CustomProvider(),
+    )
+    assert other_context.get_context_observations() == ()
+
+
+def test_explicit_amni_owner_prevents_fallback_prompt_assembly_ownership():
+    agent = _build_agent()
+    context = _build_context("task-explicit-amni-owner")
+    context.publish_context_observation(
+        ContextObservationSidecar.from_adapter_result(
+            owner="amni.folded_system",
+            namespace=agent.id(),
+            source_identity="amni-folded://exact",
+            result=adapt_final_messages(
+                [{"role": "system", "content": "folded"}],
+                source_identity="amni-folded://exact",
+                task_epoch=context.task_epoch,
+            ),
+        )
+    )
+    messages = [{"role": "system", "content": "folded"}]
+    provider = CacheAwarePromptAssemblyProvider()
+    plan = provider.build_plan(messages=messages)
+
+    assert not agent._publish_prompt_assembly_system_sections(
+        context=context,
+        plan=plan,
+        messages=messages,
+        provider=provider,
+    )
+    assert context.get_context_observations(
+        owner="agent.prompt_assembly_system_sections"
+    ) == ()
+
+
 def test_llm_call_response_upgrades_native_cache_flag_when_cache_tokens_exist():
     agent = _build_agent()
     context = _build_context()
@@ -237,7 +306,7 @@ def test_prompt_assembly_observability_uses_injected_prompt_assembly_provider():
     assert observability["provider_native_cache"] is True
 
 
-def test_openai_prompt_assembly_observability_enables_native_cache_from_stable_prefix():
+def test_openai_stable_prefix_requires_explicit_native_cache_opt_in():
     class CustomPromptAssemblyProvider:
         def build_plan(self, *, messages, tools=None, metadata=None):
             observability = dict(metadata or {})
@@ -249,7 +318,15 @@ def test_openai_prompt_assembly_observability_enables_native_cache_from_stable_p
                 metadata=dict(metadata or {}),
             )
 
-    agent = _build_agent()
+    agent = Agent(
+        name="Aworld",
+        conf=AgentConfig(
+            llm_provider="openai",
+            llm_model_name="fake-model",
+            llm_api_key="fake-key",
+            context_cache={"allow_provider_native_cache": True},
+        ),
+    )
     agent.prompt_assembly_provider = CustomPromptAssemblyProvider()
 
     observability = agent._build_prompt_assembly_observability(
@@ -321,10 +398,91 @@ async def test_async_policy_does_not_forward_prompt_cache_kwargs_to_unknown_prov
     assert context.get_llm_calls()[0]["call_id"]
 
 
+@pytest.mark.asyncio
+async def test_async_policy_publishes_the_prompt_assembly_provider_not_transport_provider():
+    class CapturingAgent(Agent):
+        async def build_llm_input(self, observation, info=None, message=None, **kwargs):
+            return [
+                {"role": "system", "content": "stable rules"},
+                {"role": "user", "content": "hello"},
+            ]
+
+        async def _filter_tools(self, context=None):
+            return None
+
+        async def invoke_model(self, messages=None, message=None, **kwargs):
+            return ModelResponse(
+                id="resp-cache-owner",
+                model="fake-model",
+                content="done",
+                usage={"prompt_tokens": 3, "completion_tokens": 2},
+            )
+
+    agent = CapturingAgent(
+        name="Aworld",
+        conf=AgentConfig(
+            llm_provider="openai",
+            llm_model_name="fake-model",
+            llm_api_key="fake-key",
+        ),
+    )
+    context = _build_context("task-assembly-provider-boundary")
+    assembly_provider = CacheAwarePromptAssemblyProvider()
+    context.get_prompt_assembly_provider = lambda agent=None: assembly_provider
+    message = Message(
+        category=Constants.AGENT,
+        sender="user",
+        receiver=agent.name(),
+        headers={"context": context},
+    )
+
+    await agent.async_policy(
+        SimpleNamespace(observer="user", from_agent_name=None, context=None),
+        message=message,
+    )
+
+    sidecars = context.get_context_observations(
+        owner="agent.prompt_assembly_system_sections",
+        namespace=agent.id(),
+    )
+    assert len(sidecars) == 1
+    assert sidecars[0].task_epoch == context.task_epoch
+    assert sidecars[0].result.items[0].stability.value == "session_stable"
+
+
 def test_enforce_compiles_after_assembly_without_replaying_provider_plan():
     assert Agent._forward_legacy_prompt_assembly_plan("openai", "off") is True
     assert Agent._forward_legacy_prompt_assembly_plan("openai", "shadow") is True
     assert Agent._forward_legacy_prompt_assembly_plan("openai", "enforce") is False
+
+
+def test_context_output_reserve_does_not_silently_cap_provider_output():
+    agent = _build_agent()
+    request = {}
+
+    agent._bind_context_output_budget(request)
+
+    assert request == {}
+
+
+def test_explicit_model_output_budget_is_bound_without_provider_specific_logic():
+    agent = Agent(
+        name="Aworld",
+        conf=AgentConfig(
+            llm_provider="openai",
+            llm_model_name="fake-model",
+            llm_api_key="fake-key",
+            max_tokens=8192,
+        ),
+    )
+    explicit = {}
+    agent._bind_context_output_budget(explicit)
+
+    assert explicit["max_tokens"] == 8192
+    assert (
+        agent.llm.context_candidate_policy.final_policy.input_budget.reserved_output_tokens
+        == 8192
+    )
 
 
 @pytest.mark.asyncio
@@ -686,16 +844,16 @@ async def test_async_policy_raises_cancelled_error_when_context_is_interrupted_a
         )
 
 
-def test_context_cache_effective_enablement_defaults_to_true_without_amni_context():
+def test_context_cache_defaults_on_without_enabling_provider_native_controls():
     agent = _build_agent()
     context = _build_context()
 
     assert agent._is_context_cache_enabled(context) is True
-    assert agent._allow_provider_native_cache(context) is True
+    assert agent._allow_provider_native_cache(context) is False
 
 
-def test_provider_native_cache_requested_defaults_on_for_anthropic_when_allowed():
-    agent = Agent(
+def test_provider_native_cache_requested_requires_explicit_opt_in_for_anthropic():
+    default_agent = Agent(
         name="Aworld",
         conf=AgentConfig(
             llm_provider="anthropic",
@@ -703,8 +861,28 @@ def test_provider_native_cache_requested_defaults_on_for_anthropic_when_allowed(
             llm_api_key="fake-key",
         ),
     )
+    opted_in_agent = Agent(
+        name="AworldOptedIn",
+        conf=AgentConfig(
+            llm_provider="anthropic",
+            llm_model_name="claude-3-5-sonnet-20241022",
+            llm_api_key="fake-key",
+            context_cache={"allow_provider_native_cache": True},
+        ),
+    )
 
-    assert agent._provider_native_cache_requested(_build_context(), "anthropic", {}) is True
+    assert (
+        default_agent._provider_native_cache_requested(
+            _build_context(), "anthropic", {}
+        )
+        is False
+    )
+    assert (
+        opted_in_agent._provider_native_cache_requested(
+            _build_context(), "anthropic", {}
+        )
+        is True
+    )
 
 
 def test_context_cache_effective_enablement_respects_agent_and_model_opt_out():

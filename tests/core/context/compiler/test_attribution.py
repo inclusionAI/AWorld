@@ -6,7 +6,12 @@ import hashlib
 
 import pytest
 
-from aworld.agents.final_context_adapter import adapt_agent_final_request
+from aworld.agents.final_context_adapter import (
+    adapt_agent_final_request,
+    adapt_amni_system_sections,
+    adapt_prompt_assembly_system_sections,
+)
+from aworld.core.context.amni.prompt.assembly import PromptSection
 from aworld.core.context.compiler import (
     AdapterResult,
     AttributionCollection,
@@ -16,6 +21,7 @@ from aworld.core.context.compiler import (
     ProviderToolsLowering,
     Authority,
     BudgetAllocationTier,
+    CacheBreakReason,
     ContextEmissionKind,
     ContextInputBudget,
     ContextItem,
@@ -211,6 +217,10 @@ def test_final_plan_preserves_duplicate_occurrences_and_actual_residency():
             created_at=datetime.now(timezone.utc),
             task_id="task",
             task_epoch=1,
+            cache_epoch=3,
+            provider_cache_namespace="routing-scope",
+            cache_break_reasons=(CacheBreakReason.HISTORY_COMPACTION,),
+            native_cache_requested=False,
         ),
         policy=_policy(),
     )
@@ -227,10 +237,222 @@ def test_final_plan_preserves_duplicate_occurrences_and_actual_residency():
     assert result.attribution_plan.fingerprint == canonical_json_hash(
         result.attribution_plan.fingerprint_payload()
     )
+    assert result.cache_plan.candidate_content_hash == result.request_snapshot.content_hash
+    assert result.cache_plan.stable_message_count == 1
+    assert result.cache_plan.cache_epoch == 3
+    assert result.cache_plan.provider_cache_namespace == "routing-scope"
+    assert result.cache_plan.break_reasons == (
+        CacheBreakReason.HISTORY_COMPACTION,
+    )
+    assert result.cache_plan.native_cache_requested is False
+    assert result.candidate_contract_hash == canonical_json_hash(
+        {
+            "candidate_content_hash": result.request_snapshot.content_hash,
+            "cache_plan_fingerprint": result.cache_plan.fingerprint,
+        }
+    )
     inspected = inspect_final_context(result)
     assert inspected["attribution"]["entry_count"] == 3
     assert inspected["attribution"]["plan_fingerprint"] == result.attribution_plan.fingerprint
     assert "rules" not in repr(inspected["attribution"])
+
+
+def test_amni_ordered_sections_preserve_stable_prefix_before_dynamic_context():
+    request_id = "amni-section-boundary"
+    messages = (
+        {"role": "system", "content": "stable base"},
+        {"role": "system", "content": "dynamic retrieval"},
+        {"role": "user", "content": "go"},
+    )
+    legacy = ProviderRequestSnapshot(
+        request_id=request_id,
+        provider_name="openai",
+        payload={"messages": messages, "tools": None, "params": {}},
+        capture_stage=RequestCaptureStage.MODEL_BOUNDARY,
+        fidelity=ProviderRequestFidelity.MODEL_BOUNDARY,
+    )
+    message_result, tool_result = adapt_agent_final_request(
+        messages=messages,
+        tools=(),
+        source_identity="model-final://agent/task-task/epoch-1",
+        task_id="task",
+        task_epoch=1,
+        agent_id="agent",
+        amni_folded_system=True,
+    )
+    binding = {
+        "request_id_hash": canonical_json_hash({"request_id": request_id}),
+        "task_epoch": 1,
+    }
+    observations = (
+        ContextObservationSidecar.from_adapter_result(
+            owner="model.final_messages",
+            namespace="agent",
+            source_identity="model-messages",
+            result=message_result,
+            collection=AttributionCollection.MESSAGES,
+            **binding,
+        ),
+        ContextObservationSidecar.from_adapter_result(
+            owner="model.final_tool_catalog",
+            namespace="agent",
+            source_identity="model-tools",
+            result=tool_result,
+            collection=AttributionCollection.TOOLS,
+            **binding,
+        ),
+        ContextObservationSidecar.from_adapter_result(
+            owner="amni.system_sections",
+            namespace="agent",
+            source_identity="amni-sections",
+            result=adapt_amni_system_sections(
+                sections=(
+                    {"name": "system_prompt", "stability": "stable", "content": "stable base"},
+                    {"name": "relevant_memory", "stability": "dynamic", "content": "dynamic retrieval"},
+                ),
+                source_identity="amni-sections",
+                task_id="task",
+                task_epoch=1,
+                agent_id="agent",
+            ),
+            task_epoch=1,
+        ),
+    )
+
+    result = compile_model_boundary_context(
+        legacy_request=legacy,
+        observations=observations,
+        inference_profile=_profile(),
+        policy=_policy(),
+        created_at=datetime.now(timezone.utc),
+        task_id="task",
+        session_id=None,
+        trace_id=None,
+        task_epoch=1,
+    )
+
+    assert [item.payload["content"] for item in result.stable_partition.stable_items] == [
+        "stable base"
+    ]
+    assert result.cache_plan.stable_message_count == 1
+    assert result.request_snapshot.thaw()["messages"] == list(messages)
+
+
+def test_framework_prompt_assembly_sections_prove_provider_neutral_stable_prefix():
+    request_id = "framework-prompt-assembly-sections"
+    messages = (
+        {"role": "system", "content": "stable base"},
+        {"role": "system", "content": "dynamic task context"},
+        {"role": "user", "content": "go"},
+    )
+    message_result, tool_result = adapt_agent_final_request(
+        messages=messages,
+        tools=(),
+        source_identity="model-final://agent/task-task/epoch-1",
+        task_id="task",
+        task_epoch=1,
+        agent_id="agent",
+        amni_folded_system=True,
+    )
+    binding = {
+        "request_id_hash": canonical_json_hash({"request_id": request_id}),
+        "task_epoch": 1,
+    }
+    observations = (
+        ContextObservationSidecar.from_adapter_result(
+            owner="model.final_messages",
+            namespace="agent",
+            source_identity="model-messages",
+            result=message_result,
+            collection=AttributionCollection.MESSAGES,
+            **binding,
+        ),
+        ContextObservationSidecar.from_adapter_result(
+            owner="model.final_tool_catalog",
+            namespace="agent",
+            source_identity="model-tools",
+            result=tool_result,
+            collection=AttributionCollection.TOOLS,
+            **binding,
+        ),
+        ContextObservationSidecar.from_adapter_result(
+            owner="agent.prompt_assembly_system_sections",
+            namespace="agent",
+            source_identity="assembly-sections",
+            result=adapt_prompt_assembly_system_sections(
+                sections=(
+                    PromptSection(
+                        name="system_prompt",
+                        kind="system",
+                        stability="stable",
+                        content=messages[0],
+                    ),
+                    PromptSection(
+                        name="task",
+                        kind="system",
+                        stability="dynamic",
+                        content=messages[1],
+                    ),
+                ),
+                messages=messages,
+                source_identity="assembly-sections",
+                task_id="task",
+                task_epoch=1,
+                agent_id="agent",
+                user_controlled=True,
+            ),
+            task_epoch=1,
+        ),
+    )
+    legacy = ProviderRequestSnapshot(
+        request_id=request_id,
+        provider_name="provider-agnostic",
+        payload={"messages": messages, "tools": None, "params": {}},
+        capture_stage=RequestCaptureStage.MODEL_BOUNDARY,
+        fidelity=ProviderRequestFidelity.MODEL_BOUNDARY,
+    )
+
+    result = compile_model_boundary_context(
+        legacy_request=legacy,
+        observations=observations,
+        inference_profile=replace(
+            _profile(), provider="provider-agnostic", model="any-model"
+        ),
+        policy=_policy(),
+        created_at=datetime.now(timezone.utc),
+        task_id="task",
+        session_id=None,
+        trace_id=None,
+        task_epoch=1,
+    )
+
+    assert result.cache_plan.stable_message_count == 1
+    assert dict(result.stable_partition.stable_items[0].payload.items()) == messages[0]
+    assert result.stable_partition.stable_items[0].trust is Trust.USER_CONTROLLED
+    assert result.request_snapshot.thaw()["messages"] == list(messages)
+
+
+def test_prompt_assembly_sections_reject_mismatched_final_message():
+    messages = ({"role": "system", "content": "actual"},)
+    with pytest.raises(
+        ValueError, match="does not match final message"
+    ):
+        adapt_prompt_assembly_system_sections(
+            sections=(
+                PromptSection(
+                    name="system_prompt",
+                    kind="system",
+                    stability="stable",
+                    content={"role": "system", "content": "claimed"},
+                ),
+            ),
+            messages=messages,
+            source_identity="assembly-sections",
+            task_id="task",
+            task_epoch=1,
+            agent_id="agent",
+            user_controlled=False,
+        )
 
 
 def test_audit_only_evidence_cannot_block_an_exact_emitted_request():

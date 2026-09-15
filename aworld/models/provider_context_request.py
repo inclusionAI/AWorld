@@ -11,6 +11,7 @@ from aworld.core.context.compiler import (
     AttributionSerialization,
     AttributionCollectionShape,
     CandidateRequestNotEnforceable,
+    CachePlan,
     ProviderAttributionMismatch,
     ProviderCandidateEnvelope,
     ProviderLoweringReceipt,
@@ -35,6 +36,8 @@ class ProviderWireProjection:
     tools_lowering: ProviderToolsLowering = ProviderToolsLowering.PRESERVE
     provider_tools_shape_override: AttributionCollectionShape | None = None
     metadata: dict[str, Any] | None = None
+    cache_lowering_status: str = "unsupported"
+    cache_lowering_strategy: str = "none"
 
 
 @dataclass(frozen=True, slots=True)
@@ -44,6 +47,7 @@ class PreparedProviderContextRequest:
     request_id: str
     attempt_tracking_ready: bool
     metadata: dict[str, Any] | None = None
+    cache_plan: CachePlan | None = None
 
 
 def _standard_request(
@@ -90,7 +94,10 @@ def prepare_provider_context_request(
     stop: list[str] | None,
     kwargs: dict[str, Any],
     stream: bool,
-    lower: Callable[[dict[str, Any], dict[str, Any], bool], ProviderWireProjection],
+    lower: Callable[
+        [dict[str, Any], dict[str, Any], bool, CachePlan | None],
+        ProviderWireProjection,
+    ],
 ) -> PreparedProviderContextRequest:
     """Select, lower, snapshot and commit one provider request before I/O."""
     request_kwargs = dict(kwargs)
@@ -138,7 +145,12 @@ def prepare_provider_context_request(
             observed_reason = "observed_model_boundary_mismatch"
 
     try:
-        projection = lower(selected, request_kwargs, stream)
+        projection = lower(
+            selected,
+            request_kwargs,
+            stream,
+            envelope.cache_plan if envelope is not None else None,
+        )
         if not isinstance(projection, ProviderWireProjection):
             raise TypeError("provider lowerer returned an invalid projection")
         canonical_json_bytes(projection.payload)
@@ -178,6 +190,16 @@ def prepare_provider_context_request(
                 provider_request=snapshot,
                 lowering=capability,
                 attribution=attribution,
+                cache_lowering_status=(
+                    projection.cache_lowering_status
+                    if envelope.cache_plan is not None
+                    else None
+                ),
+                cache_lowering_strategy=(
+                    projection.cache_lowering_strategy
+                    if envelope.cache_plan is not None
+                    else None
+                ),
             )
         except ProviderAttributionMismatch:
             raise CandidateRequestNotEnforceable(
@@ -251,6 +273,7 @@ def prepare_provider_context_request(
         request_id=snapshot.request_id,
         attempt_tracking_ready=tracking_ready,
         metadata=projection.metadata,
+        cache_plan=(envelope.cache_plan if envelope is not None else None),
     )
 
 
@@ -262,6 +285,7 @@ def mark_prepared_provider_attempt(
         provider.mark_provider_attempted(
             context=prepared.context,
             request_id=prepared.request_id,
+            cache_plan=prepared.cache_plan,
         )
     else:
         provider.mark_provider_attempted_fail_open(

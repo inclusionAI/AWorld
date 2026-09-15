@@ -64,6 +64,11 @@ def inspect_final_context(result: FinalCompileResult) -> dict[str, Any]:
             "tool_catalog_hash": result.tool_catalog_hash,
             "skill_set_hash": result.skill_set_hash,
         },
+        "cache_plan": {
+            **result.cache_plan.to_redacted_dict(),
+            "fingerprint": result.cache_plan.fingerprint,
+            "candidate_contract_hash": result.candidate_contract_hash,
+        },
         "tokens": result.token_accounting.to_dict(),
         "attribution": attribution,
         "decisions": {

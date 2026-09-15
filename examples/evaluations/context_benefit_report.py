@@ -63,6 +63,7 @@ from aworld.evaluations.normalized_cost import (  # noqa: E402
     NormalizedCostReceipt,
     compute_normalized_cost,
 )
+from aworld.models.usage import reconcile_cache_usage_receipt  # noqa: E402
 
 
 _COST_BENEFIT_METRICS = (
@@ -71,7 +72,10 @@ _COST_BENEFIT_METRICS = (
     "normalized_cost_microunits",
     "normalized_cost_conservative_delta_microunits",
 )
-_EXECUTION_EFFICIENCY_METRICS = ("provider_call_count",)
+_EXECUTION_EFFICIENCY_METRICS = (
+    "provider_call_count",
+    "uncached_input_tokens_exact",
+)
 
 _TURN_CAUSES = {
     "initial_input",
@@ -2145,14 +2149,35 @@ def provider_attribution_pairing_status(
     }
 
 
+def authoritative_cache_usage_receipt(call: dict[str, Any]) -> dict[str, Any]:
+    """Recompute and verify provider-neutral cache truth for one captured call."""
+    return reconcile_cache_usage_receipt(
+        captured_receipt=call.get("cache_usage_receipt"),
+        raw_usage=call.get("usage_raw"),
+        normalized_usage=call.get("usage_normalized") or call.get("usage"),
+    ).to_dict()
+
+
 def authoritative_provider_metrics(calls: list[dict]) -> dict[str, int | float]:
-    """Recompute provider metrics from captured calls, never a stale summary."""
+    """Recompute provider metrics from captured calls, never a stale summary.
+
+    Cache totals are exact-only.  Coverage and fidelity counters make it
+    impossible for a missing provider cache field to masquerade as a cache miss.
+    """
     metrics: dict[str, int | float] = {
         "provider_call_count": len(calls),
         "provider_request_bytes": 0,
         "prompt_tokens": 0,
         "completion_tokens": 0,
         "cache_read_tokens": 0,
+        "cache_usage_exact_call_count": 0,
+        "cache_usage_exact_coverage": 0.0,
+        "cache_usage_exact_input_tokens": 0,
+        "uncached_input_tokens_exact": 0,
+        "cache_usage_bounded_call_count": 0,
+        "cache_usage_conflicting_call_count": 0,
+        "cache_usage_invalid_call_count": 0,
+        "cache_usage_unavailable_call_count": 0,
         "request_trace_match_count": 0,
         "request_trace_match_rate": 0.0,
         "provider_attribution_receipt_count": 0,
@@ -2171,26 +2196,36 @@ def authoritative_provider_metrics(calls: list[dict]) -> dict[str, int | float]:
             ).encode("utf-8")
         )
         usage = call.get("usage_normalized") or call.get("usage") or {}
-        raw_usage = call.get("usage_raw") or usage
-        prompt_details = raw_usage.get("prompt_tokens_details") or {}
         metrics["prompt_tokens"] += int(
             usage.get("prompt_tokens") or usage.get("input_tokens") or 0
         )
         metrics["completion_tokens"] += int(
             usage.get("completion_tokens") or usage.get("output_tokens") or 0
         )
-        metrics["cache_read_tokens"] += int(
-            raw_usage.get("cache_hit_tokens")
-            or raw_usage.get("cache_read_input_tokens")
-            or prompt_details.get("cached_tokens")
-            or 0
-        )
+        receipt = authoritative_cache_usage_receipt(call)
+        fidelity = receipt["fidelity"]
+        counter = f"cache_usage_{fidelity}_call_count"
+        if counter in metrics:
+            metrics[counter] += 1
+        if fidelity == "exact":
+            input_tokens = receipt["input_tokens"]
+            cache_read_tokens = receipt["cache_read_tokens"]
+            uncached_input_tokens = receipt["uncached_input_tokens"]
+            assert isinstance(input_tokens, int)
+            assert isinstance(cache_read_tokens, int)
+            assert isinstance(uncached_input_tokens, int)
+            metrics["cache_read_tokens"] += cache_read_tokens
+            metrics["cache_usage_exact_input_tokens"] += input_tokens
+            metrics["uncached_input_tokens_exact"] += uncached_input_tokens
         metrics["request_trace_match_count"] += int(
             call.get("request_trace_match") is True
         )
     if calls:
         metrics["request_trace_match_rate"] = metrics[
             "request_trace_match_count"
+        ] / len(calls)
+        metrics["cache_usage_exact_coverage"] = metrics[
+            "cache_usage_exact_call_count"
         ] / len(calls)
     attribution = provider_attribution_summary(calls)
     metrics["provider_attribution_receipt_count"] = attribution[
@@ -2210,21 +2245,6 @@ def authoritative_normalized_usage(
     if not calls:
         return None, "provider_calls_missing"
 
-    def exact_alias(mapping: Any, names: tuple[str, ...]) -> tuple[int | None, bool]:
-        if not isinstance(mapping, dict):
-            return None, False
-        present = [mapping[name] for name in names if name in mapping]
-        if not present:
-            return None, False
-        if any(
-            isinstance(value, bool) or not isinstance(value, int) or value < 0
-            for value in present
-        ):
-            return None, False
-        if len(set(present)) != 1:
-            return None, False
-        return present[0], True
-
     totals = {"input_tokens": 0, "cache_read_tokens": 0, "output_tokens": 0}
     for call in calls:
         if (
@@ -2234,56 +2254,44 @@ def authoritative_normalized_usage(
             or call.get("provider_attempt_status") != "attempted"
         ):
             return None, "provider_attempt_truth_incomplete"
-        normalized = call.get("usage_normalized")
-        raw = call.get("usage_raw")
-        input_tokens, input_ok = exact_alias(
-            normalized, ("prompt_tokens", "input_tokens")
-        )
-        output_tokens, output_ok = exact_alias(
-            normalized, ("completion_tokens", "output_tokens")
-        )
-        raw_input, raw_input_ok = exact_alias(raw, ("prompt_tokens", "input_tokens"))
-        raw_output, raw_output_ok = exact_alias(
-            raw, ("completion_tokens", "output_tokens")
-        )
-        if not (input_ok and output_ok and raw_input_ok and raw_output_ok):
-            return None, "provider_usage_missing_or_invalid"
-        if raw_input != input_tokens or raw_output != output_tokens:
-            return None, "provider_usage_conflict"
+        receipt = authoritative_cache_usage_receipt(call)
+        if receipt["fidelity"] != "exact":
+            reason = receipt.get("reason_code")
+            if reason == "provider_total_usage_conflict":
+                normalized = call.get("usage_normalized") or call.get("usage") or {}
+                raw = call.get("usage_raw") or {}
 
-        def cache_truth(mapping: dict[str, Any]) -> int | None:
-            prompt_details = mapping.get("prompt_tokens_details")
-            values = [
-                mapping[name]
-                for name in ("cache_hit_tokens", "cache_read_input_tokens")
-                if name in mapping
-            ]
-            if isinstance(prompt_details, dict) and "cached_tokens" in prompt_details:
-                values.append(prompt_details["cached_tokens"])
-            if (
-                not values
-                or any(
-                    isinstance(value, bool) or not isinstance(value, int) or value < 0
-                    for value in values
-                )
-                or len(set(values)) != 1
-            ):
-                return None
-            return values[0]
+                def token_value(mapping: Any, aliases: tuple[str, ...]) -> Any:
+                    if not isinstance(mapping, dict):
+                        return None
+                    return next(
+                        (mapping[name] for name in aliases if name in mapping),
+                        None,
+                    )
 
-        normalized_cache = cache_truth(normalized)
-        raw_cache = cache_truth(raw)
-        if normalized_cache is None or raw_cache is None:
-            return None, "provider_cache_usage_missing_or_conflicting"
-        if normalized_cache != raw_cache:
-            return None, "provider_cache_usage_conflicting_views"
-        cache_tokens = normalized_cache
-        if cache_tokens > input_tokens:
-            return None, "provider_cache_usage_exceeds_input"
-        for usage_mapping in (normalized, raw):
-            total_tokens, total_present = exact_alias(usage_mapping, ("total_tokens",))
-            if total_present and total_tokens != input_tokens + output_tokens:
-                return None, "provider_total_usage_conflict"
+                if token_value(normalized, ("prompt_tokens", "input_tokens")) != (
+                    token_value(raw, ("prompt_tokens", "input_tokens"))
+                ) or token_value(
+                    normalized, ("completion_tokens", "output_tokens")
+                ) != token_value(raw, ("completion_tokens", "output_tokens")):
+                    return None, "provider_usage_conflict"
+            if reason == "provider_token_usage_conflicting_views":
+                return None, "provider_usage_conflict"
+            if reason == "provider_cache_usage_conflicting_views":
+                return None, "provider_cache_usage_conflicting_views"
+            if reason == "provider_cache_usage_exceeds_input":
+                return None, "provider_cache_usage_exceeds_input"
+            if reason == "captured_cache_usage_receipt_mismatch":
+                return None, "provider_cache_usage_receipt_conflict"
+            if reason == "provider_cache_usage_missing":
+                return None, "provider_cache_usage_missing_or_conflicting"
+            return None, reason or "provider_usage_missing_or_invalid"
+        input_tokens = receipt["input_tokens"]
+        output_tokens = receipt["output_tokens"]
+        cache_tokens = receipt["cache_read_tokens"]
+        assert isinstance(input_tokens, int)
+        assert isinstance(output_tokens, int)
+        assert isinstance(cache_tokens, int)
         totals["input_tokens"] += input_tokens
         totals["cache_read_tokens"] += cache_tokens
         totals["output_tokens"] += output_tokens
@@ -2303,43 +2311,6 @@ def authoritative_normalized_usage_bounds(
     """
     if not calls:
         return None, "provider_calls_missing"
-
-    def exact_alias(mapping: Any, names: tuple[str, ...]) -> tuple[int | None, bool]:
-        if not isinstance(mapping, dict):
-            return None, False
-        present = [mapping[name] for name in names if name in mapping]
-        if (
-            not present
-            or any(
-                isinstance(value, bool) or not isinstance(value, int) or value < 0
-                for value in present
-            )
-            or len(set(present)) != 1
-        ):
-            return None, False
-        return present[0], True
-
-    def cache_truth(mapping: Any) -> int | None:
-        if not isinstance(mapping, dict):
-            return None
-        details = mapping.get("prompt_tokens_details")
-        values = [
-            mapping[name]
-            for name in ("cache_hit_tokens", "cache_read_input_tokens")
-            if name in mapping
-        ]
-        if isinstance(details, dict) and "cached_tokens" in details:
-            values.append(details["cached_tokens"])
-        if (
-            not values
-            or any(
-                isinstance(value, bool) or not isinstance(value, int) or value < 0
-                for value in values
-            )
-            or len(set(values)) != 1
-        ):
-            return None
-        return values[0]
 
     lower = {"input_tokens": 0, "cache_read_tokens": 0, "output_tokens": 0}
     upper = {"input_tokens": 0, "cache_read_tokens": 0, "output_tokens": 0}
@@ -2369,27 +2340,10 @@ def authoritative_normalized_usage_bounds(
             counts["provider_attempt_bounded_call_count"] += 1
             continue
 
-        normalized = call.get("usage_normalized")
-        raw = call.get("usage_raw")
-        input_tokens, input_ok = exact_alias(
-            normalized, ("prompt_tokens", "input_tokens")
-        )
-        output_tokens, output_ok = exact_alias(
-            normalized, ("completion_tokens", "output_tokens")
-        )
-        raw_input, raw_input_ok = exact_alias(raw, ("prompt_tokens", "input_tokens"))
-        raw_output, raw_output_ok = exact_alias(
-            raw, ("completion_tokens", "output_tokens")
-        )
-        exact_usage = bool(
-            input_ok
-            and output_ok
-            and raw_input_ok
-            and raw_output_ok
-            and input_tokens == raw_input
-            and output_tokens == raw_output
-        )
-        if not exact_usage:
+        receipt = authoritative_cache_usage_receipt(call)
+        input_tokens = receipt.get("input_tokens")
+        output_tokens = receipt.get("output_tokens")
+        if not isinstance(input_tokens, int) or not isinstance(output_tokens, int):
             upper["input_tokens"] += len(canonical_json_bytes(provider_request))
             response = call.get("response")
             if response is not None:
@@ -2397,25 +2351,26 @@ def authoritative_normalized_usage_bounds(
             counts["usage_bounded_call_count"] += 1
             continue
 
-        assert input_tokens is not None and output_tokens is not None
         lower["input_tokens"] += input_tokens
         upper["input_tokens"] += input_tokens
         lower["output_tokens"] += output_tokens
         upper["output_tokens"] += output_tokens
-        normalized_cache = cache_truth(normalized)
-        raw_cache = cache_truth(raw)
-        if (
-            normalized_cache is not None
-            and raw_cache is not None
-            and normalized_cache == raw_cache
-            and normalized_cache <= input_tokens
-        ):
-            lower["cache_read_tokens"] += normalized_cache
-            upper["cache_read_tokens"] += normalized_cache
+        cache_read_tokens = receipt.get("cache_read_tokens")
+        if receipt["fidelity"] == "exact" and isinstance(cache_read_tokens, int):
+            lower["cache_read_tokens"] += cache_read_tokens
+            upper["cache_read_tokens"] += cache_read_tokens
             counts["exact_call_count"] += 1
-        else:
+        elif (
+            receipt["fidelity"] == "bounded"
+            and receipt.get("reason_code") == "provider_cache_usage_missing"
+        ):
             # Cache makes the frozen policy cheaper.  All-cache is therefore
             # the safe lower endpoint and no-cache the safe upper endpoint.
+            lower["cache_read_tokens"] += input_tokens
+            counts["cache_bounded_call_count"] += 1
+        else:
+            # Captured/recomputed conflicts and invalid provider usage keep the
+            # known input/output totals but receive the widest cache bound.
             lower["cache_read_tokens"] += input_tokens
             counts["cache_bounded_call_count"] += 1
 
@@ -2486,6 +2441,162 @@ def benefit_evidence(
         ),
         "accepted_cost_metrics": list(_COST_BENEFIT_METRICS),
         "accepted_execution_efficiency_metrics": list(_EXECUTION_EFFICIENCY_METRICS),
+    }
+
+
+def cache_ablation_evidence(
+    manifest_payload: dict[str, Any], *, baseline: str, candidate: str
+) -> dict[str, Any]:
+    """Revalidate a cache-only contrast and its provider-neutral preflight."""
+    try:
+        by_name = {
+            item["name"]: item
+            for item in manifest_payload["variants"]
+            if isinstance(item, dict) and isinstance(item.get("name"), str)
+        }
+        baseline_payload = by_name[baseline]
+        candidate_payload = by_name[candidate]
+        if not any(
+            "context_cache" in payload
+            for payload in (baseline_payload, candidate_payload)
+        ):
+            return {"status": "not_required", "reason_code": None}
+        baseline_variant = ContextVariant.build(
+            baseline, variant_settings(baseline_payload)
+        )
+        candidate_variant = ContextVariant.build(
+            candidate, variant_settings(candidate_payload)
+        )
+        contrast = ContextAblationContrast.build(
+            baseline=baseline_variant,
+            candidate=candidate_variant,
+            component=ContextAblationComponent.CACHE,
+        )
+        receipt = manifest_payload["ablation_plan"]
+        plan = ContextAblationPlan.build(
+            name=receipt["name"],
+            variants=(baseline_variant, candidate_variant),
+            contrasts=(contrast,),
+        )
+        if receipt != plan.to_dict():
+            raise ValueError("cache_ablation_plan_mismatch")
+        preflight = manifest_payload["cache_usage_preflight"]
+        if not (
+            preflight.get("schema_version")
+            == "aworld.cache-conformance-preflight/v1"
+            and preflight.get("status") == "passed"
+            and preflight.get("cache_capability_observed") is True
+            and preflight.get("exact_usage_coverage") == 1.0
+            and preflight.get("observation_count") == 8
+            and set(preflight.get("validated_modes") or ())
+            == {"nonstream", "stream"}
+            and preflight.get("failure_codes") == []
+            and preflight.get("process_exit_code") == 0
+        ):
+            raise ValueError("cache_preflight_not_exact")
+        return {
+            "status": "available",
+            "reason_code": None,
+            "ablation_plan_hash": plan.plan_hash,
+            "contrast_hash": contrast.contrast_hash,
+            "changed_paths": list(contrast.changed_paths),
+            "preflight_run_nonce_hash": preflight.get("run_nonce_hash"),
+            "exact_usage_coverage": 1.0,
+            "observation_count": 8,
+            "validated_modes": ["nonstream", "stream"],
+        }
+    except (KeyError, TypeError, ValueError) as exc:
+        reason = str(exc)
+        if not re.fullmatch(r"[a-z][a-z0-9_]{0,127}", reason):
+            reason = "cache_ablation_evidence_invalid"
+        return {"status": "unavailable", "reason_code": reason}
+
+
+_EXPLICIT_NATIVE_CACHE_LOWERINGS = frozenset(
+    {"prompt_cache_key", "anthropic_cache_control"}
+)
+
+
+def cache_lowering_run_evidence(
+    calls: list[dict[str, Any]], *, cache_enabled: bool
+) -> dict[str, Any]:
+    """Classify whether a cache policy changed the provider-bound request.
+
+    Exact-prefix providers may cache automatically and remain safe with the
+    policy enabled, but ``exact_prefix_no_hint`` is deliberately not causal
+    evidence for an AWorld cache-control ablation.
+    """
+    lowerings = []
+    for call in calls:
+        rollout = call.get("context_rollout") if isinstance(call, dict) else None
+        lowering = rollout.get("provider_lowering") if isinstance(rollout, dict) else None
+        if not isinstance(lowering, dict):
+            return {
+                "status": "unavailable",
+                "reason_code": "provider_cache_lowering_missing",
+            }
+        status = lowering.get("cache_lowering_status")
+        strategy = lowering.get("cache_lowering_strategy")
+        if not isinstance(status, str) or not isinstance(strategy, str):
+            return {
+                "status": "unavailable",
+                "reason_code": "provider_cache_lowering_missing",
+            }
+        lowerings.append((status, strategy))
+    if not lowerings:
+        return {
+            "status": "unavailable",
+            "reason_code": "provider_calls_missing",
+        }
+
+    counts: dict[str, int] = {}
+    for status, strategy in lowerings:
+        key = f"{status}:{strategy}"
+        counts[key] = counts.get(key, 0) + 1
+    evidence = {
+        "call_count": len(lowerings),
+        "lowering_counts": dict(sorted(counts.items())),
+    }
+    if not cache_enabled:
+        if all(
+            status == "disabled" and strategy == "explicit_opt_out"
+            for status, strategy in lowerings
+        ):
+            return {"status": "available", "reason_code": None, **evidence}
+        return {
+            "status": "unavailable",
+            "reason_code": "cache_disabled_lowering_not_proven",
+            **evidence,
+        }
+
+    if all(
+        status == "applied" and strategy in _EXPLICIT_NATIVE_CACHE_LOWERINGS
+        for status, strategy in lowerings
+    ):
+        return {"status": "available", "reason_code": None, **evidence}
+    if all(
+        status == "preserved" and strategy == "exact_prefix_no_hint"
+        for status, strategy in lowerings
+    ):
+        return {
+            "status": "safety_only",
+            "reason_code": "provider_native_cache_control_not_applied",
+            **evidence,
+        }
+    if all(
+        status == "unsupported"
+        and strategy == "provider_capability_not_declared"
+        for status, strategy in lowerings
+    ):
+        return {
+            "status": "safety_only",
+            "reason_code": "provider_native_cache_capability_unverified",
+            **evidence,
+        }
+    return {
+        "status": "unavailable",
+        "reason_code": "explicit_provider_cache_lowering_incomplete",
+        **evidence,
     }
 
 
@@ -2803,6 +2914,13 @@ def trial_from_result(
     ):
         numeric_metrics["wall_time_seconds"] = finished_at - started_at
     provider_metrics = authoritative_provider_metrics(calls)
+    if provider_metrics["cache_usage_exact_coverage"] != 1.0:
+        # Partial exact totals are diagnostic only. Omitting this field prevents
+        # paired metric intersection from treating unknown cache work as zero.
+        # The harness also emits a provisional value in context_metrics, so
+        # remove both sources before merging authoritative provider evidence.
+        numeric_metrics.pop("uncached_input_tokens_exact", None)
+        provider_metrics.pop("uncached_input_tokens_exact", None)
     numeric_metrics.update(provider_metrics)
     if normalized_cost_policy is not None:
         usage, usage_reason = authoritative_normalized_usage(calls)
@@ -2966,6 +3084,8 @@ def aggregate(
     capability_evidence_runs: list[dict[str, Any]] = []
     workload_kinds = []
     candidate_baseline_modes: list[bool] = []
+    cache_ablation_runs: list[dict[str, Any]] = []
+    cache_lowering_runs: list[dict[str, Any]] = []
     for experiment in experiments:
         manifest_payload = read_json(experiment / "experiment_manifest.json")
         results = read_json(experiment / "results.json", [])
@@ -2992,6 +3112,16 @@ def aggregate(
             variant_payload_by_name[baseline].get("context_compiler") or {}
         ).get("mode") in {"shadow", "enforce"}
         candidate_baseline_modes.append(allow_candidate_baseline)
+        cache_ablation_runs.append(
+            {
+                "experiment": str(experiment),
+                **cache_ablation_evidence(
+                    manifest_payload,
+                    baseline=baseline,
+                    candidate=candidate,
+                ),
+            }
+        )
         results = [
             result
             for result in results
@@ -3049,6 +3179,27 @@ def aggregate(
             if isinstance(calls, list):
                 valid_calls = [call for call in calls if isinstance(call, dict)]
                 experiment_calls.extend(valid_calls)
+                cache_settings = (
+                    variant_payload_by_name[result["variant"]].get("context_cache")
+                    or {}
+                )
+                if any(
+                    "context_cache" in payload
+                    for payload in variant_payload_by_name.values()
+                ):
+                    cache_lowering_runs.append(
+                        {
+                            "experiment": str(experiment),
+                            "run": str(run_dir),
+                            "case_id": result["task"],
+                            "variant": result["variant"],
+                            "repeat": int(result["repetition"]),
+                            **cache_lowering_run_evidence(
+                                valid_calls,
+                                cache_enabled=bool(cache_settings.get("enabled")),
+                            ),
+                        }
+                    )
                 attribution_runs.append(
                     {
                         "experiment": str(experiment),
@@ -3209,6 +3360,66 @@ def aggregate(
     )
     if not benefit["proven"]:
         hard_failures.add("positive_benefit_not_proven")
+    required_cache_ablation_runs = [
+        row for row in cache_ablation_runs if row["status"] != "not_required"
+    ]
+    if required_cache_ablation_runs and any(
+        row["status"] != "available" for row in required_cache_ablation_runs
+    ):
+        hard_failures.add("cache_ablation_evidence_incomplete")
+    cache_causal_evidence = {
+        "status": "not_required",
+        "reason_code": None,
+        "runs": cache_lowering_runs,
+    }
+    if required_cache_ablation_runs:
+        candidate_lowerings = [
+            row for row in cache_lowering_runs if row["variant"] == candidate
+        ]
+        baseline_lowerings = [
+            row for row in cache_lowering_runs if row["variant"] == baseline
+        ]
+        if (
+            candidate_lowerings
+            and baseline_lowerings
+            and all(row["status"] == "available" for row in candidate_lowerings)
+            and all(row["status"] == "available" for row in baseline_lowerings)
+        ):
+            cache_causal_evidence = {
+                "status": "available",
+                "reason_code": None,
+                "runs": cache_lowering_runs,
+            }
+        else:
+            reason = "explicit_provider_cache_lowering_incomplete"
+            if candidate_lowerings and all(
+                row["status"] == "safety_only" for row in candidate_lowerings
+            ):
+                reason_codes = {
+                    str(row["reason_code"]) for row in candidate_lowerings
+                }
+                reason = (
+                    next(iter(reason_codes))
+                    if len(reason_codes) == 1
+                    else "provider_native_cache_control_not_applied"
+                )
+            cache_causal_evidence = {
+                "status": "unavailable",
+                "reason_code": reason,
+                "runs": cache_lowering_runs,
+            }
+            hard_failures.add("cache_causal_evidence_incomplete")
+    attributed_benefit = dict(benefit)
+    if (
+        required_cache_ablation_runs
+        and cache_causal_evidence["status"] != "available"
+    ):
+        attributed_benefit = {
+            "proven": False,
+            "path": None,
+            "reason": cache_causal_evidence["reason_code"],
+            "observed_paired_benefit": benefit,
+        }
     if (
         any(row["summary"]["status"] != "available" for row in all_attribution_runs)
         or not all_attribution_runs
@@ -3305,6 +3516,9 @@ def aggregate(
             else None
         ),
         "benefit_evidence": benefit,
+        "attributed_benefit_evidence": attributed_benefit,
+        "cache_ablation_evidence": cache_ablation_runs,
+        "cache_causal_evidence": cache_causal_evidence,
         "normalized_cost_policy_ready": normalized_cost_policy_ready,
         "normalized_cost_exact_policy_ready": normalized_cost_exact_policy_ready,
         "normalized_cost_bound_policy_ready": normalized_cost_bound_policy_ready,

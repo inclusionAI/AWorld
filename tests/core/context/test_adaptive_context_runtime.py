@@ -880,6 +880,18 @@ async def test_agent_adaptive_policy_performs_checkpoint_and_compaction(monkeypa
         "low_information_gain",
     ]
     assert snapshot_state[0]["continuation"] == compacted
+    assert context.context_lifecycle_state.checkpoint_revision == 1
+
+    # Once compaction is active, later turns append to the same cache epoch
+    # until another checkpoint decision is justified.
+    reused = await agent._apply_adaptive_context_policy(
+        context=context,
+        messages=compacted,
+        context_compiler_mode="enforce",
+    )
+    assert reused
+    assert checkpoint_calls == [True]
+    assert context.context_lifecycle_state.checkpoint_revision == 1
 
 
 @pytest.mark.asyncio
@@ -930,6 +942,48 @@ async def test_agent_compacts_diverse_history_after_no_goal_progress(monkeypatch
     assert state["last_effective_prompt_tokens"] < state["last_prompt_tokens"]
     assert state["last_estimated_saved_prompt_tokens"] > 0
     assert state["decisions"][-1]["estimated_saved_prompt_tokens"] > 0
+
+
+@pytest.mark.asyncio
+async def test_recovery_checkpoint_without_rewrite_preserves_cache_epoch(monkeypatch):
+    agent = LLMAgent.__new__(LLMAgent)
+    agent._id = "agent"
+    agent._llm = SimpleNamespace(
+        _context_checkpoint_policy="adaptive",
+        _context_input_budget=100_000,
+    )
+    context = Context(
+        task_id="recovery-only-checkpoint",
+        session=SimpleNamespace(session_id="recovery-only-session"),
+    )
+    context.context_info["context_semantic_progress"] = {
+        "agent": {
+            "repetition_count": 3,
+            "low_information_gain_count": 3,
+        }
+    }
+    observed_cache_boundaries = []
+    original_snapshot = context.snapshot
+
+    async def snapshot(*, cache_boundary=True):
+        observed_cache_boundaries.append(cache_boundary)
+        return await original_snapshot(cache_boundary=cache_boundary)
+
+    monkeypatch.setattr(context, "snapshot", snapshot)
+
+    result = await agent._apply_adaptive_context_policy(
+        context=context,
+        messages=[
+            {"role": "system", "content": "policy"},
+            {"role": "user", "content": "short task"},
+        ],
+        context_compiler_mode="enforce",
+    )
+
+    assert result[-1]["role"] == "user"
+    assert observed_cache_boundaries == [False]
+    assert context.context_lifecycle_state.checkpoint_revision == 0
+    assert context.get_pending_cache_break_reasons() == ()
 
 
 @pytest.mark.asyncio

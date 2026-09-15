@@ -1,0 +1,15 @@
+{
+  "schema_version": "aworld.context-ablation-suite/v1",
+  "name": "provider-neutral-cache-v1",
+  "variants": [
+    "../context_eval_variants/adaptive-cache-off.json",
+    "../context_eval_variants/adaptive-cache-on.json"
+  ],
+  "contrasts": [
+    {
+      "baseline_variant": "adaptive-cache-off",
+      "candidate_variant": "adaptive-cache-on",
+      "component": "cache"
+    }
+  ]
+}

@@ -80,8 +80,26 @@ def test_cache_aware_prompt_assembly_provider_classifies_stable_and_dynamic_sect
     assert [section.content for section in plan.dynamic_system_sections] == [
         {"role": "system", "content": "relevant memory"},
     ]
+    assert [section.stability for section in plan.system_sections] == [
+        "stable",
+        "dynamic",
+    ]
+    assert [section.content for section in plan.system_sections] == [
+        {"role": "system", "content": "base rules"},
+        {"role": "system", "content": "relevant memory"},
+    ]
     assert plan.conversation_messages == [{"role": "user", "content": "hello"}]
     assert plan.observability["cache_aware_assembly"] is True
+
+
+def test_cache_aware_prompt_assembly_keeps_unknown_augment_dynamic():
+    plan = CacheAwarePromptAssemblyProvider().build_plan(
+        messages=[{"role": "system", "content": "retrieved value"}],
+        metadata={"system_section_hints": [{"name": "extension-x"}]},
+    )
+
+    assert plan.stable_system_sections == []
+    assert [section.stability for section in plan.system_sections] == ["dynamic"]
 
 
 def test_cache_aware_prompt_assembly_provider_marks_runtime_stable_prefix_reuse():

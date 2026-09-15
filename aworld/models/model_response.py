@@ -613,12 +613,31 @@ class ModelResponse:
                     chunk.model if hasattr(chunk, 'model') else chunk.get('model', 'unknown'),
                     chunk)
 
+            raw_usage = cls._extract_usage_payload(
+                getattr(chunk, "usage", None)
+                if not isinstance(chunk, dict)
+                else chunk.get("usage")
+            )
+            if not raw_usage:
+                message_payload = (
+                    getattr(chunk, "message", None)
+                    if not isinstance(chunk, dict)
+                    else chunk.get("message")
+                )
+                raw_usage = cls._extract_usage_payload(
+                    getattr(message_payload, "usage", None)
+                    if not isinstance(message_payload, dict)
+                    else message_payload.get("usage")
+                )
+
             # Handle stop reason (end of stream)
             if hasattr(chunk, 'stop_reason') and chunk.stop_reason:
                 return cls(
                     id=chunk.id if hasattr(chunk, 'id') else 'unknown',
                     model=chunk.model if hasattr(chunk, 'model') else 'claude',
                     content=None,
+                    usage=raw_usage or None,
+                    raw_usage=raw_usage or None,
                     raw_response=chunk,
                     message={"role": "assistant", "content": "", "stop_reason": chunk.stop_reason}
                 )
@@ -658,6 +677,8 @@ class ModelResponse:
                 model=chunk.model if hasattr(chunk, 'model') else 'claude',
                 content=content,
                 tool_calls=processed_tool_calls or None,
+                usage=raw_usage or None,
+                raw_usage=raw_usage or None,
                 raw_response=chunk,
                 message=message
             )
@@ -725,19 +746,7 @@ class ModelResponse:
 
             # Extract usage information
             raw_usage = cls._extract_usage_payload(getattr(response, "usage", None))
-            usage = dict(raw_usage)
-            if not usage:
-                usage = {
-                    "completion_tokens": 0,
-                    "prompt_tokens": 0,
-                    "total_tokens": 0
-                }
-            if "completion_tokens" not in usage and "output_tokens" in usage:
-                usage["completion_tokens"] = usage.get("output_tokens", 0)
-            if "prompt_tokens" not in usage and "input_tokens" in usage:
-                usage["prompt_tokens"] = usage.get("input_tokens", 0)
-            if "total_tokens" not in usage and "prompt_tokens" in usage and "completion_tokens" in usage:
-                usage["total_tokens"] = (usage.get("prompt_tokens") or 0) + (usage.get("completion_tokens") or 0)
+            usage = normalize_usage(raw_usage)
 
             # Create ModelResponse
             return cls(
