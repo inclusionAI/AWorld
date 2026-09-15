@@ -96,6 +96,14 @@ def _build_tool_call_failure_result(
     parameter_summary = _summarize_tool_parameters(parameter)
     if parameter_summary:
         content += f". Arguments: {parameter_summary}"
+    metadata = {
+        key: value
+        for key, value in (
+            ("failure_category", getattr(error, "failure_category", None)),
+            ("failure_code", getattr(error, "failure_code", None)),
+        )
+        if isinstance(value, str) and value
+    }
     return ActionResult(
         success=False,
         tool_name=server_name,
@@ -103,7 +111,7 @@ def _build_tool_call_failure_result(
         content=content,
         error=error_text,
         keep=True,
-        metadata={},
+        metadata=metadata,
         parameter=parameter,
     )
 

@@ -6,6 +6,7 @@ from aworld.sandbox.run.mcp_servers import (
     _build_tool_call_failure_result,
     _coalesce_tool_result_content,
 )
+from aworld.sandbox.errors import SandboxInfrastructureError
 
 
 def test_coalesce_tool_result_content_returns_plain_string_for_single_item():
@@ -34,6 +35,22 @@ def test_build_tool_call_failure_result_includes_error_context_and_parameter_sum
     assert "RuntimeError: boom" in result.content
     assert "command=python script.py" in result.content
     assert "timeout=30" in result.content
+
+
+def test_build_tool_call_failure_result_preserves_typed_infrastructure_error():
+    result = _build_tool_call_failure_result(
+        server_name="docker",
+        tool_name="run_code",
+        parameter={},
+        error=SandboxInfrastructureError(
+            "docker_checkpoint_create_failed", "backend unavailable"
+        ),
+    )
+
+    assert result.metadata == {
+        "failure_category": "infrastructure",
+        "failure_code": "docker_checkpoint_create_failed",
+    }
 
 
 def _terminal_tool(tool_name: str, param_name: str) -> dict[str, object]:

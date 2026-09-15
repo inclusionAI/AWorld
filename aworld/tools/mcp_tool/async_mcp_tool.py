@@ -102,6 +102,7 @@ class McpTool(AsyncTool):
                     {"exception": "no valid mcp actions"})
 
         action_results = None
+        failure_metadata = {}
         try:
             if agent and agent.sandbox:
                 sand_box = agent.sandbox
@@ -121,6 +122,14 @@ class McpTool(AsyncTool):
             reward = 1
         except Exception as e:
             fail_error = str(e)
+            failure_metadata = {
+                key: value
+                for key, value in (
+                    ("failure_category", getattr(e, "failure_category", None)),
+                    ("failure_code", getattr(e, "failure_code", None)),
+                )
+                if isinstance(value, str) and value
+            }
         finally:
             self._finished = True
 
@@ -143,7 +152,11 @@ class McpTool(AsyncTool):
                     f"{actions} no action results, fail info: {fail_error}, will use fail action results")
                 # every action need has the result
                 action_results = [ActionResult(
-                    success=False, content=fail_error, error=fail_error) for _ in actions]
+                    success=False,
+                    content=fail_error,
+                    error=fail_error,
+                    metadata=dict(failure_metadata),
+                ) for _ in actions]
                 observation.action_result = action_results
                 observation.content = fail_error
 

@@ -7,6 +7,7 @@ from aworld.core.agent.base import AgentFactory
 from aworld.core.common import ActionModel, ActionResult
 from aworld.core.context.base import Context
 from aworld.core.event.base import Message
+from aworld.sandbox.errors import SandboxInfrastructureError
 from aworld.tools.mcp_tool.async_mcp_tool import McpTool
 
 
@@ -30,6 +31,14 @@ class _RecordingSandbox:
                 metadata={"context_management": {"checkpoint_created": True}},
             )
         ]
+
+
+class _FailingInfrastructureSandbox:
+    async def call_tool(self, **kwargs):
+        raise SandboxInfrastructureError(
+            "docker_checkpoint_create_failed",
+            "Docker checkpoint backend unavailable",
+        )
 
 
 @pytest.mark.asyncio
@@ -64,3 +73,36 @@ async def test_mcp_tool_enters_through_sandbox_policy_boundary(monkeypatch):
     assert sandbox.calls[0]["event_message"] is message
     assert sandbox.calls[0]["action_list"][0].tool_name == "terminal"
     assert sandbox.calls[0]["action_list"][0].action_name == "run_code"
+
+
+@pytest.mark.asyncio
+async def test_mcp_tool_preserves_typed_sandbox_infrastructure_failure(monkeypatch):
+    monkeypatch.setattr(
+        AgentFactory,
+        "agent_instance",
+        lambda name: SimpleNamespace(sandbox=_FailingInfrastructureSandbox()),
+    )
+    context = Context(task_id="task-2", session_id="session-2")
+    message = Message(
+        session_id="session-2",
+        sender="agent-2",
+        headers={"context": context},
+    )
+    action = ActionModel(
+        tool_name="mcp",
+        action_name="docker__run_code",
+        tool_call_id="call-2",
+        agent_name="agent-2",
+        params={"code": "true"},
+    )
+
+    tool = McpTool(ConfigDict({}))
+    observation, reward, *_ = await tool.do_step([action], message)
+
+    result = observation.action_result[0]
+    assert reward == 0
+    assert result.success is False
+    assert result.metadata == {
+        "failure_category": "infrastructure",
+        "failure_code": "docker_checkpoint_create_failed",
+    }

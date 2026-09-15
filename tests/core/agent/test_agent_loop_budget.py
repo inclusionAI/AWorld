@@ -5,7 +5,7 @@ import pytest
 from aworld.agents.llm_agent import Agent
 from aworld.config.conf import AgentConfig
 from aworld.core.agent.base import BaseAgent
-from aworld.core.common import ActionModel, Observation
+from aworld.core.common import ActionModel, ActionResult, Observation
 from aworld.core.context.base import Context
 from aworld.core.event.base import AgentMessage, Constants, Message, TopicType
 from aworld.models.model_response import Function, ModelResponse, ToolCall
@@ -14,6 +14,94 @@ from aworld.models.model_response import Function, ModelResponse, ToolCall
 class LoopBudgetAgent(BaseAgent):
     async def async_policy(self, observation, message=None, **kwargs):
         return observation
+
+
+def _tool_observation(
+    *,
+    success: bool = False,
+    category: str | None = "infrastructure",
+    code: str = "docker_checkpoint_create_failed",
+) -> Observation:
+    metadata = {}
+    if category is not None:
+        metadata = {"failure_category": category, "failure_code": code}
+    return Observation(
+        action_result=[
+            ActionResult(
+                success=success,
+                error=None if success else "backend unavailable",
+                tool_name="docker",
+                metadata=metadata,
+            )
+        ]
+    )
+
+
+def _agent_message(agent: BaseAgent, context: Context, payload: Observation) -> Message:
+    return Message(
+        category=Constants.AGENT,
+        payload=payload,
+        sender="docker",
+        caller=agent.id(),
+        session_id=context.session_id,
+        headers={"context": context},
+    )
+
+
+@pytest.mark.asyncio
+async def test_repeated_typed_infrastructure_failure_opens_circuit_at_threshold():
+    agent = LoopBudgetAgent(
+        name="infra-circuit",
+        conf=AgentConfig(llm_provider="mock", llm_model_name="mock-model"),
+        max_loop_steps=100,
+    )
+    context = Context(task_id="infra-task", session_id="infra-session")
+
+    for _ in range(2):
+        result = await agent.async_run(
+            _agent_message(agent, context, _tool_observation())
+        )
+        assert result.category == Constants.AGENT
+
+    result = await agent.async_run(
+        _agent_message(agent, context, _tool_observation())
+    )
+
+    assert result.category == Constants.TASK
+    assert result.topic == TopicType.FINISHED
+    assert result.payload.stop is True
+    assert result.payload.success is False
+    assert result.payload.msg == "agent_infrastructure_error_circuit_open"
+    assert result.payload.data["consecutive_count"] == 3
+    assert result.payload.data["failure_codes"] == [
+        "docker_checkpoint_create_failed"
+    ]
+
+
+def test_circuit_ignores_untyped_tool_failures_and_resets_after_success():
+    agent = LoopBudgetAgent(
+        name="infra-reset",
+        conf=AgentConfig(llm_provider="mock", llm_model_name="mock-model"),
+    )
+    context = Context(task_id="infra-reset-task", session_id="infra-session")
+
+    assert agent._observe_infrastructure_failure(
+        _agent_message(agent, context, _tool_observation())
+    ) is None
+    assert agent._observe_infrastructure_failure(
+        _agent_message(agent, context, _tool_observation(success=True))
+    ) is None
+    assert agent._observe_infrastructure_failure(
+        _agent_message(agent, context, _tool_observation(category=None))
+    ) is None
+    assert agent._observe_infrastructure_failure(
+        _agent_message(agent, context, _tool_observation())
+    ) is None
+
+    state = context.context_info[
+        f"agent_infrastructure_error_circuit:{agent.id()}"
+    ]
+    assert state["consecutive_count"] == 1
 
 
 def test_default_adaptive_context_installs_elastic_budget_policy():
@@ -29,6 +117,19 @@ def test_default_adaptive_context_installs_elastic_budget_policy():
     assert policy.extension_steps == 40
     assert policy.hard_limit == 240
     assert policy.recent_progress_window_steps == 20
+
+
+def test_agent_config_can_disable_infrastructure_error_circuit_breaker():
+    agent = LoopBudgetAgent(
+        name="circuit-disabled",
+        conf=AgentConfig(
+            llm_provider="mock",
+            llm_model_name="mock-model",
+            infrastructure_error_circuit_breaker_threshold=0,
+        ),
+    )
+
+    assert agent.infrastructure_error_circuit_breaker_threshold == 0
 
 
 @pytest.mark.parametrize("mode", ["off", "observe", "shadow"])

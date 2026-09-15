@@ -543,6 +543,7 @@ class AgentConfig(BaseConfig):
     max_steps: int = 10
     max_input_tokens: int = 128000
     max_actions_per_step: int = 10
+    infrastructure_error_circuit_breaker_threshold: int = 3
     system_prompt: Optional[str] = None
     system_prompt_template: Optional[str] = None
     working_dir: Optional[str] = None
