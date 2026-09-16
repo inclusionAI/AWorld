@@ -9,6 +9,8 @@ from typing import Any
 import pytest
 
 from aworld.config import ConfigDict, ModelConfig
+from aworld.config.conf import ContextCompilerRuntimeConfig
+from aworld.core.common import ActionResult
 from aworld.core.context.base import Context
 from aworld.core.context.compiler import (
     CandidateCompileInput,
@@ -21,6 +23,12 @@ from aworld.core.context.compiler import (
     adapt_final_messages,
     canonical_json_hash,
     compile_context_candidate,
+    compact_message_history,
+    estimate_canonical_json_tokens,
+)
+from aworld.core.context.tool_output_runtime import (
+    enforce_tool_output_boundary,
+    prepare_tool_output_plans,
 )
 from aworld.core.llm_provider import LLMProviderBase
 from aworld.models.llm import LLMModel
@@ -72,6 +80,156 @@ class CountingProvider(LLMProviderBase):
         yield self._response("astream_completion")
 
 
+def _long_tool_exchange():
+    return [
+        {"role": "system", "content": "Keep tool arguments intact."},
+        {"role": "user", "content": "Write the complete report."},
+        {
+            "role": "assistant",
+            "content": "Writing the report.",
+            "tool_calls": [{
+                "id": "call-large-report", "type": "function",
+                "function": {
+                    "name": "write_report",
+                    "arguments": json.dumps({"content": "report data\n" * 5000}),
+                },
+            }],
+        },
+        {"role": "tool", "tool_call_id": "call-large-report", "content": "written"},
+    ]
+
+
+@pytest.mark.parametrize("limit", [0, -1])
+def test_config_rejects_nonpositive_explicit_item_limit(limit):
+    with pytest.raises(ValueError):
+        ContextCompilerRuntimeConfig(max_item_tokens=limit)
+
+
+def _assert_exchange_preserved(sent, original):
+    # Provider text-part normalization and the untrusted-data envelope are
+    # expected; neither may change the call arguments or the Tool result body.
+    assert sent[-2]["tool_calls"] == original[-2]["tool_calls"]
+    assert sent[-2]["content"] == [{"type": "text", "text": original[-2]["content"]}]
+    assert sent[-1]["tool_call_id"] == original[-1]["tool_call_id"]
+    text = sent[-1]["content"][0]["text"]
+    assert text.startswith("<aworld-untrusted-data ")
+    assert text.endswith("</aworld-untrusted-data>")
+    body = text.split("\n", 1)[1].rsplit("\n", 1)[0]
+    assert json.loads(body) == [{"type": "text", "text": original[-1]["content"]}]
+
+
+@pytest.mark.asyncio
+async def test_default_budget_preserves_long_tool_exchange_in_every_call_shape():
+    provider, calls = _azure_without_transport()
+    model = LLMModel(conf=ModelConfig(), custom_provider=provider)
+    model.provider_name = "azure_openai"
+    messages = _long_tool_exchange()
+    assert estimate_canonical_json_tokens(messages[2]).value > 10000
+    assert ContextCompilerRuntimeConfig().max_item_tokens is None
+    assert model.context_compiler_mode is ContextCompilerMode.ENFORCE
+
+    contexts = [Context(task_id=f"long-exchange-{index}") for index in range(4)]
+    for context in contexts:
+        context.trace_id = ""
+    model.completion(messages, context=contexts[0])
+    await model.acompletion(messages, context=contexts[1])
+    list(model.stream_completion(messages, context=contexts[2]))
+    [chunk async for chunk in model.astream_completion(messages, context=contexts[3])]
+
+    assert len(calls) == 4
+    for sent in provider._test_sent_params:
+        assert sent["messages"][:2] == messages[:2]
+        _assert_exchange_preserved(sent["messages"], messages)
+    assert all(
+        context.get_llm_calls()[0]["context_rollout"]["candidate_applied"]
+        for context in contexts
+    )
+
+
+@pytest.mark.parametrize("compiler_config,error_code", [
+    ({"max_item_tokens": 10000}, "required_item_token_limit_exceeded"),
+    ({"context_limit": 16000}, "required_context_budget_exceeded"),
+])
+def test_long_tool_exchange_still_rejects_explicit_cap_or_total_overflow(
+    compiler_config, error_code,
+):
+    provider, calls = _azure_without_transport()
+    model = LLMModel(
+        conf=ModelConfig(context_compiler=compiler_config), custom_provider=provider,
+    )
+    model.provider_name = "azure_openai"
+    context = Context(task_id="long-exchange-blocked")
+    context.trace_id = ""
+    with pytest.raises(CandidateRequestNotEnforceable, match=error_code):
+        model.completion(_long_tool_exchange(), context=context)
+    assert calls == []
+
+
+@pytest.mark.asyncio
+async def test_offload_and_history_compaction_feed_default_final_budget(tmp_path):
+    from aworld.core.context.amni.processor.op.tool_result_process_op import ToolResultOffloadOp
+    from aworld.memory.tool_result_compaction import compact_tool_result_for_memory
+
+    provider, calls = _azure_without_transport()
+    model = LLMModel(conf=ModelConfig(), custom_provider=provider)
+    model.provider_name = "azure_openai"
+    context = Context(task_id="offload-long-exchange", workspace_path=str(tmp_path))
+    context.trace_id = ""
+    context.configure_tool_output_boundary(model.enforced_tool_output_policy())
+    raw = "0123456789abcdef" * 8192
+    result = ActionResult(
+        tool_call_id="call-large-report", tool_name="report", action_name="write",
+        content=raw, metadata={},
+    )
+    action = SimpleNamespace(
+        tool_call_id=result.tool_call_id, tool_name="report", action_name="write", params={},
+    )
+    enforce_tool_output_boundary(
+        (SimpleNamespace(action_result=[result]),), (action,), context,
+        prepare_tool_output_plans(context, (action,)),
+    )
+    record = context.get_tool_output_records()[0]
+    assert record.artifact is not None
+    assert record.inline_tokens <= 4096
+    assert record.offloaded_tokens > 0
+    assert context.read_tool_output_artifact(record.artifact.ref) == raw.encode()
+    assert record.raw_checksum == "sha256:" + hashlib.sha256(raw.encode()).hexdigest()
+
+    # AMNI and memory compaction must honor the existing reversible boundary,
+    # even when their own thresholds would otherwise request another offload.
+    amni_config = SimpleNamespace(
+        tool_result_offload=True, tool_action_white_list=["report:write"],
+        tool_result_length_threshold=1,
+    )
+    amni_context = SimpleNamespace(get_config=lambda: SimpleNamespace(
+        get_agent_context_config=lambda agent_id: amni_config,
+    ))
+    assert not await ToolResultOffloadOp("tool_result_offload")._need_offload(
+        result, amni_context, SimpleNamespace(agent_id="agent"),
+    )
+    memory = compact_tool_result_for_memory(
+        result.content, force=True, result_metadata=result.metadata,
+    )
+    assert memory.applied is False
+    assert memory.metadata["preserved_reversible_boundary"] is True
+
+    messages = _long_tool_exchange()
+    messages[-1]["content"] = json.dumps(result.content)
+    old_history = [
+        {"role": role, "content": f"old turn {index}"}
+        for index in range(6) for role in ("user", "assistant")
+    ]
+    compacted, receipt = compact_message_history(
+        messages[:2] + old_history + messages[2:], keep_recent=2,
+    )
+    assert receipt["removed_message_count"] == len(old_history)
+    assert compacted[-2:] == messages[-2:]
+    model.completion(compacted, context=context)
+    assert len(calls) == 1
+    _assert_exchange_preserved(provider._test_sent_params[0]["messages"], messages)
+    assert context.read_tool_output_artifact(record.artifact.ref) == raw.encode()
+
+
 def test_legacy_config_dict_without_new_cache_fields_remains_compatible():
     provider = CountingProvider()
 
@@ -83,6 +241,296 @@ def test_legacy_config_dict_without_new_cache_fields_remains_compatible():
     assert model._context_cache_config is None
     assert model._configured_max_tokens is None
     assert model._context_input_budget == 3328
+
+
+def _recovery_context(tmp_path, monkeypatch):
+    from aworld.core.context.amni import ApplicationContext
+    from aworld.core.context.amni.state import ApplicationTaskContextState, TaskWorkingState, TaskInput
+    from aworld.core.context.amni.worksapces import ApplicationWorkspace
+
+    workspace = ApplicationWorkspace(
+        workspace_id="recovery", storage_path=str(tmp_path), use_default_observer=False,
+    )
+    context = ApplicationContext(
+        task_state=ApplicationTaskContextState(
+            task_input=TaskInput(task_id="recovery-task", session_id="recovery-session", task_content="write report"),
+            working_state=TaskWorkingState(),
+        ),
+        workspace=workspace, task_id="recovery-task", session_id="recovery-session",
+    )
+    context.trace_id = ""
+    checkpoints = []
+
+    async def snapshot(ctx, **kwargs):
+        import copy
+        checkpoints.append((copy.deepcopy(ctx.task_state.working_state.kv_store), kwargs))
+        return SimpleNamespace(id="recovery-checkpoint")
+
+    monkeypatch.setattr("aworld.core.context.amni.get_context_manager", lambda: SimpleNamespace(
+        save_context_checkpoint=snapshot,
+    ))
+    return context, checkpoints
+
+
+def _recovery_tools():
+    from aworld.core.context.budget_recovery import READ_TOOL
+    return [{"type": "function", "function": {
+        "name": READ_TOOL,
+        "parameters": {"type": "object", "properties": {
+            "knowledge_id": {"type": "string"}, "start_line": {"type": "integer"},
+            "end_line": {"type": "integer"},
+        }, "required": ["knowledge_id", "start_line", "end_line"]},
+    }}]
+
+
+def _publish_stable_amni_prefix(context, model, content):
+    from aworld.agents.final_context_adapter import adapt_amni_system_sections
+
+    agent_id = model._context_agent_identity(context)
+    context.publish_context_observation(ContextObservationSidecar.from_adapter_result(
+        owner="amni.system_sections", namespace=agent_id, source_identity="amni-stable-prefix",
+        result=adapt_amni_system_sections(
+            sections=({"name": "system_prompt", "stability": "stable", "content": content},),
+            source_identity="amni-stable-prefix", task_id=context.task_id,
+            task_epoch=context.task_epoch, agent_id=agent_id,
+        ), task_epoch=context.task_epoch,
+    ))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("shape", ["sync", "async", "stream", "astream"])
+async def test_total_budget_recovery_uses_amni_and_preserves_cache_prefix(tmp_path, monkeypatch, shape):
+    import copy
+    from aworld.core.context.budget_recovery import RECOVERY_STATE_KEY
+
+    context, checkpoints = _recovery_context(tmp_path, monkeypatch)
+    provider, calls = _azure_without_transport()
+    model = LLMModel(
+        conf=ModelConfig(context_compiler={"context_limit": 16000}), custom_provider=provider,
+    )
+    model.provider_name = "azure_openai"
+    plans = []
+
+    def compile_and_capture(**kwargs):
+        candidate = compile_context_candidate(**kwargs)
+        plans.append(candidate.final_result.cache_plan)
+        return candidate
+
+    monkeypatch.setattr("aworld.models.llm.compile_context_candidate", compile_and_capture)
+    messages = _long_tool_exchange()
+    original = copy.deepcopy(messages)
+    tools = _recovery_tools()
+    _publish_stable_amni_prefix(context, model, messages[0]["content"])
+    model.completion(messages[:2], context=context, tools=tools)
+    if shape == "sync":
+        model.completion(messages, context=context, tools=tools)
+    elif shape == "async":
+        await model.acompletion(messages, context=context, tools=tools)
+    elif shape == "stream":
+        list(model.stream_completion(messages, context=context, tools=tools))
+    else:
+        [chunk async for chunk in model.astream_completion(messages, context=context, tools=tools)]
+
+    assert len(calls) == 2  # failed compiles never invoke a model
+    assert messages == original
+    sent = provider._test_sent_params[-1]["messages"]
+    assert sent[:2] == messages[:2]
+    assert all(not item.get("tool_calls") and item["role"] != "tool" for item in sent)
+    assert "context-history-" in sent[-1]["content"]
+    assert sent[-1]["content"].startswith("<aworld-untrusted-data ")
+    assert plans[0].logical_stable_prefix_hash == plans[1].logical_stable_prefix_hash
+    assert plans[0].stable_message_count == plans[1].stable_message_count == 1
+    assert plans[0].tool_catalog_hash == plans[1].tool_catalog_hash
+    assert plans[0].cache_epoch == plans[1].cache_epoch == 0
+    assert checkpoints[0][1] == {"cache_boundary": False}
+    assert any(RECOVERY_STATE_KEY in key for key in checkpoints[0][0])
+    receipt = context.get_llm_calls()[-1]["context_rollout"]["budget_recovery"][0]
+    assert receipt["tokens_after"] < receipt["tokens_before"]
+    assert "report data" not in repr(receipt)
+
+    # Replayed Memory must reuse the exact same capsule, including after the
+    # volatile runtime registry is lost and only AMNI WorkingState remains.
+    from aworld.core.context.runtime_state import TaskRuntimeStateRegistry
+    context._task_runtime_state_registry = TaskRuntimeStateRegistry()
+    model.completion(messages, context=context, tools=tools)
+    assert provider._test_sent_params[-1]["messages"] == sent
+    assert len(checkpoints) == 1
+    artifact = context._workspace.artifacts[0]
+    read = await context.knowledge_service.get_knowledge_by_lines(artifact.artifact_id, 1, 8)
+    assert "Lines 1-4" in read
+    assert len(read) < 2500
+    # Artifact stores every original argument byte, including long strings.
+    archived = json.loads(artifact.content.replace("\n", ""))
+    assert archived[0]["tool_calls"] == original[2]["tool_calls"]
+
+
+@pytest.mark.asyncio
+async def test_recovery_preserves_pending_calls_and_all_user_constraints(tmp_path, monkeypatch):
+    from aworld.core.context.budget_recovery import recover_context_budget
+
+    context, _ = _recovery_context(tmp_path, monkeypatch)
+    messages = _long_tool_exchange()
+    pending = {"role": "assistant", "content": "pending", "tool_calls": [{
+        "id": "pending", "type": "function", "function": {"name": "write", "arguments": "{}"},
+    }]}
+    constraint = {"role": "user", "content": "Additional constraint: never change the input files."}
+    messages.extend([constraint, pending])
+    recovered, _ = await recover_context_budget(
+        context=context, agent_id="agent", messages=messages, tools=_recovery_tools(),
+    )
+    assert recovered[:2] == messages[:2]
+    assert recovered[-2:] == [constraint, pending]
+    assert messages[2]["tool_calls"][0]["id"] == "call-large-report"
+
+
+@pytest.mark.asyncio
+async def test_recovery_storage_failure_never_substitutes_or_invokes_provider(tmp_path, monkeypatch):
+    from unittest.mock import AsyncMock
+    from aworld.core.context.budget_recovery import RECOVERY_STATE_KEY
+
+    context, checkpoints = _recovery_context(tmp_path, monkeypatch)
+    monkeypatch.setattr(context.knowledge_service, "get_knowledge_by_id", AsyncMock(return_value=None))
+    provider, calls = _azure_without_transport()
+    model = LLMModel(conf=ModelConfig(context_compiler={"context_limit": 16000}), custom_provider=provider)
+    model.provider_name = "azure_openai"
+    with pytest.raises(CandidateRequestNotEnforceable, match="required_context_budget_exceeded"):
+        await model.acompletion(_long_tool_exchange(), context=context, tools=_recovery_tools())
+    assert not calls
+    assert not checkpoints
+    assert context.read_task_runtime_state(model._context_agent_identity(context), RECOVERY_STATE_KEY) is None
+    assert context.context_info["last_context_budget_recovery"][-1]["status"] == "failed"
+    assert context.get_llm_calls()[-1]["context_rollout"]["budget_recovery"][-1]["error_type"] == "ValueError"
+
+
+@pytest.mark.asyncio
+async def test_recovery_never_offloads_without_active_readback_capability(tmp_path, monkeypatch):
+    from aworld.core.context.budget_recovery import recover_context_budget
+
+    context, checkpoints = _recovery_context(tmp_path, monkeypatch)
+    recovered, receipt = await recover_context_budget(
+        context=context, agent_id="agent", messages=_long_tool_exchange(), tools=[],
+    )
+    assert recovered is None
+    assert receipt["reason"] == "bounded_readback_tool_unavailable"
+    assert not context._workspace.artifacts
+    assert not checkpoints
+
+
+def test_repeated_recovery_keeps_working_set_bounded_and_cache_prefix_stable(tmp_path, monkeypatch):
+    context, checkpoints = _recovery_context(tmp_path, monkeypatch)
+    provider, calls = _azure_without_transport()
+    model = LLMModel(conf=ModelConfig(context_compiler={"context_limit": 16000}), custom_provider=provider)
+    model.provider_name = "azure_openai"
+    history = _long_tool_exchange()[:2]
+    for index in range(12):
+        exchange = _long_tool_exchange()[2:]
+        exchange[0]["tool_calls"][0]["id"] = f"call-{index}"
+        exchange[1]["tool_call_id"] = f"call-{index}"
+        history.extend(exchange)
+        model.completion(history, context=context, tools=_recovery_tools())
+        sent = provider._test_sent_params[-1]["messages"]
+        assert sent[:2] == history[:2]
+        assert len(sent) == 3
+        assert estimate_canonical_json_tokens(sent).value < 2000
+        assert provider._test_sent_params[-1]["tools"] == _recovery_tools()
+        assert context.context_lifecycle_state.checkpoint_revision == 0
+    assert len(calls) == len(checkpoints) == 12
+
+
+def test_recovery_retains_anthropic_native_prefix_cache_control(tmp_path, monkeypatch):
+    context, checkpoints = _recovery_context(tmp_path, monkeypatch)
+    provider, calls = _anthropic_without_transport()
+    model = LLMModel(conf=ModelConfig(
+        context_compiler={"context_limit": 16000},
+        context_cache={"allow_provider_native_cache": True},
+    ), custom_provider=provider)
+    model.provider_name = "anthropic"
+    messages = _long_tool_exchange()
+    _publish_stable_amni_prefix(context, model, messages[0]["content"])
+    model.completion(messages[:2], context=context, tools=_recovery_tools())
+    model.completion(messages, context=context, tools=_recovery_tools())
+    assert len(calls) == 2
+    assert len(checkpoints) == 1
+    assert calls[0]["system"] == calls[1]["system"]
+    assert calls[1]["system"][0]["cache_control"] == {"type": "ephemeral"}
+    assert calls[0]["tools"] == calls[1]["tools"]
+
+
+@pytest.mark.asyncio
+async def test_recovery_checkpoint_failure_rolls_back_substitution(tmp_path, monkeypatch):
+    from aworld.core.context.budget_recovery import recover_context_budget_bounded, RECOVERY_STATE_KEY
+
+    context, _ = _recovery_context(tmp_path, monkeypatch)
+
+    async def fail_snapshot(**kwargs):
+        raise OSError("checkpoint unavailable")
+
+    monkeypatch.setattr(context, "snapshot", fail_snapshot)
+    messages = _long_tool_exchange()
+    recovered, receipt = await recover_context_budget_bounded(
+        context=context, agent_id="agent", messages=messages, tools=_recovery_tools(),
+    )
+    assert recovered is None
+    assert receipt == {"status": "failed", "error_type": "OSError"}
+    assert context.read_task_runtime_state("agent", RECOVERY_STATE_KEY)["replacements"] == []
+    assert context.get(f"{RECOVERY_STATE_KEY}:agent")["replacements"] == []
+    assert messages[2]["tool_calls"][0]["id"] == "call-large-report"
+
+
+@pytest.mark.asyncio
+async def test_recovery_keeps_incomplete_parallel_and_legacy_calls(tmp_path, monkeypatch):
+    from aworld.core.context.budget_recovery import recover_context_budget
+
+    context, _ = _recovery_context(tmp_path, monkeypatch)
+    messages = _long_tool_exchange()
+    messages[2]["tool_calls"].append({
+        "id": "pending", "type": "function", "function": {"name": "wait", "arguments": "{}"},
+    })
+    messages.append({"role": "assistant", "function_call": {"name": "pending", "arguments": "{}"}})
+    recovered, receipt = await recover_context_budget(
+        context=context, agent_id="agent", messages=messages, tools=_recovery_tools(),
+    )
+    assert recovered is None
+    assert receipt["reason"] == "no_completed_exchange"
+    assert not context._workspace.artifacts
+
+
+@pytest.mark.parametrize("config", [
+    {"max_item_tokens": 10000}, {"artifact_offload": False}, {"checkpoint_policy": "explicit"},
+])
+def test_recovery_respects_explicit_policy_contracts(tmp_path, monkeypatch, config):
+    context, checkpoints = _recovery_context(tmp_path, monkeypatch)
+    provider, calls = _azure_without_transport()
+    model = LLMModel(
+        conf=ModelConfig(context_compiler={"context_limit": 16000, **config}), custom_provider=provider,
+    )
+    model.provider_name = "azure_openai"
+    with pytest.raises(CandidateRequestNotEnforceable):
+        model.completion(_long_tool_exchange(), context=context, tools=_recovery_tools())
+    assert not calls
+    assert not checkpoints
+    assert not context._workspace.artifacts
+
+
+def test_adaptive_agent_provides_only_bounded_readback_without_cognitive_ingestion(tmp_path, monkeypatch):
+    from aworld.agents.llm_agent import LLMAgent
+    from aworld.core.context.budget_recovery import READ_TOOL
+
+    context, _ = _recovery_context(tmp_path, monkeypatch)
+    agent = LLMAgent.__new__(LLMAgent)
+    agent._llm = SimpleNamespace(
+        context_compiler_mode=ContextCompilerMode.ENFORCE,
+        _context_checkpoint_policy="adaptive", _context_artifact_offload=True,
+    )
+    agent.black_tool_actions = {}
+    schema = agent._context_budget_recovery_tool(context)
+    assert schema["function"]["name"] == READ_TOOL
+    assert set(schema["function"]["parameters"]["properties"]) == {"knowledge_id", "start_line", "end_line"}
+    agent.black_tool_actions = {"KNOWLEDGE": ["get_knowledge_by_lines"]}
+    assert agent._context_budget_recovery_tool(context) is None
+    agent.black_tool_actions = {}
+    agent._llm._context_artifact_offload = False
+    assert agent._context_budget_recovery_tool(context) is None
 
 
 @pytest.mark.asyncio

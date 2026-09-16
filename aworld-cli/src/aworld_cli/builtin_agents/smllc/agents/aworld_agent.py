@@ -540,6 +540,7 @@ def build_context_config(debug_mode):
     config.agent_config = AgentContextConfig(
         enable_system_prompt_augment=True,
         neuron_names=["task_grounding", "skills"],
+        automated_cognitive_ingestion=True,
         history_scope='session'
     )
     config.env_config = ContextEnvConfig()

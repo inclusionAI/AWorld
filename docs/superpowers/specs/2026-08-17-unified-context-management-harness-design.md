@@ -292,8 +292,8 @@ trajectory 与本地 Docker 环境是闭环的证据和实验基础设施，不�
 
 1. Provider 收到的 messages、tools 和相关参数必须与 `CompiledContext.request_snapshot` 深度相等。
 2. final compile 之后不得再修改 messages 或 tools。
-3. 每个注入项必须有硬 token 上限；默认单项不得超过 10K tokens。
-4. 总输入不得超过 `model_context_limit - reserved_output - protocol_reserve`。
+3. 单项硬上限是显式契约：`max_item_tokens` 默认 `null`；owner 指定的 `token_limit` 仍生效。Tool output 的 inline/offload 阈值独立管理，不能用全局 10K 单项上限替代 offload。
+4. 总输入不得超过 `model_context_limit - reserved_output - protocol_reserve - safety_margin`。
 5. `required=true` 的项不能静默丢弃；无法满足时必须在调用模型前失败并给出原因。
 6. Tool call 与对应 Tool result 必须成对保留、成对压缩或成对移除，不能破坏消息协议。
 7. 未信任的 memory、retrieval、网页和 Tool output 永远不能提升自身 authority。
@@ -998,7 +998,7 @@ aworld/core/context/compiler/
 context_compiler:
   mode: enforce  # off | observe | shadow | enforce
   compiler_version: v1
-  max_item_tokens: 10000
+  max_item_tokens: null  # 显式设置正整数时启用单项硬上限；不是 offload 阈值
   reserved_output_tokens: 4096
   safety_margin_tokens: 512
   scoped_instructions: nested  # workspace_only | nested

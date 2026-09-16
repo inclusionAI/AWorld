@@ -171,6 +171,7 @@ def normalize_tool_call_arguments_for_replay(
     *,
     tool_name: str | None = None,
     token_threshold: int = REPLAY_TOOL_CALL_ARGUMENT_TOKEN_THRESHOLD,
+    compact: bool = True,
 ) -> str | None:
     if arguments is None:
         return None
@@ -194,7 +195,13 @@ def normalize_tool_call_arguments_for_replay(
     elif isinstance(arguments, tuple):
         parsed_value = list(arguments)
 
-    parsed_value = _compact_large_string_fields(parsed_value)
+    # Model-boundary and memory serialization are structural conversions, not
+    # owners of a lossy history-reduction policy. Preserve valid wire arguments
+    # exactly when those callers opt out of replay compaction.
+    if not compact and isinstance(arguments, str):
+        return arguments
+    if compact:
+        parsed_value = _compact_large_string_fields(parsed_value)
 
     try:
         serialized = _canonical_json(parsed_value)
@@ -208,7 +215,7 @@ def normalize_tool_call_arguments_for_replay(
         )
 
     token_count = num_tokens_from_string(serialized) if serialized else 0
-    if token_count > max(token_threshold, 0):
+    if compact and token_count > max(token_threshold, 0):
         return _placeholder_arguments(
             tool_name=tool_name,
             serialized=serialized,
@@ -223,6 +230,7 @@ def normalize_tool_call_for_replay(
     tool_call: dict[str, Any],
     *,
     token_threshold: int = REPLAY_TOOL_CALL_ARGUMENT_TOKEN_THRESHOLD,
+    compact: bool = True,
 ) -> dict[str, Any]:
     normalized_tool_call = dict(tool_call)
 
@@ -242,6 +250,7 @@ def normalize_tool_call_for_replay(
         function_payload.get("arguments"),
         tool_name=function_payload.get("name"),
         token_threshold=token_threshold,
+        compact=compact,
     )
     normalized_tool_call["function"] = function_payload
     return normalized_tool_call
@@ -251,11 +260,14 @@ def normalize_tool_calls_for_replay(
     tool_calls: list[dict[str, Any]] | None,
     *,
     token_threshold: int = REPLAY_TOOL_CALL_ARGUMENT_TOKEN_THRESHOLD,
+    compact: bool = True,
 ) -> list[dict[str, Any]] | None:
     if not tool_calls:
         return None
     return [
-        normalize_tool_call_for_replay(tool_call, token_threshold=token_threshold)
+        normalize_tool_call_for_replay(
+            tool_call, token_threshold=token_threshold, compact=compact,
+        )
         for tool_call in tool_calls
         if isinstance(tool_call, dict)
     ] or None
