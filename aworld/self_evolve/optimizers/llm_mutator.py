@@ -680,6 +680,9 @@ def build_mutation_prompt(
 def _build_mutation_prompt(request: OptimizerRequest, *, candidate_index: int) -> str:
     context = request.evolution_context or compile_evolution_context(request)
     payload = context.to_prompt_payload(candidate_index=candidate_index)
+    repair_focus = context.repair_focus_for_candidate(candidate_index=candidate_index)
+    if isinstance(repair_focus, Mapping) and _repair_feedback_reached_judged_task_output(repair_focus):
+        return _build_judged_repair_prompt(request, payload)
     focused_replay_repair = _focused_payload_requires_replay_runtime(
         payload
     )
@@ -846,6 +849,73 @@ def _build_mutation_prompt(request: OptimizerRequest, *, candidate_index: int) -
         + json.dumps(payload, ensure_ascii=False, sort_keys=True)
     )
     return _scope_general_mutation_prompt(prompt, request=request)
+
+
+def _build_judged_repair_prompt(
+    request: OptimizerRequest,
+    payload: Mapping[str, object],
+) -> str:
+    """Expose the editable behavior and baseline, not frozen runtime source."""
+
+    scoped = json.loads(json.dumps(payload, ensure_ascii=False, default=str))
+    scoped["current_content"] = request.current_content
+    scoped["target_package_inventory"] = list(request.target_package_inventory)
+    scoped["capability_contracts"] = []
+    scoped.pop("repair_conformance", None)
+    focus = scoped.get("repair_focus")
+    package = focus.get("repair_candidate_package") if isinstance(focus, dict) else None
+    files = package.get("files") if isinstance(package, dict) else None
+    if isinstance(files, list):
+        for item in files:
+            if not isinstance(item, dict):
+                continue
+            content = item.pop("content", None)
+            if isinstance(content, str):
+                item["content_chars"] = len(content)
+                item["content_sha256"] = hashlib.sha256(content.encode("utf-8")).hexdigest()
+            item["content_omitted"] = True
+            item["preserve_unchanged"] = True
+    expected = scoped.get("expected_output")
+    if isinstance(expected, dict):
+        expected["files"] = []
+    prompt_budget = scoped.get("repair_prompt_budget")
+    if isinstance(prompt_budget, dict):
+        prompt_budget["omitted_current_content_chars"] = 0
+        prompt_budget["preserved_current_content_chars"] = len(request.current_content)
+    instructions = (
+        "Repair the judged target behavior using this EvolutionContext. current_content "
+        "is the real baseline; repair_focus.repair_candidate_package.content is the failed "
+        "parent. Compare them to isolate the parent delta. The parent has completed replay, "
+        "but its target prose is not verified merely because it is the repair base. "
+        "Preserve every candidate-owned replay file byte-for-byte. All package files "
+        "are frozen and inherited; omit files and do not "
+        "rebuild compilers, runtimes, protocol probes, or evaluation infrastructure. "
+        "Implement the active failed gate's required_action with a concrete reusable "
+        "behavior correction. Rewording or shortening without changing the diagnosed "
+        "behavior is not a repair. Replace unnecessary parent-added tutorials, headings, "
+        "and examples first, retaining the actual correction within the parent's added-token "
+        "surface relative to current_content. Preserve unrelated baseline behavior. Treat "
+        "repair_focus and repair_support as complementary checkpoints; do not trade a recovered gate "
+        "for a different gate. "
+        "For support_or_omit, prefer the lowest-cost repair: remove or qualify unsupported optional claims at finalization "
+        "using evidence already obtained; preserve requested supported coverage and useful "
+        "synthesis. Do not add browsing, extraction, scratch-file persistence, retries, or claim ledgers "
+        "merely to keep optional details. For reconcile_source, distinguish a bounded "
+        "excerpt from the complete saved source and check the existing source before "
+        "declaring it truncated or unavailable. Keep prior conversation useful as context "
+        "without presenting its unverified claims as newly retrieved primary evidence. "
+        "Keep verification proportionate; transport success alone is not task completion. "
+        "Do not copy case identifiers, endpoints, claims, or judge scores into the skill. "
+        "Use schema-neutral placeholders such as <CLAIM>, <ARTIFACT_PATH>, and <OFFSET> "
+        "in any necessary reusable example. "
+        "Never write your own draft answer or remembered synthesis into a file and cite "
+        "it as evidence. Any artifact citation must resolve to an existing canonical "
+        "artifact path; any reported artifact counts must be computed from the final manifest. "
+        "Preserve original non-trivial fenced blocks; use an exact replace_section "
+        "patch_intent for intentional structural changes. Return one expected_output JSON "
+        "object with content or patch_intent, and explain the behavioral correction in rationale.\n"
+    )
+    return instructions + json.dumps(scoped, ensure_ascii=False, sort_keys=True)
 
 
 def _scope_general_mutation_prompt(

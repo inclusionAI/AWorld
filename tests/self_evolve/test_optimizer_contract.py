@@ -1680,7 +1680,15 @@ async def test_llm_mutator_judge_stage_repair_freezes_verified_replay_files() ->
 
     assert len(result.candidates) == 1
     assert "Preserve every candidate-owned replay file byte-for-byte" in prompts[0]
-    assert "repair_conformance" not in _prompt_payload(prompts[0])
+    payload = _prompt_payload(prompts[0])
+    assert "repair_conformance" not in payload
+    assert payload["current_content"] == request.current_content
+    assert payload["expected_output"]["files"] == []
+    prompt_files = payload["repair_focus"]["repair_candidate_package"]["files"]
+    assert all("content" not in item for item in prompt_files)
+    assert all(item["preserve_unchanged"] for item in prompt_files)
+    assert all(item["content_sha256"] for item in prompt_files)
+    assert "--port <int> --fixture <path>" not in prompts[0]
     assert result.private_context == {}
     assert [item.path for item in result.candidates[0].files] == [
         "replay/compiler.py",
