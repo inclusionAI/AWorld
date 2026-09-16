@@ -1,4 +1,5 @@
 import asyncio
+import base64
 import json
 from pathlib import Path
 import shlex
@@ -13,10 +14,13 @@ from aworld.sandbox.tool_servers.terminal.src.terminal import (
     _HARD_MAX_TOTAL_CAPTURE_BYTES,
     _background_drain_tasks,
     _bounded_inline_stream,
+    _check_command_safety,
     _execute_command_async,
     _format_command_output,
     _get_total_capture_limit_bytes,
     _has_background_operator,
+    _resolve_command_timeout,
+    read_output_artifact,
     run_code,
 )
 
@@ -59,6 +63,62 @@ def test_capture_limit_is_configurable_but_clamped_to_hard_maximum(
     monkeypatch.setenv("AWORLD_TERMINAL_CAPTURE_MAX_BYTES", "999999999999")
 
     assert _get_total_capture_limit_bytes() == _HARD_MAX_TOTAL_CAPTURE_BYTES
+
+
+@pytest.mark.parametrize(
+    "command",
+    (
+        "rm -rf /app/build",
+        "sudo rm -rf /tmp/aworld-build",
+        "printf '%s' 'rm -rf /'",
+        "dd if=/dev/zero of=fixture.bin bs=1 count=4",
+    ),
+)
+def test_safety_policy_allows_scoped_cleanup_and_non_device_dd(command: str) -> None:
+    assert _check_command_safety(command) == (True, None)
+
+
+@pytest.mark.parametrize(
+    "command",
+    (
+        "rm -rf /",
+        "rm -rf -- /*",
+        "sudo rm -r $HOME",
+        "mkfs.ext4 /dev/sda1",
+        "dd if=/dev/zero of=/dev/sda bs=1M",
+    ),
+)
+def test_safety_policy_blocks_broad_or_device_destructive_commands(command: str) -> None:
+    allowed, reason = _check_command_safety(command)
+
+    assert allowed is False
+    assert reason
+
+
+def test_command_timeout_is_clamped_to_trial_deadline_with_completion_reserve(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("AWORLD_TASK_DEADLINE_EPOCH_SECONDS", "1120")
+    monkeypatch.setenv("AWORLD_TERMINAL_COMPLETION_RESERVE_SECONDS", "30")
+
+    decision = _resolve_command_timeout(300, now_epoch=1000)
+
+    assert decision.requested_seconds == 300
+    assert decision.effective_seconds == 90
+    assert decision.remaining_task_seconds == 120
+    assert decision.limited_by == "task_deadline"
+
+
+def test_command_timeout_reports_exhausted_completion_reserve(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("AWORLD_TASK_DEADLINE_EPOCH_SECONDS", "1020")
+    monkeypatch.setenv("AWORLD_TERMINAL_COMPLETION_RESERVE_SECONDS", "30")
+
+    decision = _resolve_command_timeout(60, now_epoch=1000)
+
+    assert decision.effective_seconds == 0
+    assert decision.limited_by == "task_deadline_exhausted"
 
 
 def test_stream_capture_retention_stays_bounded_for_large_output() -> None:
@@ -157,6 +217,111 @@ async def test_run_code_serializes_command_output_once_without_artifact_copy(
     assert response.text.count(unique_output) == 1
     assert payload["metadata"]["output_data"] is None
     assert response.model_extra["metadata"] == {}
+
+
+@pytest.mark.asyncio
+async def test_run_code_supports_explicit_cwd_env_and_compact_structured_output(
+    tmp_path: Path,
+) -> None:
+    child_code = (
+        "import os, pathlib; "
+        "print(pathlib.Path.cwd()); print(os.environ['AWORLD_TEST_SCOPE'])"
+    )
+    command = f"{shlex.quote(sys.executable)} -c {shlex.quote(child_code)}"
+
+    response = await run_code(
+        None,
+        command,
+        timeout=10,
+        cwd=str(tmp_path),
+        env={"AWORLD_TEST_SCOPE": "scoped-value"},
+    )
+    payload = json.loads(response.text)
+
+    assert payload["success"] is True
+    assert payload["message"] == {
+        "stdout": f"{tmp_path.resolve()}\nscoped-value\n",
+        "stderr": "",
+    }
+    assert payload["metadata"]["working_directory"] == str(tmp_path.resolve())
+    assert payload["metadata"]["environment_keys"] == ["AWORLD_TEST_SCOPE"]
+    assert "scoped-value" not in json.dumps(payload["metadata"])
+
+
+@pytest.mark.asyncio
+async def test_truncated_output_is_retrievable_from_checksummed_artifact(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("AWORLD_TERMINAL_CAPTURE_MAX_BYTES", "4096")
+    monkeypatch.setenv("AWORLD_TERMINAL_ARTIFACT_MAX_BYTES", "200000")
+    monkeypatch.setenv("AWORLD_TERMINAL_ARTIFACT_DIR", str(tmp_path / "artifacts"))
+    original = b"HEAD" + (b"x" * 100_000) + b"TAIL"
+    child_code = "import sys; sys.stdout.buffer.write(" + repr(original) + ")"
+    command = f"{shlex.quote(sys.executable)} -c {shlex.quote(child_code)}"
+
+    response = await run_code(None, command, timeout=10)
+    payload = json.loads(response.text)
+    policy = payload["metadata"]["output_policy"]["stdout"]
+
+    assert policy["artifact_complete"] is True
+    assert policy["raw_bytes"] == len(original)
+    assert policy["stream_total_bytes"] == len(original)
+    assert policy["artifact_ref"].startswith("aworld-terminal-output://sha256/")
+    artifact_response = await read_output_artifact(
+        None,
+        policy["artifact_ref"],
+        offset=0,
+        limit=len(original),
+        output="base64",
+    )
+    artifact_payload = json.loads(artifact_response.text)
+
+    assert base64.b64decode(artifact_payload["content"]) == original
+    assert artifact_payload["complete"] is True
+    assert artifact_payload["content_sha256"] == policy["content_sha256"]
+
+
+@pytest.mark.asyncio
+async def test_output_artifact_has_explicit_finite_hard_limit(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("AWORLD_TERMINAL_CAPTURE_MAX_BYTES", "2048")
+    monkeypatch.setenv("AWORLD_TERMINAL_ARTIFACT_MAX_BYTES", "8192")
+    monkeypatch.setenv("AWORLD_TERMINAL_ARTIFACT_DIR", str(tmp_path / "artifacts"))
+    child_code = "import sys; sys.stdout.write('x' * 20000)"
+    command = f"{shlex.quote(sys.executable)} -c {shlex.quote(child_code)}"
+
+    response = await run_code(None, command, timeout=10)
+    payload = json.loads(response.text)
+    policy = payload["metadata"]["output_policy"]["stdout"]
+
+    assert policy["artifact_complete"] is False
+    assert policy["raw_bytes"] == 8192
+    assert policy["stream_total_bytes"] == 20000
+    assert policy["artifact_ref"]
+
+
+@pytest.mark.asyncio
+async def test_output_artifact_reader_rejects_content_tampering(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("AWORLD_TERMINAL_CAPTURE_MAX_BYTES", "2048")
+    artifact_dir = tmp_path / "artifacts"
+    monkeypatch.setenv("AWORLD_TERMINAL_ARTIFACT_DIR", str(artifact_dir))
+    command = f"{shlex.quote(sys.executable)} -c " + shlex.quote(
+        "print('x' * 10000, end='')"
+    )
+    response = await run_code(None, command, timeout=10)
+    payload = json.loads(response.text)
+    policy = payload["metadata"]["output_policy"]["stdout"]
+    artifact_path = artifact_dir / f"{policy['content_sha256']}.bin"
+    artifact_path.write_bytes(b"tampered")
+
+    with pytest.raises(ValueError, match="does not match"):
+        await read_output_artifact(None, policy["artifact_ref"])
 
 
 @pytest.mark.asyncio

@@ -98,15 +98,24 @@ class ToolConfigManager:
 
     def _config_for_terminal(self) -> Optional[Dict[str, Any]]:
         script_path = get_terminal_script_path()
-        env = get_server_env()
+        env = dict(get_server_env())
         if self.workspaces:
-            env = dict(env) if env else {}
             env[ENV_WORKSPACE] = ",".join(self.workspaces)
+        working_directory = self._stdio_working_directory(env)
+        env.setdefault(
+            "AWORLD_TERMINAL_ARTIFACT_DIR",
+            str(
+                Path(working_directory)
+                / ".aworld"
+                / "artifacts"
+                / "terminal-output"
+            ),
+        )
         return build_stdio_server_config(
             command=PYTHON_CMD_PLACEHOLDER,
             args=[script_path, "--stdio"],
             env=env or None,
-            cwd=self._stdio_working_directory(env),
+            cwd=working_directory,
         )
 
     def _config_for_mac_ui_automation(self) -> Optional[Dict[str, Any]]:

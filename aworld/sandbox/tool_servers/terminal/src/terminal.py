@@ -1,15 +1,22 @@
 import asyncio
+import base64
 from collections import deque
+from dataclasses import dataclass
+import hashlib
 import json
 import logging
+import math
 import platform
+import re
+import shlex
 import signal
 import subprocess
+import tempfile
 import time
 import traceback
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Union
+from typing import Any, Mapping, Optional, Union
 import os
 
 from dotenv import load_dotenv
@@ -44,26 +51,27 @@ _STREAM_READ_CHUNK_BYTES = 64 * 1024
 _BACKGROUND_CAPTURE_FLUSH_SECONDS = 0.1
 _CAPTURE_LIMIT_ENV = "AWORLD_TERMINAL_CAPTURE_MAX_BYTES"
 _CAPTURE_LIMIT_ENV_ALIAS = "TERMINAL_CAPTURE_MAX_BYTES"
+_DEFAULT_ARTIFACT_MAX_BYTES = 64 * 1024 * 1024
+_HARD_MAX_ARTIFACT_BYTES = 512 * 1024 * 1024
+_MIN_ARTIFACT_MAX_BYTES = 2 * 1024
+_DEFAULT_ARTIFACT_READ_MAX_BYTES = 1 * 1024 * 1024
+_HARD_MAX_ARTIFACT_READ_BYTES = 16 * 1024 * 1024
+_ARTIFACT_LIMIT_ENV = "AWORLD_TERMINAL_ARTIFACT_MAX_BYTES"
+_ARTIFACT_READ_LIMIT_ENV = "AWORLD_TERMINAL_ARTIFACT_READ_MAX_BYTES"
+_ARTIFACT_DIRECTORY_ENV = "AWORLD_TERMINAL_ARTIFACT_DIR"
+_TASK_DEADLINE_ENV = "AWORLD_TASK_DEADLINE_EPOCH_SECONDS"
+_COMPLETION_RESERVE_ENV = "AWORLD_TERMINAL_COMPLETION_RESERVE_SECONDS"
+_MAX_TIMEOUT_ENV = "AWORLD_TERMINAL_MAX_TIMEOUT_SECONDS"
+_DEFAULT_COMPLETION_RESERVE_SECONDS = 15.0
+_ARTIFACT_REF_PREFIX = "aworld-terminal-output://sha256/"
+_ENV_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*\Z")
+_MAX_ENV_OVERRIDES = 128
+_MAX_ENV_OVERRIDE_BYTES = 64 * 1024
 
 # Keep strong references to drain-only tasks for background children that retain
 # inherited stdout/stderr descriptors after their launching shell has exited.
 # Each task drops all captured bytes before being registered here.
 _background_drain_tasks: set[asyncio.Task[None]] = set()
-
-# Define dangerous commands for safety
-dangerous_commands = [
-    "rm -rf /",
-    "mkfs",
-    "dd if=",
-    ":(){ :|:& };:",  # Unix
-    "del /f /s /q",
-    # "format",
-    # "format",
-    "diskpart",  # Windows
-    "sudo rm",
-    "sudo dd",
-    "sudo mkfs",  # Sudo variants
-]
 
 # Get current platform info
 platform_info = {
@@ -104,6 +112,8 @@ class CommandResult(BaseModel):
     capture_complete: bool = True
     background_output_detached: bool = False
     timed_out: bool = False
+    stdout_output_policy: dict[str, Any] = Field(default_factory=dict)
+    stderr_output_policy: dict[str, Any] = Field(default_factory=dict)
 
 
 class TerminalMetadata(BaseModel):
@@ -112,7 +122,10 @@ class TerminalMetadata(BaseModel):
     command: str
     platform: str
     working_directory: str
-    timeout_seconds: int
+    timeout_seconds: float
+    requested_timeout_seconds: float | None = None
+    remaining_task_seconds: float | None = None
+    timeout_limited_by: str | None = None
     execution_time: float | None = None
     return_code: int | None = None
     safety_check_passed: bool = True
@@ -128,6 +141,16 @@ class TerminalMetadata(BaseModel):
     capture_complete: bool = True
     background_output_detached: bool = False
     capture_strategy: str = "bounded_head_tail_drain"
+    environment_keys: list[str] = Field(default_factory=list)
+    output_policy: dict[str, dict[str, Any]] = Field(default_factory=dict)
+
+
+@dataclass(frozen=True, slots=True)
+class CommandTimeoutDecision:
+    requested_seconds: float
+    effective_seconds: float
+    remaining_task_seconds: float | None
+    limited_by: str | None
 
 
 def _get_total_capture_limit_bytes() -> int:
@@ -154,6 +177,239 @@ def _get_total_capture_limit_bytes() -> int:
     )
 
 
+def _bounded_env_int(
+    name: str,
+    default: int,
+    *,
+    minimum: int,
+    maximum: int,
+) -> int:
+    raw_value = os.environ.get(name)
+    try:
+        configured = int(raw_value) if raw_value is not None else default
+    except (TypeError, ValueError):
+        configured = default
+    return max(minimum, min(configured, maximum))
+
+
+def _get_artifact_max_bytes() -> int:
+    return _bounded_env_int(
+        _ARTIFACT_LIMIT_ENV,
+        _DEFAULT_ARTIFACT_MAX_BYTES,
+        minimum=_MIN_ARTIFACT_MAX_BYTES,
+        maximum=_HARD_MAX_ARTIFACT_BYTES,
+    )
+
+
+def _get_artifact_read_max_bytes() -> int:
+    return _bounded_env_int(
+        _ARTIFACT_READ_LIMIT_ENV,
+        _DEFAULT_ARTIFACT_READ_MAX_BYTES,
+        minimum=1,
+        maximum=_HARD_MAX_ARTIFACT_READ_BYTES,
+    )
+
+
+def _artifact_directory() -> Path:
+    configured = os.environ.get(_ARTIFACT_DIRECTORY_ENV, "").strip()
+    root = (
+        Path(configured).expanduser()
+        if configured
+        else workspace / ".aworld" / "artifacts" / "terminal-output"
+    ).resolve()
+    root.mkdir(parents=True, exist_ok=True, mode=0o700)
+    return root
+
+
+def _positive_env_float(name: str, default: float) -> float:
+    raw_value = os.environ.get(name)
+    if raw_value is None:
+        return default
+    try:
+        value = float(raw_value)
+    except (TypeError, ValueError):
+        return default
+    if not math.isfinite(value) or value < 0:
+        return default
+    return value
+
+
+def _resolve_command_timeout(
+    requested: float,
+    *,
+    now_epoch: float | None = None,
+) -> CommandTimeoutDecision:
+    """Clamp a Tool timeout to framework policy and an optional task deadline."""
+
+    if isinstance(requested, bool):
+        raise ValueError("timeout must be a positive finite number")
+    requested_seconds = float(requested)
+    if not math.isfinite(requested_seconds) or requested_seconds <= 0:
+        raise ValueError("timeout must be a positive finite number")
+
+    env_timeout = os.environ.get("TERMINAL_TIMEOUT")
+    if env_timeout is not None:
+        try:
+            configured_timeout = float(env_timeout)
+        except (TypeError, ValueError):
+            configured_timeout = requested_seconds
+        if math.isfinite(configured_timeout) and configured_timeout > 0:
+            requested_seconds = configured_timeout
+
+    configured_max = _positive_env_float(
+        _MAX_TIMEOUT_ENV,
+        float(_MAX_COMMAND_TIMEOUT_SECONDS),
+    )
+    configured_max = max(1.0, min(configured_max, float(_MAX_COMMAND_TIMEOUT_SECONDS)))
+    effective = min(requested_seconds, configured_max)
+    limited_by = "terminal_maximum" if effective < requested_seconds else None
+
+    raw_deadline = os.environ.get(_TASK_DEADLINE_ENV)
+    if raw_deadline is None:
+        return CommandTimeoutDecision(
+            requested_seconds=requested_seconds,
+            effective_seconds=effective,
+            remaining_task_seconds=None,
+            limited_by=limited_by,
+        )
+    try:
+        deadline = float(raw_deadline)
+    except (TypeError, ValueError):
+        deadline = math.nan
+    if not math.isfinite(deadline):
+        return CommandTimeoutDecision(
+            requested_seconds=requested_seconds,
+            effective_seconds=effective,
+            remaining_task_seconds=None,
+            limited_by=limited_by,
+        )
+
+    now = time.time() if now_epoch is None else float(now_epoch)
+    remaining = max(0.0, deadline - now)
+    reserve = _positive_env_float(
+        _COMPLETION_RESERVE_ENV,
+        _DEFAULT_COMPLETION_RESERVE_SECONDS,
+    )
+    available = max(0.0, remaining - reserve)
+    if available <= 0:
+        return CommandTimeoutDecision(
+            requested_seconds=requested_seconds,
+            effective_seconds=0.0,
+            remaining_task_seconds=remaining,
+            limited_by="task_deadline_exhausted",
+        )
+    if available < effective:
+        effective = available
+        limited_by = "task_deadline"
+    return CommandTimeoutDecision(
+        requested_seconds=requested_seconds,
+        effective_seconds=effective,
+        remaining_task_seconds=remaining,
+        limited_by=limited_by,
+    )
+
+
+def _resolve_working_directory(cwd: str | None) -> Path:
+    if cwd is None or not str(cwd).strip():
+        return workspace
+    candidate = Path(str(cwd)).expanduser()
+    if not candidate.is_absolute():
+        candidate = workspace / candidate
+    resolved = candidate.resolve()
+    if not resolved.exists():
+        raise ValueError(f"working directory does not exist: {cwd}")
+    if not resolved.is_dir():
+        raise ValueError(f"working directory is not a directory: {cwd}")
+    return resolved
+
+
+def _resolve_environment(overrides: Mapping[str, str] | None) -> dict[str, str]:
+    if overrides is None:
+        return dict(os.environ)
+    if not isinstance(overrides, Mapping):
+        raise TypeError("env must be an object mapping names to string values")
+    if len(overrides) > _MAX_ENV_OVERRIDES:
+        raise ValueError(f"env must contain at most {_MAX_ENV_OVERRIDES} entries")
+    normalized: dict[str, str] = {}
+    total_bytes = 0
+    for raw_name, raw_value in overrides.items():
+        if not isinstance(raw_name, str) or not _ENV_NAME.fullmatch(raw_name):
+            raise ValueError(f"invalid environment variable name: {raw_name!r}")
+        if not isinstance(raw_value, str) or "\x00" in raw_value:
+            raise ValueError(f"environment variable {raw_name!r} must be a NUL-free string")
+        total_bytes += len(raw_name.encode()) + len(raw_value.encode())
+        if total_bytes > _MAX_ENV_OVERRIDE_BYTES:
+            raise ValueError(
+                f"env exceeds the {_MAX_ENV_OVERRIDE_BYTES}-byte override limit"
+            )
+        normalized[raw_name] = raw_value
+    return {**os.environ, **normalized}
+
+
+class _ArtifactWriter:
+    """Finite streaming sink for one stdout/stderr artifact."""
+
+    def __init__(self, root: Path, max_bytes: int) -> None:
+        self.root = root
+        self.max_bytes = max_bytes
+        descriptor, temporary_name = tempfile.mkstemp(prefix=".capture-", dir=root)
+        os.chmod(temporary_name, 0o600)
+        self._stream = os.fdopen(descriptor, "wb")
+        self._temporary_path = Path(temporary_name)
+        self._digest = hashlib.sha256()
+        self.written_bytes = 0
+        self._closed = False
+
+    def feed(self, chunk: bytes) -> None:
+        if self._closed or not chunk or self.written_bytes >= self.max_bytes:
+            return
+        retained = chunk[: self.max_bytes - self.written_bytes]
+        if retained:
+            self._stream.write(retained)
+            self._digest.update(retained)
+            self.written_bytes += len(retained)
+
+    def finalize(
+        self,
+        *,
+        persist: bool,
+        stream_total_bytes: int,
+        capture_complete: bool,
+    ) -> dict[str, Any]:
+        if self._closed:
+            return {}
+        self._closed = True
+        self._stream.flush()
+        os.fsync(self._stream.fileno())
+        self._stream.close()
+        if not persist or self.written_bytes == 0:
+            self._temporary_path.unlink(missing_ok=True)
+            return {}
+        digest = self._digest.hexdigest()
+        final_path = self.root / f"{digest}.bin"
+        if final_path.exists():
+            self._temporary_path.unlink(missing_ok=True)
+        else:
+            os.replace(self._temporary_path, final_path)
+            os.chmod(final_path, 0o600)
+        return {
+            "artifact_ref": f"{_ARTIFACT_REF_PREFIX}{digest}",
+            "content_sha256": digest,
+            "raw_bytes": self.written_bytes,
+            "stream_total_bytes": stream_total_bytes,
+            "artifact_complete": (
+                capture_complete and self.written_bytes == stream_total_bytes
+            ),
+        }
+
+    def discard(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        self._stream.close()
+        self._temporary_path.unlink(missing_ok=True)
+
+
 class _BoundedStreamCapture:
     """Incrementally retain a byte-bounded head and tail of one pipe.
 
@@ -162,9 +418,16 @@ class _BoundedStreamCapture:
     retained.  No command output is spooled to disk.
     """
 
-    def __init__(self, stream_name: str, max_bytes: int) -> None:
+    def __init__(
+        self,
+        stream_name: str,
+        max_bytes: int,
+        *,
+        artifact_writer: _ArtifactWriter | None = None,
+    ) -> None:
         self.stream_name = stream_name
         self.max_bytes = max(1, int(max_bytes))
+        self._artifact_writer = artifact_writer
         self.total_bytes = 0
         self._head_limit = self.max_bytes // 2
         self._tail_limit = self.max_bytes - self._head_limit
@@ -191,6 +454,8 @@ class _BoundedStreamCapture:
         if not chunk:
             return
         self.total_bytes += len(chunk)
+        if self._artifact_writer is not None:
+            self._artifact_writer.feed(chunk)
         if self._discard_only:
             return
 
@@ -245,6 +510,19 @@ class _BoundedStreamCapture:
         self._tail_chunks.clear()
         self._tail_bytes = 0
 
+    def finalize_artifact(self, *, capture_complete: bool) -> dict[str, Any]:
+        if self._artifact_writer is None:
+            return {}
+        return self._artifact_writer.finalize(
+            persist=self.truncated,
+            stream_total_bytes=self.total_bytes,
+            capture_complete=capture_complete,
+        )
+
+    def discard_artifact(self) -> None:
+        if self._artifact_writer is not None:
+            self._artifact_writer.discard()
+
 
 def _bounded_inline_stream(
     value: str,
@@ -293,6 +571,7 @@ Key features:
 
 Main tool:
 - run_code: Execute a terminal command with safety checks
+- read_output_artifact: Retrieve a bounded range from truncated command output
 """,
 )
 
@@ -347,12 +626,21 @@ Execute a terminal command with safety checks and timeout controls.
 async def run_code(
     ctx: Context,
     code: str = Field(description="Terminal command to execute"),
-    timeout: int = Field(
+    timeout: float = Field(
         default=_DEFAULT_COMMAND_TIMEOUT_SECONDS,
         description="Command timeout in seconds (default: 300, max: 3600)",
     ),
     output_format: str = Field(
-        default="markdown", description="Output format: 'markdown', 'json', or 'text'"
+        default="structured",
+        description="Output format: 'structured', 'markdown', 'json', or 'text'",
+    ),
+    cwd: Optional[str] = Field(
+        default=None,
+        description="Optional working directory; relative paths resolve from the workspace",
+    ),
+    env: Optional[dict[str, str]] = Field(
+        default=None,
+        description="Optional per-command environment overrides",
     ),
 ) -> Union[str, TextContent]:
     # Normalize parameters: when using MCP tool schemas, the raw values may be
@@ -368,16 +656,41 @@ async def run_code(
     if isinstance(output_format, FieldInfo):
         output_format = output_format.default
 
-    # Timeout: env TERMINAL_TIMEOUT overrides parameter/default when set
-    env_timeout = os.environ.get("TERMINAL_TIMEOUT")
-    if env_timeout is not None:
-        try:
-            timeout = int(env_timeout)
-        except ValueError:
-            pass  # keep current timeout if env value is not a valid integer
-    timeout = max(1, min(int(timeout), _MAX_COMMAND_TIMEOUT_SECONDS))
+    if isinstance(cwd, FieldInfo):
+        cwd = cwd.default
+    if isinstance(env, FieldInfo):
+        env = env.default
 
     try:
+        timeout_decision = _resolve_command_timeout(timeout)
+        working_directory = _resolve_working_directory(cwd)
+        command_environment = _resolve_environment(env)
+        environment_keys = sorted(env or {})
+        if timeout_decision.effective_seconds <= 0:
+            action_response = ActionResponse(
+                success=False,
+                message={
+                    "stdout": "",
+                    "stderr": "Task execution deadline is reserved for completion",
+                },
+                metadata=TerminalMetadata(
+                    command=str(command),
+                    platform=platform_info["system"],
+                    working_directory=str(working_directory),
+                    timeout_seconds=0,
+                    requested_timeout_seconds=timeout_decision.requested_seconds,
+                    remaining_task_seconds=timeout_decision.remaining_task_seconds,
+                    timeout_limited_by=timeout_decision.limited_by,
+                    safety_check_passed=True,
+                    error_type="task_budget_exhausted",
+                    environment_keys=environment_keys,
+                ).model_dump(),
+            )
+            return TextContent(
+                type="text",
+                text=json.dumps(action_response.model_dump()),
+                **{"metadata": {}},
+            )
         # Safety check
         is_safe, safety_reason = _check_command_safety(command)
         if not is_safe:
@@ -387,10 +700,14 @@ async def run_code(
                 metadata=TerminalMetadata(
                     command=command,
                     platform=platform_info["system"],
-                    working_directory=str(workspace),
-                    timeout_seconds=timeout,
+                    working_directory=str(working_directory),
+                    timeout_seconds=timeout_decision.effective_seconds,
+                    requested_timeout_seconds=timeout_decision.requested_seconds,
+                    remaining_task_seconds=timeout_decision.remaining_task_seconds,
+                    timeout_limited_by=timeout_decision.limited_by,
                     safety_check_passed=False,
                     error_type="security_violation",
+                    environment_keys=environment_keys,
                 ).model_dump(),
             )
             # await send_command_card(
@@ -412,7 +729,12 @@ async def run_code(
 
         # Execute command
         start_time = time.time()
-        result = await _execute_command_async(command, timeout)
+        result = await _execute_command_async(
+            command,
+            timeout_decision.effective_seconds,
+            cwd=working_directory,
+            env=command_environment,
+        )
         execution_time = time.time() - start_time
 
         # Format output
@@ -422,8 +744,11 @@ async def run_code(
         metadata = TerminalMetadata(
             command=command,
             platform=platform_info["system"],
-            working_directory=str(workspace),
-            timeout_seconds=timeout,
+            working_directory=str(working_directory),
+            timeout_seconds=timeout_decision.effective_seconds,
+            requested_timeout_seconds=timeout_decision.requested_seconds,
+            remaining_task_seconds=timeout_decision.remaining_task_seconds,
+            timeout_limited_by=timeout_decision.limited_by,
             execution_time=execution_time,
             return_code=result.return_code,
             safety_check_passed=True,
@@ -435,6 +760,11 @@ async def run_code(
             capture_limit_bytes=result.capture_limit_bytes,
             capture_complete=result.capture_complete,
             background_output_detached=result.background_output_detached,
+            environment_keys=environment_keys,
+            output_policy={
+                "stdout": result.stdout_output_policy,
+                "stderr": result.stderr_output_policy,
+            },
         )
 
         if result.success:
@@ -478,8 +808,8 @@ async def run_code(
             metadata=TerminalMetadata(
                 command=command,
                 platform=platform_info["system"],
-                working_directory=str(workspace),
-                timeout_seconds=timeout,
+                working_directory=str(cwd or workspace),
+                timeout_seconds=0,
                 safety_check_passed=True,
                 error_type="internal_error",
             ).model_dump(),
@@ -493,21 +823,138 @@ async def run_code(
         )
 
 
+def _shell_command_segments(command: str) -> list[list[str]]:
+    """Return shell command words without treating quoted examples as actions."""
+
+    lexer = shlex.shlex(command, posix=True, punctuation_chars=";&|()\n")
+    lexer.whitespace = " \t\r"
+    lexer.whitespace_split = True
+    lexer.commenters = "#"
+    segments: list[list[str]] = []
+    current: list[str] = []
+    for token in lexer:
+        if token and all(character in ";&|()\n" for character in token):
+            if current:
+                segments.append(current)
+                current = []
+            continue
+        current.append(token)
+    if current:
+        segments.append(current)
+    return segments
+
+
+def _command_words(segment: list[str]) -> tuple[str, list[str]]:
+    """Strip common execution wrappers and return executable plus arguments."""
+
+    words = list(segment)
+    while words:
+        executable = Path(words[0]).name.lower()
+        if executable in {"command", "builtin"}:
+            words.pop(0)
+            continue
+        if executable == "sudo":
+            words.pop(0)
+            while words and words[0].startswith("-"):
+                option = words.pop(0)
+                if option in {"-u", "-g", "-h", "-p", "-C", "-T", "-R", "-D"} and words:
+                    words.pop(0)
+            continue
+        if executable == "env":
+            words.pop(0)
+            while words and (words[0].startswith("-") or "=" in words[0]):
+                words.pop(0)
+            continue
+        return executable, words[1:]
+    return "", []
+
+
+def _is_broad_rm_target(target: str) -> bool:
+    raw = target.strip()
+    if not raw:
+        return False
+    expanded = os.path.expanduser(os.path.expandvars(raw))
+    normalized = os.path.normpath(expanded)
+    if normalized == "/" or raw in {"/*", "/.*", "/{*,.*}"}:
+        return True
+    home = str(Path.home().resolve())
+    if normalized == home or raw in {"~", "$HOME", "${HOME}"}:
+        return True
+    return raw in {"~/*", "$HOME/*", "${HOME}/*", "~/.*", "$HOME/.*", "${HOME}/.*"}
+
+
+def _rm_recurses(args: list[str]) -> bool:
+    for value in args:
+        if value == "--":
+            break
+        if value.startswith("--"):
+            if value == "--recursive":
+                return True
+            continue
+        if value.startswith("-") and any(flag in value[1:] for flag in ("r", "R")):
+            return True
+    return False
+
+
+def _rm_targets(args: list[str]) -> list[str]:
+    targets: list[str] = []
+    options_done = False
+    for value in args:
+        if not options_done and value == "--":
+            options_done = True
+            continue
+        if not options_done and value.startswith("-"):
+            continue
+        targets.append(value)
+    return targets
+
+
+def _dangerous_device_output(args: list[str]) -> str | None:
+    for value in args:
+        if not value.lower().startswith("of="):
+            continue
+        target = value[3:]
+        if re.match(
+            r"^/dev/(?:sd|hd|vd|xvd|nvme|mmcblk|disk|rdisk|mapper/)",
+            target,
+            re.IGNORECASE,
+        ):
+            return target
+    return None
+
+
 def _check_command_safety(command: str) -> tuple[bool, str | None]:
-    """Check if command is safe to execute.
+    """Reject broad host-destructive operations without blocking scoped cleanup."""
 
-    Args:
-        command: Command string to check
-
-    Returns:
-        Tuple of (is_safe, reason_if_unsafe)
-    """
-    command_lower = command.lower().strip()
-
-    for dangerous_cmd in dangerous_commands:
-        if dangerous_cmd.lower() in command_lower:
-            return False, f"Command contains dangerous pattern: {dangerous_cmd}"
-
+    if not isinstance(command, str) or not command.strip():
+        return False, "Command must be a non-empty string"
+    compact = "".join(command.split())
+    if ":(){:|:&};:" in compact:
+        return False, "Command contains a shell fork bomb"
+    try:
+        segments = _shell_command_segments(command)
+    except ValueError as exc:
+        return False, f"Command could not be parsed safely: {exc}"
+    for segment in segments:
+        executable, args = _command_words(segment)
+        if not executable:
+            continue
+        if executable == "rm" and _rm_recurses(args):
+            target = next((value for value in _rm_targets(args) if _is_broad_rm_target(value)), None)
+            if target is not None:
+                return False, f"Recursive removal of broad target is not allowed: {target}"
+        if executable == "mkfs" or executable.startswith("mkfs."):
+            return False, f"Filesystem formatting command is not allowed: {executable}"
+        if executable == "diskpart":
+            return False, "Disk partitioning command is not allowed"
+        if executable == "dd":
+            target = _dangerous_device_output(args)
+            if target is not None:
+                return False, f"Writing directly to a block device is not allowed: {target}"
+        if executable in {"del", "erase"} and any(
+            value.lower() in {"c:\\", "c:\\*", "c:/*"} for value in args
+        ):
+            return False, "Recursive removal of a Windows drive root is not allowed"
     return True, None
 
 
@@ -578,19 +1025,21 @@ def _is_background_process(command: str) -> bool:
 
 
 def _format_command_output(
-    result: CommandResult, output_format: str = "markdown"
-) -> str:
+    result: CommandResult, output_format: str = "structured"
+) -> Any:
     """Format command execution results for LLM consumption.
 
     Args:
         result: Command execution result
-        output_format: Format type ('markdown', 'json', 'text')
+        output_format: Format type ('structured', 'markdown', 'json', 'text')
 
     Returns:
         Formatted string suitable for LLM consumption
     """
     stdout = _bounded_inline_stream(result.stdout)
     stderr = _bounded_inline_stream(result.stderr)
+    if output_format == "structured":
+        return {"stdout": stdout, "stderr": stderr}
     if output_format == "json":
         return json.dumps(
             result.model_copy(update={"stdout": stdout, "stderr": stderr}).model_dump(),
@@ -624,7 +1073,7 @@ def _format_command_output(
 
         return "\n".join(output_parts)
 
-    else:  # markdown (default)
+    elif output_format == "markdown":
         status_emoji = "✅" if result.success else "❌"
 
         output_parts = [
@@ -654,6 +1103,9 @@ def _format_command_output(
             output_parts.extend(["\n## Errors/Warnings", "```", stderr.strip(), "```"])
 
         return "\n".join(output_parts)
+    raise ValueError(
+        "output_format must be one of: structured, markdown, json, text"
+    )
 
 
 async def _drain_stream(
@@ -809,7 +1261,13 @@ def _record_command_history(
         command_history.pop(0)
 
 
-async def _execute_command_async(command: str, timeout: int) -> CommandResult:
+async def _execute_command_async(
+    command: str,
+    timeout: float,
+    *,
+    cwd: Path | None = None,
+    env: Mapping[str, str] | None = None,
+) -> CommandResult:
     """Execute a command while retaining only bounded stdout/stderr excerpts.
 
     Both foreground and background paths use concurrently drained pipes.  The
@@ -824,8 +1282,24 @@ async def _execute_command_async(command: str, timeout: int) -> CommandResult:
     loop = asyncio.get_running_loop()
     deadline = loop.time() + timeout
     capture_limit = _get_total_capture_limit_bytes()
-    stdout_capture = _BoundedStreamCapture("stdout", (capture_limit + 1) // 2)
-    stderr_capture = _BoundedStreamCapture("stderr", capture_limit // 2)
+    artifact_root = _artifact_directory()
+    artifact_limit = _get_artifact_max_bytes()
+    stdout_writer = _ArtifactWriter(artifact_root, artifact_limit)
+    try:
+        stderr_writer = _ArtifactWriter(artifact_root, artifact_limit)
+    except Exception:
+        stdout_writer.discard()
+        raise
+    stdout_capture = _BoundedStreamCapture(
+        "stdout",
+        (capture_limit + 1) // 2,
+        artifact_writer=stdout_writer,
+    )
+    stderr_capture = _BoundedStreamCapture(
+        "stderr",
+        capture_limit // 2,
+        artifact_writer=stderr_writer,
+    )
     process: asyncio.subprocess.Process | None = None
     stdout_task: asyncio.Task[None] | None = None
     stderr_task: asyncio.Task[None] | None = None
@@ -840,6 +1314,8 @@ async def _execute_command_async(command: str, timeout: int) -> CommandResult:
             "stderr": asyncio.subprocess.PIPE,
             "shell": True,
             "limit": _STREAM_READ_CHUNK_BYTES,
+            "cwd": str(cwd or workspace),
+            "env": dict(env) if env is not None else None,
         }
         if platform_info["system"] != "Windows":
             process_options.update(
@@ -909,10 +1385,35 @@ async def _execute_command_async(command: str, timeout: int) -> CommandResult:
                 stdout_capture.discard_retained_bytes()
             if stderr_task in pending_tasks:
                 stderr_capture.discard_retained_bytes()
+            stdout_capture.discard_artifact()
+            stderr_capture.discard_artifact()
             _track_background_drain_tasks(pending_tasks)
 
+        stdout_output_policy = stdout_capture.finalize_artifact(
+            capture_complete=capture_complete
+        )
+        stderr_output_policy = stderr_capture.finalize_artifact(
+            capture_complete=capture_complete
+        )
+        for policy, capture in (
+            (stdout_output_policy, stdout_capture),
+            (stderr_output_policy, stderr_capture),
+        ):
+            policy.setdefault("artifact_ref", None)
+            policy.setdefault("content_sha256", None)
+            policy.setdefault("raw_bytes", capture.total_bytes)
+            policy.setdefault("stream_total_bytes", capture.total_bytes)
+            policy.setdefault("artifact_complete", capture_complete)
+            policy.update(
+                {
+                    "inline_bytes": capture.retained_bytes,
+                    "offloaded_bytes": capture.omitted_bytes,
+                    "output_truncated": capture.truncated,
+                }
+            )
+
         if timed_out:
-            timeout_message = f"Command timed out after {timeout} seconds"
+            timeout_message = f"Command timed out after {timeout:g} seconds"
             stderr = (
                 f"{stderr.rstrip()}\n{timeout_message}" if stderr else timeout_message
             )
@@ -938,6 +1439,8 @@ async def _execute_command_async(command: str, timeout: int) -> CommandResult:
             capture_complete=capture_complete,
             background_output_detached=background_output_detached,
             timed_out=timed_out,
+            stdout_output_policy=stdout_output_policy,
+            stderr_output_policy=stderr_output_policy,
         )
         _record_command_history(
             command=command,
@@ -957,6 +1460,8 @@ async def _execute_command_async(command: str, timeout: int) -> CommandResult:
         }
         if process is not None:
             await _finish_reader_tasks_after_termination(process, tasks)
+        stdout_capture.discard_artifact()
+        stderr_capture.discard_artifact()
         raise
     except Exception as e:
         if process is not None:
@@ -968,6 +1473,8 @@ async def _execute_command_async(command: str, timeout: int) -> CommandResult:
         }
         if process is not None:
             await _finish_reader_tasks_after_termination(process, tasks)
+        stdout_capture.discard_artifact()
+        stderr_capture.discard_artifact()
         duration = str(datetime.now() - start_time)
         result = CommandResult(
             command=command,
@@ -987,6 +1494,91 @@ async def _execute_command_async(command: str, timeout: int) -> CommandResult:
             duration=duration,
         )
         return result
+
+
+def _resolve_artifact_ref(artifact_ref: str) -> tuple[Path, str]:
+    if not isinstance(artifact_ref, str) or not artifact_ref.startswith(
+        _ARTIFACT_REF_PREFIX
+    ):
+        raise ValueError("artifact_ref is not a terminal output artifact")
+    digest = artifact_ref[len(_ARTIFACT_REF_PREFIX) :]
+    if len(digest) != 64 or any(character not in "0123456789abcdef" for character in digest):
+        raise ValueError("artifact_ref has an invalid checksum")
+    root = _artifact_directory()
+    path = (root / f"{digest}.bin").resolve()
+    if path.parent != root or not path.is_file():
+        raise ValueError("artifact_ref is unavailable in this terminal sandbox")
+    actual_digest_builder = hashlib.sha256()
+    with path.open("rb") as stream:
+        while chunk := stream.read(_STREAM_READ_CHUNK_BYTES):
+            actual_digest_builder.update(chunk)
+    actual_digest = actual_digest_builder.hexdigest()
+    if actual_digest != digest:
+        raise ValueError("artifact content does not match artifact_ref checksum")
+    return path, digest
+
+
+@mcp.tool(
+    description=(
+        "Read a bounded byte range from a checksummed full terminal output "
+        "artifact returned by run_code."
+    )
+)
+async def read_output_artifact(
+    ctx: Context,
+    artifact_ref: str = Field(
+        description="Artifact reference returned in output_policy.artifact_ref"
+    ),
+    offset: int = Field(default=0, description="Zero-based byte offset"),
+    limit: Optional[int] = Field(
+        default=None,
+        description="Bytes to read; capped by terminal artifact read policy",
+    ),
+    output: str = Field(default="text", description="text or base64"),
+) -> TextContent:
+    del ctx
+    if isinstance(offset, FieldInfo):
+        offset = offset.default
+    if isinstance(limit, FieldInfo):
+        limit = limit.default
+    if isinstance(output, FieldInfo):
+        output = output.default
+    if offset < 0:
+        raise ValueError("offset must be non-negative")
+    max_read_bytes = _get_artifact_read_max_bytes()
+    requested = max_read_bytes if limit is None else limit
+    if requested < 1 or requested > max_read_bytes:
+        raise ValueError(f"limit must be between 1 and {max_read_bytes}")
+    if output not in {"text", "base64"}:
+        raise ValueError("output must be 'text' or 'base64'")
+    artifact, digest = _resolve_artifact_ref(artifact_ref)
+    total_bytes = artifact.stat().st_size
+    with artifact.open("rb") as stream:
+        stream.seek(offset)
+        data = stream.read(requested)
+    next_offset = offset + len(data)
+    content = (
+        data.decode("utf-8", errors="replace")
+        if output == "text"
+        else base64.b64encode(data).decode("ascii")
+    )
+    payload = {
+        "type": output,
+        "content": content,
+        "artifact_ref": artifact_ref,
+        "offset": offset,
+        "next_offset": next_offset,
+        "returned_bytes": len(data),
+        "total_bytes": total_bytes,
+        "complete": next_offset >= total_bytes,
+        "content_sha256": digest,
+        "chunk_sha256": hashlib.sha256(data).hexdigest(),
+    }
+    return TextContent(
+        type="text",
+        text=json.dumps(payload, ensure_ascii=False),
+        **{"metadata": {}},
+    )
 
 
 if __name__ == "__main__":

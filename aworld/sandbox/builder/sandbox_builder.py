@@ -1,5 +1,5 @@
 """Main builder for creating Sandbox instances with fluent API."""
-from typing import Dict, List, Any, Optional, TYPE_CHECKING
+from typing import Dict, List, Any, Mapping, Optional, TYPE_CHECKING
 
 if TYPE_CHECKING:
     from aworld.sandbox.implementations.sandbox import Sandbox
@@ -354,10 +354,40 @@ class SandboxBuilder:
             exclude_patterns=exclude_patterns,
         )
 
-    async def run_code(self, code: str, timeout: int = 30, output_format: str = "markdown"):
+    async def run_code(
+        self,
+        code: str,
+        timeout: float = 300,
+        output_format: str = "structured",
+        cwd: str | None = None,
+        env: Mapping[str, str] | None = None,
+    ):
         """Proxy to Sandbox.terminal.run_code for IDE completion."""
         instance = self.build()
-        return await instance.terminal.run_code(code=code, timeout=timeout, output_format=output_format)
+        return await instance.terminal.run_code(
+            code=code,
+            timeout=timeout,
+            output_format=output_format,
+            cwd=cwd,
+            env=env,
+        )
+
+    async def read_output_artifact(
+        self,
+        artifact_ref: str,
+        *,
+        offset: int = 0,
+        limit: int | None = None,
+        output: str = "text",
+    ):
+        """Proxy to Sandbox.terminal.read_output_artifact for IDE completion."""
+        instance = self.build()
+        return await instance.terminal.read_output_artifact(
+            artifact_ref=artifact_ref,
+            offset=offset,
+            limit=limit,
+            output=output,
+        )
 
     def build(self) -> 'Sandbox':
         """Build and return the Sandbox instance.

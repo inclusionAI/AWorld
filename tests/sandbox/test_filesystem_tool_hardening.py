@@ -48,11 +48,17 @@ def test_terminal_policy_configuration_is_forwarded_to_stdio_server(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("AWORLD_TERMINAL_CAPTURE_MAX_BYTES", "2097152")
+    monkeypatch.setenv("AWORLD_TERMINAL_ARTIFACT_MAX_BYTES", "67108864")
+    monkeypatch.setenv("AWORLD_TASK_DEADLINE_EPOCH_SECONDS", "1900000000")
+    monkeypatch.setenv("AWORLD_TERMINAL_COMPLETION_RESERVE_SECONDS", "30")
     monkeypatch.setenv("TERMINAL_TIMEOUT", "90")
 
     env = get_server_env()
 
     assert env["AWORLD_TERMINAL_CAPTURE_MAX_BYTES"] == "2097152"
+    assert env["AWORLD_TERMINAL_ARTIFACT_MAX_BYTES"] == "67108864"
+    assert env["AWORLD_TASK_DEADLINE_EPOCH_SECONDS"] == "1900000000"
+    assert env["AWORLD_TERMINAL_COMPLETION_RESERVE_SECONDS"] == "30"
     assert env["TERMINAL_TIMEOUT"] == "90"
 
 
