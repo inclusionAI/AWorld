@@ -14,6 +14,10 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
+# Paddle's image formats from FileX's provider registry. Keep the wrapper
+# independent of the wheel's Python environment until the exporter is invoked.
+_LAYOUT_IMAGE_TYPES = frozenset({"png", "jpg", "jpeg", "webp", "gif", "bmp"})
+
 
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Use FileX from an AWorld sandbox")
@@ -400,9 +404,22 @@ def _parse(args: argparse.Namespace, executable: str, workspace: Path) -> int:
     )
     if args.file_type:
         command.extend(["--file-type", args.file_type])
-    if args.provider:
+    provider = args.provider
+    if (
+        not provider
+        and not args.env_file
+        and args.artifacts_dir
+        and args.layout_format == "parse-output"
+        and source_path is not None
+    ):
+        file_type = (
+            str(args.file_type or source_path.suffix).strip().lower().lstrip(".")
+        )
+        if file_type in _LAYOUT_IMAGE_TYPES:
+            provider = "paddle_ocr"
+    if provider:
         command.extend(
-            ["--env-content-json", json.dumps({"filex_parse_provider": args.provider})]
+            ["--env-content-json", json.dumps({"filex_parse_provider": provider})]
         )
     for flag, value in (
         ("--task-id", args.task_id),

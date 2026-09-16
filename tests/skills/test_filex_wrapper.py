@@ -495,6 +495,84 @@ def test_filex_wrapper_uses_the_configured_exporter_python(tmp_path: Path) -> No
     assert not (artifacts / "result.json").exists()
 
 
+def _image_export_command(
+    tmp_path: Path,
+    *,
+    suffix: str = ".png",
+    layout_format: str | None = "parse-output",
+    artifacts: bool = True,
+    provider: str | None = None,
+    env_file: bool = False,
+    file_type: str | None = None,
+    env_format: str | None = None,
+):
+    workspace, args_log, env = _environment(tmp_path)
+    source = workspace / f"input{suffix}"
+    source.write_bytes(b"image input fixture")
+    env["FILEX_ARTIFACTS_ROOT"] = str(tmp_path / "artifacts")
+    if env_format is not None:
+        env["FILEX_LAYOUT_FORMAT"] = env_format
+    command = [sys.executable, str(FILEX_SCRIPT), "parse", "--input", str(source)]
+    if layout_format is not None:
+        command.extend(["--layout-format", layout_format])
+    if artifacts:
+        command.extend(["--artifacts-dir", env["FILEX_ARTIFACTS_ROOT"]])
+    if provider is not None:
+        command.extend(["--provider", provider])
+    if env_file:
+        configuration = workspace / "provider.json"
+        configuration.write_text('{"filex_parse_provider":"image_vlm"}')
+        command.extend(["--env-file", str(configuration)])
+    if file_type is not None:
+        command.extend(["--file-type", file_type])
+    result = subprocess.run(
+        command, check=False, capture_output=True, text=True, env=env
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    return json.loads(args_log.read_bytes())
+
+
+@pytest.mark.parametrize(
+    "suffix", [".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp", ".JPG"]
+)
+def test_public_image_artifacts_select_paddle_for_real_geometry(
+    tmp_path: Path, suffix: str
+) -> None:
+    arguments = _image_export_command(tmp_path, suffix=suffix)
+    configuration = json.loads(arguments[arguments.index("--env-content-json") + 1])
+    assert configuration == {"filex_parse_provider": "paddle_ocr"}
+    assert "--pages" not in arguments
+
+
+@pytest.mark.parametrize(
+    ("options", "expected_provider", "expected_env_file"),
+    [
+        ({"layout_format": "document-ir"}, None, False),
+        ({"artifacts": False}, None, False),
+        ({"provider": "image_vlm"}, "image_vlm", False),
+        ({"env_file": True}, None, True),
+        ({"suffix": ".data", "file_type": "PNG"}, "paddle_ocr", False),
+        ({"suffix": ".pdf"}, None, False),
+        ({"layout_format": None, "env_format": "parse-output"}, "paddle_ocr", False),
+        ({"layout_format": "document-ir", "env_format": "parse-output"}, None, False),
+    ],
+)
+def test_image_layout_selection_preserves_explicit_and_legacy_choices(
+    tmp_path: Path,
+    options: dict,
+    expected_provider: str | None,
+    expected_env_file: bool,
+) -> None:
+    arguments = _image_export_command(tmp_path, **options)
+    if expected_provider is None:
+        assert "--env-content-json" not in arguments
+    else:
+        assert json.loads(arguments[arguments.index("--env-content-json") + 1]) == {
+            "filex_parse_provider": expected_provider,
+        }
+    assert ("--env-content-file" in arguments) is expected_env_file
+
+
 @pytest.mark.docker_integration
 def test_exported_filex_page_is_scored_by_the_public_official_verifier(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch

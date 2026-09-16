@@ -60,6 +60,14 @@ A version 2 `result.json` records the layout format, source hash, all three outp
 hashes, and the unmodified FileX response. The task's requested `document.md` and
 `layout.json` are the submission artifacts; the other files retain provenance.
 
+ParseOutput export requires a provider that emits real layout geometry. For
+PNG, JPG/JPEG, WebP, GIF, and BMP inputs with `--artifacts-dir` and
+`--layout-format parse-output`, the wrapper selects `paddle_ocr` when no
+`--provider` or `--env-file` was supplied. This also applies when the format comes
+from `FILEX_LAYOUT_FORMAT`. PDF already defaults to Paddle in FileX. Explicit
+provider/configuration choices and the legacy `document-ir` behavior stay
+unchanged; choose a layout-capable provider when overriding this export path.
+
 Use the task's source path, selected pages, artifact paths, and output format.
 For a selected PDF page, include `--pages` with the original one-based page
 number. Read only the task's supplied material; evaluation and private reference
