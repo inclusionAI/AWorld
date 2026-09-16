@@ -46,6 +46,8 @@ _LABELS = {
     "heading": "section-header",
     "table": "table",
     "text": "text",
+    # PaddleOCR-VL emits a full-page OCR text block when layout detection is off.
+    "ocr": "text",
     "content": "text",
     "abstract": "text",
     "reference": "text",

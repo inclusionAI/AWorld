@@ -20,7 +20,7 @@ EXPORTER = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(EXPORTER)
 
 
-def _real_provider_ir() -> dict:
+def _real_provider_ir(*, text_label: str = "doc_title") -> dict:
     # Exercise the real provider's normalization of its native Paddle response.
     # Its existing test loader isolates optional model dependencies; no model runs.
     spec = importlib.util.spec_from_file_location(
@@ -45,7 +45,7 @@ def _real_provider_ir() -> dict:
                         "block_order": 2,
                     },
                     {
-                        "block_label": "doc_title",
+                        "block_label": text_label,
                         "block_bbox": [10, 10, 90, 40],
                         "block_content": "Heading",
                         "block_order": 1,
@@ -88,6 +88,18 @@ def test_exports_real_provider_ir_with_original_page_order_and_html() -> None:
     assert len(page["items"]) == 2  # Text-layer spans do not invent new geometry.
     assert "confidence" not in table["bbox"]  # No fabricated provider confidence.
     assert "model" not in output
+
+
+def test_paddle_ocr_label_exports_text_without_changing_parser_geometry() -> None:
+    ir = _real_provider_ir(text_label="ocr")
+    original = copy.deepcopy(ir)
+    item = _export(ir)["layout_pages"][0]["items"][0]
+    assert ir == original
+    assert item["type"] == "text"
+    assert item["md"] == "Heading"
+    assert item["bbox"] == {
+        "x": 10.0, "y": 10.0, "w": 80.0, "h": 30.0, "label": "text"
+    }
 
 
 def test_noncontiguous_pages_and_missing_reading_order_keep_source_identity() -> None:
