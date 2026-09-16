@@ -123,6 +123,27 @@ def test_focused_score_regression_can_replace_unverified_parent_delta() -> None:
     assert "blanket claim ledgers" in instructions
 
 
+def test_focused_independent_regression_repair_must_shrink_parent_delta() -> None:
+    instructions = _focused_repair_prompt_instructions(
+        {
+            "repair_conformance": {},
+            "validation_feedback": [
+                {
+                    "failed_gates": ["global_regression_benchmark"],
+                    "metrics": {
+                        "code": "independent_regression_failed",
+                    },
+                }
+            ],
+        }
+    )
+
+    assert "Treat this as context dilution" in instructions
+    assert "strictly shrink and narrow" in instructions
+    assert "must not exceed the focused parent's added-token surface" in instructions
+    assert "global completion invariants" in instructions
+
+
 def _evaluation_support_prerequisite_feedback(
     current_content: str,
 ) -> EvaluationSummary:
@@ -1087,6 +1108,59 @@ def test_contextual_validation_rejects_undeclared_fenced_block_rewrite() -> None
     assert exc_info.value.code == "skill_fenced_block_deleted"
     assert exc_info.value.field_path == "code_fences"
     assert exc_info.value.representation == "full_content"
+
+
+def test_contextual_validation_rejects_expanded_regression_repair() -> None:
+    current_content = "# Demo\n\nBaseline workflow.\n"
+    parent_content = (
+        current_content
+        + "\n## Content verification\n\n"
+        "Verify substantive URL content before summarizing.\n"
+    )
+    request = OptimizerRequest(
+        target=_target(),
+        current_content=current_content,
+        target_fingerprint="sha256:old",
+        trace_packs=(_trace_pack(),),
+        validation_feedback=(
+            EvaluationSummary(
+                variant_id="candidate-regressed",
+                dataset_split="validation",
+                metrics={
+                    "score": 91.0,
+                    "failed_gates": ["global_regression_benchmark"],
+                    "repair_candidate_package": {
+                        "candidate_id": "candidate-regressed",
+                        "content": parent_content,
+                        "files": [],
+                    },
+                },
+            ),
+        ),
+        target_package_inventory=("SKILL.md",),
+        max_candidates=1,
+    )
+    output = {
+        "content": (
+            parent_content
+            + "\n## Global completion invariant\n\n"
+            "Build a claim ledger, persist every artifact, retry extraction, "
+            "and verify every claim before any answer.\n"
+        ),
+        "rationale": "expand verification after regression",
+    }
+
+    with pytest.raises(CandidateSemanticValidationError) as exc_info:
+        _validate_mutator_output_context(
+            output,
+            request=request,
+            candidate_index=0,
+        )
+
+    assert exc_info.value.code == "regression_repair_scope_expanded"
+    assert exc_info.value.details["candidate_added_token_surface"] > (
+        exc_info.value.details["parent_added_token_surface"]
+    )
 
 
 @pytest.mark.asyncio

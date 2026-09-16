@@ -7,6 +7,7 @@ import json
 import re
 import time
 from dataclasses import dataclass
+from difflib import SequenceMatcher
 from typing import Any, Awaitable, Callable, Mapping, Sequence
 
 from aworld.self_evolve.candidate_package import (
@@ -1426,6 +1427,22 @@ def _focused_repair_prompt_instructions(
             "the regressed judge dimensions before optimizing evidence strictness or cost. "
         )
     if (
+        "global_regression_benchmark" in feedback_text
+        or "independent_regression_failed" in feedback_text
+    ):
+        instructions += (
+            "The focused candidate passed its primary evaluation but regressed on an "
+            "independent behavior-preservation suite. Treat this as context dilution: "
+            "strictly shrink and narrow the focused target delta rather than expanding "
+            "its verification workflow. The candidate's added-token surface relative to "
+            "current_content must not exceed the focused parent's added-token surface. "
+            "Do not add claim ledgers, claim-by-claim output schemas, global completion "
+            "invariants, mandatory artifact persistence, extra retries, or duplicate "
+            "headings. Preserve the smallest useful parent behavior, scope it only to "
+            "the task shape that needs it, and leave unrelated documented workflows "
+            "semantically untouched. "
+        )
+    if (
         "duplicate_prior_candidate" in feedback_text
         or "repair_parent_target_delta_lost" in feedback_text
         or "repair_parent_semantic_delta_missing" in feedback_text
@@ -1944,6 +1961,11 @@ def _validate_mutator_output_context(
             candidate_index=candidate_index
         )
         _validate_judge_repair_target_delta(
+            request,
+            repair_focus=repair_focus,
+            candidate_content=content,
+        )
+        _validate_regression_repair_surface(
             request,
             repair_focus=repair_focus,
             candidate_content=content,
@@ -3121,6 +3143,78 @@ def _validate_prerequisite_composition_target_delta(
                 else None
             ),
         },
+    )
+
+
+def _validate_regression_repair_surface(
+    request: OptimizerRequest,
+    *,
+    repair_focus: Mapping[str, object] | None,
+    candidate_content: str,
+) -> None:
+    """Require independent-regression repairs to narrow, not amplify, prose."""
+
+    if not isinstance(repair_focus, Mapping):
+        return
+    failed_gates = repair_focus.get("failed_gates")
+    if isinstance(failed_gates, str):
+        failed_gate_names = {failed_gates}
+    elif isinstance(failed_gates, (list, tuple, set, frozenset)):
+        failed_gate_names = {str(item) for item in failed_gates}
+    else:
+        failed_gate_names = set()
+    if "global_regression_benchmark" not in failed_gate_names:
+        return
+    package = repair_focus.get("repair_candidate_package")
+    parent_content = (
+        package.get("content") if isinstance(package, Mapping) else None
+    )
+    if not isinstance(parent_content, str) or not parent_content.strip():
+        return
+    parent_added_tokens = _added_token_surface(
+        request.current_content,
+        parent_content,
+    )
+    candidate_added_tokens = _added_token_surface(
+        request.current_content,
+        candidate_content,
+    )
+    if candidate_added_tokens <= parent_added_tokens:
+        return
+    raise CandidateSemanticValidationError(
+        "regression_repair_scope_expanded",
+        (
+            "independent-regression repair expanded the focused target delta; "
+            "strictly shrink and narrow the parent behavior instead"
+        ),
+        field_path=CandidateFailureField.CONTENT.value,
+        representation=CandidateRepresentation.CANDIDATE_PACKAGE.value,
+        repairable=True,
+        allowed_improvement_signal_ids=exposed_improvement_signal_ids(request),
+        details={
+            "parent_added_token_surface": parent_added_tokens,
+            "candidate_added_token_surface": candidate_added_tokens,
+            "required_change": (
+                "remove global invariants, duplicate sections, claim ledgers, and "
+                "new verification steps until the repair is no larger than its parent"
+            ),
+        },
+    )
+
+
+def _added_token_surface(base_content: str, candidate_content: str) -> int:
+    """Count inserted/replaced candidate tokens against an authoritative base."""
+
+    base_tokens = base_content.split()
+    candidate_tokens = candidate_content.split()
+    return sum(
+        candidate_end - candidate_start
+        for operation, _, _, candidate_start, candidate_end in SequenceMatcher(
+            a=base_tokens,
+            b=candidate_tokens,
+            autojunk=False,
+        ).get_opcodes()
+        if operation in {"insert", "replace"}
     )
 
 
