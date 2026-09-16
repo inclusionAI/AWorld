@@ -34,6 +34,7 @@ from aworld.core.llm_provider import LLMProviderBase
 from aworld.core.context.compiler import (
     AWORLD_PROVIDER_CANDIDATE_KWARG,
     AWORLD_PROVIDER_OBSERVED_ATTRIBUTION_KWARG,
+    CachePlan,
     CandidateRequestNotEnforceable,
     ProviderCandidateEnvelope,
     ProviderObservedAttributionEnvelope,
@@ -65,6 +66,7 @@ class _PreparedOpenAIRequest:
     context: Any = None
     request_id: str | None = None
     cache_identity: Any = None
+    cache_plan: CachePlan | None = None
     attempt_tracking_ready: bool = False
     attempt_tracking_fail_open: bool = False
 
@@ -86,6 +88,23 @@ AZURE_OPENAI_CONTEXT_LOWERING = ProviderLoweringCapability(
 
 class OpenAIProvider(LLMProviderBase):
     """OpenAI provider implementation."""
+
+    def _supports_native_prompt_cache_control(self) -> bool:
+        """Require explicit capability for arbitrary compatible endpoints.
+
+        OpenAI-compatible describes a wire protocol, not every optional routing
+        extension. Official OpenAI may use its documented control by default;
+        custom gateways must opt in after their own conformance/canary run.
+        """
+        base_url = getattr(self, "base_url", None) or os.getenv("OPENAI_ENDPOINT")
+        auto_supported = not base_url
+        if base_url:
+            from urllib.parse import urlparse
+
+            auto_supported = urlparse(base_url).hostname == "api.openai.com"
+        return self.provider_native_cache_control_enabled(
+            auto_supported=auto_supported
+        )
 
     def _build_tcp_keepalive_socket_options(
         self,
@@ -313,6 +332,43 @@ class OpenAIProvider(LLMProviderBase):
                     "provider_candidate_schema_unsupported"
                 ) from None
 
+        cache_lowering_status = None
+        cache_lowering_strategy = None
+        if envelope is not None and envelope.cache_plan is not None:
+            plan = envelope.cache_plan
+            explicit_cache_key = request_kwargs.get("prompt_cache_key")
+            extra_body = request_kwargs.get("extra_body")
+            if explicit_cache_key is None and isinstance(extra_body, dict):
+                explicit_cache_key = extra_body.get("prompt_cache_key")
+            explicit_native = request_kwargs.pop(
+                "provider_native_prompt_cache", None
+            )
+            if explicit_cache_key is not None:
+                cache_lowering_status = "explicit_override"
+                cache_lowering_strategy = "prompt_cache_key"
+            elif not plan.native_cache_requested or explicit_native is False:
+                cache_lowering_status = "disabled"
+                cache_lowering_strategy = "explicit_opt_out"
+            elif plan.stable_message_count <= 0:
+                cache_lowering_status = "unavailable"
+                cache_lowering_strategy = "no_stable_message_prefix"
+            elif (
+                plan.provider_cache_namespace is not None
+                and self._supports_native_prompt_cache_control()
+            ):
+                request_kwargs["prompt_cache_key"] = plan.provider_cache_namespace
+                cache_lowering_status = "applied"
+                cache_lowering_strategy = "prompt_cache_key"
+            elif plan.provider_cache_namespace is not None:
+                cache_lowering_status = "unsupported"
+                cache_lowering_strategy = "provider_capability_not_declared"
+            else:
+                # Preserve the exact prefix without claiming that an arbitrary
+                # OpenAI-compatible endpoint implements automatic caching.
+                # CacheUsageReceipt remains the authoritative runtime proof.
+                cache_lowering_status = "preserved"
+                cache_lowering_strategy = "exact_prefix_no_hint"
+
         try:
             processed_messages = self.preprocess_messages(messages, **request_kwargs)
             if envelope is not None and processed_messages != messages:
@@ -361,8 +417,13 @@ class OpenAIProvider(LLMProviderBase):
                 if canonical_body is None:
                     raise ValueError("HTTP request is not serializable")
                 serialized_body = canonical_body
-                if envelope is not None and envelope.cache_material is not None:
-                    material = envelope.cache_material
+                cache_material = (
+                    envelope.cache_plan or envelope.cache_material
+                    if envelope is not None
+                    else None
+                )
+                if cache_material is not None:
+                    material = cache_material
                     sorted_keys = sorted(openai_params)
                     message_index = sorted_keys.index("messages")
                     preceding = b",".join(
@@ -460,6 +521,8 @@ class OpenAIProvider(LLMProviderBase):
                     attribution=attribution,
                     serialized_prefix_evidence=serialized_evidence,
                     cache_identity=cache_identity,
+                    cache_lowering_status=cache_lowering_status,
+                    cache_lowering_strategy=cache_lowering_strategy,
                 )
             except ProviderAttributionMismatch:
                 raise CandidateRequestNotEnforceable(
@@ -565,6 +628,7 @@ class OpenAIProvider(LLMProviderBase):
                 else request_kwargs.get("llm_request_id")
             ),
             cache_identity=(receipt.cache_identity if envelope is not None else None),
+            cache_plan=(envelope.cache_plan if envelope is not None else None),
             attempt_tracking_ready=attempt_tracking_ready,
             attempt_tracking_fail_open=(envelope is None),
         )
@@ -581,6 +645,7 @@ class OpenAIProvider(LLMProviderBase):
             context=prepared.context,
             request_id=prepared.request_id,
             cache_identity=prepared.cache_identity,
+            cache_plan=prepared.cache_plan,
         )
 
     def preprocess_messages(
@@ -1176,8 +1241,12 @@ class OpenAIProvider(LLMProviderBase):
         **kwargs,
     ) -> Dict[str, Any]:
         prompt_assembly_plan = kwargs.pop("prompt_assembly_plan", None)
-        provider_native_prompt_cache = bool(
+        provider_native_prompt_cache_requested = bool(
             kwargs.pop("provider_native_prompt_cache", False)
+        )
+        provider_native_prompt_cache = (
+            provider_native_prompt_cache_requested
+            and self._supports_native_prompt_cache_control()
         )
         lowered_request_kwargs = {}
         if prompt_assembly_plan is not None:

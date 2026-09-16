@@ -28,6 +28,7 @@ class TurnCauseCode(str, Enum):
     INITIAL_INPUT = "initial_input"
     MODEL_CHOICE = "model_choice"
     VALIDATION_REPAIR = "validation_repair"
+    ACTION_BUDGET_REPAIR = "action_budget_repair"
     FRAMEWORK_RETRY = "framework_retry"
     DEFERRED_CATALOG_EXPANSION = "deferred_catalog_expansion"
     DEFERRED_SKILL_EXPANSION = "deferred_skill_expansion"
@@ -39,6 +40,7 @@ SUPPORTED_TURN_CAUSES = frozenset({
     TurnCauseCode.INITIAL_INPUT,
     TurnCauseCode.MODEL_CHOICE,
     TurnCauseCode.VALIDATION_REPAIR,
+    TurnCauseCode.ACTION_BUDGET_REPAIR,
     TurnCauseCode.FRAMEWORK_RETRY,
     TurnCauseCode.ARTIFACT_RETRIEVAL,
 })

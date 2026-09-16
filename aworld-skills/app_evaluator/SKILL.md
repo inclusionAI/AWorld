@@ -1,5 +1,6 @@
 ---
 name: app_evaluator
+default_enabled: false
 description: A professional skill for App Evaluation (evaluating app's performance with score) and App Improvement (giving professional suggestions for improving the app's performance).
 license: Complete terms in LICENSE.txt
 ---

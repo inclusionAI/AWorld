@@ -844,6 +844,7 @@ def _load_variant(path: Path | None) -> dict:
             "schema_version": "aworld.context-eval-variant/v1",
             "name": "baseline",
             "agent_memory_config": {},
+            "context_cache": {},
             "context_compiler": {},
             "docker_output_policy": {},
         }
@@ -852,6 +853,7 @@ def _load_variant(path: Path | None) -> dict:
         "schema_version",
         "name",
         "agent_memory_config",
+        "context_cache",
         "context_compiler",
         "docker_output_policy",
     }
@@ -864,13 +866,19 @@ def _load_variant(path: Path | None) -> dict:
     if not payload.get("name"):
         raise ValueError("variant config requires a non-empty name")
     payload.setdefault("agent_memory_config", {})
+    payload.setdefault("context_cache", {})
     payload.setdefault("context_compiler", {})
     payload.setdefault("docker_output_policy", {})
     from aworld.evaluations.context_benefit import ContextVariant
 
     settings = {
         key: payload[key]
-        for key in ("agent_memory_config", "context_compiler", "docker_output_policy")
+        for key in (
+            "agent_memory_config",
+            "context_cache",
+            "context_compiler",
+            "docker_output_policy",
+        )
     }
     try:
         ContextVariant.build(str(payload["name"]), settings)
@@ -1094,6 +1102,25 @@ def parse_args() -> argparse.Namespace:
         default=10.0,
         help="Invariant base delay for exponential LLM transport retry backoff.",
     )
+    parser.add_argument(
+        "--llm-stream-call",
+        action="store_true",
+        help="Use the provider's generic streaming call shape for every model turn.",
+    )
+    parser.add_argument(
+        "--llm-max-tokens",
+        type=int,
+        help="Invariant per-turn output-token limit passed to every provider call.",
+    )
+    parser.add_argument(
+        "--provider-native-cache-capability",
+        choices=("auto", "supported", "unsupported"),
+        default="auto",
+        help=(
+            "Provider-declared native cache-control capability. Custom compatible "
+            "endpoints must explicitly opt in after conformance validation."
+        ),
+    )
     parser.add_argument("--model-seed", type=int)
     parser.add_argument(
         "--variant-config",
@@ -1155,6 +1182,8 @@ async def run(args: argparse.Namespace) -> int:
     started_at = time.time()
     if args.llm_max_attempts < 1:
         raise ValueError("--llm-max-attempts must be positive")
+    if args.llm_max_tokens is not None and args.llm_max_tokens < 1:
+        raise ValueError("--llm-max-tokens must be positive")
     if args.llm_retry_delay_sec < 0:
         raise ValueError("--llm-retry-delay-sec must be non-negative")
     args.output_dir.mkdir(parents=True, exist_ok=True)
@@ -1250,9 +1279,17 @@ async def run(args: argparse.Namespace) -> int:
                 llm_api_key=api_key,
                 llm_base_url=os.environ.get("LLM_BASE_URL"),
                 llm_temperature=float(os.environ.get("LLM_TEMPERATURE", "0")),
-                params={"seed": args.model_seed} if args.model_seed is not None else {},
+                llm_stream_call=args.llm_stream_call,
+                max_tokens=args.llm_max_tokens,
+                provider_native_cache_capability=(
+                    args.provider_native_cache_capability
+                ),
+                params={
+                    **({"seed": args.model_seed} if args.model_seed is not None else {}),
+                },
                 max_steps=args.max_steps,
                 use_vision=False,
+                context_cache=variant["context_cache"],
                 memory_config=AgentMemoryConfig(**variant["agent_memory_config"]),
                 context_compiler=variant["context_compiler"],
                 skill_configs=skill_configs,

@@ -10,6 +10,7 @@ from typing import (
 from aworld.models.model_response import ModelResponse
 from aworld.core.context.base import Context
 from aworld.core.context.compiler import (
+    CachePlan,
     CandidateRequestNotEnforceable,
     ContextEntrypointParityReceipt,
     ProviderCandidateEnvelope,
@@ -79,6 +80,27 @@ class LLMProviderBase(abc.ABC):
         """Return a versioned provider-owned lowering contract, if supported."""
         return None
 
+    def provider_native_cache_control_enabled(
+        self, *, auto_supported: bool
+    ) -> bool:
+        """Resolve the common native-cache capability declaration.
+
+        Wire compatibility is not evidence that an optional provider cache
+        control is implemented. Provider adapters supply only their reviewed
+        ``auto`` decision; deployments may explicitly opt a compatible endpoint
+        in or out after conformance and canary validation.
+        """
+        capability = self.kwargs.get("provider_native_cache_capability", "auto")
+        if capability == "supported":
+            return True
+        if capability == "unsupported":
+            return False
+        if capability != "auto":
+            raise ValueError("invalid provider native cache capability")
+        if not isinstance(auto_supported, bool):
+            raise TypeError("auto_supported must be a boolean")
+        return auto_supported
+
     def commit_provider_prepared_attempt(
         self,
         *,
@@ -110,6 +132,16 @@ class LLMProviderBase(abc.ABC):
                     raise ValueError("provider lowering capability mismatch")
                 if receipt.candidate_content_hash != envelope.candidate_request.content_hash:
                     raise ValueError("provider receipt is not bound to the candidate")
+                if envelope.cache_plan is not None:
+                    if (
+                        receipt.candidate_contract_hash
+                        != envelope.candidate_contract_hash
+                        or receipt.cache_plan_fingerprint
+                        != envelope.cache_plan.fingerprint
+                    ):
+                        raise ValueError(
+                            "provider receipt is not bound to the cache plan"
+                        )
             if context is None:
                 raise ValueError("provider prepared attempt requires Context")
             llm_calls = context.get_llm_calls()
@@ -131,6 +163,15 @@ class LLMProviderBase(abc.ABC):
                 candidate_evidence = rollout.get("candidate_snapshot")
                 if not isinstance(candidate_evidence, dict) or candidate_evidence.get("content_hash") != envelope.candidate_request.content_hash:
                     raise ValueError("persisted candidate evidence does not match envelope")
+                if envelope.cache_plan is not None and (
+                    candidate_evidence.get("candidate_contract_hash")
+                    != envelope.candidate_contract_hash
+                    or candidate_evidence.get("cache_plan_fingerprint")
+                    != envelope.cache_plan.fingerprint
+                ):
+                    raise ValueError(
+                        "persisted candidate evidence does not match cache plan"
+                    )
                 lowering_evidence = receipt.to_redacted_dict()
                 lowering_evidence["cache_continuity"] = (
                     context.preview_provider_cache_identity(receipt.cache_identity)
@@ -186,6 +227,7 @@ class LLMProviderBase(abc.ABC):
         context: Context | None,
         request_id: str,
         cache_identity: Any = None,
+        cache_plan: CachePlan | None = None,
     ) -> None:
         """Commit attempted state at the immediate SDK/HTTP call boundary."""
         try:
@@ -210,6 +252,11 @@ class LLMProviderBase(abc.ABC):
             try:
                 if cache_identity is not None:
                     context.commit_provider_cache_identity(cache_identity)
+                elif cache_plan is not None:
+                    context.acknowledge_cache_plan_attempt(
+                        cache_epoch=cache_plan.cache_epoch,
+                        break_reasons=cache_plan.break_reasons,
+                    )
                 context.replace_llm_call(
                     index, updated, event_type="provider_request_attempted"
                 )

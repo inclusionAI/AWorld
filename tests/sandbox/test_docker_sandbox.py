@@ -9,6 +9,7 @@ from aworld.core.context.base import Context
 from aworld.core.tool_action_journal import read_tool_action_journal
 from aworld.sandbox import DockerSandbox, SandboxEnvType, create_sandbox
 from aworld.sandbox.base import BaseSandbox
+from aworld.sandbox.errors import SandboxInfrastructureError
 
 
 @pytest.fixture
@@ -78,6 +79,26 @@ async def test_factory_selects_docker_sandbox(docker_runtime: None) -> None:
 def test_docker_sandbox_rejects_option_like_container_name(docker_runtime: None) -> None:
     with pytest.raises(ValueError, match="container must be"):
         DockerSandbox(container="--context=unexpected", reuse=False)
+
+
+def test_docker_checkpoint_failure_is_typed_infrastructure_error(
+    docker_runtime: None,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sandbox = DockerSandbox(container="abc123", reuse=False)
+    monkeypatch.setattr(
+        sandbox,
+        "_docker_run",
+        lambda *args, **kwargs: CompletedProcess(
+            args=args[0], returncode=1, stdout="", stderr="disk I/O error"
+        ),
+    )
+
+    with pytest.raises(SandboxInfrastructureError) as raised:
+        sandbox._create_image_checkpoint_sync("checkpoint", ["/workspace"])
+
+    assert raised.value.failure_category == "infrastructure"
+    assert raised.value.failure_code == "docker_checkpoint_create_failed"
 
 
 def test_docker_sandbox_requires_running_container(

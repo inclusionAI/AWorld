@@ -12,7 +12,7 @@ from typing import Any, Dict, Generic, List, Tuple, TypeVar, Union, Optional
 from pydantic import BaseModel
 
 from aworld.config.conf import AgentConfig, ConfigDict, load_config, TaskRunMode
-from aworld.core.common import ActionModel, TaskItem
+from aworld.core.common import ActionModel, Observation, TaskItem
 from aworld.events import eventbus
 from aworld.core.event.base import Constants, Message, AgentMessage, TopicType
 from aworld.core.factory import Factory
@@ -200,6 +200,20 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
             )
         self.loop_step = 0
         self.max_loop_steps = kwargs.pop("max_loop_steps", 20)
+        circuit_threshold = kwargs.pop(
+            "infrastructure_error_circuit_breaker_threshold",
+            self.conf.get("infrastructure_error_circuit_breaker_threshold", 3),
+        )
+        if (
+            isinstance(circuit_threshold, bool)
+            or not isinstance(circuit_threshold, int)
+            or circuit_threshold < 0
+        ):
+            raise ValueError(
+                "infrastructure_error_circuit_breaker_threshold must be a "
+                "non-negative integer"
+            )
+        self.infrastructure_error_circuit_breaker_threshold = circuit_threshold
         explicit_elastic_budget = any(
             key in kwargs
             for key in (
@@ -304,7 +318,11 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
     def run(self, message: Message, **kwargs) -> Message:
         message.context.update_agent_step(self.id())
         task = message.context.get_task()
-        if task.conf.get("run_mode") == TaskRunMode.INTERACTIVE:
+        if (
+            task
+            and task.conf
+            and task.conf.get("run_mode") == TaskRunMode.INTERACTIVE
+        ):
             agent = task.swarm.ordered_agents[0] if task.agent is None else task.agent
             message.context.new_trajectory_step(agent.id())
         caller = message.caller
@@ -312,10 +330,20 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
             self.loop_step += 1
         else:
             self.loop_step = 0
+        circuit_receipt = self._observe_infrastructure_failure(message)
+        if circuit_receipt is not None:
+            return self._terminate_for_infrastructure_failure(
+                message, circuit_receipt
+            )
         should_term = self.sync_should_terminate_loop(message)
         if should_term:
+            final_result = sync_exec(
+                self.async_finalize_at_loop_budget, message, **kwargs
+            )
             sync_exec(self._resolve_completion_at_loop_budget, message)
             self.postprocess_terminate_loop(message)
+            if final_result is not None:
+                return final_result
             return Message(
                 category=Constants.TASK,
                 payload=TaskItem(
@@ -398,10 +426,20 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
                 self.loop_step += 1
             else:
                 self.loop_step = 0
+            circuit_receipt = self._observe_infrastructure_failure(message)
+            if circuit_receipt is not None:
+                return self._terminate_for_infrastructure_failure(
+                    message, circuit_receipt
+                )
             should_term = await self.should_terminate_loop(message)
             if should_term:
+                final_result = await self.async_finalize_at_loop_budget(
+                    message, **kwargs
+                )
                 await self._resolve_completion_at_loop_budget(message)
                 self.postprocess_terminate_loop(message)
+                if final_result is not None:
+                    return final_result
                 return Message(
                     category=Constants.TASK,
                     payload=TaskItem(
@@ -668,6 +706,96 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
     def sync_should_terminate_loop(self, message: Message) -> bool:
         return sync_exec(self.should_terminate_loop, message)
 
+    def _observe_infrastructure_failure(
+        self, message: Message
+    ) -> Dict[str, Any] | None:
+        """Open a circuit after repeated typed sandbox infrastructure failures."""
+        threshold = self.infrastructure_error_circuit_breaker_threshold
+        context = getattr(message, "context", None)
+        if threshold <= 0 or context is None:
+            return None
+
+        payload = getattr(message, "payload", None)
+        if isinstance(payload, tuple) and payload:
+            payload = payload[0]
+        results = (
+            payload.action_result
+            if isinstance(payload, Observation) and payload.action_result
+            else []
+        )
+        failure_keys = []
+        for result in results:
+            metadata = result.metadata if isinstance(result.metadata, dict) else {}
+            category = metadata.get("failure_category")
+            code = metadata.get("failure_code")
+            if (
+                result.success
+                or category != "infrastructure"
+                or not isinstance(code, str)
+                or not code
+            ):
+                failure_keys = []
+                break
+            failure_keys.append((result.tool_name or "", code))
+
+        state_key = f"agent_infrastructure_error_circuit:{self.id()}"
+        previous = context.context_info.get(state_key, {})
+        fingerprint = tuple(sorted(set(failure_keys))) if failure_keys else None
+        if fingerprint is None:
+            context.context_info.pop(state_key, None)
+            return None
+
+        count = (
+            int(previous.get("consecutive_count", 0)) + 1
+            if previous.get("fingerprint") == fingerprint
+            else 1
+        )
+        state = {
+            "fingerprint": fingerprint,
+            "consecutive_count": count,
+            "threshold": threshold,
+        }
+        context.context_info[state_key] = state
+        if count < threshold:
+            return None
+
+        receipt = {
+            "schema_version": "aworld.agent-infrastructure-circuit/v1",
+            "agent_id": self.id(),
+            "failure_category": "infrastructure",
+            "failure_codes": sorted({code for _, code in fingerprint}),
+            "tool_names": sorted({tool for tool, _ in fingerprint if tool}),
+            "consecutive_count": count,
+            "threshold": threshold,
+        }
+        context.context_info[
+            f"agent_infrastructure_error_circuit_open:{self.id()}"
+        ] = receipt
+        logger.error(
+            "Agent infrastructure error circuit opened: "
+            f"agent={self.id()} codes={receipt['failure_codes']} "
+            f"consecutive_count={count} threshold={threshold}"
+        )
+        return receipt
+
+    def _terminate_for_infrastructure_failure(
+        self, message: Message, receipt: Dict[str, Any]
+    ) -> Message:
+        self.postprocess_terminate_loop(message)
+        return Message(
+            category=Constants.TASK,
+            payload=TaskItem(
+                data=receipt,
+                msg="agent_infrastructure_error_circuit_open",
+                stop=True,
+                success=False,
+            ),
+            sender=self.id(),
+            session_id=message.context.session_id,
+            headers=message.headers,
+            topic=TopicType.FINISHED,
+        )
+
     async def should_terminate_loop(self, message: Message) -> bool:
         if self.max_loop_steps <= 0:
             return False
@@ -689,6 +817,14 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
                 progress_by_agent.get(self.id(), {})
                 if isinstance(progress_by_agent, dict)
                 else {}
+            )
+            raw_goal_progress_observable = progress.get(
+                "goal_progress_observable"
+            )
+            goal_progress_observable = (
+                raw_goal_progress_observable
+                if isinstance(raw_goal_progress_observable, bool)
+                else None
             )
             raw_goal_progress_count = progress.get("goal_progress_count", 0)
             goal_progress_count = (
@@ -715,6 +851,7 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
                 policy=self._elastic_step_budget_policy,
                 observed_goal_progress_count=goal_progress_count,
                 last_goal_progress_agent_step=last_goal_step,
+                goal_progress_observable=goal_progress_observable,
             )
             state_context.context_info[f"agent_step_budget:{self.id()}"] = (
                 decision.to_dict()
@@ -728,6 +865,17 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
             return get_agent_step(self.id()) >= self.max_loop_steps
         return self.loop_step >= self.max_loop_steps
 
+    async def async_finalize_at_loop_budget(
+        self, message: Message, **kwargs
+    ) -> Message | None:
+        """Optionally consume the boundary step as a bounded finalization turn.
+
+        Generic agents retain the historical hard-stop behavior. Agents whose
+        policy can synthesize a user-facing result may override this hook, but
+        must not start additional environment work from the boundary turn.
+        """
+        return None
+
     async def _resolve_completion_at_loop_budget(self, message: Message) -> None:
         context = getattr(message, "context", None)
         if context is None:
@@ -740,6 +888,11 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
                 else None
             ),
             "max_loop_steps": self.max_loop_steps,
+            "finalization_performed": bool(
+                context.context_info.get(
+                    f"agent_loop_budget_finalized:{self.id()}", False
+                )
+            ),
         }
         event_manager = getattr(context, "event_manager", None)
         state_context = (
@@ -760,7 +913,20 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
                 dict(exhaustion)
             )
         resolver = getattr(context, "resolve_completion_evidence", None)
-        if callable(resolver):
+        resolved_step = context.context_info.pop(
+            f"completion_evidence_resolved_this_turn:{self.id()}", None
+        )
+        current_step = (
+            context.get_agent_step(self.id())
+            if callable(getattr(context, "get_agent_step", None))
+            else None
+        )
+        already_resolved = (
+            isinstance(resolved_step, int)
+            and not isinstance(resolved_step, bool)
+            and resolved_step == current_step
+        )
+        if callable(resolver) and not already_resolved:
             await resolver()
 
     def postprocess_terminate_loop(self, message: Message):

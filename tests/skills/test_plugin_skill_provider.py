@@ -10,7 +10,7 @@ def test_plugin_provider_preserves_plugin_identity(tmp_path: Path):
     (plugin_root / ".aworld-plugin").mkdir(parents=True)
     (plugin_root / "skills" / "brainstorming").mkdir(parents=True)
     (plugin_root / "skills" / "brainstorming" / "SKILL.md").write_text(
-        "---\ndescription: Design before implementation\n---\n\n# Brainstorming\n",
+        "---\ndescription: Design before implementation\ndefault_enabled: false\n---\n\n# Brainstorming\n",
         encoding="utf-8",
     )
     (plugin_root / ".aworld-plugin" / "plugin.json").write_text(
@@ -37,6 +37,7 @@ def test_plugin_provider_preserves_plugin_identity(tmp_path: Path):
 
     assert len(descriptors) == 1
     assert descriptors[0].skill_id == "plugin-skill:brainstorming"
+    assert descriptors[0].metadata["default_enabled"] is False
 
 
 def test_plugin_provider_lists_descriptor_without_decoding_invalid_body(

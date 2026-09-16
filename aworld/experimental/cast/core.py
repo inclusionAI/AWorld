@@ -202,11 +202,12 @@ class ACast:
         try:
             # Create search engine instance
             self.search_engine = SearchEngine()
+            root_path = self.search_engine.root_path
 
             # Register built-in searchers
-            grep_searcher = GrepSearcher()
-            glob_searcher = GlobSearcher()
-            read_searcher = ReadSearcher()
+            grep_searcher = GrepSearcher(root_path)
+            glob_searcher = GlobSearcher(root_path)
+            read_searcher = ReadSearcher(root_path)
 
             self.search_engine.register_searcher(grep_searcher)
             self.search_engine.register_searcher(glob_searcher)
@@ -224,6 +225,12 @@ class ACast:
         except Exception as e:
             logger.error(f"Failed to initialize search engine: {e}")
             self.search_engine = None
+
+    def set_search_root_path(self, path: Union[str, Path]) -> None:
+        """Set one canonical filesystem authority for all CAST search actions."""
+        if not self.search_engine:
+            raise RuntimeError("Search engine not initialized")
+        self.search_engine.set_root_path(path)
 
     async def search(self,
                search_type: Union[str, SearchType],

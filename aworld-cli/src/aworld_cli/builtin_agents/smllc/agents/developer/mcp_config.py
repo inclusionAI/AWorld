@@ -1,13 +1,7 @@
-import sys
-
+# External providers used only by the standalone developer sandbox. Terminal
+# and filesystem execution are supplied by Sandbox(builtin_tools=...).
 mcp_config = {
     "mcpServers": {
-        "terminal": {
-            "command": sys.executable,
-            "args": ["-m", "examples.gaia.mcp_collections.tools.terminal"],
-            "env": {},
-            "client_session_timeout_seconds": 9999.0,
-        },
         "ms-playwright": {
             "command": "npx",
             "args": [

@@ -3,7 +3,8 @@ Keyword list for background / long-running processes.
 
 If a command contains any of the keywords below, it is treated as a
 potentially background or long-running process and the server will
-capture output via a temporary file to avoid PIPE blocking / timeouts.
+return promptly when the launching shell exits while continuing to drain
+inherited output pipes without retaining additional bytes.
 """
 
 # Matching is done with simple `in` checks; it is recommended to include

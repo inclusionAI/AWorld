@@ -1,5 +1,6 @@
 ---
 name: text2agent
+default_enabled: false
 description: Creates new agents from user requirements by generating Python implementation and mcp_config.
 tool_names: ["AGENT_REGISTRY", "CAST_SEARCH", "human"]
 ---

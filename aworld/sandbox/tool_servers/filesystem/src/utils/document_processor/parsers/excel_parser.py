@@ -12,6 +12,7 @@ except ImportError:
     load_workbook = None
 
 from ..base_parser import BaseParser
+from ...limits import FilesystemLimits
 
 logger = logging.getLogger(__name__)
 
@@ -35,15 +36,27 @@ class ExcelParser(BaseParser):
     ) -> Dict[str, Any]:
         if pd is None or load_workbook is None:
             raise RuntimeError("未安装 pandas 或 openpyxl。请安装: pip install pandas openpyxl")
-        markdown_content = await self._extract_xlsx_content(file_path)
+        markdown_content = await self._extract_xlsx_content(
+            file_path,
+            limits=kwargs.get("filesystem_limits"),
+        )
         source_name = source_file_name or file_path.stem
         parsed_file_path = await self._save_markdown_to_file(
             markdown_content, task_id, source_name, output_path=output_path
         )
         return {"file_path": parsed_file_path}
 
-    async def _extract_xlsx_content(self, file_path: Path) -> str:
+    async def _extract_xlsx_content(
+        self, file_path: Path, *, limits: FilesystemLimits | None = None
+    ) -> str:
+        limits = limits or FilesystemLimits.from_env()
         workbook = load_workbook(file_path, data_only=True)
+        if len(workbook.sheetnames) > limits.max_workbook_sheets:
+            workbook.close()
+            raise ValueError(
+                "Workbook has too many sheets: "
+                f"{len(workbook.sheetnames)}; limit={limits.max_workbook_sheets}"
+            )
         parts = [f"# {file_path.stem}\n\n", f"**工作表数**: {len(workbook.sheetnames)}\n\n", "---\n\n"]
         for sheet_name in workbook.sheetnames:
             parts.append(f"## 工作表: {sheet_name}\n\n")
@@ -52,7 +65,23 @@ class ExcelParser(BaseParser):
                 if ws.max_row == 0 or ws.max_column == 0:
                     parts.append("*工作表为空*\n\n")
                     continue
-                merged = await self._process_merged_cells(ws)
+                if ws.max_row > limits.max_workbook_rows:
+                    raise ValueError(
+                        f"Worksheet row limit exceeded: {ws.max_row}; "
+                        f"limit={limits.max_workbook_rows}"
+                    )
+                if ws.max_column > limits.max_workbook_columns:
+                    raise ValueError(
+                        f"Worksheet column limit exceeded: {ws.max_column}; "
+                        f"limit={limits.max_workbook_columns}"
+                    )
+                cell_count = ws.max_row * ws.max_column
+                if cell_count > limits.max_workbook_cells:
+                    raise ValueError(
+                        f"Worksheet cell limit exceeded: {cell_count}; "
+                        f"limit={limits.max_workbook_cells}"
+                    )
+                merged = await self._process_merged_cells(ws, limits=limits)
                 data = []
                 for row_idx, row in enumerate(
                     ws.iter_rows(
@@ -92,16 +121,31 @@ class ExcelParser(BaseParser):
                     for _, row in df.iterrows():
                         parts.append("| " + " | ".join(str(v) if v != "" else "" for v in row) + " |\n")
                     parts.append("\n")
+            except ValueError:
+                workbook.close()
+                raise
             except Exception as e:
                 logger.warning("excel_parser sheet %s error: %s", sheet_name, e)
                 parts.append(f"**错误**: {e}\n\n")
         workbook.close()
         return "".join(parts)
 
-    async def _process_merged_cells(self, worksheet) -> dict:
+    async def _process_merged_cells(
+        self, worksheet, *, limits: FilesystemLimits | None = None
+    ) -> dict:
+        limits = limits or FilesystemLimits.from_env()
         out = {}
+        merged_cells = 0
         for merged_range in worksheet.merged_cells.ranges:
             min_col, min_row, max_col_idx, max_row_idx = merged_range.bounds
+            merged_cells += (max_row_idx - min_row + 1) * (
+                max_col_idx - min_col + 1
+            )
+            if merged_cells > limits.max_workbook_merged_cells:
+                raise ValueError(
+                    f"Worksheet merged-cell limit exceeded: {merged_cells}; "
+                    f"limit={limits.max_workbook_merged_cells}"
+                )
             min_col -= 1
             min_row -= 1
             max_col_idx -= 1
@@ -111,4 +155,3 @@ class ExcelParser(BaseParser):
                 for col in range(min_col, max_col_idx + 1):
                     out[(row, col)] = None if (row != min_row or col != min_col) else main_val
         return out
-

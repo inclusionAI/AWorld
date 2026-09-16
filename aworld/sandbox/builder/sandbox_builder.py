@@ -1,5 +1,5 @@
 """Main builder for creating Sandbox instances with fluent API."""
-from typing import Dict, List, Any, Optional, TYPE_CHECKING
+from typing import Dict, List, Any, Mapping, Optional, TYPE_CHECKING
 
 if TYPE_CHECKING:
     from aworld.sandbox.implementations.sandbox import Sandbox
@@ -227,10 +227,25 @@ class SandboxBuilder:
 
     # ==================== Tool namespace proxies (for IDE completion) ====================
 
-    async def read_file(self, path: str, head: Optional[int] = None, tail: Optional[int] = None, output: str = "text"):
+    async def read_file(
+        self,
+        path: str,
+        head: Optional[int] = None,
+        tail: Optional[int] = None,
+        output: str = "text",
+        offset: int = 0,
+        limit: Optional[int] = None,
+    ):
         """Proxy to Sandbox.file.read_file for IDE completion."""
         instance = self.build()
-        return await instance.file.read_file(path=path, head=head, tail=tail, output=output)
+        return await instance.file.read_file(
+            path=path,
+            head=head,
+            tail=tail,
+            output=output,
+            offset=offset,
+            limit=limit,
+        )
 
     async def write_file(self, path: str, content: str):
         """Proxy to Sandbox.file.write_file for IDE completion."""
@@ -260,15 +275,25 @@ class SandboxBuilder:
         instance = self.build()
         return await instance.file.upload_file(source_path=source_path, target_path=target_path)
 
-    async def download_file(self, path: str):
+    async def download_file(
+        self,
+        path: str,
+        offset: int = 0,
+        limit: Optional[int] = None,
+    ):
         """Proxy to Sandbox.file.download_file for IDE completion."""
         instance = self.build()
-        return await instance.file.download_file(path=path)
+        return await instance.file.download_file(path=path, offset=offset, limit=limit)
 
-    async def read_media_file(self, path: str):
+    async def read_media_file(
+        self,
+        path: str,
+        offset: int = 0,
+        limit: Optional[int] = None,
+    ):
         """Proxy to Sandbox.file.read_media_file for IDE completion. Read image or audio as base64."""
         instance = self.build()
-        return await instance.file.read_media_file(path=path)
+        return await instance.file.read_media_file(path=path, offset=offset, limit=limit)
 
     async def parse_file(self, file_path: str, file_type: str, output_path: Optional[str] = None):
         """Proxy to Sandbox.file.parse_file for IDE completion."""
@@ -329,10 +354,40 @@ class SandboxBuilder:
             exclude_patterns=exclude_patterns,
         )
 
-    async def run_code(self, code: str, timeout: int = 30, output_format: str = "markdown"):
+    async def run_code(
+        self,
+        code: str,
+        timeout: float = 300,
+        output_format: str = "structured",
+        cwd: str | None = None,
+        env: Mapping[str, str] | None = None,
+    ):
         """Proxy to Sandbox.terminal.run_code for IDE completion."""
         instance = self.build()
-        return await instance.terminal.run_code(code=code, timeout=timeout, output_format=output_format)
+        return await instance.terminal.run_code(
+            code=code,
+            timeout=timeout,
+            output_format=output_format,
+            cwd=cwd,
+            env=env,
+        )
+
+    async def read_output_artifact(
+        self,
+        artifact_ref: str,
+        *,
+        offset: int = 0,
+        limit: int | None = None,
+        output: str = "text",
+    ):
+        """Proxy to Sandbox.terminal.read_output_artifact for IDE completion."""
+        instance = self.build()
+        return await instance.terminal.read_output_artifact(
+            artifact_ref=artifact_ref,
+            offset=offset,
+            limit=limit,
+            output=output,
+        )
 
     def build(self) -> 'Sandbox':
         """Build and return the Sandbox instance.
@@ -420,4 +475,3 @@ class SandboxBuilder:
         # For any other attribute/method (Sandbox methods), auto-build and forward
         instance = self.build()
         return getattr(instance, name)
-

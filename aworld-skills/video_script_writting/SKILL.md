@@ -1,5 +1,6 @@
 ---
 name: ai-video-script-sop-remotion-diffusion
+default_enabled: false
 description: >-
   Standard operating procedure for automated AI video production using a Remotion (code) and
   diffusion (model) hybrid pipeline. Covers narrative DNA (hero, show-don’t-tell, three-act arc),

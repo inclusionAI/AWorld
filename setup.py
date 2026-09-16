@@ -231,6 +231,13 @@ setup(
             "*.test",
             "*.test.*",
             "test.*",
+            # Example applications are source-tree resources, not production
+            # runtime dependencies.  Keeping them out of the core wheel also
+            # prevents bundled agents from accidentally importing demo Tools.
+            "examples",
+            "examples.*",
+            "train.examples",
+            "train.examples.*",
         ],
     ),
     package_data={
@@ -244,10 +251,6 @@ setup(
             "cmd/web/webui/public/trace_ui.html",
             "cmd/web/webui/dist/**",
             "sandbox/tool_servers/docker/src/*.py",
-        ],
-        "examples": [
-            "**/mcp.json",
-            "gaia/GAIA/**",
         ],
     },
     license="MIT",

@@ -5,7 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import Enum
 import hashlib
-from typing import Iterable
+import re
+from typing import Any, Iterable
 
 from .frozen_json import canonical_json_hash
 from .models import (
@@ -129,6 +130,121 @@ class SerializedPrefixEvidence:
 
 class InsufficientSerializedPrefixEvidence(ValueError):
     code = "serialized_prefix_evidence_insufficient"
+
+
+@dataclass(frozen=True, slots=True)
+class CachePlan:
+    """Provider-neutral cache intent frozen with a final request candidate."""
+
+    candidate_content_hash: str
+    inference_profile: InferenceProfile
+    policy_version: str
+    tool_catalog_hash: str
+    skill_set_hash: str
+    logical_stable_prefix_hash: str
+    stable_message_count: int
+    cache_epoch: int = 0
+    provider_cache_namespace: str | None = None
+    break_reasons: tuple[CacheBreakReason, ...] = ()
+    native_cache_requested: bool = True
+
+    SCHEMA_VERSION = "aworld.context.cache-plan.v1"
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.inference_profile, InferenceProfile):
+            if isinstance(self.inference_profile, dict):
+                object.__setattr__(
+                    self,
+                    "inference_profile",
+                    InferenceProfile.from_dict(self.inference_profile),
+                )
+            else:
+                raise TypeError("inference_profile must be an InferenceProfile")
+        for name in (
+            "candidate_content_hash",
+            "tool_catalog_hash",
+            "skill_set_hash",
+            "logical_stable_prefix_hash",
+        ):
+            value = getattr(self, name)
+            if not isinstance(value, str) or not re.fullmatch(
+                r"sha256:[0-9a-f]{64}", value
+            ):
+                raise ValueError(f"{name} must be a canonical sha256 hash")
+        if not isinstance(self.policy_version, str) or not self.policy_version.strip():
+            raise ValueError("policy_version must be a non-empty string")
+        for name in ("stable_message_count", "cache_epoch"):
+            value = getattr(self, name)
+            if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+                raise ValueError(f"{name} must be a non-negative integer")
+        if self.provider_cache_namespace is not None and (
+            not isinstance(self.provider_cache_namespace, str)
+            or not self.provider_cache_namespace.strip()
+        ):
+            raise ValueError(
+                "provider_cache_namespace must be a non-empty string or None"
+            )
+        resolved_reasons = {
+            CacheBreakReason(reason) for reason in self.break_reasons
+        }
+        object.__setattr__(
+            self,
+            "break_reasons",
+            tuple(sorted(resolved_reasons, key=lambda reason: reason.value)),
+        )
+        if not isinstance(self.native_cache_requested, bool):
+            raise TypeError("native_cache_requested must be a boolean")
+
+    @property
+    def input_identity(self) -> dict[str, Any]:
+        return {
+            **self.inference_profile.to_dict(),
+            "policy_version": self.policy_version,
+            "tool_catalog_hash": self.tool_catalog_hash,
+            "skill_set_hash": self.skill_set_hash,
+            "logical_stable_prefix_hash": self.logical_stable_prefix_hash,
+            "stable_message_count": self.stable_message_count,
+            "cache_epoch": self.cache_epoch,
+            "provider_cache_namespace": self.provider_cache_namespace,
+        }
+
+    @property
+    def fingerprint(self) -> str:
+        return canonical_json_hash(self.to_dict())
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "schema_version": self.SCHEMA_VERSION,
+            "candidate_content_hash": self.candidate_content_hash,
+            "inference_profile": self.inference_profile.to_dict(),
+            "policy_version": self.policy_version,
+            "tool_catalog_hash": self.tool_catalog_hash,
+            "skill_set_hash": self.skill_set_hash,
+            "logical_stable_prefix_hash": self.logical_stable_prefix_hash,
+            "stable_message_count": self.stable_message_count,
+            "cache_epoch": self.cache_epoch,
+            "provider_cache_namespace": self.provider_cache_namespace,
+            "break_reasons": [reason.value for reason in self.break_reasons],
+            "native_cache_requested": self.native_cache_requested,
+        }
+
+    def to_redacted_dict(self) -> dict[str, Any]:
+        payload = self.to_dict()
+        namespace = payload.pop("provider_cache_namespace")
+        payload["provider_cache_namespace_hash"] = (
+            canonical_json_hash({"provider_cache_namespace": namespace})
+            if namespace is not None
+            else None
+        )
+        return payload
+
+    @classmethod
+    def from_dict(cls, payload: dict[str, Any]) -> "CachePlan":
+        values = dict(payload)
+        schema_version = values.pop("schema_version", cls.SCHEMA_VERSION)
+        if schema_version != cls.SCHEMA_VERSION:
+            raise ValueError("unsupported cache plan schema_version")
+        return cls(**values)
 
 
 def _validate_provider_wire_evidence(

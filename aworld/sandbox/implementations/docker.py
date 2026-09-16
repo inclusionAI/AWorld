@@ -31,6 +31,7 @@ from aworld.sandbox.config.templates import (
     get_server_env,
 )
 from aworld.sandbox.implementations.sandbox import Sandbox
+from aworld.sandbox.errors import SandboxInfrastructureError
 from aworld.sandbox.models import SandboxEnvType, SandboxLocalResponse, SandboxStatus
 from aworld.core.tool_action_journal import (
     append_tool_action_event,
@@ -426,12 +427,18 @@ class DockerSandbox(Sandbox):
         )
         if committed.returncode != 0:
             detail = str(committed.stderr or "")[:500]
-            raise RuntimeError(f"Docker image checkpoint failed: {detail}")
+            raise SandboxInfrastructureError(
+                "docker_checkpoint_create_failed",
+                f"Docker image checkpoint failed: {detail}",
+            )
         output = str(committed.stdout or "")
         identities = re.findall(r"sha256:[0-9a-fA-F]{64}", output)
         image_id = identities[-1].lower() if identities else output.strip()
         if not re.fullmatch(r"sha256:[0-9a-f]{64}", image_id):
-            raise RuntimeError("Docker image checkpoint returned no image identity")
+            raise SandboxInfrastructureError(
+                "docker_checkpoint_create_failed",
+                "Docker image checkpoint returned no image identity",
+            )
         self._checkpoint_images.add(image_id)
         existing: list[str] = []
         for path in paths:
@@ -458,7 +465,10 @@ class DockerSandbox(Sandbox):
         prefer_image: bool = False,
     ) -> dict[str, Any]:
         if self.checkpoint_directory is None:
-            raise RuntimeError("checkpoint directory is not configured")
+            raise SandboxInfrastructureError(
+                "docker_checkpoint_not_configured",
+                "checkpoint directory is not configured",
+            )
         effective_paths = list(paths or self.tracked_artifact_paths)
         checkpoint_id = uuid.uuid4().hex
         if prefer_image and not self._tracked_paths_overlap_mounts_sync(effective_paths):
@@ -485,7 +495,10 @@ class DockerSandbox(Sandbox):
         if snapshot.returncode != 0:
             archive.unlink(missing_ok=True)
             detail = (snapshot.stderr or b"").decode(errors="replace")[:500]
-            raise RuntimeError(f"Docker checkpoint failed: {detail}")
+            raise SandboxInfrastructureError(
+                "docker_checkpoint_create_failed",
+                f"Docker checkpoint failed: {detail}",
+            )
         self._checkpoint_files.add(archive)
         return {
             "id": checkpoint_id,
@@ -520,8 +533,9 @@ class DockerSandbox(Sandbox):
             detail = (cleared.stderr or b"")
             if isinstance(detail, bytes):
                 detail = detail.decode(errors="replace")
-            raise RuntimeError(
-                f"Unable to clear tracked paths before rollback: {str(detail)[:500]}"
+            raise SandboxInfrastructureError(
+                "docker_checkpoint_restore_failed",
+                f"Unable to clear tracked paths before rollback: {str(detail)[:500]}",
             )
 
     def _restore_image_checkpoint_sync(self, checkpoint: dict[str, Any]) -> None:
@@ -535,8 +549,9 @@ class DockerSandbox(Sandbox):
             timeout=60,
         )
         if created.returncode != 0:
-            raise RuntimeError(
-                f"Unable to create Docker rollback helper: {str(created.stderr or '')[:500]}"
+            raise SandboxInfrastructureError(
+                "docker_checkpoint_restore_failed",
+                f"Unable to create Docker rollback helper: {str(created.stderr or '')[:500]}",
             )
         try:
             self._clear_checkpoint_paths_sync(tracked_paths)
@@ -555,8 +570,9 @@ class DockerSandbox(Sandbox):
                         timeout=600,
                     )
                     if copied_out.returncode != 0:
-                        raise RuntimeError(
-                            f"Unable to read Docker image checkpoint path: {path}"
+                        raise SandboxInfrastructureError(
+                            "docker_checkpoint_restore_failed",
+                            f"Unable to read Docker image checkpoint path: {path}",
                         )
                     is_directory = local_path.is_dir()
                     parent = path if is_directory else (posixpath.dirname(path) or "/")
@@ -566,7 +582,10 @@ class DockerSandbox(Sandbox):
                         timeout=60,
                     )
                     if parent_created.returncode != 0:
-                        raise RuntimeError(f"Unable to create rollback parent: {parent}")
+                        raise SandboxInfrastructureError(
+                            "docker_checkpoint_restore_failed",
+                            f"Unable to create rollback parent: {parent}",
+                        )
                     copied_back = self._docker_run(
                         [
                             self.docker_binary,
@@ -578,8 +597,9 @@ class DockerSandbox(Sandbox):
                         timeout=600,
                     )
                     if copied_back.returncode != 0:
-                        raise RuntimeError(
-                            f"Unable to restore Docker checkpoint path: {path}"
+                        raise SandboxInfrastructureError(
+                            "docker_checkpoint_restore_failed",
+                            f"Unable to restore Docker checkpoint path: {path}",
                         )
         finally:
             self._docker_run(
@@ -594,7 +614,10 @@ class DockerSandbox(Sandbox):
             return
         archive = Path(checkpoint["archive"])
         if self._sha256_path(archive) != checkpoint["sha256"]:
-            raise RuntimeError("Docker checkpoint checksum mismatch")
+            raise SandboxInfrastructureError(
+                "docker_checkpoint_restore_failed",
+                "Docker checkpoint checksum mismatch",
+            )
         tracked_paths = list(
             checkpoint.get("tracked_paths") or self.tracked_artifact_paths
         )
@@ -610,7 +633,10 @@ class DockerSandbox(Sandbox):
             detail = (restored.stderr or b"")
             if isinstance(detail, bytes):
                 detail = detail.decode(errors="replace")
-            raise RuntimeError(f"Unable to restore Docker checkpoint: {str(detail)[:500]}")
+            raise SandboxInfrastructureError(
+                "docker_checkpoint_restore_failed",
+                f"Unable to restore Docker checkpoint: {str(detail)[:500]}",
+            )
         existing_paths = set(checkpoint.get("existing_paths") or ())
         missing_paths = [
             path for path in tracked_paths if path not in existing_paths
@@ -631,7 +657,10 @@ class DockerSandbox(Sandbox):
                 timeout=120,
             )
             if removed.returncode != 0:
-                raise RuntimeError("Unable to remove artifacts absent at checkpoint")
+                raise SandboxInfrastructureError(
+                    "docker_checkpoint_restore_failed",
+                    "Unable to remove artifacts absent at checkpoint",
+                )
 
     def _discard_checkpoint(self, checkpoint: dict[str, Any] | None) -> None:
         if not checkpoint:

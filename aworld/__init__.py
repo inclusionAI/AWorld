@@ -8,17 +8,19 @@ log_level = os.environ.get('AWORLD_LOG_LEVEL', 'INFO')
 PROJECT_CONFIG = {"debug_mode": debug_mode, "log_level": log_level,
                   "use_trace": os.environ.get('AWORLD_USE_TRACE', 'false').lower() in ('true', '1', 't')}
 
-# Try to load .env file if python-dotenv is available
-# This is optional and should not fail if the package is not installed yet (e.g., during pip install)
-try:
-    from dotenv import load_dotenv
+_disable_auto_dotenv = os.environ.get("AWORLD_DISABLE_AUTO_DOTENV", "").strip().lower()
+if _disable_auto_dotenv not in {"1", "true", "yes", "on"}:
+    # Preserve historical library behavior unless an embedding runtime opts
+    # into explicit configuration ownership before importing AWorld.
+    try:
+        from dotenv import load_dotenv
 
-    success = load_dotenv()
-    if not success:
-        load_dotenv(os.path.join(os.getcwd(), ".env"))
-except Exception as e:
-    # Log other errors but don't fail initialization
-    print(f"Warning: Failed to load .env file: {e}")
+        success = load_dotenv()
+        if not success:
+            load_dotenv(os.path.join(os.getcwd(), ".env"))
+    except Exception as e:
+        # Loading project convenience configuration must never break imports.
+        print(f"Warning: Failed to load .env file: {e}")
 
 
 def configure(logger_level: str = "INFO", use_trace: bool = None, debug: bool = None):

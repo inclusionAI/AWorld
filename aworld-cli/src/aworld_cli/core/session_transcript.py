@@ -7,6 +7,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from aworld.utils.runtime_state import get_runtime_state_root, runtime_state_path
+
 
 TRANSCRIPT_RELATIVE_DIR = Path(".aworld") / "sessions" / "transcripts"
 MODEL_CONTEXT_MAX_CHARS = 12000
@@ -37,14 +39,26 @@ class CliSessionTranscript:
         history_path: str | os.PathLike[str] | None = None,
     ) -> None:
         self.root = Path(root).expanduser().resolve() if root is not None else Path.cwd().resolve()
+        self._transcript_dir = (
+            self.root / TRANSCRIPT_RELATIVE_DIR
+            if root is not None or get_runtime_state_root() is None
+            else runtime_state_path(
+                "sessions",
+                "transcripts",
+                default=self.root / TRANSCRIPT_RELATIVE_DIR,
+            )
+        )
         self.history_path = (
             Path(history_path).expanduser().resolve()
             if history_path is not None
-            else Path.home() / ".aworld" / "cli_history.jsonl"
+            else runtime_state_path(
+                "cli_history.jsonl",
+                default=Path.home() / ".aworld" / "cli_history.jsonl",
+            )
         )
 
     def path_for(self, session_id: str) -> Path:
-        return self.root / TRANSCRIPT_RELATIVE_DIR / f"{_safe_session_filename(session_id)}.jsonl"
+        return self._transcript_dir / f"{_safe_session_filename(session_id)}.jsonl"
 
     def record_turn(
         self,

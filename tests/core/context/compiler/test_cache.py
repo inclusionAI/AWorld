@@ -7,6 +7,7 @@ import pytest
 from aworld.core.context.compiler import (
     Authority,
     CacheBreakReason,
+    CachePlan,
     ContextItem,
     ContextKind,
     ContextScope,
@@ -78,6 +79,43 @@ def _identity(**overrides):
     }
     values.update(overrides)
     return build_cache_identity(**values).identity
+
+
+def test_cache_plan_is_deterministic_candidate_bound_and_provider_neutral() -> None:
+    values = {
+        "candidate_content_hash": canonical_json_hash({"messages": []}),
+        "inference_profile": _profile(),
+        "policy_version": "policy-v1",
+        "tool_catalog_hash": canonical_json_hash([]),
+        "skill_set_hash": canonical_json_hash([]),
+        "logical_stable_prefix_hash": canonical_json_hash([]),
+        "stable_message_count": 0,
+        "cache_epoch": 2,
+        "provider_cache_namespace": "routing-a",
+        "break_reasons": (
+            CacheBreakReason.TASK_RESET,
+            CacheBreakReason.HISTORY_COMPACTION,
+            CacheBreakReason.TASK_RESET,
+        ),
+    }
+
+    first = CachePlan(**values)
+    restored = CachePlan.from_dict(first.to_dict())
+
+    assert restored == first
+    assert restored.fingerprint == first.fingerprint
+    assert restored.input_identity["provider"] == "provider-a"
+    assert restored.cache_epoch == 2
+    assert restored.break_reasons == (
+        CacheBreakReason.HISTORY_COMPACTION,
+        CacheBreakReason.TASK_RESET,
+    )
+    assert "glm" not in str(first.to_dict()).lower()
+    assert "routing-a" not in repr(first.to_redacted_dict())
+    assert first.to_redacted_dict()["provider_cache_namespace_hash"] is not None
+
+    with pytest.raises(ValueError, match="candidate_content_hash"):
+        CachePlan(**{**values, "candidate_content_hash": "forged"})
 
 
 def test_partition_is_contiguous_and_never_reorders_late_stable_items() -> None:

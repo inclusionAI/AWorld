@@ -456,6 +456,29 @@ def test_global_parser_registers_emit_trajectory_for_legacy_task_mode() -> None:
     assert enabled_args.emit_trajectory is True
 
 
+def test_run_parser_registers_harbor_trajectory_output() -> None:
+    import argparse
+
+    from aworld_cli.top_level_commands.run_cmd import RunTopLevelCommand
+
+    parser = argparse.ArgumentParser()
+    RunTopLevelCommand().register_parser(parser.add_subparsers(dest="command"))
+    args = parser.parse_args(
+        [
+            "run",
+            "--task",
+            "write tests",
+            "--trajectory-output",
+            "/logs/agent/trajectory.json",
+            "--trajectory-format",
+            "atif",
+        ]
+    )
+
+    assert args.trajectory_output == "/logs/agent/trajectory.json"
+    assert args.trajectory_format == "atif"
+
+
 def test_main_routes_default_interactive_through_registered_command(
     monkeypatch,
 ) -> None:

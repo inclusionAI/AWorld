@@ -80,6 +80,10 @@ class TaskRunner(Runner):
                 agent.conf.llm_config.llm_stream_call = True
 
     async def pre_run(self):
+        # Sandbox tool discovery and event-driven execution must share the same
+        # deterministic built-in registration boundary.  Recursive import scanning
+        # is intentionally best-effort and may skip MCP during package bootstrap.
+        aworld.tools.ensure_builtin_tools_registered()
         task = self.task
         self.swarm = task.swarm
         self.input = task.input

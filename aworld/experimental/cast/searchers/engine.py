@@ -7,7 +7,7 @@ Unified search interface that integrates multiple tools such as Grep, Glob and R
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import Dict, List, Optional, Any, Union, AsyncIterator, Iterator
+from typing import Dict, List, Optional, Any, Union
 from pathlib import Path
 from enum import Enum
 
@@ -43,13 +43,15 @@ class SearchParams:
     exclude_patterns: Optional[List[str]] = None  # File patterns to exclude
     max_results: int = 100                  # Maximum number of results
     max_line_length: int = 2000            # Maximum line length
-    follow_symlinks: bool = True           # Follow symbolic links
+    follow_symlinks: bool = True           # Follow symbolic links within root
     search_hidden: bool = True             # Search hidden files
     case_sensitive: bool = False           # Case sensitivity
     offset: int = 0                        # Result offset
     limit: int = 2000                      # Result limit
     max_depth: Optional[int] = None        # Maximum search depth
     context_lines: int = 0                 # Number of context lines
+    max_bytes: Optional[int] = None        # Producer-side output byte budget
+    timeout_seconds: Optional[float] = None  # Producer deadline
 
 
 class Searcher(ABC):
@@ -79,7 +81,9 @@ class SearchEngine:
     """
 
     def __init__(self, root_path: Optional[Union[str, Path]] = None):
-        self.root_path = Path(root_path) if root_path else Path.cwd()
+        from .path_policy import canonical_root
+
+        self.root_path = canonical_root(root_path or Path.cwd())
         self.searchers: Dict[SearchType, Searcher] = {}
 
     def register_searcher(self, searcher: Searcher):
@@ -148,7 +152,9 @@ class SearchEngine:
 
     def set_root_path(self, path: Union[str, Path]):
         """Set the root path for searches."""
-        self.root_path = Path(path)
+        from .path_policy import canonical_root
+
+        self.root_path = canonical_root(path)
         # Notify all tools that the root path has changed
         for searcher in self.searchers.values():
             if hasattr(searcher, 'set_root_path'):

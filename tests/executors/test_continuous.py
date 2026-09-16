@@ -6,6 +6,7 @@ import pytest
 from rich.console import Console
 
 from aworld_cli.executors.continuous import ContinuousExecutor
+from aworld_cli.executors.local import LocalAgentExecutor
 
 
 @pytest.mark.asyncio
@@ -87,3 +88,146 @@ async def test_run_iteration_carries_task_response_trajectory() -> None:
     assert result["trajectory_capture_mode"] == "task_response"
     assert result["trajectory"] == full_trajectory
     assert result["llm_calls"] == [{"model": "test-model"}]
+
+
+@pytest.mark.asyncio
+async def test_run_iteration_propagates_failed_task_response() -> None:
+    async def fake_chat(prompt: str, **kwargs):
+        return "Task fail, cause: provider_timeout"
+
+    fake_executor = SimpleNamespace(
+        chat=fake_chat,
+        session_id="sess-1",
+        last_task_response=SimpleNamespace(
+            success=False,
+            trajectory=[{"id": "failed-step"}],
+            llm_calls=[{"model": "test-model"}],
+        ),
+    )
+    continuous = ContinuousExecutor(
+        fake_executor,
+        console=Console(file=StringIO(), force_terminal=False),
+    )
+
+    result = await continuous.run_iteration(1, "hello", agent_name="Aworld")
+
+    assert result["success"] is False
+    assert result["completed"] is False
+    assert result["immediate_stop"] is False
+
+
+@pytest.mark.asyncio
+async def test_local_interruption_signal_cannot_be_reclassified_as_success() -> None:
+    executor = object.__new__(LocalAgentExecutor)
+    executor.session_id = "sess-1"
+    executor.last_task_response = None
+    executor.last_task_interrupted = False
+    executor._publish_hud_task_finished = lambda *_args, **_kwargs: None
+
+    async def no_hooks(*_args, **_kwargs):
+        return []
+
+    executor._run_plugin_task_hook = no_hooks
+    task = SimpleNamespace(id="task-1")
+
+    async def interrupted_chat(_prompt: str, **_kwargs):
+        return await executor._handle_task_interrupted(
+            task,
+            answer="partial model output",
+        )
+
+    executor.chat = interrupted_chat
+    continuous = ContinuousExecutor(
+        executor,
+        console=Console(file=StringIO(), force_terminal=False),
+    )
+
+    result = await continuous.run_iteration(
+        1,
+        "hello",
+        agent_name="Aworld",
+        non_interactive=True,
+    )
+
+    assert result["response"] == "partial model output"
+    assert result["success"] is False
+    assert result["completed"] is False
+    assert result["termination_status"] == "cancelled"
+
+
+@pytest.mark.asyncio
+async def test_run_iteration_preserves_control_plane_when_inline_trajectory_is_empty() -> None:
+    async def fake_chat(prompt: str, **kwargs):
+        return "Task fail, cause: provider_timeout"
+
+    build_result = SimpleNamespace(
+        to_dict=lambda: {
+            "status": "partial",
+            "fidelity": "partial",
+            "llm_call_count": 4,
+            "tool_call_count": 1,
+            "completed_updates": 2,
+            "persisted_items": 0,
+            "source_high_watermark": "event-8",
+        }
+    )
+    fake_executor = SimpleNamespace(
+        chat=fake_chat,
+        session_id="sess-1",
+        last_task_response=SimpleNamespace(
+            success=False,
+            status="failed",
+            trajectory=[],
+            llm_calls=[{"request_id": f"request-{index}"} for index in range(4)],
+            trajectory_build_result=build_result,
+            trajectory_delivery_receipt=None,
+        ),
+    )
+    continuous = ContinuousExecutor(
+        fake_executor,
+        console=Console(file=StringIO(), force_terminal=False),
+    )
+
+    result = await continuous.run_iteration(1, "hello", agent_name="Aworld")
+
+    assert result["trajectory_capture_mode"] == "task_response"
+    assert result["trajectory"] == []
+    assert len(result["llm_calls"]) == 4
+    assert result["trajectory_build_result"]["source_high_watermark"] == "event-8"
+
+
+@pytest.mark.asyncio
+async def test_run_iteration_executor_exception_keeps_fresh_infrastructure_origin() -> None:
+    stale_task_response = SimpleNamespace(
+        success=False,
+        status="failed",
+        failure_origin="task",
+        failure_code="completion_contract_unsatisfied",
+        error_type="CompletionContractError",
+        trajectory=[{"role": "assistant", "content": "partial"}],
+        llm_calls=[{"request_id": "call-1"}],
+        trajectory_build_result={"status": "partial"},
+        trajectory_delivery_receipt={"status": "persisted"},
+    )
+
+    class RaisingExecutor:
+        last_task_response = stale_task_response
+        last_task_interrupted = False
+
+        async def chat(self, *_args, **_kwargs):
+            raise RuntimeError("framework cleanup failed")
+
+    continuous = ContinuousExecutor(
+        RaisingExecutor(),
+        console=Console(file=StringIO(), force_terminal=False),
+    )
+    result = await continuous.run_iteration(1, "hello", agent_name="Aworld")
+
+    assert result["failure_origin"] == "infrastructure"
+    assert result["failure_code"] == "executor_exception"
+    assert result["error_type"] == "RuntimeError"
+    assert result["trajectory"] == [{"role": "assistant", "content": "partial"}]
+    assert result["llm_calls"] == [{"request_id": "call-1"}]
+    assert result["trajectory_build_result"] == {"status": "partial"}
+    assert result["trajectory_delivery_receipt"] == {"status": "persisted"}
+    assert "task_status" not in result

@@ -19,10 +19,14 @@ from aworld.logs.util import logger
 from aworld.memory.main import MemoryFactory
 from aworld.memory.models import MemorySummary, MessageMetadata
 from aworld.models.utils import num_tokens_from_messages
+from aworld.utils.runtime_state import runtime_state_path
 
 def get_default_history_path() -> Path:
-    """Default CLI history path: ~/.aworld/cli_history.jsonl."""
-    return Path.home() / ".aworld" / "cli_history.jsonl"
+    """Return the CLI history path, honoring isolated runtime state."""
+    return runtime_state_path(
+        "cli_history.jsonl",
+        default=Path.home() / ".aworld" / "cli_history.jsonl",
+    )
 
 
 def get_limit_str() -> Optional[str]:
@@ -330,6 +334,44 @@ async def run_context_optimization(
             agent_memory_config=agent_memory_config,
         )
         logger.info(f"Context|step 5: Compressed context saved")
+
+        # A manual history rewrite is the same cache boundary as adaptive
+        # compaction. Persist it through the Context owner so the next CLI task
+        # can restore the exact epoch and its pending break evidence. This is a
+        # provider-neutral lifecycle contract; native cache controls remain in
+        # provider adapters.
+        if context is not None:
+            compaction_state = {
+                "schema_version": "aworld.cli-context-compaction.v1",
+                "checkpoint_snapshot_state": "prepared",
+                "checkpoint_id": None,
+                "original_tokens": original_tokens,
+                "new_tokens": num_tokens_from_messages(
+                    [combined_memory.to_openai_message()]
+                ),
+            }
+            context.context_info["cli_context_compaction_state"] = compaction_state
+            try:
+                checkpoint = (
+                    await context.snapshot(checkpoint_only=True)
+                    if isinstance(context, AmniContext)
+                    else await context.snapshot()
+                )
+            except Exception as exc:
+                compaction_state["checkpoint_snapshot_state"] = "failed"
+                compaction_state["error_code"] = "context_checkpoint_failed"
+                logger.warning(
+                    f"Context|manual compaction checkpoint failed: {exc}"
+                )
+                return (
+                    False,
+                    original_tokens,
+                    compaction_state["new_tokens"],
+                    "Compression summary was saved but its Context checkpoint failed",
+                    combined_content,
+                )
+            compaction_state["checkpoint_snapshot_state"] = "captured"
+            compaction_state["checkpoint_id"] = getattr(checkpoint, "id", None)
 
         # Calculate new tokens
         new_tokens = num_tokens_from_messages(

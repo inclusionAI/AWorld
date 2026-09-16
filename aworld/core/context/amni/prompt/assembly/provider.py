@@ -69,6 +69,16 @@ class DefaultPromptAssemblyProvider(PromptAssemblyProvider):
                 hash=stable_hash,
             )
         ]
+        ordered_system_sections = [
+            PromptSection(
+                name=f"system_message_{index}",
+                kind="system",
+                stability="stable",
+                content=message,
+                hash=stable_hash,
+            )
+            for index, message in enumerate(stable_messages)
+        ]
         if conversation_messages:
             dynamic_sections.append(
                 PromptSection(
@@ -89,6 +99,7 @@ class DefaultPromptAssemblyProvider(PromptAssemblyProvider):
 
         return PromptAssemblyPlan(
             messages=serializable_messages,
+            system_sections=ordered_system_sections,
             stable_system_sections=stable_sections,
             dynamic_system_sections=dynamic_sections,
             conversation_messages=conversation_messages,
@@ -144,6 +155,7 @@ class CacheAwarePromptAssemblyProvider(PromptAssemblyProvider):
         hints = self._normalize_system_section_hints(plan_metadata.get("system_section_hints"))
         stable_sections: List[PromptSection] = []
         dynamic_sections: List[PromptSection] = []
+        ordered_system_sections: List[PromptSection] = []
         conversation_messages = []
         system_index = 0
 
@@ -161,6 +173,7 @@ class CacheAwarePromptAssemblyProvider(PromptAssemblyProvider):
                     stable_sections.append(section)
                 else:
                     dynamic_sections.append(section)
+                ordered_system_sections.append(section)
             else:
                 conversation_messages.append(message)
 
@@ -192,6 +205,7 @@ class CacheAwarePromptAssemblyProvider(PromptAssemblyProvider):
 
         return PromptAssemblyPlan(
             messages=serializable_messages,
+            system_sections=ordered_system_sections,
             stable_system_sections=stable_sections,
             dynamic_system_sections=dynamic_sections,
             conversation_messages=conversation_messages,
@@ -230,4 +244,6 @@ class CacheAwarePromptAssemblyProvider(PromptAssemblyProvider):
             return "dynamic"
         if name in cls.STABLE_SECTION_NAMES:
             return "stable"
-        return "stable"
+        # Unknown augment sources may contain retrieval, memory, task, or user
+        # data. They stay dynamic until their owner declares stable semantics.
+        return "dynamic"

@@ -1,5 +1,6 @@
 ---
 name: self_evolve
+default_enabled: false
 description: "Use for framework-gated self-evolve workflows in AWorld: evolve skills, create trajectory-backed proposals, inspect self-evolve run artifacts, run aworld-cli optimize, or prepare verified apply decisions through aworld.self_evolve gates."
 ---
 

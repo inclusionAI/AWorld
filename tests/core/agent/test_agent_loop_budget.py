@@ -2,15 +2,106 @@ import asyncio
 
 import pytest
 
+from aworld.agents.llm_agent import Agent
 from aworld.config.conf import AgentConfig
 from aworld.core.agent.base import BaseAgent
+from aworld.core.common import ActionModel, ActionResult, Observation
 from aworld.core.context.base import Context
-from aworld.core.event.base import Constants, Message, TopicType
+from aworld.core.event.base import AgentMessage, Constants, Message, TopicType
+from aworld.models.model_response import Function, ModelResponse, ToolCall
 
 
 class LoopBudgetAgent(BaseAgent):
     async def async_policy(self, observation, message=None, **kwargs):
         return observation
+
+
+def _tool_observation(
+    *,
+    success: bool = False,
+    category: str | None = "infrastructure",
+    code: str = "docker_checkpoint_create_failed",
+) -> Observation:
+    metadata = {}
+    if category is not None:
+        metadata = {"failure_category": category, "failure_code": code}
+    return Observation(
+        action_result=[
+            ActionResult(
+                success=success,
+                error=None if success else "backend unavailable",
+                tool_name="docker",
+                metadata=metadata,
+            )
+        ]
+    )
+
+
+def _agent_message(agent: BaseAgent, context: Context, payload: Observation) -> Message:
+    return Message(
+        category=Constants.AGENT,
+        payload=payload,
+        sender="docker",
+        caller=agent.id(),
+        session_id=context.session_id,
+        headers={"context": context},
+    )
+
+
+@pytest.mark.asyncio
+async def test_repeated_typed_infrastructure_failure_opens_circuit_at_threshold():
+    agent = LoopBudgetAgent(
+        name="infra-circuit",
+        conf=AgentConfig(llm_provider="mock", llm_model_name="mock-model"),
+        max_loop_steps=100,
+    )
+    context = Context(task_id="infra-task", session_id="infra-session")
+
+    for _ in range(2):
+        result = await agent.async_run(
+            _agent_message(agent, context, _tool_observation())
+        )
+        assert result.category == Constants.AGENT
+
+    result = await agent.async_run(
+        _agent_message(agent, context, _tool_observation())
+    )
+
+    assert result.category == Constants.TASK
+    assert result.topic == TopicType.FINISHED
+    assert result.payload.stop is True
+    assert result.payload.success is False
+    assert result.payload.msg == "agent_infrastructure_error_circuit_open"
+    assert result.payload.data["consecutive_count"] == 3
+    assert result.payload.data["failure_codes"] == [
+        "docker_checkpoint_create_failed"
+    ]
+
+
+def test_circuit_ignores_untyped_tool_failures_and_resets_after_success():
+    agent = LoopBudgetAgent(
+        name="infra-reset",
+        conf=AgentConfig(llm_provider="mock", llm_model_name="mock-model"),
+    )
+    context = Context(task_id="infra-reset-task", session_id="infra-session")
+
+    assert agent._observe_infrastructure_failure(
+        _agent_message(agent, context, _tool_observation())
+    ) is None
+    assert agent._observe_infrastructure_failure(
+        _agent_message(agent, context, _tool_observation(success=True))
+    ) is None
+    assert agent._observe_infrastructure_failure(
+        _agent_message(agent, context, _tool_observation(category=None))
+    ) is None
+    assert agent._observe_infrastructure_failure(
+        _agent_message(agent, context, _tool_observation())
+    ) is None
+
+    state = context.context_info[
+        f"agent_infrastructure_error_circuit:{agent.id()}"
+    ]
+    assert state["consecutive_count"] == 1
 
 
 def test_default_adaptive_context_installs_elastic_budget_policy():
@@ -26,6 +117,19 @@ def test_default_adaptive_context_installs_elastic_budget_policy():
     assert policy.extension_steps == 40
     assert policy.hard_limit == 240
     assert policy.recent_progress_window_steps == 20
+
+
+def test_agent_config_can_disable_infrastructure_error_circuit_breaker():
+    agent = LoopBudgetAgent(
+        name="circuit-disabled",
+        conf=AgentConfig(
+            llm_provider="mock",
+            llm_model_name="mock-model",
+            infrastructure_error_circuit_breaker_threshold=0,
+        ),
+    )
+
+    assert agent.infrastructure_error_circuit_breaker_threshold == 0
 
 
 @pytest.mark.parametrize("mode", ["off", "observe", "shadow"])
@@ -92,6 +196,36 @@ async def test_non_positive_loop_budget_remains_unbounded():
 
 
 @pytest.mark.asyncio
+async def test_large_fixed_budget_only_postpones_the_same_hard_stop():
+    agent = LoopBudgetAgent(
+        name="large-fixed-budget",
+        conf=AgentConfig(
+            llm_provider="mock",
+            llm_model_name="mock-model",
+            context_compiler={"mode": "off"},
+        ),
+        max_loop_steps=1000,
+    )
+    context = Context(task_id="large-fixed-budget-task")
+    message = Message(
+        category=Constants.AGENT,
+        payload="observation",
+        sender="tool",
+        caller=agent.id(),
+        session_id="session",
+        headers={"context": context},
+    )
+
+    for _ in range(20):
+        context.update_agent_step(agent.id())
+    assert await agent.should_terminate_loop(message) is False
+
+    for _ in range(980):
+        context.update_agent_step(agent.id())
+    assert await agent.should_terminate_loop(message) is True
+
+
+@pytest.mark.asyncio
 async def test_async_run_emits_task_completion_and_resolves_contract_at_budget():
     agent = LoopBudgetAgent(
         name="bounded",
@@ -125,6 +259,250 @@ async def test_async_run_emits_task_completion_and_resolves_contract_at_budget()
     assert exhaustion["context_agent_step"] == 1
     assert exhaustion["max_loop_steps"] == 1
     assert exhaustion["elastic_budget"]["decision"] == "no_new_goal_progress"
+
+
+@pytest.mark.asyncio
+async def test_budget_resolution_does_not_repeat_evidence_resolved_in_final_turn():
+    agent = LoopBudgetAgent(
+        name="resolved-once",
+        conf=AgentConfig(llm_provider="mock", llm_model_name="mock-model"),
+        max_loop_steps=1,
+    )
+    context = Context(task_id="resolved-once-task")
+    resolved = []
+
+    async def resolve():
+        resolved.append(True)
+
+    context.resolve_completion_evidence = resolve
+    context.context_info[
+        f"completion_evidence_resolved_this_turn:{agent.id()}"
+    ] = context.get_agent_step(agent.id())
+    message = Message(
+        category=Constants.AGENT,
+        payload="last observation",
+        sender="tool",
+        caller=agent.id(),
+        session_id="session",
+        headers={"context": context},
+    )
+
+    await agent._resolve_completion_at_loop_budget(message)
+
+    assert resolved == []
+
+
+@pytest.mark.asyncio
+async def test_llm_agent_uses_budget_boundary_for_one_finalization_turn():
+    class FinalizingAgent(Agent):
+        async def async_policy(self, observation, message=None, **kwargs):
+            self.finalization_requested = kwargs.get("_loop_budget_finalization")
+            self._finished = True
+            return [
+                ActionModel(
+                    agent_name=self.id(),
+                    policy_info="verified final summary",
+                )
+            ]
+
+    agent = FinalizingAgent(
+        name="finalizing",
+        conf=AgentConfig(llm_provider="mock", llm_model_name="mock-model"),
+        max_loop_steps=1,
+    )
+    context = Context(task_id="finalizing-task")
+    message = Message(
+        category=Constants.AGENT,
+        payload=Observation(content="last tool observation"),
+        sender="tool",
+        caller=agent.id(),
+        session_id="session",
+        headers={"context": context},
+    )
+
+    result = await agent.async_run(message)
+
+    assert isinstance(result, AgentMessage)
+    assert result.payload[0].policy_info == "verified final summary"
+    assert agent.finalization_requested is True
+    exhaustion = context.context_info[f"agent_loop_budget_exhausted:{agent.id()}"]
+    assert exhaustion["finalization_performed"] is True
+
+
+def test_sync_llm_agent_uses_budget_boundary_for_finalization():
+    class SyncFinalizingAgent(Agent):
+        async def async_policy(self, observation, message=None, **kwargs):
+            self.finalization_requested = kwargs.get("_loop_budget_finalization")
+            self._finished = True
+            return [ActionModel(agent_name=self.id(), policy_info="sync summary")]
+
+        async def async_post_run(self, policy_result, policy_input, message=None):
+            return AgentMessage(payload=policy_result, headers=message.headers)
+
+    agent = SyncFinalizingAgent(
+        name="sync-finalizing",
+        conf=AgentConfig(llm_provider="mock", llm_model_name="mock-model"),
+        max_loop_steps=1,
+    )
+    context = Context(task_id="sync-finalizing-task")
+    message = Message(
+        category=Constants.AGENT,
+        payload=Observation(content="last tool observation"),
+        sender="tool",
+        caller=agent.id(),
+        session_id="session",
+        headers={"context": context},
+    )
+
+    result = agent.run(message)
+
+    assert isinstance(result, AgentMessage)
+    assert result.payload[0].policy_info == "sync summary"
+    assert agent.finalization_requested is True
+    exhaustion = context.context_info[f"agent_loop_budget_exhausted:{agent.id()}"]
+    assert exhaustion["finalization_performed"] is True
+
+
+@pytest.mark.asyncio
+async def test_non_llm_agent_keeps_hard_budget_termination_without_finalizer():
+    agent = LoopBudgetAgent(
+        name="generic-bounded",
+        conf=AgentConfig(llm_provider="mock", llm_model_name="mock-model"),
+        max_loop_steps=1,
+    )
+    context = Context(task_id="generic-bounded-task")
+    message = Message(
+        category=Constants.AGENT,
+        payload="last observation",
+        sender="tool",
+        caller=agent.id(),
+        session_id="session",
+        headers={"context": context},
+    )
+
+    result = await agent.async_run(message)
+
+    assert result.category == Constants.TASK
+    assert result.payload.msg == "agent_loop_budget_exhausted"
+    exhaustion = context.context_info[f"agent_loop_budget_exhausted:{agent.id()}"]
+    assert exhaustion["finalization_performed"] is False
+
+
+@pytest.mark.asyncio
+async def test_failed_llm_budget_finalization_degrades_to_hard_stop():
+    class FailingFinalizer(Agent):
+        async def async_policy(self, observation, message=None, **kwargs):
+            raise RuntimeError("model unavailable")
+
+    agent = FailingFinalizer(
+        name="failing-finalizer",
+        conf=AgentConfig(llm_provider="mock", llm_model_name="mock-model"),
+        max_loop_steps=1,
+    )
+    context = Context(task_id="failing-finalizer-task")
+    message = Message(
+        category=Constants.AGENT,
+        payload=Observation(content="last tool observation"),
+        sender="tool",
+        caller=agent.id(),
+        session_id="session",
+        headers={"context": context},
+    )
+
+    result = await agent.async_run(message)
+
+    assert result.category == Constants.TASK
+    assert result.payload.msg == "agent_loop_budget_exhausted"
+    assert context.context_info[
+        f"agent_loop_budget_finalization_error:{agent.id()}"
+    ] == {"error_type": "RuntimeError"}
+    exhaustion = context.context_info[f"agent_loop_budget_exhausted:{agent.id()}"]
+    assert exhaustion["finalization_performed"] is False
+
+
+@pytest.mark.asyncio
+async def test_cancelled_llm_budget_finalization_propagates():
+    class CancelledFinalizer(Agent):
+        async def async_policy(self, observation, message=None, **kwargs):
+            raise asyncio.CancelledError()
+
+    agent = CancelledFinalizer(
+        name="cancelled-finalizer",
+        conf=AgentConfig(llm_provider="mock", llm_model_name="mock-model"),
+        max_loop_steps=1,
+    )
+    context = Context(task_id="cancelled-finalizer-task")
+    message = Message(
+        category=Constants.AGENT,
+        payload=Observation(content="last tool observation"),
+        sender="tool",
+        caller=agent.id(),
+        session_id="session",
+        headers={"context": context},
+    )
+
+    with pytest.raises(asyncio.CancelledError):
+        await agent.async_run(message)
+
+    assert (
+        f"agent_loop_budget_finalization_error:{agent.id()}"
+        not in context.context_info
+    )
+
+
+def test_budget_finalization_sanitizes_a_copy_and_preserves_raw_response():
+    raw = ModelResponse(
+        id="raw-response",
+        model="test-model",
+        content="",
+        reasoning_content="internal reasoning must remain private",
+        tool_calls=[
+            ToolCall(
+                id="call-1",
+                function=Function(name="terminal", arguments="{}"),
+            )
+        ],
+    )
+
+    sanitized = Agent._coerce_loop_budget_final_response(raw)
+
+    assert sanitized is not raw
+    assert len(raw.tool_calls) == 1
+    assert "tool_calls" in raw.message
+    assert sanitized.tool_calls == []
+    assert "tool_calls" not in sanitized.message
+    assert sanitized.content == ""
+
+
+@pytest.mark.asyncio
+async def test_empty_llm_budget_finalization_degrades_to_hard_stop():
+    class EmptyFinalizer(Agent):
+        async def async_policy(self, observation, message=None, **kwargs):
+            self._finished = True
+            return [ActionModel(agent_name=self.id(), policy_info="")]
+
+    agent = EmptyFinalizer(
+        name="empty-finalizer",
+        conf=AgentConfig(llm_provider="mock", llm_model_name="mock-model"),
+        max_loop_steps=1,
+    )
+    context = Context(task_id="empty-finalizer-task")
+    message = Message(
+        category=Constants.AGENT,
+        payload=Observation(content="last tool observation"),
+        sender="tool",
+        caller=agent.id(),
+        session_id="session",
+        headers={"context": context},
+    )
+
+    result = await agent.async_run(message)
+
+    assert result.category == Constants.TASK
+    assert result.payload.msg == "agent_loop_budget_exhausted"
+    assert context.context_info[
+        f"agent_loop_budget_finalization_error:{agent.id()}"
+    ] == {"error_type": "AWorldRuntimeException"}
 
 
 @pytest.mark.asyncio
@@ -291,6 +669,57 @@ async def test_elastic_budget_grants_only_recent_new_goal_progress():
     context.context_info["context_semantic_progress"][agent.id()][
         "last_goal_progress_agent_step"
     ] = 7
+    assert await agent.should_terminate_loop(message) is True
+    assert (
+        context.context_info[f"agent_step_budget:{agent.id()}"]["decision"]
+        == "hard_limit_reached"
+    )
+
+
+@pytest.mark.asyncio
+async def test_elastic_budget_extends_when_goal_progress_is_unobservable():
+    agent = LoopBudgetAgent(
+        name="elastic-unobservable",
+        conf=AgentConfig(llm_provider="mock", llm_model_name="mock-model"),
+        max_loop_steps=3,
+        loop_step_extension_steps=2,
+        max_extended_loop_steps=7,
+        loop_step_progress_window=2,
+    )
+    context = Context(task_id="elastic-unobservable-task")
+    context.context_info["context_semantic_progress"] = {
+        agent.id(): {
+            "goal_progress_count": 0,
+            "goal_progress_observable": False,
+            "last_goal_progress_agent_step": None,
+        }
+    }
+    message = Message(
+        category=Constants.AGENT,
+        payload="observation",
+        sender="tool",
+        caller=agent.id(),
+        session_id="session",
+        headers={"context": context},
+    )
+
+    for _ in range(3):
+        context.update_agent_step(agent.id())
+    assert await agent.should_terminate_loop(message) is False
+    receipt = context.context_info[f"agent_step_budget:{agent.id()}"]
+    assert receipt["decision"] == "unobservable_progress_extension_granted"
+    assert receipt["effective_limit"] == 5
+
+    context.update_agent_step(agent.id())
+    context.update_agent_step(agent.id())
+    assert await agent.should_terminate_loop(message) is False
+    assert (
+        context.context_info[f"agent_step_budget:{agent.id()}"]["effective_limit"]
+        == 7
+    )
+
+    context.update_agent_step(agent.id())
+    context.update_agent_step(agent.id())
     assert await agent.should_terminate_loop(message) is True
     assert (
         context.context_info[f"agent_step_budget:{agent.id()}"]["decision"]

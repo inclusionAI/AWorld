@@ -31,6 +31,7 @@ from aworld.core.context.compiler.lifecycle import (
     LifecycleAction,
     transition_context_lifecycle,
 )
+from aworld.core.context.compiler.models import CacheBreakReason
 from aworld.core.context.compiler.completion import (
     ArtifactEvidence,
     CompletionAssessment,
@@ -197,6 +198,7 @@ class _AgentStepRegistry:
         current_step: int,
         observed_goal_progress_count: int,
         last_goal_progress_agent_step: int | None,
+        goal_progress_observable: bool | None,
     ) -> ElasticStepBudgetDecision:
         key = (agent_id, task_id)
         with self._lock:
@@ -205,6 +207,7 @@ class _AgentStepRegistry:
                 current_step=current_step,
                 observed_goal_progress_count=observed_goal_progress_count,
                 last_goal_progress_agent_step=last_goal_progress_agent_step,
+                goal_progress_observable=goal_progress_observable,
                 state=self._budgets.get(key),
             )
             self._budgets[key] = state
@@ -738,6 +741,7 @@ class Context:
         if cause not in {
             TurnCauseCode.FRAMEWORK_RETRY,
             TurnCauseCode.VALIDATION_REPAIR,
+            TurnCauseCode.ACTION_BUDGET_REPAIR,
         }:
             raise ValueError("only implemented scheduler causes may be scheduled")
         if evidence_hash is not None and not evidence_hash.startswith("sha256:"):
@@ -1270,6 +1274,25 @@ class Context:
 
     def get_context_reduction_receipts(self) -> tuple[ReductionReceipt, ...]:
         return tuple(self._context_reduction_receipts.values())
+
+    def get_pending_cache_break_reasons(self) -> tuple[CacheBreakReason, ...]:
+        """Return a deterministic snapshot of unconsumed cache invalidations."""
+        return tuple(
+            sorted(self._pending_cache_break_reasons, key=lambda item: item.value)
+        )
+
+    def acknowledge_cache_plan_attempt(
+        self,
+        *,
+        cache_epoch: int,
+        break_reasons: tuple[CacheBreakReason, ...],
+    ) -> bool:
+        """Consume invalidations only for the lifecycle epoch actually attempted."""
+        if cache_epoch != self._context_lifecycle_state.checkpoint_revision:
+            return False
+        resolved = {CacheBreakReason(reason) for reason in break_reasons}
+        self._pending_cache_break_reasons.difference_update(resolved)
+        return True
 
     def advance_context_lifecycle(
         self,
@@ -2536,6 +2559,7 @@ class Context:
         policy: ElasticStepBudgetPolicy,
         observed_goal_progress_count: int,
         last_goal_progress_agent_step: int | None,
+        goal_progress_observable: bool | None = None,
         task_id: str | None = None,
     ) -> ElasticStepBudgetDecision:
         resolved_task_id = task_id or self.task_id
@@ -2550,6 +2574,7 @@ class Context:
             current_step=self.get_agent_step(agent_id, resolved_task_id),
             observed_goal_progress_count=observed_goal_progress_count,
             last_goal_progress_agent_step=last_goal_progress_agent_step,
+            goal_progress_observable=goal_progress_observable,
         )
 
     def open_step(
@@ -2888,6 +2913,9 @@ class Context:
                 "branch_id": self._context_lifecycle_state.branch_id,
                 "checkpoint_revision": self._context_lifecycle_state.checkpoint_revision,
             },
+            "pending_cache_break_reasons": [
+                reason.value for reason in self.get_pending_cache_break_reasons()
+            ],
             "progressive_state": self.export_progressive_state(),
             # Timestamp for checkpoint creation
             "checkpoint_created_at": datetime.now().isoformat(),
@@ -2917,7 +2945,7 @@ class Context:
 
         return CheckpointMetadata(**metadata_dict)
 
-    async def snapshot(self):
+    async def snapshot(self, *, cache_boundary: bool = True):
         """Save current context state to a checkpoint.
 
         This method serializes the current context state into a Checkpoint object,
@@ -2926,10 +2954,11 @@ class Context:
         """
         from aworld.checkpoint import create_checkpoint, VersionUtils
 
-        # A checkpoint is a logical context rewrite/cache boundary even when
-        # the repository later reports a persistence failure. Record that
-        # transition before freezing the values so the revision is restorable.
-        self.advance_context_lifecycle(LifecycleAction.CHECKPOINT)
+        # A checkpoint that follows a logical rewrite is a cache boundary even
+        # when persistence later fails. Recovery-only snapshots can explicitly
+        # preserve the current epoch when model-visible Context did not change.
+        if cache_boundary:
+            self.advance_context_lifecycle(LifecycleAction.CHECKPOINT)
 
         # Extract checkpoint values
         checkpoint_values = self._create_checkpoint_values()

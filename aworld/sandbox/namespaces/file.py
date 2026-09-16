@@ -24,9 +24,19 @@ class FileNamespace(ToolNamespace):
         head: Optional[int] = None,
         tail: Optional[int] = None,
         output: str = "text",
+        offset: int = 0,
+        limit: Optional[int] = None,
     ) -> Dict[str, Any]:
-        """Read file. output: 'text' or 'base64'. Returns JSON with type and content/base64."""
-        return await self._call_tool("read_file", path=path, head=head, tail=tail, output=output)
+        """Read a file; binary output supports bounded offset/limit paging."""
+        params: Dict[str, Any] = {
+            "path": path,
+            "head": head,
+            "tail": tail,
+            "output": output,
+        }
+        if offset != 0 or limit is not None:
+            params.update(offset=offset, limit=limit)
+        return await self._call_tool("read_file", **params)
 
     async def write_file(self, path: str, content: str) -> Dict[str, Any]:
         """Write content to file."""
@@ -64,13 +74,29 @@ class FileNamespace(ToolNamespace):
         """Copy file from source_path to target_path (target must be in allowed directories)."""
         return await self._call_tool("upload_file", source_path=source_path, target_path=target_path)
 
-    async def download_file(self, path: str) -> Dict[str, Any]:
-        """Download file; returns JSON with base64, mimeType, fileName."""
-        return await self._call_tool("download_file", path=path)
+    async def download_file(
+        self,
+        path: str,
+        offset: int = 0,
+        limit: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        """Download one bounded base64 chunk with continuation metadata."""
+        params: Dict[str, Any] = {"path": path}
+        if offset != 0 or limit is not None:
+            params.update(offset=offset, limit=limit)
+        return await self._call_tool("download_file", **params)
 
-    async def read_media_file(self, path: str) -> Dict[str, Any]:
-        """Read image or audio file as base64. Returns JSON with type (image/audio/blob), data (base64), mimeType."""
-        return await self._call_tool("read_media_file", path=path)
+    async def read_media_file(
+        self,
+        path: str,
+        offset: int = 0,
+        limit: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        """Read one bounded media chunk as base64."""
+        params: Dict[str, Any] = {"path": path}
+        if offset != 0 or limit is not None:
+            params.update(offset=offset, limit=limit)
+        return await self._call_tool("read_media_file", **params)
 
     async def parse_file(
         self,

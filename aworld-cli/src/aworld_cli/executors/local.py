@@ -30,7 +30,9 @@ from aworld.core.task import Task, TaskResponse
 from aworld.logs.util import logger
 from aworld.memory.main import _default_file_memory_store
 from aworld.runner import Runners
+from aworld.utils.runtime_state import runtime_state_path
 from aworld_cli.core.plugin_manager import PluginManager
+from aworld_cli.core.runtime_completion import configure_runtime_completion
 from aworld_cli.core.skill_activation_resolver import (
     SkillActivationResolver,
     SkillResolverRequest,
@@ -82,7 +84,10 @@ class LocalAgentExecutor(BaseAgentExecutor):
     TASK_PROGRESS_HOOK_MIN_INTERVAL_SECONDS = 2.0
 
     def _context_entry_point(self) -> str:
-        return "resume" if getattr(self, "_aworld_cli_resumed", False) else "cli"
+        resumed = getattr(self, "_aworld_cli_resumed", False) or getattr(
+            self, "_context_checkpoint_restored_for_task", False
+        )
+        return "resume" if resumed else "cli"
 
     def _attest_context_entry_point(self, context: ApplicationContext) -> None:
         context._aworld_context_entrypoint_claim = _issue_context_entrypoint_claim(
@@ -127,6 +132,8 @@ class LocalAgentExecutor(BaseAgentExecutor):
             console=self.console
         )
         self._last_task_progress_hook_at: float | None = None
+        self._resume_context_checkpoint_once = False
+        self._context_checkpoint_restored_for_task = False
 
     def _record_cli_session_transcript_turn(
         self,
@@ -498,6 +505,10 @@ class LocalAgentExecutor(BaseAgentExecutor):
         return should_pause
 
     async def _handle_task_interrupted(self, task: Task, answer: str = "") -> str:
+        # Preserve a typed executor-owned signal.  Returning a partial string is
+        # useful for an interactive session, but it must never be reclassified
+        # as a successful direct/non-interactive task by a higher layer.
+        self.last_task_interrupted = True
         await self._run_plugin_task_hook(
             "task_interrupted",
             {
@@ -689,7 +700,9 @@ class LocalAgentExecutor(BaseAgentExecutor):
         )
         requested = self._extract_requested_skill_names(task_input)
         task_text = str(getattr(task_input, "task_content", "") or "")
-        disabled_skill_names = SkillStateManager().disabled_skill_names()
+        skill_state = SkillStateManager()
+        disabled_skill_names = skill_state.disabled_skill_names()
+        enabled_skill_names = skill_state.enabled_skill_names()
 
         for agent in self._iter_swarm_agents():
             agent_name = self._agent_name_for_resolution(agent)
@@ -712,6 +725,7 @@ class LocalAgentExecutor(BaseAgentExecutor):
                 agent_name=agent_name,
                 task_text=task_text,
                 requested_skill_names=requested,
+                enabled_skill_names=enabled_skill_names,
                 disabled_skill_names=disabled_skill_names,
                 compatibility_sources=tuple(
                     str(item)
@@ -821,11 +835,20 @@ class LocalAgentExecutor(BaseAgentExecutor):
         # 4. Build context
         async def build_context(_task_input: TaskInput, _swarm: Swarm, _workspace) -> ApplicationContext:
             """Build application context from task input and swarm."""
-            _context = await ApplicationContext.from_input(
-                _task_input, 
-                workspace=_workspace,
-                context_config=self.context_config
+            resume_checkpoint = bool(
+                getattr(self, "_resume_context_checkpoint_once", False)
             )
+            self._context_checkpoint_restored_for_task = False
+            context_kwargs = {
+                "workspace": _workspace,
+                "context_config": self.context_config,
+            }
+            if resume_checkpoint:
+                context_kwargs["use_checkpoint"] = True
+            _context = await ApplicationContext.from_input(_task_input, **context_kwargs)
+            if resume_checkpoint:
+                self._resume_context_checkpoint_once = False
+                self._context_checkpoint_restored_for_task = True
             _context.get_config().debug_mode=True
             await _context.init_swarm_state(_swarm)
             return _context
@@ -870,6 +893,16 @@ class LocalAgentExecutor(BaseAgentExecutor):
         context = hook_kwargs.get('context', context)
         task_input = hook_kwargs.get('task_input', task_input)
         image_urls = hook_kwargs.get('image_urls', image_urls) or []
+
+        # Direct benchmark callers may opt in to a high-confidence filesystem
+        # completion contract.  This validates declared outputs without changing
+        # the actual CLI/sandbox working directory. Run this after input hooks so
+        # a caller-installed contract always takes precedence.
+        configure_runtime_completion(
+            context,
+            request=str(original_task_content or ""),
+            workspace_path=context.workspace_path,
+        )
 
         # 5. Build observation with images if provided
         # Use task_input.task_content (which may have been updated by FileParseHook) instead of old task_content
@@ -947,6 +980,7 @@ class LocalAgentExecutor(BaseAgentExecutor):
                 from .._globals import console as global_console
                 self.console = global_console
             self.last_task_response = None
+            self.last_task_interrupted = False
 
             # 2. Parse message - handle both string and tuple format
             if isinstance(message, tuple):
@@ -1938,8 +1972,12 @@ class LocalAgentExecutor(BaseAgentExecutor):
         if WorkSpace is None:
             return None
         
-        # Create workspace in current directory under .aworld/workspaces
-        workspace_base = Path.cwd() / ".aworld" / "workspaces"
+        # Keep framework workspace state separate from task artifacts when the
+        # caller supplied an isolated control root.
+        workspace_base = runtime_state_path(
+            "workspaces",
+            default=Path.cwd() / ".aworld" / "workspaces",
+        )
         os.environ['WORKSPACE_PATH'] = str(workspace_base)
         workspace_base.mkdir(parents=True, exist_ok=True)
         

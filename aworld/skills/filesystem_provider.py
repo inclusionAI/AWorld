@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
@@ -79,6 +80,26 @@ class FilesystemSkillProvider(SkillProvider):
                     "install_options": aworld_meta["install"],
                 }
 
+            declared_metadata = front_matter.get("metadata")
+            metadata = (
+                dict(declared_metadata)
+                if isinstance(declared_metadata, Mapping)
+                else {}
+            )
+            metadata.setdefault("type", str(front_matter.get("type", "")))
+            metadata.setdefault(
+                "active",
+                str(front_matter.get("active", "False")).lower() == "true",
+            )
+            metadata.setdefault("tool_list", dict(tool_list))
+            metadata.setdefault(
+                "self_evolve", extract_self_evolve_metadata(front_matter)
+            )
+            if "default_enabled" in front_matter:
+                metadata.setdefault(
+                    "default_enabled", front_matter["default_enabled"]
+                )
+
             descriptors.append(
                 SkillDescriptor(
                     skill_id=skill_id,
@@ -91,12 +112,7 @@ class FilesystemSkillProvider(SkillProvider):
                     visibility="public",
                     asset_root=str(skill_file.parent.resolve()),
                     skill_file=str(skill_file),
-                    metadata={
-                        "type": str(front_matter.get("type", "")),
-                        "active": str(front_matter.get("active", "False")).lower() == "true",
-                        "tool_list": dict(tool_list),
-                        "self_evolve": extract_self_evolve_metadata(front_matter),
-                    },
+                    metadata=metadata,
                     execution_assets=build_execution_assets_config(
                         skill_file.parent,
                         declared_assets=front_matter.get("execution_assets"),

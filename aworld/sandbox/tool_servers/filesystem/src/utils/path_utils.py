@@ -2,6 +2,7 @@
 
 from pathlib import Path
 import os
+import stat
 
 
 def normalize_path(p: str) -> str:
@@ -63,7 +64,7 @@ async def validate_path(path: str, allowed_dirs: list[str]) -> str:
     try:
         real_path = Path(normalized).resolve()
         if not is_path_allowed(str(real_path), allowed_dirs):
-            raise ValueError(f"Access denied: symlink target outside allowed directories")
+            raise ValueError("Access denied: symlink target outside allowed directories")
         return str(real_path)
     except OSError:
         # File does not exist yet, check its parent directory instead
@@ -71,7 +72,7 @@ async def validate_path(path: str, allowed_dirs: list[str]) -> str:
         try:
             real_parent = parent.resolve()
             if not is_path_allowed(str(real_parent), allowed_dirs):
-                raise ValueError(f"Access denied: parent directory outside allowed directories")
+                raise ValueError("Access denied: parent directory outside allowed directories")
             return normalized
         except OSError:
             raise ValueError(f"Parent directory does not exist: {parent}")
@@ -90,3 +91,26 @@ def resolve_and_require_file(path: str) -> str:
         raise ValueError(f"Path is not a file: {path}")
     return str(real)
 
+
+def require_regular_file(path: str) -> str:
+    """Require a resolved path to be a regular file, rejecting FIFOs/devices."""
+
+    try:
+        mode = os.stat(path).st_mode
+    except OSError as exc:
+        raise ValueError(f"Path does not exist or cannot be read: {path}") from exc
+    if not stat.S_ISREG(mode):
+        raise ValueError(f"Path is not a regular file: {path}")
+    return path
+
+
+def require_directory(path: str) -> str:
+    """Require a resolved path to be a directory."""
+
+    try:
+        mode = os.stat(path).st_mode
+    except OSError as exc:
+        raise ValueError(f"Path does not exist or cannot be read: {path}") from exc
+    if not stat.S_ISDIR(mode):
+        raise ValueError(f"Path is not a directory: {path}")
+    return path

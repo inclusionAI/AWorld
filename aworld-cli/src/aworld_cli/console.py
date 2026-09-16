@@ -2208,9 +2208,8 @@ class AWorldCLI:
             return None
 
         alias_token = normalized_input.split(maxsplit=1)[0].lower()
-        disabled = set(SkillStateManager().disabled_skill_names())
-        if not disabled:
-            return None
+        state_manager = SkillStateManager()
+        skill_configs: dict[str, dict[str, Any]] = {}
 
         try:
             resolved = self._resolve_visible_skills(
@@ -2218,20 +2217,23 @@ class AWorldCLI:
                 executor_instance=executor_instance,
                 apply_disabled_filter=False,
             )
-            skill_names = list(getattr(resolved, "skill_configs", {}))
+            skill_configs = dict(getattr(resolved, "skill_configs", {}))
         except Exception:
-            skill_names = []
+            pass
 
-        if not skill_names:
+        if not skill_configs:
             try:
                 runtime_view = build_runtime_skill_registry_view()
-                skill_names = list(runtime_view.get_all_skills())
+                skill_configs = runtime_view.get_all_skills()
             except Exception:
                 return None
 
-        for skill_name in skill_names:
+        for skill_name, skill_data in skill_configs.items():
             normalized_skill = str(skill_name).strip()
-            if not normalized_skill or normalized_skill.lower() not in disabled:
+            default_enabled = skill_data.get("default_enabled", True) is not False
+            if not normalized_skill or state_manager.is_enabled(
+                normalized_skill, default_enabled=default_enabled
+            ):
                 continue
             if f"/{normalized_skill}".lower() == alias_token:
                 return normalized_skill
@@ -2369,16 +2371,23 @@ class AWorldCLI:
             executor_instance=executor_instance,
         )
 
+        state_manager = SkillStateManager()
         request = SkillResolverRequest(
             plugin_roots=plugin_roots,
             runtime_scope="session",
             agent_name=agent_name,
             requested_skill_names=tuple(self._normalize_skill_names(requested_skill_names)),
-            disabled_skill_names=(
-                SkillStateManager().disabled_skill_names()
+            enabled_skill_names=(
+                state_manager.enabled_skill_names()
                 if apply_disabled_filter
                 else tuple()
             ),
+            disabled_skill_names=(
+                state_manager.disabled_skill_names()
+                if apply_disabled_filter
+                else tuple()
+            ),
+            include_default_disabled=not apply_disabled_filter,
             compatibility_sources=tuple(
                 str(item)
                 for item in resolver_inputs.get("compatibility_sources", [])
@@ -3152,7 +3161,7 @@ class AWorldCLI:
 
         rows = sorted(manageable.skill_configs.items(), key=lambda item: item[0])
         pending = set(self._normalize_skill_names(self._pending_skill_overrides))
-        disabled = set(SkillStateManager().disabled_skill_names())
+        state_manager = SkillStateManager()
         active = set(getattr(resolved, "active_skill_names", ()) or ())
         alias_map = self._generated_skill_alias_map(
             agent_name=agent_name,
@@ -3175,7 +3184,10 @@ class AWorldCLI:
             address = skill_data.get("skill_path", "") or "—"
             if skill_name in pending:
                 status = "pending"
-            elif skill_name.lower() in disabled:
+            elif not state_manager.is_enabled(
+                skill_name,
+                default_enabled=skill_data.get("default_enabled", True) is not False,
+            ):
                 status = "disabled"
             elif skill_name in active:
                 status = "active"
@@ -3938,7 +3950,8 @@ class AWorldCLI:
                             compression_task = asyncio.create_task(
                                 run_context_optimization(
                                     agent_id=agent_id,
-                                    session_id=session_id
+                                    context=getattr(executor_instance, "context", None),
+                                    session_id=session_id,
                                 )
                             )
 
@@ -3949,6 +3962,25 @@ class AWorldCLI:
                             )
 
                             if ok:
+                                compacted_context = getattr(
+                                    executor_instance, "context", None
+                                )
+                                compacted_state = (
+                                    compacted_context.context_info.get(
+                                        "cli_context_compaction_state"
+                                    )
+                                    if compacted_context is not None
+                                    and hasattr(compacted_context, "context_info")
+                                    else None
+                                )
+                                if (
+                                    isinstance(compacted_state, dict)
+                                    and compacted_state.get(
+                                        "checkpoint_snapshot_state"
+                                    )
+                                    == "captured"
+                                ):
+                                    executor_instance._resume_context_checkpoint_once = True
                                 # If this is first compression (tokens_before == 0), show generation message
                                 if tokens_before == 0:
                                     self.console.print(
