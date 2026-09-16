@@ -385,6 +385,9 @@ def _framework_shared_failure_candidate_id(
 
     if report.get("status") != SelfEvolveRunStatus.REJECTED.value:
         return None
+    release_candidate = _verified_release_framework_failure_candidate_id(report)
+    if release_candidate is not None:
+        return release_candidate
     attribution = report.get("rejection_attribution")
     if not isinstance(attribution, Mapping):
         return None
@@ -435,6 +438,43 @@ def _framework_shared_failure_candidate_id(
             # candidate regression.  The nested fresh negative evidence must
             # veto an evaluator retry of that immutable candidate.
             return None
+    return candidate_id
+
+
+def _verified_release_framework_failure_candidate_id(
+    report: Mapping[str, Any],
+) -> str | None:
+    """Recognize verified candidates that never reached the publication write."""
+
+    post_apply = report.get("post_apply")
+    confidence = report.get("acceptance_confidence")
+    gates = report.get("gate_results")
+    candidate_id = report.get("selected_candidate_id")
+    if not (
+        report.get("status") == SelfEvolveRunStatus.REJECTED.value
+        and isinstance(candidate_id, str) and candidate_id
+        and isinstance(post_apply, Mapping)
+        and post_apply.get("published") is False
+        and post_apply.get("source_target_unchanged") is True
+        and isinstance(confidence, Mapping)
+        and confidence.get("passed") is True
+        and confidence.get("confidence") == "verified"
+        and isinstance(gates, list) and gates
+        and all(isinstance(gate, Mapping) and gate.get("passed") is True for gate in gates)
+        and {"score_improvement", "evidence_quality", "global_regression_benchmark"}
+        <= {gate.get("gate_name") for gate in gates}
+    ):
+        return None
+    metrics = post_apply.get("metrics")
+    if not (
+        isinstance(metrics, Mapping)
+        and metrics.get("failure_class") == "framework"
+        and metrics.get("failure_owner") == "framework"
+        and metrics.get("failure_scope") == "shared_run"
+        and metrics.get("structural_failure_code") == "skill_structural_edit_intent_rebind_failed"
+        and metrics.get("normalization_content_preservation_passed") is True
+    ):
+        return None
     return candidate_id
 
 
@@ -564,6 +604,24 @@ def _discover_framework_evaluator_retry_candidate(
             run_id=source_run_id,
             report=report,
         )
+        if checkpoint is None and _verified_release_framework_failure_candidate_id(report) is not None:
+            # Release failures occur after measurement checkpoint publication.
+            # Reconstruct the pointer only through the normal artifact validator;
+            # the retry still performs fresh replay and evaluation below.
+            try:
+                replay_request = _load_json_mapping(
+                    report_path.parent / "replay" / candidate_id / "request.json"
+                )
+                checkpoint = discover_paired_replay_resume_checkpoint(
+                    store,
+                    run_id=source_run_id,
+                    candidate_id=candidate_id,
+                    verified_candidate_package_fingerprint=replay_request.get(
+                        "verified_candidate_package_fingerprint"
+                    ),
+                )
+            except (OSError, TypeError, ValueError, json.JSONDecodeError):
+                continue
         if (
             checkpoint is None
             or checkpoint.candidate_id != candidate_id

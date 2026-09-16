@@ -7108,6 +7108,35 @@ def test_framework_retry_requires_pure_shared_evaluator_failure() -> None:
     assert _framework_shared_failure_candidate_id(mixed_failure) is None
 
 
+def test_framework_retry_recognizes_unpublished_verified_release() -> None:
+    report = {
+        "status": "rejected",
+        "selected_candidate_id": "verified-candidate",
+        "acceptance_confidence": {"passed": True, "confidence": "verified"},
+        "gate_results": [
+            {"gate_name": name, "passed": True}
+            for name in ("score_improvement", "evidence_quality", "global_regression_benchmark")
+        ],
+        "post_apply": {
+            "published": False,
+            "source_target_unchanged": True,
+            "metrics": {
+                "failure_class": "framework",
+                "failure_owner": "framework",
+                "failure_scope": "shared_run",
+                "structural_failure_code": "skill_structural_edit_intent_rebind_failed",
+                "normalization_content_preservation_passed": True,
+            },
+        },
+    }
+    assert _framework_shared_failure_candidate_id(report) == "verified-candidate"
+    report["gate_results"][0]["passed"] = False
+    assert _framework_shared_failure_candidate_id(report) is None
+    report["gate_results"][0]["passed"] = True
+    report["post_apply"]["source_target_unchanged"] = False
+    assert _framework_shared_failure_candidate_id(report) is None
+
+
 def test_framework_retry_is_superseded_by_completed_fresh_rerun() -> None:
     report = {
         "candidate_source_dispositions": {
