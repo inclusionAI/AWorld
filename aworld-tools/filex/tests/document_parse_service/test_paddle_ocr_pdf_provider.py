@@ -185,7 +185,7 @@ def test_paddle_ocr_preserves_page_element_geometry() -> None:
 
     assert provider._pipeline_kwargs()["use_chart_recognition"] is True
     assert result.document_ir == {
-        "schema_version": "filex-document-ir-v2",
+        "schema_version": "filex-document-ir-v3",
         "coordinate_system": "pixel_top_left_xyxy",
         "pages": [
             {
@@ -195,17 +195,97 @@ def test_paddle_ocr_preserves_page_element_geometry() -> None:
                 "elements": [
                     {
                         "id": "7",
-                        "type": "title",
+                        "type": "paragraph_title",
                         "bbox": [10.0, 20.0, 300.0, 80.0],
                         "text": "Heading",
                         "reading_order": 1,
                         "group_id": 7,
+                        "source": "document_parsing",
                     }
                 ],
                 "spans": [],
             }
         ],
     }
+
+
+def test_paddle_ocr_document_ir_prefers_unmerged_layout_detections() -> None:
+    module = _load_provider_module()
+    payload = {
+        "page_index": 0,
+        "width": 800,
+        "height": 600,
+        "layout_det_res": {
+            "boxes": [
+                {"label": "image", "score": 0.91, "coordinate": [700, 20, 730, 50]},
+                {"label": "image", "score": 0.89, "coordinate": [700, 60, 730, 90]},
+                {"label": "chart", "score": 0.97, "coordinate": [20, 20, 650, 500]},
+            ]
+        },
+        "parsing_res_list": [
+            {
+                "block_label": "aside_text",
+                "block_content": "merged icons",
+                "block_bbox": [695, 15, 735, 100],
+                "block_id": 1,
+                "block_order": 2,
+            },
+            {
+                "block_label": "chart",
+                "block_content": "chart text",
+                "block_bbox": [20, 20, 650, 500],
+                "block_id": 2,
+                "block_order": 1,
+            },
+        ],
+    }
+
+    document_ir = module.PaddleOcrPdfProvider._build_document_ir([payload])
+
+    elements = document_ir["pages"][0]["elements"]
+    assert document_ir["schema_version"] == "filex-document-ir-v3"
+    assert [element["type"] for element in elements[:3]] == ["image", "image", "chart"]
+    assert elements[0]["text"] == ""
+    assert elements[1]["text"] == ""
+    assert elements[2]["text"] == "chart text"
+    assert elements[2]["reading_order"] == 1
+    assert elements[2]["confidence"] == 0.97
+    assert elements[3]["type"] == "aside_text"
+    assert elements[3]["source"] == "document_parsing"
+
+
+def test_document_ir_uses_plain_semantic_text_and_page_context_labels() -> None:
+    module = _load_provider_module()
+    payload = {
+        "page_index": 0,
+        "width": 1000,
+        "height": 1000,
+        "layout_det_res": {
+            "boxes": [
+                {"label": "table", "score": 0.9, "coordinate": [20, 20, 800, 850]},
+                {"label": "number", "score": 0.8, "coordinate": [850, 950, 950, 980]},
+                {"label": "footer_image", "score": 0.7, "coordinate": [20, 900, 120, 980]},
+            ]
+        },
+        "parsing_res_list": [
+            {
+                "block_label": "table",
+                "block_content": "<table border=1><tr><td>Lincoln</td><td>City</td></tr></table>",
+                "block_bbox": [20, 20, 800, 850],
+            },
+            {
+                "block_label": "number",
+                "block_content": "Page 2 of 28",
+                "block_bbox": [850, 950, 950, 980],
+            },
+        ],
+    }
+
+    elements = module.PaddleOcrPdfProvider._build_document_ir([payload])["pages"][0]["elements"]
+
+    assert elements[0]["text"] == "Lincoln City"
+    assert elements[1]["type"] == "footer"
+    assert elements[2]["type"] == "image"
 
 
 def test_text_layer_formatting_recovers_sparse_bold_title() -> None:

@@ -13,7 +13,7 @@ The repository ships two deployment shapes:
 
 Supported inputs include PDF, Markdown/text, Word, PowerPoint, Excel/CSV,
 images, audio, video, HTTP(S) files, and YouTube transcript sources. PDF output
-uses Document IR v2; video output can include timestamped keyframes, OCR
+uses Document IR v3; video output can include timestamped keyframes, OCR
 evidence, and a storyboard. Video evidence is not yet a full semantic video
 understanding model.
 
@@ -261,10 +261,13 @@ Useful model variables are:
 
 ## Evaluation
 
-The latest validated component baseline on the pinned ParseBench 2,553-case
-suite is **52.07% five-dimension equal-weight overall**. Strongest performance
-is content faithfulness (82.88%); the main remaining gap is visual grounding
-(5.30%).
+The pinned ParseBench suite contains 2,553 cases and all five dimensions have
+reached a trusted terminal state. The older 5.30% layout number is retired
+because it mixed 458 legacy contract zeros with 42 current Document IR results;
+it is not a valid score for the current runtime. A fixed 20-case current-layout
+A/B improved from **62.31% to 76.71%** after the Document IR v3 repair (11
+improved, 9 unchanged, 0 regressed). The subsequent clean 500-case layout run
+scored **71.70%**.
 
 | Dimension | Cases | FileX score | Official PaddleOCR-VL-1.6 reference |
 | --- | ---: | ---: | ---: |
@@ -272,13 +275,12 @@ is content faithfulness (82.88%); the main remaining gap is visual grounding
 | Charts | 568 | 56.14% | 54.24% |
 | Content faithfulness | 506 | 82.88% | 82.71% |
 | Semantic formatting | 476 | 48.40% | 54.64% |
-| Visual grounding / layout | 500 | 5.30% | 77.80% |
-| Equal-weight overall | 2,553 | **52.07%** | **67.43%** |
+| Visual grounding / layout | 500 | **71.70%** | 77.80% |
+| Equal-weight overall | 2,553 | **65.35%** | **67.43%** |
 
 Nineteen formatting cases returned `not_scored` and are excluded rather than
-counted as zero. The table combines the newest trusted campaign for each
-dimension, so it is a component baseline rather than a claim that every row was
-produced by one immutable release. See
+counted as zero. The overall row is the equal-weight mean of the five dimension
+means; the case-weighted mean over 2,534 numeric results is 65.44%. See
 [the ParseBench evaluation report](docs/parsebench-evaluation.md) for pinned
 revisions, methodology, limitations, and the optimization roadmap.
 
