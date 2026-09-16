@@ -1051,6 +1051,44 @@ def test_contextual_validation_closes_one_trailing_full_content_fence() -> None:
     assert normalized["content"].endswith("agent-browser snapshot -i\n```\n")
 
 
+def test_contextual_validation_rejects_undeclared_fenced_block_rewrite() -> None:
+    current_content = (
+        "---\nname: demo-skill\ndescription: demo\n---\n\n"
+        "# Demo\n\n## Example\n\n"
+        "```bash\nagent-browser open https://example.com/form\n"
+        "agent-browser snapshot -i\nagent-browser click @e1\n```\n"
+    )
+    request = OptimizerRequest(
+        target=_target(),
+        current_content=current_content,
+        target_fingerprint="sha256:old",
+        trace_packs=(_trace_pack(),),
+        target_package_inventory=("SKILL.md",),
+        max_candidates=1,
+    )
+    output = {
+        "content": (
+            "---\nname: demo-skill\ndescription: demo\n---\n\n"
+            "# Demo\n\n## Example\n\n"
+            "```bash\nagent-browser open <URL>\n"
+            "agent-browser snapshot -i\nagent-browser click <REF>\n```\n"
+            "\n## Verification\n\nCapture direct evidence.\n"
+        ),
+        "rationale": "add a reusable verification workflow",
+    }
+
+    with pytest.raises(CandidateSemanticValidationError) as exc_info:
+        _validate_mutator_output_context(
+            output,
+            request=request,
+            candidate_index=0,
+        )
+
+    assert exc_info.value.code == "skill_fenced_block_deleted"
+    assert exc_info.value.field_path == "code_fences"
+    assert exc_info.value.representation == "full_content"
+
+
 @pytest.mark.asyncio
 async def test_llm_mutator_unwraps_structured_expected_output_envelope() -> None:
     async def mutate(prompt: str) -> dict:
@@ -2890,6 +2928,8 @@ async def test_judged_target_repair_freezes_empty_replay_file_set() -> None:
         assert "Never write your own draft answer" in prompt
         assert "existing canonical artifact path" in prompt
         assert "computed from the final manifest" in prompt
+        assert "For support_or_omit, prefer the lowest-cost repair" in prompt
+        assert "Do not add browsing, extraction, scratch-file persistence" in prompt
         return {
             "content": (
                 "# Demo\n\nVerify each generic claim against bounded artifact evidence.\n"
@@ -2916,6 +2956,24 @@ async def test_judged_target_repair_freezes_empty_replay_file_set() -> None:
                     "A1_groundedness": 2.0,
                     "evidence_incomplete": True,
                     "failed_gates": ["evidence_quality"],
+                    "evidence_repair_constraints": [
+                        {
+                            "constraint_identity_digest": "sha256:" + "a" * 64,
+                            "failure_mode": "unsupported_claim",
+                            "owner": "candidate",
+                            "required_action": "support_or_omit",
+                            "source_layer": "candidate_output",
+                            "subject_kind": "general_claim",
+                        },
+                        {
+                            "constraint_identity_digest": "sha256:" + "b" * 64,
+                            "failure_mode": "missing_source",
+                            "owner": "candidate",
+                            "required_action": "capture_artifact",
+                            "source_layer": "candidate_output",
+                            "subject_kind": "general_claim",
+                        },
+                    ],
                     "repair_candidate_package": {
                         "candidate_id": "candidate-judged",
                         "content": "# Demo\n\nPersist bounded evidence.\n",

@@ -141,6 +141,7 @@ from aworld.self_evolve.cli_orchestration import (
     _default_iteration_budget,
     _framework_shared_failure_candidate_id,
     _has_later_conclusive_negative_measurement,
+    _report_has_fresh_evaluator_rerun_disposition,
     _include_prior_run_cases,
     _parse_candidate_mutation_model_output,
     _trajectory_group_rank_key,
@@ -7105,6 +7106,34 @@ def test_framework_retry_requires_pure_shared_evaluator_failure() -> None:
         {"gate_name": "cost", "passed": False, "details": {}}
     )
     assert _framework_shared_failure_candidate_id(mixed_failure) is None
+
+
+def test_framework_retry_is_superseded_by_completed_fresh_rerun() -> None:
+    report = {
+        "candidate_source_dispositions": {
+            "candidate-1": {
+                "kind": "stored_evidence_rerun",
+                "requires_fresh_evaluation": True,
+                "source_run_id": "old-run",
+            }
+        }
+    }
+
+    assert _report_has_fresh_evaluator_rerun_disposition(
+        report,
+        candidate_id="candidate-1",
+        source_run_id="old-run",
+    )
+    assert not _report_has_fresh_evaluator_rerun_disposition(
+        report,
+        candidate_id="candidate-2",
+        source_run_id="old-run",
+    )
+    assert not _report_has_fresh_evaluator_rerun_disposition(
+        report,
+        candidate_id="candidate-1",
+        source_run_id="different-run",
+    )
 
 
 def test_framework_retry_is_superseded_by_later_negative_measurement(

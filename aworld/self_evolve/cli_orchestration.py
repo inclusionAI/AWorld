@@ -607,11 +607,84 @@ def _discover_framework_evaluator_retry_candidate(
             after_mtime=report_path.stat().st_mtime,
         ):
             continue
+        if _has_later_fresh_evaluator_rerun(
+            store=store,
+            target=target,
+            dataset=dataset,
+            candidate_id=candidate_id,
+            source_run_id=source_run_id,
+            after_mtime=report_path.stat().st_mtime,
+        ):
+            continue
         return _FrameworkEvaluatorRetryCandidate(
             candidate=candidate,
             source_run_id=source_run_id,
         )
     return None
+
+
+def _report_has_fresh_evaluator_rerun_disposition(
+    report: Mapping[str, object],
+    *,
+    candidate_id: str,
+    source_run_id: str,
+) -> bool:
+    dispositions = report.get("candidate_source_dispositions")
+    if not isinstance(dispositions, Mapping):
+        return False
+    disposition = dispositions.get(candidate_id)
+    return bool(
+        isinstance(disposition, Mapping)
+        and disposition.get("kind") == "stored_evidence_rerun"
+        and disposition.get("requires_fresh_evaluation") is True
+        and disposition.get("source_run_id") == source_run_id
+    )
+
+
+def _has_later_fresh_evaluator_rerun(
+    *,
+    store: FilesystemSelfEvolveStore,
+    target: SelfEvolveTarget,
+    dataset: SelfEvolveDataset,
+    candidate_id: str,
+    source_run_id: str,
+    after_mtime: float,
+) -> bool:
+    """Return whether this frozen candidate already received its one fresh rerun."""
+
+    for run_path in store.artifact_root.iterdir():
+        if not run_path.is_dir() or run_path.is_symlink():
+            continue
+        report_path = run_path / "report.json"
+        if (
+            not report_path.is_file()
+            or report_path.is_symlink()
+            or report_path.stat().st_mtime <= after_mtime
+        ):
+            continue
+        try:
+            report = _load_json_mapping(report_path)
+        except (OSError, TypeError, ValueError, json.JSONDecodeError):
+            continue
+        if not (
+            _report_matches_target(report, target.identity)
+            and _report_has_fresh_evaluator_rerun_disposition(
+                report,
+                candidate_id=candidate_id,
+                source_run_id=source_run_id,
+            )
+        ):
+            continue
+        rerun_dataset = _load_stored_campaign_dataset(
+            store=store,
+            source_run_path=run_path,
+        )
+        if rerun_dataset is not None and _dataset_recipe_matches_candidate_source(
+            dataset.recipe,
+            rerun_dataset.recipe,
+        ):
+            return True
+    return False
 
 
 def _default_iteration_budget(

@@ -814,7 +814,10 @@ def _build_mutation_prompt(request: OptimizerRequest, *, candidate_index: int) -
         "Keep reusable examples schema-neutral: use role placeholders such as "
         "<CLAIM>, <ARTIFACT_PATH>, and <OFFSET> instead of copying proper nouns, "
         "resource names, claim text, filenames, URLs, or identifiers from trajectory "
-        "evidence. "
+        "evidence. Preserve every existing non-trivial fenced block verbatim in its "
+        "current section when returning full content. If an existing fenced block "
+        "must change, use patch_intent with an exact replace_section operation so the "
+        "structural edit is explicitly authorized. "
         "Replay files must accompany a reusable target behavior delta, not replace it. "
         "Treat SKILL.md and every candidate-owned file as one atomic release package. "
         "Include every added or changed package file in files. Every concrete replay/... "
@@ -964,7 +967,11 @@ def _focused_non_replay_repair_prompt_instructions(
         "or replay artifacts: no candidate-owned replay runtime is required. "
         "Keep reusable examples schema-neutral with placeholders such as "
         "<CLAIM>, <ARTIFACT_PATH>, and <OFFSET>; never copy proper nouns, "
-        "resource identifiers, or diagnostic text into the skill. "
+        "resource identifiers, or diagnostic text into the skill. Preserve every "
+        "existing non-trivial fenced block verbatim in its current section when "
+        "returning full content. If an existing fenced block must change, use "
+        "patch_intent with an exact replace_section operation so the structural edit "
+        "is explicitly authorized. "
         "Never write your own draft answer or remembered synthesis into a file "
         "and cite it as evidence. Every evidence reference must resolve to an "
         "existing canonical artifact path, and any artifact or entry count must "
@@ -978,6 +985,41 @@ def _focused_non_replay_repair_prompt_instructions(
             "preserve every behavior already verified by either frontier while "
             "satisfying the union of their typed constraints. Do not recreate "
             "omitted sibling source or trade a recovered gate for another. "
+        )
+    validation_feedback = payload.get("validation_feedback", ())
+    focused_feedback = (
+        validation_feedback[0]
+        if isinstance(validation_feedback, list) and validation_feedback
+        else {}
+    )
+    raw_required_behaviors = (
+        focused_feedback.get("required_behaviors")
+        if isinstance(focused_feedback, Mapping)
+        else None
+    )
+    required_behaviors = (
+        {str(item) for item in raw_required_behaviors if isinstance(item, str)}
+        if isinstance(raw_required_behaviors, list)
+        else set()
+    )
+    if "support_or_omit" in required_behaviors:
+        instructions += (
+            "For support_or_omit, prefer the lowest-cost repair at finalization: "
+            "remove, qualify, or narrow the unsupported claim using evidence already "
+            "captured by the successful parent. Do not add browsing, extraction, "
+            "scratch-file persistence, claim-ledger construction, retries, or wider "
+            "source collection merely to retain optional detail. Preserve the parent "
+            "package's passed score, replay, cost, and latency checkpoints, and keep "
+            "requested supported coverage unchanged. "
+        )
+    if "capture_artifact" in required_behaviors:
+        instructions += (
+            "For capture_artifact, first register or retain the direct tool output "
+            "already obtained on the successful parent path through the canonical "
+            "evidence bundle. Do not re-fetch the source or introduce an extra tool "
+            "call when existing non-compacted output can be captured. If no such "
+            "output exists, omit the dependent optional claim instead of broadening "
+            "the workflow. "
         )
     return instructions.rstrip() + "\n"
 
@@ -1283,6 +1325,25 @@ def _focused_repair_prompt_instructions(
         if isinstance(raw_evidence_constraints, list)
         else []
     )
+    raw_required_behaviors = (
+        focused_feedback.get("required_behaviors")
+        if isinstance(focused_feedback, Mapping)
+        else None
+    )
+    compacted_evidence_actions = {
+        str(item)
+        for item in raw_required_behaviors
+        if isinstance(item, str)
+        and item in {
+            "capture_artifact",
+            "repair_artifact_reference",
+            "support_or_omit",
+        }
+    } if isinstance(raw_required_behaviors, list) else set()
+    required_evidence_actions = compacted_evidence_actions | {
+        str(item.get("required_action") or "")
+        for item in candidate_evidence_constraints
+    }
     if candidate_evidence_constraints:
         instructions += (
             "This repair has candidate-owned typed evidence_repair_constraints. "
@@ -1292,18 +1353,33 @@ def _focused_repair_prompt_instructions(
             "identity hashes, and do not reinterpret evaluator prose as an additional "
             "constraint. "
         )
-        required_evidence_actions = {
-            str(item.get("required_action") or "")
-            for item in candidate_evidence_constraints
-        }
-        if "repair_artifact_reference" in required_evidence_actions:
-            instructions += (
-                "For repair_artifact_reference, make the reusable target require "
-                "that every file presented as final-answer evidence resolves to a "
-                "valid canonical manifest or bundle entry. A file merely existing "
-                "in the artifact directory is insufficient: register it as a "
-                "bounded evidence source or omit it from the final evidence ledger. "
-            )
+    if "repair_artifact_reference" in required_evidence_actions:
+        instructions += (
+            "For repair_artifact_reference, make the reusable target require "
+            "that every file presented as final-answer evidence resolves to a "
+            "valid canonical manifest or bundle entry. A file merely existing "
+            "in the artifact directory is insufficient: register it as a "
+            "bounded evidence source or omit it from the final evidence ledger. "
+        )
+    if "support_or_omit" in required_evidence_actions:
+        instructions += (
+            "For support_or_omit, prefer the lowest-cost repair at finalization: "
+            "remove, qualify, or narrow the unsupported claim using evidence already "
+            "captured by the successful parent. Do not add browsing, extraction, "
+            "scratch-file persistence, claim-ledger construction, retries, or wider "
+            "source collection merely to retain optional detail. Preserve the parent "
+            "package's passed score, replay, cost, and latency checkpoints, and keep "
+            "requested supported coverage unchanged. "
+        )
+    if "capture_artifact" in required_evidence_actions:
+        instructions += (
+            "For capture_artifact, first register or retain the direct tool output "
+            "already obtained on the successful parent path through the canonical "
+            "evidence bundle. Do not re-fetch the source or introduce an extra tool "
+            "call when existing non-compacted output can be captured. If no such "
+            "output exists, omit the dependent optional claim instead of broadening "
+            "the workflow. "
+        )
     repair_support = payload.get("repair_support")
     if isinstance(repair_support, Mapping):
         instructions += (
@@ -1719,7 +1795,10 @@ def _focused_repair_prompt_instructions(
         "starts with the file's first byte: never place a Markdown filename heading "
         "such as '# replay/capability.json' inside JSON or source file content. "
         "Every Markdown fenced block in content or patch_intent must be balanced inside the "
-        "same field. Do not duplicate or partially splice an existing section. Return the "
+        "same field. Preserve every existing non-trivial fenced block verbatim in its "
+        "current section when returning full content; use an exact patch_intent "
+        "replace_section operation to authorize any necessary change. Do not duplicate "
+        "or partially splice an existing section. Return the "
         "value of expected_output as exactly one JSON object without a "
         "wrapper. Use at most one of content or patch_intent; both may be omitted "
         "when candidate-owned files implement the reusable behavior delta.\n"
@@ -1761,11 +1840,12 @@ def _validate_mutator_output_context(
             candidate_index=candidate_index,
         )
         if request.target.target_type == "skill":
+            base_content = _focused_repair_patch_base(
+                request,
+                candidate_index=candidate_index,
+            )
             base_structure = validate_skill_markdown_structure(
-                _focused_repair_patch_base(
-                    request,
-                    candidate_index=candidate_index,
-                )
+                base_content
             )
             structure = validate_skill_markdown_structure(content)
             if base_structure.passed and not structure.passed:
@@ -1785,6 +1865,45 @@ def _validate_mutator_output_context(
                             structure.contract_fingerprint
                         ),
                         **dict(structure.details),
+                    },
+                )
+            structural_edit_intent = (
+                _focused_parent_structural_edit_intent(
+                    request,
+                    candidate_index=candidate_index,
+                )
+                if _focused_source_repair_parent_content_required(
+                    request,
+                    candidate_index=candidate_index,
+                )
+                else _candidate_structural_edit_intent(
+                    output,
+                    base_content=base_content,
+                    candidate_content=content,
+                )
+            )
+            release_structure = validate_skill_markdown_structure(
+                content,
+                original_content=request.current_content,
+                edit_intent=structural_edit_intent,
+            )
+            if base_structure.passed and not release_structure.passed:
+                raise CandidateSemanticValidationError(
+                    release_structure.code,
+                    release_structure.reason,
+                    field_path=release_structure.field_path,
+                    representation=(
+                        _candidate_output_representation(output).value
+                    ),
+                    repairable=True,
+                    allowed_improvement_signal_ids=(
+                        exposed_improvement_signal_ids(request)
+                    ),
+                    details={
+                        "contract_fingerprint": (
+                            release_structure.contract_fingerprint
+                        ),
+                        **dict(release_structure.details),
                     },
                 )
         declared_addressed_improvement_signal_ids(request, output)
