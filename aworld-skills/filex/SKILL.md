@@ -37,10 +37,43 @@ python3 /skills/filex/scripts/filex.py parse \
   --artifacts-dir /logs/artifacts
 ```
 
-This atomically writes `document.md`, the original FileX Document IR as
-`layout.json`, and `result.json` with source/output hashes plus the unmodified
-FileX response. This is a generic FileX artifact contract; benchmark-specific
-normalization and scoring remain the dataset verifier's responsibility.
+The default `--layout-format document-ir` writes `document.md`, FileX Document IR
+as `layout.json`, and a version 1 `result.json` containing source/output hashes
+and the unmodified FileX response.
+
+When the task requests `document.md` and a public ParseOutput `layout.json`
+containing `layout_pages`, export that format explicitly:
+
+```bash
+python3 /skills/filex/scripts/filex.py parse \
+  --input /workspace/input/report.pdf \
+  --no-cache \
+  --layout-format parse-output \
+  --artifacts-dir /logs/artifacts
+```
+
+This preserves the generated Markdown exactly, exports actual element boxes as
+pixel `x`, `y`, `w`, `h` coordinates with Canonical17 labels, and preserves source
+page numbers and reading order. Tables retain their Markdown/HTML content. The
+original Document IR is separately preserved byte for byte as `document-ir.json`.
+A version 2 `result.json` records the layout format, source hash, all three output
+hashes, and the unmodified FileX response. The task's requested `document.md` and
+`layout.json` are the submission artifacts; the other files retain provenance.
+
+Use the task's source path, selected pages, artifact paths, and output format.
+For a selected PDF page, include `--pages` with the original one-based page
+number. Read only the task's supplied material; evaluation and private reference
+data stay with the task's verifier. If the parser cannot supply real page
+dimensions, boxes, or a supported label, export reports a clear error. Actual
+empty page/item lists are preserved; text-layer spans without complete boxes
+remain in the original Document IR.
+
+Operators can set `FILEX_LAYOUT_FORMAT=parse-output` as the default; an explicit
+`--layout-format` takes precedence. The wheel supplies the format converter.
+`FILEX_PYTHON` selects the Python environment containing that FileX wheel when it
+differs from the wrapper's Python; by default the wrapper uses its own Python.
+These controls select an output representation and do not select a model or run
+evaluation.
 
 ## Select a provider
 

@@ -9,6 +9,7 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 import tempfile
 from pathlib import Path
 from typing import Any
@@ -43,6 +44,12 @@ def _parser() -> argparse.ArgumentParser:
             "Optional directory for a self-verifying FileX artifact bundle. "
             "Must be inside FILEX_ARTIFACTS_ROOT (default: /logs/artifacts)."
         ),
+    )
+    parse.add_argument(
+        "--layout-format",
+        choices=("document-ir", "parse-output"),
+        default=os.environ.get("FILEX_LAYOUT_FORMAT", "document-ir"),
+        help="Artifact layout format (default: FILEX_LAYOUT_FORMAT or document-ir)",
     )
     parse.add_argument(
         "--file-type", help="Explicit source type; otherwise infer from the file"
@@ -139,8 +146,23 @@ def _sha256(content: bytes) -> str:
     return "sha256:" + hashlib.sha256(content).hexdigest()
 
 
+def _unique_json_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    value: dict[str, Any] = {}
+    for key, item in pairs:
+        if key in value:
+            raise ValueError("duplicate Document IR JSON key")
+        value[key] = item
+    return value
+
+
+def _reject_json_constant(_value: str) -> None:
+    raise ValueError("nonfinite Document IR JSON number")
+
+
 def _atomic_write(path: Path, content: bytes) -> None:
-    descriptor, temporary_name = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+    descriptor, temporary_name = tempfile.mkstemp(
+        prefix=f".{path.name}.", dir=path.parent
+    )
     temporary = Path(temporary_name)
     try:
         with os.fdopen(descriptor, "wb") as destination:
@@ -159,19 +181,25 @@ def _export_artifact_bundle(
     markdown: Path,
     payload: dict[str, Any],
     workspace: Path,
+    layout_format: str = "document-ir",
 ) -> dict[str, Any]:
-    root = Path(
-        os.environ.get("FILEX_ARTIFACTS_ROOT", "/logs/artifacts")
-    ).expanduser().resolve()
+    root = (
+        Path(os.environ.get("FILEX_ARTIFACTS_ROOT", "/logs/artifacts"))
+        .expanduser()
+        .resolve()
+    )
     destination = Path(artifacts_dir).expanduser().resolve()
     try:
         destination.relative_to(root)
     except ValueError as exc:
         raise ValueError(
-            f"Artifact directory must be inside FILEX_ARTIFACTS_ROOT {root}: {destination}"
+            "Artifact directory must be inside FILEX_ARTIFACTS_ROOT "
+            f"{root}: {destination}"
         ) from exc
     if destination.exists() and (destination.is_symlink() or not destination.is_dir()):
-        raise ValueError(f"Artifact destination is not a regular directory: {destination}")
+        raise ValueError(
+            f"Artifact destination is not a regular directory: {destination}"
+        )
     destination.mkdir(parents=True, exist_ok=True)
 
     document_ir = _workspace_artifact_path(
@@ -179,15 +207,33 @@ def _export_artifact_bundle(
     )
     source_bytes = source.read_bytes()
     markdown_bytes = markdown.read_bytes()
-    layout_bytes = document_ir.read_bytes()
+    original_ir_bytes = document_ir.read_bytes()
     try:
-        layout = json.loads(layout_bytes)
-    except (UnicodeError, json.JSONDecodeError) as exc:
+        layout = json.loads(
+            original_ir_bytes,
+            object_pairs_hook=_unique_json_object,
+            parse_constant=_reject_json_constant,
+        )
+    except (UnicodeError, ValueError) as exc:
         raise ValueError("FileX Document IR is not valid JSON") from exc
     if not isinstance(layout, dict):
         raise TypeError("FileX Document IR must be a JSON object")
+    if layout_format == "parse-output":
+        layout = _export_parse_output(
+            document_ir=layout,
+            markdown=markdown_bytes.decode("utf-8"),
+            example_id=str(payload.get("task_id") or source.stem),
+        )
+    elif layout_format != "document-ir":
+        raise ValueError("layout format must be document-ir or parse-output")
     layout_bytes = (
-        json.dumps(layout, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        json.dumps(
+            layout,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        )
         + "\n"
     ).encode("utf-8")
 
@@ -195,7 +241,9 @@ def _export_artifact_bundle(
     layout_output = destination / "layout.json"
     result_output = destination / "result.json"
     result = {
-        "schema_version": "filex.skill.parse-result/v1",
+        "schema_version": "filex.skill.parse-result/v1"
+        if layout_format == "document-ir"
+        else "filex.skill.parse-result/v2",
         "status": "succeeded",
         "source": {
             "path": str(source),
@@ -216,13 +264,67 @@ def _export_artifact_bundle(
         },
         "filex": payload,
     }
+    if layout_format == "parse-output":
+        raw_ir_output = destination / "document-ir.json"
+        result["layout_format"] = layout_format
+        result["artifacts"]["document_ir"] = {
+            "path": str(raw_ir_output),
+            "size": len(original_ir_bytes),
+            "sha256": _sha256(original_ir_bytes),
+        }
+        _atomic_write(raw_ir_output, original_ir_bytes)
     _atomic_write(document_output, markdown_bytes)
     _atomic_write(layout_output, layout_bytes)
     _atomic_write(
         result_output,
-        (json.dumps(result, ensure_ascii=False, sort_keys=True, separators=(",", ":")) + "\n").encode("utf-8"),
+        (
+            json.dumps(
+                result, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+            )
+            + "\n"
+        ).encode("utf-8"),
     )
-    return {"artifacts_dir": str(destination), "artifact_result": str(result_output)}
+    return {
+        "artifacts_dir": str(destination),
+        "artifact_result": str(result_output),
+        "layout_format": layout_format,
+    }
+
+
+def _export_parse_output(
+    *, document_ir: dict[str, Any], markdown: str, example_id: str
+) -> dict[str, Any]:
+    """Call the wheel's converter using a snapshot, without exposing file paths."""
+
+    executable = os.environ.get("FILEX_PYTHON") or sys.executable
+    request = {
+        "document_ir": document_ir,
+        "markdown": markdown,
+        "example_id": example_id,
+    }
+    try:
+        completed = subprocess.run(
+            [executable, "-m", "document_parse_service.parse_output_export"],
+            input=json.dumps(request, ensure_ascii=False, allow_nan=False),
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise ValueError(
+            "Could not run FileX ParseOutput exporter with FILEX_PYTHON"
+        ) from exc
+    if completed.returncode:
+        detail = completed.stderr.strip()
+        raise ValueError(
+            "FileX ParseOutput export failed; FILEX_PYTHON must select a Python "
+            "environment with the current aworld-filex wheel installed. " + detail
+        )
+    result = json.loads(completed.stdout)
+    if not isinstance(result, dict) or result.get("task_type") != "parse":
+        raise ValueError("FileX ParseOutput exporter returned invalid output")
+    return result
 
 
 def _run(command: list[str]) -> tuple[int, dict[str, Any]]:
@@ -250,6 +352,11 @@ def _run(command: list[str]) -> tuple[int, dict[str, Any]]:
 
 
 def _parse(args: argparse.Namespace, executable: str, workspace: Path) -> int:
+    if args.layout_format not in {"document-ir", "parse-output"}:
+        return _fail(
+            "FILEX_LAYOUT_FORMAT must be document-ir or parse-output",
+            error_type="InputError",
+        )
     if args.provider and args.env_file:
         return _fail(
             "Use --provider without --env-file, or put filex_parse_provider "
@@ -322,6 +429,7 @@ def _parse(args: argparse.Namespace, executable: str, workspace: Path) -> int:
     if return_code or args.sync_mode == "async":
         _emit(payload)
         return return_code
+    original_response = dict(payload)
     try:
         result = _result_path(payload, workspace)
         if args.output:
@@ -342,8 +450,9 @@ def _parse(args: argparse.Namespace, executable: str, workspace: Path) -> int:
                     artifacts_dir=args.artifacts_dir,
                     source=source_path,
                     markdown=output,
-                    payload=payload,
+                    payload=original_response,
                     workspace=workspace,
+                    layout_format=args.layout_format,
                 )
             )
         except (OSError, TypeError, ValueError) as exc:
