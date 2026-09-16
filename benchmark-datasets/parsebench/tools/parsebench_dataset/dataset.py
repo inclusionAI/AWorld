@@ -78,8 +78,8 @@ from .package_contract import (
 )
 
 DEFAULT_DATASET_ID = "parsebench-2805a1d9"
-DEFAULT_SERVICE_NAME = "aworld-filex-parsebench"
-DEFAULT_RUNTIME_IMAGE = "aworld-filex-parsebench:local"
+DEFAULT_SERVICE_NAME = "benchmark-catalog"
+DEFAULT_RUNTIME_IMAGE = PINNED_PARSEBENCH_RUNTIME_IMAGE
 
 _ZIP_TIMESTAMP = (1980, 1, 1, 0, 0, 0)
 _SHA256_PATTERN = re.compile(r"^sha256:[0-9a-f]{64}$")
@@ -961,10 +961,21 @@ PINNED_PARSEBENCH_CONTRACT = _VerifierContract()
     return {
         "__init__.py": b'"""Dataset-owned ParseBench verifier runtime."""\n',
         "contracts.py": compact_contracts,
-        "artifacts.py": (package_root / "artifacts.py").read_bytes(),
         "scoring.py": (package_root / "scoring.py").read_bytes(),
         "verifier.py": (package_root / "verifier.py").read_bytes(),
     }
+
+
+def _scorer_build_files() -> dict[str, bytes]:
+    root = Path(__file__).resolve().parents[2] / "resources/scorer"
+    names = (
+        "install_scorer.py",
+        "requirements.txt",
+        "build-requirements.txt",
+        "AWORLD_SCORER_BUNDLE_MANIFEST.json",
+        "VENDORED.md",
+    )
+    return {name: (root / name).read_bytes() for name in names}
 
 
 def _selection_case(execution: ParseBenchExecution) -> dict[str, object]:
@@ -980,6 +991,16 @@ def _selection_case(execution: ParseBenchExecution) -> dict[str, object]:
         "dimensions": [dimension.value for dimension in execution.dimensions],
         "materials": {
             "task.toml": _content_attestation(_task_toml()),
+            "environment/Dockerfile": _content_attestation(
+                _dockerfile(runtime_image=DEFAULT_RUNTIME_IMAGE)
+            ),
+            "tests/Dockerfile": _content_attestation(
+                _verifier_dockerfile(runtime_image=DEFAULT_RUNTIME_IMAGE)
+            ),
+            **{
+                f"tests/scorer/{name}": _content_attestation(content)
+                for name, content in _scorer_build_files().items()
+            },
             "instruction.md": _content_attestation(_instruction(execution)),
             f"environment/{PARSEBENCH_TASK_FILENAME}": _content_attestation(
                 _public_task_contract(execution)
@@ -1253,6 +1274,7 @@ def _write_task_archive(
                     f"{prefix}/tests",
                     f"{prefix}/tests/input",
                     f"{prefix}/tests/parsebench_runtime",
+                    f"{prefix}/tests/scorer",
                 ):
                     _tar_add_directory(archive, directory)
                 _tar_add_bytes(
@@ -1313,6 +1335,8 @@ def _write_task_archive(
                     f"{prefix}/tests/ground_truth.json",
                     _private_ground_truth(execution),
                 )
+                for name, content in _scorer_build_files().items():
+                    _tar_add_bytes(archive, f"{prefix}/tests/scorer/{name}", content)
                 for name, content in _verifier_runtime_modules().items():
                     _tar_add_bytes(
                         archive,
@@ -1427,9 +1451,7 @@ def _dataset_yaml(
         "catalog: dataset.jsonl",
         "materials: manifest.json",
         "params:",
-        '  agent: "aworld"',
-        '  required_skill: "filex"',
-        '  model_profile: "default__gemini-3.1-pro-preview"',
+        '  artifact_contract: "parsebench.parse-output/v1"',
         "  dataset_revision: "
         + json.dumps(PINNED_PARSEBENCH_CONTRACT.dataset_revision),
         "  scorer_revision: " + json.dumps(PINNED_PARSEBENCH_CONTRACT.scorer_revision),
@@ -1499,7 +1521,9 @@ def _readme(
         "may add only an explicit model-proxy host at deployment time. Local smoke "
         "runs that need connectivity must use an explicit non-publishable mode and "
         "an external/model proxy. No network fetch is performed while authoring "
-        "this package.\n"
+        "this package. Agent and model choices belong to the evaluation run. "
+        "Both task images use a public Python base; the verifier installs its "
+        "own hash-pinned official scorer from public sources at image build time.\n"
     ).encode()
 
 
@@ -1747,7 +1771,12 @@ def main(argv: Sequence[str] | None = None) -> None:
     parser.add_argument("--output", required=True, type=Path)
     parser.add_argument("--dataset-id")
     parser.add_argument("--service-name", default=DEFAULT_SERVICE_NAME)
-    parser.add_argument("--runtime-image", default=DEFAULT_RUNTIME_IMAGE)
+    parser.add_argument(
+        "--base-image",
+        "--runtime-image",
+        dest="runtime_image",
+        default=DEFAULT_RUNTIME_IMAGE,
+    )
     parser.add_argument(
         "--allow-mutable-local-image",
         action="store_true",

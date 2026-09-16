@@ -1,4 +1,4 @@
-"""Dataset-owned verifier bridge from FileX artifacts to the pinned scorer.
+"""Dataset-owned verifier bridge from public artifacts to the pinned scorer.
 
 The verifier owns the private rules.  It reconstructs only the official JSONL
 and ``InferenceResult`` files required by the pinned scorer, invokes that
@@ -20,14 +20,6 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any
 
-from .artifacts import (
-    DEFAULT_PROVIDER,
-    FILEX_METRICS_SCHEMA_VERSION,
-    FileXAdapterError,
-    ParseBenchTaskSource,
-    normalize_filex_document_ir,
-    validate_parsebench_artifacts,
-)
 from .contracts import (
     DATASET_REVISION,
     GROUND_TRUTH_SCHEMA_VERSION,
@@ -68,6 +60,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--result", type=Path, default=DEFAULT_RESULT_PATH)
     parser.add_argument("--markdown", type=Path, default=DEFAULT_MARKDOWN_PATH)
     parser.add_argument("--layout", type=Path, default=DEFAULT_LAYOUT_PATH)
+    parser.add_argument(
+        "--artifact-format",
+        choices=("parsebench", "filex"),
+        default="parsebench",
+        help="public ParseOutput artifacts (default), or explicit legacy FileX compatibility",
+    )
     parser.add_argument("--verifier-output", type=Path, default=DEFAULT_VERIFIER_OUTPUT)
     arguments = parser.parse_args(argv)
     outcome = verify_parsebench_task(
@@ -76,6 +74,7 @@ def main(argv: list[str] | None = None) -> int:
         result_path=arguments.result,
         markdown_path=arguments.markdown,
         layout_path=arguments.layout,
+        artifact_format=arguments.artifact_format,
         verifier_output=arguments.verifier_output,
     )
     print(json.dumps(outcome.result.reward_payload(), sort_keys=True))
@@ -205,7 +204,7 @@ class _BenchmarkScope:
 class _ArtifactSnapshot:
     result: dict[str, Any]
     layout: dict[str, Any]
-    result_sha256: str
+    result_sha256: str | None
     document_sha256: str
     layout_sha256: str
 
@@ -251,12 +250,14 @@ def _parse_json_object(content: bytes, description: str) -> dict[str, Any]:
     return value
 
 
-def _read_regular_file(path: Path, description: str, *, limit: int) -> bytes:
+def _read_regular_file(
+    path: Path, description: str, *, limit: int, allow_empty: bool = False
+) -> bytes:
     try:
         if path.is_symlink() or not path.is_file():
             raise OSError("not a regular file")
         size = path.stat().st_size
-        if size <= 0 or size > limit:
+        if size < (0 if allow_empty else 1) or size > limit:
             raise OSError("file size is outside the verifier limit")
         content = path.read_bytes()
     except OSError as exc:
@@ -662,7 +663,299 @@ def _snapshot_artifacts(
     markdown_path: Path,
     layout_path: Path,
     workspace_root: Path,
+    artifact_format: str = "parsebench",
 ) -> _ArtifactSnapshot:
+    """Read public predictions; legacy producer checks require an explicit opt-in."""
+
+    if artifact_format == "filex":
+        return _snapshot_filex_artifacts(
+            ground_truth=ground_truth,
+            result_path=result_path,
+            markdown_path=markdown_path,
+            layout_path=layout_path,
+            workspace_root=workspace_root,
+        )
+    if artifact_format != "parsebench":
+        raise ParseBenchVerificationError(
+            "artifact_validation_failed", "unknown ParseBench artifact format"
+        )
+    document_bytes = _read_regular_file(
+        markdown_path, "Markdown artifact", limit=_MAX_ARTIFACT_BYTES, allow_empty=True
+    )
+    layout_bytes = _read_regular_file(
+        layout_path, "layout artifact", limit=_MAX_ARTIFACT_BYTES
+    )
+    try:
+        markdown = document_bytes.decode("utf-8")
+    except UnicodeError as exc:
+        raise ParseBenchVerificationError(
+            "artifact_validation_failed", "Markdown artifact must be UTF-8"
+        ) from exc
+    layout = _public_parse_output(
+        _parse_json_object(layout_bytes, "layout artifact"),
+        markdown=markdown,
+        ground_truth=ground_truth,
+    )
+    return _ArtifactSnapshot(
+        result={},
+        layout=layout,
+        result_sha256=None,
+        document_sha256="sha256:" + _sha256(document_bytes),
+        layout_sha256="sha256:" + _sha256(layout_bytes),
+    )
+
+
+_CANONICAL_LAYOUT_LABELS = frozenset(
+    {
+        "caption",
+        "footnote",
+        "formula",
+        "list-item",
+        "page-footer",
+        "page-header",
+        "picture",
+        "section-header",
+        "table",
+        "text",
+        "title",
+        "document-index",
+        "code",
+        "checkbox-selected",
+        "checkbox-unselected",
+        "form",
+        "key-value-region",
+    }
+)
+
+
+def _artifact_error(message: str) -> ParseBenchVerificationError:
+    return ParseBenchVerificationError("artifact_validation_failed", message)
+
+
+def _artifact_number(value: object, description: str, *, minimum: float = 0) -> float:
+    try:
+        valid = (
+            not isinstance(value, bool)
+            and isinstance(value, (int, float))
+            and math.isfinite(value)
+            and value >= minimum
+        )
+    except OverflowError:
+        valid = False
+    if not valid:
+        raise _artifact_error(f"{description} must be a finite number >= {minimum}")
+    return float(value)
+
+
+def _artifact_page(value: object, description: str, *, zero_based: bool = False) -> int:
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, int)
+        or value < (0 if zero_based else 1)
+        or value > 100_000
+    ):
+        raise _artifact_error(f"{description} is not a valid page index")
+    return value
+
+
+def _public_segment(value: object, *, width: float, height: float) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        raise _artifact_error("layout segment must be an object with x, y, w, h")
+    segment = {}
+    for coordinate in ("x", "y", "w", "h"):
+        segment[coordinate] = _artifact_number(
+            value.get(coordinate), "layout coordinate"
+        )
+    if (
+        segment["w"] <= 0
+        or segment["h"] <= 0
+        or segment["x"] + segment["w"] > width + 1e-6
+        or segment["y"] + segment["h"] > height + 1e-6
+    ):
+        raise _artifact_error(
+            "layout segment must have positive extents within its page"
+        )
+    label = value.get("label")
+    if not isinstance(label, str):
+        raise _artifact_error("layout segment must declare a canonical layout label")
+    label = "-".join(label.strip().lower().replace("_", " ").split())
+    if label not in _CANONICAL_LAYOUT_LABELS:
+        raise _artifact_error(
+            "layout segment label is outside the official Canonical17 ontology"
+        )
+    segment["label"] = label
+    confidence = _artifact_number(value.get("confidence", 1.0), "layout confidence")
+    if confidence > 1:
+        raise _artifact_error("layout confidence must be <= 1")
+    segment["confidence"] = confidence
+    for name in ("start_index", "end_index"):
+        index = value.get(name)
+        if index is not None and (
+            isinstance(index, bool) or not isinstance(index, int) or index < 0
+        ):
+            raise _artifact_error(
+                "layout text span offsets must be nonnegative integers"
+            )
+        if index is not None:
+            segment[name] = index
+    if (
+        value.get("start_index") is not None
+        and value.get("end_index") is not None
+        and value["end_index"] < value["start_index"]
+    ):
+        raise _artifact_error("layout text span end precedes its start")
+    return segment
+
+
+def _public_parse_output(
+    payload: dict[str, Any], *, markdown: str, ground_truth: _GroundTruth
+) -> dict[str, Any]:
+    """Validate official ParseOutput geometry without depending on an agent SDK.
+
+    Metadata is supplied by this trusted bridge. Canonical17 labels are mapped
+    to the pinned scorer's lowercase spelling, and item order is preserved.
+    document.md is the authoritative full document, including all whitespace.
+    """
+
+    if payload.get("task_type", "parse") != "parse" or "schema_version" in payload:
+        raise _artifact_error(
+            "layout.json must use the official ParseOutput layout format"
+        )
+    raw_pages = payload.get("layout_pages")
+    if not isinstance(raw_pages, list):
+        raise _artifact_error("layout.json must contain a layout_pages array")
+    if ParseBenchDimension.LAYOUT in ground_truth.dimensions and not raw_pages:
+        raise _artifact_error("layout tasks require a page object; items may be empty")
+    layout_pages: list[dict[str, Any]] = []
+    page_numbers: set[int] = set()
+    for raw_page in raw_pages:
+        if not isinstance(raw_page, dict):
+            raise _artifact_error("layout page must be an object")
+        number = _artifact_page(raw_page.get("page_number"), "layout page_number")
+        if number in page_numbers:
+            raise _artifact_error("layout page_number is duplicated")
+        if ground_truth.source.page is not None and number != ground_truth.source.page:
+            raise _artifact_error("layout page does not match the selected source page")
+        page_numbers.add(number)
+        width = _artifact_number(raw_page.get("width"), "page width", minimum=1)
+        height = _artifact_number(raw_page.get("height"), "page height", minimum=1)
+        page = {"page_number": number, "width": width, "height": height}
+        for field in (
+            "md",
+            "text",
+            "page_header_markdown",
+            "page_footer_markdown",
+            "printed_page_number",
+        ):
+            if field in raw_page:
+                if not isinstance(raw_page[field], str):
+                    raise _artifact_error("layout page text must be a string")
+                page[field] = raw_page[field]
+        angle = raw_page.get("original_orientation_angle")
+        if angle is not None:
+            if isinstance(angle, bool) or not isinstance(angle, int):
+                raise _artifact_error("original_orientation_angle must be an integer")
+            page["original_orientation_angle"] = angle
+        items = raw_page.get("items", [])
+        if not isinstance(items, list):
+            raise _artifact_error("layout page items must be an array")
+        page["items"] = []
+        for raw_item in items:
+            if not isinstance(raw_item, dict):
+                raise _artifact_error("layout item must be an object")
+            item = {}
+            for field in ("type", "md", "html", "value"):
+                if field in raw_item:
+                    if not isinstance(raw_item[field], str):
+                        raise _artifact_error(
+                            "layout item text and type must be strings"
+                        )
+                    item[field] = raw_item[field]
+            bbox = raw_item.get("bbox")
+            if bbox is not None:
+                item["bbox"] = _public_segment(bbox, width=width, height=height)
+            segments = raw_item.get("layout_segments", [] if bbox is None else [bbox])
+            if not isinstance(segments, list):
+                raise _artifact_error("layout_segments must be an array")
+            item["layout_segments"] = [
+                _public_segment(segment, width=width, height=height)
+                for segment in segments
+            ]
+            page["items"].append(item)
+        layout_pages.append(page)
+    layout_pages.sort(key=lambda page: page["page_number"])
+    pages = payload.get("pages")
+    if pages is None:
+        pages = [
+            {
+                "page_index": page["page_number"] - 1,
+                "markdown": markdown
+                if len(layout_pages) == 1
+                else page.get("md", page.get("text", "")),
+            }
+            for page in layout_pages
+        ]
+        if not pages and ground_truth.source.page is not None:
+            pages = [{"page_index": ground_truth.source.page - 1, "markdown": markdown}]
+    if not isinstance(pages, list):
+        raise _artifact_error("ParseOutput pages must be an array")
+    seen: set[int] = set()
+    for page in pages:
+        if not isinstance(page, dict) or not isinstance(page.get("markdown"), str):
+            raise _artifact_error("ParseOutput page must have a Markdown string")
+        index = _artifact_page(page.get("page_index"), "page_index", zero_based=True)
+        if index in seen or (
+            ground_truth.source.page is not None
+            and index + 1 != ground_truth.source.page
+        ):
+            raise _artifact_error(
+                "ParseOutput page index is duplicated or does not match the source"
+            )
+        seen.add(index)
+    # The pinned official fallback enumerates this array instead of consulting
+    # page_number. Preserve the true page indexes for single-page selections.
+    if layout_pages:
+        by_number = {page["page_number"]: page for page in layout_pages}
+        reference = layout_pages[0]
+        layout_pages = [
+            by_number.get(
+                number,
+                {
+                    "page_number": number,
+                    "width": reference["width"],
+                    "height": reference["height"],
+                    "md": "",
+                    "items": [],
+                },
+            )
+            for number in range(1, max(by_number) + 1)
+        ]
+    return {
+        "task_type": "parse",
+        "example_id": ground_truth.task_id,
+        "pipeline_name": "parsebench-submission",
+        "markdown": markdown,
+        "pages": pages,
+        "layout_pages": layout_pages,
+    }
+
+
+def _snapshot_filex_artifacts(
+    *,
+    ground_truth: _GroundTruth,
+    result_path: Path,
+    markdown_path: Path,
+    layout_path: Path,
+    workspace_root: Path,
+) -> _ArtifactSnapshot:
+    """Legacy FileX adapter, used only by explicit artifact_format='filex'."""
+
+    from .artifacts import (
+        FileXAdapterError,
+        ParseBenchTaskSource,
+        validate_parsebench_artifacts,
+    )
+
     expected_source = ParseBenchTaskSource(
         runtime_path=ground_truth.source.runtime_path,
         size=ground_truth.source.size,
@@ -740,6 +1033,13 @@ def _snapshot_filex_skill_artifacts(
     workspace_root: Path,
 ) -> _ArtifactSnapshot:
     """Validate the generic FileX skill bundle and normalize it for ParseBench."""
+
+    from .artifacts import (
+        DEFAULT_PROVIDER,
+        FILEX_METRICS_SCHEMA_VERSION,
+        FileXAdapterError,
+        normalize_filex_document_ir,
+    )
 
     if set(result) != {"schema_version", "status", "source", "artifacts", "filex"}:
         raise ParseBenchVerificationError(
@@ -940,6 +1240,12 @@ def _write_official_inputs(
         rule.official_row(source_path=ground_truth.source.logical_path)
         for rule in ground_truth.rules_for(dimension)
     ]
+    if dimension is ParseBenchDimension.LAYOUT and ground_truth.source.page is not None:
+        # The official JSONL loader reads this routing metadata separately from
+        # the one-based rule page. Without it, cross-evaluation selects page 1.
+        for row in rows:
+            row["rule"] = dict(row["rule"])
+            row["rule"].setdefault("page_index", ground_truth.source.page - 1)
     jsonl = b"".join(_canonical_json_bytes(row) for row in rows)
     (test_cases_dir / f"{dimension.value}.jsonl").write_bytes(jsonl)
 
@@ -958,7 +1264,11 @@ def _write_official_inputs(
         "pipeline_name": snapshot.layout["pipeline_name"],
         "product_type": "parse",
         "raw_output": {
-            "result_sha256": snapshot.result_sha256,
+            **(
+                {"result_sha256": snapshot.result_sha256}
+                if snapshot.result_sha256
+                else {}
+            ),
             "document_sha256": snapshot.document_sha256,
             "layout_sha256": snapshot.layout_sha256,
         },
@@ -967,7 +1277,7 @@ def _write_official_inputs(
         "completed_at": _FIXED_TIMESTAMP,
         "latency_in_ms": 0,
     }
-    (output_dir / "filex.result.json").write_bytes(
+    (output_dir / "prediction.result.json").write_bytes(
         _canonical_json_bytes(inference_result)
     )
     return output_dir, test_cases_dir, report_dir
@@ -1095,13 +1405,14 @@ def verify_parsebench_task(
     result_path: Path = DEFAULT_RESULT_PATH,
     markdown_path: Path = DEFAULT_MARKDOWN_PATH,
     layout_path: Path = DEFAULT_LAYOUT_PATH,
+    artifact_format: str = "parsebench",
     verifier_output: Path = DEFAULT_VERIFIER_OUTPUT,
     workspace_root: Path = DEFAULT_VERIFIER_WORKSPACE_ROOT,
     scorer_checkout: Path = DEFAULT_SCORER_CHECKOUT,
     scorer_python: Path = DEFAULT_SCORER_PYTHON,
     scorer_timeout_seconds: float = 8 * 60,
 ) -> ParseBenchVerificationOutcome:
-    """Verify one FileX task with the exact official scorer and fail closed."""
+    """Verify public task predictions with the exact official scorer and fail closed."""
 
     if (
         isinstance(scorer_timeout_seconds, bool)
@@ -1129,6 +1440,7 @@ def verify_parsebench_task(
         markdown_path=Path(markdown_path),
         layout_path=Path(layout_path),
         workspace_root=Path(workspace_root),
+        artifact_format=artifact_format,
     )
 
     try:
@@ -1149,7 +1461,7 @@ def verify_parsebench_task(
         return _commit_verifier_result(output=output, result=result)
 
     case_results: list[ParseBenchCaseResult] = []
-    with tempfile.TemporaryDirectory(prefix="aworld-parsebench-verifier-") as temporary:
+    with tempfile.TemporaryDirectory(prefix="parsebench-verifier-") as temporary:
         temporary_root = Path(temporary)
         for dimension in ground_truth.dimensions:
             dimension_root = temporary_root / dimension.value

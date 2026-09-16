@@ -21,7 +21,7 @@ MATERIAL_MANIFEST_SCHEMA_VERSION = "yolo-dataset-material-manifest/v1"
 TASK_ARCHIVE_SCHEMA_VERSION = "lingguang-task-archive/v1"
 GROUND_TRUTH_SCHEMA_VERSION = "aworld-parsebench-ground-truth/v1"
 PROVENANCE_SCHEMA_VERSION = "aworld-parsebench-provenance/v1"
-CONVERTER_VERSION = "aworld-parsebench-dataset/v1"
+CONVERTER_VERSION = "parsebench-dataset/v2"
 PARSEBENCH_TASK_SCHEMA_VERSION = "aworld-parsebench-task/v1"
 PARSEBENCH_TASK_FILENAME = "parsebench-task.json"
 PARSEBENCH_TASK_RUNTIME_PATH = "/workspace/parsebench-task.json"
@@ -30,12 +30,15 @@ PARSEBENCH_SCOPE_FILENAME = "parsebench-scope.json"
 PARSEBENCH_SCOPE_RUNTIME_PATH = "/workspace/parsebench-scope.json"
 SELECTION_MANIFEST_SCHEMA_VERSION = "aworld-parsebench-selection-manifest/v2"
 PINNED_FULL_SELECTION_MANIFEST_SHA256 = (
-    "sha256:d60ac109ae00f99240fb27a049614f6702b4ce4c3fb3f14126bde6c4451f7f7c"
+    "sha256:927318ec88e7a8efdf5b7a6540daed2de2c126c40d7f68d503cf814598f71e40"
 )
-# Publication stays fail-closed until the matching Runtime image is built,
-# independently audited, pushed, and this exact digest reference is released.
-# Local/smoke/full execution remains available while this is ``None``.
-PINNED_PARSEBENCH_RUNTIME_IMAGE: str | None = None
+# Public task/verifier base. The scorer source, dependencies, Dockerfiles and
+# embedded verifier are independently pinned by the full selection manifest.
+# Retain the old constant name as an authoring API compatibility alias.
+PINNED_PARSEBENCH_RUNTIME_IMAGE = (
+    "python:3.12-slim-bookworm@sha256:"
+    "782412e85d0f0984994c290652577d4018aff08145c85b262bb63dc0c7522254"
+)
 
 EXPECTED_SOURCE_FIELDS = frozenset(
     {

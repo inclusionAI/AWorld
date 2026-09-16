@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Mapping
+from pathlib import Path
 
 from .contracts import (
     DATASET_REVISION,
@@ -67,35 +68,33 @@ def public_scope_contract(scope: Mapping[str, object]) -> bytes:
 
 
 def instruction(*, source_runtime_path: str, page: int | None) -> bytes:
-    """Render the deterministic agent instruction for one source/page."""
+    """Describe an agent-neutral ParseBench submission using public artifacts."""
 
-    source_name = source_runtime_path.rsplit("/", 1)[-1]
     scope = "the complete document" if page is None else f"one-indexed page {page}"
-    page_argument = "" if page is None else f" --pages {page}"
     return (
-        "# FileX ParseBench task\n\n"
-        f"Parse {scope} from `/workspace/input/{source_name}` using the loaded `filex` skill "
-        "and its independent FileX CLI.\n\n"
-        "Run exactly this generic FileX skill wrapper command:\n\n"
-        "```bash\n"
-        "python3 /opt/runtime-agent/skills/filex/scripts/filex.py parse "
-        f"--input /workspace/input/{source_name}{page_argument} "
-        "--provider paddle_ocr --no-cache "
-        "--artifacts-dir /logs/artifacts\n"
-        "```\n\n"
-        "It writes exactly these output artifacts:\n\n"
-        "- `/logs/artifacts/document.md`: parsed Markdown.\n"
-        "- `/logs/artifacts/layout.json`: original FileX Document IR.\n"
-        "- `/logs/artifacts/result.json`: generic FileX skill result with source/output "
-        "hashes and parser evidence.\n\n"
-        "The authored task is no-network. A production runtime may add only its "
-        "explicit model-proxy host. Do not fetch dataset or ground-truth material; "
-        "local connectivity requires an explicit non-publishable mode and an "
-        "external/model proxy.\n\n"
-        "Do not inspect or depend on verifier-only files. Fail explicitly if the "
-        "configured provider falls back or cannot emit required output. Do not manually "
-        "invent or rewrite these artifacts; the dataset verifier owns ParseBench-specific "
-        "normalization and scoring.\n"
+        "# ParseBench document parsing task\n\n"
+        f"Parse {scope} from `{source_runtime_path}`. Use your available tools "
+        "and parsing method. All input material is local.\n\n"
+        "Write these two artifacts under `/logs/artifacts/`:\n\n"
+        "1. `document.md`: UTF-8 Markdown containing the parsed text, formatting, "
+        "tables, and chart content. Preserve reading order. HTML tables are allowed.\n"
+        "2. `layout.json`: JSON containing the official ParseOutput `layout_pages` "
+        "array. Include each page's one-based `page_number`, pixel `width`/`height`, "
+        "and `items` in reading order. Each item may contain `type`, `md`/`html`, "
+        "a `bbox`, and `layout_segments`. Boxes use pixel `x,y,w,h`, a canonical "
+        "`label`, and confidence from 0 to 1. Coordinates must fit the page.\n\n"
+        "Example structure (replace values with your document predictions):\n"
+        '```json\n{"layout_pages":[{"page_number":1,"width":100,"height":100,'
+        '"md":"Example","items":[{"type":"text","md":"Example",'
+        '"bbox":{"x":1,"y":2,"w":50,"h":10,"label":"text","confidence":1}}]}]}\n```\n\n'
+        "Canonical labels: caption, footnote, formula, list-item, page-footer, "
+        "page-header, picture, section-header, table, text, title, document-index, "
+        "code, checkbox-selected, checkbox-unselected, form, key-value-region.\n\n"
+        "For a selected page, retain its original page number. Optional `pages` "
+        "entries use zero-based `page_index` and `markdown`. Empty predictions are "
+        "allowed: use empty Markdown and page objects with empty `items` when no "
+        "content was recovered. Do not use test answers or verifier-only files. "
+        "The independent verifier applies the fixed official ParseBench scoring rules.\n"
     ).encode()
 
 
@@ -106,10 +105,10 @@ def task_toml() -> bytes:
         b'schema_version = "1.4"\n\n'
         b'artifacts = ["/logs/artifacts"]\n\n'
         b"[metadata]\n"
-        b'author_name = "inclusionAI/AWorld"\n'
+        b'author_name = "ParseBench Dataset adapter"\n'
         b'difficulty = "benchmark"\n'
         b'category = "parsebench"\n'
-        b'tags = ["parsebench", "filex", "deterministic"]\n\n'
+        b'tags = ["parsebench", "document-parsing", "deterministic"]\n\n'
         b"[verifier]\n"
         b"timeout_sec = 600.0\n"
         b'environment_mode = "separate"\n\n'
@@ -135,6 +134,8 @@ def agent_dockerfile(*, runtime_image: str) -> bytes:
 
     return (
         f"FROM {runtime_image}\n"
+        "RUN apt-get update && apt-get install -y --no-install-recommends "
+        "poppler-utils && rm -rf /var/lib/apt/lists/*\n"
         "WORKDIR /workspace\n"
         "COPY input/ /workspace/input/\n"
         f"COPY {PARSEBENCH_TASK_FILENAME} {PARSEBENCH_TASK_RUNTIME_PATH}\n"
@@ -144,16 +145,18 @@ def agent_dockerfile(*, runtime_image: str) -> bytes:
 
 
 def verifier_dockerfile(*, runtime_image: str) -> bytes:
-    """Render the deterministic isolated-verifier Dockerfile."""
+    """Build the official scorer from public pinned sources, without an agent SDK."""
 
+    recipe = Path(__file__).resolve().parents[2] / "resources/verifier.Dockerfile"
+    prefix = recipe.read_text(encoding="utf-8").replace("{base_image}", runtime_image)
     return (
-        f"FROM {runtime_image}\n"
-        "WORKDIR /tests\n"
-        "COPY input/ /workspace/input/\n"
-        f"COPY {PARSEBENCH_SCOPE_FILENAME} {PARSEBENCH_SCOPE_RUNTIME_PATH}\n"
-        "COPY --chmod=755 test.sh /tests/test.sh\n"
-        "COPY --chmod=444 ground_truth.json /tests/ground_truth.json\n"
-        "COPY parsebench_runtime/ /tests/parsebench_runtime/\n"
+        prefix
+        + "COPY input/ /workspace/input/\n"
+        + f"COPY {PARSEBENCH_SCOPE_FILENAME} {PARSEBENCH_SCOPE_RUNTIME_PATH}\n"
+        + f"COPY {PARSEBENCH_SCOPE_FILENAME} /tests/{PARSEBENCH_SCOPE_FILENAME}\n"
+        + "COPY --chmod=755 test.sh /tests/test.sh\n"
+        + "COPY --chmod=444 ground_truth.json /tests/ground_truth.json\n"
+        + "COPY parsebench_runtime/ /tests/parsebench_runtime/\n"
     ).encode()
 
 
@@ -164,10 +167,9 @@ def verifier_script() -> bytes:
         "#!/bin/sh\n"
         "set -eu\n"
         'script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)\n'
-        "exec python -m parsebench_runtime.verifier \\\n"
+        "exec python -m parsebench_runtime.verifier --artifact-format parsebench \\\n"
         '  --ground-truth "$script_dir/ground_truth.json" \\\n'
         f'  --scope "$script_dir/{PARSEBENCH_SCOPE_FILENAME}" \\\n'
-        "  --result /logs/artifacts/result.json \\\n"
         "  --markdown /logs/artifacts/document.md \\\n"
         "  --layout /logs/artifacts/layout.json \\\n"
         "  --verifier-output /logs/verifier\n"
@@ -188,12 +190,6 @@ def artifact_specs() -> list[dict[str, str]]:
             "kind": "deliverable",
             "source": "/logs/artifacts/layout.json",
             "name": "layout.json",
-            "content_type": "application/json",
-        },
-        {
-            "kind": "deliverable",
-            "source": "/logs/artifacts/result.json",
-            "name": "result.json",
             "content_type": "application/json",
         },
     ]

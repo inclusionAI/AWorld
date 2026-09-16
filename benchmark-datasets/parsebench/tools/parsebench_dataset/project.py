@@ -48,6 +48,7 @@ def materialize_project(
     model_name: str,
     smoke_per_dimension: int | None,
     smoke_seed: str,
+    agent: str = "asap",
     allow_mutable_local_image: bool = False,
     contract: ParseBenchContract = PINNED_PARSEBENCH_CONTRACT,
 ) -> Path:
@@ -93,11 +94,10 @@ def materialize_project(
                     task_id,
                 )
         dataset_params = dict(descriptor.get("params") or {})
-        dataset_params["model_profile"] = model_name
         client_metadata = {
             "agent_dataset": {
                 "dataset_id": descriptor["dataset_id"],
-                "description": "ParseBench tasks executed by AWorld with FileX",
+                "description": "Public ParseBench document parsing benchmark",
                 "params": dataset_params,
             }
         }
@@ -136,13 +136,10 @@ def materialize_project(
                     'tasks_dir = "tasks"',
                     "",
                     "[execution]",
-                    'agent = "aworld"',
+                    f'agent = "{agent}"',
                     "timeout_s = 3600",
                     "prewarm_timeout_s = 1200",
                     "include_trajectory = true",
-                    "",
-                    "[capabilities]",
-                    'skills = ["filex"]',
                     "",
                     "[model]",
                     f'name = "{model_name}"',
@@ -173,10 +170,24 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--source", required=True, type=Path)
     parser.add_argument("--output", required=True, type=Path)
-    parser.add_argument("--runtime-image", default=DEFAULT_RUNTIME_IMAGE)
-    parser.add_argument("--runtime-service", required=True)
+    parser.add_argument(
+        "--base-image",
+        "--runtime-image",
+        dest="runtime_image",
+        default=DEFAULT_RUNTIME_IMAGE,
+    )
+    parser.add_argument(
+        "--runtime-service",
+        default="configure-before-run",
+        help="Local client run profile only",
+    )
     parser.add_argument("--gateway-base-url", default="http://127.0.0.1:8100")
-    parser.add_argument("--model-name", default="ai_cloud_Kimi_k26_pgc")
+    parser.add_argument("--model-name", default="configure-before-run")
+    parser.add_argument(
+        "--agent",
+        default="asap",
+        help="Local run profile only; never embedded in the Dataset",
+    )
     parser.add_argument(
         "--allow-mutable-local-image",
         action="store_true",
@@ -192,6 +203,7 @@ def main() -> None:
         runtime_service=arguments.runtime_service,
         gateway_base_url=arguments.gateway_base_url,
         model_name=arguments.model_name,
+        agent=arguments.agent,
         smoke_per_dimension=arguments.smoke_per_dimension,
         smoke_seed=arguments.smoke_seed,
         allow_mutable_local_image=arguments.allow_mutable_local_image,

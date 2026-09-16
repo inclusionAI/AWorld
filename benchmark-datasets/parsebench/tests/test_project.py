@@ -157,13 +157,14 @@ def test_materializes_stock_lingguang_project(tmp_path: Path) -> None:
     metadata = yaml.safe_load((output / "dataset/dataset.yaml").read_text())
     samples = (output / "dataset/samples.jsonl").read_text().splitlines()
     assert config["model"]["name"] == "ai_cloud_Kimi_k26_pgc"
-    assert (
-        metadata["agent_dataset"]["params"]["model_profile"] == config["model"]["name"]
-    )
+    assert "model_profile" not in metadata["agent_dataset"]["params"]
     assert config["dataset"]["package_mode"] == "executable"
-    assert config["execution"]["agent"] == "aworld"
-    assert config["capabilities"]["skills"] == ["filex"]
-    assert metadata["agent_dataset"]["params"]["required_skill"] == "filex"
+    assert config["execution"]["agent"] == "asap"
+    assert "capabilities" not in config
+    assert (
+        not {"agent", "required_skill", "model_profile"}
+        & metadata["agent_dataset"]["params"].keys()
+    )
     assert len(samples) == 4
     assert len(list((output / "tasks").iterdir())) == 4
     instructions = [
@@ -171,7 +172,11 @@ def test_materializes_stock_lingguang_project(tmp_path: Path) -> None:
         for path in (output / "tasks").glob("*/instruction.md")
     ]
     assert instructions
-    assert all("--provider paddle_ocr --no-cache" in text for text in instructions)
+    assert all("document.md" in text and "layout.json" in text for text in instructions)
+    assert all(
+        "FileX" not in text and "filex" not in text and "AWorld" not in text
+        for text in instructions
+    )
 
 
 def test_local_mutable_image_is_explicitly_non_publishable(tmp_path: Path) -> None:
