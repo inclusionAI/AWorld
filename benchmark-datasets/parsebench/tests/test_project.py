@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
+import sys
 from dataclasses import replace
 from hashlib import sha1, sha256
 from pathlib import Path
@@ -155,7 +157,9 @@ def test_materializes_stock_lingguang_project(tmp_path: Path) -> None:
     metadata = yaml.safe_load((output / "dataset/dataset.yaml").read_text())
     samples = (output / "dataset/samples.jsonl").read_text().splitlines()
     assert config["model"]["name"] == "ai_cloud_Kimi_k26_pgc"
-    assert metadata["agent_dataset"]["params"]["model_profile"] == config["model"]["name"]
+    assert (
+        metadata["agent_dataset"]["params"]["model_profile"] == config["model"]["name"]
+    )
     assert config["dataset"]["package_mode"] == "executable"
     assert config["execution"]["agent"] == "aworld"
     assert config["capabilities"]["skills"] == ["filex"]
@@ -194,3 +198,78 @@ def test_local_mutable_image_is_explicitly_non_publishable(tmp_path: Path) -> No
     scope = rows[0]["benchmark_scope"]
     assert scope["publishable"] is False
     assert "mutable_runtime_image" in scope["non_publishable_reasons"]
+
+
+def test_generated_verifier_loads_ground_truth_for_all_dimensions(
+    tmp_path: Path,
+) -> None:
+    source, contract = _fixture(tmp_path)
+    output = tmp_path / "project"
+    materialize_project(
+        source,
+        output,
+        runtime_image="aworld-filex-parsebench:local",
+        runtime_service="local-docker-sandbox",
+        gateway_base_url="http://127.0.0.1:8100",
+        model_name="ai_cloud_Kimi_k26_pgc",
+        smoke_per_dimension=1,
+        smoke_seed="verifier-contract-v1",
+        allow_mutable_local_image=True,
+        contract=contract,
+    )
+    # Import only the emitted package in a fresh interpreter. Importing the
+    # author's verifier would hide differences in the compact runtime contract.
+    probe = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            """
+import json
+import sys
+from pathlib import Path
+
+root = Path(sys.argv[1])
+ground_truth_files = sorted(root.glob("tasks/*/tests/ground_truth.json"))
+runtime_root = ground_truth_files[0].parent
+sys.path.insert(0, str(runtime_root))
+from parsebench_runtime import verifier
+
+assert Path(verifier.__file__).is_relative_to(runtime_root)
+dimensions = set()
+provenance = {}
+for path in ground_truth_files:
+    loaded = verifier._load_ground_truth(path)
+    dimensions.update(dimension.value for dimension in loaded.dimensions)
+    provenance.update({rule.dimension.value: rule.source_jsonl for rule in loaded.rules})
+    if any(rule.dimension.value.startswith("text_") for rule in loaded.rules):
+        payload = json.loads(path.read_bytes())
+        for rule in payload["rules"]:
+            if rule["dimension"].startswith("text_"):
+                rule["provenance"]["source_jsonl"] = "text.jsonl"
+        changed = path.with_name("incorrect-ground-truth.json")
+        changed.write_text(json.dumps(payload))
+        try:
+            verifier._load_ground_truth(changed)
+        except verifier.ParseBenchVerificationError as error:
+            assert error.code == "ground_truth_contract_mismatch"
+        else:
+            raise AssertionError("unbound text provenance was accepted")
+print(json.dumps({"dimensions": sorted(dimensions), "provenance": provenance,
+                  "task_count": len(ground_truth_files)}))
+""",
+            str(output),
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+        env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"},
+    )
+    checked = json.loads(probe.stdout)
+    assert checked["task_count"] == 4
+    assert checked["dimensions"] == sorted(
+        dimension.value for dimension, _ in PINNED_PARSEBENCH_CONTRACT.source_files
+    )
+    assert checked["provenance"] == {
+        dimension.value: filename
+        for dimension, filename in PINNED_PARSEBENCH_CONTRACT.source_files
+    }

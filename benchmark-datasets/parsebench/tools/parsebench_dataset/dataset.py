@@ -928,6 +928,10 @@ def _verifier_runtime_modules() -> dict[str, bytes]:
     """
 
     package_root = Path(__file__).resolve().parent
+    source_file_rows = "\n".join(
+        f"            ParseBenchDimension.{dimension.name}: {filename!r},"
+        for dimension, filename in PINNED_PARSEBENCH_CONTRACT.source_files
+    )
     compact_contracts = f'''"""Minimal pinned ParseBench verifier contract."""
 from dataclasses import dataclass
 from enum import Enum
@@ -949,15 +953,11 @@ class _VerifierContract:
 
     def source_file_for(self, dimension: ParseBenchDimension) -> str:
         return {{
-            ParseBenchDimension.CHART: "chart.jsonl",
-            ParseBenchDimension.LAYOUT: "layout.jsonl",
-            ParseBenchDimension.TABLE: "table.jsonl",
-            ParseBenchDimension.TEXT_CONTENT: "text.jsonl",
-            ParseBenchDimension.TEXT_FORMATTING: "text.jsonl",
+{source_file_rows}
         }}[dimension]
 
 PINNED_PARSEBENCH_CONTRACT = _VerifierContract()
-'''.encode("utf-8")
+'''.encode()
     return {
         "__init__.py": b'"""Dataset-owned ParseBench verifier runtime."""\n',
         "contracts.py": compact_contracts,
