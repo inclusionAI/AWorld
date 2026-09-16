@@ -30,7 +30,7 @@ PARSEBENCH_SCOPE_FILENAME = "parsebench-scope.json"
 PARSEBENCH_SCOPE_RUNTIME_PATH = "/workspace/parsebench-scope.json"
 SELECTION_MANIFEST_SCHEMA_VERSION = "aworld-parsebench-selection-manifest/v2"
 PINNED_FULL_SELECTION_MANIFEST_SHA256 = (
-    "sha256:66fc68ad1f912ab3b5b03239ae76f4330ebcb801a1578a53913ff3231ab18f62"
+    "sha256:0a565ea2c27ee50c45e65b5a4a10e8087de9a190cff773972d754ef84145d2c1"
 )
 # Publication stays fail-closed until the matching Runtime image is built,
 # independently audited, pushed, and this exact digest reference is released.

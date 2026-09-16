@@ -92,11 +92,13 @@ def materialize_project(
                     tasks_directory / task_id,
                     task_id,
                 )
+        dataset_params = dict(descriptor.get("params") or {})
+        dataset_params["model_profile"] = model_name
         client_metadata = {
             "agent_dataset": {
                 "dataset_id": descriptor["dataset_id"],
                 "description": "ParseBench tasks executed by AWorld with FileX",
-                "params": descriptor.get("params") or {},
+                "params": dataset_params,
             }
         }
         (dataset_directory / "dataset.yaml").write_text(

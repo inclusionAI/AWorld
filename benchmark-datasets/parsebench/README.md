@@ -51,3 +51,22 @@ PaddleOCR-VL provider uses `aisearch_paaldocr_vl_16`. Credentials must remain
 Runtime Secrets (`GATEWAY_VLLM_API_KEY` and
 `FILEX_PADDLE_OCR_VL_REC_API_KEY`); never place them in the generated Dataset
 project or ZIP.
+
+For a complete local package before a Runtime image has been released, omit
+`--smoke-per-dimension` and use `--runtime-image aworld-filex-parsebench:local
+--allow-mutable-local-image`. The result includes all 2,078 tasks and 169,011
+rules, but explicitly retains `publishable=false`. The local image reference is
+a build target, not evidence of an available or approved Runtime image.
+
+Full releases require a verified Runtime digest and an updated
+`PINNED_PARSEBENCH_RUNTIME_IMAGE` release contract. A digest-shaped string alone
+does not establish approval. Changes to embedded verifier modules also require
+recomputing `PINNED_FULL_SELECTION_MANIFEST_SHA256` against the full source.
+Run the full source and Runtime bundle checks before packaging:
+
+```bash
+PARSEBENCH_SOURCE=/path/to/ParseBench-snapshot \
+PARSEBENCH_RUNTIME_SOURCE=/path/to/lingguang-bench-runtime \
+PYTHONPATH=benchmark-datasets/parsebench/tools \
+python -m pytest benchmark-datasets/parsebench/tests
+```

@@ -131,6 +131,8 @@ _SCOPE_REASONS = {
     "smoke_selection",
     "noncanonical_contract",
     "incomplete_official_selection",
+    "unpinned_selection_manifest",
+    "unapproved_verifier_runtime",
     "mutable_runtime_image",
 }
 _MAX_GROUND_TRUTH_BYTES = 64 * 1024 * 1024

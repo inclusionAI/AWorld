@@ -145,7 +145,7 @@ def test_materializes_stock_lingguang_project(tmp_path: Path) -> None:
         runtime_image="registry.example/aworld-filex@sha256:" + "4" * 64,
         runtime_service="aworld-runtime-test",
         gateway_base_url="http://127.0.0.1:8100",
-        model_name="default__gemini-3.1-pro-preview",
+        model_name="ai_cloud_Kimi_k26_pgc",
         smoke_per_dimension=1,
         smoke_seed="project-v1",
         contract=contract,
@@ -154,6 +154,8 @@ def test_materializes_stock_lingguang_project(tmp_path: Path) -> None:
     config = tomllib.loads((output / "bench.toml").read_text())
     metadata = yaml.safe_load((output / "dataset/dataset.yaml").read_text())
     samples = (output / "dataset/samples.jsonl").read_text().splitlines()
+    assert config["model"]["name"] == "ai_cloud_Kimi_k26_pgc"
+    assert metadata["agent_dataset"]["params"]["model_profile"] == config["model"]["name"]
     assert config["dataset"]["package_mode"] == "executable"
     assert config["execution"]["agent"] == "aworld"
     assert config["capabilities"]["skills"] == ["filex"]

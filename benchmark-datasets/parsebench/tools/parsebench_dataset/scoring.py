@@ -49,8 +49,10 @@ PARSEBENCH_SCORER_VENDORED_METADATA_SHA256 = (
 PARSEBENCH_SCORER_BUNDLE_MANIFEST_FILENAME = "AWORLD_SCORER_BUNDLE_MANIFEST.json"
 PARSEBENCH_SCORER_BUNDLE_MANIFEST_SCHEMA = "aworld.parsebench.scorer-bundle/v1"
 PARSEBENCH_SCORER_BUNDLE_MANIFEST_SIZE = 32_520
+# Runtime 456846a corrected only the README.md entry in the bundle manifest.
+# The pinned scorer source, revision, and dependency lock remain unchanged.
 PARSEBENCH_SCORER_BUNDLE_MANIFEST_SHA256 = (
-    "6a3e317b5b10cdbbb684cc6a519e819af70bfe24646b1de871b2a9b95d7e800e"
+    "70c69695e47dfd9467f2aaadd8b93ec6c7254dd61f4941fcfcc12f7c92742065"
 )
 PARSEBENCH_CASE_RESULT_SCHEMA = "aworld.parsebench.case-result/v1"
 PARSEBENCH_REPORT_SCHEMA = "aworld.parsebench.report/v1"
