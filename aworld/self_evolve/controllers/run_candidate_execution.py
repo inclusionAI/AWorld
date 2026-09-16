@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from aworld.self_evolve.budget import CandidateAttemptStage
 from aworld.self_evolve.controllers.measurement import (
     CandidateMeasurementController,
     MeasurementPlanningController,
@@ -29,6 +30,7 @@ from aworld.self_evolve.controllers.run_evaluation_admission import (
     CandidateEvaluationAdmissionRequest,
     CandidateEvaluationAdmissionRuntime,
     plan_candidate_evaluation_admission,
+    preflight_candidate_evaluation_budget,
 )
 from aworld.self_evolve.controllers.run_evaluation_execution import (
     CandidateEvaluationExecutionPolicy,
@@ -50,6 +52,7 @@ from aworld.self_evolve.controllers.run_execution import (
     CandidateReplayAdmissionRuntime,
     execute_candidate_local_admission,
     execute_candidate_replay_admission,
+    terminal_candidate_evaluation_result,
 )
 from aworld.self_evolve.controllers.run_regression_execution import (
     RegressionExecution,
@@ -241,6 +244,43 @@ async def execute_iteration_candidate(
     if replay_admission.terminal_result is not None:
         return replay_admission.terminal_result
 
+    evaluation_policy = CandidateEvaluationAdmissionPolicy(
+        replay_enabled=policy.replay_enabled,
+        evaluation_backend=policy.evaluation_backend,  # type: ignore[arg-type]
+        judge_repetitions=policy.judge_repetitions,
+        min_eval_cases=policy.min_eval_cases,
+        regression_suite_case_counts=policy.regression_suite_case_counts,
+        challenger_enabled=policy.challenger_enabled,
+        challenger_max_cases=policy.challenger_max_cases,
+    )
+    if replay_admission.replay_planned and not replay_admission.reuses_replay_evidence:
+        budget_gate = preflight_candidate_evaluation_budget(
+            request,
+            evaluation_policy,
+            replay_case_count=replay_admission.replay_case_count,
+            candidate_repetitions=replay_admission.effective_candidate_repetitions,
+        )
+        if budget_gate is not None:
+            if request.budget_context is not None and replay_admission.replay_budget is not None:
+                request.budget_context.release(
+                    replay_admission.replay_budget,
+                    reason_code="downstream_evaluation_budget_denied",
+                )
+            if request.attempt_tracker is not None and request.attempt_key is not None:
+                request.attempt_tracker.emit(
+                    request.attempt_key,
+                    CandidateAttemptStage.NOT_RUN,
+                    reason_code=str((budget_gate.details or {})["code"]),
+                )
+            return terminal_candidate_evaluation_result(
+                candidate=request.candidate,
+                iteration_number=request.iteration_number,
+                candidate_number=request.candidate_number,
+                candidate_count=request.candidate_count,
+                gate_results=(*replay_admission.gate_results, budget_gate),
+                feedback_builder=runtime.feedback_builder,
+            )
+
     async def replay_candidate(**kwargs: Any) -> tuple[object, object, object]:
         if runtime.paired_replay_override is not None:
             return await runtime.paired_replay_override(**kwargs)
@@ -268,15 +308,7 @@ async def execute_iteration_candidate(
         return replay_execution.terminal_result
     evaluation_admission = plan_candidate_evaluation_admission(
         CandidateEvaluationAdmissionRequest(request, replay_execution),
-        CandidateEvaluationAdmissionPolicy(
-            replay_enabled=policy.replay_enabled,
-            evaluation_backend=policy.evaluation_backend,  # type: ignore[arg-type]
-            judge_repetitions=policy.judge_repetitions,
-            min_eval_cases=policy.min_eval_cases,
-            regression_suite_case_counts=policy.regression_suite_case_counts,
-            challenger_enabled=policy.challenger_enabled,
-            challenger_max_cases=policy.challenger_max_cases,
-        ),
+        evaluation_policy,
         CandidateEvaluationAdmissionRuntime(
             typed_gate_failure=runtime.typed_gate_failure,
             feedback_builder=runtime.feedback_builder,

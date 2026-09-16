@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import ast
 import inspect
+import pytest
 from decimal import Decimal
+from pathlib import Path
 from types import SimpleNamespace
 
 from aworld.self_evolve.budget import (
@@ -23,6 +25,7 @@ from aworld.self_evolve.controllers.run_evaluation_admission import (
     CandidateEvaluationAdmissionRequest,
     CandidateEvaluationAdmissionRuntime,
     plan_candidate_evaluation_admission,
+    preflight_candidate_evaluation_budget,
 )
 from aworld.self_evolve.controllers.run_execution import (
     CandidateEvaluationRequest,
@@ -44,6 +47,10 @@ from aworld.self_evolve.replay import (
     CandidateReplayResult,
     ReplayVariantResult,
 )
+from aworld.self_evolve.runner import SelfEvolveRunner
+from aworld.self_evolve.provenance import TargetProvenance
+from aworld.self_evolve.store import FilesystemSelfEvolveStore
+from aworld.self_evolve.targets import SkillTextTarget
 from aworld.self_evolve.types import (
     CandidateFileDelta,
     CandidateVariant,
@@ -150,6 +157,94 @@ class _EvaluationBackend:
 
 class _ProbabilisticEvaluationBackend(_EvaluationBackend):
     probabilistic_only = True
+
+
+@pytest.mark.asyncio
+async def test_judge_budget_denial_skips_replay_backend(tmp_path: Path) -> None:
+    skill = tmp_path / "skills" / "demo" / "SKILL.md"
+    skill.parent.mkdir(parents=True)
+    skill.write_text("---\nname: demo\ndescription: Test guidance\n---\n# Demo\n\nOld guidance.\n")
+
+    class ReplayBackend:
+        calls = 0
+
+        async def replay_candidate(self, *args, **kwargs):
+            self.calls += 1
+            raise AssertionError("unaffordable evaluation must prevent replay")
+
+    backend = ReplayBackend()
+    runner = SelfEvolveRunner(
+        store=FilesystemSelfEvolveStore(tmp_path),
+        optimizer=object(),
+        replay_enabled=True,
+        candidate_replay_backend=backend,
+        evaluation_backend=_EvaluationBackend(),
+        measurement_mode="off",
+    )
+    budget = _BudgetContext(total_tokens=15)
+    request = CandidateEvaluationRequest(
+        run_id="preflight-test",
+        target=SkillTextTarget(skill),
+        dataset=_dataset(3),
+        candidate=CandidateVariant(
+            candidate_id="preflight-candidate",
+            target=SelfEvolveTargetRef("skill", "demo", str(skill)),
+            content="---\nname: demo\ndescription: Test guidance\n---\n# Demo\n\nImproved guidance.\n",
+            rationale="exercise downstream budget denial",
+        ),
+        apply_policy="proposal",
+        target_provenance=TargetProvenance(
+            target=SelfEvolveTargetRef("skill", "demo", str(skill)),
+            source_kind="skill",
+            write_origin="operator_selection",
+            trust_level="local",
+            protected=False,
+            reason="explicit local target",
+        ),
+        iteration_number=1,
+        candidate_number=1,
+        candidate_count=1,
+        budget_context=budget,
+    )
+    result = await runner._candidate_iteration_execution().execute(request)
+    assert backend.calls == 0
+    failed = [gate for gate in result.state.gate_results if not gate.passed]
+    assert [gate.gate_name for gate in failed] == ["run_budget_judge"]
+    assert failed[0].details["admission_stage"] == "before_paired_replay"
+    assert budget.ledger.outstanding_reservations == ()
+    assert budget.ledger.total_spent().tokens == 0
+
+
+@pytest.mark.parametrize("total_tokens,denied", [(50, True), (110, False)])
+def test_judge_preflight_accounts_for_held_replay_and_releases_forecast(
+    total_tokens: int, denied: bool,
+) -> None:
+    budget = _BudgetContext(total_tokens=total_tokens)
+    replay = budget.reserve(BudgetStage.PAIRED_REPLAY, "replay", units=10)
+    evaluation = _request(
+        dataset=_dataset(3), apply_policy="verified_only", budget_context=budget,
+    ).evaluation
+    gate = preflight_candidate_evaluation_budget(
+        evaluation,
+        CandidateEvaluationAdmissionPolicy(
+            replay_enabled=True,
+            evaluation_backend=_EvaluationBackend(),
+            judge_repetitions=3,
+            regression_suite_case_counts=(2,),
+            challenger_enabled=True,
+            challenger_max_cases=1,
+        ),
+        replay_case_count=3,
+        candidate_repetitions=1,
+    )
+    # 18 primary/held-out/challenge units + 4 regression + 2 challenger,
+    # followed by three judge repetitions; the replay reservation stays held.
+    assert [x[2] for x in budget.reservations] == [10, 24, 72]
+    assert (gate is not None) is denied
+    if gate is not None:
+        assert gate.gate_name == "run_budget_judge"
+        assert gate.details["admission_stage"] == "before_paired_replay"
+    assert [x.reservation_id for x in budget.ledger.outstanding_reservations] == [replay.reservation_id]
 
 
 def _request(

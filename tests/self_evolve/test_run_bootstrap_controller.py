@@ -314,8 +314,8 @@ def test_workflow_estimation_compiles_bound_budget_item_factory() -> None:
     assert result.budget_items(iteration=3, candidate_count=2) == (
         (BudgetStage.CANDIDATE_GENERATION, "iteration-3-workflow-generation", 2),
         (BudgetStage.PAIRED_REPLAY, "iteration-3-workflow-replay", 12),
-        (BudgetStage.EVALUATION, "iteration-3-workflow-evaluation", 40),
-        (BudgetStage.JUDGE, "iteration-3-workflow-judge", 120),
+        (BudgetStage.EVALUATION, "iteration-3-workflow-evaluation", 48),
+        (BudgetStage.JUDGE, "iteration-3-workflow-judge", 144),
     )
 
 

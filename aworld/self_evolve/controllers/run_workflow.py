@@ -29,6 +29,8 @@ class WorkflowEstimationPolicy:
     evaluation_backend_available: bool
     judge_repetitions: int
     progress_repair_extension_iterations: int
+    challenger_enabled: bool = False
+    challenger_max_cases: int = 1
 
 
 @dataclass(frozen=True)
@@ -113,12 +115,24 @@ def estimate_run_workflow(
     evaluation_case_count = max(
         len(request.dataset.cases), replay_case_count * candidate_repetitions
     )
-    evaluation_variants = 5 if is_verified_apply_policy(request.apply_policy) else 2
+    verified_apply = is_verified_apply_policy(request.apply_policy)
+    reuse_single_case_validation = bool(
+        replay_units > 0
+        and replay_case_count == 1
+        and not request.dataset.recipe.held_out_case_ids
+    )
+    # Validation, challenge, and held-out evaluation are all paired. Match
+    # authoritative admission rather than under-budgeting a held-out arm.
+    evaluation_variants = (
+        (4 if reuse_single_case_validation else 6) if verified_apply else 2
+    )
     regression_units = (
         sum(max(1, len(suite.dataset.cases)) * 2 for suite in request.regression_suites)
-        if is_verified_apply_policy(request.apply_policy)
+        if verified_apply
         else 0
     )
+    if verified_apply and policy.challenger_enabled and request.regression_suites:
+        regression_units += policy.challenger_max_cases * 2
     evaluation_units = max(
         1, evaluation_case_count * evaluation_variants + regression_units
     )

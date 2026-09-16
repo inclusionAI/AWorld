@@ -1110,7 +1110,19 @@ def test_contextual_validation_rejects_undeclared_fenced_block_rewrite() -> None
     assert exc_info.value.representation == "full_content"
 
 
-def test_contextual_validation_rejects_expanded_regression_repair() -> None:
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "failed_gate",
+    (
+        "global_regression_benchmark",
+        "score_improvement",
+        "cost_latency_regression",
+        "evidence_quality",
+    ),
+)
+async def test_contextual_validation_rejects_expanded_judged_repair(
+    failed_gate: str,
+) -> None:
     current_content = "# Demo\n\nBaseline workflow.\n"
     parent_content = (
         current_content
@@ -1128,7 +1140,7 @@ def test_contextual_validation_rejects_expanded_regression_repair() -> None:
                 dataset_split="validation",
                 metrics={
                     "score": 91.0,
-                    "failed_gates": ["global_regression_benchmark"],
+                    "failed_gates": [failed_gate],
                     "repair_candidate_package": {
                         "candidate_id": "candidate-regressed",
                         "content": parent_content,
@@ -1157,10 +1169,20 @@ def test_contextual_validation_rejects_expanded_regression_repair() -> None:
             candidate_index=0,
         )
 
-    assert exc_info.value.code == "regression_repair_scope_expanded"
+    assert exc_info.value.code == "judged_repair_scope_expanded"
     assert exc_info.value.details["candidate_added_token_surface"] > (
         exc_info.value.details["parent_added_token_surface"]
     )
+
+    # Custom mutators bypass contextual validation. Their materialization must
+    # preserve the same repairable outcome instead of aborting the population.
+    result = await TraceReflectiveLLMMutator(
+        mutate_text=lambda prompt: output,
+    ).propose(request)
+    assert result.candidates == ()
+    failure = result.diagnostics["candidate_materialization_failures"][0]
+    assert failure["code"] == "judged_repair_scope_expanded"
+    assert failure["repairable"] is True
 
 
 @pytest.mark.asyncio
@@ -2254,7 +2276,7 @@ async def test_context_only_requirement_does_not_enable_replay_runtime_authoring
 
 
 @pytest.mark.asyncio
-async def test_llm_mutator_repairs_first_transport_response_completion_policy() -> None:
+async def test_llm_mutator_rejects_first_transport_response_completion_policy() -> None:
     async def mutate(prompt: str) -> dict:
         return {
             "content": (
@@ -2276,28 +2298,17 @@ async def test_llm_mutator_repairs_first_transport_response_completion_policy() 
 
     result = await TraceReflectiveLLMMutator(mutate_text=mutate).propose(request)
 
-    assert len(result.candidates) == 1
-    assert "Task Semantic Completion Invariant" in result.candidates[0].content
-    assert "delivery signal, not task completion" in result.candidates[0].content
-    assert "make exactly one materially different bounded" in (
-        result.candidates[0].content
-    )
-    assert "Do not issue more tool calls after that single fallback" in (
-        result.candidates[0].content
-    )
-    assert "configuration, bibliographic, quantitative, symbolic" in (
-        result.candidates[0].content
-    )
-    assert "do not expand evidence with remembered details" in (
-        result.candidates[0].content.lower()
-    )
+    assert result.candidates == ()
+    assert result.diagnostics["candidate_materialization_failures"][0][
+        "code"
+    ] == "transport_completion_policy_invalid"
     assert result.diagnostics[
         "repaired_transport_completion_violation_candidates"
-    ] == 1
+    ] == 0
 
 
 @pytest.mark.asyncio
-async def test_llm_mutator_bounds_claim_evidence_completion_loops() -> None:
+async def test_llm_mutator_rejects_unbounded_claim_evidence_completion_loops() -> None:
     async def mutate(prompt: str) -> dict:
         return {
             "content": (
@@ -2319,13 +2330,10 @@ async def test_llm_mutator_bounds_claim_evidence_completion_loops() -> None:
 
     result = await TraceReflectiveLLMMutator(mutate_text=mutate).propose(request)
 
-    assert len(result.candidates) == 1
-    assert "make exactly one materially different bounded" in (
-        result.candidates[0].content
-    )
-    assert "Do not issue more tool calls after that single fallback" in (
-        result.candidates[0].content
-    )
+    assert result.candidates == ()
+    assert result.diagnostics["candidate_materialization_failures"][0][
+        "code"
+    ] == "transport_completion_policy_invalid"
 
 
 @pytest.mark.asyncio
@@ -4433,8 +4441,7 @@ async def test_llm_mutator_rejects_full_repair_package_replacement_of_current() 
     )
     repaired_content = (
         focused_content.rstrip()
-        + "\n\n## Finalization Delta\n\n"
-        "Return immediately after the persisted result satisfies the acceptance check.\n"
+        + "\n\nReturn when verified.\n"
     )
 
     async def mutate(prompt: str) -> dict:

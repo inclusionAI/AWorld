@@ -338,9 +338,15 @@ class TraceReflectiveLLMMutator:
                     rationale = _verified_prerequisite_composition_rationale(
                         repair_focus
                     )
-                if _violates_transport_completion_invariant(content):
-                    content = _append_transport_completion_invariant(content)
-                    repaired_transport_completion_violation_count += 1
+                _validate_transport_completion_policy(
+                    request,
+                    candidate_content=content,
+                )
+                _validate_judged_repair_surface(
+                    request,
+                    repair_focus=repair_focus,
+                    candidate_content=content,
+                )
                 structural_edit_intent = (
                     _focused_parent_structural_edit_intent(
                         request,
@@ -716,6 +722,11 @@ def _build_mutation_prompt(request: OptimizerRequest, *, candidate_index: int) -
         "Prefer the smallest reusable behavior delta; use patch_intent for a bounded "
         "change to large target content, and never hard-code task ids, case ids, original "
         "endpoints, environment paths, fixture hashes, or diagnostic previews. "
+        "Keep evaluation replay infrastructure in the candidate-owned replay files. "
+        "The target skill delta must improve ordinary task execution even without the "
+        "replay harness: do not turn it into a replay tutorial or add fictional CLI "
+        "subcommands for capability discovery. Prefer replacing one relevant paragraph "
+        "with a concrete behavior correction over appending a new workflow. "
         "When an active typed constraint requires handling unknown-size output, redirect it "
         "before inspection and use explicit byte-bounded excerpts; head -N is not a byte bound. "
         "Preserve the user's requested coverage, useful synthesis, and relevant prior-task "
@@ -1426,21 +1437,32 @@ def _focused_repair_prompt_instructions(
             "compiler/runtime files only when their typed conformance remains valid. Restore "
             "the regressed judge dimensions before optimizing evidence strictness or cost. "
         )
-    if (
-        "global_regression_benchmark" in feedback_text
-        or "independent_regression_failed" in feedback_text
+    if any(
+        gate in feedback_text
+        for gate in (
+            "global_regression_benchmark",
+            "independent_regression_failed",
+            "score_improvement",
+            "cost_latency_regression",
+            "evidence_quality",
+        )
     ):
         instructions += (
-            "The focused candidate passed its primary evaluation but regressed on an "
-            "independent behavior-preservation suite. Treat this as context dilution: "
-            "strictly shrink and narrow the focused target delta rather than expanding "
-            "its verification workflow. The candidate's added-token surface relative to "
-            "current_content must not exceed the focused parent's added-token surface. "
+            "This is a judged score, cost, evidence, or independent-regression repair. "
+            "Treat this as context dilution: strictly shrink and narrow, "
+            "or replace the focused target delta rather than expanding its verification "
+            "workflow. The candidate's added-token surface relative to current_content "
+            "must not exceed the focused parent's added-token surface. "
             "Do not add claim ledgers, claim-by-claim output schemas, global completion "
             "invariants, mandatory artifact persistence, extra retries, or duplicate "
             "headings. Preserve the smallest useful parent behavior, scope it only to "
             "the task shape that needs it, and leave unrelated documented workflows "
-            "semantically untouched. "
+            "semantically untouched. Meet the size constraint by removing parent-added "
+            "replay tutorials, redundant examples, headings, and transport explanations "
+            "first; retain the concrete correction for the active failed gate. Do not "
+            "delete that correction just to keep boilerplate within the size limit. "
+            "The useful behavior must also apply to ordinary execution without a replay "
+            "harness; infrastructure support belongs in the existing replay files. "
         )
     if (
         "duplicate_prior_candidate" in feedback_text
@@ -1965,9 +1987,13 @@ def _validate_mutator_output_context(
             repair_focus=repair_focus,
             candidate_content=content,
         )
-        _validate_regression_repair_surface(
+        _validate_judged_repair_surface(
             request,
             repair_focus=repair_focus,
+            candidate_content=content,
+        )
+        _validate_transport_completion_policy(
+            request,
             candidate_content=content,
         )
         _validate_prerequisite_composition_target_delta(
@@ -3146,13 +3172,13 @@ def _validate_prerequisite_composition_target_delta(
     )
 
 
-def _validate_regression_repair_surface(
+def _validate_judged_repair_surface(
     request: OptimizerRequest,
     *,
     repair_focus: Mapping[str, object] | None,
     candidate_content: str,
 ) -> None:
-    """Require independent-regression repairs to narrow, not amplify, prose."""
+    """Require judged repairs to narrow or replace, never amplify, target prose."""
 
     if not isinstance(repair_focus, Mapping):
         return
@@ -3163,7 +3189,13 @@ def _validate_regression_repair_surface(
         failed_gate_names = {str(item) for item in failed_gates}
     else:
         failed_gate_names = set()
-    if "global_regression_benchmark" not in failed_gate_names:
+    judged_surface_gates = {
+        "global_regression_benchmark",
+        "score_improvement",
+        "cost_latency_regression",
+        "evidence_quality",
+    }
+    if not failed_gate_names.intersection(judged_surface_gates):
         return
     package = repair_focus.get("repair_candidate_package")
     parent_content = (
@@ -3179,12 +3211,24 @@ def _validate_regression_repair_surface(
         request.current_content,
         candidate_content,
     )
-    if candidate_added_tokens <= parent_added_tokens:
+    # Score/evidence repairs sometimes need a short in-place replacement to
+    # express the typed fix. Cost and independent-regression failures receive
+    # no growth allowance; other judged repairs get only one concise sentence.
+    strict_surface_gates = {
+        "global_regression_benchmark",
+        "cost_latency_regression",
+    }
+    allowed_growth = (
+        0
+        if failed_gate_names.intersection(strict_surface_gates)
+        else 8
+    )
+    if candidate_added_tokens <= parent_added_tokens + allowed_growth:
         return
     raise CandidateSemanticValidationError(
-        "regression_repair_scope_expanded",
+        "judged_repair_scope_expanded",
         (
-            "independent-regression repair expanded the focused target delta; "
+            "judged repair expanded the focused target delta; "
             "strictly shrink and narrow the parent behavior instead"
         ),
         field_path=CandidateFailureField.CONTENT.value,
@@ -3194,9 +3238,41 @@ def _validate_regression_repair_surface(
         details={
             "parent_added_token_surface": parent_added_tokens,
             "candidate_added_token_surface": candidate_added_tokens,
+            "allowed_added_token_growth": allowed_growth,
             "required_change": (
-                "remove global invariants, duplicate sections, claim ledgers, and "
-                "new verification steps until the repair is no larger than its parent"
+                "replace parent-added replay tutorials, redundant examples, and headings "
+                "with the concise correction for the active failed gate; remove global "
+                "invariants, claim ledgers, and unnecessary verification steps, but keep "
+                "the actual repair within the allowed added-token surface"
+            ),
+        },
+    )
+
+
+def _validate_transport_completion_policy(
+    request: OptimizerRequest,
+    *,
+    candidate_content: str,
+) -> None:
+    """Reject unsafe completion shortcuts without silently bloating the candidate."""
+
+    if not _violates_transport_completion_invariant(candidate_content):
+        return
+    raise CandidateSemanticValidationError(
+        "transport_completion_policy_invalid",
+        (
+            "candidate treats transport success as task completion or creates an "
+            "unbounded evidence-acquisition loop"
+        ),
+        field_path=CandidateFailureField.CONTENT.value,
+        representation=CandidateRepresentation.CANDIDATE_PACKAGE.value,
+        repairable=True,
+        allowed_improvement_signal_ids=exposed_improvement_signal_ids(request),
+        details={
+            "required_change": (
+                "replace the offending stop or retry rule in place with one concise "
+                "semantic-sufficiency check; do not append a global invariant, claim "
+                "ledger, artifact manifest, or new workflow"
             ),
         },
     )
@@ -3965,33 +4041,6 @@ def _violates_transport_completion_invariant(content: str) -> bool:
         and "do not issue more tool calls after that single fallback" in normalized
     )
     return evidence_workflow and not hard_stop
-
-
-def _append_transport_completion_invariant(content: str) -> str:
-    return (
-        content.rstrip()
-        + "\n\n## Task Semantic Completion Invariant\n\n"
-        "This invariant overrides any earlier completion rule in this skill. A successful "
-        "handshake, HTTP status, structured envelope, metadata record, tool-execution "
-        "summary, or first data-plane response is a delivery signal, not task completion. "
-        "Persist the first usable response immediately, then verify claim by claim that its "
-        "payload directly supports the user's requested result. Stop only when that semantic "
-        "check passes. If it does not, make exactly one materially different bounded "
-        "artifact-backed attempt, then immediately return either the "
-        "supported answer or an explicit insufficiency. Do not issue more tool calls after "
-        "that single fallback. Evidence artifacts must contain direct tool or primary-source "
-        "output, never a model-authored draft answer, synthesis, inferred comparison, or "
-        "remembered knowledge written to a file and cited back as support. Add a manifest "
-        "entry only for a real captured source, read that source before answering, and bind "
-        "each cited claim to the exact bounded excerpt or structured fields used. Never "
-        "claim artifact or manifest-entry counts without computing them from the final "
-        "manifest. Before finalizing, remove every factual, configuration, "
-        "bibliographic, quantitative, symbolic, and quoted claim that is not directly "
-        "supported by a bounded non-compacted artifact excerpt or structured field. Do not "
-        "expand evidence with remembered details. When no supporting source artifact exists, "
-        "state the insufficiency instead of supplying examples, citations, parameter values, "
-        "equations, or other missing content.\n"
-    )
 
 
 def _lesson_set_fingerprint(request: OptimizerRequest) -> str | None:

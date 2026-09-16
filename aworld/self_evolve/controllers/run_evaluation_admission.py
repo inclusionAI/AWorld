@@ -244,6 +244,90 @@ def can_reuse_single_case_replay_validation(
     )
 
 
+def _evaluation_work_units(
+    *,
+    policy: CandidateEvaluationAdmissionPolicy,
+    case_count: int,
+    verified_apply: bool,
+    baseline_is_cached: bool,
+    reuse_single_case_validation: bool,
+) -> int:
+    variants = 1 if baseline_is_cached else 2
+    regression_units = 0
+    if verified_apply:
+        variants += 2
+        if not reuse_single_case_validation:
+            variants += 2
+        regression_units = sum(
+            max(1, count) * 2 for count in policy.regression_suite_case_counts
+        )
+        if policy.challenger_enabled and policy.regression_suite_case_counts:
+            regression_units += policy.challenger_max_cases * 2
+    return max(1, case_count * variants + regression_units)
+
+
+def preflight_candidate_evaluation_budget(
+    evaluation: CandidateEvaluationRequest,
+    policy: CandidateEvaluationAdmissionPolicy,
+    *,
+    replay_case_count: int,
+    candidate_repetitions: int,
+) -> GateResult | None:
+    """Check downstream work while the paired-replay reservation is still held.
+
+    This is a forecast, not evaluation admission: no replay evidence is invented.
+    Actual admission still verifies the materialized dataset and reserves again.
+    """
+
+    budget = evaluation.budget_context
+    if budget is None or policy.evaluation_backend is None:
+        return None
+    classification = classify_candidate_mutation(
+        evaluation.candidate,
+        current_content=evaluation.target.load_current_content(),
+    )
+    if classification.kind is CandidateMutationKind.EVALUATION_SUPPORT:
+        return None
+    units = _evaluation_work_units(
+        policy=policy,
+        case_count=max(len(evaluation.dataset.cases), replay_case_count * candidate_repetitions),
+        verified_apply=is_verified_apply_policy(evaluation.apply_policy),
+        # A cached judge result cannot be proven until replay identity is known.
+        baseline_is_cached=False,
+        reuse_single_case_validation=(
+            replay_case_count == 1 and not evaluation.dataset.recipe.held_out_case_ids
+        ),
+    )
+    reservations: list[BudgetDecision] = []
+    try:
+        for stage, count in (
+            (BudgetStage.EVALUATION, units),
+            (BudgetStage.JUDGE, max(1, units * policy.judge_repetitions)),
+        ):
+            decision = budget.reserve(
+                stage,
+                f"{evaluation.candidate.candidate_id}-{stage.value}-preflight",
+                units=count,
+            )
+            if not decision.allowed:
+                return GateResult(
+                    gate_name=f"run_budget_{stage.value}",
+                    passed=False,
+                    reason="paired replay was not run because downstream evaluation budget was denied",
+                    details={
+                        "failure_class": "budget",
+                        "code": f"{stage.value}_budget_denied",
+                        "budget_decision": decision.to_dict(),
+                        "admission_stage": "before_paired_replay",
+                    },
+                )
+            reservations.append(decision)
+    finally:
+        for decision in reservations:
+            budget.release(decision, reason_code="evaluation_preflight_complete")
+    return None
+
+
 def _terminal_result(
     request: CandidateEvaluationAdmissionRequest,
     runtime: CandidateEvaluationAdmissionRuntime,
@@ -480,36 +564,13 @@ def plan_candidate_evaluation_admission(
             and baseline_identity.fingerprint
             in evaluation.baseline_evaluation_cache
         )
-        evaluation_variants = 1 if baseline_is_cached else 2
-        if verified_apply:
-            evaluation_variants += 2
-        if (
-            verified_apply
-            and not can_reuse_single_case_replay_validation(evaluation_dataset)
-        ):
-            # Held-out verification is paired just like validation.  Reserving
-            # only the treatment arm made its evidence gate absolute and also
-            # understated the judge budget.
-            evaluation_variants += 2
         expected_judge_summary_count = 1 if baseline_is_cached else 2
-        regression_evaluation_units = (
-            sum(
-                max(1, case_count) * 2
-                for case_count in policy.regression_suite_case_counts
-            )
-            if verified_apply
-            else 0
-        )
-        if (
-            verified_apply
-            and policy.challenger_enabled
-            and policy.regression_suite_case_counts
-        ):
-            regression_evaluation_units += policy.challenger_max_cases * 2
-        evaluation_units = max(
-            1,
-            evaluation_case_count * evaluation_variants
-            + regression_evaluation_units,
+        evaluation_units = _evaluation_work_units(
+            policy=policy,
+            case_count=evaluation_case_count,
+            verified_apply=verified_apply,
+            baseline_is_cached=baseline_is_cached,
+            reuse_single_case_validation=can_reuse_single_case_replay_validation(evaluation_dataset),
         )
         evaluation_budget = budget_context.reserve(
             BudgetStage.EVALUATION,

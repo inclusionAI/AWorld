@@ -167,6 +167,8 @@ def prepare_lifecycle_iteration(
                 candidate_repetitions=context.construction.replay.candidate_replay_repetitions,
                 evaluation_backend_available=(context.construction.runtime.evaluation_backend is not None),
                 judge_repetitions=context.construction.policy.judge_repetitions,
+                challenger_enabled=context.construction.policy.challenger_enabled,
+                challenger_max_cases=context.construction.policy.challenger_max_cases,
                 progress_repair_extension_iterations=(
                     _MAX_PROGRESS_REPAIR_EXTENSION_ITERATIONS
                 ),
