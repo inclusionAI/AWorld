@@ -2578,6 +2578,7 @@ class LLMModel:
                     yield chunk
                     continue
                 tool_progress = chunk.tool_call_progress
+                cumulative_usage = chunk.usage_is_cumulative
                 if self.llm_response_parser:
                     response_parse_args = kwargs.get("response_parse_args") or {}
                     chunk = sync_exec(
@@ -2586,6 +2587,7 @@ class LLMModel:
                         **response_parse_args,
                     )
                     chunk.tool_call_progress = tool_progress
+                    chunk.usage_is_cumulative = cumulative_usage
                 log_params["time_cost"] = round(time.time() - start_ms, 3)
                 log_llm_record(
                     "CHUNK",
@@ -2750,12 +2752,14 @@ class LLMModel:
                     yield chunk
                     continue
                 tool_progress = chunk.tool_call_progress
+                cumulative_usage = chunk.usage_is_cumulative
                 if self.llm_response_parser:
                     response_parse_args = kwargs.get("response_parse_args") or {}
                     chunk = await self.llm_response_parser.parse_chunk(
                         chunk, **response_parse_args
                     )
                     chunk.tool_call_progress = tool_progress
+                    chunk.usage_is_cumulative = cumulative_usage
                 log_params["time_cost"] = round(time.time() - start_ms, 3)
                 log_llm_record(
                     "CHUNK",

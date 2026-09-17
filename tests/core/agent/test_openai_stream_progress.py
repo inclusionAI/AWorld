@@ -319,3 +319,37 @@ async def test_interrupted_stream_without_usage_does_not_report_known_zero():
     await model_stream.__anext__()
     await model_stream.aclose()
     assert context.get_llm_calls()[-1]["usage_available"] is False
+
+
+@pytest.mark.asyncio
+async def test_incremental_usage_is_summarized_without_double_counting():
+    from aworld_cli.atif import build_atif_trajectory
+
+    stream = _RawStream(
+        [
+            _chunk(
+                {"content": "x"},
+                usage={"prompt_tokens": 1, "completion_tokens": 2, "total_tokens": 3},
+            )
+            for _ in range(3)
+        ]
+        + [_chunk({}, finish_reason="stop")]
+    )
+    agent = _stream_agent(stream, with_tools=False)
+    message = _message("incremental-usage")
+    response = await agent.invoke_model(
+        messages=[{"role": "user", "content": "work"}], message=message, stream=True
+    )
+    calls = message.context.get_llm_calls()
+
+    assert response.usage["total_tokens"] == 9
+    assert calls[-1]["usage_normalized"]["total_tokens"] == 9
+    trajectory = build_atif_trajectory(
+        {"llm_calls": calls},
+        prompt="work",
+        agent_name="Aworld",
+        agent_version="dev",
+        run_outcome={"llm_call_count": 1},
+    )
+    assert trajectory["final_metrics"]["total_prompt_tokens"] == 3
+    assert trajectory["final_metrics"]["total_completion_tokens"] == 6

@@ -1042,6 +1042,7 @@ class OpenAIProvider(LLMProviderBase):
             )
 
         tool_buffer = []
+        usage = {"completion_tokens": 0, "prompt_tokens": 0, "total_tokens": 0}
 
         try:
             prepared_request = self._prepare_chat_completion_request(
@@ -1070,12 +1071,16 @@ class OpenAIProvider(LLMProviderBase):
                     chunk, tool_buffer=tool_buffer
                 )
                 if resp:
+                    self._accumulate_chunk_usage(usage, resp.usage)
                     yield resp
                     if finish_reason:
                         yield ModelResponse(
                             id=resp.id,
                             model=resp.model,
                             finish_reason=finish_reason,
+                            usage=usage,
+                            raw_usage=resp.raw_usage,
+                            usage_is_cumulative=True,
                             provider_request_id=resp.provider_request_id,
                         )
 
@@ -1118,6 +1123,7 @@ class OpenAIProvider(LLMProviderBase):
             )
 
         tool_buffer = []
+        usage = {"completion_tokens": 0, "prompt_tokens": 0, "total_tokens": 0}
 
         response_stream = None
         try:
@@ -1146,12 +1152,16 @@ class OpenAIProvider(LLMProviderBase):
                         chunk, tool_buffer=tool_buffer
                     )
                     if resp:
+                        self._accumulate_chunk_usage(usage, resp.usage)
                         yield resp
                         if finish_reason:
                             yield ModelResponse(
                                 id=resp.id,
                                 model=resp.model,
                                 finish_reason=finish_reason,
+                                usage=usage,
+                                raw_usage=resp.raw_usage,
+                                usage_is_cumulative=True,
                                 provider_request_id=resp.provider_request_id,
                             )
             else:
@@ -1166,6 +1176,7 @@ class OpenAIProvider(LLMProviderBase):
                         chunk, tool_buffer=tool_buffer
                     )
                     if resp:
+                        self._accumulate_chunk_usage(usage, resp.usage)
                         yield resp
                         if finish_reason:
                             yield ModelResponse(
@@ -1173,6 +1184,9 @@ class OpenAIProvider(LLMProviderBase):
                                 model=resp.model,
                                 content="",
                                 finish_reason=finish_reason,
+                                usage=usage,
+                                raw_usage=resp.raw_usage,
+                                usage_is_cumulative=True,
                                 provider_request_id=resp.provider_request_id,
                             )
 
