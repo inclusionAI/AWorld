@@ -108,9 +108,11 @@ def _terminal_trajectory_projection(
         if "is_agent_finished" in action:
             projected_action["is_agent_finished"] = action["is_agent_finished"]
         tool_calls = action.get("tool_calls")
-        if isinstance(tool_calls, list):
+        if isinstance(tool_calls, (list, tuple)):
             projected_action["tool_call_count"] = len(tool_calls)
-            projected_action["tool_calls"] = []
+            # Preserve pending intent without retaining tool identity or arguments.
+            # Completion checks distinguish a nonempty call list from a final answer.
+            projected_action["tool_calls"] = [{}] if tool_calls else []
         projected["action"] = projected_action
     reward = item.get("reward")
     if isinstance(reward, dict):
@@ -178,15 +180,16 @@ def _bounded_task_response_capability_payload(
         separators=(",", ":"),
     ).encode("utf-8")
     if len(compact_encoded) > max_bytes:
+        projected_action = compact["trajectory"][0].get("action", {})
         compact["trajectory"][0] = {
             "action": {
+                **projected_action,
                 "content": _bounded_text(
                     terminal.get("action", {}).get("content", "")
                     if isinstance(terminal.get("action"), dict)
                     else "",
                     max_chars=max(min(max_bytes // 8, 16_000), 256),
                 ),
-                "is_agent_finished": "True",
             }
         }
     final_encoded = json.dumps(
