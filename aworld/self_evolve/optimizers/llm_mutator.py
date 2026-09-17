@@ -883,7 +883,12 @@ def _build_judged_repair_prompt(
         prompt_budget["omitted_current_content_chars"] = 0
         prompt_budget["preserved_current_content_chars"] = len(request.current_content)
     instructions = (
-        "Repair the judged target behavior using this EvolutionContext. current_content "
+        "Repair the judged target behavior using this EvolutionContext. "
+        "Judge feedback on candidate_output, evidence, and support evaluates the task "
+        "answer and tool evidence produced by using the skill, not the wording of "
+        "SKILL.md itself. Encode reusable behavioral rules in the skill so future task "
+        "outputs address that feedback. Editing or deleting explanatory prose alone "
+        "does not fix the diagnosed problems in task answers. current_content "
         "is the real baseline; repair_focus.repair_candidate_package.content is the failed "
         "parent. Compare them to isolate the parent delta. The parent has completed replay, "
         "but its target prose is not verified merely because it is the repair base. "
