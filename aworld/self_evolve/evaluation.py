@@ -40,6 +40,7 @@ from aworld.self_evolve.evidence_diagnostics import (
     merge_evidence_repair_constraints,
 )
 from aworld.self_evolve.candidate_package import candidate_package_fingerprint
+from aworld.self_evolve.task_context import task_context_text
 from aworld.self_evolve.types import (
     CandidateVariant,
     EvaluationSummary,
@@ -1844,6 +1845,18 @@ def _aworld_trajectory_record(
         "is_sub_task": False,
         "trajectory": json.dumps(trajectory, ensure_ascii=False),
     }
+    metadata = case.metadata if isinstance(case.metadata, Mapping) else {}
+    replay = metadata.get("replay")
+    replay_request = replay.get("request") if isinstance(replay, Mapping) else None
+    # Paired replay carries the validated, adapted input actually dispatched to
+    # both arms. It can differ from the source case after context preparation.
+    task_context = task_context_text(
+        replay_request["task_context"]
+        if isinstance(replay_request, Mapping) and "task_context" in replay_request
+        else case.input
+    )
+    if task_context is not None:
+        record["task_context"] = task_context
     evidence_bundle_path = _evidence_bundle_path_for_variant(case, request=request)
     if evidence_bundle_path:
         record["evidence_bundle_path"] = evidence_bundle_path
@@ -1867,6 +1880,7 @@ def _aworld_trajectory_record_fingerprint(record: Mapping[str, Any]) -> str:
     payload = {
         "trajectory": record.get("trajectory"),
         "evidence_bundle_path": record.get("evidence_bundle_path"),
+        "task_context": record.get("task_context"),
     }
     raw = json.dumps(payload, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()

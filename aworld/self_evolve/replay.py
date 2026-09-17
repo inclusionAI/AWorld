@@ -62,6 +62,7 @@ from aworld.self_evolve.datasets import (
     SelfEvolveDataset,
     is_framework_meta_trace_pack,
 )
+from aworld.self_evolve.task_context import task_context_text
 from aworld.self_evolve.failure_events import (
     FAILURE_EVENT_SCHEMA_VERSION,
     FailureEventSource,
@@ -15225,6 +15226,9 @@ def build_paired_replay_dataset(
                     "task_id": replay_request.task_id,
                     "candidate_id": replay_request.candidate_id,
                     "overlay_skill_root": replay_request.overlay_skill_root,
+                    # Parent-owned input, kept separately from the terminal
+                    # trajectory projection and never treated as tool evidence.
+                    "task_context": task_context_text(replay_request.task_input),
                 },
                 "baseline": {
                     "status": baseline_variant.status,

@@ -336,20 +336,24 @@ def extract_aworld_trajectory_payload(
     *,
     task_id: str,
     is_sub_task: Any | None = None,
+    task_context: str | None = None,
 ) -> dict[str, Any]:
     trajectory = list(trajectory)
     if not isinstance(trajectory, list):
         raise ValueError(f"task_id {task_id} trajectory must be a list")
 
-    question = None
+    # A terminal-only projection need not contain the original user state.
+    # This separate task input is not an observation and adds no evidence.
+    question = _question_from_state_input(task_context)
     system_prompt = ""
     if trajectory:
         first_state = trajectory[0].get("state", {}) if isinstance(trajectory[0], Mapping) else {}
-        question = (
-            _question_from_state_input(first_state.get("input"))
-            if isinstance(first_state, Mapping)
-            else None
-        )
+        if question is None:
+            question = (
+                _question_from_state_input(first_state.get("input"))
+                if isinstance(first_state, Mapping)
+                else None
+            )
         first_messages = first_state.get("messages", []) if isinstance(first_state, Mapping) else []
         if first_messages and isinstance(first_messages[0], Mapping) and first_messages[0].get("role") == "system":
             system_prompt = str(first_messages[0].get("content") or "")
@@ -402,6 +406,7 @@ def _extract_aworld_trajectory_record_payload(record: TrajectorySnapshot) -> dic
         record.trajectory or [],
         task_id=record.task_id,
         is_sub_task=record.is_sub_task,
+        task_context=record.task_context,
     )
     extracted["trajectory_record"] = {
         "schema_version": record.schema_version,

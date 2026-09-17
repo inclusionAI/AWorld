@@ -153,6 +153,7 @@ class TrajectoryEnvelope:
     llm_calls: Sequence[Mapping[str, Any]] = field(default_factory=tuple)
     token_id_trajectory: Any = None
     is_sub_task: bool = False
+    task_context: str | None = None
 
     def __post_init__(self) -> None:
         if isinstance(self.revision, bool) or not isinstance(self.revision, int) or self.revision < 1:
@@ -163,6 +164,8 @@ class TrajectoryEnvelope:
             raise TypeError("llm_calls must be a sequence")
         if any(not isinstance(call, Mapping) for call in self.llm_calls):
             raise TypeError("llm_calls entries must be mappings")
+        if self.task_context is not None and not isinstance(self.task_context, str):
+            raise TypeError("task_context must be text or None")
 
         _validate_projection_consistency(
             self.build_result,
@@ -188,6 +191,7 @@ class TrajectoryEnvelope:
             "trajectory_ref": self.build_result.trajectory_ref,
             "llm_calls": _json_value([dict(call) for call in self.llm_calls]),
             "token_id_trajectory": _json_value(self.token_id_trajectory),
+            **({"task_context": self.task_context} if self.task_context is not None else {}),
             "integrity": {
                 "algorithm": "sha256",
                 "canonicalization": CANONICALIZATION_VERSION,
@@ -268,6 +272,11 @@ class TrajectoryEnvelope:
             raise TrajectoryIOError("v2 llm_calls must be a list of objects")
         if not isinstance(values.get("is_sub_task", False), bool):
             raise TrajectoryIOError("v2 is_sub_task must be a boolean")
+        # The optional field is omitted when absent. Accepting explicit null
+        # would lose its representation and change the verified record hash on
+        # the envelope-to-snapshot round trip.
+        if "task_context" in values and not isinstance(values["task_context"], str):
+            raise TrajectoryIOError("v2 task_context must be omitted or text")
         return cls(
             build_result=build_result,
             revision=values.get("revision"),
@@ -275,6 +284,7 @@ class TrajectoryEnvelope:
             llm_calls=llm_calls,
             token_id_trajectory=values.get("token_id_trajectory"),
             is_sub_task=bool(values.get("is_sub_task", False)),
+            task_context=values.get("task_context"),
         )
 
 
@@ -400,6 +410,7 @@ class TrajectorySnapshot:
     source: str
     line_number: int
     evidence_bundle_path: str | None = None
+    task_context: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -426,6 +437,9 @@ def _legacy_snapshot(
     task_id = payload.get("task_id")
     if task_id is None:
         raise TrajectoryIOError("legacy trajectory record is missing task_id")
+    task_context = payload.get("task_context")
+    if task_context is not None and not isinstance(task_context, str):
+        raise TrajectoryIOError("legacy task_context must be text or null")
     embedded_build_payload = _decode_nested_json(payload.get("trajectory_build_result"))
     if embedded_build_payload is not None and not isinstance(embedded_build_payload, Mapping):
         raise TrajectoryIOError("legacy trajectory_build_result must decode to an object")
@@ -480,6 +494,7 @@ def _legacy_snapshot(
         build_result = embedded_build_result.to_dict()
     return TrajectorySnapshot(
         schema_version="legacy",
+        task_context=task_context,
         task_id=str(task_id),
         revision=0,
         trajectory=trajectory,
@@ -506,6 +521,7 @@ def _v2_snapshot(envelope: TrajectoryEnvelope, *, source: str, line_number: int)
     payload = envelope.to_dict()
     return TrajectorySnapshot(
         schema_version=SCHEMA_VERSION,
+        task_context=envelope.task_context,
         task_id=envelope.build_result.task_id,
         revision=envelope.revision,
         trajectory=list(envelope.trajectory) if envelope.trajectory is not None else None,
