@@ -423,6 +423,7 @@ def _candidate_judge_metrics_by_split(
 
 def _reported_judge_gate_splits(
     report: Mapping[str, Any], *, metrics_by_split: Mapping[str, Mapping[str, Any]],
+    allow_legacy_evidence_order: bool = True,
 ) -> dict[int, str]:
     """Read split provenance; recognize only the known legacy gate layout."""
     raw_gates = report.get("gate_results")
@@ -459,7 +460,8 @@ def _reported_judge_gate_splits(
     if len(metrics_by_split) == 1 and len(evidence_indexes) == 1:
         result[evidence_indexes[0]] = next(iter(metrics_by_split))
     elif (
-        set(metrics_by_split) == {"validation", "held_out"}
+        allow_legacy_evidence_order
+        and set(metrics_by_split) == {"validation", "held_out"}
         and len(evidence_indexes) == 2
         and _legacy_judge_pair_identity_matches(metrics_by_split)
     ):

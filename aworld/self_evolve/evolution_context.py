@@ -907,6 +907,7 @@ def _repair_feedback_reached_judged_task_output(
                 "held_out_verification",
                 "required_verification",
                 "score_improvement",
+                "global_regression_benchmark",
             }
         )
     )

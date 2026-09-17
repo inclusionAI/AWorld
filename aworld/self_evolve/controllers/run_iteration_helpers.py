@@ -42,6 +42,7 @@ from aworld.self_evolve.replay_gates import (
     _gate_is_replay_execution_infrastructure_failure,
 )
 from aworld.self_evolve.feedback_diagnostics import _typed_gate_feedback_metrics
+from aworld.self_evolve.feedback_history import _reported_judge_gate_splits
 from aworld.self_evolve.gates import (
     CandidatePackageGate,
     ExternalCodeEvolutionGate,
@@ -717,63 +718,66 @@ def _iteration_validation_feedback(
         # gate in the run report, but never turn it into optimizer feedback or
         # lesson memory.
         return ()
-    feedback: list[EvaluationSummary] = []
-    typed_gate_metrics = _typed_gate_feedback_metrics(failed_gates)
-    typed_candidate_status = next(
-        (
-            str(gate.details["candidate_status"])
-            for gate in failed_gates
-            if isinstance(gate.details, Mapping)
-            and isinstance(gate.details.get("candidate_status"), str)
-        ),
-        None,
-    )
-    if typed_candidate_status is not None:
-        typed_gate_metrics["candidate_status"] = typed_candidate_status
-    repair_candidate_package = _repair_candidate_package_feedback(
-        candidate,
-        failed_gates=failed_gates,
-    )
-    if repair_candidate_package is not None:
-        typed_gate_metrics["repair_candidate_package"] = repair_candidate_package
-        # This helper is called only from the full candidate evaluation path.
-        # Mark its repair frontier explicitly so bounded representative screening
-        # or historical task-rollout feedback cannot outrank a later failure
-        # discovered across the authoritative dataset.
-        typed_gate_metrics["authoritative_replay_failure"] = (
-            typed_candidate_status != "prerequisite"
-        )
     comparison_metrics = _baseline_comparison_feedback_metrics(
         baseline_summary=baseline_summary,
         candidate_summary=candidate_summary,
     )
-    if candidate_summary is not None:
-        feedback.append(
-            EvaluationSummary(
-                variant_id=candidate_summary.variant_id,
-                metrics={
-                    **dict(candidate_summary.metrics),
-                    **comparison_metrics,
-                    **typed_gate_metrics,
-                    "failed_gates": [gate.gate_name for gate in failed_gates],
-                },
-                dataset_split=candidate_summary.dataset_split,
-            )
+    summaries = {
+        split: summary
+        for split, summary in (
+            ("validation", candidate_summary), ("held_out", held_out_summary)
         )
-    if held_out_summary is not None:
-        feedback.append(
-            EvaluationSummary(
-                variant_id=held_out_summary.variant_id,
-                metrics={
-                    **dict(held_out_summary.metrics),
-                    **typed_gate_metrics,
-                    "failed_gates": [gate.gate_name for gate in failed_gates],
-                },
-                dataset_split=held_out_summary.dataset_split,
-            )
+        if summary is not None
+    }
+    if summaries:
+        gate_splits = _reported_judge_gate_splits(
+            {"gate_results": [to_json_dict(gate) for gate in failed_gates]},
+            metrics_by_split={split: summary.metrics for split, summary in summaries.items()},
+            # Only failed gates reach this function, so the complete legacy
+            # validation-then-held-out layout is not available here.
+            allow_legacy_evidence_order=False,
         )
-    if feedback:
+        feedback: list[EvaluationSummary] = []
+        for split, summary in summaries.items():
+            owned_gates = [gate for index, gate in enumerate(failed_gates)
+                           if gate_splits.get(index) == split]
+            metrics = {
+                **dict(summary.metrics),
+                **(comparison_metrics if split == "validation" else {}),
+                **_iteration_gate_feedback_metrics(candidate, owned_gates),
+                "failed_gates": [gate.gate_name for gate in owned_gates],
+            }
+            if not owned_gates:
+                metrics.pop("repair_candidate_package", None)
+                metrics.pop("authoritative_replay_failure", None)
+            feedback.append(EvaluationSummary(
+                variant_id=summary.variant_id, metrics=metrics,
+                dataset_split=summary.dataset_split,
+            ))
+        unknown_gates = [gate for index, gate in enumerate(failed_gates)
+                         if index not in gate_splits]
+        if unknown_gates:
+            context = next(iter(summaries.values()))
+            metrics = {
+                **dict(context.metrics),
+                **_iteration_gate_feedback_metrics(candidate, unknown_gates),
+                "failed_gates": [gate.gate_name for gate in unknown_gates],
+            }
+            diagnostics = list(metrics.get("candidate_validation_diagnostics") or [])
+            diagnostics.append({
+                "code": "judge_failure_split_unknown", "stage": "evaluation",
+                "reason": f"The gate has no reliable dataset split. Metrics from {context.dataset_split} are context only, not a failure attribution.",
+            })
+            metrics["candidate_validation_diagnostics"] = diagnostics
+            if gate_splits:
+                metrics.pop("repair_candidate_package", None)
+                metrics.pop("authoritative_replay_failure", None)
+            feedback.append(EvaluationSummary(
+                variant_id=candidate.candidate_id, metrics=metrics,
+                dataset_split="unattributed",
+            ))
         return tuple(feedback)
+    typed_gate_metrics = _iteration_gate_feedback_metrics(candidate, failed_gates)
     return (
         EvaluationSummary(
             variant_id=candidate.candidate_id,
@@ -782,13 +786,34 @@ def _iteration_validation_feedback(
                 **typed_gate_metrics,
                 "failed_gates": [gate.gate_name for gate in failed_gates],
                 "candidate_status": (
-                    typed_candidate_status
+                    typed_gate_metrics.get("candidate_status")
                     or ("rejected" if failed_gates else "accepted")
                 ),
             },
             dataset_split="validation",
         ),
     )
+
+
+def _iteration_gate_feedback_metrics(
+    candidate: CandidateVariant, failed_gates: list[GateResult],
+) -> dict[str, object]:
+    metrics = _typed_gate_feedback_metrics(failed_gates)
+    candidate_status = next(
+        (str(gate.details["candidate_status"]) for gate in failed_gates
+         if isinstance(gate.details, Mapping)
+         and isinstance(gate.details.get("candidate_status"), str)),
+        None,
+    )
+    if candidate_status is not None:
+        metrics["candidate_status"] = candidate_status
+    package = _repair_candidate_package_feedback(candidate, failed_gates=failed_gates)
+    if package is not None:
+        metrics["repair_candidate_package"] = package
+        # Scope the authoritative repair marker to the same failed gates as
+        # the package; a passing split must not inherit either one.
+        metrics["authoritative_replay_failure"] = candidate_status != "prerequisite"
+    return metrics
 
 
 def _bounded_repair_candidate_target_content(

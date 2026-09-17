@@ -11391,9 +11391,15 @@ def test_iteration_validation_feedback_does_not_mix_validation_delta_into_held_o
         ],
     )
 
-    assert len(feedback) == 2
-    validation_metrics = feedback[0].metrics
-    held_out_metrics = feedback[1].metrics
+    by_split = {item.dataset_split: item for item in feedback}
+    assert set(by_split) == {"validation", "held_out", "unattributed"}
+    validation_metrics = by_split["validation"].metrics
+    held_out_metrics = by_split["held_out"].metrics
+    assert by_split["unattributed"].metrics["failed_gates"] == [
+        "global_regression_benchmark"
+    ]
+    assert validation_metrics["failed_gates"] == []
+    assert held_out_metrics["failed_gates"] == []
     assert validation_metrics["score_delta"] == 2.0
     assert held_out_metrics["score"] == 63.0
     assert held_out_metrics["A1_groundedness"] == 2.0
