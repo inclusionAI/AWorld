@@ -148,6 +148,58 @@ def _run_metric(
     return fallback
 
 
+def _complete_usage_totals(
+    trajectory_payload: dict[str, Any], llm_call_count: int
+) -> dict[str, int]:
+    """Export totals only when every distinct call has actual provider usage.
+
+    Missing terminal usage is unknown, including interrupted streams. Older
+    records filled missing usage with zeros, so accept legacy records only
+    when their raw usage contains nonzero evidence.
+    """
+    calls: dict[str, dict[str, Any]] = {}
+    for call in trajectory_payload.get("llm_calls") or []:
+        if not isinstance(call, dict) or not call.get("request_id"):
+            return {}
+        request_id = str(call["request_id"])
+        if request_id in calls and calls[request_id] != call:
+            return {}
+        calls[request_id] = call
+    if not calls or len(calls) != llm_call_count:
+        return {}
+    prompt = completion = 0
+    for call in calls.values():
+        raw = _as_dict(call.get("usage_raw"))
+        available = call.get("usage_available")
+        if available is False or (
+            available is not True
+            and not any(
+                (_as_nonnegative_int(raw.get(key)) or 0) > 0
+                for key in (
+                    "prompt_tokens",
+                    "input_tokens",
+                    "completion_tokens",
+                    "output_tokens",
+                )
+            )
+        ):
+            return {}
+        input_tokens = _as_nonnegative_int(
+            raw.get("prompt_tokens", raw.get("input_tokens"))
+        )
+        output_tokens = _as_nonnegative_int(
+            raw.get("completion_tokens", raw.get("output_tokens"))
+        )
+        if input_tokens is None or output_tokens is None:
+            return {}
+        prompt += input_tokens
+        completion += output_tokens
+    return {
+        "total_prompt_tokens": prompt,
+        "total_completion_tokens": completion,
+    }
+
+
 class AtifExportStatus(str, Enum):
     PERSISTED = "persisted"
     FAILED = "failed"
@@ -288,6 +340,7 @@ def build_atif_trajectory(
     )
     final_metrics: dict[str, Any] = {
         "total_steps": len(steps),
+        **_complete_usage_totals(trajectory_payload, llm_call_count),
         "extra": {
             "llm_call_count": llm_call_count,
             "tool_call_count": tool_call_count,
@@ -324,11 +377,15 @@ def build_atif_trajectory(
     }
 
 
-def write_atif_trajectory(path: str | os.PathLike[str], trajectory: dict[str, Any]) -> None:
+def write_atif_trajectory(
+    path: str | os.PathLike[str], trajectory: dict[str, Any]
+) -> None:
     """Write an ATIF trajectory atomically."""
     output_path = Path(path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    temporary_path = output_path.with_name(f".{output_path.name}.{uuid.uuid4().hex}.tmp")
+    temporary_path = output_path.with_name(
+        f".{output_path.name}.{uuid.uuid4().hex}.tmp"
+    )
     try:
         with temporary_path.open("w", encoding="utf-8") as stream:
             stream.write(json.dumps(trajectory, ensure_ascii=False, indent=2) + "\n")

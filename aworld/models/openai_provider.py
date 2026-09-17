@@ -3,6 +3,8 @@ import hashlib
 import os
 import socket
 import traceback
+import inspect
+from copy import deepcopy
 from dataclasses import dataclass
 from typing import Any, Dict, List, Generator, AsyncGenerator, Tuple, Optional
 
@@ -708,7 +710,9 @@ class OpenAIProvider(LLMProviderBase):
                 response,
             )
 
-    def postprocess_stream_response(self, chunk: Any) -> Tuple[ModelResponse, str]:
+    def postprocess_stream_response(
+        self, chunk: Any, *, tool_buffer: list | None = None
+    ) -> Tuple[ModelResponse, str]:
         """Process OpenAI streaming response chunk.
 
         Args:
@@ -720,6 +724,10 @@ class OpenAIProvider(LLMProviderBase):
         Raises:
             LLMResponseError: When LLM response error occurs.
         """
+        # A stream owns its buffer, including while another request is running.
+        # Keep the instance default for callers using this parser directly.
+        if tool_buffer is None:
+            tool_buffer = self.stream_tool_buffer
         # Check if chunk contains error
         if hasattr(chunk, "error") or (isinstance(chunk, dict) and chunk.get("error")):
             error_msg = (
@@ -754,6 +762,7 @@ class OpenAIProvider(LLMProviderBase):
             return None, None
 
         try:
+            resp = None
             finish_reason = ModelResponse._get_item_from_openai_message(
                 chunk_choice, "finish_reason"
             )
@@ -800,8 +809,8 @@ class OpenAIProvider(LLMProviderBase):
                             else None
                         )
                     func_args = func_args or ""  # API may send None in early chunks
-                    if index >= len(self.stream_tool_buffer):
-                        self.stream_tool_buffer.append(
+                    if index >= len(tool_buffer):
+                        tool_buffer.append(
                             {
                                 "id": tool_call.id
                                 if hasattr(tool_call, "id")
@@ -814,26 +823,41 @@ class OpenAIProvider(LLMProviderBase):
                             }
                         )
                     else:
-                        existing = self.stream_tool_buffer[index]["function"][
-                            "arguments"
-                        ]
-                        self.stream_tool_buffer[index]["function"]["arguments"] = (
+                        existing = tool_buffer[index]["function"]["arguments"]
+                        tool_buffer[index]["function"]["arguments"] = (
                             existing or ""
                         ) + func_args
-                processed_chunk = chunk
+                # Do not mutate SDK/provider records while removing incomplete
+                # calls from the response passed to the Agent.
+                processed_chunk = deepcopy(chunk)
                 if hasattr(processed_chunk, "choices"):
                     processed_chunk.choices[0].delta.tool_calls = None
                 else:
                     processed_chunk["choices"][0]["delta"]["tool_calls"] = None
                 resp = ModelResponse.from_openai_stream_chunk(processed_chunk)
+                resp.tool_call_progress = any(
+                    bool(
+                        (tc.get("function") or {}).get("arguments")
+                        or (tc.get("function") or {}).get("name")
+                    )
+                    if isinstance(tc, dict)
+                    else bool(
+                        getattr(getattr(tc, "function", None), "arguments", None)
+                        or getattr(getattr(tc, "function", None), "name", None)
+                    )
+                    for tc in tool_calls
+                )
                 # Skip this chunk only when there is no finish_reason; otherwise continue to return buffered tool_calls below
                 if (
-                    not resp.content and not resp.usage.get("total_tokens", 0)
+                    not resp.content
+                    and not resp.reasoning_content
+                    and not resp.tool_call_progress
+                    and not resp.usage.get("total_tokens", 0)
                 ) and not finish_reason:
                     logger.debug("[stream] skip chunk: no content and no usage")
                     return None, None
             if finish_reason:
-                if self.stream_tool_buffer:
+                if tool_buffer:
                     raw_usage = ModelResponse._extract_usage_payload(
                         chunk.usage
                         if hasattr(chunk, "usage")
@@ -844,9 +868,15 @@ class OpenAIProvider(LLMProviderBase):
                     # Extract content based on chunk type (dict vs object)
                     if isinstance(chunk, dict):
                         content = chunk["choices"][0].get("delta", {}).get("content")
+                        reasoning = (
+                            chunk["choices"][0]
+                            .get("delta", {})
+                            .get("reasoning_content")
+                        )
                     else:
                         delta = chunk.choices[0].delta
                         content = delta.content if hasattr(delta, "content") else None
+                        reasoning = getattr(delta, "reasoning_content", None)
 
                     tool_call_chunk = {
                         "id": chunk.id if hasattr(chunk, "id") else chunk.get("id"),
@@ -856,9 +886,6 @@ class OpenAIProvider(LLMProviderBase):
                         "object": chunk.object
                         if hasattr(chunk, "object")
                         else chunk.get("object"),
-                        "usage": chunk.usage
-                        if hasattr(chunk, "usage")
-                        else chunk.get("usage"),
                         "request_id": getattr(chunk, "request_id", None)
                         if not isinstance(chunk, dict)
                         else chunk.get("request_id"),
@@ -870,24 +897,32 @@ class OpenAIProvider(LLMProviderBase):
                                 "delta": {
                                     "role": "assistant",
                                     "content": content,
-                                    "tool_calls": self.stream_tool_buffer,
+                                    "reasoning_content": reasoning,
+                                    "tool_calls": list(tool_buffer),
                                 }
                             }
                         ],
                         "usage": raw_usage,
                     }
-                    self.stream_tool_buffer = []
+                    tool_buffer.clear()
                     chunk_resp = ModelResponse.from_openai_stream_chunk(tool_call_chunk)
                     logger.debug(
                         f"[stream] finished chunk: {chunk} \n chunk_resp: {chunk_resp}, finish_reason={finish_reason}"
                     )
                     return chunk_resp, finish_reason
-            resp = ModelResponse.from_openai_stream_chunk(chunk)
+            if resp is None:
+                resp = ModelResponse.from_openai_stream_chunk(chunk)
             logger.debug(
                 f"[stream] chunk: {chunk} \n resp: {resp}\nfinish_reason:{finish_reason}"
             )
             # Skip chunks with empty content and no tool_calls (unless finish_reason signals stream end)
-            if (not resp.content and not resp.tool_calls) and not finish_reason:
+            if (
+                not resp.content
+                and not resp.reasoning_content
+                and not resp.tool_calls
+                and not resp.tool_call_progress
+                and not any(resp.usage.values())
+            ) and not finish_reason:
                 logger.debug("[stream] skip chunk: empty content and no tool_calls")
                 return None, None
             return resp, finish_reason
@@ -1006,7 +1041,7 @@ class OpenAIProvider(LLMProviderBase):
                 "Sync provider not initialized. Make sure 'sync_enabled' parameter is set to True in initialization."
             )
 
-        usage = {"completion_tokens": 0, "prompt_tokens": 0, "total_tokens": 0}
+        tool_buffer = []
 
         try:
             prepared_request = self._prepare_chat_completion_request(
@@ -1031,17 +1066,16 @@ class OpenAIProvider(LLMProviderBase):
                 logger.debug(f"LLM raw stream chunk: {chunk}")
                 if not chunk:
                     continue
-                resp, finish_reason = self.postprocess_stream_response(chunk)
+                resp, finish_reason = self.postprocess_stream_response(
+                    chunk, tool_buffer=tool_buffer
+                )
                 if resp:
-                    self._accumulate_chunk_usage(usage, resp.usage)
                     yield resp
                     if finish_reason:
                         yield ModelResponse(
                             id=resp.id,
                             model=resp.model,
                             finish_reason=finish_reason,
-                            usage=usage,
-                            raw_usage=resp.raw_usage,
                             provider_request_id=resp.provider_request_id,
                         )
 
@@ -1083,8 +1117,9 @@ class OpenAIProvider(LLMProviderBase):
                 "Async provider not initialized. Make sure 'async_enabled' parameter is set to True in initialization."
             )
 
-        usage = {"completion_tokens": 0, "prompt_tokens": 0, "total_tokens": 0}
+        tool_buffer = []
 
+        response_stream = None
         try:
             prepared_request = self._prepare_chat_completion_request(
                 messages=messages,
@@ -1099,24 +1134,24 @@ class OpenAIProvider(LLMProviderBase):
             self._mark_prepared_attempt(prepared_request)
 
             if self.is_http_provider:
-                async for chunk in self.http_provider.async_stream_call(
+                response_stream = self.http_provider.async_stream_call(
                     openai_params,
                     serialized_body=prepared_request.serialized_body,
-                ):
+                )
+                async for chunk in response_stream:
                     logger.debug(f"LLM raw stream chunk: {chunk}")
                     if not chunk:
                         continue
-                    resp, finish_reason = self.postprocess_stream_response(chunk)
+                    resp, finish_reason = self.postprocess_stream_response(
+                        chunk, tool_buffer=tool_buffer
+                    )
                     if resp:
-                        self._accumulate_chunk_usage(usage, resp.usage)
                         yield resp
                         if finish_reason:
                             yield ModelResponse(
                                 id=resp.id,
                                 model=resp.model,
                                 finish_reason=finish_reason,
-                                usage=usage,
-                                raw_usage=resp.raw_usage,
                                 provider_request_id=resp.provider_request_id,
                             )
             else:
@@ -1127,9 +1162,10 @@ class OpenAIProvider(LLMProviderBase):
                     if not chunk:
                         continue
                     logger.debug(f"origin chunk: {chunk}")
-                    resp, finish_reason = self.postprocess_stream_response(chunk)
+                    resp, finish_reason = self.postprocess_stream_response(
+                        chunk, tool_buffer=tool_buffer
+                    )
                     if resp:
-                        self._accumulate_chunk_usage(usage, resp.usage)
                         yield resp
                         if finish_reason:
                             yield ModelResponse(
@@ -1137,8 +1173,6 @@ class OpenAIProvider(LLMProviderBase):
                                 model=resp.model,
                                 content="",
                                 finish_reason=finish_reason,
-                                usage=usage,
-                                raw_usage=resp.raw_usage,
                                 provider_request_id=resp.provider_request_id,
                             )
 
@@ -1151,6 +1185,17 @@ class OpenAIProvider(LLMProviderBase):
             raise LLMResponseError(
                 str(e), kwargs.get("model_name", self.model_name or "unknown")
             )
+
+        finally:
+            tool_buffer.clear()
+            if response_stream is not None:
+                close = getattr(response_stream, "aclose", None) or getattr(
+                    response_stream, "close", None
+                )
+                if close is not None:
+                    closed = close()
+                    if inspect.isawaitable(closed):
+                        await closed
 
     async def acompletion(
         self,

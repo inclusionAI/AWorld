@@ -1941,6 +1941,7 @@ class LLMModel:
                     "finish_reason": getattr(response, "finish_reason", None),
                 }
                 updated["usage_normalized"] = usage_normalized
+                updated["usage_available"] = bool(getattr(response, "raw_usage", None))
                 updated["usage_raw"] = self._safe_copy(
                     getattr(response, "raw_usage", None) or usage_normalized
                 )
@@ -2573,6 +2574,10 @@ class LLMModel:
                 context=context,
                 **kwargs,
             ):
+                if chunk.is_tool_progress_only:
+                    yield chunk
+                    continue
+                tool_progress = chunk.tool_call_progress
                 if self.llm_response_parser:
                     response_parse_args = kwargs.get("response_parse_args") or {}
                     chunk = sync_exec(
@@ -2580,6 +2585,7 @@ class LLMModel:
                         chunk,
                         **response_parse_args,
                     )
+                    chunk.tool_call_progress = tool_progress
                 log_params["time_cost"] = round(time.time() - start_ms, 3)
                 log_llm_record(
                     "CHUNK",
@@ -2730,20 +2736,26 @@ class LLMModel:
             kwargs[AWORLD_PROVIDER_CANDIDATE_KWARG] = provider_candidate
         if observed_attribution is not None:
             kwargs[AWORLD_PROVIDER_OBSERVED_ATTRIBUTION_KWARG] = observed_attribution
+        provider_stream = self.provider.astream_completion(
+            messages=messages,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            stop=stop,
+            context=context,
+            **kwargs,
+        )
         try:
-            async for chunk in self.provider.astream_completion(
-                messages=messages,
-                temperature=temperature,
-                max_tokens=max_tokens,
-                stop=stop,
-                context=context,
-                **kwargs,
-            ):
+            async for chunk in provider_stream:
+                if chunk.is_tool_progress_only:
+                    yield chunk
+                    continue
+                tool_progress = chunk.tool_call_progress
                 if self.llm_response_parser:
                     response_parse_args = kwargs.get("response_parse_args") or {}
                     chunk = await self.llm_response_parser.parse_chunk(
                         chunk, **response_parse_args
                     )
+                    chunk.tool_call_progress = tool_progress
                 log_params["time_cost"] = round(time.time() - start_ms, 3)
                 log_llm_record(
                     "CHUNK",
@@ -2777,17 +2789,26 @@ class LLMModel:
                 terminal_error = "provider_stream_failed"
             raise
         finally:
-            persisted_chunk = self._capture_stream_response_record(
-                record_chunk, final_chunk
-            )
-            self._finish_llm_call_record(
-                context=context,
-                request_id=request_id,
-                status=terminal_status,
-                response=persisted_chunk,
-                finished_at=time.time(),
-                error_code=terminal_error,
-            )
+            try:
+                close = getattr(provider_stream, "aclose", None)
+                if close is not None:
+                    await close()
+            except Exception as exc:
+                logger.warning(
+                    f"Provider stream cleanup failed; error_type={type(exc).__name__}"
+                )
+            finally:
+                persisted_chunk = self._capture_stream_response_record(
+                    record_chunk, final_chunk
+                )
+                self._finish_llm_call_record(
+                    context=context,
+                    request_id=request_id,
+                    status=terminal_status,
+                    response=persisted_chunk,
+                    finished_at=time.time(),
+                    error_code=terminal_error,
+                )
 
     def speech_to_text(
         self, audio_file: str, language: str = None, prompt: str = None, **kwargs

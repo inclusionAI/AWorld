@@ -4231,6 +4231,21 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                         exc, controller=controller, response=llm_response
                     ) from exc
 
+                tool_progress = bool(getattr(chunk, "tool_call_progress", False))
+                meaningful_progress = bool(
+                    chunk.content
+                    or chunk.reasoning_content
+                    or chunk.tool_calls
+                    or tool_progress
+                )
+                if meaningful_progress:
+                    controller.observe_stream_activity(
+                        meaningful_content_observed=True,
+                        tool_call_observed=bool(chunk.tool_calls) or tool_progress,
+                    )
+                if chunk.is_tool_progress_only:
+                    continue
+
                 logger.info(
                     f"llm_agent chunk [agent_name={self.name()}, agent_id={self.id()}]: {chunk}"
                 )
@@ -4238,9 +4253,8 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                     llm_response.content += chunk.content
                 if chunk.reasoning_content:
                     llm_response.reasoning_content = (
-                        (llm_response.reasoning_content or "")
-                        + chunk.reasoning_content
-                    )
+                        llm_response.reasoning_content or ""
+                    ) + chunk.reasoning_content
                 if chunk.tool_calls:
                     for tc in chunk.tool_calls:
                         if (
@@ -4268,13 +4282,6 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                     llm_response.message["tool_calls"] = [
                         tc.to_dict() for tc in llm_response.tool_calls
                     ]
-                controller.observe_stream_activity(
-                    meaningful_content_observed=bool(
-                        chunk.content or chunk.reasoning_content or chunk.tool_calls
-                    ),
-                    tool_call_observed=bool(llm_response.tool_calls),
-                )
-
                 await send_message(
                     ChunkMessage(
                         payload=chunk,
