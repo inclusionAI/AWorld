@@ -11392,10 +11392,10 @@ def test_iteration_validation_feedback_does_not_mix_validation_delta_into_held_o
     )
 
     by_split = {item.dataset_split: item for item in feedback}
-    assert set(by_split) == {"validation", "held_out", "unattributed"}
+    assert set(by_split) == {"validation", "held_out", "regression"}
     validation_metrics = by_split["validation"].metrics
     held_out_metrics = by_split["held_out"].metrics
-    assert by_split["unattributed"].metrics["failed_gates"] == [
+    assert by_split["regression"].metrics["failed_gates"] == [
         "global_regression_benchmark"
     ]
     assert validation_metrics["failed_gates"] == []

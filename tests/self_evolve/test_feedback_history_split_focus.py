@@ -232,7 +232,7 @@ def test_intra_cycle_unlabelled_gate_retains_unknown_attribution():
 
 
 @pytest.mark.parametrize("gate_name,judged", [
-    ("global_regression_benchmark", True), ("candidate_replay", False),
+    ("evidence_quality", True), ("candidate_replay", False),
 ])
 def test_unattributed_feedback_keeps_known_judge_stage_without_inventing_one(gate_name, judged):
     candidate = CandidateVariant(

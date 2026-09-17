@@ -43,6 +43,7 @@ from aworld.self_evolve.replay_gates import (
 )
 from aworld.self_evolve.feedback_diagnostics import _typed_gate_feedback_metrics
 from aworld.self_evolve.feedback_history import _reported_judge_gate_splits
+from aworld.self_evolve.regression_feedback import independent_regression_for_gate
 from aworld.self_evolve.gates import (
     CandidatePackageGate,
     ExternalCodeEvolutionGate,
@@ -718,6 +719,26 @@ def _iteration_validation_feedback(
         # gate in the run report, but never turn it into optimizer feedback or
         # lesson memory.
         return ()
+    regression_gates = [gate for gate in failed_gates if gate.gate_name == "global_regression_benchmark"]
+    if regression_gates:
+        metrics = _iteration_gate_feedback_metrics(candidate, regression_gates)
+        metrics["failed_gates"] = ["global_regression_benchmark"]
+        regression = independent_regression_for_gate(regression_gates[0].details, candidate_id=candidate.candidate_id)
+        if regression and regression["suites"]:
+            metrics["independent_regression"] = regression
+        else:
+            metrics.pop("repair_candidate_package", None)
+            metrics.pop("authoritative_replay_failure", None)
+            metrics["candidate_validation_diagnostics"] = [
+                *metrics.get("candidate_validation_diagnostics", []),
+                {"code": "independent_regression_feedback_unavailable", "stage": "evaluation", "reason": "No matching candidate-bound regression suite observations are available; selection metrics are separate context."},
+            ]
+        remaining = [gate for gate in failed_gates if gate.gate_name != "global_regression_benchmark"]
+        secondary = _iteration_validation_feedback(
+            candidate=candidate, baseline_summary=baseline_summary,
+            candidate_summary=candidate_summary, held_out_summary=held_out_summary, failed_gates=remaining,
+        ) if remaining or candidate_summary is not None or held_out_summary is not None else ()
+        return (EvaluationSummary(candidate.candidate_id, metrics, "regression"), *secondary)
     comparison_metrics = _baseline_comparison_feedback_metrics(
         baseline_summary=baseline_summary,
         candidate_summary=candidate_summary,

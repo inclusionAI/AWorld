@@ -20,6 +20,7 @@ from aworld.self_evolve.provenance import (
 )
 from aworld.self_evolve.replay_adaptation import ReplayAdaptationBundle
 from aworld.self_evolve.regression import RegressionEvidence
+from aworld.self_evolve.regression_feedback import project_independent_regression_feedback
 from aworld.self_evolve.types import CandidateVariant, EvaluationSummary, GateResult
 from aworld.self_evolve.runtime_health import (
     EvaluationRuntimeHealthStatus,
@@ -1738,6 +1739,9 @@ class GlobalRegressionBenchmarkGate:
                 ),
                 "evidence_fingerprint": evidence.fingerprint,
                 "suite_count": len(evidence.suite_results),
+                **({"independent_regression": project_independent_regression_feedback(
+                    evidence.to_dict(), candidate_id=candidate.candidate_id,
+                )} if not passed else {}),
                 "failed_suite_ids": [
                     result.spec.suite_id
                     for result in evidence.suite_results

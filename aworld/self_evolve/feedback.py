@@ -13,6 +13,7 @@ from aworld.self_evolve.sanitization import (
     sanitize_source_text,
     sanitize_text,
 )
+from aworld.self_evolve.regression_feedback import bounded_independent_regression_feedback
 from aworld.self_evolve.recovery_trace import (
     validate_public_constraint_recovery_trace,
     validate_public_recovery_trace,
@@ -146,6 +147,9 @@ def normalize_feedback_summary(feedback: EvaluationSummary) -> dict[str, Any]:
         "required_behaviors": required_behaviors,
         "repair_plan": repair_plan,
     }
+    regression = bounded_independent_regression_feedback(metrics.get("independent_regression"))
+    if regression is not None:
+        result["independent_regression"] = regression
     evidence_constraints = public_evidence_constraint_payload(metrics)
     if evidence_constraints:
         result["evidence_repair_constraints"] = evidence_constraints

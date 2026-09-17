@@ -39,6 +39,7 @@ from aworld.self_evolve.sanitization import (
     sanitize_source_text,
     sanitize_text,
 )
+from aworld.self_evolve.regression_feedback import bounded_independent_regression_feedback, has_judged_independent_regression
 from aworld.self_evolve.handbook import HandbookLocatorIntegrityError
 
 
@@ -371,6 +372,9 @@ def _compact_prompt_feedback_item(
     metrics = item.get("metrics")
     if isinstance(metrics, Mapping):
         compact["metrics"] = sanitize_metric_value(metrics, max_chars=120)
+    regression = bounded_independent_regression_feedback(item.get("independent_regression"))
+    if regression is not None:
+        compact["independent_regression"] = regression
     evidence = item.get("evidence")
     raw_issues = evidence.get("issues") if isinstance(evidence, Mapping) else None
     if isinstance(raw_issues, list):
@@ -878,6 +882,10 @@ def _repair_feedback_reached_judged_task_output(
         if isinstance(failed_gates, (list, tuple))
         else set()
     )
+    if "global_regression_benchmark" in gate_names and has_judged_independent_regression(
+        feedback.get("independent_regression"), candidate_id=feedback.get("variant_id"),
+    ):
+        return True
     has_judge_metrics = any(
         key in metrics
         for key in (
@@ -998,7 +1006,7 @@ def _repair_feedback_priority(feedback: Mapping[str, object]) -> int:
         # its evidence contract before revisiting older replay/conformance
         # branches. Held-out feedback wins ties with validation from the same
         # evaluated package, while recency still breaks ties within each split.
-        split_offset = 5_000 if feedback.get("dataset_split") == "held_out" else 0
+        split_offset = {"held_out": 5_000, "regression": 10_000}.get(feedback.get("dataset_split"), 0)
         return 200_000 + split_offset + frontier_progress
     if (
         isinstance(metrics, Mapping)
@@ -1244,7 +1252,7 @@ def _merge_typed_repair_constraints_across_feedback(
     result: list[Mapping[str, object]] = []
     for item in feedback:
         updated = dict(item)
-        if evidence_context:
+        if evidence_context and "independent_regression" not in item:
             updated["evidence_repair_constraints"] = evidence_context
         if not isinstance(item.get("repair_candidate_package"), Mapping):
             result.append(updated)
@@ -1453,6 +1461,9 @@ def _bounded_feedback_summary(
     summary: Mapping[str, Any],
 ) -> Mapping[str, object]:
     normalized = dict(sanitize_metric_value(summary))
+    regression = bounded_independent_regression_feedback(summary.get("independent_regression"))
+    if regression is not None:
+        normalized["independent_regression"] = regression
     for key, limit in (("failed_gates", 16), ("required_behaviors", 32)):
         raw = summary.get(key)
         if isinstance(raw, list):

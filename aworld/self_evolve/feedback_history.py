@@ -15,6 +15,7 @@ from aworld.self_evolve.sanitization import (
     sanitize_source_text,
     sanitize_text,
 )
+from aworld.self_evolve.regression_feedback import independent_regression_for_gate
 from aworld.self_evolve.types import EvaluationSummary, GateResult, to_json_dict
 from aworld.skills.structure_types import skill_structural_edit_intent_from_dict
 
@@ -177,6 +178,7 @@ def _feedback_from_report(
         report, report_path=report_path,
     )
     items.extend(selected_feedback)
+    regression_feedback_candidates = {item.variant_id for item in selected_feedback if item.dataset_split == "regression"}
     seen_repair_candidates = {item.variant_id for item in selected_feedback}
     for feedback in _repair_feedback_from_screening_report(report, report_path=report_path):
         if feedback.variant_id in seen_repair_candidates:
@@ -205,6 +207,10 @@ def _feedback_from_report(
             if not isinstance(candidate_id, str) or not candidate_id:
                 continue
             metrics = _historical_feedback_metrics(iteration)
+            if candidate_id in regression_feedback_candidates:
+                # The dedicated regression observation owns this failure;
+                # these iteration metrics describe the selection panel only.
+                metrics["failed_gates"] = [name for name in metrics.get("failed_gates", []) if name != "global_regression_benchmark"]
             metrics["candidate_status"] = str(iteration.get("status"))
             post_apply = (
                 report.get("post_apply")
@@ -301,7 +307,7 @@ def _repair_feedback_from_selected_candidate(
         )
         if failure_artifacts:
             bounded_details["failure_artifacts"] = list(failure_artifacts)
-        split = gate_splits.get(index) if judge_repair else judge_split
+        split = "regression" if gate_name == "global_regression_benchmark" else (gate_splits.get(index) if judge_repair else judge_split)
         gates_by_split.setdefault(split, []).append(
             GateResult(
                 gate_name=gate_name,
@@ -313,7 +319,7 @@ def _repair_feedback_from_selected_candidate(
     if not gates_by_split:
         return ()
     feedback: list[EvaluationSummary] = []
-    for split in ("held_out", "validation", None):
+    for split in ("regression", "held_out", "validation", None):
         gates = gates_by_split.get(split)
         if not gates:
             continue
@@ -327,7 +333,20 @@ def _repair_feedback_from_selected_candidate(
             else "repairable"
         )
         metrics = _typed_gate_feedback_metrics(gates)
-        metrics.update(metrics_by_split.get(split, judge_metrics if split is None else {}))
+        regression = None
+        if split == "regression":
+            regression = independent_regression_for_gate(
+                gates[0].details, candidate_id=candidate_id, evidence=report.get("regression_evidence"),
+            )
+            if regression and regression["suites"]:
+                metrics["independent_regression"] = regression
+            else:
+                metrics["candidate_validation_diagnostics"] = [
+                    *metrics.get("candidate_validation_diagnostics", []),
+                    {"code": "independent_regression_feedback_unavailable", "stage": "evaluation", "reason": "No matching candidate-bound regression suite observations are available; selection metrics are separate context."},
+                ]
+        else:
+            metrics.update(metrics_by_split.get(split, judge_metrics if split is None else {}))
         metrics.update({
             "failed_gates": list(dict.fromkeys(gate.gate_name for gate in gates)),
             "candidate_status": candidate_status,
@@ -345,7 +364,15 @@ def _repair_feedback_from_selected_candidate(
             })
             metrics["candidate_validation_diagnostics"] = diagnostics
         known_judge_failure = any(key in gates_by_split for key in metrics_by_split)
-        if not unknown_judge_split or not known_judge_failure:
+        if split == "regression":
+            if regression and regression["suites"] and any(
+                isinstance(gate.details, Mapping) and gate.details.get("failure_class") == "candidate" and gate.details.get("repairable") is True
+                for gate in gates
+            ):
+                metrics["repair_candidate_package"] = package
+            else:
+                metrics.pop("authoritative_replay_failure", None)
+        elif not unknown_judge_split or not known_judge_failure:
             metrics["repair_candidate_package"] = package
         feedback.append(EvaluationSummary(
             variant_id=candidate_id, metrics=metrics,
