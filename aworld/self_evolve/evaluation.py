@@ -40,6 +40,7 @@ from aworld.self_evolve.evidence_diagnostics import (
     merge_evidence_repair_constraints,
 )
 from aworld.self_evolve.candidate_package import candidate_package_fingerprint
+from aworld.self_evolve.sanitization import sanitize_text
 from aworld.self_evolve.task_context import task_context_text
 from aworld.self_evolve.types import (
     CandidateVariant,
@@ -49,6 +50,8 @@ from aworld.self_evolve.types import (
 
 
 EVALUATION_IDENTITY_SCHEMA_VERSION = "aworld.self_evolve.evaluation_identity.v1"
+_MAX_AGGREGATED_EVIDENCE_ISSUES = 16
+_MAX_AGGREGATED_EVIDENCE_ISSUE_CHARS = 480
 
 
 @dataclass(frozen=True)
@@ -2091,6 +2094,32 @@ def _aworld_comparison_plan_metrics(
     }
 
 
+def _merge_aworld_evidence_issues(groups: list[Any]) -> list[str]:
+    """Keep distinct judge explanations within a fixed diagnostic budget.
+
+    Wording is probabilistic even when the observed failure is the same. Keep
+    the first occurrence of each bounded explanation; prose never determines
+    typed constraint identity, severity, or acceptance.
+    """
+
+    issues: list[str] = []
+    seen: set[str] = set()
+    for group in groups:
+        if not isinstance(group, list):
+            continue
+        for value in group:
+            if not isinstance(value, str):
+                continue
+            issue = sanitize_text(value, max_chars=_MAX_AGGREGATED_EVIDENCE_ISSUE_CHARS)
+            if not issue or issue in seen:
+                continue
+            seen.add(issue)
+            issues.append(issue)
+            if len(issues) >= _MAX_AGGREGATED_EVIDENCE_ISSUES:
+                return issues
+    return issues
+
+
 def _aggregate_aworld_evaluator_metrics(
     reports: list[Mapping[str, Any]],
     *,
@@ -2152,6 +2181,11 @@ def _aggregate_aworld_evaluator_metrics(
                 aggregated[key] = [
                     constraint.to_dict() for constraint in constraints
                 ]
+            continue
+        if key == "evidence_issues":
+            issues = _merge_aworld_evidence_issues(values)
+            if issues:
+                aggregated[key] = issues
             continue
         if key in {"evidence_compacted", "evidence_incomplete"}:
             aggregated[key] = any(_truthy_metric(value) for value in values)
