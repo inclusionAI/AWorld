@@ -227,6 +227,7 @@ class ModelResponse:
             reasoning_details: Dict[str, Any] = None,
             video_result: VideoGenerationResult = None,
             tool_call_progress: bool = False,
+            usage_is_cumulative: bool = False,
     ):
         """
         Initialize ModelResponse object
@@ -262,6 +263,9 @@ class ModelResponse:
         # deliberately absent from messages/to_dict: partial arguments are not
         # executable Tool calls or a persisted model answer.
         self.tool_call_progress = tool_call_progress
+        # Provider finish receipts summarize preceding usage deltas. Consumers
+        # replace the running total with this snapshot instead of adding it.
+        self.usage_is_cumulative = usage_is_cumulative
 
         # If message is not provided, construct one from other fields
         if message is None:

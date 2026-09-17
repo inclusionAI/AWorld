@@ -4274,7 +4274,9 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                 llm_response.id = chunk.id
                 llm_response.model = chunk.model
                 llm_response.usage = nest_dict_counter(
-                    llm_response.usage, chunk.usage, ignore_zero=False
+                    {} if chunk.usage_is_cumulative else llm_response.usage,
+                    chunk.usage,
+                    ignore_zero=False,
                 )
                 if isinstance(chunk.message, dict):
                     llm_response.message.update(chunk.message)

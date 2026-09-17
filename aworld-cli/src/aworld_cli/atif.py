@@ -169,6 +169,8 @@ def _complete_usage_totals(
         return {}
     prompt = completion = 0
     for call in calls.values():
+        if call.get("status") not in (None, "success"):
+            return {}
         raw = _as_dict(call.get("usage_raw"))
         available = call.get("usage_available")
         if available is False or (
@@ -192,6 +194,12 @@ def _complete_usage_totals(
         )
         if input_tokens is None or output_tokens is None:
             return {}
+        normalized = _as_dict(call.get("usage_normalized"))
+        if normalized:
+            input_tokens = _as_nonnegative_int(normalized.get("prompt_tokens"))
+            output_tokens = _as_nonnegative_int(normalized.get("completion_tokens"))
+            if input_tokens is None or output_tokens is None:
+                return {}
         prompt += input_tokens
         completion += output_tokens
     return {
