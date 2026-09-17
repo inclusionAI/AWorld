@@ -31,6 +31,7 @@ from aworld.self_evolve.concurrency import (
     SelfEvolveConcurrencyPolicy,
 )
 from aworld.self_evolve.evolution_context import (
+    _compact_prompt_causal_diagnostics,
     _repair_feedback_reached_judged_task_output,
     compile_evolution_context,
 )
@@ -45,6 +46,10 @@ from aworld.self_evolve.optimizers.base import (
     exposed_improvement_signal_ids,
 )
 from aworld.self_evolve.patch_intent import apply_skill_patch_intent
+from aworld.self_evolve.recovery_trace import (
+    validate_public_constraint_recovery_trace,
+    validate_public_recovery_trace,
+)
 from aworld.self_evolve.repair_conformance import (
     RepairConformanceContract,
     compile_repair_conformance_contract,
@@ -862,6 +867,11 @@ def _build_judged_repair_prompt(
     scoped["target_package_inventory"] = list(request.target_package_inventory)
     scoped["capability_contracts"] = []
     scoped.pop("repair_conformance", None)
+    feedback = scoped.get("validation_feedback")
+    if isinstance(feedback, list):
+        scoped["validation_feedback"] = [
+            _judged_historical_runtime_summary(item) for item in feedback
+        ]
     focus = scoped.get("repair_focus")
     package = focus.get("repair_candidate_package") if isinstance(focus, dict) else None
     files = package.get("files") if isinstance(package, dict) else None
@@ -926,6 +936,69 @@ def _build_judged_repair_prompt(
         "object with content or patch_intent, and explain the behavioral correction in rationale.\n"
     )
     return instructions + json.dumps(scoped, ensure_ascii=False, sort_keys=True)
+
+
+def _judged_historical_runtime_summary(item: object) -> object:
+    """Keep old runtime checkpoints without reviving their repair instructions."""
+
+    if (
+        not isinstance(item, Mapping)
+        or item.get("dataset_split") != "historical_repair"
+        or _repair_feedback_reached_judged_task_output(item)
+    ):
+        return item
+    gates = item.get("failed_gates")
+    runtime_gates = {
+        "replay_adaptation", "candidate_replay", "candidate_repair_conformance"
+    }
+    if (
+        not isinstance(gates, list)
+        or not gates
+        or not all(isinstance(gate, str) for gate in gates)
+        or not set(gates).issubset(runtime_gates)
+    ):
+        return item
+
+    summary: dict[str, object] = {
+        "status": "history_only_runtime_frozen",
+        "failed_gates": list(gates),
+    }
+    diagnostics = item.get("candidate_validation_diagnostics")
+    if isinstance(diagnostics, list):
+        summary["diagnostics"] = [
+            {
+                key: diagnostic[key]
+                for key in ("code", "stage", "failure_fingerprint")
+                if key in diagnostic
+            }
+            for diagnostic in _compact_prompt_causal_diagnostics(diagnostics)
+        ]
+    counterexamples = item.get("replay_counterexamples")
+    if isinstance(counterexamples, list):
+        summary["counterexamples"] = [
+            {
+                key: example[key]
+                for key in (
+                    "failure_code", "stage", "semantic_key", "occurrence_count"
+                )
+                if key in example
+            }
+            for example in counterexamples[:4]
+            if isinstance(example, Mapping)
+        ]
+    for key, validator in (
+        ("recovery_trace", validate_public_recovery_trace),
+        ("constraint_recovery_trace", validate_public_constraint_recovery_trace),
+    ):
+        recovery = validator(item.get(key))
+        if recovery is not None:
+            recovery.pop("guidance", None)
+            summary[key] = recovery
+    return {
+        "variant_id": item.get("variant_id"),
+        "dataset_split": "historical_repair",
+        "historical_runtime_summary": summary,
+    }
 
 
 def _scope_general_mutation_prompt(
@@ -3319,11 +3392,14 @@ def _validate_judged_repair_surface(
             "parent_added_token_surface": parent_added_tokens,
             "candidate_added_token_surface": candidate_added_tokens,
             "allowed_added_token_growth": allowed_growth,
+            "maximum_added_token_surface": parent_added_tokens + allowed_growth,
             "required_change": (
                 "replace parent-added replay tutorials, redundant examples, and headings "
                 "with the concise correction for the active failed gate; remove global "
                 "invariants, claim ledgers, and unnecessary verification steps, but keep "
-                "the actual repair within the allowed added-token surface"
+                f"the actual repair within {parent_added_tokens + allowed_growth} total "
+                "added tokens relative to current_content "
+                f"({parent_added_tokens} parent tokens + {allowed_growth} growth allowance)"
             ),
         },
     )
