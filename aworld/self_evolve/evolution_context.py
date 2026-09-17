@@ -371,6 +371,18 @@ def _compact_prompt_feedback_item(
     metrics = item.get("metrics")
     if isinstance(metrics, Mapping):
         compact["metrics"] = sanitize_metric_value(metrics, max_chars=120)
+    evidence = item.get("evidence")
+    raw_issues = evidence.get("issues") if isinstance(evidence, Mapping) else None
+    if isinstance(raw_issues, list):
+        # Preserve the evaluator's causal explanation at the same 3 x 240
+        # limit as normalized feedback, including source-free repair support.
+        issues = [
+            sanitize_text(issue, max_chars=240)
+            for issue in raw_issues[:3]
+            if isinstance(issue, str) and issue.strip()
+        ]
+        if issues:
+            compact["evidence"] = {"issues": issues}
     diagnostics = item.get("candidate_validation_diagnostics")
     if isinstance(diagnostics, list):
         compact["candidate_validation_diagnostics"] = (
