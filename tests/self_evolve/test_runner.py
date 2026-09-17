@@ -20504,6 +20504,7 @@ def test_repair_conformance_failure_preserves_fixture_shape_and_trace_tail(
     diagnostics = _repair_conformance_failure_diagnostics(
         capability,
         artifact_dir=artifact_root,
+        trusted_artifact_root=tmp_path,
     )
 
     assert diagnostics["replay_fixture_summaries"][0]["json_root_type"] == "array"

@@ -57,6 +57,7 @@ from aworld.self_evolve.repair_conformance_diagnostics import (
     _repair_conformance_validation_surface_changed,
     _repair_probe_root_cause_code,
     _repair_conformance_gate,
+    _repair_conformance_failure_diagnostics,
 )
 from aworld.self_evolve.replay_capability import (
     frozen_replay_fixture_shape_fingerprints,
@@ -391,6 +392,17 @@ async def preflight_candidate_repair_conformance(
                 integrity_capability=capability,
             )
         except Exception as exc:
+            try:
+                artifact_diagnostics = _repair_conformance_failure_diagnostics(
+                    capability, artifact_dir=artifact_dir,
+                    trusted_artifact_root=runtime.store.run_path(request.run_id),
+                )
+            except Exception as diagnostic_error:
+                # Optional artifact inspection must not replace the original
+                # probe failure, including failures before group projection.
+                artifact_diagnostics = {
+                    "artifact_diagnostic_error_type": type(diagnostic_error).__name__,
+                }
             artifact_ref = sanitize_path_ref(
                 artifact_dir.relative_to(runtime.store.workspace_root).as_posix()
                 if artifact_dir.is_relative_to(runtime.store.workspace_root)
@@ -499,6 +511,7 @@ async def preflight_candidate_repair_conformance(
                     "error_type": type(exc).__name__,
                     "reason": error_reason,
                     **typed_error_details,
+                    **artifact_diagnostics,
                     "failure_event": failure_aggregate.to_dict(),
                 }
             )

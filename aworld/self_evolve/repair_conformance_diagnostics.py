@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Iterable, Mapping
 from pathlib import Path
 from typing import Any
@@ -199,6 +200,23 @@ def _failed_probe_typed_feedback(
             "error_type": str(result.get("error_type") or "Exception"),
             "reason": str(result.get("reason") or "candidate probe failed"),
         }
+        event = result.get("failure_event")
+        error_summaries = result.get("replay_service_error_summaries")
+        if isinstance(event, Mapping) and isinstance(error_summaries, list):
+            for summary in error_summaries[:8]:
+                if not isinstance(summary, Mapping):
+                    continue
+                reason = summary.get("reason")
+                error_type = summary.get("error_type")
+                if isinstance(reason, str) and isinstance(error_type, str):
+                    # Descriptive source context is separate from the typed
+                    # event identity and cannot change ownership or acceptance.
+                    diagnostic.update(
+                        semantic_key=event.get("semantic_key"),
+                        reason=sanitize_text(reason, max_chars=240),
+                        error_type=sanitize_text(error_type, max_chars=80),
+                    )
+                    break
         for key in (
             "probe_phase",
             "phase",
@@ -347,20 +365,38 @@ def _repair_conformance_failure_diagnostics(
     capability: Any,
     *,
     artifact_dir: Path,
+    trusted_artifact_root: Path,
 ) -> dict[str, object]:
+    try:
+        trusted_root = trusted_artifact_root.absolute()
+        relative_group = artifact_dir.absolute().relative_to(trusted_root)
+        if ".." in relative_group.parts or trusted_root.is_symlink():
+            return {}
+        checked_parent = trusted_root
+        for part in relative_group.parts:
+            checked_parent /= part
+            if checked_parent.is_symlink():
+                return {}
+        if artifact_dir.is_symlink() or not artifact_dir.is_dir():
+            return {}
+        artifact_root = artifact_dir.resolve(strict=True)
+        if not artifact_root.is_relative_to(trusted_root.resolve(strict=True)):
+            return {}
+    except (OSError, ValueError):
+        return {}
     diagnostics: dict[str, object] = {}
     fixture_summaries = replay_capability_fixture_summaries(capability)
     if fixture_summaries:
         diagnostics["replay_fixture_summaries"] = fixture_summaries
     trace_excerpts: list[dict[str, str]] = []
+    error_summaries: list[dict[str, str]] = []
     if artifact_dir.is_dir():
         inspected = 0
+        read_count = 0
         for path in artifact_dir.rglob("*"):
             inspected += 1
-            if inspected > 128 or len(trace_excerpts) >= 8:
+            if inspected > 128 or read_count >= 8:
                 break
-            if path.is_symlink() or not path.is_file():
-                continue
             name = path.name.lower()
             if "protocol_trace" not in name and name not in {
                 "stderr.txt",
@@ -368,6 +404,14 @@ def _repair_conformance_failure_diagnostics(
             }:
                 continue
             try:
+                if path.is_symlink() or not path.is_file():
+                    continue
+                if not path.resolve(strict=True).is_relative_to(artifact_root):
+                    continue
+                if any(parent.is_symlink() for parent in path.parents
+                       if parent != artifact_dir and parent.is_relative_to(artifact_dir)):
+                    continue
+                read_count += 1
                 with path.open("rb") as handle:
                     handle.seek(0, 2)
                     size = handle.tell()
@@ -375,7 +419,9 @@ def _repair_conformance_failure_diagnostics(
                     tail = handle.read(4_096).decode("utf-8", errors="replace")
             except OSError:
                 continue
-            bounded_tail = sanitize_text(tail, max_chars=4_000).strip()
+            # Keep the end of the sanitized tail: traceback exception lines
+            # come last and must not be cut by a prefix-oriented text budget.
+            bounded_tail = sanitize_text(tail, max_chars=16_384)[-4_000:].strip()
             if bounded_tail:
                 trace_excerpts.append(
                     {
@@ -385,8 +431,25 @@ def _repair_conformance_failure_diagnostics(
                         "tail": bounded_tail,
                     }
                 )
+            if name == "stderr.txt":
+                errors = re.findall(
+                    r"(?m)^([A-Za-z_][A-Za-z0-9_.]*(?:Error|Exception)):[^\r\n]*",
+                    tail,
+                )
+                if errors:
+                    error_type = errors[-1]
+                    line = next(line for line in reversed(tail.splitlines())
+                                if line.startswith(error_type + ":"))
+                    summary = {
+                        "error_type": sanitize_text(error_type, max_chars=80),
+                        "reason": sanitize_text(line, max_chars=240),
+                    }
+                    if summary not in error_summaries:
+                        error_summaries.append(summary)
     if trace_excerpts:
         diagnostics["replay_service_protocol_traces"] = trace_excerpts
+    if error_summaries:
+        diagnostics["replay_service_error_summaries"] = error_summaries
     return diagnostics
 
 def _conformance_gate_blocks_population(gate: GateResult) -> bool:

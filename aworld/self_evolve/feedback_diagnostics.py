@@ -485,6 +485,7 @@ def _typed_gate_feedback_metrics(
     repairable_values: list[bool] = []
     causal_events: dict[tuple[str, str], Mapping[str, object]] = {}
     candidate_causal_contexts: dict[str, Mapping[str, object]] = {}
+    candidate_causal_observations: dict[tuple[str, str], Mapping[str, str]] = {}
     repair_contract_contexts: list[Mapping[str, object]] = []
     recovery_traces: list[dict[str, object]] = []
     violated_schema_constraint_ids: set[str] = set()
@@ -640,6 +641,7 @@ def _typed_gate_feedback_metrics(
         repairable = details.get("repairable")
         if isinstance(repairable, bool):
             repairable_values.append(repairable)
+        gate_candidate_events: dict[tuple[str, str], str] = {}
         raw_causal_events = details.get("causal_failure_events")
         if isinstance(raw_causal_events, list):
             for event in raw_causal_events[:64]:
@@ -659,6 +661,7 @@ def _typed_gate_feedback_metrics(
                         "causal emission id was reused with a different typed payload"
                     )
                 if typed_event.owner is FailureOwner.CANDIDATE:
+                    gate_candidate_events[emission_key] = typed_event.code
                     has_specific_counterexample = any(
                         item.get("failure_code") == typed_event.code
                         and item.get("stage") == typed_event.stage.value
@@ -709,6 +712,21 @@ def _typed_gate_feedback_metrics(
                             ] = dict(bounded_contract)
         raw_diagnostics = details.get("diagnostics")
         if isinstance(raw_diagnostics, list):
+            for item in raw_diagnostics[:32]:
+                if not isinstance(item, Mapping):
+                    continue
+                semantic_key, code = item.get("semantic_key"), item.get("code")
+                reason, error_type = item.get("reason"), item.get("error_type")
+                if all(isinstance(value, str) for value in (semantic_key, code, reason, error_type)):
+                    for emission_key, event_code in gate_candidate_events.items():
+                        if emission_key[0] == semantic_key and event_code == code:
+                            # Bind only within the supplying gate, then retain
+                            # the emission key so equal failures from another
+                            # candidate cannot borrow this source observation.
+                            candidate_causal_observations.setdefault(emission_key, {
+                                "reason": sanitize_text(reason, max_chars=240),
+                                "error_type": sanitize_text(error_type, max_chars=80),
+                            })
             diagnostics.extend(
                 dict(item)
                 for item in raw_diagnostics[:16]
@@ -788,6 +806,9 @@ def _typed_gate_feedback_metrics(
                     if event.get(key) is not None
                 }
                 semantic_key = event.get("semantic_key")
+                observation = candidate_causal_observations.get((semantic_key, event.get("emission_id")))
+                if observation is not None:
+                    diagnostic.update(observation)
                 if isinstance(semantic_key, str):
                     repair_conformance = candidate_causal_contexts.get(
                         semantic_key
