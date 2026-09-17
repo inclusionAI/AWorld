@@ -15,6 +15,7 @@ from aworld.self_evolve.controllers.run_replay_adaptation import (
     execute_replay_adaptation,
 )
 from aworld.self_evolve.datasets import SelfEvolveDataset
+from aworld.self_evolve.replay_adaptation_diagnostics import _bound_adaptation_failure_diagnostics
 from aworld.self_evolve.failure_events import (
     FailureEventSource,
     FailureOwner,
@@ -341,6 +342,8 @@ async def validate_candidate_capabilities(
             ),
             details={
                 **details,
+                **({"diagnostics": _bound_adaptation_failure_diagnostics(details, event)}
+                   if not proven_shared else {}),
                 "failure_class": "infrastructure" if proven_shared else "candidate",
                 "repairable": not proven_shared,
                 "stage": "capability_compile",

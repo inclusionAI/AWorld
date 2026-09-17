@@ -90,12 +90,15 @@ async def test_current_conformance_stderr_reaches_actual_mutation_prompt(tmp_pat
     if failure_point == "projection":
         assert event["code"] == "repair_probe_execution_failed"
         assert result.gate.details["probe_group_results"][0]["reason"] == "original projection failure"
-        return
-    assert event["code"] == "replay_service_readiness_failed"
-    if failure_point == "inspection":
+        expected_reason = "original projection failure"
+    elif failure_point == "inspection":
+        assert event["code"] == "replay_service_readiness_failed"
         assert result.gate.details["probe_group_results"][0]["artifact_diagnostic_error_type"] == "OSError"
-        return
-    assert ERROR in json.dumps(result.gate.details)
+        expected_reason = "readiness timed out"
+    else:
+        assert event["code"] == "replay_service_readiness_failed"
+        assert ERROR in json.dumps(result.gate.details)
+        expected_reason = ERROR
     feedback = _iteration_validation_feedback(
         candidate=candidate, baseline_summary=None, candidate_summary=None, held_out_summary=None, failed_gates=[result.gate],
     )
@@ -110,7 +113,7 @@ async def test_current_conformance_stderr_reaches_actual_mutation_prompt(tmp_pat
     payload, _ = json.JSONDecoder().raw_decode(prompt[prompt.index('{"acceptance_constraints"'):])
     focus = payload["repair_focus"]
     assert focus["variant_id"] == candidate.candidate_id
-    assert ERROR in json.dumps(focus)
+    assert any(d.get("reason") == expected_reason for d in focus["candidate_validation_diagnostics"])
     assert "private-value" not in prompt
     assert "/Users/private" not in prompt
     assert "unrelated candidate failure" not in prompt

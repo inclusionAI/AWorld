@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from pathlib import Path
 
 from aworld.self_evolve.failure_events import (
@@ -28,6 +28,32 @@ from aworld.self_evolve.sanitization import sanitize_text
 from aworld.self_evolve.schema_diagnostics import (
     _schema_field_contract_fingerprint,
 )
+
+
+def _bound_adaptation_failure_diagnostics(
+    details: Mapping[str, object], event: ReplayFailureEvent,
+) -> list[object]:
+    """Associate the current compile exception with its outer typed event."""
+
+    raw_diagnostics = details.get("diagnostics")
+    diagnostics = list(raw_diagnostics) if isinstance(raw_diagnostics, list) else []
+    reason = details.get("reason")
+    if not isinstance(reason, str) or not reason.strip():
+        reason = next((item["reason"] for item in diagnostics
+                       if isinstance(item, Mapping) and isinstance(item.get("reason"), str)
+                       and item["reason"].strip()), None)
+    if not isinstance(reason, str):
+        return diagnostics
+    observation = {
+        "semantic_key": event.semantic_key,
+        "code": event.code,
+        "stage": event.stage.value,
+        "reason": sanitize_text(reason, max_chars=240),
+    }
+    error_type = details.get("type")
+    if isinstance(error_type, str) and error_type.strip():
+        observation["error_type"] = sanitize_text(error_type, max_chars=80)
+    return [observation, *diagnostics]
 
 
 def _replay_adaptation_exception_details(

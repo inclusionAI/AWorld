@@ -49,6 +49,7 @@ from aworld.self_evolve.replay import (
     replay_capability_fixture_response_leaf_values,
 )
 from aworld.self_evolve.replay_adaptation import ReplayCapabilityRequirement
+from aworld.self_evolve.replay_adaptation_diagnostics import _bound_adaptation_failure_diagnostics
 from aworld.self_evolve.repair_conformance_diagnostics import (
     _conformance_gate_blocks_population,
     _failed_probe_typed_feedback,
@@ -272,6 +273,9 @@ async def preflight_candidate_repair_conformance(
                 reason=adaptation_gate.reason,
                 details={
                     **adaptation_details,
+                    "diagnostics": _bound_adaptation_failure_diagnostics(
+                        adaptation_details, failure_event,
+                    ),
                     "failure_class": (
                         "candidate" if candidate_owned else "infrastructure"
                     ),

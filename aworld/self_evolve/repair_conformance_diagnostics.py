@@ -201,6 +201,8 @@ def _failed_probe_typed_feedback(
             "reason": str(result.get("reason") or "candidate probe failed"),
         }
         event = result.get("failure_event")
+        if isinstance(event, Mapping):
+            diagnostic["semantic_key"] = event.get("semantic_key")
         error_summaries = result.get("replay_service_error_summaries")
         if isinstance(event, Mapping) and isinstance(error_summaries, list):
             for summary in error_summaries[:8]:
@@ -212,7 +214,6 @@ def _failed_probe_typed_feedback(
                     # Descriptive source context is separate from the typed
                     # event identity and cannot change ownership or acceptance.
                     diagnostic.update(
-                        semantic_key=event.get("semantic_key"),
                         reason=sanitize_text(reason, max_chars=240),
                         error_type=sanitize_text(error_type, max_chars=80),
                     )

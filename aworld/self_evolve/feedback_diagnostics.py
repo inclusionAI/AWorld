@@ -717,16 +717,18 @@ def _typed_gate_feedback_metrics(
                     continue
                 semantic_key, code = item.get("semantic_key"), item.get("code")
                 reason, error_type = item.get("reason"), item.get("error_type")
-                if all(isinstance(value, str) for value in (semantic_key, code, reason, error_type)):
+                if all(isinstance(value, str) for value in (semantic_key, code, reason)):
                     for emission_key, event_code in gate_candidate_events.items():
                         if emission_key[0] == semantic_key and event_code == code:
                             # Bind only within the supplying gate, then retain
                             # the emission key so equal failures from another
                             # candidate cannot borrow this source observation.
-                            candidate_causal_observations.setdefault(emission_key, {
+                            observation = {
                                 "reason": sanitize_text(reason, max_chars=240),
-                                "error_type": sanitize_text(error_type, max_chars=80),
-                            })
+                            }
+                            if isinstance(error_type, str):
+                                observation["error_type"] = sanitize_text(error_type, max_chars=80)
+                            candidate_causal_observations.setdefault(emission_key, observation)
             diagnostics.extend(
                 dict(item)
                 for item in raw_diagnostics[:16]

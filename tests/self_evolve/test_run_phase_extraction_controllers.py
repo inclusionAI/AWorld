@@ -3,7 +3,7 @@ from __future__ import annotations
 import ast
 import inspect
 import json
-from dataclasses import fields, is_dataclass
+from dataclasses import fields, is_dataclass, replace
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -43,7 +43,12 @@ from aworld.self_evolve.controllers.run_replay_adaptation import (
     execute_replay_adaptation,
 )
 from aworld.self_evolve.datasets import EvalCase, SelfEvolveDataset
-from aworld.self_evolve.optimizers.base import OptimizerResult
+from aworld.self_evolve.failure_events import FailureOwner, FailureScope, FailureStage, ReplayFailureEvent
+from aworld.self_evolve.evolution_context import compile_evolution_context
+from aworld.self_evolve.optimizers.base import OptimizerRequest, OptimizerResult
+from aworld.self_evolve.optimizers.llm_mutator import _build_mutation_prompt
+from aworld.self_evolve.controllers.run_iteration_helpers import _iteration_validation_feedback
+from aworld.self_evolve.replay_adaptation_diagnostics import _replay_adaptation_exception_details
 from aworld.self_evolve.repair_conformance import (
     RepairConformanceContract,
     RepairConformanceResult,
@@ -53,9 +58,12 @@ from aworld.self_evolve.replay import ReplayServiceProtocolError
 from aworld.self_evolve.replay_capability import ReplayCapabilityError
 from aworld.self_evolve.runner import SelfEvolveRunner
 from aworld.self_evolve.store import FilesystemSelfEvolveStore
+from aworld.self_evolve.schema_diagnostics import SchemaFieldRepairConstraint
 from aworld.self_evolve.types import (
     CandidateVariant,
+    CandidateFileDelta,
     DatasetRecipe,
+    EvaluationSummary,
     GateResult,
     SelfEvolveTargetRef,
 )
@@ -691,6 +699,141 @@ async def test_capability_compile_failure_preserves_candidate_vs_shared_cause(
 
     assert result.gates[0].passed is False
     assert result.gates[0].details["failure_class"] == failure_class
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("wrapper", ["conformance", "capability"])
+@pytest.mark.parametrize("with_error_type", [False, True])
+@pytest.mark.parametrize("compact", [False, True])
+async def test_compile_wrapper_preserves_specific_reason_in_mutator_prompt(tmp_path, wrapper, with_error_type, compact):
+    skill = tmp_path / "skills/demo/SKILL.md"
+    skill.parent.mkdir(parents=True)
+    skill.write_text("# Demo\n")
+    candidate = CandidateVariant(
+        candidate_id="compile-candidate", target=SelfEvolveTargetRef("skill", "demo", str(skill)),
+        content="# Demo\n", rationale="repair compiler",
+        files=(CandidateFileDelta("replay/compiler.py", content="def compile_request():\n    pass\n"),),
+    )
+    reason = "duplicate replay service id: service-requirement-"
+    details = _replay_adaptation_exception_details(ReplayCapabilityError(reason), candidate_capability=True)
+    # Native compile diagnostics carry a reason even when no optional error
+    # type field is present. The outer gate deliberately has generic wording.
+    if with_error_type:
+        details["type"] = "ReplayCapabilityError"
+    adaptation = _adaptation_execution(tmp_path, override=lambda _: ReplayAdaptationResult(
+        None, GateResult("replay_adaptation", False, "replay adaptation compilation failed", details=details),
+    ))
+    target = SimpleNamespace(identity=SimpleNamespace(path=skill), baseline_skill_roots=())
+
+    def overlay(**_):
+        return SimpleNamespace(candidate_skill_path=skill)
+
+    if wrapper == "conformance":
+        result = await preflight_candidate_repair_conformance(
+            RepairConformancePreflightRequest(
+                run_id="compile-reason", target=target, dataset=_dataset(), candidate=candidate,
+                contract=RepairConformanceContract(
+                    focus_candidate_id="parent", failure_codes=("old_schema_violation",), interaction_progress=0,
+                    base_file_fingerprints={}, base_branch_fingerprints={}, required_branch_paths=("replay/compiler.py",),
+                    compiler_path="replay/compiler.py",
+                    schema_field_constraints=(SchemaFieldRepairConstraint("compile_result", "fixtures", "unique"),),
+                ),
+            ),
+            RepairConformancePreflightRuntime(store=FilesystemSelfEvolveStore(tmp_path), replay_adaptation=adaptation, create_candidate_skill_overlay=overlay),
+        )
+        gate = result.gate
+        expected_code = "repair_capability_compile_failed"
+    else:
+        result = await validate_candidate_capabilities(
+            CapabilityValidationRequest(run_id="compile-reason", target=target, dataset=_dataset(), candidate=candidate, requirements=(SimpleNamespace(),)),
+            CapabilityValidationPolicy(replay_enabled=True),
+            CapabilityValidationRuntime(
+                store=FilesystemSelfEvolveStore(tmp_path), replay_adaptation=adaptation,
+                create_candidate_skill_overlay=overlay,
+                validate_applicable_capabilities=lambda **_: (SimpleNamespace(capability_type="replay", passed=True, diagnostics=()),),
+            ),
+        )
+        gate = result.gates[0]
+        expected_code = "candidate_capability_compile_failed"
+    feedback = _iteration_validation_feedback(candidate=candidate, baseline_summary=None, candidate_summary=None, held_out_summary=None, failed_gates=[gate])
+    request = OptimizerRequest(
+        target=candidate.target, current_content="# Demo\n", target_fingerprint="sha256:base", trace_packs=(), validation_feedback=feedback,
+    )
+    if compact:
+        history = tuple(EvaluationSummary(variant_id=f"older-{i}", dataset_split="validation", metrics={
+            "failed_gates": ["candidate_replay"],
+            "candidate_validation_diagnostics": [{"code": f"historical_{j}", "reason": "historical observation " * 20} for j in range(16)],
+        }) for i in range(12))
+        request = replace(request, validation_feedback=(*feedback, *history))
+    prompt = _build_mutation_prompt(request, candidate_index=0)
+    payload, _ = json.JSONDecoder().raw_decode(prompt[prompt.index('{"acceptance_constraints"'):])
+    current = next(d for d in payload["repair_focus"]["candidate_validation_diagnostics"] if d.get("code") == expected_code)
+    assert current["reason"] == reason
+    assert current.get("error_type") == ("ReplayCapabilityError" if with_error_type else None)
+    assert current["owner"] == "candidate"
+    assert current["scope"] == "candidate"
+    assert payload["repair_conformance"]["required_branch_paths"] == ["replay/compiler.py"]
+    assert "active_schema_field_constraints" not in payload["repair_focus"]
+    if wrapper == "conformance":
+        assert payload["repair_conformance"]["schema_field_constraints"] == [
+            {"schema_layer": "compile_result", "field_path": "fixtures", "rule": "unique", "expected": []},
+        ]
+    if compact:
+        assert any(item.get("feedback_compacted") for item in payload["validation_feedback"])
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("wrapper", ["conformance", "capability"])
+@pytest.mark.parametrize("owner", ["framework", "infrastructure"])
+async def test_shared_compile_reason_never_becomes_candidate_feedback(tmp_path, wrapper, owner):
+    skill = tmp_path / "SKILL.md"
+    skill.write_text("# Demo\n")
+    candidate = _candidate()
+    event = ReplayFailureEvent(
+        code="shared_compile_failed", owner=FailureOwner(owner), stage=FailureStage.CAPABILITY_COMPILE,
+        scope=FailureScope.SHARED_RUN, repairable=False,
+    )
+    details = {
+        "failure_owner": owner, "failure_scope": "shared_run", "failure_source": "native",
+        "failure_class": owner, "repairable": False,
+        "reason": "specific shared environment failure", "type": "OSError",
+        "failure_event": event.to_dict(), "causal_failure_events": [event.to_dict()],
+    }
+    adaptation = _adaptation_execution(tmp_path, override=lambda _: ReplayAdaptationResult(
+        None, GateResult("replay_adaptation", False, "shared failure", details=details),
+    ))
+    target = SimpleNamespace(identity=SimpleNamespace(path=skill), baseline_skill_roots=())
+
+    def overlay(**_):
+        return SimpleNamespace(candidate_skill_path=skill)
+
+    if wrapper == "conformance":
+        result = await preflight_candidate_repair_conformance(
+            RepairConformancePreflightRequest(
+                run_id="shared", target=target, dataset=_dataset(), candidate=candidate,
+                contract=RepairConformanceContract(focus_candidate_id="parent", failure_codes=("failed",), interaction_progress=0, base_file_fingerprints={}, base_branch_fingerprints={}, required_branch_paths=()),
+            ),
+            RepairConformancePreflightRuntime(store=FilesystemSelfEvolveStore(tmp_path), replay_adaptation=adaptation, create_candidate_skill_overlay=overlay),
+        )
+        gate = result.gate
+        assert gate.details["failure_event"] == details["failure_event"]
+    else:
+        result = await validate_candidate_capabilities(
+            CapabilityValidationRequest(run_id="shared", target=target, dataset=_dataset(), candidate=candidate, requirements=(SimpleNamespace(),)),
+            CapabilityValidationPolicy(replay_enabled=True),
+            CapabilityValidationRuntime(store=FilesystemSelfEvolveStore(tmp_path), replay_adaptation=adaptation, create_candidate_skill_overlay=overlay, validate_applicable_capabilities=lambda **_: (SimpleNamespace(capability_type="replay", passed=True, diagnostics=()),)),
+        )
+        gate = result.gates[0]
+    assert gate.details.get("diagnostics") is None
+    feedback = _iteration_validation_feedback(candidate=candidate, baseline_summary=None, candidate_summary=None, held_out_summary=None, failed_gates=[gate])
+    for item in feedback:
+        assert item.metrics["failure_class"] != "candidate"
+        assert item.metrics["repairable"] is False
+        assert "repair_candidate_package" not in item.metrics
+    context = compile_evolution_context(OptimizerRequest(
+        target=candidate.target, current_content="# Demo\n", target_fingerprint="sha256:base", trace_packs=(), validation_feedback=feedback,
+    ))
+    assert context.repair_focus_for_candidate(candidate_index=0) is None
 
 
 def test_replay_manifest_compatibility_rejects_identity_and_isolation_downgrade(
