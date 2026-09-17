@@ -226,6 +226,7 @@ class ModelResponse:
             finish_reason: str = None,
             reasoning_details: Dict[str, Any] = None,
             video_result: VideoGenerationResult = None,
+            tool_call_progress: bool = False,
     ):
         """
         Initialize ModelResponse object
@@ -257,6 +258,10 @@ class ModelResponse:
         self.error = error
         self.raw_response = raw_response
         self.video_result = video_result
+        # In-process liveness evidence for buffered argument deltas. It is
+        # deliberately absent from messages/to_dict: partial arguments are not
+        # executable Tool calls or a persisted model answer.
+        self.tool_call_progress = tool_call_progress
 
         # If message is not provided, construct one from other fields
         if message is None:
@@ -521,6 +526,7 @@ class ModelResponse:
                     id=chunk.get('id', 'unknown'),
                     model=chunk.get('model', 'unknown'),
                     content=delta.get('content'),
+                    reasoning_content=delta.get('reasoning_content'),
                     usage=raw_usage,
                     raw_usage=raw_usage,
                     provider_request_id=cls._extract_provider_request_id(chunk),
@@ -536,6 +542,7 @@ class ModelResponse:
                     id=chunk.id if hasattr(chunk, 'id') else 'unknown',
                     model=chunk.model if hasattr(chunk, 'model') else 'unknown',
                     content=delta.content if hasattr(delta, 'content') else None,
+                    reasoning_content=getattr(delta, 'reasoning_content', None),
                     usage=raw_usage,
                     raw_usage=raw_usage,
                     provider_request_id=cls._extract_provider_request_id(chunk),
@@ -547,10 +554,12 @@ class ModelResponse:
 
         # Normal chunk with delta content
         content = ""
+        reasoning_content = None
         processed_tool_calls = []
 
         if hasattr(chunk, 'choices') and chunk.choices:
             delta = chunk.choices[0].delta
+            reasoning_content = getattr(delta, "reasoning_content", None)
             if hasattr(delta, 'content') and delta.content:
                 content = delta.content
             if hasattr(delta, 'tool_calls') and delta.tool_calls:
@@ -579,6 +588,7 @@ class ModelResponse:
             if not delta:
                 delta = chunk['choices'][0].get('message', {})
             content = delta.get('content')
+            reasoning_content = delta.get('reasoning_content')
             raw_tool_calls = delta.get('tool_calls')
             if raw_tool_calls:
                 for tool_call in raw_tool_calls:
@@ -597,6 +607,7 @@ class ModelResponse:
             id=chunk.id if hasattr(chunk, 'id') else chunk.get('id', 'unknown'),
             model=chunk.model if hasattr(chunk, 'model') else chunk.get('model', 'unknown'),
             content=content or "",
+            reasoning_content=reasoning_content,
             tool_calls=processed_tool_calls or None,
             usage=raw_usage,
             raw_usage=raw_usage,
@@ -801,6 +812,15 @@ class ModelResponse:
             model=model,
             error=error_msg,
             message={"role": "assistant", "content": f"Error: {error_msg}"}
+        )
+
+    @property
+    def is_tool_progress_only(self) -> bool:
+        """Whether this chunk only signals buffered Tool argument progress."""
+        return bool(
+            self.tool_call_progress
+            and not (self.content or self.reasoning_content or self.tool_calls)
+            and not (self.error or self.finish_reason or any(self.usage.values()))
         )
 
     def to_dict(self) -> Dict[str, Any]:
