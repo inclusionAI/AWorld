@@ -1,5 +1,6 @@
 import asyncio
 import json
+import math
 import os
 import re
 import shlex
@@ -31,6 +32,7 @@ from typing_extensions import Optional, List, Dict, Any
 from typing import TYPE_CHECKING
 
 from aworld.mcp_client.utils import (
+    _stdio_server_environment,
     call_api,
     call_function_tool,
     call_mcp_tool_with_exit_stack,
@@ -56,6 +58,85 @@ if TYPE_CHECKING:
 
 _TERMINAL_EXECUTION_TOOL_NAMES = {"run_code", "execute_command", "mcp_execute_command"}
 _TERMINAL_COMMAND_PARAMETER_KEYS = {"code", "command"}
+_MCP_TRANSPORT_MIN_TIMEOUT_SECONDS = 120.0
+_MCP_TRANSPORT_GRACE_SECONDS = 10.0
+_MCP_TRANSPORT_MAX_TIMEOUT_SECONDS = 86410.0
+_TERMINAL_DEFAULT_TIMEOUT_SECONDS = 300.0
+_TERMINAL_MAX_TIMEOUT_SECONDS = 3600.0
+
+
+def _finite_positive_timeout(value: Any) -> float:
+    """Accept provider numeric strings, never bool/NaN/infinity or no deadline."""
+    if isinstance(value, bool) or not isinstance(value, (int, float, str)):
+        raise ValueError("timeout must be a positive finite number")
+    try:
+        seconds = float(value)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise ValueError("timeout must be a positive finite number") from exc
+    if not math.isfinite(seconds) or seconds <= 0:
+        raise ValueError("timeout must be a positive finite number")
+    return seconds
+
+
+def _resolve_mcp_transport_timeout(
+    *,
+    server_name: str,
+    tool_name: str,
+    parameter: Dict[str, Any],
+    tool_list: List[Dict[str, Any]],
+    environ: Dict[str, str] | None = None,
+) -> float:
+    """Wait beyond the tool's declared execution budget, with finite bounds.
+
+    Schema defaults are annotations, not values that MCP automatically inserts
+    into the arguments. Older schema projections also discard ``default``;
+    retain the packaged terminal's public default for that canonical route.
+    Task/process deadlines continue to bound this transport wait externally.
+    """
+    terminal_run = server_name == "terminal" and tool_name == "run_code"
+    fallback = _TERMINAL_DEFAULT_TIMEOUT_SECONDS if terminal_run else 30.0
+    if "timeout" in parameter:
+        seconds = _finite_positive_timeout(parameter["timeout"])
+        parameter["timeout"] = seconds
+    else:
+        seconds = fallback
+        identifier = f"{server_name}__{tool_name}"
+        for tool in tool_list or ():
+            function = tool.get("function", {})
+            if tool.get("type") != "function" or function.get("name") != identifier:
+                continue
+            timeout_schema = function.get("parameters", {}).get("properties", {}).get(
+                "timeout", {}
+            )
+            if "default" in timeout_schema:
+                try:
+                    seconds = _finite_positive_timeout(timeout_schema["default"])
+                except ValueError:
+                    # A malformed schema must not create an unbounded wait.
+                    seconds = fallback
+            break
+    if terminal_run:
+        # Only the resolved child environment is authoritative. Most host
+        # variables are deliberately not inherited by MCP subprocesses.
+        environment = {} if environ is None else environ
+        override = environment.get("TERMINAL_TIMEOUT")
+        if override is not None:
+            try:
+                seconds = _finite_positive_timeout(override)
+            except ValueError:
+                pass
+        maximum = _TERMINAL_MAX_TIMEOUT_SECONDS
+        configured_maximum = environment.get("AWORLD_TERMINAL_MAX_TIMEOUT_SECONDS")
+        if configured_maximum is not None:
+            try:
+                maximum = min(maximum, max(1.0, _finite_positive_timeout(configured_maximum)))
+            except ValueError:
+                pass
+        seconds = min(seconds, maximum)
+    return min(
+        _MCP_TRANSPORT_MAX_TIMEOUT_SECONDS,
+        max(_MCP_TRANSPORT_MIN_TIMEOUT_SECONDS, seconds + _MCP_TRANSPORT_GRACE_SECONDS),
+    )
 
 
 def _coalesce_tool_result_content(content_items: List[str]) -> Any:
@@ -986,6 +1067,7 @@ class McpServers:
 
                 # Check server type
                 server_type = None
+                server_config = {}
                 if self.mcp_config and self.mcp_config.get("mcpServers"):
                     server_config = self.mcp_config.get("mcpServers").get(server_name, {})
                     server_type = server_config.get("type", "")
@@ -1066,6 +1148,17 @@ class McpServers:
                         tool_name=tool_name,
                         parameter=parameter
                     )
+                    mcp_timeout = _resolve_mcp_transport_timeout(
+                        server_name=server_name,
+                        tool_name=tool_name,
+                        parameter=parameter,
+                        tool_list=self.tool_list,
+                        environ=(
+                            _stdio_server_environment(server_config)
+                            if server_type == "stdio" or server_config.get("command")
+                            else {}
+                        ),
+                    )
                 except Exception as e:
                     logger.warning(f"Error checking tool parameters: {e}")
                     action_result = _build_tool_call_failure_result(
@@ -1089,15 +1182,7 @@ class McpServers:
 
                 sandbox_id = self.sandbox.sandbox_id if self.sandbox is not None else None
 
-                # Extract timeout from tool parameters if available, otherwise use default
-                # Add 10 seconds buffer for MCP communication overhead
-                tool_timeout = parameter.get("timeout", 30)
-                if isinstance(tool_timeout, (int, float)):
-                    mcp_timeout = max(float(tool_timeout) + 10, 120.0)
-                else:
-                    mcp_timeout = 120.0
-
-                logger.debug(f"Tool timeout: {tool_timeout}s, MCP timeout: {mcp_timeout}s")
+                logger.debug(f"MCP timeout for {result_key}: {mcp_timeout}s")
                 retry_safe = mcp_tool_retry_safe(
                     self.mcp_config,
                     server_name,
