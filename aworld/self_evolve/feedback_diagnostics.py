@@ -130,27 +130,31 @@ def _merge_validation_feedback(
             continue
         seen.add(fingerprint)
         merged.append(item)
-    best_family_index: dict[str, int] = {}
-    best_family_progress: dict[str, tuple[int, ...]] = {}
+    # Independent dataset splits describe different observations of the same
+    # failure. Keep one frontier per split, without changing the failure-family
+    # identity also used to bound repair-budget extensions.
+    best_family_index: dict[tuple[str, str], int] = {}
+    best_family_progress: dict[tuple[str, str], tuple[int, ...]] = {}
     for index, item in enumerate(merged):
         family = _validation_feedback_failure_family(item)
         if family is not None:
+            checkpoint_key = (family, item.dataset_split)
             progress = _feedback_interaction_progress(item)
             recovery_frontier = _feedback_recovery_frontier(item)
             constraint_frontier = _feedback_constraint_recovery_frontier(item)
             frontier = (*recovery_frontier, *constraint_frontier, progress)
             if frontier >= best_family_progress.get(
-                family,
+                checkpoint_key,
                 tuple(-1 for _ in frontier),
             ):
-                best_family_progress[family] = frontier
-                best_family_index[family] = index
+                best_family_progress[checkpoint_key] = frontier
+                best_family_index[checkpoint_key] = index
     compacted = [
         item
         for index, item in enumerate(merged)
         if (
             (family := _validation_feedback_failure_family(item)) is None
-            or best_family_index.get(family) == index
+            or best_family_index.get((family, item.dataset_split)) == index
         )
     ]
     return tuple(compacted[-_MAX_CURRENT_RUN_VALIDATION_FEEDBACK:])
