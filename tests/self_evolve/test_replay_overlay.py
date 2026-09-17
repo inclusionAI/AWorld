@@ -11346,7 +11346,8 @@ async def test_aworld_cli_replay_executor_decodes_timeout_output_bytes(
         "max_steps": None,
         "max_tool_calls": 8,
         "tool_calls_used": 0,
-        "terminal_synthesis_attempted": False,
+        "tool_calls_used_scope": "evidence_directory",
+        "max_tool_calls_scope": "task",
         "evidence_phase": "collecting",
         "diagnostics": {
             "stdout_tail": "partial stdout: CDP discovery failed at <LOCAL_PATH>",
@@ -11366,7 +11367,8 @@ async def test_aworld_cli_replay_executor_decodes_timeout_output_bytes(
             "max_steps": None,
             "max_tool_calls": 8,
             "tool_calls_used": 0,
-            "terminal_synthesis_attempted": False,
+            "tool_calls_used_scope": "evidence_directory",
+            "max_tool_calls_scope": "task",
             "evidence_phase": "collecting",
         },
     }
@@ -11861,7 +11863,7 @@ async def test_aworld_cli_replay_executor_preserves_timeout_with_recoverable_evi
     assert result.failure["repairable"] is False
     assert result.failure["termination_kind"] == "budget_exhausted"
     assert result.failure["termination_budget_axis"] == "wall_time"
-    assert result.failure["terminal_synthesis_attempted"] is False
+    assert "terminal_synthesis_attempted" not in result.failure
     assert result.failure["diagnostics"]["evidence_recoverable"] is True
     assert result.stdout == "partial stdout"
     assert result.stderr == "partial stderr"

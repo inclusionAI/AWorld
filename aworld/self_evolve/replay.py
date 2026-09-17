@@ -1334,6 +1334,8 @@ def _execution_failure_event(
         "max_steps",
         "max_tool_calls",
         "tool_calls_used",
+        "tool_calls_used_scope",
+        "max_tool_calls_scope",
         "terminal_synthesis_attempted",
         "evidence_phase",
     ):
@@ -6928,18 +6930,20 @@ def _timeout_termination_diagnostics(
     evidence_phase = str(
         evidence_metrics.get("evidence_runtime_policy_phase") or "collecting"
     )
-    if tool_calls_used >= max_tool_calls:
-        budget_axis = "tool_calls"
-    else:
-        budget_axis = "wall_time"
+    # This is called for the supervisor's elapsed-time deadline. Evidence
+    # policy counts span CLI task iterations, while the tool limit resets per
+    # task; comparing them cannot establish tool-budget exhaustion.
     return {
         "termination_kind": "budget_exhausted",
-        "termination_budget_axis": budget_axis,
+        "termination_budget_axis": "wall_time",
         "timeout_seconds": request.timeout_seconds,
         "max_steps": request.max_steps,
         "max_tool_calls": max_tool_calls,
         "tool_calls_used": tool_calls_used,
-        "terminal_synthesis_attempted": evidence_phase == "finalizing",
+        "tool_calls_used_scope": "evidence_directory",
+        "max_tool_calls_scope": "task",
+        # The policy phase is updated at tool boundaries, not when an LLM
+        # starts a final answer. Synthesis attempts are unknown here.
         "evidence_phase": evidence_phase,
     }
 

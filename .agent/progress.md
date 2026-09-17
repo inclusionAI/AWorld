@@ -1,5 +1,14 @@
 # Project Progress
 
+## Self-evolve verified publication follow-up (2026-09-17)
+
+- Scope: only the exact `aworld-cli optimize --target skill:agent-browser --from-trajectory ~/Documents/trajectory1.log --apply verified_only --judge-agent ~/Documents/agent.md --judge-timeout 600 --judge-model-profile gpt-5.5 --replay-timeout 900 --replay-total-timeout 3600` acceptance goal. Other project milestones below are out of scope for this follow-up.
+- Commits e524eeca and ac201309 preserve concise judged repairs and preflight evaluation budgets. Commit 46e835f5 repairs release normalization for verified parent-bound edits while retaining baseline preservation and fresh replay.
+- Candidate llm-mutator-a65ea6794a39 passed all quality gates in campaign-5875173f625fdeb7a2e7-cycle-004 but publication failed on structural intent rebinding. Never treat this as published success.
+- Active campaign campaign-054fec7d311420ce1a88 is evaluating the successor candidate after a fresh retry timed out. Runtime investigation found wall-clock/monotonic timeout divergence and misleading synthesis/tool-budget diagnostics, not evidence that incomplete streams should be accepted. Fix these narrowly in isolated worktrees while preserving active replay and all quality gates.
+- Completion requires verified confidence, all gates passed, published post-apply receipt, matching live target and accepted journal. Runtime artifacts and tmp/ stay untracked.
+- Timeout diagnostics now report the observed supervisor time deadline, label tool-count scopes, and retain unknown synthesis attempts instead of inferring failure from the policy phase. Relevant overlay/diagnostics tests: 262 passed; runner tests: 411 passed; independent read-only review found no acceptance weakening.
+
 ## Self-evolve acceptance follow-up (2026-09-13)
 
 **Status:** harness fix implemented; fresh acceptance rerun pending

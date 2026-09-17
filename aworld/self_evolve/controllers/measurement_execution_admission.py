@@ -649,7 +649,7 @@ def _paired_candidate_completion_failure(
     termination_axes: list[str] = []
     candidate_timeout_count = 0
     baseline_timeout_count = 0
-    terminal_synthesis_attempted = False
+    synthesis_observations: list[bool | None] = []
     for member in normalized.members:
         if _variant_is_screening_timeout(member.baseline):
             baseline_timeout_count += 1
@@ -678,12 +678,24 @@ def _paired_candidate_completion_failure(
             axis = failure.diagnostics.get("termination_budget_axis")
             if isinstance(axis, str) and axis and axis not in termination_axes:
                 termination_axes.append(axis)
-            terminal_synthesis_attempted = bool(
-                terminal_synthesis_attempted
-                or failure.diagnostics.get("terminal_synthesis_attempted") is True
+            synthesis_observation = failure.diagnostics.get(
+                "terminal_synthesis_attempted"
+            )
+            synthesis_observations.append(
+                synthesis_observation
+                if isinstance(synthesis_observation, bool)
+                else None
             )
     if not operations:
         return None
+    terminal_synthesis_attempted = (
+        True
+        if any(item is True for item in synthesis_observations)
+        else False
+        if synthesis_observations
+        and all(item is False for item in synthesis_observations)
+        else None
+    )
     evidence: dict[str, object] = {
         "completed_data_plane_operations": operations[:32],
         "candidate_timeout_count": candidate_timeout_count,
