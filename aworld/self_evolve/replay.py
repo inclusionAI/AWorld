@@ -7781,6 +7781,7 @@ def _framework_canonical_evidence_manifest(
     annotations: dict[Path, Mapping[str, Any]] = {}
     advisory_invalid_reasons: list[str] = []
     advisory_entry_count = 0
+    agent_manifest_observation: dict[str, Any] | None = None
     if candidate_manifest_is_symlink:
         advisory_invalid_reasons.append(
             "manifest is a symlink and was ignored"
@@ -7793,16 +7794,19 @@ def _framework_canonical_evidence_manifest(
             else:
                 raw = candidate_manifest.read_bytes()
                 text = raw.decode("utf-8", errors="replace")
+                record_errors = 0
                 for line_number, entry, decode_error in _decode_evidence_manifest_stream(
                     text
                 ):
                     if advisory_entry_count >= _MAX_EVIDENCE_MANIFEST_ENTRIES:
+                        record_errors += 1
                         advisory_invalid_reasons.append(
                             "manifest exceeds bounded entry limit"
                         )
                         break
                     advisory_entry_count += 1
                     if decode_error is not None or not isinstance(entry, Mapping):
+                        record_errors += 1
                         advisory_invalid_reasons.append(
                             f"line {line_number}: {decode_error or 'entry is not an object'}"
                         )
@@ -7823,6 +7827,16 @@ def _framework_canonical_evidence_manifest(
                         )
                         continue
                     annotations.setdefault(resolved, dict(entry))
+                agent_manifest_observation = {
+                    "path": str(candidate_manifest),
+                    "present": True,
+                    "readable": True,
+                    "valid": record_errors == 0,
+                    "entry_count": advisory_entry_count,
+                    "invalid_entry_count": record_errors,
+                    "size_bytes": len(raw),
+                    "fingerprint": "sha256:" + hashlib.sha256(raw).hexdigest(),
+                }
         except OSError as exc:
             advisory_invalid_reasons.append(
                 f"manifest is not readable: {exc.__class__.__name__}"
@@ -7895,6 +7909,8 @@ def _framework_canonical_evidence_manifest(
         "framework_evidence_manifest_path": str(canonical_manifest),
         "framework_task_response_only_evidence": task_response_only_evidence,
     }
+    if agent_manifest_observation is not None:
+        diagnostics["agent_manifest_observation"] = agent_manifest_observation
     if advisory_invalid_reasons:
         diagnostics["candidate_evidence_manifest_diagnostic_count"] = len(
             advisory_invalid_reasons
@@ -8736,6 +8752,17 @@ class AWorldCliReplayExecutor:
                 variant_role=_replay_execution_variant_role(request),
             )
             evidence_metrics.update(framework_evidence_metrics)
+            agent_manifest_observation = framework_evidence_metrics.get(
+                "agent_manifest_observation"
+            )
+            if isinstance(agent_manifest_observation, Mapping):
+                bundle_path = evidence_dir / "evidence_bundle.json"
+                bundle = _load_json_object(bundle_path)
+                bundle["agent_manifest_observation"] = dict(agent_manifest_observation)
+                bundle_path.write_text(
+                    json.dumps(bundle, ensure_ascii=False, indent=2, sort_keys=True),
+                    encoding="utf-8",
+                )
             if trust_context is not None:
                 trust_metrics = _finalize_replay_evidence_trust(
                     trust_context,

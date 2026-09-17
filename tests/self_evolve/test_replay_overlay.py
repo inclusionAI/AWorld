@@ -9475,6 +9475,14 @@ async def test_required_replay_uses_parent_inventory_when_child_path_repeats_roo
     ]
     assert "fields" not in bundle["entries"][0]["bounded_evidence"]
     assert bundle["entries"][0]["artifact_path"].endswith("result.html")
+    observation = bundle["agent_manifest_observation"]
+    # The advisory file contains two records, although only one references an
+    # inventoried artifact. Recording its count must not admit the other file.
+    assert observation["entry_count"] == 2
+    assert observation["fingerprint"] == (
+        "sha256:" + hashlib.sha256(Path(observation["path"]).read_bytes()).hexdigest()
+    )
+    assert len(bundle["entries"]) == 1
 
 
 @pytest.mark.asyncio
