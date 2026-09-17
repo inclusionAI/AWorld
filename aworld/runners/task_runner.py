@@ -73,6 +73,7 @@ class TaskRunner(Runner):
             'use_demon', False)
         self._exception = None
         self.start_time = time.time()
+        self._timeout_started_at = time.monotonic()
         self.step_agent_counter = {}
         if task.conf.get("run_mode") == TaskRunMode.INTERACTIVE and self.task.agent:
             self.task.agent.wait_tool_result = True
@@ -84,7 +85,19 @@ class TaskRunner(Runner):
             for agent_id, agent in agents.items():
                 agent.conf.llm_config.llm_stream_call = True
 
+    def timeout_elapsed_seconds(self) -> float:
+        """Measure the runner's duration budget independently of wall time.
+
+        The execution clock is reset by pre_run on the worker that runs the
+        task. Keep start_time as the wall-clock timestamp used by reports.
+        """
+        return time.monotonic() - self._timeout_started_at
+
     async def pre_run(self):
+        # Runners may be constructed on a different host before dispatch.
+        # Start the duration budget here so it covers bootstrap and execution,
+        # without comparing monotonic clock epochs across worker hosts.
+        self._timeout_started_at = time.monotonic()
         task = self.task
         self.swarm = task.swarm
         self.input = task.input
