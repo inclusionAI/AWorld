@@ -25,6 +25,7 @@ from aworld.self_evolve.recovery_trace import (
     validate_public_constraint_recovery_trace,
     validate_public_recovery_trace,
 )
+from aworld.self_evolve.regression_feedback import feedback_independent_regression_repairs
 from aworld.self_evolve.repair_conformance import (
     merge_repair_conformance_constraint_context,
 )
@@ -309,9 +310,9 @@ def _next_progress_repair_extension_family(
 ) -> str | None:
     for feedback in reversed(tuple(feedback_items)):
         metrics = feedback.metrics
-        if metrics.get("failure_class") != "candidate":
-            continue
-        if metrics.get("repairable") is not True:
+        if not (
+            metrics.get("failure_class") == "candidate" and metrics.get("repairable") is True
+        ) and not feedback_independent_regression_repairs(feedback):
             continue
         if not isinstance(metrics.get("repair_candidate_package"), Mapping):
             continue
@@ -336,6 +337,12 @@ def _validation_feedback_failure_family(
             metrics.get("candidate_validation_diagnostics")
         ),
     }
+    regression_repairs = feedback_independent_regression_repairs(feedback)
+    if regression_repairs:
+        signature = {"independent_regression_repairs": sorted(
+            (suite_id, gate.gate_name, str(gate.details.get("code") or ""))
+            for suite_id, gate in regression_repairs
+        )}
     return hashlib.sha256(
         json.dumps(
             signature,

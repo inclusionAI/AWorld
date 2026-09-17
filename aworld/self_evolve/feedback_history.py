@@ -15,7 +15,7 @@ from aworld.self_evolve.sanitization import (
     sanitize_source_text,
     sanitize_text,
 )
-from aworld.self_evolve.regression_feedback import independent_regression_for_gate
+from aworld.self_evolve.regression_feedback import independent_regression_for_gate, independent_regression_repair_gates
 from aworld.self_evolve.types import EvaluationSummary, GateResult, to_json_dict
 from aworld.skills.structure_types import skill_structural_edit_intent_from_dict
 
@@ -293,8 +293,9 @@ def _repair_feedback_from_selected_candidate(
             and details.get("failure_class") == "candidate"
             and details.get("repairable") is True
         )
-        judge_repair = bool(judge_metrics) and gate_name in judge_repair_gates
-        if not candidate_repair and not judge_repair:
+        regression_gate = gate_name == "global_regression_benchmark"
+        judge_repair = bool(judge_metrics) and gate_name in judge_repair_gates and not regression_gate
+        if not candidate_repair and not judge_repair and not regression_gate:
             continue
         bounded_details = dict(details) if isinstance(details, Mapping) else {}
         if judge_repair:
@@ -365,10 +366,7 @@ def _repair_feedback_from_selected_candidate(
             metrics["candidate_validation_diagnostics"] = diagnostics
         known_judge_failure = any(key in gates_by_split for key in metrics_by_split)
         if split == "regression":
-            if regression and regression["suites"] and any(
-                isinstance(gate.details, Mapping) and gate.details.get("failure_class") == "candidate" and gate.details.get("repairable") is True
-                for gate in gates
-            ):
+            if independent_regression_repair_gates(regression, candidate_id=candidate_id):
                 metrics["repair_candidate_package"] = package
             else:
                 metrics.pop("authoritative_replay_failure", None)

@@ -4,7 +4,9 @@ import json
 import pytest
 
 from aworld.self_evolve.controllers.run_iteration_helpers import _iteration_validation_feedback
+from aworld.self_evolve.controllers.run_generation_helpers import _typed_repair_frontiers
 from aworld.self_evolve.controllers.screening_execution import _with_typed_gate_failure_event
+from aworld.self_evolve.feedback_diagnostics import _next_progress_repair_extension_family
 from aworld.self_evolve.feedback_history import _feedback_from_report
 from aworld.self_evolve.gates import GlobalRegressionBenchmarkGate
 from aworld.self_evolve.optimizers.base import OptimizerRequest
@@ -184,3 +186,147 @@ def test_missing_regression_observations_never_borrow_main_evaluation_for_repair
     assert "evidence_issues" not in regression.metrics
     assert "repair_candidate_package" not in regression.metrics
     assert any(d.get("code") == "independent_regression_feedback_unavailable" for d in regression.metrics["candidate_validation_diagnostics"])
+
+
+def _mixed_feedback(tmp_path, *, historical, problem=None, no_main=False, legacy_candidate_label=False):
+    candidate = _candidate()
+    original = _evidence(candidate)
+    quality = original.suite_results[0]
+    quality = replace(quality, gate_results=(replace(quality.gate_results[0], details={
+        **quality.gate_results[0].details, "decision": "inconclusive",
+        "code": "score_improvement_inconclusive",
+    }),))
+    infrastructure = replace(original.suite_results[1],
+        baseline_summary=EvaluationSummary("baseline", {"score": 0.0}, "regression"),
+        candidate_summary=EvaluationSummary(candidate.candidate_id, {"score": 0.0}, "regression"),
+        gate_results=(GateResult("evaluation_runtime_health", False, "HTTP 401 Invalid token", {
+            "failure_class": "infrastructure", "failure_owner": "infrastructure",
+            "repairable": False, "code": "evaluation_runtime_unhealthy",
+        }),),
+    )
+    if problem == "stale":
+        quality = replace(quality, fresh_execution=False)
+    elif problem == "unscored":
+        quality = replace(quality, candidate_summary=replace(quality.candidate_summary, metrics={}))
+    elif problem in {"framework", "not_repairable", "conflicting_owner", "explicit_shared_owner", "passing"}:
+        gate = quality.gate_results[0]
+        details = dict(gate.details)
+        if problem == "framework":
+            details.update(failure_class="framework", failure_owner="framework")
+        elif problem == "not_repairable":
+            details["repairable"] = False
+        elif problem == "conflicting_owner":
+            details["failure_class"] = "framework"
+        elif problem == "explicit_shared_owner":
+            details["failure_owner"] = "framework"
+        quality = replace(quality, gate_results=(replace(gate, details=details, passed=problem == "passing"),))
+    elif problem == "runtime":
+        quality = replace(quality, gate_results=(*quality.gate_results, infrastructure.gate_results[0]))
+    elif problem == "split_qualification":
+        quality = replace(quality, fresh_execution=False)
+        infrastructure = original.suite_results[1]
+    suites = (infrastructure,) if problem == "only_infrastructure" else (quality,) if problem == "only_candidate" else (infrastructure, quality)
+    evidence = replace(original, suite_results=suites)
+    raw_evidence = evidence.to_dict()
+    gate = GlobalRegressionBenchmarkGate().evaluate(candidate, evidence)
+    if legacy_candidate_label:
+        gate = replace(gate, details={**gate.details, "failure_owner": "candidate", "failure_class": "candidate", "failure_scope": "candidate", "repairable": True})
+    gate = _with_typed_gate_failure_event(gate)
+    if problem in {"candidate", "fingerprint"}:
+        if historical:
+            raw_evidence["candidate_id" if problem == "candidate" else "fingerprint"] = "other"
+        else:
+            gate = replace(gate, details={**gate.details, "independent_regression": {
+                **gate.details["independent_regression"],
+                "candidate_id" if problem == "candidate" else "evidence_fingerprint": "other",
+            }})
+    original_gate = to_json_dict(gate)
+    main = None if no_main else EvaluationSummary(candidate.candidate_id, {"score": 96.0}, "validation")
+    if historical:
+        package = tmp_path / "candidates" / candidate.candidate_id
+        package.mkdir(parents=True)
+        (package / "candidate.json").write_text(json.dumps(to_json_dict(candidate)))
+        report = {"run_id": "mixed", "selected_candidate_id": candidate.candidate_id,
+            "gate_results": [original_gate], "regression_evidence": raw_evidence,
+            "iterations": [{"candidate_id": candidate.candidate_id, "status": "rejected",
+                "failed_gates": [gate.gate_name], **({"candidate_metrics": dict(main.metrics)} if main else {})}]}
+        before = json.dumps(report, sort_keys=True)
+        feedback = _feedback_from_report(report, report_path=tmp_path / "report.json")
+        assert json.dumps(report, sort_keys=True) == before
+    else:
+        feedback = _iteration_validation_feedback(candidate=candidate, baseline_summary=None,
+            candidate_summary=main, held_out_summary=None, failed_gates=[gate])
+    assert to_json_dict(gate) == original_gate
+    return candidate, gate, next(x for x in feedback if x.dataset_split == "regression")
+
+
+@pytest.mark.parametrize("historical", [False, True])
+@pytest.mark.parametrize("problem", [None, "only_candidate"])
+@pytest.mark.parametrize("no_main", [False, True])
+def test_mixed_regression_retains_shared_failure_and_repairs_only_judged_quality(tmp_path, historical, problem, no_main):
+    candidate, gate, feedback = _mixed_feedback(tmp_path, historical=historical, problem=problem, no_main=no_main)
+    expected_owner = "candidate" if problem == "only_candidate" else "framework"
+    assert gate.details["failure_owner"] == expected_owner
+    assert feedback.metrics["failure_class"] == expected_owner
+    assert feedback.metrics["repairable"] is (problem == "only_candidate")
+    assert feedback.metrics["repair_candidate_package"]["candidate_id"] == candidate.candidate_id
+    prompt = _build_mutation_prompt(OptimizerRequest(target=candidate.target, current_content="# Demo\n",
+        target_fingerprint="sha256:base", trace_packs=(), validation_feedback=(feedback,)), candidate_index=0)
+    assert prompt.startswith("Repair the judged target behavior")
+    payload = json.loads(prompt[prompt.index('{"acceptance_constraints"'):])
+    focus = payload["repair_focus"]
+    assert focus["variant_id"] == candidate.candidate_id
+    assert focus["dataset_split"] == "regression"
+    assert focus["independent_regression"] == gate.details["independent_regression"]
+    assert all(f["preserve_unchanged"] and f["content_omitted"] for f in focus["repair_candidate_package"]["files"])
+    assert len(json.dumps(payload["validation_feedback"], ensure_ascii=False, separators=(",", ":"))) <= 16000
+    frontiers = _typed_repair_frontiers((feedback,))
+    assert any(f.owner.value == "candidate" and f.repairable for f in frontiers)
+    if problem is None:
+        assert any(f.shared_blocking and not f.repairable for f in frontiers)
+    family = _next_progress_repair_extension_family((feedback,), consumed_families=set())
+    assert family is not None
+    assert _next_progress_repair_extension_family((feedback,), consumed_families={family}) is None
+
+
+@pytest.mark.parametrize("historical", [False, True])
+@pytest.mark.parametrize("problem", ["only_infrastructure", "stale", "unscored", "runtime", "framework", "not_repairable", "conflicting_owner", "explicit_shared_owner", "split_qualification", "passing", "candidate", "fingerprint"])
+def test_invalid_or_unrepairable_regression_never_authorizes_source_repair(tmp_path, historical, problem):
+    _, _, feedback = _mixed_feedback(tmp_path, historical=historical, problem=problem)
+    assert "repair_candidate_package" not in feedback.metrics
+    assert not any(f.owner.value == "candidate" and f.repairable for f in _typed_repair_frontiers((feedback,)))
+    assert _next_progress_repair_extension_family((feedback,), consumed_families=set()) is None
+
+
+@pytest.mark.parametrize("historical", [False, True])
+@pytest.mark.parametrize("problem", ["only_infrastructure", "stale", "unscored", "runtime", "framework", "not_repairable"])
+def test_legacy_global_candidate_label_does_not_authorize_invalid_suite_source(tmp_path, historical, problem):
+    _, gate, feedback = _mixed_feedback(tmp_path, historical=historical, problem=problem, legacy_candidate_label=True)
+    assert gate.details["failure_owner"] == feedback.metrics["failure_class"] == "candidate"
+    assert gate.details["repairable"] is feedback.metrics["repairable"] is True
+    assert "repair_candidate_package" not in feedback.metrics
+    before = json.dumps(feedback.metrics, sort_keys=True)
+    assert not any(f.owner.value == "candidate" for f in _typed_repair_frontiers((feedback,)))
+    assert json.dumps(feedback.metrics, sort_keys=True) == before
+    assert _next_progress_repair_extension_family((feedback,), consumed_families=set()) is None
+
+
+def test_mixed_regression_frontier_and_extension_do_not_reset_for_remeasurement(tmp_path):
+    _, _, feedback = _mixed_feedback(tmp_path, historical=False)
+    metrics = json.loads(json.dumps(feedback.metrics))
+    metrics["repair_candidate_package"]["candidate_id"] = "next-candidate"
+    metrics["independent_regression"]["candidate_id"] = "next-candidate"
+    metrics["independent_regression"]["evidence_fingerprint"] = "sha256:new-execution"
+    for suite in metrics["independent_regression"]["suites"]:
+        suite["execution_id"] += "-again"
+        suite["candidate"]["score"] += 1.0
+        for gate in suite["failed_gates"]:
+            gate["reason"] += " with different prose"
+    repeated = EvaluationSummary("next-candidate", metrics, "regression")
+    family = _next_progress_repair_extension_family((feedback,), consumed_families=set())
+    assert _next_progress_repair_extension_family((repeated,), consumed_families={family}) is None
+    first = {f.semantic_key for f in _typed_repair_frontiers((feedback,)) if f.owner.value == "candidate"}
+    assert first == {f.semantic_key for f in _typed_repair_frontiers((repeated,)) if f.owner.value == "candidate"}
+    mismatched = replace(repeated, variant_id="mismatched")
+    assert not any(f.owner.value == "candidate" for f in _typed_repair_frontiers((mismatched,)))
+    assert _next_progress_repair_extension_family((mismatched,), consumed_families=set()) is None

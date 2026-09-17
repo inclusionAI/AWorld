@@ -8,6 +8,7 @@ from collections.abc import Mapping
 from typing import Any
 
 from aworld.self_evolve.sanitization import sanitize_text
+from aworld.self_evolve.types import EvaluationSummary, GateResult
 
 
 _SCHEMA = "aworld.self_evolve.independent_regression_feedback.v1"
@@ -167,6 +168,53 @@ def project_independent_regression_feedback(
 def has_judged_independent_regression(value: object, *, candidate_id: object) -> bool:
     projected = bounded_independent_regression_feedback(value)
     return bool(projected and projected["candidate_id"] == candidate_id and any(s["judged"] for s in projected["suites"]))
+
+
+def independent_regression_repair_gates(
+    value: object, *, candidate_id: object,
+) -> tuple[tuple[str, GateResult], ...]:
+    """Select recorded candidate repairs within individually usable suites.
+
+    A sibling suite's shared failure still blocks acceptance. It does not erase
+    this suite's independently judged repair, nor authorize repairing the shared
+    failure. Callers first bind the envelope to its original gate fingerprint.
+    """
+    projected = bounded_independent_regression_feedback(value)
+    if not projected or projected["candidate_id"] != candidate_id:
+        return ()
+    repairs = []
+    for suite in projected["suites"]:
+        if not suite["judged"]:
+            continue
+        for gate in suite["failed_gates"]:
+            details = gate["details"]
+            owners = [details[key] for key in ("failure_owner", "failure_class") if key in details]
+            if (
+                gate["gate_name"] in _QUALITY_GATES
+                and owners and all(owner == "candidate" for owner in owners)
+                and details.get("repairable") is True
+            ):
+                repairs.append((suite["suite_id"], GateResult(**gate)))
+    return tuple(repairs)
+
+
+def feedback_independent_regression_repairs(
+    feedback: EvaluationSummary,
+) -> tuple[tuple[str, GateResult], ...]:
+    """Reuse qualified source feedback for scheduling without relabeling it."""
+    package = feedback.metrics.get("repair_candidate_package")
+    failed_gates = feedback.metrics.get("failed_gates")
+    if (
+        feedback.dataset_split != "regression"
+        or not isinstance(failed_gates, (list, tuple))
+        or "global_regression_benchmark" not in failed_gates
+        or not isinstance(package, Mapping)
+        or package.get("candidate_id") != feedback.variant_id
+    ):
+        return ()
+    return independent_regression_repair_gates(
+        feedback.metrics.get("independent_regression"), candidate_id=feedback.variant_id,
+    )
 
 
 def independent_regression_for_gate(details: object, *, candidate_id: str, evidence: object = None) -> dict[str, Any] | None:

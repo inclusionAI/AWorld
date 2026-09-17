@@ -43,7 +43,7 @@ from aworld.self_evolve.replay_gates import (
 )
 from aworld.self_evolve.feedback_diagnostics import _typed_gate_feedback_metrics
 from aworld.self_evolve.feedback_history import _reported_judge_gate_splits
-from aworld.self_evolve.regression_feedback import independent_regression_for_gate
+from aworld.self_evolve.regression_feedback import independent_regression_for_gate, independent_regression_repair_gates
 from aworld.self_evolve.gates import (
     CandidatePackageGate,
     ExternalCodeEvolutionGate,
@@ -723,12 +723,18 @@ def _iteration_validation_feedback(
     if regression_gates:
         metrics = _iteration_gate_feedback_metrics(candidate, regression_gates)
         metrics["failed_gates"] = ["global_regression_benchmark"]
+        # Global acceptance ownership cannot authorize a suite-specific repair.
+        metrics.pop("repair_candidate_package", None)
+        metrics.pop("authoritative_replay_failure", None)
         regression = independent_regression_for_gate(regression_gates[0].details, candidate_id=candidate.candidate_id)
         if regression and regression["suites"]:
             metrics["independent_regression"] = regression
+            repairs = independent_regression_repair_gates(regression, candidate_id=candidate.candidate_id)
+            package = _repair_candidate_package_feedback(candidate, failed_gates=(gate for _, gate in repairs))
+            if package is not None:
+                metrics["repair_candidate_package"] = package
+                metrics["authoritative_replay_failure"] = True
         else:
-            metrics.pop("repair_candidate_package", None)
-            metrics.pop("authoritative_replay_failure", None)
             metrics["candidate_validation_diagnostics"] = [
                 *metrics.get("candidate_validation_diagnostics", []),
                 {"code": "independent_regression_feedback_unavailable", "stage": "evaluation", "reason": "No matching candidate-bound regression suite observations are available; selection metrics are separate context."},

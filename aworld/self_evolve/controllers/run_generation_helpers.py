@@ -36,6 +36,7 @@ from aworld.self_evolve.optimizers.base import (
     OptimizerResult,
 )
 from aworld.self_evolve.recovery_trace import RECOVERY_TRACE_SCHEMA_VERSION
+from aworld.self_evolve.regression_feedback import feedback_independent_regression_repairs
 from aworld.self_evolve.population_projection import _candidate_strategy_records
 from aworld.self_evolve.run_history import (
     _SEMANTIC_DEDUP_IDENTITY_VERSION,
@@ -105,10 +106,16 @@ def _candidate_generation_actual_usage(
 def _typed_repair_frontiers(
     feedback: Iterable[EvaluationSummary],
 ) -> tuple[RepairFrontier, ...]:
-    """Build scheduler input solely from typed causal failure envelopes."""
+    """Build scheduler input from typed causal events and bound suite gates."""
 
     frontiers: dict[str, RepairFrontier] = {}
     for summary in feedback:
+        failed_gates = summary.metrics.get("failed_gates")
+        regression_summary = (
+            summary.dataset_split == "regression"
+            and isinstance(failed_gates, (list, tuple))
+            and "global_regression_benchmark" in failed_gates
+        )
         raw_events = summary.metrics.get("causal_failure_events")
         event_payloads = raw_events if isinstance(raw_events, (list, tuple)) else ()
         for payload in event_payloads:
@@ -117,6 +124,10 @@ def _typed_repair_frontiers(
             try:
                 event = _typed_causal_feedback_event(payload)
             except (TypeError, ValueError):
+                continue
+            # Keep the recorded global event intact, but qualify regression
+            # repairs from their usable suites, including for legacy labels.
+            if regression_summary and event.owner is FailureOwner.CANDIDATE:
                 continue
             if not _causal_event_drives_repair_frontier(
                 code=event.code,
@@ -137,6 +148,16 @@ def _typed_repair_frontiers(
             previous = frontiers.get(frontier.semantic_key)
             if previous is None or frontier.progress > previous.progress:
                 frontiers[frontier.semantic_key] = frontier
+        if regression_summary:
+            for suite_id, gate in feedback_independent_regression_repairs(summary):
+                # Stable across remeasurement and prose/score changes: a new
+                # evidence fingerprint must not reset stalled repair budgets.
+                identity = json.dumps([suite_id, gate.gate_name, gate.details.get("code")], separators=(",", ":"))
+                semantic_key = "independent-regression-repair-" + hashlib.sha256(identity.encode()).hexdigest()
+                frontiers.setdefault(semantic_key, RepairFrontier(
+                    semantic_key=semantic_key, progress=1,
+                    owner=FailureOwner.CANDIDATE, scope=FailureScope.CANDIDATE, repairable=True,
+                ))
         # Lesson memory intentionally stores a bounded scalar projection of a
         # causal aggregate instead of duplicating its full envelope.  Restore
         # the scheduler frontier from that typed projection so Campaign
