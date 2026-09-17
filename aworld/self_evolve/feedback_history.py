@@ -173,18 +173,12 @@ def _feedback_from_report(
     report_path: Path,
 ) -> tuple[EvaluationSummary, ...]:
     items: list[EvaluationSummary] = []
-    repair_feedback = (
-        *_repair_feedback_from_selected_candidate(
-            report,
-            report_path=report_path,
-        ),
-        *_repair_feedback_from_screening_report(
-            report,
-            report_path=report_path,
-        ),
+    selected_feedback = _repair_feedback_from_selected_candidate(
+        report, report_path=report_path,
     )
-    seen_repair_candidates: set[str] = set()
-    for feedback in repair_feedback:
+    items.extend(selected_feedback)
+    seen_repair_candidates = {item.variant_id for item in selected_feedback}
+    for feedback in _repair_feedback_from_screening_report(report, report_path=report_path):
         if feedback.variant_id in seen_repair_candidates:
             continue
         seen_repair_candidates.add(feedback.variant_id)
@@ -266,6 +260,8 @@ def _repair_feedback_from_selected_candidate(
         report,
         candidate_id=candidate_id,
     )
+    metrics_by_split = _candidate_judge_metrics_by_split(report, candidate_id=candidate_id)
+    gate_splits = _reported_judge_gate_splits(report, metrics_by_split=metrics_by_split)
     judge_repair_gates = {
         "evidence_quality",
         "replay_evaluator_admission",
@@ -278,8 +274,8 @@ def _repair_feedback_from_selected_candidate(
         "replay_stability",
     }
 
-    gates: list[GateResult] = []
-    for item in raw_gates:
+    gates_by_split: dict[str | None, list[GateResult]] = {}
+    for index, item in enumerate(raw_gates):
         if not isinstance(item, Mapping) or item.get("passed") is not False:
             continue
         details = item.get("details")
@@ -305,7 +301,8 @@ def _repair_feedback_from_selected_candidate(
         )
         if failure_artifacts:
             bounded_details["failure_artifacts"] = list(failure_artifacts)
-        gates.append(
+        split = gate_splits.get(index) if judge_repair else judge_split
+        gates_by_split.setdefault(split, []).append(
             GateResult(
                 gate_name=gate_name,
                 passed=False,
@@ -313,36 +310,63 @@ def _repair_feedback_from_selected_candidate(
                 details=bounded_details,
             )
         )
-    if not gates:
+    if not gates_by_split:
         return ()
-    candidate_status = (
-        "prerequisite"
-        if any(
-            isinstance(gate.details, Mapping)
-            and gate.details.get("candidate_status") == "prerequisite"
-            for gate in gates
+    feedback: list[EvaluationSummary] = []
+    for split in ("held_out", "validation", None):
+        gates = gates_by_split.get(split)
+        if not gates:
+            continue
+        candidate_status = (
+            "prerequisite"
+            if any(
+                isinstance(gate.details, Mapping)
+                and gate.details.get("candidate_status") == "prerequisite"
+                for gate in gates
+            )
+            else "repairable"
         )
-        else "repairable"
-    )
-    metrics = _typed_gate_feedback_metrics(gates)
-    metrics.update(judge_metrics)
-    metrics.update(
-        {
-            "failed_gates": [gate.gate_name for gate in gates],
+        metrics = _typed_gate_feedback_metrics(gates)
+        metrics.update(metrics_by_split.get(split, judge_metrics if split is None else {}))
+        metrics.update({
+            "failed_gates": list(dict.fromkeys(gate.gate_name for gate in gates)),
             "candidate_status": candidate_status,
             "authoritative_replay_failure": candidate_status != "prerequisite",
             "run_id": report.get("run_id") or report_path.parent.name,
             "report_path": str(report_path),
-            "repair_candidate_package": package,
-        }
-    )
-    return (
-        EvaluationSummary(
-            variant_id=candidate_id,
-            metrics=metrics,
-            dataset_split=judge_split or "historical_repair",
-        ),
-    )
+        })
+        unknown_judge_split = split is None and bool(judge_metrics)
+        if unknown_judge_split:
+            diagnostics = list(metrics.get("candidate_validation_diagnostics") or [])
+            diagnostics.append({
+                "code": "historical_judge_failure_split_unknown",
+                "stage": "evaluation",
+                "reason": "The stored gate has no reliable dataset split; retained judge metrics are context only. See the separate split observations.",
+            })
+            metrics["candidate_validation_diagnostics"] = diagnostics
+        known_judge_failure = any(key in gates_by_split for key in metrics_by_split)
+        if not unknown_judge_split or not known_judge_failure:
+            metrics["repair_candidate_package"] = package
+        feedback.append(EvaluationSummary(
+            variant_id=candidate_id, metrics=metrics,
+            dataset_split=split or "historical_repair",
+        ))
+    for split, observed_metrics in metrics_by_split.items():
+        if split in gates_by_split:
+            continue
+        # A complementary checkpoint remains visible, but cannot take over
+        # repair_focus merely because held-out observations rank more deeply.
+        metrics = dict(observed_metrics)
+        metrics.pop("repair_candidate_package", None)
+        metrics.update({
+            "failed_gates": [],
+            "run_id": report.get("run_id") or report_path.parent.name,
+            "report_path": str(report_path),
+        })
+        feedback.append(EvaluationSummary(
+            variant_id=candidate_id, metrics=metrics, dataset_split=split,
+        ))
+    return tuple(feedback)
 
 
 def _selected_candidate_judge_metrics(
@@ -350,58 +374,120 @@ def _selected_candidate_judge_metrics(
     *,
     candidate_id: str,
 ) -> tuple[dict[str, Any], str | None]:
-    """Rehydrate judge metrics onto the selected candidate repair package.
+    """Select a recorded failing split, without blaming a passing checkpoint."""
+    metrics_by_split = _candidate_judge_metrics_by_split(report, candidate_id=candidate_id)
+    gate_splits = _reported_judge_gate_splits(report, metrics_by_split=metrics_by_split)
+    raw_gates = report.get("gate_results") or []
+    for split in ("held_out", "validation"):
+        failed = [
+            str(gate.get("gate_name"))
+            for index, gate in enumerate(raw_gates)
+            if isinstance(gate, Mapping) and gate.get("passed") is False
+            and gate_splits.get(index) == split
+        ]
+        if failed and split in metrics_by_split:
+            return {**metrics_by_split[split], "failed_gates": failed}, split
+    for split in ("held_out", "validation"):
+        if split in metrics_by_split:
+            # Keep legacy judge context, but do not assign an ambiguous gate
+            # to that split. The repair feedback records unknown attribution.
+            return dict(metrics_by_split[split]), None
+    return {}, None
 
-    Iteration history stores evaluated metrics separately from the candidate
-    source package.  Joining them here preserves the deepest repair frontier
-    when a later optimize run learns from a rejected report.
-    """
 
+def _candidate_judge_metrics_by_split(
+    report: Mapping[str, Any], *, candidate_id: str,
+) -> dict[str, dict[str, Any]]:
     iterations = report.get("iterations")
     if not isinstance(iterations, list):
-        return {}, None
+        return {}
     for iteration in reversed(iterations):
         if (
             not isinstance(iteration, Mapping)
             or iteration.get("candidate_id") != candidate_id
         ):
             continue
-        candidate_metrics = iteration.get("candidate_metrics")
-        held_out_metrics = iteration.get("held_out_metrics")
-        selected_metrics: Mapping[str, Any] | None = None
-        selected_split: str | None = None
-        if isinstance(held_out_metrics, Mapping) and any(
-            key in held_out_metrics
-            for key in (
-                "score",
-                "A1_groundedness",
-                "A2_completeness",
-                "evidence_incomplete",
-                "veto_triggered",
-            )
-        ):
-            selected_metrics = held_out_metrics
-            selected_split = "held_out"
-        elif isinstance(candidate_metrics, Mapping) and any(
-            key in candidate_metrics
-            for key in (
-                "score",
-                "A1_groundedness",
-                "A2_completeness",
-                "evidence_incomplete",
-                "veto_triggered",
-            )
-        ):
-            selected_metrics = candidate_metrics
-            selected_split = "validation"
-        if selected_metrics is None:
-            return {}, None
-        metrics = dict(selected_metrics)
-        failed_gates = iteration.get("failed_gates")
-        if isinstance(failed_gates, list):
-            metrics["failed_gates"] = [str(gate) for gate in failed_gates if str(gate)]
-        return metrics, selected_split
-    return {}, None
+        result: dict[str, dict[str, Any]] = {}
+        for split, key in (("validation", "candidate_metrics"), ("held_out", "held_out_metrics")):
+            metrics = iteration.get(key)
+            if isinstance(metrics, Mapping) and any(
+                key in metrics for key in (
+                    "score", "A1_groundedness", "A2_completeness",
+                    "evidence_incomplete", "veto_triggered",
+                )
+            ):
+                result[split] = dict(metrics)
+        return result
+    return {}
+
+
+def _reported_judge_gate_splits(
+    report: Mapping[str, Any], *, metrics_by_split: Mapping[str, Mapping[str, Any]],
+) -> dict[int, str]:
+    """Read split provenance; recognize only the known legacy gate layout."""
+    raw_gates = report.get("gate_results")
+    if not isinstance(raw_gates, list):
+        return {}
+    result: dict[int, str] = {}
+    evidence_indexes: list[int] = []
+    for index, gate in enumerate(raw_gates):
+        if not isinstance(gate, Mapping):
+            continue
+        details = gate.get("details")
+        split = details.get("dataset_split") if isinstance(details, Mapping) else None
+        if split is not None:
+            if split == "single_case_replay":
+                split = "validation"
+            if split in metrics_by_split:
+                result[index] = split
+            continue
+        name = gate.get("gate_name")
+        if name == "evidence_quality":
+            evidence_indexes.append(index)
+        elif name in {"score_improvement", "cost_latency_regression", "evaluation_comparability", "replay_stability"}:
+            if "validation" in metrics_by_split:
+                result[index] = "validation"
+        elif name in {"required_verification", "held_out_verification", "judge_only_signal"}:
+            if "held_out" in metrics_by_split:
+                result[index] = "held_out"
+    all_evidence_count = sum(
+        isinstance(gate, Mapping) and gate.get("gate_name") == "evidence_quality"
+        for gate in raw_gates
+    )
+    if len(evidence_indexes) != all_evidence_count:
+        return result
+    if len(metrics_by_split) == 1 and len(evidence_indexes) == 1:
+        result[evidence_indexes[0]] = next(iter(metrics_by_split))
+    elif (
+        set(metrics_by_split) == {"validation", "held_out"}
+        and len(evidence_indexes) == 2
+        and _legacy_judge_pair_identity_matches(metrics_by_split)
+    ):
+        # The legacy execution controller appended validation evidence first,
+        # then held-out evidence only for a distinct execution. Never infer
+        # failure from absolute scores or evidence_incomplete flags.
+        result.update(zip(evidence_indexes, ("validation", "held_out")))
+    return result
+
+
+def _legacy_judge_pair_identity_matches(
+    metrics_by_split: Mapping[str, Mapping[str, Any]],
+) -> bool:
+    identities = []
+    for split, metrics in metrics_by_split.items():
+        identity = metrics.get("evaluation_identity")
+        if isinstance(identity, Mapping):
+            if identity.get("dataset_split", split) != split:
+                return False
+            if identity.get("role", "candidate") != "candidate":
+                return False
+            identities.append(identity)
+    for field in ("variant_fingerprint", "dataset_fingerprint"):
+        values = {item[field] for item in identities if isinstance(item.get(field), str)}
+        if len(values) > 1:
+            return False
+    execution_ids = [metrics.get("evaluation_execution_id") for metrics in metrics_by_split.values()]
+    return not (all(execution_ids) and len(set(execution_ids)) == 1)
 
 
 def _historical_failure_artifact_excerpts(

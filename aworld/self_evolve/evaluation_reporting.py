@@ -142,7 +142,11 @@ def _evidence_quality_gate(
     )
     if not requires_evidence_quality:
         return None
-    return EvidenceQualityGate().evaluate(summary, baseline=baseline)
+    result = EvidenceQualityGate().evaluate(summary, baseline=baseline)
+    return replace(
+        result,
+        details={**(result.details or {}), "dataset_split": summary.dataset_split},
+    )
 
 
 def _summary_with_replay_evidence_metrics(
