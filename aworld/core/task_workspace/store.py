@@ -81,6 +81,7 @@ class TaskWorkspaceStore:
         self._journal_path = self.path / "journal.json"
         self._strategies = list(input_strategies or [SQLiteGroupStrategy(), RegularFileStrategy()])
         self._fault_injector = None  # Internal failure-injection seam; never a tool argument.
+        self._last_recovery_result = {"recovered": False, "action": "none"}
         with locked(self._lock_path):
             config_path = self.path / "scope.json"
             config = {"schema_version": SCHEMA, "scope": self.scope,
@@ -108,7 +109,7 @@ class TaskWorkspaceStore:
                                              "input_snapshot_id": None, "best": None,
                                              "last_transaction": None})
             self._input(self._state()["input_snapshot_id"])
-            self._recover_locked()
+            self._last_recovery_result = self._recover_locked()
 
     @classmethod
     def open_existing(cls, store_path, *, validator=None, policy=None):
@@ -302,11 +303,27 @@ class TaskWorkspaceStore:
                 if (isinstance(left, bool) or isinstance(right, bool) or not isinstance(left, int)
                         or not isinstance(right, int) or not 0 <= left <= right <= entry["size"]):
                     raise StorePolicyError("invalid source provenance byte range")
-                sources.append({"path": path, "sha256": entry["sha256"], "start": left, "end": right})
+                sources.append({"path": path, "sha256": entry["sha256"], "start": left, "end": right,
+                                "range_sha256": self._range_hash(entry, left, right)})
             result.append({**record, "artifact": output, "sha256": files[output]["sha256"],
                            "start": start, "end": end, "sources": sources,
+                           "range_sha256": self._range_hash(files[output], start, end),
                            "claim_type": "declared_derivation_not_semantic_proof"})
         return result
+
+    def _range_hash(self, entry, start, end):
+        verify_blob(self.blobs / entry["sha256"], entry)
+        digest = hashlib.sha256()
+        with (self.blobs / entry["sha256"]).open("rb") as stream:
+            stream.seek(start)
+            remaining = end - start
+            while remaining:
+                chunk = stream.read(min(remaining, 1024 * 1024))
+                if not chunk:
+                    raise StoreIntegrityError("provenance byte range became unavailable")
+                digest.update(chunk)
+                remaining -= len(chunk)
+        return digest.hexdigest()
 
     def register_candidate(self, files: Mapping, *, provenance=None):
         if not files or len(files) > self.max_files:
@@ -406,6 +423,9 @@ class TaskWorkspaceStore:
             if inspect.isawaitable(validation):
                 validation = await validation
             validation = deepcopy(validation)
+            if ("execution_environment_sha256" in policy
+                    and validation.get("execution_environment_sha256") != policy["execution_environment_sha256"]):
+                raise StoreIntegrityError("validator used a different caller execution environment")
             expected = {"artifacts": {k: {"state": "regular", "sha256": e["sha256"], "size": e["size"]}
                                       for k, e in candidate["files"].items()},
                         "inputs": {k: {"state": "regular", "sha256": e["sha256"], "size": e["size"]}
@@ -424,6 +444,9 @@ class TaskWorkspaceStore:
         observed = validation.get("checks")
         if not isinstance(observed, list) or len({x.get("id") for x in observed}) != len(observed):
             raise StoreIntegrityError("validator must return unique executed checks")
+        if {c.get("id"): c.get("kind") for c in observed} != {c.get("id"): c.get("kind") for c in checks}:
+            raise StoreIntegrityError("validator check identities differ from the bound definitions")
+        self._verify_checkers(validation)
         violations = self._eligibility(candidate, validation, policy)
         receipt = {"schema_version": SCHEMA, "scope_id": self.scope_id,
                    "candidate_id": candidate_id, "candidate_sha256": candidate_id,
@@ -458,6 +481,20 @@ class TaskWorkspaceStore:
         if fingerprint(receipt) != identifier or not hmac.compare_digest(expected, record.get("mac", "")):
             raise StoreIntegrityError("forged or modified validation receipt")
         return receipt
+
+    def _verify_checkers(self, validation):
+        for result in validation.get("checks", []):
+            evidence = result.get("evidence") or {}
+            paths = evidence.get("checker_paths") or {}
+            if result.get("kind") == "command" and result.get("success") is True and not paths:
+                raise StoreIntegrityError("executed checker path provenance is unavailable")
+            bindings = evidence.get("checker_files") or {}
+            if set(paths) != set(bindings):
+                raise StoreIntegrityError("checker path/hash bindings differ")
+            for label, path in paths.items():
+                if bindings[label].get("state") != "regular":
+                    raise StoreIntegrityError("checker file was not a stable regular file")
+                verify_blob(Path(path), bindings[label])
 
     def _archive_best(self, best):
         if best:
@@ -503,6 +540,7 @@ class TaskWorkspaceStore:
             self._recover_locked()
             candidate = self._candidate(candidate_id)
             receipt = self._receipt(receipt_id)
+            self._verify_checkers(receipt["validation"])
             state = self._state()
             if (receipt["candidate_id"] != candidate_id or receipt["candidate_sha256"] != candidate_id
                     or receipt["input_snapshot_id"] != state["input_snapshot_id"]
@@ -542,6 +580,10 @@ class TaskWorkspaceStore:
                         "publication_id": publication, "readback": self._readback_locked()}
             if state["best"]:
                 prior = self._receipt(state["best"]["receipt_id"])
+                try:
+                    self._verify_checkers(prior["validation"])
+                except StoreIntegrityError as exc:
+                    raise StoreConflictError("incumbent checker changed; call revalidate_best") from exc
                 if prior["policy_sha256"] != receipt["policy_sha256"]:
                     raise StoreConflictError("call revalidate_best under the changed selection policy")
                 incumbent = self._candidate(state["best"]["candidate_id"])
@@ -632,8 +674,12 @@ class TaskWorkspaceStore:
             self._install(Path(entry["path"]), entry["after"] if committed else entry["before"])
         self._journal_path.unlink()
         sync_directory(self.path)
-        return {"recovered": True, "action": "complete" if committed else "rollback",
-                "candidate_id": (self._state()["best"] or {}).get("candidate_id")}
+        result = {"recovered": True, "action": "complete" if committed else "rollback",
+                  "transaction_id": journal["id"], "observed_ns": time.time_ns(),
+                  "candidate_id": (self._state()["best"] or {}).get("candidate_id")}
+        self._last_recovery_result = result
+        atomic_json(self.path / "last-recovery.json", result)
+        return result
 
     def recover(self):
         with locked(self._lock_path):
@@ -647,6 +693,10 @@ class TaskWorkspaceStore:
             problems.append("no_promoted_candidate")
         else:
             receipt = self._receipt(best["receipt_id"])
+            try:
+                self._verify_checkers(receipt["validation"])
+            except StoreIntegrityError:
+                problems.append("checker_definition_changed")
             candidate = self._candidate(best["candidate_id"])
             expected_files = {str(self._target(k)): e for k, e in candidate["files"].items()}
             if receipt["candidate_id"] != best["candidate_id"] or best["files"] != expected_files:
@@ -677,6 +727,10 @@ class TaskWorkspaceStore:
         with locked(self._lock_path):
             self._recover_locked()
             return self._readback_locked()
+
+    @property
+    def last_recovery_result(self):
+        return deepcopy(self._last_recovery_result)
 
     @property
     def store_path(self):
@@ -722,6 +776,8 @@ class TaskWorkspaceStore:
                     "store_path": str(self.path), "workspace": str(self.workspace),
                     "input_snapshot_id": state["input_snapshot_id"],
                     "input_sha256": snapshot["input_sha256"], "best": deepcopy(state["best"]),
+                    "last_transaction": state["last_transaction"],
+                    "last_recovery_result": self.last_recovery_result,
                     "pending_transaction": self._journal_path.exists(),
                     "candidate_count": len(list((self.path / "candidates").glob("*.json"))),
                     "receipt_count": len(list((self.path / "receipts").glob("*.json")))}

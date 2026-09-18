@@ -6,6 +6,7 @@ from contextlib import closing
 from pathlib import Path
 import shutil
 import sqlite3
+import struct
 import tempfile
 from typing import Protocol
 
@@ -56,6 +57,8 @@ class SQLiteGroupStrategy:
                         or Path(str(path) + suffix).is_symlink())]
 
     def finalize(self, path: Path, entries: dict, blobs: Path, limit: int) -> dict:
+        wal = entries.get(str(path) + "-wal")
+        wal_validation = _validate_wal(blobs / wal["sha256"]) if wal else None
         with tempfile.TemporaryDirectory(prefix="sqlite-input-", dir=blobs.parent) as tmp:
             root = Path(tmp)
             copied = root / "captured.sqlite"
@@ -77,8 +80,52 @@ class SQLiteGroupStrategy:
             recovered = capture(normalized, blobs, limit)
         return {"strategy": self.name, "anchor": str(path), "members": list(entries),
                 "working_copy": recovered, "protocol": "stable-raw-group/private-sqlite-backup",
+                "wal_validation": wal_validation,
                 "derived_from": [{"path": p, "sha256": e["sha256"], "start": 0,
                                   "end": e["size"]} for p, e in entries.items()]}
+
+
+def _validate_wal(path: Path) -> dict:
+    """Do not silently accept SQLite discarding checksum-corrupted WAL pages."""
+    def checksum(data, endian, value):
+        words = struct.unpack(endian + str(len(data) // 4) + "I", data)
+        first, second = value
+        for index in range(0, len(words), 2):
+            first = (first + words[index] + second) & 0xffffffff
+            second = (second + words[index + 1] + first) & 0xffffffff
+        return first, second
+    with path.open("rb") as stream:
+        header = stream.read(32)
+        if not header:
+            return {"frames": 0, "commits": 0}
+        if len(header) != 32:
+            raise StoreIntegrityError("truncated SQLite WAL header")
+        magic, version, page_size, _, salt1, salt2, check1, check2 = struct.unpack(">8I", header)
+        if (magic not in (0x377f0682, 0x377f0683) or version != 3007000
+                or not 512 <= page_size <= 65536 or page_size & (page_size - 1)):
+            raise StoreIntegrityError("unsupported/corrupt SQLite WAL header")
+        endian = ">" if magic & 1 else "<"
+        value = checksum(header[:24], endian, (0, 0))
+        if value != (check1, check2):
+            raise StoreIntegrityError("SQLite WAL header checksum failed")
+        frames = commits = 0
+        while frame := stream.read(24):
+            if len(frame) != 24:
+                raise StoreIntegrityError("truncated SQLite WAL frame")
+            page, commit, first_salt, second_salt, check1, check2 = struct.unpack(">6I", frame)
+            if (first_salt, second_salt) != (salt1, salt2):
+                # A reset WAL may retain old-epoch tail allocation; SQLite
+                # ignores those frames. Current-epoch checksum failures reject.
+                break
+            data = stream.read(page_size)
+            if len(data) != page_size or not page:
+                raise StoreIntegrityError("incomplete SQLite WAL page")
+            value = checksum(data, endian, checksum(frame[:8], endian, value))
+            if value != (check1, check2):
+                raise StoreIntegrityError("SQLite WAL frame checksum failed")
+            frames += 1
+            commits += int(commit > 0)
+    return {"frames": frames, "commits": commits}
 
 
 def capture_group(path: Path, strategy: InputGroupStrategy, blobs: Path, limit: int):

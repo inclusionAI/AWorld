@@ -62,8 +62,15 @@ def read_json(path: Path):
     info = path.lstat()
     if not stat.S_ISREG(info.st_mode) or info.st_size > 16 * 1024 * 1024:
         raise StoreIntegrityError("store record must be a bounded regular file")
-    with path.open("rb") as stream:
-        return json.loads(stream.read(16 * 1024 * 1024 + 1))
+    fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0))
+    with os.fdopen(fd, "rb") as stream:
+        current = os.fstat(stream.fileno())
+        if not stat.S_ISREG(current.st_mode) or (current.st_dev, current.st_ino) != (info.st_dev, info.st_ino):
+            raise StoreIntegrityError("store record changed while opening")
+        data = stream.read(16 * 1024 * 1024 + 1)
+        if len(data) > 16 * 1024 * 1024:
+            raise StoreIntegrityError("store record exceeds byte allowance")
+        return json.loads(data)
 
 
 def identity(path: Path):
@@ -83,14 +90,18 @@ def capture(path: Path, blobs: Path, limit: int) -> dict:
         raise FileNotFoundError(path)
     if before[2] > limit:
         raise StoreError(f"file exceeds snapshot byte allowance: {path}")
-    source = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
-    fd, name = tempfile.mkstemp(prefix=".blob-", dir=blobs)
+    source = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0))
+    try:
+        fd, name = tempfile.mkstemp(prefix=".blob-", dir=blobs)
+    except BaseException:
+        os.close(source)
+        raise
     digest = hashlib.sha256()
     size = 0
     try:
         with os.fdopen(source, "rb") as incoming, os.fdopen(fd, "wb") as outgoing:
             info = os.fstat(incoming.fileno())
-            if (info.st_dev, info.st_ino) != before[:2]:
+            if not stat.S_ISREG(info.st_mode) or (info.st_dev, info.st_ino) != before[:2]:
                 raise StoreConflictError("source changed before snapshot")
             while chunk := incoming.read(1024 * 1024):
                 size += len(chunk)
@@ -121,10 +132,18 @@ def verify_blob(path: Path, expected: dict) -> None:
     if actual is None or actual[2] != expected["size"]:
         raise StoreIntegrityError("snapshot size/availability changed")
     digest = hashlib.sha256()
-    with path.open("rb") as stream:
+    fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0))
+    total = 0
+    with os.fdopen(fd, "rb") as stream:
+        value = os.fstat(stream.fileno())
+        if not stat.S_ISREG(value.st_mode) or (value.st_dev, value.st_ino) != actual[:2]:
+            raise StoreIntegrityError("snapshot changed while opening")
         while chunk := stream.read(1024 * 1024):
+            total += len(chunk)
+            if total > expected["size"]:
+                raise StoreIntegrityError("snapshot grew beyond its recorded bound")
             digest.update(chunk)
-    if digest.hexdigest() != expected["sha256"] or identity(path) != actual:
+    if total != expected["size"] or digest.hexdigest() != expected["sha256"] or identity(path) != actual:
         raise StoreIntegrityError("snapshot content changed")
 
 

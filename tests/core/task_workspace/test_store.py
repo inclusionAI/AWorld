@@ -186,6 +186,9 @@ s.promote(sys.argv[3],sys.argv[4])
     assert [int((store.workspace / name).read_text()) for name in ("a.txt", "b.txt")] == expected
     assert reopened.readback()["valid"]
     assert not reopened.status()["pending_transaction"]
+    assert reopened.last_recovery_result["action"] == ("rollback" if crash_event == "installed" else "complete")
+    assert reopened.recover()["action"] == "none"
+    assert reopened.status()["last_recovery_result"]["recovered"]
 
 
 def test_input_snapshots_accumulate_and_never_rebaseline_or_downgrade(store):
@@ -298,6 +301,8 @@ def test_registered_provenance_binds_artifact_and_source_byte_ranges(store):
     provenance = store.provenance(record["candidate_id"])["artifacts"][0]
     assert provenance["sha256"] == hashlib.sha256(b"cdef").hexdigest()
     assert provenance["sources"][0]["sha256"] == snapshot["files"][str(source)]["sha256"]
+    assert provenance["sources"][0]["range_sha256"] == hashlib.sha256(b"cdef").hexdigest()
+    assert provenance["range_sha256"] == hashlib.sha256(b"cdef").hexdigest()
     assert provenance["claim_type"] == "declared_derivation_not_semantic_proof"
     with pytest.raises(StorePolicyError):
         store.register_candidate({"result.bin": candidate}, provenance=[{
@@ -399,3 +404,77 @@ async def test_real_semantic_validator_rejects_invalid_candidate_and_measures_im
         receipt = await store.validate_candidate(candidate["candidate_id"], checks, policy)
         assert store.promote(candidate["candidate_id"], receipt["receipt_id"], policy)["promoted"] == accepted
     assert store.status()["best"]["objective"]["value"] == 0
+
+
+@pytest.mark.asyncio
+async def test_executed_checker_mutation_invalidates_receipt_and_final_readback(store):
+    checker = store.workspace / "checker.py"
+    checker.write_text("import pathlib,sys; assert 0 <= int(pathlib.Path(sys.argv[1]).read_text()) <= 100\n")
+    checks = [{"id": "measure", "kind": "command"}]
+    async def execute(files, inputs, definitions, **kwargs):
+        before = {"state": "regular", "size": checker.stat().st_size,
+                  "sha256": hashlib.sha256(checker.read_bytes()).hexdigest()}
+        process = await asyncio.create_subprocess_exec(sys.executable, str(checker), str(next(iter(files.values()))))
+        assert await process.wait() == 0
+        result = await actual_validator(files, inputs, definitions, **kwargs)
+        result["checks"][0]["evidence"] = {
+            "checker_paths": {"program": str(checker)}, "checker_files": {"program": before}}
+        return result
+    store.validator = execute
+    path = store.workspace / "candidate.txt"
+    path.write_text("42")
+    candidate = store.register_candidate({"result.txt": path})
+    receipt = await store.validate_candidate(candidate["candidate_id"], checks)
+    store.promote(candidate["candidate_id"], receipt["receipt_id"])
+    checker.write_text("raise RuntimeError('changed checker')\n")
+    with pytest.raises(StoreIntegrityError):
+        store.promote(candidate["candidate_id"], receipt["receipt_id"])
+    assert "checker_definition_changed" in store.readback()["problems"]
+
+
+@pytest.mark.asyncio
+async def test_receipt_must_bind_caller_execution_environment(store):
+    policy = {**POLICY, "execution_environment_sha256": fingerprint({"PROFILE": "caller"})}
+    with pytest.raises(StoreIntegrityError, match="environment"):
+        await checked(store, 42, policy=policy)
+    assert store.status()["receipt_count"] == 0
+
+
+def test_checksum_corruption_in_wal_is_not_silently_dropped_by_sqlite(store):
+    path = store.workspace / "data.db"
+    db = sqlite3.connect(path)
+    db.execute("PRAGMA journal_mode=WAL")
+    db.execute("CREATE TABLE sample(value INTEGER)")
+    db.execute("INSERT INTO sample VALUES(42)")
+    db.commit()
+    try:
+        wal = Path(str(path) + "-wal")
+        with wal.open("r+b") as stream:
+            stream.seek(32 + 24 + 100)
+            value = stream.read(1)
+            stream.seek(-1, 1)
+            stream.write(bytes([value[0] ^ 1]))
+        with pytest.raises(StoreIntegrityError, match="WAL frame checksum"):
+            store.protect_inputs([path])
+        assert store.current_input_snapshot_id is None
+    finally:
+        db.close()
+
+
+def test_regular_file_replaced_by_fifo_during_open_cannot_block_snapshot(store, monkeypatch):
+    from aworld.core.task_workspace import store_io
+    source = store.workspace / "source"
+    source.write_text("value")
+    original = store_io.identity
+    switched = False
+    def identity(path):
+        nonlocal switched
+        value = original(path)
+        if path == source and not switched:
+            switched = True
+            path.unlink()
+            os.mkfifo(path)
+        return value
+    monkeypatch.setattr(store_io, "identity", identity)
+    with pytest.raises(StoreConflictError):
+        store_io.capture(source, store.blobs, 1024)

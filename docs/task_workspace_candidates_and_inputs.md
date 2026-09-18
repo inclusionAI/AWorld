@@ -13,6 +13,8 @@ SHA-256 subdirectory, with `scope.json` as its public opening record.
 `protected_input_files()`, `immutable_input_evidence()`, `provenance()` and
 `list_candidates(limit=20, offset=0)` expose state without private-manifest access.
 `open_existing(store_path)` and construction recover interrupted transactions.
+`last_recovery_result` remains available after a subsequent no-op `recover()`;
+`status()` includes it and the last committed transaction for recovery audit.
 
 All methods are synchronous except `validate_candidate` and `revalidate_best`.
 Validation accepts an async or synchronous trusted callback with the A3
@@ -34,6 +36,9 @@ The SQLite strategy recognizes the database header, captures existing DB/WAL/SHM
 members with before/after identity checks, and rejects concurrent changes. It
 validates and backs up the captured group in a private directory to produce a
 committed working copy. It never opens the original database through SQLite.
+Current-epoch WAL header/frame checksums are checked before SQLite recovery, so
+SQLite cannot silently discard corrupted frames and advertise an incomplete
+dataset as a valid capture.
 Writers must be quiescent during capture; this is not a live transactional backup
 service. Raw sidecar bytes remain recoverable separately from the normalized view.
 
@@ -42,6 +47,9 @@ regular files. Provenance binds each artifact and source byte range to captured
 hashes; derivation claims are explicitly not semantic proof. `validate_candidate`
 runs actual checks and registers a MAC-bound receipt over candidate/input/check
 definitions/policy hashes. Model-provided pass/metric objects are not accepted.
+Executable/checker paths returned by the actual validator are rehashed before
+receipt registration, promotion and final readback. Caller-bound execution
+environment hashes are checked when present in the policy.
 
 A policy has `mandatory_checks: [id, ...]`, optional `hard_constraints` such as
 `{artifact: "result.json", max_bytes: 1024}` or `{metric: "check.error", op: "<=",
