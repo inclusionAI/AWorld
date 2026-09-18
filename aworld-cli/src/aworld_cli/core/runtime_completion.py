@@ -312,8 +312,9 @@ def configure_runtime_completion(
         [check["id"] for item in delivery["outputs"] for check in item["checks"]]
         + [check["id"] for check in delivery.get("checks", [])]
     ))
-    if not requirements and not inputs and not check_ids:
-        return None
+    # Even an ordinary question keeps the aggregate hook: it passes with no
+    # deliverables, but rechecks any artifacts/self-checks added later through
+    # the workbench. Ambiguous text still creates no guessed file requirement.
     check_ids = (*check_ids, "workbench.delivery")
     contract = CompletionContract(
         required_artifacts=requirements, immutable_inputs=inputs,
