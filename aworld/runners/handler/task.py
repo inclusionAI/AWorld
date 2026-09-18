@@ -116,7 +116,10 @@ class DefaultTaskHandler(TaskHandler):
                                                       status=TaskStatusValue.FAILED,
                                                       failure_origin=origin,
                                                       failure_code=code if isinstance(code, str) else "runtime_exception",
-                                                      error_type=error_type if isinstance(error_type, str) else None)
+                                                      error_type=error_type if isinstance(error_type, str) else None,
+                                                      semantic_status="incomplete",
+                                                      completion_reason=code if isinstance(code, str) else "runtime_exception",
+                                                      recoverable=code in {"provider_timeout", "idle_timeout", "call_deadline_exceeded", "action_repair_timeout"})
             await self.runner.stop()
             yield Message(payload=self.runner._task_response,
                           session_id=message.session_id,
@@ -134,31 +137,51 @@ class DefaultTaskHandler(TaskHandler):
                 and completion.mode is CompletionMode.ENFORCE
                 and completion.status is not CompletionStatus.SATISFIED
             )
+            execution_state = self.runner.context.context_info.get("agent_execution_state", {})
+            if not isinstance(execution_state, dict) or (
+                execution_state.get("schema_version") != "aworld.agent.execution-state/v1"
+                or execution_state.get("task_id") != self.runner.context.task_id
+                or execution_state.get("task_epoch") != getattr(self.runner.context, "task_epoch", None)
+            ):
+                execution_state = {}
+            semantic_status = execution_state.get("status")
+            if semantic_status == "running":
+                semantic_status = "incomplete"
+                execution_state = {**execution_state, "reason": "completion_not_confirmed", "recoverable": True}
+            incomplete = semantic_status in {"incomplete", "budget_exhausted"}
+            reason = execution_state.get("reason") if incomplete else None
+            if completion_blocked:
+                semantic_status = "incomplete"
+                reason = "completion_contract_unsatisfied"
+            unsuccessful = completion_blocked or incomplete
             status = (
-                TaskStatusValue.FAILED
-                if completion_blocked
+                TaskStatusValue.BUDGET_EXHAUSTED if semantic_status == "budget_exhausted"
+                else TaskStatusValue.INCOMPLETE if unsuccessful
                 else "running" if message.headers.get("step_interrupt", False)
                 else "finished"
             )
             self.runner._task_response = TaskResponse(answer=message.payload,
-                                                      success=not completion_blocked,
+                                                      success=not unsuccessful,
                                                       context=message.context,
                                                       id=self.runner.task.id,
                                                       time_cost=(time.time() - self.runner.start_time),
                                                       usage=self.runner.context.token_usage,
                                                       status=status,
+                                                      semantic_status=semantic_status or "succeeded",
+                                                      completion_reason=reason,
+                                                      recoverable=execution_state.get("recoverable", True) if unsuccessful else None,
                                                       msg=(
                                                           "completion_contract_unsatisfied:"
                                                           + ",".join(completion.reason_codes)
-                                                          if completion_blocked else None
+                                                          if completion_blocked else reason
                                                       ),
                                                       failure_origin=(
                                                           TaskFailureOrigin.TASK.value
-                                                          if completion_blocked else None
+                                                          if unsuccessful else None
                                                       ),
                                                       failure_code=(
                                                           "completion_contract_unsatisfied"
-                                                          if completion_blocked else None
+                                                          if completion_blocked else reason
                                                       ))
 
             logger.info(f"{task_flag} task {self.runner.task.id} receive finished message.")
@@ -204,6 +227,9 @@ class DefaultTaskHandler(TaskHandler):
                                                       usage=self.runner.context.token_usage,
                                                       msg=f'cancellation message received: {task_item.msg}',
                                                       status=TaskStatusValue.CANCELLED,
+                                                      semantic_status="incomplete",
+                                                      completion_reason="cancelled",
+                                                      recoverable=False,
                                                       failure_origin=TaskFailureOrigin.CANCELLED.value,
                                                       failure_code="cancelled")
             await self.runner.stop()
@@ -222,6 +248,9 @@ class DefaultTaskHandler(TaskHandler):
                                                       usage=self.runner.context.token_usage,
                                                       msg=f'interruption message received: {task_item.msg}',
                                                       status=TaskStatusValue.INTERRUPTED,
+                                                      semantic_status="incomplete",
+                                                      completion_reason="interrupted",
+                                                      recoverable=False,
                                                       failure_origin=TaskFailureOrigin.CANCELLED.value,
                                                       failure_code="interrupted")
             await self.runner.stop()

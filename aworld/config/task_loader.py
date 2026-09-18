@@ -155,6 +155,18 @@ async def load_task_from_yaml(
     task_meta = data.get("task", {})
     task_config_dict = data.get("task_config", {})
     task_config = TaskConfig(**task_config_dict) if task_config_dict else None
+    # Portable absolute limits survive reloading/retrying a task plan. An
+    # explicit caller override may tighten them, never erase an existing epoch.
+    for key in ("timeout", "deadline_epoch_seconds"):
+        if key in task_meta and key not in task_overrides:
+            task_overrides[key] = task_meta[key]
+    if task_meta.get("deadline_epoch_seconds") is not None:
+        existing = task_meta["deadline_epoch_seconds"]
+        supplied = task_overrides.get("deadline_epoch_seconds")
+        Task(deadline_epoch_seconds=existing)
+        if supplied is not None:
+            Task(deadline_epoch_seconds=supplied)
+        task_overrides["deadline_epoch_seconds"] = min(existing, supplied) if supplied is not None else existing
     
     task = Task(
         input=task_overrides.get("input") or task_meta.get("query"),

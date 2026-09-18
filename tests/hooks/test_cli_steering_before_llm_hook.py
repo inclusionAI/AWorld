@@ -119,6 +119,9 @@ class _DummyContext:
     def get_config(self):
         return self._config
 
+    def set_state(self, key, value):
+        self.context_info[key] = value
+
     async def init_swarm_state(self, _swarm):
         return None
 
@@ -166,6 +169,8 @@ async def test_local_executor_reattaches_steering_after_post_build_context_repla
     assert task.context._aworld_cli_steering is coordinator
     assert task.context.execution_scope == "cli_interactive"
     assert task.context.context_info["execution_scope"] == "cli_interactive"
+    assert task.timeout is None
+    assert task.deadline_epoch_seconds is None
 
 
 @pytest.mark.asyncio
@@ -190,7 +195,8 @@ async def test_local_executor_preserves_explicit_origin_user_input(
     )
     monkeypatch.setattr(executor, "_create_workspace", _fake_create_workspace)
 
-    await executor._build_task(
+    monkeypatch.setenv("AWORLD_TASK_DEADLINE_EPOCH_SECONDS", "12345")
+    task = await executor._build_task(
         "整理结果\n会话附加信息:\n - conversationId: conv-1",
         session_id="session-1",
         task_id="task-1",
@@ -199,6 +205,8 @@ async def test_local_executor_preserves_explicit_origin_user_input(
 
     assert captured["task_input"].task_content == "整理结果\n会话附加信息:\n - conversationId: conv-1"
     assert captured["task_input"].origin_user_input == "整理结果"
+    assert task.deadline_epoch_seconds == 12345
+    assert task.remaining_seconds() == 0
 
 
 def test_local_executor_streaming_output_can_be_suppressed_for_interactive_steering(

@@ -133,5 +133,7 @@ class TaskStatusValue:
     CANCELLED = 'cancelled'
     INTERRUPTED = 'interrupted'
     TIMEOUT = 'timeout'
+    INCOMPLETE = 'incomplete'
+    BUDGET_EXHAUSTED = 'budget_exhausted'
 
-TaskStatus = Literal['init', 'running', 'success', 'failed', 'cancelled', 'interrupted', 'timeout']
+TaskStatus = Literal['init', 'running', 'success', 'failed', 'cancelled', 'interrupted', 'timeout', 'incomplete', 'budget_exhausted']

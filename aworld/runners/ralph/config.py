@@ -41,7 +41,7 @@ class StopConditionConfig:
     stop_detectors: List[StopCondition] = field(default_factory=list)
     conflict_strategy: str = ConflictStrategy.MERGE
     max_iterations: int = 1
-    timeout: Optional[float] = 3600.0
+    timeout: Optional[float] = None
     max_consecutive_failures: int = 3
     max_cost: Optional[float] = 100.0
     enable_user_interrupt: bool = True

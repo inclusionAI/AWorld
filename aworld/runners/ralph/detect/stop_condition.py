@@ -126,7 +126,7 @@ class TimeoutCondition(StopCondition):
         timeout = state.completion_criteria.timeout
         elapsed = time.time() - state.start_time
 
-        if 0 < timeout <= elapsed:
+        if timeout is not None and 0 < timeout <= elapsed:
             return StopDecision(
                 should_stop=True,
                 stop_type=StopType.TIMEOUT,

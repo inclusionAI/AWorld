@@ -940,7 +940,7 @@ class LocalAgentExecutor(BaseAgentExecutor):
                 stream=False,
                 exit_on_failure=True
             ),
-            timeout=60 * 60,
+            deadline_epoch_seconds=self._caller_deadline_from_environment(),
             observation=observation
         )
 
@@ -953,6 +953,13 @@ class LocalAgentExecutor(BaseAgentExecutor):
         task = hook_kwargs.get('task', task)
 
         return task
+
+    @staticmethod
+    def _caller_deadline_from_environment() -> float | None:
+        raw = os.environ.get("AWORLD_TASK_DEADLINE_EPOCH_SECONDS")
+        if raw is None:
+            return None
+        return Task(deadline_epoch_seconds=float(raw)).deadline_epoch_seconds
 
     async def chat(
         self,
@@ -1746,7 +1753,7 @@ class LocalAgentExecutor(BaseAgentExecutor):
                 if hasattr(outputs, '_run_impl_task') and outputs._run_impl_task and not outputs.is_complete:
                     try:
                         # Wait with timeout to avoid hanging
-                        final_result = await asyncio.wait_for(outputs._run_impl_task, timeout=1.0)
+                        final_result = await outputs._run_impl_task
                         if self.console:
                             self.console.print(f"[dim]📋 Final result received: {type(final_result)}[/dim]")
                         

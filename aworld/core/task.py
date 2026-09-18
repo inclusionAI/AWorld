@@ -3,6 +3,8 @@
 import abc
 import asyncio
 import enum
+import math
+import time
 import uuid
 from dataclasses import dataclass, field
 from typing import Any, Union, List, Dict, Callable, Optional, Literal, TYPE_CHECKING, AsyncGenerator
@@ -72,20 +74,77 @@ class Task:
     # parent task reference
     parent_task: Optional['Task'] = field(default=None, repr=False)
     max_retry_count: int = field(default=0)
-    timeout: int = field(default=0)
+    # None is unbounded. A supplied duration is bound once, never per retry.
+    timeout: float | None = field(default=None)
     observation: Optional[Observation] = field(default=None)
     task_status: TaskStatus = field(default=TaskStatusValue.INIT)
     # streaming support
     streaming_mode: StreamingMode = field(default=None)
     # Explicit identity epoch for repeated executions of the same task id.
     trajectory_task_epoch: int | None = field(default=None)
+    deadline_epoch_seconds: float | None = field(default=None)
+    _deadline_monotonic: float | None = field(default=None, init=False, repr=False)
+    _bound_deadline_epoch_seconds: float | None = field(default=None, init=False, repr=False)
 
     def __post_init__(self) -> None:
+        self.bind_deadline()
         epoch = self.trajectory_task_epoch
         if epoch is not None and (
             isinstance(epoch, bool) or not isinstance(epoch, int) or epoch < 0
         ):
             raise ValueError("trajectory_task_epoch must be a non-negative integer")
+
+    def _validate_lifetime(self) -> None:
+        for name in ("timeout", "deadline_epoch_seconds"):
+            value = getattr(self, name)
+            if value is not None and (
+                isinstance(value, bool) or not isinstance(value, (int, float))
+                or not math.isfinite(value)
+                or (value <= 0 if name == "timeout" else value < 0)
+            ):
+                raise ValueError(f"{name} must be a finite positive number or None")
+
+    def bind_deadline(self) -> float | None:
+        """Bind the caller's budget once; wall-clock rollback cannot extend it.
+
+        The epoch is the portable control plane for serialization/continuation.
+        The monotonic deadline protects a live task against clock adjustments.
+        A child task may tighten, but never extend, its parent's deadline.
+        """
+        self._validate_lifetime()
+        now = time.time()
+        parent_remaining = None
+        candidates = [d for d in (self.deadline_epoch_seconds, self._bound_deadline_epoch_seconds) if d is not None]
+        if self.timeout is not None and self._deadline_monotonic is None:
+            candidates.append(now + self.timeout)
+        if self.parent_task is not None:
+            parent_deadline = self.parent_task.bind_deadline()
+            if parent_deadline is not None:
+                candidates.append(parent_deadline)
+                parent_remaining = self.parent_task.remaining_seconds()
+        if candidates:
+            self.deadline_epoch_seconds = min(candidates)
+            self._bound_deadline_epoch_seconds = self.deadline_epoch_seconds
+            monotonic = time.monotonic() + max(0.0, self.deadline_epoch_seconds - now)
+            if parent_remaining is not None:
+                monotonic = min(monotonic, time.monotonic() + parent_remaining)
+            self._deadline_monotonic = min(
+                monotonic, self._deadline_monotonic
+            ) if self._deadline_monotonic is not None else monotonic
+        return self.deadline_epoch_seconds
+
+    def remaining_seconds(self) -> float | None:
+        self.bind_deadline()
+        if self.deadline_epoch_seconds is None:
+            return None
+        return max(0.0, min(self.deadline_epoch_seconds - time.time(),
+                            self._deadline_monotonic - time.monotonic()))
+
+    def request_pause(self) -> None:
+        self.task_status = TaskStatusValue.INTERRUPTED
+
+    def request_cancel(self) -> None:
+        self.task_status = TaskStatusValue.CANCELLED
 
     def to_dict(self) -> Dict[str, Any]:
         """Serialize Task to dict while excluding parent_task to avoid recursion.
@@ -116,6 +175,7 @@ class Task:
             "group_id": self.group_id,
             "max_retry_count": self.max_retry_count,
             "timeout": self.timeout,
+            "deadline_epoch_seconds": self.deadline_epoch_seconds,
             "parent_task_id": self.parent_task.id if self.parent_task else None,
             "task_status": self.task_status,
             # Streaming-related fields (serializable)
@@ -149,6 +209,9 @@ class TaskResponse:
     failure_origin: str | None = field(default=None)
     failure_code: str | None = field(default=None)
     error_type: str | None = field(default=None)
+    semantic_status: str | None = field(default=None)
+    completion_reason: str | None = field(default=None)
+    recoverable: bool | None = field(default=None)
 
     @property
     def trajectory_status(self) -> str | None:
@@ -200,7 +263,8 @@ class TaskResponse:
         }
         # Preserve the historical success payload exactly; the typed failure
         # keys are an additive control plane only when evidence exists.
-        for key in ("failure_origin", "failure_code", "error_type"):
+        for key in ("failure_origin", "failure_code", "error_type",
+                    "semantic_status", "completion_reason", "recoverable"):
             value = getattr(self, key)
             if value is not None:
                 payload[key] = value
