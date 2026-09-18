@@ -478,7 +478,7 @@ EOF
 
             await runtime.run_plugin_hooks(
                 "task_completed",
-                event={"task_status": "completed", "final_answer": "<promise>COMPLETE</promise>"},
+                event={"task_status": "completed", "final_answer": "<promise>COMPLETE</promise>", "semantic_status": "succeeded"},
                 executor_instance=executor_instance,
             )
 

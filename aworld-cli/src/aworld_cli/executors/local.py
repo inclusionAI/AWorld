@@ -8,6 +8,8 @@ import time
 import re
 import shutil
 import traceback
+import uuid
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from time import monotonic
@@ -67,6 +69,12 @@ class _PauseForQueuedSteeringCheckpoint(Exception):
     """Internal control-flow signal for yielding to queued steering at a safe checkpoint."""
 
     pass
+
+
+@dataclass(frozen=True)
+class _GoalContinuation:
+    prompt: str
+    context: Any = None
 
 
 class LocalAgentExecutor(BaseAgentExecutor):
@@ -777,7 +785,7 @@ class LocalAgentExecutor(BaseAgentExecutor):
             session_id = self.session_id
         
         if not task_id:
-            task_id = f"task_{datetime.now().strftime('%Y%m%d%H%M%S')}"
+            task_id = f"task_{datetime.now().strftime('%Y%m%d%H%M%S')}_{uuid.uuid4().hex[:8]}"
         
         # 🔥 Hook: PRE_INPUT_PARSE
         original_task_content = task_content if origin_user_input is None else origin_user_input
@@ -903,6 +911,14 @@ class LocalAgentExecutor(BaseAgentExecutor):
             request=str(original_task_content or ""),
             workspace_path=context.workspace_path,
         )
+        goal_state = self._goal_session_state()
+        goal_commands = goal_state.get("verification_commands")
+        if goal_state.get("active") and goal_commands:
+            from aworld_cli.core.runtime_completion import configure_goal_completion
+            configure_goal_completion(
+                context, verification_commands=goal_commands,
+                workspace_path=context.workspace_path,
+            )
 
         # 5. Build observation with images if provided
         # Use task_input.task_content (which may have been updated by FileParseHook) instead of old task_content
@@ -954,18 +970,111 @@ class LocalAgentExecutor(BaseAgentExecutor):
 
         return task
 
+    async def chat(
+        self,
+        message: Union[str, tuple[str, List[str]]],
+        requested_skill_names: Optional[List[str]] = None,
+        *,
+        timeout: float | None = None,
+        deadline_epoch_seconds: float | None = None,
+    ) -> str:
+        """Run a goal without recursion or an implicit aggregate time limit."""
+        state = self._goal_session_state()
+        if not state.get("active"):
+            # A completed/paused goal does not constrain ordinary later chats.
+            # Explicit resume reactivates the persisted contract first.
+            state = {}
+        deadlines = [d for d in (deadline_epoch_seconds, self._caller_deadline_from_environment(), state.get("deadline_epoch_seconds")) if d is not None]
+        # Validate each input before taking min; otherwise NaN could disappear.
+        for deadline in deadlines:
+            Task(deadline_epoch_seconds=deadline)
+        lifetime = Task(timeout=timeout, deadline_epoch_seconds=min(deadlines) if deadlines else None)
+        previous_context = None
+        self._active_chat_task = asyncio.current_task()
+        try:
+            while True:
+                turn = self._chat_turn(
+                    message, requested_skill_names=requested_skill_names, _lifetime=lifetime,
+                    _previous_goal_context=previous_context,
+                )
+                # Include context/hook construction in an explicitly requested
+                # aggregate limit. Unspecified lifetimes have no outer timer.
+                try:
+                    result = await asyncio.wait_for(turn, timeout=lifetime.remaining_seconds())
+                except asyncio.TimeoutError:
+                    if lifetime.remaining_seconds() != 0:
+                        raise
+                    self.last_task_response = TaskResponse(
+                        success=False, answer="", status="timeout",
+                        failure_origin="infrastructure", failure_code="task_timeout",
+                        semantic_status="budget_exhausted", completion_reason="task_timeout",
+                        recoverable=False,
+                    )
+                    await self._run_plugin_task_hook("task_completed", {
+                        "session_id": self.session_id, "task_status": "timeout",
+                        "semantic_status": "budget_exhausted", "recoverable": False,
+                        "completion_reason": "task_timeout",
+                        "deadline_epoch_seconds": lifetime.deadline_epoch_seconds,
+                    })
+                    return ""
+                if not isinstance(result, _GoalContinuation):
+                    return result
+                message = result.prompt
+                previous_context = result.context
+                # Give cancellation/queued controls a scheduling point between turns.
+                await asyncio.sleep(0)
+        except asyncio.CancelledError:
+            await self._run_plugin_task_hook("task_interrupted", {
+                "session_id": self.session_id, "task_status": "interrupted",
+                "partial_answer": "",
+            })
+            raise
+        finally:
+            self._active_goal_task = None
+            self._active_chat_task = None
+
+    def _goal_session_state(self) -> dict:
+        runtime = getattr(self, "_base_runtime", None)
+        if runtime is None or not hasattr(runtime, "build_plugin_hook_state"):
+            return {}
+        return runtime.build_plugin_hook_state("goal-session", "session", self)
+
+    def _goal_agent_ids(self) -> dict[str, str]:
+        """Stable configured names bridge UUID agent IDs after process restart.
+
+        Ambiguous names are deliberately excluded, never guessed.
+        """
+        groups = {}
+        for agent in (getattr(self.swarm, "agents", None) or {}).values():
+            name = agent.name() if callable(agent.name) else agent.name
+            groups.setdefault(name, []).append(agent.id())
+        return {name: ids[0] for name, ids in groups.items() if len(ids) == 1}
+
     @staticmethod
     def _caller_deadline_from_environment() -> float | None:
         raw = os.environ.get("AWORLD_TASK_DEADLINE_EPOCH_SECONDS")
         if raw is None:
             return None
+        # Task validates finite/non-negative epoch values. Never fail open on an
+        # invalid caller budget (including an empty environment variable).
         return Task(deadline_epoch_seconds=float(raw)).deadline_epoch_seconds
 
-    async def chat(
+    def request_goal_pause(self) -> None:
+        task = getattr(self, "_active_goal_task", None)
+        if task is not None:
+            task.request_pause()
+        chat = getattr(self, "_active_chat_task", None)
+        if chat is not None and not chat.done():
+            chat.cancel()
+
+    async def _chat_turn(
         self,
         message: Union[str, tuple[str, List[str]]],
         requested_skill_names: Optional[List[str]] = None,
-    ) -> str:
+        *,
+        _lifetime: Task | None = None,
+        _previous_goal_context: Any = None,
+    ) -> str | _GoalContinuation:
             """
             Execute chat with local agent using Task/Runners pattern.
             
@@ -1005,6 +1114,18 @@ class LocalAgentExecutor(BaseAgentExecutor):
                 image_urls=image_urls,
                 requested_skill_names=requested_skill_names,
             )
+            if _previous_goal_context is not None:
+                from aworld.core.context.work_progress import carry_goal_work_state
+                carry_goal_work_state(_previous_goal_context, task.context)
+            resume_scope = getattr(self, "_resume_goal_work_scope_once", None)
+            if resume_scope is not None:
+                from aworld.core.context.work_progress import resume_goal_work_state
+                old_ids = getattr(self, "_resume_goal_agent_ids_once", {})
+                new_ids = self._goal_agent_ids()
+                mapping = {old_id: new_ids[name] for name, old_id in old_ids.items() if name in new_ids}
+                resume_goal_work_state(task.context, **resume_scope, agent_id_mapping=mapping)
+                self._resume_goal_work_scope_once = None
+                self._resume_goal_agent_ids_once = None
             try:
                 from aworld_cli.core.session_store import CliSessionStore
 
@@ -1047,6 +1168,24 @@ class LocalAgentExecutor(BaseAgentExecutor):
             hook_result = await self._execute_hooks(ExecutorHookPoint.PRE_RUN_TASK, **hook_kwargs)
             # Get updated task from kwargs
             task = hook_kwargs.get('task', task)
+            if isinstance(task, Task):
+                if _lifetime is not None:
+                    task.parent_task = _lifetime
+                    task.bind_deadline()
+                    # A PRE_RUN_TASK caller may supply the finite budget. Bind
+                    # it to the entire continuation chain on its first turn.
+                    if task.deadline_epoch_seconds is not None:
+                        _lifetime.deadline_epoch_seconds = task.deadline_epoch_seconds
+                        _lifetime.bind_deadline()
+                state = self._goal_session_state()
+                if state.get("active") and state.get("__plugin_state__") is not None:
+                    state["__plugin_state__"].update({
+                        "deadline_epoch_seconds": task.deadline_epoch_seconds,
+                        "last_task_id": task.id,
+                        "last_task_epoch": getattr(task.context, "task_epoch", None),
+                        "agent_ids_by_name": self._goal_agent_ids(),
+                    })
+                self._active_goal_task = task
 
             # 4. Run task with streaming
             try:
@@ -1753,6 +1892,9 @@ class LocalAgentExecutor(BaseAgentExecutor):
                 if hasattr(outputs, '_run_impl_task') and outputs._run_impl_task and not outputs.is_complete:
                     try:
                         # Wait with timeout to avoid hanging
+                        # A completed stream can precede durable finalization.
+                        # Waiting one second used to cancel that producer and
+                        # incorrectly promote a partial streamed answer.
                         final_result = await outputs._run_impl_task
                         if self.console:
                             self.console.print(f"[dim]📋 Final result received: {type(final_result)}[/dim]")
@@ -1765,6 +1907,7 @@ class LocalAgentExecutor(BaseAgentExecutor):
                                     self.console.print(f"[dim]📋 TaskResponse type: {type(task_response)}[/dim]")
                                 if isinstance(task_response, TaskResponse):
                                     self.last_task_response = task_response
+                                    final_task_response = task_response
                                 
                                 # Try different ways to get the answer
                                 if hasattr(task_response, 'answer'):
@@ -1893,6 +2036,11 @@ class LocalAgentExecutor(BaseAgentExecutor):
                         "task_id": task.id,
                         "session_id": self.session_id,
                         "task_status": "idle",
+                        "semantic_status": getattr(final_task_response, "semantic_status", None),
+                        "completion_reason": getattr(final_task_response, "completion_reason", None),
+                        "recoverable": getattr(final_task_response, "recoverable", None),
+                        "deadline_epoch_seconds": getattr(task, "deadline_epoch_seconds", None),
+                        "task_epoch": getattr(task.context, "task_epoch", None),
                         "final_answer": answer,
                         "usage": final_usage,
                         "llm_calls": final_llm_calls,
@@ -1924,9 +2072,9 @@ class LocalAgentExecutor(BaseAgentExecutor):
                         getattr(result, "follow_up_prompt", None) or getattr(result, "updated_input", None)
                     )
                     if follow_up_prompt:
-                        return await self.chat(
+                        return _GoalContinuation(
                             follow_up_prompt,
-                            requested_skill_names=requested_skill_names,
+                            task.context if isinstance(task, Task) else None,
                         )
                 return answer
                 

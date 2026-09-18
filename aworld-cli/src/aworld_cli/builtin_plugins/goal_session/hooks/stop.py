@@ -19,6 +19,8 @@ class GoalCommand(PluginBoundCommand):
         return "prompt"
 
     def resolve_command_type(self, context: CommandContext) -> str:
+        if resolve_goal_control_action(context.user_args) == "resume":
+            return "prompt"
         if resolve_goal_control_action(context.user_args):
             return "tool"
         return "prompt"
@@ -27,6 +29,19 @@ class GoalCommand(PluginBoundCommand):
         return resolve_goal_control_action(context.user_args) is None
 
     async def pre_execute(self, context: CommandContext):
+        if resolve_goal_control_action(context.user_args) == "resume":
+            handle = self.get_state_handle(context)
+            current = handle.read() if handle else {}
+            if goal_status(current) not in {"paused", "active"}:
+                return "Only a paused or active goal can resume; exhausted budgets require an explicit new goal."
+            maximum = current.get("max_turns")
+            if maximum is not None and current.get("turn_count", 1) >= maximum:
+                handle.update({"active": False, "status": "budget_limited"})
+                return "The goal's explicit turn budget is exhausted. Resume does not renew it."
+            from aworld.core.task import Task
+            if Task(deadline_epoch_seconds=current.get("deadline_epoch_seconds")).remaining_seconds() == 0:
+                handle.update({"active": False, "status": "budget_limited"})
+                return "The goal's explicit deadline has expired. Resume does not renew it."
         if resolve_goal_control_action(context.user_args):
             return None
         try:
@@ -48,6 +63,11 @@ class GoalCommand(PluginBoundCommand):
                 parsed["from_campaign"],
                 max_turns=parsed["max_turns"],
             )
+            from aworld.core.task import Task
+            state["deadline_epoch_seconds"] = Task(
+                timeout=parsed["timeout_seconds"],
+                deadline_epoch_seconds=parsed["deadline_epoch_seconds"],
+            ).deadline_epoch_seconds
         else:
             state = new_goal_contract_state(
                 objective=parsed["prompt"],
@@ -55,6 +75,8 @@ class GoalCommand(PluginBoundCommand):
                 completion_promise=parsed["completion_promise"],
                 max_turns=parsed["max_turns"],
                 source="goal",
+                timeout_seconds=parsed["timeout_seconds"],
+                deadline_epoch_seconds=parsed["deadline_epoch_seconds"],
             )
         handle.write(state)
         return state
@@ -137,17 +159,45 @@ class GoalCommand(PluginBoundCommand):
                     "last_task_status": "paused",
                 }
             )
+            if context.executor is not None and hasattr(context.executor, "request_goal_pause"):
+                context.executor.request_goal_pause()
             return build_goal_context_prompt(updated)
+
+        if action == "resume":
+            if goal_status(current) not in {"paused", "active"}:
+                return "Only a paused or active goal can resume; an exhausted explicit budget cannot be reset by resume."
+            import time
+            maximum = current.get("max_turns")
+            if maximum is not None and current.get("turn_count", 1) >= maximum:
+                return build_goal_context_prompt(handle.update({"active": False, "status": "budget_limited"}))
+            deadline = current.get("deadline_epoch_seconds")
+            if deadline is not None and time.time() >= deadline:
+                return build_goal_context_prompt(handle.update({"active": False, "status": "budget_limited"}))
+            if context.executor is not None and current.get("last_task_id"):
+                context.executor._resume_context_checkpoint_once = True
+                context.executor._resume_goal_work_scope_once = {
+                    "source_task_id": current["last_task_id"],
+                    "source_task_epoch": current.get("last_task_epoch"),
+                }
+                context.executor._resume_goal_agent_ids_once = current.get("agent_ids_by_name") or {}
+            return build_goal_context_prompt(handle.update({
+                "active": True, "status": "active",
+                "turn_count": current.get("turn_count", 1) + 1,
+            }))
 
         if action == "clear":
             if not current:
                 return "No goal state to clear."
             handle.clear()
+            if context.executor is not None and hasattr(context.executor, "request_goal_pause"):
+                context.executor.request_goal_pause()
             return "Goal cleared."
 
         return "Unknown /goal action."
 
     async def get_prompt(self, context: CommandContext) -> str:
+        if resolve_goal_control_action(context.user_args) == "resume":
+            return await self.execute(context)
         state = self._build_start_state(context)
         return build_goal_context_prompt(state)
 
