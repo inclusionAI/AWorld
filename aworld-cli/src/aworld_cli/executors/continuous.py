@@ -83,10 +83,13 @@ class ContinuousExecutor:
             task_status = getattr(task_response, "status", None)
             if task_status is not None:
                 result["task_status"] = to_serializable(task_status)
-            for attribute in ("failure_origin", "failure_code", "error_type"):
+            for attribute in ("failure_origin", "failure_code", "error_type", "semantic_status", "completion_reason"):
                 value = getattr(task_response, attribute, None)
                 if isinstance(value, str) and value:
                     result[attribute] = value
+            recoverable = getattr(task_response, "recoverable", None)
+            if isinstance(recoverable, bool):
+                result["recoverable"] = recoverable
             if result.get("failure_origin") == "cancelled" or result.get(
                 "task_status"
             ) in {"cancelled", "interrupted"}:
@@ -239,107 +242,17 @@ class ContinuousExecutor:
                 is_complete = True
                 self.console.print(f"[green]✅ ({iteration}) Completion signal detected![/green]")
 
-            # Smart task completion detection (only after first iteration)
-            if not is_complete and isinstance(response, str) and iteration == 1:
-                # Check if agent gave a definitive answer (not asking questions or saying it will try)
-                normalized_response = response.lower()
-
-                # Definitive completion indicators (command execution)
-                execution_indicators = [
-                    "成功执行",
-                    "执行成功",
-                    "命令执行成功",
-                    "任务完成",
-                    "已完成",
-                    "输出结果",
-                    "执行结果",
-                    "successfully executed",
-                    "execution successful",
-                    "command executed",
-                    "task completed",
-                ]
-
-                # Definitive answer indicators (Q&A tasks)
-                answer_indicators = [
-                    "作者是",
-                    "答案是",
-                    "结果是",
-                    "主要是",
-                    "根据.*信息",
-                    "具体信息如下",
-                    "关键信息",
-                    "the author is",
-                    "the answer is",
-                    "the result is",
-                    "according to",
-                    "based on",
-                ]
-
-                # Continuation indicators (agent wants to keep working)
-                continuation_indicators = [
-                    "让我",
-                    "我将",
-                    "接下来",
-                    "需要继续",
-                    "还需要",
-                    "应该继续",
-                    "让我们继续",
-                    "let me",
-                    "i will",
-                    "i'll",
-                    "we should continue",
-                    "we need to",
-                    "next, i",
-                    "next, we",
-                ]
-
-                has_execution = any(indicator in normalized_response for indicator in execution_indicators)
-                has_answer = any(indicator in normalized_response for indicator in answer_indicators)
-                has_continuation = any(indicator in normalized_response for indicator in continuation_indicators)
-
-                # Response length check: if response is substantial (>200 chars) and structured
-                is_substantial = len(response) > 200 and ("\n" in response or "：" in response or ":" in response)
-
-                # Decision logic:
-                # 1. Command execution task: has execution indicator + no continuation
-                # 2. Q&A task: has answer indicator OR (substantial response + no continuation)
-                if (has_execution or has_answer or is_substantial) and not has_continuation:
-                    is_complete = True
-                    completion_reason = "execution" if has_execution else ("answer" if has_answer else "substantial response")
-                    self.console.print(f"[green]✅ ({iteration}) Task completed - agent gave definitive {completion_reason}![/green]")
-
-            # Intelligent repetition detection: Check if agent is repeating the same answer
-            if not is_complete and isinstance(response, str):
-                # Normalize response for comparison (remove extra whitespace, lowercase)
-                normalized_response = " ".join(response.lower().split())
-
-                # Check if this response is very similar to recent responses
-                if len(self.response_history) >= 1:
-                    # Compare with last response (reduced from 2 to make it more sensitive)
-                    recent_responses = self.response_history[-1:]
-                    similarity_scores = []
-
-                    for past_response in recent_responses:
-                        # Simple similarity: check if 70%+ of words are the same (reduced from 80%)
-                        words_current = set(normalized_response.split())
-                        words_past = set(past_response.split())
-
-                        if not words_current:
-                            continue
-
-                        intersection = words_current & words_past
-                        similarity = len(intersection) / len(words_current)
-                        similarity_scores.append(similarity)
-
-                    # If last response is 70%+ similar, consider task complete
-                    if similarity_scores and all(s >= 0.7 for s in similarity_scores):
-                        is_complete = True
-                        self.console.print(f"[green]✅ ({iteration}) Repetition detected - task appears complete![/green]")
-
-                # Add current response to history (keep last 3)
-                self.response_history.append(normalized_response)
-                if len(self.response_history) > 3:
-                    self.response_history.pop(0)
+            # A runtime completion record or a caller-selected completion signal
+            # can finish a run. Repeated/substantial prose is not verification.
+            task_response = getattr(self.agent_executor, "last_task_response", None)
+            semantic_status = getattr(task_response, "semantic_status", None)
+            if semantic_status is not None:
+                is_complete = semantic_status == "succeeded"
+            elif task_response is not None:
+                is_complete = is_complete or (
+                    getattr(task_response, "success", False) is True
+                    and getattr(task_response, "status", None) in {"finished", "success"}
+                )
 
             # TODO: Extract actual cost from response if available
             # For now, we'll use a placeholder
@@ -356,6 +269,8 @@ class ContinuousExecutor:
                 if task_interrupted
                 else getattr(task_response, "success", None)
             )
+            if semantic_status in {"incomplete", "budget_exhausted"}:
+                task_succeeded = False
             if task_succeeded is None:
                 task_succeeded = not (
                     isinstance(response, str)

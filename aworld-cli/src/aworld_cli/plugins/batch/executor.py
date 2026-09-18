@@ -385,17 +385,25 @@ class BatchExecutor:
                     "latency": latency
                 }
 
-                self.console.print(f"[green]✅[/green] [dim]Record {record_id}: Success ({(latency):.2f}s)[/dim]")
-
-                return {
+                task_response = getattr(agent_executor, "last_task_response", None)
+                succeeded = getattr(task_response, "success", None)
+                if succeeded is None:
+                    succeeded = not (isinstance(response, str) and response.strip().lower().startswith("task fail, cause:"))
+                semantic_status = getattr(task_response, "semantic_status", None)
+                if semantic_status in {"incomplete", "budget_exhausted"} or getattr(agent_executor, "last_task_interrupted", False):
+                    succeeded = False
+                label = "Success" if succeeded else semantic_status or "Failed"
+                self.console.print(f"[dim]Record {record_id}: {label} ({latency:.2f}s)[/dim]")
+                result = {
                     "record_id": record_id,
-                    "success": True,
+                    "success": bool(succeeded),
                     "response": str(response) if response else "",
-                    "error": None,
+                    "error": None if succeeded else getattr(task_response, "completion_reason", None) or "task_failed",
                     "metrics": metrics,
                     "original_record": record,
                     "task_id": task_id,
                 }
+                return ContinuousExecutor._attach_task_response_evidence(result, task_response)
 
             except asyncio.TimeoutError:
                 latency = time.time() - start_time

@@ -1674,6 +1674,23 @@ async def _run_direct_mode(
             details=infrastructure_failure,
             summary=summary,
         )
+    incomplete_results = [
+        result for result in (summary or {}).get("results", [])
+        if isinstance(result, dict) and result.get("semantic_status", result.get("task_status"))
+        in {"incomplete", "budget_exhausted"}
+    ]
+    if incomplete_results:
+        unfinished = incomplete_results[-1]
+        semantic = unfinished.get("semantic_status", unfinished.get("task_status"))
+        return _direct_run_failure_outcome(
+            stage=DirectRunStage.AGENT_EXECUTION,
+            error_code=(DirectRunErrorCode.AGENT_BUDGET_EXHAUSTED if semantic == "budget_exhausted"
+                        else DirectRunErrorCode.AGENT_INCOMPLETE),
+            agent_name=agent_name,
+            details={"recoverable": unfinished.get("recoverable") is True},
+            summary=summary,
+            status=DirectRunStatus.TASK_FAILED,
+        )
     if not _direct_run_succeeded(summary):
         if require_explicit_failure_origin and not _direct_run_has_explicit_task_failure(
             summary

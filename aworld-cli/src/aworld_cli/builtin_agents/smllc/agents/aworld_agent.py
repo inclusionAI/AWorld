@@ -388,7 +388,11 @@ def load_aworld_system_prompt(
 
 
 def resolve_aworld_max_loop_steps() -> int:
-    """Resolve the bounded soft limit for one Aworld agent task."""
+    """Resolve the bounded step limit for one execution segment.
+
+    Exhaustion is a checkpointed budget_exhausted outcome, never success. A
+    goal may continue in another segment under its original caller deadline.
+    """
 
     raw_value = os.environ.get("AWORLD_MAX_LOOP_STEPS", "120")
     try:

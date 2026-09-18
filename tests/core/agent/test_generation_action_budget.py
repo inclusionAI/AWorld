@@ -273,6 +273,11 @@ async def test_started_tool_call_disarms_tool_free_deadline(
                 ],
             )
 
+        yield ModelResponse(
+            id="tool", model="fake-model", finish_reason="tool_calls",
+            tool_calls=[ToolCall(id="call-1", function=Function(name="unknown", arguments='"}'))],
+        )
+
     monkeypatch.setattr(llm_agent_module, "acall_llm_model_stream", tool_stream)
     agent = _agent(
         policy=GenerationBudgetPolicy(
@@ -291,7 +296,7 @@ async def test_started_tool_call_disarms_tool_free_deadline(
     )
 
     assert len(response.tool_calls) == 1
-    assert response.tool_calls[0].function.arguments.endswith("xxxxxx")
+    assert response.tool_calls[0].function.arguments == '{"content":"xxxxxx"}'
     assert message.context.context_info.get("generation_budget_events") is None
 
 

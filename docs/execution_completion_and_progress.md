@@ -1,0 +1,73 @@
+# Execution completion and recoverable progress
+
+Agent termination, completion evidence, and reward are separate concepts. A
+non-empty model response or a tool transport success does not prove that the
+requested work was completed.
+
+## Completion boundaries
+
+The model response boundary retains the provider's `finish_reason`. Length
+stops, reasoning-only responses, and invalid native tool-call JSON are retried
+within the configured model attempt budget. An invalid batch is discarded as a
+whole: no prefix of the batch is executed. Exhaustion produces an `incomplete`
+execution state. Repeated response repair without an executable response is not
+automatically retried forever by a goal.
+
+A step-budget finalization is a handoff summary. It always produces
+`budget_exhausted`, including when the summary sounds successful. The state is
+stored under `agent_execution_state`, with task/epoch identity, reason, and
+recoverability. The task handler projects this state into TaskResponse. CLI
+summaries preserve these distinctions; the existing supervised outcome schema
+continues to use `task_failed`, with `failure.stage=agent_execution` and
+`failure.error_code=agent_incomplete` or `agent_budget_exhausted`.
+
+## Explicit verification
+
+`AWORLD_REQUIRED_ARTIFACTS_JSON` is a caller-supplied JSON array of output paths.
+It enables enforcement by default unless `AWORLD_COMPLETION_MODE` is explicitly
+set. Optional natural-language output inference remains advisory and must not
+add guessed requirements to an explicit contract.
+
+`AWORLD_VALIDATION_COMMANDS_JSON` accepts explicit objects containing
+`command_id`, `argv`, optional `cwd`, and optional `timeout_seconds`. Validation
+commands are not inferred from model or tool text. They execute at the completion
+boundary and produce actual exit codes and output hashes. Output is drained with
+bounded memory; timeouts/cancellation terminate the validation process group.
+A message saying `PASS` cannot override a failed process. Caller-supplied
+expected artifact hashes are checked against actual file contents.
+
+Goal `--verify` commands use `configure_goal_completion`. These are explicit
+user shell commands, executed with Bash `pipefail` so a failing test piped into
+a successful log formatter cannot pass. Individual command timeouts protect
+liveness and do not replace the task's caller-owned overall deadline. No
+verification result is inferred from repeated prose or response length.
+
+## Persistent work progress
+
+The existing adaptive Tool ledger now retains:
+
+- Public task input, with source and content hash.
+- The latest agent plan, explicitly labelled as an unverified agent claim.
+- Observed commands/results and recent failures.
+- Explicit output requirements, observed candidate state, and pending outputs.
+- Runtime self-check evidence, separately from transport success.
+- Exact repeated read/result hash evidence, with observation sequence numbers.
+
+The ledger is saved through WorkingState and the existing lightweight Amni
+checkpoint before the next model request and at termination. Plain Contexts
+without a usable checkpoint destination retain in-memory state and report
+`memory_only`; they do not claim durable persistence. Recovery messages keep
+untrusted values inside an escaped data boundary. They never promote text inside
+a tool result into instructions or verification.
+
+Three identical reads without a changed result produce an advisory recovery
+hint. Reads remain allowed; changed results or a write reset the advisory window.
+A goal may explicitly call `carry_goal_work_state` to transfer historical evidence
+to a new execution segment, or `resume_goal_work_state` to rebind a named prior
+segment loaded from a checkpoint. Completion state and fresh verification receipts
+are not carried forward. An exhausted segment which repeats the prior exhausted
+segment's same evidence can pause for intervention instead of cycling forever.
+
+These checks cannot establish arbitrary domain correctness. Tasks without a
+structured completion contract still require independent evaluation; a successful
+agent run is not a benchmark reward claim.

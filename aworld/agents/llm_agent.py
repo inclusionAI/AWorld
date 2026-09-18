@@ -2597,6 +2597,9 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         raw_messages = await self.build_llm_input(
             observation, info, message=message, **kwargs
         )
+        from aworld.core.context.work_progress import retain_work_progress, checkpoint_work_progress
+        retain_work_progress(message.context, self.id())
+        await checkpoint_work_progress(message.context, self.id())
         raw_messages = await self._apply_adaptive_context_policy(
             context=message.context,
             messages=raw_messages,
@@ -2611,7 +2614,8 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                         "The execution step budget has been reached. This is the "
                         "bounded finalization turn and no tools are available. "
                         "Using only the task and observations already present, "
-                        "produce the best complete final response now. Report "
+                        "save a handoff summary of current progress and unfinished work. "
+                        "This is a budget stop, not successful task completion. Report "
                         "verified outcomes and artifacts, state uncertainty instead "
                         "of inventing results, and do not request another tool call."
                     ),
@@ -3027,28 +3031,37 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                         )
                         await send_message(output_message)
                 else:
-                    if self.output_converter and isinstance(
-                        self.output_converter, Callable
-                    ):
-                        if asyncio.iscoroutinefunction(self.output_converter):
-                            agent_result = await self.output_converter(
-                                llm_response,
-                                agent_id=self.id(),
-                                use_tools_in_prompt=self.use_tools_in_prompt,
-                            )
+                    try:
+                        if self.output_converter and isinstance(
+                            self.output_converter, Callable
+                        ):
+                            if asyncio.iscoroutinefunction(self.output_converter):
+                                agent_result = await self.output_converter(
+                                    llm_response,
+                                    agent_id=self.id(),
+                                    use_tools_in_prompt=self.use_tools_in_prompt,
+                                )
+                            else:
+                                agent_result = self.output_converter(
+                                    llm_response,
+                                    agent_id=self.id(),
+                                    use_tools_in_prompt=self.use_tools_in_prompt,
+                                )
                         else:
-                            agent_result = self.output_converter(
+                            agent_result = await self.output_converter.parse(
                                 llm_response,
                                 agent_id=self.id(),
+                                agent=self,
                                 use_tools_in_prompt=self.use_tools_in_prompt,
                             )
-                    else:
-                        agent_result = await self.output_converter.parse(
-                            llm_response,
-                            agent_id=self.id(),
-                            agent=self,
-                            use_tools_in_prompt=self.use_tools_in_prompt,
+                    except ToolCallBatchParseError as exc:
+                        validation_feedback = (
+                            "The model returned an incomplete or malformed tool-call batch. "
+                            "No calls in that batch were executed. Emit a complete, smaller "
+                            "tool call and continue from observed work. Issue codes: "
+                            + ",".join(issue.code.value for issue in exc.issues)
                         )
+                        agent_result = AgentResult(actions=[], is_call_tool=False)
                     if loop_budget_finalization and agent_result.is_call_tool:
                         logger.warning(
                             "Agent %s attempted tool work during its bounded "
@@ -3066,14 +3079,18 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                             is_call_tool=False,
                         )
                     candidate_finished = not agent_result.is_call_tool
-                    if candidate_finished:
+                    response_incomplete = bool(
+                        isinstance(llm_response.message, dict)
+                        and llm_response.message.get("aworld_incomplete_reason")
+                    )
+                    if candidate_finished and not validation_feedback and not response_incomplete:
                         validation_feedback = (
                             await self._completion_feedback_if_unsatisfied(
                                 context=message.context,
                                 final_response_text=llm_response.content or "",
                             )
                         )
-                    if candidate_finished and not validation_feedback:
+                    if candidate_finished and not validation_feedback and not response_incomplete:
                         validation_feedback = (
                             self._build_result_validation_feedback_from_context(
                                 context=message.context,
@@ -3156,6 +3173,8 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             self._result_validation_retry_key(self.id()), None
         )
 
+        retain_work_progress(message.context, self.id(), plan=llm_response.content)
+        await checkpoint_work_progress(message.context, self.id())
         if self.is_agent_finished(llm_response, agent_result):
             policy_result = agent_result.actions
         else:
@@ -3172,6 +3191,8 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                 policy_result = await self.execution_tools(
                     agent_result.actions, message
                 )
+        if self.finished:
+            await checkpoint_work_progress(message.context, self.id(), force=True)
         await self.send_agent_response_output(
             self, llm_response, message.context, kwargs.get("outputs")
         )
@@ -3560,6 +3581,9 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             )
 
         if retry_count >= 1:
+            from aworld.core.context.execution_state import record_execution_state, checkpoint_execution_state
+            record_execution_state(message.context, self.id(), "incomplete", "validation_repair_exhausted", recoverable=False)
+            await checkpoint_execution_state(message.context)
             self._finished = True
             return [
                 ActionModel(
@@ -3622,6 +3646,9 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                 exc,
             )
             message.context.context_info.pop(retry_key, None)
+            from aworld.core.context.execution_state import record_execution_state, checkpoint_execution_state
+            record_execution_state(message.context, self.id(), "incomplete", "validation_repair_unavailable", recoverable=False)
+            await checkpoint_execution_state(message.context)
             self._finished = True
             return [
                 ActionModel(
@@ -4269,6 +4296,8 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                                 ) + (tc.function.arguments or "")
                         else:
                             llm_response.tool_calls.append(tc)
+                if chunk.finish_reason is not None:
+                    llm_response.finish_reason = chunk.finish_reason
                 if chunk.error:
                     llm_response.error = chunk.error
                 llm_response.id = chunk.id
@@ -4343,6 +4372,44 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             raise
         finally:
             await self._close_generation_stream(resp_stream)
+
+    @staticmethod
+    def _incomplete_model_response_reason(response: ModelResponse | None) -> str | None:
+        if response is None:
+            return None
+        if response.finish_reason in {"length", "max_tokens", "max_output_tokens"}:
+            return "model_output_truncated"
+        if response.finish_reason in {"content_filter", "error", "cancelled"}:
+            return "model_output_interrupted"
+        ids = set()
+        for call in response.tool_calls or []:
+            function = getattr(call, "function", None)
+            call_id = getattr(call, "id", None)
+            if not call_id or call_id in ids or not function or not function.name:
+                return "malformed_tool_call_batch"
+            ids.add(call_id)
+            try:
+                arguments = json.loads(function.arguments)
+            except (TypeError, ValueError):
+                return "incomplete_tool_arguments"
+            if not isinstance(arguments, dict):
+                return "invalid_tool_arguments"
+        if response.tool_calls:
+            return None
+        if not str(response.content or "").strip():
+            return "reasoning_only_response" if response.reasoning_content else None
+        return None
+
+    @staticmethod
+    def _incomplete_model_response(response: ModelResponse | None, reason: str) -> ModelResponse:
+        # Preserve usage/finish metadata for diagnostics; discard executable and
+        # unfinished prose rather than presenting a truncated plan as completion.
+        result = copy.copy(response) if response is not None else ModelResponse(id="", model="")
+        result.content = "Work remains incomplete after bounded model-response recovery (" + reason + "). Progress is retained for continuation."
+        result.tool_calls = []
+        result.message = {"role": "assistant", "content": result.content,
+                          "aworld_incomplete_reason": reason, "aworld_recoverable": False}
+        return result
 
     @staticmethod
     def _bounded_partial_for_repair(content: str, *, limit: int) -> str:
@@ -4611,6 +4678,32 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                             streaming=False,
                         )
 
+                    # A non-empty provider response is not necessarily a completed
+                    # action. In particular length-stop batches must be discarded
+                    # atomically even if an early call happens to be valid JSON.
+                    incomplete_reason = self._incomplete_model_response_reason(llm_response)
+                    if incomplete_reason:
+                        if llm_response:
+                            usage_process(llm_response.usage, message.context)
+                        from aworld.core.context.execution_state import record_execution_state
+                        record_execution_state(context, self.id(), "incomplete", incomplete_reason)
+                        if attempt < self.llm_max_attempts:
+                            attempt += 1
+                            messages = list(messages) + [{
+                                "role": "user",
+                                "content": (
+                                    "Runtime response recovery: the previous model response was "
+                                    + incomplete_reason
+                                    + ". No tool calls from that response were executed. "
+                                    "Continue from observed work. Use a smaller complete JSON tool "
+                                    "call, or provide a final answer only when the task is complete."
+                                ),
+                            }]
+                            continue
+                        record_execution_state(context, self.id(), "incomplete", incomplete_reason, recoverable=False)
+                        return self._incomplete_model_response(llm_response, incomplete_reason)
+                    from aworld.core.context.execution_state import record_execution_state
+                    record_execution_state(context, self.id(), "running", "model_response_accepted")
                     # Check if we got a valid response
                     if llm_response and (
                         llm_response.content
@@ -5041,6 +5134,21 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         self, llm_response: ModelResponse, agent_result: AgentResult
     ) -> bool:
         if not agent_result.is_call_tool:
+            from aworld.core.context.execution_state import record_execution_state
+            response_metadata = llm_response.message if isinstance(llm_response.message, dict) else {}
+            reason = response_metadata.get("aworld_incomplete_reason")
+            raw_reason = self._incomplete_model_response_reason(llm_response)
+            if raw_reason and not reason:
+                self._finished = False
+                if getattr(self, "context", None) is not None:
+                    record_execution_state(self.context, self.id(), "incomplete", raw_reason)
+                return False
+            if getattr(self, "context", None) is not None:
+                record_execution_state(
+                    self.context, self.id(), "incomplete" if reason else "succeeded",
+                    reason or "agent_final_response",
+                    recoverable=bool(reason and response_metadata.get("aworld_recoverable", False)),
+                )
             self._finished = True
         return self.finished
 

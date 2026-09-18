@@ -196,7 +196,7 @@ def test_semantic_progress_records_bounded_work_state_for_checkpoint_resume():
     assert "inspect --current-state" in continuation
     assert "verified-current-state" in continuation
     assert "must-not-enter-context" not in continuation
-    assert "<redacted>" in continuation
+    assert "\\u003credacted\\u003e" in continuation
 
 
 def test_work_state_preserves_only_typed_retrievable_artifact_refs():

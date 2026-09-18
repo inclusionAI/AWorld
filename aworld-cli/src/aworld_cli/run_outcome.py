@@ -42,6 +42,8 @@ class DirectRunErrorCode(str, Enum):
     EXECUTOR_CREATION_FAILED = "executor_creation_failed"
     PROVIDER_CALL_NOT_CAPTURED = "provider_call_not_captured"
     AGENT_TASK_FAILED = "agent_task_failed"
+    AGENT_INCOMPLETE = "agent_incomplete"
+    AGENT_BUDGET_EXHAUSTED = "agent_budget_exhausted"
     AGENT_EXECUTION_INFRASTRUCTURE_FAILED = "agent_execution_infrastructure_failed"
     AGENT_EXECUTION_UNTYPED_FAILURE = "agent_execution_untyped_failure"
     DIRECT_RUN_EXCEPTION = "direct_run_exception"

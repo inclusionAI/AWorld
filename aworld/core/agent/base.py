@@ -912,6 +912,16 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
             state_context.context_info[f"agent_loop_budget_exhausted:{self.id()}"] = (
                 dict(exhaustion)
             )
+        from aworld.core.context.execution_state import (
+            record_execution_state, checkpoint_execution_state,
+        )
+        from aworld.core.context.work_progress import record_budget_handoff
+        recoverable = record_budget_handoff(context, self.id())
+        record_execution_state(
+            context, self.id(), "budget_exhausted", "agent_loop_budget_exhausted",
+            recoverable=recoverable,
+        )
+        await checkpoint_execution_state(context)
         resolver = getattr(context, "resolve_completion_evidence", None)
         resolved_step = context.context_info.pop(
             f"completion_evidence_resolved_this_turn:{self.id()}", None
