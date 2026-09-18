@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any, Dict, List, Optional
 
 from aworld.agents.llm_agent import Agent
+from aworld.models.context_window import resolve_model_context_window
 from aworld.core.context.amni.prompt.assembly.budget import (
     BudgetedPromptAssemblyProvider,
     PromptBudgetExceededError,
@@ -147,20 +148,22 @@ class PromptBudgetedAgent(Agent):
         return effective_limit
 
     def _resolve_input_budget(self, output_limit: int) -> int:
-        max_input_tokens = self._positive_limit(
+        max_input_tokens = self._optional_positive_limit(
             self.conf.max_input_tokens,
             "AgentConfig.max_input_tokens",
         )
-        max_model_len = self._positive_limit(
-            self.conf.llm_config.max_model_len,
-            "ModelConfig.max_model_len",
-        )
+        model = self.conf.llm_config
+        max_model_len = resolve_model_context_window(
+            model.llm_model_name,
+            context_limit=model.context_compiler.context_limit,
+            max_model_len=model.max_model_len,
+        ).tokens
         model_input_capacity = max_model_len - output_limit
         if model_input_capacity <= 0:
             raise ValueError(
                 "reserved output tokens must be smaller than ModelConfig.max_model_len"
             )
-        return min(max_input_tokens, model_input_capacity)
+        return min(max_input_tokens, model_input_capacity) if max_input_tokens is not None else model_input_capacity
 
     @classmethod
     def _optional_positive_limit(cls, value: Any, name: str) -> Optional[int]:
@@ -173,4 +176,3 @@ class PromptBudgetedAgent(Agent):
         if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
             raise ValueError(f"{name} must be a positive integer")
         return value
-

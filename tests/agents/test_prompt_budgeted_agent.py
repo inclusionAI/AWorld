@@ -144,3 +144,30 @@ async def test_final_budget_assertion_forwards_resolved_output_limit(
     assert result == "ok"
     assert captured["max_tokens"] == 100
 
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("explicit_input_cap", [None, 128000])
+async def test_registered_large_window_has_no_implicit_128k_input_clamp(monkeypatch, explicit_input_cap):
+    called = False
+    async def invoke(self, messages, message=None, **kwargs):
+        nonlocal called
+        called = True
+        return kwargs
+    monkeypatch.setattr(Agent, "invoke_model", invoke)
+    monkeypatch.setattr(BudgetedPromptAssemblyProvider, "estimate_request_tokens",
+                        lambda **kwargs: {"total": 200000, "tool_tokens": 0})
+    agent = PromptBudgetedAgent(
+        name="large-window",
+        conf=AgentConfig(llm_config=ModelConfig(llm_model_name="gpt-4.1"),
+                         max_input_tokens=explicit_input_cap),
+        prompt_budget_policy=PromptBudgetPolicy(reserved_output_tokens=32768),
+        tool_names=[],
+    )
+    if explicit_input_cap is None:
+        result = await agent.invoke_model([{"role":"user", "content":"estimated request"}])
+        assert called and result["max_tokens"] == 32768
+        assert agent._resolve_input_budget(32768) == 1_047_576 - 32768
+    else:
+        with pytest.raises(PromptBudgetExceededError):
+            await agent.invoke_model([{"role":"user", "content":"estimated request"}])
+        assert not called

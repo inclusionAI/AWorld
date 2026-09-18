@@ -632,6 +632,26 @@ def _apply_image_models_config(models_config: Dict[str, Any]) -> None:
     )
 
 
+_profile_context_window_value: str | None = None
+
+
+def _apply_default_context_window(profile: Dict[str, Any]) -> None:
+    """Bridge the selected default profile without retaining a previous model's window."""
+    global _profile_context_window_value
+    from aworld_cli.core.model_profiles import CONTEXT_WINDOW_ENV, _context_window_value, _profile_value
+
+    raw = _profile_value(profile, "max_model_len", "context_window", "context_window_tokens", CONTEXT_WINDOW_ENV)
+    window = _context_window_value(raw, "default model context window")
+    if window is not None:
+        _profile_context_window_value = str(window)
+        os.environ[CONTEXT_WINDOW_ENV] = _profile_context_window_value
+    else:
+        if (_profile_context_window_value is not None
+                and os.environ.get(CONTEXT_WINDOW_ENV) == _profile_context_window_value):
+            os.environ.pop(CONTEXT_WINDOW_ENV, None)
+        _profile_context_window_value = None
+
+
 def _apply_models_config_to_env(models_config: Dict[str, Any]) -> None:
     """
     Apply models config (api_key, model, base_url) to os.environ.
@@ -645,6 +665,7 @@ def _apply_models_config_to_env(models_config: Dict[str, Any]) -> None:
         default_cfg = {}
     # New format: default has api_key, model, base_url, provider
     if (default_cfg.get('api_key') or '').strip():
+        _apply_default_context_window(default_cfg)
         api_key = (default_cfg.get('api_key') or '').strip()
         model_name = (default_cfg.get('model') or '').strip()
         base_url = (default_cfg.get('base_url') or '').strip()
@@ -694,6 +715,7 @@ def _apply_models_config_to_env(models_config: Dict[str, Any]) -> None:
             elif provider.lower() == 'gemini':
                 os.environ['GEMINI_API_KEY'] = api_key
             if not llm_primary_set:
+                _apply_default_context_window(provider_config)
                 os.environ['LLM_API_KEY'] = api_key
                 os.environ['LLM_PROVIDER'] = provider.lower()
                 if model_name:

@@ -226,13 +226,14 @@ class ModelConfig(BaseConfig):
     llm_async_enabled: bool = True
     llm_stream_call: bool = False
     max_retries: int = 3
-    max_model_len: Optional[int] = None  # Maximum model context length
+    # None preserves an undeclared window for model/deployment-aware resolution.
+    max_model_len: Optional[int] = Field(default=None, gt=0, strict=True)
     max_tokens: Optional[int] = Field(default=None, gt=0)
     provider_native_cache_capability: Literal[
         "auto", "supported", "unsupported"
     ] = "auto"
     model_type: Optional[str] = (
-        "qwen"  # Model type determines tokenizer and maximum length
+        "qwen"  # Tokenizer family; context capacity is resolved separately.
     )
     params: Optional[Dict[str, Any]] = {}
     ext_config: Optional[Dict[str, Any]] = {}
@@ -250,11 +251,6 @@ class ModelConfig(BaseConfig):
                 continue
             if hasattr(self, key):
                 setattr(self, key, value)
-
-        # init max_model_len
-        if self.max_model_len is None:
-            # qwen or other default model_type
-            self.max_model_len = 128000 if self.model_type != "claude" else 200000
 
 
 class LlmCompressionConfig(BaseConfig):
@@ -565,7 +561,7 @@ class AgentConfig(BaseConfig):
     # use vision model
     use_vision: bool = True
     max_steps: int = 10
-    max_input_tokens: int = 128000
+    max_input_tokens: Optional[int] = Field(default=None, gt=0, strict=True)
     max_actions_per_step: int = 10
     infrastructure_error_circuit_breaker_threshold: int = 3
     system_prompt: Optional[str] = None
@@ -597,7 +593,23 @@ class AgentConfig(BaseConfig):
 
         # Reassignment if it has llm config args
         if llm_config_kwargs or not self.llm_config:
-            self.llm_config = ModelConfig(**llm_config_kwargs)
+            # Flat legacy options replace their own fields, retaining the
+            # nested model/profile and explicit window declarations.
+            overrides = ModelConfig(**llm_config_kwargs)
+            if self.llm_config:
+                retained = self.llm_config.model_copy(deep=True)
+                for key in llm_config_kwargs:
+                    value = getattr(overrides, key)
+                    original = getattr(retained, key)
+                    if isinstance(original, BaseModel) and isinstance(value, BaseModel):
+                        merged = original.model_copy(deep=True)
+                        for nested_key in value.model_fields_set:
+                            setattr(merged, nested_key, getattr(value, nested_key))
+                        value = merged
+                    setattr(retained, key, value)
+                self.llm_config = retained
+            else:
+                self.llm_config = overrides
 
         self.llm_config.ext_config.update(llm_config_ext)
 
