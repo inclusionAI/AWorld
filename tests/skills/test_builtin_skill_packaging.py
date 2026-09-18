@@ -60,7 +60,7 @@ def test_cli_wheel_bundles_filex_and_loads_it_outside_the_checkout(tmp_path: Pat
 import sys
 from pathlib import Path
 sys.path.insert(0, sys.argv[1])
-from aworld_cli.core.builtin_skills import get_builtin_skills_path
+from aworld_cli.core.builtin_skills import AWORLD_DEFAULT_SKILL_NAMES, get_builtin_skills_path
 from aworld_cli.core.skill_activation_resolver import SkillActivationResolver, SkillResolverRequest
 root = get_builtin_skills_path()
 assert root == Path(sys.argv[1]) / 'aworld_cli' / 'builtin_skills', root
@@ -69,6 +69,10 @@ result = SkillActivationResolver().resolve(SkillResolverRequest(
 assert result.active_skill_names == ('filex',), result
 assert Path(result.skill_configs['filex']['asset_root']) == root / 'filex'
 assert (root / 'filex/scripts/filex.py').is_file()
+default_result = SkillActivationResolver().resolve(SkillResolverRequest(
+    plugin_roots=(), runtime_scope='session', task_text='',
+    default_skill_names=AWORLD_DEFAULT_SKILL_NAMES))
+assert default_result.active_skill_names == ('filex',), default_result
 """
     subprocess.run(
         [sys.executable, "-c", code, str(installed)],

@@ -27,6 +27,7 @@ from aworld.core.tool.surface import (
 )
 from aworld.logs.util import logger
 from aworld_cli.core.context_tool import CONTEXT_TOOL
+from aworld_cli.core.builtin_skills import AWORLD_DEFAULT_SKILL_NAMES
 from aworld_cli.core.skill_registry import build_skill_resolver_inputs
 from .audio.audio import build_audio_swarm
 from .avatar.avatar import build_avatar_swarm
@@ -592,6 +593,9 @@ def build_aworld_agent(include_skills: Optional[str] = None):
         plugin_base_dir,
         user_dir=os.environ.get("AWORLD_SKILLS_PATH"),
     )
+    # AWorld owns its default skills. Public tasks and other harnesses do not
+    # need a Gateway capability/profile to enable the bundled FileX workflow.
+    resolver_inputs["default_skill_names"] = list(AWORLD_DEFAULT_SKILL_NAMES)
 
     prompt_budget_policy = resolve_aworld_prompt_budget()
     max_completion_tokens = (

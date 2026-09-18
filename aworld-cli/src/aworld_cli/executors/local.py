@@ -703,6 +703,7 @@ class LocalAgentExecutor(BaseAgentExecutor):
         skill_state = SkillStateManager()
         disabled_skill_names = skill_state.disabled_skill_names()
         enabled_skill_names = skill_state.enabled_skill_names()
+        sandbox_skills: dict[int, tuple[Any, dict[str, Any]]] = {}
 
         for agent in self._iter_swarm_agents():
             agent_name = self._agent_name_for_resolution(agent)
@@ -725,6 +726,7 @@ class LocalAgentExecutor(BaseAgentExecutor):
                 agent_name=agent_name,
                 task_text=task_text,
                 requested_skill_names=requested,
+                default_skill_names=tuple(resolver_inputs.get("default_skill_names", [])),
                 enabled_skill_names=enabled_skill_names,
                 disabled_skill_names=disabled_skill_names,
                 compatibility_sources=tuple(
@@ -739,6 +741,33 @@ class LocalAgentExecutor(BaseAgentExecutor):
             result = resolver.resolve(request)
             if agent_conf is not None:
                 agent_conf.skill_configs = result.skill_configs
+                # Agents and sandboxes retain their own skill configuration
+                # references after construction. Keep the prompt, tool filter,
+                # and execution-asset staging views aligned with this task.
+                agent.skill_configs = result.skill_configs
+                sandbox = getattr(agent, "sandbox", None)
+                if sandbox is not None:
+                    shared_skill_configs = sandbox_skills.setdefault(
+                        id(sandbox), (sandbox, {})
+                    )[1]
+                    for skill_name, skill_config in result.skill_configs.items():
+                        previous = shared_skill_configs.get(skill_name)
+                        if previous is None or (
+                            skill_config.get("active") and not previous.get("active")
+                        ):
+                            shared_skill_configs[skill_name] = skill_config
+                if result.skill_configs:
+                    from aworld.core.context.amni.tool.context_skill_tool import CONTEXT_SKILL
+
+                    tool_names = getattr(agent, "tool_names", None)
+                    if tool_names is not None and CONTEXT_SKILL not in tool_names:
+                        tool_names.append(CONTEXT_SKILL)
+
+        # Shared sandboxes stage assets for every owner, while each agent keeps
+        # its own activation state. Refresh each sandbox only after the union is
+        # complete so a later agent cannot erase an earlier agent's skills.
+        for sandbox, skill_configs in sandbox_skills.values():
+            sandbox.skill_configs = skill_configs
 
     def _consume_restored_messages(self) -> list[dict[str, Any]]:
         restored_messages = getattr(self, "_aworld_cli_restored_messages", None) or []

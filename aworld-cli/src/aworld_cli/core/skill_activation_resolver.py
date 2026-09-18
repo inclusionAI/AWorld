@@ -32,6 +32,7 @@ class SkillResolverRequest:
     include_default_disabled: bool = False
     compatibility_sources: tuple[str, ...] = ()
     compatibility_skill_patterns: tuple[str, ...] = ()
+    default_skill_names: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -199,26 +200,36 @@ class SkillActivationResolver:
                     requested.append(skill_name)
             return tuple(requested)
 
+        # Agent defaults are active without task keywords, while explicit task
+        # selection above and the availability/disable filters stay authoritative.
         enabled_skill_names = {
             str(skill_name).strip().lower()
             for skill_name in request.enabled_skill_names
             if str(skill_name).strip()
         }
+        eligible = [
+            candidate
+            for candidate in candidates
+            if candidate.metadata.get("default_enabled", True) is not False
+            or candidate.skill_name.strip().lower() in enabled_skill_names
+        ]
+        available = {candidate.skill_name for candidate in eligible}
+        defaults = tuple(
+            dict.fromkeys(name for name in request.default_skill_names if name in available)
+        )
         scored = sorted(
             (
                 (
                     self._score_candidate(candidate, request.task_text or ""),
                     candidate.skill_name,
                 )
-                for candidate in candidates
-                if candidate.metadata.get("default_enabled", True) is not False
-                or candidate.skill_name.strip().lower() in enabled_skill_names
+                for candidate in eligible
             ),
             key=lambda item: (-item[0], item[1]),
         )
         if not scored or scored[0][0] <= 0:
-            return tuple()
-        return (scored[0][1],)
+            return defaults
+        return tuple(dict.fromkeys((*defaults, scored[0][1])))
 
     def _score_candidate(
         self, candidate: ResolvedSkillCandidate, task_text: str

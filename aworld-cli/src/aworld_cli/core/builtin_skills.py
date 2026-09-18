@@ -8,6 +8,8 @@ from pathlib import Path
 from aworld.skills.filesystem_provider import FilesystemSkillProvider
 
 
+AWORLD_DEFAULT_SKILL_NAMES = ("filex",)
+
 _PACKAGE_ROOT = Path(__file__).resolve().parents[1]
 _MANIFEST_PATH = _PACKAGE_ROOT / "builtin_skills" / "manifest.json"
 

@@ -5,6 +5,12 @@ standard executable Dataset accepted by an unmodified lingguang-bench-client and
 mcpgateway. The Dataset does not select an Agent, skill, model, or parsing library.
 AWorld/FileX may participate as one candidate through a separate run configuration.
 
+When the run selects AWorld, its built-in Agent enables the bundled FileX skill
+by default and uses it to produce the requested parsing artifacts. This policy
+belongs to AWorld: submitting the task does not require `capabilities.skills`,
+a Gateway profile, or FileX hints in the Dataset. Runtime provides AWorld's
+FileX executable and dependencies; other harnesses choose their own parsers.
+
 The source revision is `2805a1d940f95a203e0ae4b88be9934f7765b3fc`: 2,078 unique
 input tasks and 169,011 rules across table, chart, text content, text formatting,
 and layout. Ground truth is available only in the isolated verifier context.

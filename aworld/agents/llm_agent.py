@@ -5068,6 +5068,9 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             return False
         if skill_config.get("type") == "agent":
             return False
+        execution_assets = skill_config.get("execution_assets")
+        if isinstance(execution_assets, dict) and execution_assets.get("enabled"):
+            return False
         return not bool(skill_config.get("tool_list"))
 
     def _should_disable_tools_for_forced_skills(
