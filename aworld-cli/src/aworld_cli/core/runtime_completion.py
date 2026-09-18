@@ -247,6 +247,7 @@ def _attach_workspace_completion(context, existing):
     # Extending a caller contract must retain its evidence, mode and checks.
     context._completion_contract = extended
     context._completion_evidence_resolver = resolver
+    context._workspace_completion_caller_contract = existing
     context._workspace_completion_owned_contract = extended
     return extended
 

@@ -210,3 +210,51 @@ async def test_repair_trampoline_records_empty_followup_as_incomplete(tmp_path):
     assert get_execution_state(context)['status'] == 'incomplete'
     assert get_execution_state(context)['reason'] == 'validation_repair_unavailable'
     assert 'not claiming success' in result[0].policy_info
+
+
+@pytest.mark.asyncio
+async def test_completion_feedback_identifies_bounded_failed_checks_without_raw_output():
+    context = Context(task_id='check-feedback')
+    contract = CompletionContract((), (), (), None, (), max_repairs=None,
+                                  required_self_check_ids=('workbench.delivery',))
+    context.configure_completion_contract(contract, mode=CompletionMode.ENFORCE)
+    context.context_info['delivery_validation'] = {
+        'receipt': {'success': False, 'unchanged': False, 'checks': [
+            {'id': f'check-{index}', 'kind': 'json', 'path': f'/outputs/file-{index}.json',
+             'status': 'error', 'success': False, 'error_type': 'JSONDecodeError',
+             'error': 'RAW_CONTENT_MUST_NOT_APPEAR', 'stdout': 'RAW_CONTENT_MUST_NOT_APPEAR'}
+            for index in range(8)]},
+        'readback': {'valid': False},
+    }
+    feedback = await _agent(context)._completion_feedback_if_unsatisfied(context=context, final_response_text='done')
+    assert 'check-0' in feedback and '/outputs/file-0.json' in feedback
+    assert 'JSONDecodeError' in feedback and '3 more failed checks' in feedback
+    assert 'check-7' not in feedback and 'RAW_CONTENT_MUST_NOT_APPEAR' not in feedback
+    assert 'readback is invalid' in feedback and 'bytes changed' in feedback
+    assert 'WORKBENCH inspect' in feedback
+
+
+@pytest.mark.asyncio
+async def test_agent_caller_contract_does_not_replace_workspace_or_goal_extensions(local_facade, tmp_path):
+    context = Context(task_id='agent-caller')
+    _bind(context, tmp_path)
+    contract = CompletionContract((), (), (ValidationCommand('caller', (sys.executable, '-c', 'pass')),),
+                                  90, (), max_repairs=4)
+    resolver = AsyncMock()
+    agent = _agent(context)
+    agent.configure_completion_contract(contract, mode=CompletionMode.ENFORCE, evidence_resolver=resolver)
+    agent._install_runtime_completion_contract(context)
+    extended = configure_runtime_completion(context, request='Write unrelated.json.', workspace_path=tmp_path)
+    agent._install_runtime_completion_contract(context)
+    assert context.completion_contract is extended
+    assert 'workbench.delivery' in extended.required_self_check_ids
+    goal_extended = configure_goal_completion(context, verification_commands=['true'], workspace_path=tmp_path)
+    agent._install_runtime_completion_contract(context)
+    assert context.completion_contract is goal_extended
+    assert contract.validation_commands[0] in goal_extended.validation_commands
+    await context.resolve_completion_evidence()
+    resolver.assert_awaited_once_with(context, contract)
+    # Old ownership markers must not authorize an unrelated replacement.
+    context.configure_completion_contract(CompletionContract((), (), (), None, ()), mode=CompletionMode.ENFORCE)
+    with pytest.raises(ValueError, match='conflicting completion contracts'):
+        agent._install_runtime_completion_contract(context)

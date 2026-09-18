@@ -694,8 +694,20 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         mode = self._runtime_completion_mode or getattr(
             self.llm, "_context_completion_mode", "off"
         )
+        existing = context.completion_contract
+        owned_extension = any(existing is getattr(context, attribute, None)
+                              for attribute in ("_workspace_completion_owned_contract", "_goal_completion_owned_contract"))
+        if existing is not None and owned_extension and any(
+            contract is getattr(context, attribute, None)
+            for attribute in ("_workspace_completion_caller_contract", "_goal_completion_base_contract")
+        ):
+            # The local executor appended actual delivery/goal evidence to this
+            # same caller contract. Reinstalling it would silently drop checks.
+            return
+        if existing is not None and existing != contract:
+            raise ValueError("the Context and primary Agent supply conflicting completion contracts")
         if (
-            context.completion_contract == contract
+            existing == contract
             and context.completion_mode is CompletionMode(mode)
             and getattr(context, "_completion_evidence_resolver", None)
             is self._runtime_completion_evidence_resolver
@@ -745,7 +757,36 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         return (
             "The runtime completion contract rejected the completion claim "
             f"({reasons}). Continue working, gather new evidence, and rerun focused checks."
+            + self._completion_delivery_feedback(context)
         )
+
+    @staticmethod
+    def _completion_delivery_feedback(context) -> str:
+        """Expose bounded checker metadata without replaying checker output."""
+        validation = context.context_info.get("delivery_validation")
+        if not isinstance(validation, dict):
+            return (" Use WORKBENCH inspect to review the delivery requirements and latest checks."
+                    if context.context_info.get("task_workspace_binding") else "")
+        receipt = validation.get("receipt", validation)
+        receipt = receipt if isinstance(receipt, dict) else {}
+        failed = [check for check in receipt.get("checks", [])
+                  if isinstance(check, dict) and check.get("success") is not True]
+        details = []
+        for check in failed[:5]:
+            summary = {key: check[key][:180] for key in ("id", "kind", "path", "status", "error_type")
+                       if isinstance(check.get(key), str)}
+            details.append(summary)
+        message = ""
+        if details:
+            message = " Executed delivery check failures: " + json.dumps(details, ensure_ascii=False, separators=(",", ":"))
+            if len(failed) > len(details):
+                message += f" ({len(failed) - len(details)} more failed checks)."
+        readback = validation.get("readback")
+        if isinstance(readback, dict) and readback.get("valid") is False:
+            message += " Published artifact readback is invalid."
+        if receipt.get("unchanged") is False:
+            message += " Artifact or input bytes changed during validation."
+        return message + " Use WORKBENCH inspect to review the latest validation details, repair the affected output, then validate again."
 
     def _record_llm_call_request(
         self,
