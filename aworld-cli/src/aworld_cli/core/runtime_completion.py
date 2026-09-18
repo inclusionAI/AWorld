@@ -188,6 +188,10 @@ async def resolve_runtime_completion_evidence(
         ))
     if context.context_info.get("task_workspace_binding") is not None:
         await _evaluate_workspace_completion(context, contract)
+    _record_runtime_artifacts(context, contract)
+
+
+def _record_runtime_artifacts(context, contract):
     observed_at = datetime.now(timezone.utc)
     for requirement in contract.required_artifacts:
         path = Path(requirement.path).expanduser()
@@ -227,16 +231,32 @@ async def _evaluate_workspace_completion(context, contract):
 
 
 def _attach_workspace_completion(context, existing):
-    if not (existing.required_artifacts or existing.immutable_inputs
-            or existing.validation_commands or existing.required_self_check_ids):
-        return existing
+    delivery = context.context_info.get("delivery_contract", {})
     if any(command.command_id == "workbench.delivery" for command in existing.validation_commands):
         raise ValueError("workbench.delivery is reserved for executed workspace evidence")
-    if existing is getattr(context, "_workspace_completion_owned_contract", None):
+    if any(existing is getattr(context, key, None) for key in (
+        "_workspace_completion_owned_contract", "_goal_completion_owned_contract",
+        "_runtime_completion_derived_contract",
+    )):
         return existing
-    extended = replace(existing, required_self_check_ids=tuple(dict.fromkeys(
-        (*existing.required_self_check_ids, "workbench.delivery")
-    )))
+    requirements = list(existing.required_artifacts)
+    known_paths = {item.path for item in requirements}
+    requirements.extend(ArtifactRequirement(item["id"], item["path"])
+                        for item in delivery.get("outputs", []) if item["path"] not in known_paths)
+    input_ids = tuple(item["id"] for item in delivery.get("inputs", []) if item.get("immutable") is True)
+    check_ids = tuple(check["id"] for item in delivery.get("outputs", []) for check in item["checks"])
+    check_ids += tuple(check["id"] for check in delivery.get("checks", []))
+    caller_ids = {command.command_id for command in existing.validation_commands}
+    caller_ids.update(existing.required_self_check_ids)
+    if caller_ids.intersection((*check_ids, "workbench.delivery")):
+        raise ValueError("caller check IDs conflict with native workspace check IDs")
+    extended = replace(
+        existing, required_artifacts=tuple(requirements),
+        immutable_inputs=tuple(dict.fromkeys((*existing.immutable_inputs, *input_ids))),
+        required_self_check_ids=tuple(dict.fromkeys(
+            (*existing.required_self_check_ids, *check_ids, "workbench.delivery")
+        )),
+    )
     previous_resolver = getattr(context, "_completion_evidence_resolver", None)
     resolver = previous_resolver
     if previous_resolver is not resolve_runtime_completion_evidence:
@@ -244,6 +264,12 @@ def _attach_workspace_completion(context, existing):
             if previous_resolver is not None:
                 await previous_resolver(target, existing)
             await _evaluate_workspace_completion(target, configured)
+            previous_ids = {item.requirement_id for item in existing.required_artifacts}
+            local_contract = configured if previous_resolver is None else replace(
+                configured, required_artifacts=tuple(item for item in configured.required_artifacts
+                                                     if item.requirement_id not in previous_ids),
+            )
+            _record_runtime_artifacts(target, local_contract)
     # Extending a caller contract must retain its evidence, mode and checks.
     context._completion_contract = extended
     context._completion_evidence_resolver = resolver
@@ -266,6 +292,7 @@ def configure_runtime_completion(
     mode = resolve_completion_mode()
     existing = getattr(context, "completion_contract", None)
     explicit_paths = _configured_artifact_paths()
+    artifact_field_provided = bool((os.environ.get(REQUIRED_ARTIFACTS_ENV) or "").strip())
     validation_commands = _configured_validation_commands()
     binding = context.context_info.get("task_workspace_binding")
     if existing is not None:
@@ -278,16 +305,19 @@ def configure_runtime_completion(
 
     # Install caller structure before preparing workspace state, so the facade
     # can recognize its authority and never replace it with inferred paths.
-    if explicit_paths or validation_commands:
+    if artifact_field_provided or validation_commands:
         contract = build_runtime_completion_contract(
             request, workspace_path=workspace_path, explicit_paths=explicit_paths,
             validation_commands=validation_commands,
         )
+        if contract is None:
+            contract = CompletionContract((), (), (), None, ("agent_final_response",), max_repairs=None)
         context.configure_completion_contract(contract, mode=mode,
                                               evidence_resolver=resolve_runtime_completion_evidence)
         context.context_info["runtime_completion_contract"] = {
             "mode": mode.value, "requested_mode": mode.value, "source": "explicit_structured",
             "required_artifacts": [item.path for item in contract.required_artifacts],
+            "provided_fields": ["outputs"] if artifact_field_provided else [],
         }
         if binding is not None:
             from aworld.core.task_workspace.session import prepare_task_workspace
@@ -324,6 +354,7 @@ def configure_runtime_completion(
     )
     context.configure_completion_contract(contract, mode=mode,
                                           evidence_resolver=resolve_runtime_completion_evidence)
+    context._runtime_completion_derived_contract = contract
     context.context_info["runtime_completion_contract"] = {
         "mode": mode.value, "requested_mode": mode.value,
         "source": "explicit_structured" if delivery["coverage_status"] == "explicit" else "public_literal",
@@ -358,6 +389,7 @@ def configure_goal_completion(context, *, verification_commands: Sequence[str], 
     base_checks = tuple(c for c in (previous.validation_commands if previous else ())
                         if c.command_id not in owned_ids)
     used_ids = {c.command_id for c in base_checks}
+    used_ids.update(previous.required_self_check_ids if previous else ())
     checks = []
     for index, command in enumerate(verification_commands, 1):
         base_id = f"goal-verify-{index}"
@@ -389,7 +421,9 @@ def configure_goal_completion(context, *, verification_commands: Sequence[str], 
             # The caller resolver owns the original checks. Only execute this
             # goal's added commands here; rerunning caller commands could mutate
             # outputs twice and overwrite their authoritative evidence.
-            await resolve_runtime_completion_evidence(target, replace(configured, validation_commands=checks))
+            await resolve_runtime_completion_evidence(target, replace(
+                configured, validation_commands=checks, required_artifacts=(),
+            ))
     context.configure_completion_contract(contract, mode=CompletionMode.ENFORCE, evidence_resolver=resolver)
     context.context_info["runtime_completion_contract"] = {
         "mode": "enforce", "requested_mode": "enforce", "source": "explicit_goal_verification",

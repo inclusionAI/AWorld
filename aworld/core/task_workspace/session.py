@@ -105,28 +105,49 @@ def prepare_task_workspace(context, request, workspace_path, delivery=None):
     if delivery is None:
         explicit = context.context_info.get("task_workspace_contract")
         existing = getattr(context, "completion_contract", None)
+        session = getattr(context, "_task_workspace_session", None)
+        owned = any(existing is getattr(context, key, None) for key in (
+            "_workspace_completion_owned_contract", "_goal_completion_owned_contract",
+            "_runtime_completion_derived_contract",
+        ))
+        if (session is not None and existing is not None and owned
+                and getattr(context, "_task_workspace_prepared_request", None) == request
+                and getattr(context, "_task_workspace_prepared_explicit", None) == explicit
+                and getattr(context, "_task_workspace_prepared_binding", None)
+                    == context.context_info.get("task_workspace_binding")):
+            # Framework extensions are not new caller declarations. In
+            # particular, re-entry after goal wiring cannot rebase originals.
+            return deepcopy(session.delivery)
+        context._task_workspace_caller_check_ids = (
+            tuple(existing.required_self_check_ids) + tuple(command.command_id for command in existing.validation_commands)
+            if existing else ()
+        )
         if explicit is None and existing is not None:
-            explicit = {
-                "outputs": [
+            metadata = context.context_info.get("runtime_completion_contract", {})
+            provided_fields = metadata.get("provided_fields")
+            # The legacy CompletionContract has an authoritative artifact list.
+            # CLI env shortcuts only declare the fields actually supplied.
+            explicit = {}
+            if provided_fields is None or "outputs" in provided_fields:
+                explicit["outputs"] = [
                     {
                         "id": item.requirement_id,
                         "path": item.path,
-                        "checks": [
+                        **({"checks": [
                             {
                                 "id": "caller-" + _digest(item.requirement_id)[:32],
                                 "kind": "regular_file",
                             }
-                        ],
+                        ]} if provided_fields is None else {}),
                     }
                     for item in existing.required_artifacts
                     if item.required
-                ],
-                "inputs": [
-                    {"id": path, "path": path, "immutable": True}
-                    for path in existing.immutable_inputs
-                    if "/" in path or "\\" in path
-                ],
-            }
+                ]
+            explicit["inputs"] = [
+                {"id": path, "path": path, "immutable": True}
+                for path in existing.immutable_inputs
+                if "/" in path or "\\" in path
+            ]
         delivery = derive_delivery_contract(
             request, workspace_path=workspace_path, explicit=explicit
         )
@@ -141,6 +162,9 @@ def prepare_task_workspace(context, request, workspace_path, delivery=None):
         task_env=getattr(context, "_task_workspace_environment", None),
     )
     context._task_workspace_session = session
+    context._task_workspace_prepared_request = request
+    context._task_workspace_prepared_explicit = deepcopy(context.context_info.get("task_workspace_contract"))
+    context._task_workspace_prepared_binding = deepcopy(binding)
     context.context_info["delivery_contract"] = session.delivery
     context.context_info["task_workspace_summary"] = session.summary()
     return deepcopy(session.delivery)
@@ -480,6 +504,13 @@ async def evaluate_delivery(context, contract):
     try:
         session = get_task_workspace(context)
         checks = session._checks()
+        caller_ids = {command.command_id for command in contract.validation_commands}
+        caller_ids.update(getattr(context, "_task_workspace_caller_check_ids", ()))
+        current_contract = getattr(context, "completion_contract", None)
+        if current_contract is not None:
+            caller_ids.update(command.command_id for command in current_contract.validation_commands)
+        if caller_ids.intersection(check["id"] for check in checks):
+            raise ValueError("caller check IDs conflict with native workspace check IDs")
         paths = {item["path"] for item in session.delivery.get("outputs", [])}
         paths.update(c["path"] for c in checks if c.get("path"))
         paths.update(

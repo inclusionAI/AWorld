@@ -156,3 +156,80 @@ def test_explicit_legacy_immutable_input_ids_preserve_caller_identity(tmp_path):
     contract = derive_delivery_contract('', workspace_path=tmp_path,
         explicit={'inputs': [{'id': path, 'path': path, 'immutable': True}]})
     assert contract['inputs'][0]['id'] == path
+
+
+@pytest.mark.parametrize("public_text", [
+    "Do not modify the input file source.csv.",
+    "You must not modify source.csv.",
+    "请勿修改输入文件 source.csv。",
+    'Please do not overwrite the source file "source.csv".',
+    "Keep the input file source.csv unchanged.",
+    "source.csv must remain unchanged.",
+    "You must not overwrite the original input file source.csv.",
+])
+def test_direct_preservation_labels_bind_original_source(public_text, tmp_path):
+    contract = derive_delivery_contract(public_text, workspace_path=tmp_path)
+    assert len(contract["inputs"]) == 1 and contract["inputs"][0]["immutable"] is True
+    source = contract["inputs"][0]["immutable_source"]
+    assert source["quote"] == public_text[source["start"]:source["end"]]
+
+
+@pytest.mark.parametrize("public_text", [
+    "Do not modify source.csv unless validation requires it.",
+    "For example, do not modify source.csv.",
+    '"Do not modify source.csv."',
+    "The documentation says do not modify source.csv.",
+    "Discuss the requirement: do not modify source.csv.",
+    "Do not keep source.csv unchanged.",
+    "E.g. do not modify source.csv.",
+    "An example: do not modify source.csv.",
+    "source.csv must remain unchanged is an example.",
+])
+def test_reported_conditional_and_negated_preservation_never_becomes_immutable(public_text, tmp_path):
+    contract = derive_delivery_contract(public_text, workspace_path=tmp_path)
+    assert not any(item["immutable"] for item in contract["inputs"])
+
+
+def test_caller_empty_inputs_add_nothing_but_empty_outputs_clear_output_requirements(tmp_path):
+    contract = derive_delivery_contract("Do not modify source.csv. Write result.json.",
+        workspace_path=tmp_path, explicit={"inputs": [], "outputs": []})
+    assert contract["outputs"] == []
+    assert len(contract["inputs"]) == 1 and contract["inputs"][0]["immutable"] is True
+
+
+def test_input_declaration_without_immutable_keeps_public_constraint(tmp_path):
+    contract = derive_delivery_contract("Do not modify source.csv.", workspace_path=tmp_path,
+                                        explicit={"inputs": [{"path": "source.csv"}]})
+    assert contract["inputs"][0]["immutable"] is True
+    assert contract["inputs"][0]["immutable_source"]["kind"] == "public_requirement"
+
+
+def test_explicit_mutability_resolves_same_path_output_conflict_without_losing_output(tmp_path):
+    contract = derive_delivery_contract("Keep source.csv unchanged. Write source.csv.",
+        workspace_path=tmp_path, explicit={"inputs": [{"path": "source.csv", "immutable": False}]})
+    assert [item["public_path"] for item in contract["outputs"]] == ["source.csv"]
+    assert contract["inputs"][0]["immutable"] is False
+    assert contract["unresolved"] == []
+    assert contract["resolved_conflicts"][0]["field"] == "immutable"
+
+
+@pytest.mark.parametrize("public_text", [
+    "不得修改 a.csv 和 b.csv。",
+    "Do not modify input files a.csv and b.csv.",
+    "Keep the original files a.csv, b.csv and c.csv unchanged.",
+])
+def test_preservation_of_literal_file_lists_applies_to_every_member(public_text, tmp_path):
+    contract = derive_delivery_contract(public_text, workspace_path=tmp_path)
+    assert len(contract["inputs"]) == (3 if "c.csv" in public_text else 2)
+    assert all(item["immutable"] for item in contract["inputs"])
+
+
+@pytest.mark.parametrize("public_text", [
+    "Write result.json without modifying source.csv.",
+    "Create result.json while leaving source.csv unchanged.",
+    "生成 result.json，但不要修改 source.csv。",
+])
+def test_uncovered_preservation_clauses_are_reported_instead_of_claiming_full_coverage(public_text, tmp_path):
+    contract = derive_delivery_contract(public_text, workspace_path=tmp_path)
+    assert contract["coverage_status"] == "partial"
+    assert "input_preservation_clause_unsupported" in {item["reason"] for item in contract["unresolved"]}

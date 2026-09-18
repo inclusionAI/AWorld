@@ -315,10 +315,42 @@ _DECLARATIVE_OUTPUT_RE = re.compile(
     r"|^\s*(?:最终)?(?:输出|结果|交付)(?:文件|产物)?(?:必须|应当)(?:保存|写入|放置)?(?:到|在|为)\s*$", re.I,
 )
 _INPUT_LABEL_RE = re.compile(r"\b(?:input|source)(?:\s+(?:file|data|path))?\s*[:=]?\s*$|(?:输入|源)(?:文件|数据|路径)?\s*[:：]?\s*$", re.I)
-_IMMUTABLE_PREFIX_RE = re.compile(r"\b(?:do\s+not|don't|never)\s+(?:modify|change|overwrite|delete|edit)\s*$|(?:不要|不得|禁止|请勿)(?:修改|改变|覆盖|删除)\s*$", re.I)
-_IMMUTABLE_SUFFIX_RE = re.compile(r"^\s*(?:must\s+)?(?:remain|stay|be\s+kept)\s+(?:unchanged|unmodified)|^\s*(?:保持不变|不得修改|不能修改)", re.I)
-_KEEP_PREFIX_RE = re.compile(r"\b(?:keep|leave|preserve)\s*$|(?:保持|保留)\s*$", re.I)
-_KEEP_SUFFIX_RE = re.compile(r"^\s*(?:unchanged|unmodified|intact)\b|^\s*(?:不变|原样)", re.I)
+_INPUT_OBJECT = r"(?:(?:(?:the|original|input|source|data|files?)\s+){0,6}|(?:(?:输入|源|原始|数据|文件)){0,6})"
+_PRESERVATION_ROOT = r"\s*(?:(?:[-*]|\d+[.)])\s*)?(?:please\s+)?"
+_IMMUTABLE_PREFIX_RE = re.compile(
+    _PRESERVATION_ROOT + r"(?:(?:do\s+not|don't|never|(?:you\s+)?(?:must|shall)\s+not)\s+"
+    r"(?:modify|change|overwrite|delete|edit)\s+|(?:不要|不得|禁止|请勿)(?:修改|改变|覆盖|删除)\s*)"
+    + _INPUT_OBJECT + r"\s*", re.I)
+_IMMUTABLE_SUFFIX_RE = re.compile(
+    r"\s*(?:(?:(?:must|shall)\s+)?(?:remain|stay|be\s+kept)\s+(?:unchanged|unmodified|intact)"
+    r"|(?:必须)?(?:保持不变|不得修改|不能修改))\s*[.。]?\s*", re.I)
+_KEEP_PREFIX_RE = re.compile(
+    _PRESERVATION_ROOT + r"(?:(?:keep|leave|preserve)\s+|(?:保持|保留)\s*)" + _INPUT_OBJECT + r"\s*", re.I)
+_KEEP_SUFFIX_RE = re.compile(r"\s*(?:unchanged|unmodified|intact|不变|原样)\s*[.。]?\s*", re.I)
+_INPUT_SUBJECT_RE = re.compile(_PRESERVATION_ROOT + _INPUT_OBJECT + r"\s*", re.I)
+_PRESERVATION_CUE_RE = re.compile(
+    r"\b(?:(?:do\s+not|don't|never|must\s+not|shall\s+not)\s+(?:modify|change|overwrite|delete|edit)"
+    r"|without\s+(?:modifying|changing|overwriting|deleting|editing)|unchanged|unmodified)\b"
+    r"|(?:不得|不要|请勿|禁止)(?:修改|改变|覆盖|删除)|保持不变", re.I)
+
+
+def _is_explicit_preservation_clause(prefix: str, suffix: str) -> bool:
+    return bool(
+        (_IMMUTABLE_PREFIX_RE.fullmatch(prefix) and re.fullmatch(r"\s*[.。]?\s*", suffix))
+        or (_KEEP_PREFIX_RE.fullmatch(prefix) and _KEEP_SUFFIX_RE.fullmatch(suffix))
+        or (_INPUT_SUBJECT_RE.fullmatch(prefix) and _IMMUTABLE_SUFFIX_RE.fullmatch(suffix))
+    )
+
+
+def _preserves_mentioned_inputs(masked: str, mentions: list) -> bool:
+    if not mentions:
+        return False
+    if any(re.fullmatch(r"\s*(?:,\s*(?:and\s+)?|and|和|及|、)\s*",
+                        masked[left.end():right.start()], re.I) is None
+           for left, right in zip(mentions, mentions[1:])):
+        return False
+    return _is_explicit_preservation_clause(masked[:mentions[0].start()], masked[mentions[-1].end():])
+
 _FORBIDDEN_OUTPUT_PREFIX_RE = re.compile(
     r"\b(?:do\s+not|don't|never)\s+(?:write|create|save|export|generate|produce|submit)(?:\s+(?:to|a|the|file|output|result))*\s*$"
     r"|(?:不要|不得|禁止|请勿)(?:写入|创建|保存|导出|生成|提交)(?:到)?\s*$", re.I,
@@ -510,6 +542,64 @@ def _explicit_contract(request: str, workspace: Path, explicit: Mapping[str, Any
             "unresolved": [], "excluded": [], "coverage_status": "explicit"}
 
 
+def _merge_explicit_contract(public: dict, configured: dict, explicit: Mapping, workspace: Path) -> dict:
+    """Merge caller fields: outputs=[] clears outputs; inputs=[] adds no overrides.
+
+    Inputs are declarations keyed by path. Only an explicitly provided
+    immutable boolean replaces a public preservation requirement for that path.
+    """
+    result = deepcopy(public)
+    resolved = []
+    caller_source = {"kind": "caller_contract", "quote": None, "start": None, "end": None}
+    public_outputs = {item["path"]: item for item in public["outputs"]}
+    if "outputs" in explicit:
+        raw_outputs = [{ "path": item } if isinstance(item, str) else item for item in explicit["outputs"]]
+        result["outputs"] = configured["outputs"]
+        for output, raw in zip(result["outputs"], raw_outputs):
+            previous = public_outputs.get(output["path"])
+            if previous:
+                output["sources"] = [deepcopy(previous["source"]), deepcopy(caller_source)]
+                if "checks" not in raw:
+                    # A path-only override changes the destination list, not its
+                    # public JSON/CSV/size requirements for this same path.
+                    merged = {check["id"]: check for check in output["checks"]}
+                    merged.update({check["id"]: deepcopy(check) for check in previous["checks"]})
+                    output["checks"] = list(merged.values())
+                else:
+                    resolved.append({"path": output["path"], "field": "checks",
+                                     "public_checks": deepcopy(previous["checks"]),
+                                     "caller_check_ids": [c["id"] for c in output["checks"]],
+                                     "caller_source": deepcopy(caller_source), "resolution": "explicit_caller"})
+        # Explicit output selection resolves output inference ambiguity; it
+        # cannot erase an unrelated uncovered input preservation instruction.
+        result["unresolved"] = [item for item in result["unresolved"]
+                                if item["reason"].startswith("input_preservation")]
+    inputs = {item["path"]: deepcopy(item) for item in public["inputs"]}
+    raw_inputs = [{ "path": item } if isinstance(item, str) else item for item in explicit.get("inputs", ())]
+    for item, raw in zip(configured["inputs"], raw_inputs):
+        previous = inputs.get(item["path"])
+        if previous:
+            item["sources"] = [deepcopy(previous["source"]), deepcopy(caller_source)]
+            if "immutable" not in raw:
+                item["immutable"] = previous["immutable"]
+                item["immutable_source"] = deepcopy(previous.get("immutable_source", previous["source"]))
+            elif previous["immutable"] and item["immutable"] is False:
+                resolved.append({"path": item["path"], "field": "immutable",
+                                 "public_value": True, "caller_value": False,
+                                 "public_source": deepcopy(previous.get("immutable_source", previous["source"])),
+                                 "caller_source": deepcopy(caller_source), "resolution": "explicit_caller"})
+        if "immutable" in raw:
+            item["immutable_source"] = deepcopy(caller_source)
+        inputs[item["path"]] = item
+    result["inputs"] = list(inputs.values())
+    for field in ("checks", "policy"):
+        if field in explicit:
+            result[field] = configured[field]
+    result["resolved_conflicts"] = resolved
+    result["coverage_status"] = "partial" if result["unresolved"] else "explicit"
+    return result
+
+
 def derive_delivery_contract(request: str, *, workspace_path, explicit: Mapping[str, Any] | None = None) -> dict:
     """Compile public literal requirements; ambiguous clauses remain uncovered.
 
@@ -519,15 +609,25 @@ def derive_delivery_contract(request: str, *, workspace_path, explicit: Mapping[
     if not isinstance(request, str):
         raise TypeError("request must be text")
     workspace = Path(os.path.abspath(Path(workspace_path).expanduser()))
-    envelope = {"schema_version": DELIVERY_SCHEMA, "source_hash": "sha256:" + hashlib.sha256(request.encode()).hexdigest()}
     if explicit is not None:
         if not isinstance(explicit, Mapping):
             raise TypeError("explicit contract must be an object")
-        return {**envelope, **_explicit_contract(request, workspace, explicit)}
+        configured = _explicit_contract(request, workspace, explicit)
+        raw_inputs = [{ "path": item } if isinstance(item, str) else item for item in explicit.get("inputs", ())]
+        overrides = {item["path"]: raw["immutable"] for item, raw in zip(configured["inputs"], raw_inputs)
+                     if "immutable" in raw}
+        public = _derive_public_delivery(request, workspace, input_overrides=overrides)
+        return _merge_explicit_contract(public, configured, explicit, workspace)
+    return _derive_public_delivery(request, workspace)
+
+
+def _derive_public_delivery(request: str, workspace: Path, *, input_overrides=None) -> dict:
+    envelope = {"schema_version": DELIVERY_SCHEMA, "source_hash": "sha256:" + hashlib.sha256(request.encode()).hexdigest()}
     outputs, inputs, unresolved, excluded, forbidden = {}, {}, [], [], {}
     for start, end, clause in _clauses(request):
         source = _source(request, start, end)
         mentions, masked = _mentions(clause)
+        preserves_inputs = _preserves_mentioned_inputs(masked, mentions)
         output_mentions = []
         if not mentions:
             cue = _last_output_cue(clause)
@@ -545,9 +645,13 @@ def derive_delivery_contract(request: str, *, workspace_path, explicit: Mapping[
             if _FORBIDDEN_OUTPUT_PREFIX_RE.search(prefix) and not meta_clause and not conditional_clause:
                 forbidden[path] = source
                 excluded.append({**source, "reason": "negated_output"})
-            immutable = bool(not meta_clause and not conditional_clause and (
-                _IMMUTABLE_PREFIX_RE.search(prefix) or _IMMUTABLE_SUFFIX_RE.search(suffix)
-                or (_KEEP_PREFIX_RE.search(prefix) and _KEEP_SUFFIX_RE.search(suffix))))
+            immutable = bool(not meta_clause and not conditional_clause
+                             and preserves_inputs)
+            if (not immutable and not meta_clause and not conditional_clause
+                    and _PRESERVATION_CUE_RE.search(clause)
+                    and (_IMPERATIVE_ROOT_RE.match(clause) or re.match(
+                        _PRESERVATION_ROOT + r"(?:do\s+not|don't|never|(?:you\s+)?(?:must|shall)\s+not|keep|leave|preserve|不要|不得|禁止|请勿|保持|保留)\b", prefix, re.I))):
+                unresolved.append({**source, "reason": "input_preservation_clause_unsupported"})
             cue = _last_output_cue(prefix)
             input_cues = list(_INPUT_VERB_RE.finditer(prefix))
             direct_input = bool(input_cues and (cue is None or input_cues[-1].start() > cue.start()))
@@ -566,7 +670,9 @@ def derive_delivery_contract(request: str, *, workspace_path, explicit: Mapping[
                     previous = inputs.get(path)
                     inputs[path] = {"id": _stable_id("delivery-input-", path), "path": path,
                                     "public_path": mention.text, "immutable": immutable or bool(previous and previous["immutable"]),
-                                    "source": source}
+                                    "source": source,
+                                    **({"immutable_source": source if immutable else previous.get("immutable_source", previous["source"])}
+                                       if immutable or (previous and previous["immutable"]) else {})}
             if not direct:
                 continue
             if _ALTERNATIVE_RE.search(clause):
@@ -605,7 +711,8 @@ def derive_delivery_contract(request: str, *, workspace_path, explicit: Mapping[
         sizes = [check for check in item["checks"] if check["kind"] == "file_size"]
         minimum = max((check.get("min_bytes", 0) for check in sizes), default=0)
         maximum = min((check.get("max_bytes", float("inf")) for check in sizes), default=float("inf"))
-        conflict = "immutable_input_is_output" if inputs.get(path, {}).get("immutable") else (
+        immutable = (input_overrides or {}).get(path, inputs.get(path, {}).get("immutable"))
+        conflict = "immutable_input_is_output" if immutable else (
             "conflicting_output_obligations" if path in forbidden else (
                 "conflicting_size_constraints" if minimum > maximum else None))
         if conflict:
