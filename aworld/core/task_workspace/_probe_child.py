@@ -1,6 +1,7 @@
 """Inspect the interpreter's installed API; imports occur only in this process."""
 
 import importlib
+import asyncio
 import importlib.metadata
 import inspect
 import itertools
@@ -94,6 +95,13 @@ def main():
         if request.get("call") is not None:
             call = request["call"]
             value = target(*call["args"], **call["kwargs"])
+            receipt["call_awaited"] = inspect.isawaitable(value)
+            if receipt["call_awaited"]:
+
+                async def resolve():
+                    return await value
+
+                value = asyncio.run(resolve())
             receipt["call_result"] = shape(value)
             if call.get("result", "structure") == "json":
                 encoded = json.dumps(value, allow_nan=False)

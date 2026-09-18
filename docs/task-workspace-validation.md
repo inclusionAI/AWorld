@@ -144,6 +144,8 @@ An optional minimal call requires explicit JSON `args` and `kwargs` and can
 request a structural result or a bounded JSON result. No expression is evaluated
 to select the object: module/object names must be dotted identifiers. Import or
 call failures retain their real stack, error type and process return code.
+Awaitable return values are awaited inside the child process under the same
+operation bounds, so an async function body and its errors are actually observed.
 
 `probe_argv` supports other installed languages/tools. Process success is a
 diagnostic fact; `task_correctness` remains `not_assessed`. `describe_probes()`

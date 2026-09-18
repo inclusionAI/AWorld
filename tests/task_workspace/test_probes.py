@@ -64,6 +64,34 @@ def test_python_failure_preserves_stack_and_actual_return_code(tmp_path):
     )
 
 
+@pytest.mark.parametrize("failing", [False, True])
+def test_async_api_call_executes_body_and_reports_failure(tmp_path, failing):
+    (tmp_path / "async_fixture.py").write_text(
+        "import asyncio\nasync def execute():\n    await asyncio.sleep(0)\n"
+        + (
+            "    raise ValueError('async failure')\n"
+            if failing
+            else "    return {'executed': True}\n"
+        )
+    )
+    result = asyncio.run(
+        probe_python(
+            sys.executable,
+            "async_fixture",
+            "execute",
+            working_dir=tmp_path,
+            call={"args": [], "kwargs": {}, "result": "json"},
+        )
+    )
+    assert result["report"]["call_awaited"]
+    assert result["success"] is not failing
+    if failing:
+        assert result["report"]["error_type"] == "ValueError"
+        assert "async_fixture.py" in result["report"]["traceback"]
+    else:
+        assert result["report"]["json_result"] == {"executed": True}
+
+
 def test_process_environment_only_contains_explicit_task_values(tmp_path, monkeypatch):
     monkeypatch.setenv("PRIVATE_RUNTIME_TEST_TOKEN", "do-not-forward")
     result = asyncio.run(
