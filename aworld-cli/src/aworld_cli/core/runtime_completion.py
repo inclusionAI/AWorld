@@ -571,16 +571,30 @@ def configure_goal_completion(context, *, verification_commands: Sequence[str], 
         raise ValueError("explicit shell validation requires bash with pipefail")
     previous = getattr(context, "completion_contract", None)
     previous_resolver = getattr(context, "_completion_evidence_resolver", None)
-    checks = tuple(ValidationCommand(
-        command_id=f"goal-verify-{index}",
-        argv=(shell, "-o", "pipefail", "-c", command),
-        cwd=str(Path(workspace_path).expanduser().resolve()),
-    ) for index, command in enumerate(verification_commands, 1))
+    metadata = context.context_info.get("runtime_completion_contract", {})
+    owned_ids = set(metadata.get("validation_command_ids", ())) if metadata.get("source") == "explicit_goal_verification" else set()
+    base_checks = tuple(c for c in (previous.validation_commands if previous else ())
+                        if c.command_id not in owned_ids)
+    used_ids = {c.command_id for c in base_checks}
+    checks = []
+    for index, command in enumerate(verification_commands, 1):
+        base_id = f"goal-verify-{index}"
+        command_id = base_id
+        suffix = 1
+        while command_id in used_ids:
+            command_id = f"{base_id}-{suffix}"
+            suffix += 1
+        used_ids.add(command_id)
+        checks.append(ValidationCommand(
+            command_id=command_id,
+            argv=(shell, "-o", "pipefail", "-c", command),
+            cwd=str(Path(workspace_path).expanduser().resolve()),
+        ))
+    checks = tuple(checks)
     contract = CompletionContract(
         required_artifacts=previous.required_artifacts if previous else (),
         immutable_inputs=previous.immutable_inputs if previous else (),
-        validation_commands=tuple(c for c in (previous.validation_commands if previous else ())
-                                  if not c.command_id.startswith("goal-verify-")) + checks,
+        validation_commands=base_checks + checks,
         max_evidence_age_seconds=None,
         required_final_evidence=tuple(dict.fromkeys((previous.required_final_evidence if previous else ()) + ("agent_final_response",))),
         max_repairs=previous.max_repairs if previous else 1,

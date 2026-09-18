@@ -10,6 +10,7 @@ only framework-observed evidence and never interprets benchmark semantics.
 from __future__ import annotations
 
 import json
+import re
 import shlex
 from typing import Any, Mapping, Sequence
 
@@ -93,11 +94,20 @@ def _read_only_actions(actions: Sequence[Mapping[str, Any]]) -> bool:
         code = params.get("code") if isinstance(params, Mapping) else None
         if not isinstance(code, str):
             return False
+        # A read-looking executable does not make arbitrary shell text read-only.
+        # Decline expansions rather than trying to interpret shell semantics.
+        if any(character in code for character in "$`\n\r"):
+            return False
         try:
-            tokens = list(shlex.shlex(code, posix=True, punctuation_chars=";&|><"))
+            lexer = shlex.shlex(code, posix=True, punctuation_chars=";&|><")
+            lexer.whitespace_split = True
+            tokens = list(lexer)
         except ValueError:
             return False
-        if not tokens or any(t in {">", ">>", "<", "<<", ";", "&", "|"} for t in tokens):
+        if not tokens or any(
+            token != "&&" and any(character in token for character in ";&|><")
+            for token in tokens
+        ):
             return False
         segments = [[]]
         for token in tokens:
@@ -108,10 +118,15 @@ def _read_only_actions(actions: Sequence[Mapping[str, Any]]) -> bool:
         for segment in segments:
             if not segment or segment[0] not in {"cat", "head", "tail", "sed", "ls", "wc", "rg", "pwd", "echo"}:
                 return False
-            if segment[0] == "sed" and "-n" not in segment:
+            if segment[0] == "rg" and any(token.startswith("--pre") for token in segment[1:]):
                 return False
-            if any(token.startswith("-i") for token in segment) and segment[0] == "sed":
-                return False
+            if segment[0] == "sed":
+                # Recognize only direct line-range printing. sed scripts can
+                # write files or execute commands even with -n and without -i.
+                if (len(segment) < 3 or segment[1] != "-n"
+                        or re.fullmatch(r"\d+(?:,\d+)?p", segment[2]) is None
+                        or any(token.startswith("-") for token in segment[3:])):
+                    return False
     return True
 
 
