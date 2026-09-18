@@ -618,7 +618,7 @@ def build_aworld_agent(include_skills: Optional[str] = None):
             params={"max_completion_tokens": max_completion_tokens},
             llm_stream_call=os.environ.get("STREAM", "0").lower() in ("1", "true", "yes")
         ),
-        use_vision=False,  # Enable if needed for image analysis
+        use_vision=True,
         skill_configs={},
         ext={"skill_resolver_inputs": resolver_inputs},
     )
