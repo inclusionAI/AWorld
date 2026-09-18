@@ -283,45 +283,26 @@ def test_contract_resolves_relative_paths_against_task_workspace(tmp_path: Path)
     assert tuple(item.path for item in contract.required_artifacts) == (
         str((tmp_path / "answer.json").resolve()),
     )
-    assert contract.max_repairs == 1
+    assert contract.max_repairs is None
 
 
-@pytest.mark.asyncio
-async def test_inferred_contract_is_advisory_even_when_enforcement_requested(
+def test_unbound_context_keeps_coverage_without_reading_host_outputs(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    output_path = tmp_path / "answer.json"
     monkeypatch.setenv("AWORLD_COMPLETION_MODE", "enforce")
-    monkeypatch.setenv("AWORLD_INFER_REQUIRED_ARTIFACTS", "true")
-    context = Context(task_id="completion-test")
-
+    context = Context(task_id="remote-context")
     contract = configure_runtime_completion(
-        context,
-        request=f"Write the answer to {output_path}",
-        workspace_path=tmp_path,
+        context, request="Write answer.json.", workspace_path=tmp_path,
     )
-    assert contract is not None
-
-    context.record_completion_final_evidence("agent_final_response")
-    await context.resolve_completion_evidence()
-    missing = context.assess_completion_contract(agent_claimed_finished=True)
-    assert missing is not None
-    assert missing.mode is CompletionMode.OBSERVE
-    assert missing.status is CompletionStatus.SATISFIED
-    assert missing.reason_codes == ("required_artifact_missing",)
-    assert context.context_info["runtime_completion_contract"]["source"] == (
-        "inferred_advisory"
-    )
-
-    output_path.write_text("{}", encoding="utf-8")
-    await context.resolve_completion_evidence()
-    satisfied = context.assess_completion_contract(agent_claimed_finished=True)
-    assert satisfied is not None
-    assert satisfied.status is CompletionStatus.SATISFIED
+    assert contract is None
+    assert context.context_info["delivery_evaluation_unavailable"] == "local_workspace_not_bound"
+    delivery = context.context_info["delivery_contract"]
+    assert delivery["outputs"][0]["path"] == str(tmp_path / "answer.json")
+    assert context.assess_completion_contract(agent_claimed_finished=True) is None
 
 
-def test_completion_contract_is_opt_in(
+def test_derived_completion_requires_a_native_workspace_binding(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:

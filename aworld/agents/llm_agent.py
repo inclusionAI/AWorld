@@ -177,6 +177,13 @@ def _configured_pending_generation_capacity() -> int | None:
 DEFAULT_LLM_EXECUTION_TIMEOUT_SECONDS = 360.0
 
 
+@dataclass(frozen=True)
+class _ValidationRepairContinuation:
+    observation: Observation
+    kwargs: dict
+    validation_feedback: str = ""
+
+
 class ToolCallParseIssueCode(str, Enum):
     """Provider-neutral reasons why a declared tool call cannot be executed."""
 
@@ -735,11 +742,10 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         reasons = ", ".join(assessment.reason_codes)
         if assessment.status is CompletionStatus.REPAIR_REQUIRED:
             context.increment_completion_repair_attempt()
-            return (
-                "The runtime completion contract rejected the completion claim "
-                f"({reasons}). Continue working, gather new evidence, and rerun focused checks."
-            )
-        return None
+        return (
+            "The runtime completion contract rejected the completion claim "
+            f"({reasons}). Continue working, gather new evidence, and rerun focused checks."
+        )
 
     def _record_llm_call_request(
         self,
@@ -2546,6 +2552,38 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         message: Message = None,
         **kwargs,
     ) -> List[ActionModel]:
+        """Continue completion repairs without recursive stack growth."""
+        repair_feedback = None
+        while True:
+            try:
+                result = await self._async_policy_once(observation, info=info, message=message, **kwargs)
+            except Exception as exc:
+                if repair_feedback is None or not self._should_degrade_result_validation_retry_error(exc):
+                    raise
+                return await self._degrade_result_validation_retry(message, repair_feedback, exc)
+            if not isinstance(result, _ValidationRepairContinuation):
+                return result
+            repair_feedback = result.validation_feedback or str(result.observation.content)
+            await self._raise_if_task_interrupted(message.context, reason="completion repair interrupted")
+            if await self.should_terminate_loop(message):
+                await self._resolve_completion_at_loop_budget(message)
+                self._finished = True
+                return [ActionModel(agent_name=self.id(), policy_info=(
+                    "The configured maximum number of attempts was reached before delivery validation passed. "
+                    "Work remains incomplete; retained progress is available for continuation."
+                ))]
+            message.context.update_agent_step(self.id())
+            self.loop_step += 1
+            observation, kwargs = result.observation, result.kwargs
+            await asyncio.sleep(0)
+
+    async def _async_policy_once(
+        self,
+        observation: Observation,
+        info: Dict[str, Any] = {},
+        message: Message = None,
+        **kwargs,
+    ) -> List[ActionModel]:
         """The strategy of an agent can be to decide which tools to use in the environment, or to delegate tasks to other agents.
 
         Args:
@@ -3167,6 +3205,7 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                 info=info,
                 message=message,
                 kwargs=kwargs,
+                iterative=True,
             )
 
         message.context.context_info.pop(
@@ -3564,6 +3603,7 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         info: Dict[str, Any],
         message: Message,
         kwargs: Dict[str, Any],
+        iterative: bool = False,
     ) -> List[ActionModel]:
         retry_key = self._result_validation_retry_key(self.id())
         retry_count = int(message.context.context_info.get(retry_key, 0) or 0)
@@ -3580,7 +3620,9 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                 artifact_evidence_text=evidence.get("artifact", ""),
             )
 
-        if retry_count >= 1:
+        contract = getattr(message.context, "completion_contract", None)
+        maximum_repairs = contract.max_repairs if contract is not None else 1
+        if maximum_repairs is not None and retry_count >= maximum_repairs:
             from aworld.core.context.execution_state import record_execution_state, checkpoint_execution_state
             record_execution_state(message.context, self.id(), "incomplete", "validation_repair_exhausted", recoverable=False)
             await checkpoint_execution_state(message.context)
@@ -3629,6 +3671,8 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                 "provider_native_prompt_cache",
             }
         }
+        if iterative:
+            return _ValidationRepairContinuation(followup_observation, recursive_kwargs, validation_feedback)
         try:
             return await self.async_policy(
                 followup_observation,
@@ -3639,28 +3683,27 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         except Exception as exc:
             if not self._should_degrade_result_validation_retry_error(exc):
                 raise
+            return await self._degrade_result_validation_retry(message, validation_feedback, exc)
 
-            logger.warning(
-                "Result validation follow-up degraded for agent %s after LLM retry failure: %s",
-                self.id(),
-                exc,
-            )
-            message.context.context_info.pop(retry_key, None)
-            from aworld.core.context.execution_state import record_execution_state, checkpoint_execution_state
-            record_execution_state(message.context, self.id(), "incomplete", "validation_repair_unavailable", recoverable=False)
-            await checkpoint_execution_state(message.context)
-            self._finished = True
-            return [
-                ActionModel(
-                    agent_name=self.id(),
-                    policy_info=(
-                        f"{validation_feedback}\n"
-                        "The follow-up validation round failed because the model returned an empty or invalid "
-                        "response. I cannot confirm the task is complete with the current evidence, so I am not "
-                        "claiming success."
-                    ),
-                )
-            ]
+    async def _degrade_result_validation_retry(self, message, validation_feedback, exc):
+        logger.warning(
+            "Result validation follow-up degraded for agent %s after LLM retry failure: %s",
+            self.id(), exc,
+        )
+        message.context.context_info.pop(self._result_validation_retry_key(self.id()), None)
+        from aworld.core.context.execution_state import record_execution_state, checkpoint_execution_state
+        record_execution_state(message.context, self.id(), "incomplete", "validation_repair_unavailable", recoverable=False)
+        await checkpoint_execution_state(message.context)
+        self._finished = True
+        return [ActionModel(
+            agent_name=self.id(),
+            policy_info=(
+                f"{validation_feedback}\n"
+                "The follow-up validation round failed because the model returned an empty or invalid "
+                "response. I cannot confirm the task is complete with the current evidence, so I am not "
+                "claiming success."
+            ),
+        )]
 
     async def execution_tools(
         self, actions: List[ActionModel], message: Message = None, **kwargs
@@ -5143,6 +5186,14 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                 if getattr(self, "context", None) is not None:
                     record_execution_state(self.context, self.id(), "incomplete", raw_reason)
                 return False
+            if not reason and getattr(self, "context", None) is not None:
+                from aworld.core.context.compiler import CompletionMode, CompletionStatus
+                assessment = self.context.assess_completion_contract(agent_claimed_finished=True)
+                if (assessment is not None and assessment.mode is CompletionMode.ENFORCE
+                        and assessment.status is not CompletionStatus.SATISFIED):
+                    self._finished = False
+                    record_execution_state(self.context, self.id(), "incomplete", "completion_contract_unsatisfied")
+                    return False
             if getattr(self, "context", None) is not None:
                 record_execution_state(
                     self.context, self.id(), "incomplete" if reason else "succeeded",

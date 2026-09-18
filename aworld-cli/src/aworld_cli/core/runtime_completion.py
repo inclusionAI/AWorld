@@ -1,8 +1,8 @@
 """Runtime-owned completion contracts for direct execution tasks.
 
-The contract is deliberately narrow: it recognizes only explicitly declared
-output paths.  It never guesses a target from a task id, an input path, a URL,
-or a benchmark-specific name.
+Caller contracts take priority. Locally bound execution also enforces literal
+public delivery requirements with source provenance and executed checks.
+Ambiguous requirements remain visible without guessing paths or results.
 """
 
 from __future__ import annotations
@@ -28,6 +28,7 @@ from aworld.core.context.compiler import (
     ValidationCommand,
 )
 from aworld.logs.util import logger
+from aworld.core.task_workspace.contracts import derive_delivery_contract, infer_declared_output_paths
 
 
 COMPLETION_MODE_ENV = "AWORLD_COMPLETION_MODE"
@@ -35,147 +36,14 @@ INFER_ARTIFACTS_ENV = "AWORLD_INFER_REQUIRED_ARTIFACTS"
 REQUIRED_ARTIFACTS_ENV = "AWORLD_REQUIRED_ARTIFACTS_JSON"
 VALIDATION_COMMANDS_ENV = "AWORLD_VALIDATION_COMMANDS_JSON"
 
-_FENCED_CODE_BLOCK_RE = re.compile(r"```.*?```", re.DOTALL)
-_URL_RE = re.compile(r"https?://[^\s`\"'<>]+", re.IGNORECASE)
-_PATH_RE = re.compile(
-    r"(?:"
-    r"(?:~/|/|\.\.?/)[^\s`\"'>)，,，。！？；：、”’》」】]+"
-    r"|"
-    # A concrete filename such as ``report.xlsx`` or ``out/result.json``.
-    # Requiring a suffix deliberately excludes ambiguous words/directories.
-    r"(?:[A-Za-z0-9][A-Za-z0-9._-]*/)*"
-    r"[A-Za-z0-9][A-Za-z0-9._-]*\.[A-Za-z0-9][A-Za-z0-9._-]*"
-    r")"
-)
-_OUTPUT_CUE_RE = re.compile(
-    r"(?:"
-    r"(?:保存|另存|写入|输出|导出|生成|创建|存储|放置|提交)"
-    r"[^。！？\n]{0,36}?(?:到|至|为|在|路径(?:是|为)?|目录(?:是|为)?)"
-    r"|"
-    r"\b(?:save|write|export|generate|create|produce|store|place|submit)\b"
-    r"[^.!?\n]{0,36}?(?:\bto\b|\bat\b|\bas\b|\bunder\b|\binto\b|\bin\b)"
-    r")",
-    re.IGNORECASE,
-)
-_DIRECT_OUTPUT_CUE_RE = re.compile(
-    r"(?:"
-    r"(?:保存|另存|写入|输出|导出|生成|创建|存储|放置|提交)(?:为|到|至|在)?"
-    r"|"
-    r"\b(?:save|write|export|generate|create|produce|store|place|submit)\b"
-    r"(?:\s+(?:me|us))?"
-    r"(?:\s+(?:(?:the|a|an|final|resulting)\s+){0,3})?"
-    r")\s*$",
-    re.IGNORECASE,
-)
-_OUTPUT_VERB_RE = re.compile(
-    r"(?:保存|另存|写入|输出|导出|生成|创建|存储|放置|提交)"
-    r"|\b(?:save|write|export|generate|create|produce|store|place|submit)\b",
-    re.IGNORECASE,
-)
-_CONDITIONAL_CONTEXT_RE = re.compile(
-    r"(?:"
-    r"\b(?:if|unless|otherwise|in\s+case)\b"
-    r"|\b(?:when|where)\s+(?:needed|required|appropriate)\b"
-    r"|\bas\s+needed\b"
-    r"|(?:如果|若(?:是|需|有)?|否则|视情况)"
-    r")",
-    re.IGNORECASE,
-)
-_NON_DIRECT_ACTION_CONTEXT_RE = re.compile(
-    r"(?:"
-    r"\b(?:do\s+not|don't|not|never|no\s+need\s+to|without)\b"
-    r"|\b(?:for\s+example|e\.g\.|such\s+as)\b"
-    r"|\b(?:you|we|i)\s+(?:may|might|should|could)\b"
-    r"|\b(?:recommend|advise|suggest)\b"
-    r"|\b(?:how\s+to|commands?\s+to|instructions?\s+(?:to|for)|steps?\s+to)\b"
-    r"|(?:不要|请勿|别|无需|不必|例如|举例|建议|是否|能否|可否|会不会|"
-    r"应该|应不应该|要不要|可以)"
-    r"|(?:如何|怎样|怎么|命令|指令|步骤|方法)"
-    r")",
-    re.IGNORECASE,
-)
-_TARGET_PREPOSITION_RE = re.compile(
-    r"^\s*(?:to|as|into|at|under|in)\b", re.IGNORECASE
-)
-_TARGET_PREPOSITION_ANY_RE = re.compile(
-    r"\b(?:to|as|into|at|under|in)\b", re.IGNORECASE
-)
-_ALTERNATIVE_RE = re.compile(
-    r"\b(?:either|or)\b|(?:或者|或是|二选一|或)", re.IGNORECASE
-)
-_SENTENCE_BOUNDARY_RE = re.compile(
-    r"(?:[!?。！？;；]\s*|\.\s+(?=[A-Z\u3400-\u9fff]))"
-)
-_SEQUENCE_BOUNDARY_RE = re.compile(
-    r"(?:,\s*)?(?:\b(?:and\s+then|then|next)\b|然后|随后|接着)\s*",
-    re.IGNORECASE,
-)
-_DIRECT_REQUEST_ACTION_RE = re.compile(
-    r"^\s*(?:please\s+)?(?:can|could|would|will)\s+you\s+(?:please\s+)?"
-    r"(?:carefully\s+|directly\s+|first\s+|now\s+|also\s+)*"
-    r"(?:analy[sz]e|inspect|read|open|review|process|convert|transform|extract|"
-    r"calculate|compute|clean|merge|build|save|write|export|generate|create|"
-    r"produce|store|place|submit)\b",
-    re.IGNORECASE,
-)
-_IMPERATIVE_ROOT_RE = re.compile(
-    r"^\s*(?:(?:[-*]|\d+[.)])\s*)?(?:please\s+)?"
-    r"(?:carefully\s+|directly\s+|first\s+|now\s+|also\s+)*"
-    r"(?:analy[sz]e|inspect|read|open|review|process|convert|transform|extract|"
-    r"calculate|compute|clean|merge|build|save|write|export|generate|create|"
-    r"produce|store|place|submit)\b"
-    r"|^\s*(?:请\s*)?(?:仔细|直接|先|再)?\s*"
-    r"(?:读取|打开|检查|分析|处理|转换|提取|计算|清理|合并|保存|另存|写入|"
-    r"输出|导出|生成|创建|存储|放置|提交|把|将)",
-    re.IGNORECASE,
-)
-_ROOT_OUTPUT_PREFIX_RE = re.compile(
-    r"^\s*(?:(?:[-*]|\d+[.)])\s*)?(?:please\s+)?"
-    r"(?:(?:can|could|would|will)\s+you\s+(?:please\s+)?)?"
-    r"(?:carefully\s+|directly\s+|first\s+|now\s+|also\s+)*$",
-    re.IGNORECASE,
-)
-_SEQUENCED_OUTPUT_PREFIX_RE = re.compile(
-    r"(?:\b(?:and\s+then|then|next)\b|然后|随后|接着)\s*$", re.IGNORECASE
-)
-_COORDINATED_OUTPUT_PREFIX_RE = re.compile(
-    r"(?:\band\b|并)\s*(?:please\s+)?$", re.IGNORECASE
-)
-_CHINESE_DIRECT_OUTPUT_PREFIX_RE = re.compile(
-    r"^\s*(?:请\s*)?(?:(?:仔细|直接|先|再)\s*)?"
-    r"(?:(?:把|将)[^,，;；:：\"'`“”‘’《》「」【】]{1,48})?\s*$"
-)
-_CHINESE_COMPOUND_OUTPUT_PREFIX_RE = re.compile(
-    r"^\s*请\s*(?:读取|打开|检查|分析|处理|转换|提取|计算|清理|合并)"
-    r"[^;；:：\"'`“”‘’《》「」【】]{0,64}(?:并将|并把)"
-    r"[^;；:：\"'`“”‘’《》「」【】]{0,48}$"
-)
-_META_OUTPUT_SUFFIX_RE = re.compile(
-    r"^\s*(?:[:：]|(?:这|该)(?:句|句话|短语|命令|指令|示例)|"
-    r"(?:的|这个|该)?(?:行为|含义|利弊|方案)|"
-    r"(?:the|this)\s+(?:sentence|phrase|command|instruction|example)\b)",
-    re.IGNORECASE,
-)
-_META_ACTION_CONTEXT_RE = re.compile(
-    r"(?:"
-    r"\b(?:whether|why)\b"
-    r"|\b(?:this|the|a)\s+(?:request|instruction|claim|hypothetical)\b"
-    r"|\b(?:documentation|text|statement)\s+(?:saying|stating|that)\b"
-    r"|(?:这个|该)(?:请求|指令|说法|假设)"
-    r"|(?:是否|为什么)"
-    r")",
-    re.IGNORECASE,
-)
-
-
 def _truthy_env(value: str | None) -> bool:
     return (value or "").strip().lower() in {"1", "true", "yes", "on"}
 
 
 def resolve_completion_mode(value: str | None = None) -> CompletionMode:
-    """Resolve the opt-in completion mode from a value or the environment."""
+    """Resolve the caller mode; local literal delivery checks enforce by default."""
 
-    default = "enforce" if (os.environ.get(REQUIRED_ARTIFACTS_ENV) or os.environ.get(VALIDATION_COMMANDS_ENV)) else "off"
+    default = "enforce"
     raw_value = os.environ.get(COMPLETION_MODE_ENV, default) if value is None else value
     normalized = (raw_value or "off").strip().lower()
     try:
@@ -183,164 +51,6 @@ def resolve_completion_mode(value: str | None = None) -> CompletionMode:
     except ValueError as exc:
         allowed = ", ".join(item.value for item in CompletionMode)
         raise ValueError(f"{COMPLETION_MODE_ENV} must be one of: {allowed}") from exc
-
-
-def _spans_overlap(left: tuple[int, int], right: tuple[int, int]) -> bool:
-    return left[0] < right[1] and right[0] < left[1]
-
-
-def _looks_like_concrete_path(value: str) -> bool:
-    if not value or any(marker in value for marker in ("*", "?", "[", "]", "{", "}")):
-        return False
-    if value.startswith(("/", "./", "../", "~/")):
-        return True
-    # Bare relative paths are accepted only when the final component is an
-    # unambiguous filename.  The output-cue check below supplies the semantic
-    # evidence that this is a target rather than an input mention.
-    return bool(Path(value).suffix) and ":" not in value
-
-
-def _last_output_cue(prefix: str) -> re.Match[str] | None:
-    cue_matches = [
-        *list(_OUTPUT_CUE_RE.finditer(prefix)),
-        *list(_DIRECT_OUTPUT_CUE_RE.finditer(prefix)),
-        *list(_OUTPUT_VERB_RE.finditer(prefix)),
-    ]
-    if not cue_matches:
-        return None
-    cue = max(cue_matches, key=lambda match: match.start())
-    return cue
-
-
-def _is_user_directed_output_clause(prefix: str, cue: re.Match[str]) -> bool:
-    """Accept only high-confidence imperative or second-person requests."""
-
-    sentence_boundaries = list(_SENTENCE_BOUNDARY_RE.finditer(prefix))
-    sentence_prefix = (
-        prefix[sentence_boundaries[-1].end() :]
-        if sentence_boundaries
-        else prefix
-    )
-    sentence_cue_start = cue.start() - (len(prefix) - len(sentence_prefix))
-    if sentence_cue_start < 0:
-        return False
-    before_cue = sentence_prefix[:sentence_cue_start]
-    if _CONDITIONAL_CONTEXT_RE.search(before_cue):
-        return False
-
-    sequence_boundaries = list(_SEQUENCE_BOUNDARY_RE.finditer(before_cue))
-    action_prefix = (
-        sentence_prefix[sequence_boundaries[-1].end() :]
-        if sequence_boundaries
-        else sentence_prefix
-    )
-    if _NON_DIRECT_ACTION_CONTEXT_RE.search(action_prefix):
-        return False
-    if _META_ACTION_CONTEXT_RE.search(action_prefix):
-        return False
-
-    cue_prefix = sentence_prefix[:sentence_cue_start]
-    if _ROOT_OUTPUT_PREFIX_RE.fullmatch(cue_prefix):
-        return True
-    if re.search(r"[\u3400-\u9fff]", cue_prefix) and (
-        _CHINESE_DIRECT_OUTPUT_PREFIX_RE.fullmatch(cue_prefix)
-    ):
-        return True
-    if _SEQUENCED_OUTPUT_PREFIX_RE.search(cue_prefix):
-        return True
-    if _COORDINATED_OUTPUT_PREFIX_RE.search(cue_prefix) and (
-        _DIRECT_REQUEST_ACTION_RE.search(sentence_prefix)
-        or _IMPERATIVE_ROOT_RE.search(sentence_prefix)
-    ):
-        return True
-    return _CHINESE_COMPOUND_OUTPUT_PREFIX_RE.fullmatch(cue_prefix) is not None
-
-
-def _candidate_sentence(line: str, span: tuple[int, int]) -> tuple[str, str]:
-    """Return sentence text and the text after one path within that sentence."""
-
-    boundaries = list(_SENTENCE_BOUNDARY_RE.finditer(line))
-    start = max(
-        (boundary.end() for boundary in boundaries if boundary.end() <= span[0]),
-        default=0,
-    )
-    end = min(
-        (boundary.start() for boundary in boundaries if boundary.start() >= span[1]),
-        default=len(line),
-    )
-    return line[start:end], line[span[1] : end]
-
-
-def _candidate_is_governed_target(
-    line: str, path_match: re.Match[str], cue: re.Match[str]
-) -> bool:
-    normalized_path = path_match.group(0).rstrip(".,:;!?")
-    normalized_span = (path_match.start(), path_match.start() + len(normalized_path))
-    sentence, suffix = _candidate_sentence(line, normalized_span)
-    if _ALTERNATIVE_RE.search(sentence):
-        return False
-    if any(
-        mark in sentence
-        for mark in ('"', "`", "“", "”", "‘", "’", "《", "》", "「", "」", "【", "】")
-    ):
-        return False
-    if _META_OUTPUT_SUFFIX_RE.search(suffix):
-        return False
-    # A conditional written after the filename still makes artifact creation
-    # optional, so inference must fail closed.
-    if _CONDITIONAL_CONTEXT_RE.search(suffix):
-        return False
-    # In "save source.csv to output.csv", the first path is an object/source,
-    # not the governed destination.  The later path is evaluated separately.
-    later_paths = list(_PATH_RE.finditer(suffix))
-    if later_paths:
-        before_last_later_path = suffix[: later_paths[-1].start()]
-        if _TARGET_PREPOSITION_ANY_RE.search(before_last_later_path):
-            return False
-    governed_prefix = line[cue.end() : path_match.start()]
-    prior_paths = list(_PATH_RE.finditer(governed_prefix))
-    if prior_paths:
-        after_prior_path = governed_prefix[prior_paths[-1].end() :]
-        if _TARGET_PREPOSITION_RE.search(after_prior_path) is None:
-            return False
-    return True
-
-
-def infer_declared_output_paths(request: str | None) -> tuple[str, ...]:
-    """Extract concrete paths governed by an explicit output-writing cue.
-
-    Matching is line-local and the cue must precede the path.  This intentionally
-    favors false negatives over blocking a task on an input or merely mentioned
-    path.
-    """
-
-    natural_text = _FENCED_CODE_BLOCK_RE.sub(" ", request or "")
-    candidates: list[str] = []
-    seen: set[str] = set()
-    for raw_line in natural_text.splitlines():
-        line = raw_line.strip()
-        if not line:
-            continue
-        url_spans = [match.span() for match in _URL_RE.finditer(line)]
-        for path_match in _PATH_RE.finditer(line):
-            if any(_spans_overlap(path_match.span(), span) for span in url_spans):
-                continue
-            candidate = path_match.group(0).rstrip(".,:;!?")
-            if not _looks_like_concrete_path(candidate):
-                continue
-            prefix = line[: path_match.start()]
-            cue_match = _last_output_cue(prefix)
-            if cue_match is None or not _is_user_directed_output_clause(
-                prefix, cue_match
-            ):
-                continue
-            if not _candidate_is_governed_target(line, path_match, cue_match):
-                continue
-            key = candidate.casefold()
-            if key not in seen:
-                seen.add(key)
-                candidates.append(candidate)
-    return tuple(candidates)
 
 
 def _configured_artifact_paths(raw_value: str | None = None) -> tuple[str, ...]:
@@ -455,9 +165,9 @@ def build_runtime_completion_contract(
         immutable_inputs=(),
         validation_commands=tuple(replace(command, cwd=str((Path(workspace_path) / (command.cwd or ".")).resolve()))
                                   for command in validation_commands),
-        max_evidence_age_seconds=None if validation_commands else 30,
+        max_evidence_age_seconds=None,
         required_final_evidence=("agent_final_response",),
-        max_repairs=1,
+        max_repairs=None,
     )
 
 
@@ -476,6 +186,8 @@ async def resolve_runtime_completion_evidence(
             command_id=command.command_id, exit_code=exit_code,
             output_hash=output_hash, observed_at=datetime.now(timezone.utc),
         ))
+    if context.context_info.get("task_workspace_binding") is not None:
+        await _evaluate_workspace_completion(context, contract)
     observed_at = datetime.now(timezone.utc)
     for requirement in contract.required_artifacts:
         path = Path(requirement.path).expanduser()
@@ -500,58 +212,122 @@ async def resolve_runtime_completion_evidence(
         )
 
 
+async def _evaluate_workspace_completion(context, contract):
+    from aworld.core.task_workspace.session import evaluate_delivery
+    delivery_ids = set(context.context_info.get("runtime_completion_contract", {}).get("delivery_check_ids", ()))
+    if "workbench.delivery" in contract.required_self_check_ids:
+        delivery_ids.add("workbench.delivery")
+    for check_id in delivery_ids:
+        # A resolver error must not leave an earlier successful receipt current.
+        context.record_completion_self_check(SelfCheckEvidence(
+            command_id=check_id, exit_code=1, output_hash=None,
+            observed_at=datetime.now(timezone.utc),
+        ))
+    await evaluate_delivery(context, contract)
+
+
+def _attach_workspace_completion(context, existing):
+    if not (existing.required_artifacts or existing.immutable_inputs
+            or existing.validation_commands or existing.required_self_check_ids):
+        return existing
+    if any(command.command_id == "workbench.delivery" for command in existing.validation_commands):
+        raise ValueError("workbench.delivery is reserved for executed workspace evidence")
+    if existing is getattr(context, "_workspace_completion_owned_contract", None):
+        return existing
+    extended = replace(existing, required_self_check_ids=tuple(dict.fromkeys(
+        (*existing.required_self_check_ids, "workbench.delivery")
+    )))
+    previous_resolver = getattr(context, "_completion_evidence_resolver", None)
+    resolver = previous_resolver
+    if previous_resolver is not resolve_runtime_completion_evidence:
+        async def resolver(target, configured):
+            if previous_resolver is not None:
+                await previous_resolver(target, existing)
+            await _evaluate_workspace_completion(target, configured)
+    # Extending a caller contract must retain its evidence, mode and checks.
+    context._completion_contract = extended
+    context._completion_evidence_resolver = resolver
+    context._workspace_completion_owned_contract = extended
+    return extended
+
+
 def configure_runtime_completion(
     context,
     *,
     request: str | None,
     workspace_path: str | os.PathLike[str],
 ) -> CompletionContract | None:
-    """Install the opt-in generic completion contract on one execution Context."""
+    """Bind actual caller or high-confidence public delivery requirements.
 
+    The native workspace binding is issued by the local executor. An arbitrary
+    remote sandbox cannot make derived checks inspect the host filesystem.
+    """
     mode = resolve_completion_mode()
-    if mode is CompletionMode.OFF:
-        return None
-    if getattr(context, "completion_contract", None) is not None:
-        logger.info("Keeping the completion contract already installed by the caller")
-        return context.completion_contract
-
+    existing = getattr(context, "completion_contract", None)
     explicit_paths = _configured_artifact_paths()
     validation_commands = _configured_validation_commands()
-    inferred_only = not explicit_paths and not validation_commands
-    contract = build_runtime_completion_contract(
-        request,
-        workspace_path=workspace_path,
-        explicit_paths=explicit_paths,
-        validation_commands=validation_commands,
-        # A structured contract is authoritative.  Do not silently add natural
-        # language guesses to it, because one ambiguous inferred path could
-        # otherwise turn a successful task into a typed task failure.
-        infer_paths=(
-            inferred_only
-            and _truthy_env(os.environ.get(INFER_ARTIFACTS_ENV))
-        ),
-    )
-    if contract is None:
-        logger.info(
-            "Completion-contract mode is %s but the task declares no output path",
-            mode.value,
+    binding = context.context_info.get("task_workspace_binding")
+    if existing is not None:
+        if binding is not None:
+            from aworld.core.task_workspace.session import prepare_task_workspace
+            prepare_task_workspace(context, request=request or "", workspace_path=workspace_path)
+            existing = _attach_workspace_completion(context, existing)
+        logger.info("Keeping the completion contract already installed by the caller")
+        return existing
+
+    # Install caller structure before preparing workspace state, so the facade
+    # can recognize its authority and never replace it with inferred paths.
+    if explicit_paths or validation_commands:
+        contract = build_runtime_completion_contract(
+            request, workspace_path=workspace_path, explicit_paths=explicit_paths,
+            validation_commands=validation_commands,
         )
+        context.configure_completion_contract(contract, mode=mode,
+                                              evidence_resolver=resolve_runtime_completion_evidence)
+        context.context_info["runtime_completion_contract"] = {
+            "mode": mode.value, "requested_mode": mode.value, "source": "explicit_structured",
+            "required_artifacts": [item.path for item in contract.required_artifacts],
+        }
+        if binding is not None:
+            from aworld.core.task_workspace.session import prepare_task_workspace
+            prepare_task_workspace(context, request=request or "", workspace_path=workspace_path)
+            contract = _attach_workspace_completion(context, contract)
+        return contract
+
+    if binding is not None:
+        from aworld.core.task_workspace.session import prepare_task_workspace
+        delivery = prepare_task_workspace(context, request=request or "", workspace_path=workspace_path)
+    else:
+        delivery = derive_delivery_contract(request or "", workspace_path=workspace_path)
+        context.context_info["delivery_contract"] = delivery
+        context.context_info["delivery_evaluation_unavailable"] = "local_workspace_not_bound"
         return None
-    effective_mode = (
-        CompletionMode.OBSERVE
-        if inferred_only and mode is CompletionMode.ENFORCE
-        else mode
+    context.context_info["delivery_contract"] = delivery
+    if mode is CompletionMode.OFF:
+        return None
+    requirements = tuple(ArtifactRequirement(item["id"], item["path"]) for item in delivery["outputs"])
+    inputs = tuple(item["id"] for item in delivery["inputs"] if item.get("immutable") is True)
+    check_ids = tuple(dict.fromkeys(
+        [check["id"] for item in delivery["outputs"] for check in item["checks"]]
+        + [check["id"] for check in delivery.get("checks", [])]
+    ))
+    if not requirements and not inputs and not check_ids:
+        return None
+    check_ids = (*check_ids, "workbench.delivery")
+    contract = CompletionContract(
+        required_artifacts=requirements, immutable_inputs=inputs,
+        validation_commands=(), required_self_check_ids=check_ids,
+        max_evidence_age_seconds=None, required_final_evidence=("agent_final_response",),
+        max_repairs=None,
     )
-    context.configure_completion_contract(
-        contract,
-        mode=effective_mode,
-        evidence_resolver=resolve_runtime_completion_evidence,
-    )
+    context.configure_completion_contract(contract, mode=mode,
+                                          evidence_resolver=resolve_runtime_completion_evidence)
     context.context_info["runtime_completion_contract"] = {
-        "mode": effective_mode.value,
-        "requested_mode": mode.value,
-        "source": "inferred_advisory" if inferred_only else "explicit_structured",
-        "required_artifacts": [item.path for item in contract.required_artifacts],
+        "mode": mode.value, "requested_mode": mode.value,
+        "source": "explicit_structured" if delivery["coverage_status"] == "explicit" else "public_literal",
+        "source_hash": delivery["source_hash"], "coverage_status": delivery["coverage_status"],
+        "required_artifacts": [item.path for item in requirements],
+        "delivery_check_ids": list(check_ids),
     }
     return contract
 
@@ -572,7 +348,11 @@ def configure_goal_completion(context, *, verification_commands: Sequence[str], 
     previous = getattr(context, "completion_contract", None)
     previous_resolver = getattr(context, "_completion_evidence_resolver", None)
     metadata = context.context_info.get("runtime_completion_contract", {})
-    owned_ids = set(metadata.get("validation_command_ids", ())) if metadata.get("source") == "explicit_goal_verification" else set()
+    owns_previous = previous is getattr(context, "_goal_completion_owned_contract", None)
+    owned_ids = set(metadata.get("validation_command_ids", ())) if owns_previous else set()
+    if owns_previous:
+        previous_resolver = getattr(context, "_goal_completion_base_resolver", None)
+    base_resolver_contract = getattr(context, "_goal_completion_base_contract", None) if owns_previous else previous
     base_checks = tuple(c for c in (previous.validation_commands if previous else ())
                         if c.command_id not in owned_ids)
     used_ids = {c.command_id for c in base_checks}
@@ -595,21 +375,26 @@ def configure_goal_completion(context, *, verification_commands: Sequence[str], 
         required_artifacts=previous.required_artifacts if previous else (),
         immutable_inputs=previous.immutable_inputs if previous else (),
         validation_commands=base_checks + checks,
-        max_evidence_age_seconds=None,
+        max_evidence_age_seconds=previous.max_evidence_age_seconds if previous else None,
         required_final_evidence=tuple(dict.fromkeys((previous.required_final_evidence if previous else ()) + ("agent_final_response",))),
-        max_repairs=previous.max_repairs if previous else 1,
+        max_repairs=previous.max_repairs if previous else None,
+        required_self_check_ids=previous.required_self_check_ids if previous else (),
     )
     resolver = resolve_runtime_completion_evidence
     if previous_resolver is not None and previous_resolver is not resolve_runtime_completion_evidence:
         async def resolver(target, configured):
-            await previous_resolver(target, previous)
+            await previous_resolver(target, base_resolver_contract)
             await resolve_runtime_completion_evidence(target, configured)
     context.configure_completion_contract(contract, mode=CompletionMode.ENFORCE, evidence_resolver=resolver)
     context.context_info["runtime_completion_contract"] = {
         "mode": "enforce", "requested_mode": "enforce", "source": "explicit_goal_verification",
         "required_artifacts": [item.path for item in contract.required_artifacts],
         "validation_command_ids": [item.command_id for item in checks],
+        "delivery_check_ids": metadata.get("delivery_check_ids", []),
     }
+    context._goal_completion_owned_contract = contract
+    context._goal_completion_base_contract = base_resolver_contract
+    context._goal_completion_base_resolver = previous_resolver
     return contract
 
 
