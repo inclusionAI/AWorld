@@ -6,6 +6,7 @@ import traceback
 import copy
 from contextlib import contextmanager
 from contextvars import ContextVar
+from dataclasses import replace
 from datetime import datetime, timezone
 from typing import (
     List,
@@ -429,7 +430,12 @@ class LLMModel:
                     policy_version=context_config_value("policy_version", "v1"),
                     input_budget=ContextInputBudget(
                         context_limit=configured_context_limit,
-                        reserved_output_tokens=reserved_output_tokens,
+                        # The shared policy holds the explicit minimum. The
+                        # effective output cap is resolved for each request so
+                        # a smaller override can reclaim input capacity.
+                        reserved_output_tokens=int(
+                            context_config_value("reserved_output_tokens", 4096)
+                        ),
                         provider_protocol_reserve=context_config_value(
                             "provider_protocol_reserve", 256
                         ),
@@ -1140,6 +1146,64 @@ class LLMModel:
                 "model_boundary_finalize_failed"
             ) from None
 
+    def _context_policy_for_request(
+        self,
+        *,
+        policy: CandidateCompilePolicy,
+        max_tokens: int | None,
+        request_kwargs: dict[str, Any] | None,
+    ) -> CandidateCompilePolicy:
+        """Reserve the output limits actually passed by the provider adapter.
+
+        Only frozen request-local policies are replaced; concurrent calls and
+        later overrides must not inherit another request's output reservation.
+        """
+        if policy.final_policy is None:
+            return policy
+        output_limits = [max_tokens]
+        if isinstance(self.provider, OpenAIProvider):
+            # get_openai_params merges configured params, then call kwargs,
+            # then the named max_tokens argument (including None). Thus a
+            # configured params.max_tokens is not an effective fallback, and
+            # an explicit max_completion_tokens=None clears its configured cap.
+            params = self.provider.kwargs.get("params", {})
+            output_limits.append(
+                (request_kwargs or {}).get(
+                    "max_completion_tokens", params.get("max_completion_tokens")
+                )
+            )
+        elif isinstance(self.provider, AnthropicProvider):
+            # The native adapter supplies this default even when the caller
+            # lowers the compiler's explicit reservation minimum.
+            output_limits = [max_tokens or 4096]
+        budget = policy.final_policy.input_budget
+        reserved_output = budget.reserved_output_tokens
+        for value in output_limits:
+            if value is None:
+                continue
+            if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+                raise ValueError("request output token limits must be positive integers")
+            reserved_output = max(reserved_output, value)
+        if reserved_output == budget.reserved_output_tokens:
+            return policy
+        available_output = (
+            budget.context_limit
+            - budget.provider_protocol_reserve
+            - budget.safety_margin_tokens
+        )
+        if reserved_output > available_output:
+            raise RequiredContextBudgetExceeded(
+                required_tokens=reserved_output,
+                available_tokens=available_output,
+            )
+        return replace(
+            policy,
+            final_policy=replace(
+                policy.final_policy,
+                input_budget=replace(budget, reserved_output_tokens=reserved_output),
+            ),
+        )
+
     def _prepare_context_rollout(
         self, **kwargs,
     ):
@@ -1205,6 +1269,7 @@ class LLMModel:
         tools: Any,
         model_name: str | None,
         call_shape: ContextCallShape,
+        request_kwargs: dict[str, Any] | None = None,
         defer_budget_failure: bool = False,
         recovery_receipts: list | None = None,
     ) -> tuple[
@@ -1480,7 +1545,14 @@ class LLMModel:
                 None,
             )
 
+        output_budget_resolved = False
         try:
+            policy = self._context_policy_for_request(
+                policy=policy,
+                max_tokens=max_tokens,
+                request_kwargs=request_kwargs,
+            )
+            output_budget_resolved = True
             candidate = compile_context_candidate(
                 compiler_input=compiler_input,
                 policy=policy,
@@ -1570,7 +1642,10 @@ class LLMModel:
                         "reason_code": "entrypoint_parity_receipt_failed",
                     }
         except Exception as exc:
-            if defer_budget_failure and isinstance(exc, RequiredContextBudgetExceeded):
+            # Compacting input cannot fix an output reservation that already
+            # exceeds the context window on its own.
+            if (defer_budget_failure and output_budget_resolved
+                    and isinstance(exc, RequiredContextBudgetExceeded)):
                 raise
             logger.error(
                 "Context candidate compilation failed before provider lowering; "
@@ -2091,6 +2166,7 @@ class LLMModel:
                 tools=kwargs.get("tools"),
                 model_name=kwargs.get("model_name") or kwargs.get("model"),
                 call_shape=ContextCallShape.ASYNC,
+                request_kwargs=kwargs,
             )
         )
         self._begin_llm_call_record(
@@ -2339,6 +2415,7 @@ class LLMModel:
                 tools=kwargs.get("tools"),
                 model_name=kwargs.get("model_name") or kwargs.get("model"),
                 call_shape=ContextCallShape.SYNC,
+                request_kwargs=kwargs,
             )
         )
         self._begin_llm_call_record(
@@ -2543,6 +2620,7 @@ class LLMModel:
                 tools=kwargs.get("tools"),
                 model_name=kwargs.get("model_name") or kwargs.get("model"),
                 call_shape=ContextCallShape.SYNC_STREAM,
+                request_kwargs=kwargs,
             )
         )
         self._begin_llm_call_record(
@@ -2716,6 +2794,7 @@ class LLMModel:
                 tools=kwargs.get("tools"),
                 model_name=kwargs.get("model_name") or kwargs.get("model"),
                 call_shape=ContextCallShape.ASYNC_STREAM,
+                request_kwargs=kwargs,
             )
         )
         self._begin_llm_call_record(

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import traceback
@@ -564,6 +565,202 @@ async def test_configured_output_budget_reaches_every_direct_call_shape():
     ]
 
 
+def _output_reservation_model(monkeypatch, **config):
+    provider, calls = _azure_without_transport()
+
+    def create_provider(model, **kwargs):
+        # Exercise ModelConfig -> provider params with a fake SDK transport.
+        provider.kwargs = kwargs
+        model.provider = provider
+
+    monkeypatch.setattr(LLMModel, "_create_provider", create_provider)
+    compiler_config = {
+        "context_limit": 40000,
+        "checkpoint_policy": "explicit",
+        **config.pop("context_compiler", {}),
+    }
+    model = LLMModel(conf=ModelConfig(
+        llm_provider="azure_openai", llm_model_name="azure-test",
+        context_compiler=compiler_config, **config,
+    ))
+    return model, provider, calls
+
+
+async def _invoke_output_reservation_shape(model, shape, messages, context, **kwargs):
+    if shape == "sync":
+        return model.completion(messages, context=context, **kwargs)
+    if shape == "async":
+        return await model.acompletion(messages, context=context, **kwargs)
+    if shape == "stream":
+        return list(model.stream_completion(messages, context=context, **kwargs))
+    return [chunk async for chunk in model.astream_completion(
+        messages, context=context, **kwargs,
+    )]
+
+
+def _output_reservation_context(name):
+    context = Context(task_id=name)
+    context.trace_id = ""
+    return context
+
+
+def _reserved_output(context):
+    return context.get_llm_calls()[-1]["context_rollout"]["final_compile"]["tokens"][
+        "reserved_output"
+    ]["value"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("shape", ["sync", "async", "stream", "astream"])
+@pytest.mark.parametrize("config,request_kwargs,wire_key", [
+    ({"max_tokens": 32768}, {}, "max_tokens"),
+    ({"params": {"max_completion_tokens": 32768}}, {}, "max_completion_tokens"),
+    ({}, {"max_tokens": 32768}, "max_tokens"),
+    ({}, {"max_completion_tokens": 32768}, "max_completion_tokens"),
+])
+async def test_effective_output_reservation_blocks_overflow_before_every_call_shape(
+    monkeypatch, shape, config, request_kwargs, wire_key,
+):
+    model, provider, calls = _output_reservation_model(monkeypatch, **config)
+    shared_policy = model.context_candidate_policy
+    # Fits the former 4096-token output reserve, but not the requested 32768.
+    large_messages = [{"role": "user", "content": "x" * 32000}]
+    blocked = _output_reservation_context(f"output-overflow-{shape}")
+    with pytest.raises(CandidateRequestNotEnforceable, match="required_context_budget_exceeded"):
+        await _invoke_output_reservation_shape(
+            model, shape, large_messages, blocked, **request_kwargs,
+        )
+    assert calls == []
+    assert blocked.get_llm_calls()[-1]["status"] == "blocked_before_provider"
+    assert blocked.get_llm_calls()[-1]["provider_invoked"] is False
+    assert large_messages[0]["content"] == "x" * 32000
+
+    valid = _output_reservation_context(f"output-valid-{shape}")
+    await _invoke_output_reservation_shape(
+        model, shape, [{"role": "user", "content": "go"}], valid, **request_kwargs,
+    )
+    assert len(calls) == 1
+    assert provider._test_sent_params[-1][wire_key] == 32768
+    assert _reserved_output(valid) == 32768
+    assert model.context_candidate_policy is shared_policy
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("shape", ["sync", "async", "stream", "astream"])
+@pytest.mark.parametrize("config,request_kwargs,expected_reserve,wire_limits", [
+    ({"max_tokens": 32768}, {"max_tokens": 8192}, 8192, {"max_tokens": 8192}),
+    ({"params": {"max_completion_tokens": 32768}}, {"max_completion_tokens": 8192},
+     8192, {"max_completion_tokens": 8192}),
+    ({"params": {"max_completion_tokens": 32768}}, {"max_completion_tokens": None},
+     4096, {}),
+    # The named max_tokens=None already removes this configured parameter at
+    # the OpenAI boundary; budget inference must not reintroduce it.
+    ({"params": {"max_tokens": 32768}}, {}, 4096, {}),
+    ({"max_tokens": 4096, "params": {"max_completion_tokens": 16384}},
+     {"max_tokens": 8192}, 16384, {"max_tokens": 8192, "max_completion_tokens": 16384}),
+    ({"context_compiler": {"reserved_output_tokens": 12288}}, {"max_tokens": 8192},
+     12288, {"max_tokens": 8192}),
+])
+async def test_output_reservation_matches_provider_precedence_and_explicit_minimum(
+    monkeypatch, shape, config, request_kwargs, expected_reserve, wire_limits,
+):
+    model, provider, calls = _output_reservation_model(monkeypatch, **config)
+    shared_policy = model.context_candidate_policy
+    context = _output_reservation_context(f"output-precedence-{shape}")
+    # A smaller per-call override must also reclaim input space from a larger
+    # configured default, rather than just changing the outbound parameter.
+    messages = [{"role": "user", "content": "x" * 32000}]
+    await _invoke_output_reservation_shape(model, shape, messages, context, **request_kwargs)
+    assert len(calls) == 1
+    assert _reserved_output(context) == expected_reserve
+    sent = provider._test_sent_params[-1]
+    assert {key: sent[key] for key in ("max_tokens", "max_completion_tokens") if key in sent} == wire_limits
+    assert sent["messages"] == messages
+    assert model.context_candidate_policy is shared_policy
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("shape", ["async", "astream"])
+async def test_concurrent_output_reservations_remain_request_local(monkeypatch, shape):
+    model, provider, calls = _output_reservation_model(
+        monkeypatch, params={"max_completion_tokens": 32768},
+    )
+    shared_policy = model.context_candidate_policy
+    first_entered, both_entered, release = asyncio.Event(), asyncio.Event(), asyncio.Event()
+    create = provider.async_provider.chat.completions.create
+
+    async def wait_for_both(**kwargs):
+        response = await create(**kwargs)
+        first_entered.set()
+        if len(calls) == 2:
+            both_entered.set()
+        await release.wait()
+        return response
+
+    provider.async_provider.chat.completions.create = wait_for_both
+    high = _output_reservation_context(f"output-concurrent-high-{shape}")
+    low = _output_reservation_context(f"output-concurrent-low-{shape}")
+    high_call = asyncio.create_task(_invoke_output_reservation_shape(
+        model, shape, [{"role": "user", "content": "go"}], high,
+    ))
+    tasks = [high_call]
+    try:
+        await asyncio.wait_for(first_entered.wait(), timeout=5)
+        tasks.append(asyncio.create_task(_invoke_output_reservation_shape(
+            model, shape, [{"role": "user", "content": "x" * 32000}], low,
+            max_completion_tokens=8192,
+        )))
+        await asyncio.wait_for(both_entered.wait(), timeout=5)
+    finally:
+        release.set()
+        await asyncio.gather(*tasks)
+    assert _reserved_output(high) == 32768
+    assert _reserved_output(low) == 8192
+    assert [item["max_completion_tokens"] for item in provider._test_sent_params] == [32768, 8192]
+    assert model.context_candidate_policy is shared_policy
+    assert shared_policy.final_policy.input_budget.reserved_output_tokens == 4096
+
+
+def test_output_reservation_larger_than_context_is_blocked_before_provider(monkeypatch):
+    model, _provider, calls = _output_reservation_model(
+        monkeypatch, context_compiler={"checkpoint_policy": "adaptive"},
+    )
+    recovery_calls = []
+
+    async def recover(**kwargs):
+        recovery_calls.append(kwargs)
+        return None, {"status": "failed"}
+
+    monkeypatch.setattr(
+        "aworld.core.context.budget_recovery.recover_context_budget_bounded", recover,
+    )
+    with pytest.raises(CandidateRequestNotEnforceable, match="required_context_budget_exceeded"):
+        model.completion(
+            [{"role": "user", "content": "go"}], max_completion_tokens=40000,
+            context=_output_reservation_context("output-reserve-exceeds-context"),
+        )
+    assert calls == []
+    assert recovery_calls == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("shape", ["sync", "async", "stream", "astream"])
+async def test_output_reservation_includes_native_provider_default(shape):
+    provider, calls = _anthropic_without_transport()
+    model = LLMModel(
+        conf=ModelConfig(context_compiler={"reserved_output_tokens": 128}),
+        custom_provider=provider,
+    )
+    model.provider_name = "anthropic"
+    context = _output_reservation_context(f"output-native-default-{shape}")
+    await _invoke_output_reservation_shape(
+        model, shape, [{"role": "user", "content": "go"}], context,
+    )
+    assert len(calls) == 1
+    assert calls[-1]["max_tokens"] == 4096
+    assert _reserved_output(context) == 4096
+
+
 def _counters() -> dict[str, int]:
     return {"compiler": 0, "tool": 0, "artifact_offload": 0}
 
@@ -661,7 +858,7 @@ def _azure_without_transport() -> tuple[AzureOpenAIProvider, list[str]]:
         lambda self, response: CountingProvider._response("completion"), provider
     )
     provider.postprocess_stream_response = MethodType(
-        lambda self, chunk: (CountingProvider._response("stream"), "stop"),
+        lambda self, chunk, **kwargs: (CountingProvider._response("stream"), "stop"),
         provider,
     )
     return provider, calls
