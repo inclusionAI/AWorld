@@ -129,6 +129,37 @@ def test_explicit_resume_rebinds_only_named_prior_task():
     assert retain_work_progress(context, "agent")["current_plan"]["text"] == "next step"
 
 
+def test_goal_carry_excludes_historical_and_unscoped_ledgers():
+    old = Context(task_id="current", task_epoch=2)
+    current = retain_work_progress(old, "current-agent", plan="current plan")
+    old.context_info["adaptive_work_state:unrelated-agent"] = {
+        "scope":{"task_id":"unrelated", "task_epoch":2},
+        "current_plan":{"text":"unrelated plan"}}
+    old.context_info["adaptive_work_state:old-epoch-agent"] = {
+        "scope":{"task_id":"current", "task_epoch":1},
+        "current_plan":{"text":"old epoch plan"}}
+    old.context_info["adaptive_work_state:unscoped-agent"] = {
+        "current_plan":{"text":"unknown provenance"}}
+    new = Context(task_id="next")
+    assert carry_goal_work_state(old, new) == 1
+    assert new.context_info["adaptive_work_state:current-agent"]["carried_from"] == current["scope"]
+    assert not any(f"adaptive_work_state:{agent}" in new.context_info
+                   for agent in ("unrelated-agent", "old-epoch-agent", "unscoped-agent"))
+
+
+@pytest.mark.parametrize("source_epoch", [None, 4])
+def test_resume_rebinds_agent_identity_from_checkpoint(source_epoch):
+    from aworld.core.context.work_progress import resume_goal_work_state
+    context = Context(task_id="next")
+    context.context_info["adaptive_work_state:prior-agent-id"] = {
+        "scope":{"task_id":"prior", "task_epoch":4},
+        "current_plan":{"text":"resume pending work"}}
+    assert resume_goal_work_state(context, source_task_id="prior",
+        source_task_epoch=source_epoch,
+        agent_id_mapping={"prior-agent-id":"new-agent-id"}) == 1
+    assert retain_work_progress(context, "new-agent-id")["current_plan"]["text"] == "resume pending work"
+
+
 @pytest.mark.asyncio
 async def test_checkpoint_write_failure_cannot_claim_progress_saved():
     from aworld.core.context.execution_state import checkpoint_execution_state

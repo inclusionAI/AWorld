@@ -112,9 +112,16 @@ def carry_goal_work_state(old_context, new_context, *, agent_id_mapping=None) ->
     working = getattr(getattr(old, "task_state", None), "working_state", None)
     values.update(getattr(working, "kv_store", None) or {})
     values.update(dict(old.context_info))
+    source_task_id = getattr(old, "task_id", None)
+    source_task_epoch = getattr(old, "task_epoch", None)
     copied = 0
     for key, value in values.items():
         if not key.startswith(ADAPTIVE_WORK_STATE_KEY + ":") or not isinstance(value, dict):
+            continue
+        scope = value.get("scope")
+        if not isinstance(scope, dict) or scope.get("task_id") != source_task_id:
+            continue
+        if source_task_epoch is not None and scope.get("task_epoch") != source_task_epoch:
             continue
         agent_id = key[len(ADAPTIVE_WORK_STATE_KEY) + 1:]
         agent_id = (agent_id_mapping or {}).get(agent_id, agent_id)
@@ -138,7 +145,8 @@ def carry_goal_work_state(old_context, new_context, *, agent_id_mapping=None) ->
     return copied
 
 
-def resume_goal_work_state(context, *, source_task_id: str, source_task_epoch=None) -> int:
+def resume_goal_work_state(context, *, source_task_id: str, source_task_epoch=None,
+                           agent_id_mapping=None) -> int:
     """Rebind only an explicitly named prior segment loaded from a checkpoint."""
     owner = state_context(context)
     if not source_task_id or owner is None:
@@ -149,8 +157,8 @@ def resume_goal_work_state(context, *, source_task_id: str, source_task_epoch=No
     for key, value in values.items():
         if not key.startswith(ADAPTIVE_WORK_STATE_KEY + ":") or not isinstance(value, dict):
             continue
-        scope = value.get("scope", {})
-        if scope.get("task_id") != source_task_id:
+        scope = value.get("scope")
+        if not isinstance(scope, dict) or scope.get("task_id") != source_task_id:
             continue
         if source_task_epoch is not None and scope.get("task_epoch") != source_task_epoch:
             continue
@@ -158,8 +166,9 @@ def resume_goal_work_state(context, *, source_task_id: str, source_task_epoch=No
     # An in-memory source containing only the caller-authorized old task's
     # recovery records prevents an unrelated checkpoint from being imported.
     from types import SimpleNamespace
-    source = SimpleNamespace(context_info=scoped, task_id=source_task_id)
-    return carry_goal_work_state(source, owner)
+    source = SimpleNamespace(context_info=scoped, task_id=source_task_id,
+                             task_epoch=source_task_epoch)
+    return carry_goal_work_state(source, owner, agent_id_mapping=agent_id_mapping)
 
 
 def record_budget_handoff(context, agent_id: str) -> bool:
