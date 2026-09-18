@@ -1,9 +1,62 @@
 ---
 name: filex
 description: Parse workspace files, HTTP(S) file URLs, or supported source URLs such as YouTube into Markdown, inspect source routing, and inspect resumable PDF batch status with the FileX CLI inside an AWorld sandbox. Use for reading, extracting, transcribing, inspecting, summarizing, or answering questions about PDF, Word, PowerPoint, Excel, CSV, text, Markdown, image, audio, or video files.
+default_enabled: true
+metadata:
+  match_keywords:
+    - pdf
+    - docx
+    - pptx
+    - xlsx
+    - csv
+    - document
+    - spreadsheet
+    - powerpoint
+    - extract text
+    - read this file
+    - parse this file
+    - transcribe
+    - transcript
+    - .doc
+    - .ppt
+    - .xls
+    - .txt
+    - .md
+    - .png
+    - .jpg
+    - .jpeg
+    - .webp
+    - .gif
+    - .bmp
+    - .mp3
+    - .wav
+    - .m4a
+    - .aac
+    - .flac
+    - .ogg
+    - .opus
+    - .mp4
+    - .mov
+    - .mkv
+    - .webm
+    - .avi
+    - .m4v
+    - .mpeg
+    - .mpg
+    - youtube.com/
+    - youtu.be/
+    - 文档
+    - 表格
+    - 提取文字
+    - 转录
+    - 字幕
 ---
 
 # Use FileX
+
+Choose this skill when the task needs content from an existing document or media
+source. FileX does not need to run for unrelated tasks or to create new documents
+or media.
 
 Use the bundled wrapper for FileX `inspect`, `parse`, and `status`. It validates workspace paths, resolves supported URL sources, keeps credentials out of command-line arguments, preserves FileX JSON fields, and returns `output_path` for synchronous parsing.
 

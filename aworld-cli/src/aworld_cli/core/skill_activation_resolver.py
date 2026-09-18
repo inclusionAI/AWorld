@@ -10,6 +10,8 @@ from aworld.skills.plugin_provider import PluginSkillProvider
 from aworld.skills.release import is_self_evolve_release_visible
 from aworld.skills.registry import SkillRegistry as FrameworkSkillRegistry
 
+from aworld_cli.core.builtin_skills import build_builtin_skill_providers
+
 
 _SCOPE_ORDER = {
     "session": 0,
@@ -69,6 +71,10 @@ class SkillActivationResolver:
             provider = build_compat_provider(source)
             providers.append(provider)
             compatibility_provider_ids.add(provider.provider_id())
+
+        # Built-ins remain available without --skill or agent source hints, but
+        # explicit plugin/user definitions with the same name take precedence.
+        providers.extend(build_builtin_skill_providers())
 
         return FrameworkSkillRegistry(providers), compatibility_provider_ids
 
