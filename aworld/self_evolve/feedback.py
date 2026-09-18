@@ -14,6 +14,7 @@ from aworld.self_evolve.sanitization import (
     sanitize_text,
 )
 from aworld.self_evolve.regression_feedback import bounded_independent_regression_feedback
+from aworld.self_evolve.repair_selection import bounded_repair_selection, repair_source_fingerprint
 from aworld.self_evolve.recovery_trace import (
     validate_public_constraint_recovery_trace,
     validate_public_recovery_trace,
@@ -178,6 +179,11 @@ def normalize_feedback_summary(feedback: EvaluationSummary) -> dict[str, Any]:
     )
     if repair_candidate_package is not None:
         result["repair_candidate_package"] = repair_candidate_package
+    selection = bounded_repair_selection(metrics.get("repair_selection"), candidate_id=feedback.variant_id)
+    if selection is not None and selection["source_fingerprint"] == repair_source_fingerprint(metrics.get("repair_candidate_package")) and repair_candidate_package is not None:
+        # Rebind only after verifying the incoming source, then applying the
+        # existing bounded source projection; never borrow another record's proof.
+        result["repair_selection"] = {**selection, "source_fingerprint": repair_source_fingerprint(repair_candidate_package)}
     repair_conformance = metrics.get("repair_conformance")
     if isinstance(repair_conformance, Mapping):
         projected_contract = public_diagnostic_projection(

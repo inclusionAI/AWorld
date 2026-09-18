@@ -234,6 +234,34 @@ def test_proposal_preserves_candidate_failure_without_blocking_outcome() -> None
     assert result.state.gate_results[0].details["typed"] is True
 
 
+def test_passed_checkpoints_enrich_only_feedback_not_evaluation_records() -> None:
+    from aworld.self_evolve.candidate_package import candidate_package_fingerprint
+    from aworld.self_evolve.controllers.run_iteration_helpers import _iteration_validation_feedback
+
+    candidate = replace(_candidate(), target_fingerprint="sha256:" + "a" * 64, parent_candidate_ids=("parent",))
+    summaries = {}
+    for split in ("validation", "held_out"):
+        identity = {"schema_version": "aworld.self_evolve.evaluation_identity.v1", "role": "candidate",
+            "dataset_split": split, "variant_fingerprint": candidate_package_fingerprint(candidate),
+            "fingerprint": "sha256:" + ("b" if split == "validation" else "c") * 64,
+            "backend_fingerprint": "sha256:" + "d" * 64}
+        summaries[split] = EvaluationSummary(candidate.candidate_id, {"score": 88.0,
+            "evaluation_agent_signal": True, "evaluation_fresh_execution": True,
+            "judge_success_count": 3, "judge_failure_count": 0, "judge_timeout_count": 0,
+            "evaluation_identity": identity, "evaluation_identity_fingerprint": identity["fingerprint"],
+            "comparison_case_ids": [split]}, split)
+    gates = (GateResult("evidence_quality", False, "original failure", {"dataset_split": "validation", "failure_class": "candidate", "repairable": True}),
+        GateResult("evidence_quality", True, "original pass", {"dataset_split": "held_out"}))
+    execution = replace(_execution(*gates), candidate_summary=summaries["validation"], held_out_summary=summaries["held_out"])
+    result = finalize_candidate_evaluation(_request(evaluation=replace(_evaluation_request(), candidate=candidate), execution=execution),
+        _policy(), replace(_runtime(_unused_materializer), feedback_builder=_iteration_validation_feedback))
+    selection = next(x.metrics["repair_selection"] for x in result.feedback if "repair_selection" in x.metrics)
+    assert selection["parent_candidate_ids"] == ["parent"]
+    assert selection["checkpoints"]["held_out"]["passed_gates"] == ["evidence_quality"]
+    assert "repair_selection" not in repr(result.report_item)
+    assert all("repair_selection" not in summary.metrics for summary in summaries.values())
+
+
 def test_infrastructure_failure_blocks_attempt_and_proposal() -> None:
     tracker = _AttemptTracker()
     result = finalize_candidate_evaluation(

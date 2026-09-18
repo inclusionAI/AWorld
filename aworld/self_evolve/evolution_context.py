@@ -40,6 +40,7 @@ from aworld.self_evolve.sanitization import (
     sanitize_text,
 )
 from aworld.self_evolve.regression_feedback import bounded_independent_regression_feedback, has_judged_independent_regression
+from aworld.self_evolve.repair_selection import bounded_repair_selection, superseded_repair_indexes
 from aworld.self_evolve.handbook import HandbookLocatorIntegrityError
 
 
@@ -309,6 +310,8 @@ def _public_repair_value(value: object) -> object:
         projected: dict[str, object] = {}
         for raw_key, item in value.items():
             key = str(raw_key)
+            if key == "repair_selection":
+                continue
             if key in _PRIVATE_REPAIR_VALUE_KEYS and isinstance(item, (str, bytes)):
                 encoded = item.encode("utf-8") if isinstance(item, str) else item
                 projected[f"{key}_fingerprint"] = (
@@ -685,6 +688,10 @@ def _focused_validation_feedback(
     ]
     if not repair_items:
         return tuple(feedback), None, None
+    superseded = superseded_repair_indexes([
+        (index, item) for index, item in repair_items if _repair_feedback_reached_judged_task_output(item)
+    ])
+    repair_items = [(index, item) for index, item in repair_items if index not in superseded]
 
     # The first population member exploits the deepest observed failure. The
     # remaining members preserve recency diversity so a newly-progressing
@@ -1464,6 +1471,9 @@ def _bounded_feedback_summary(
     regression = bounded_independent_regression_feedback(summary.get("independent_regression"))
     if regression is not None:
         normalized["independent_regression"] = regression
+    selection = bounded_repair_selection(summary.get("repair_selection"), candidate_id=summary.get("variant_id"))
+    if selection is not None:
+        normalized["repair_selection"] = selection
     for key, limit in (("failed_gates", 16), ("required_behaviors", 32)):
         raw = summary.get(key)
         if isinstance(raw, list):

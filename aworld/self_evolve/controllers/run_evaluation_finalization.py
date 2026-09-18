@@ -32,6 +32,8 @@ from aworld.self_evolve.measurement import (
     MeasurementSummary,
 )
 from aworld.self_evolve.types import EvaluationSummary, GateResult
+from aworld.self_evolve.feedback_history import _reported_judge_gate_splits
+from aworld.self_evolve.repair_selection import with_repair_selection
 
 
 MeasurementMaterializer = Callable[..., MeasurementSummary]
@@ -281,6 +283,13 @@ def finalize_candidate_evaluation(
         held_out_summary=execution.held_out_summary,
         failed_gates=failed_gates,
     )
+    summaries = {split: summary for split, summary in (("validation", execution.candidate_summary), ("held_out", execution.held_out_summary)) if summary is not None}
+    gate_splits = _reported_judge_gate_splits(
+        {"gate_results": [{"gate_name": gate.gate_name, "details": gate.details} for gate in gate_results]},
+        metrics_by_split={split: summary.metrics for split, summary in summaries.items()},
+    )
+    feedback = with_repair_selection(feedback, candidate=evaluation.candidate, summaries=summaries,
+        split_gates={split: [gate_results[index] for index, origin in gate_splits.items() if origin == split] for split in summaries})
     state = iteration_state(
         candidate=evaluation.candidate,
         baseline_summary=execution.baseline_summary,

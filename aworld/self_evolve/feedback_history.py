@@ -16,6 +16,7 @@ from aworld.self_evolve.sanitization import (
     sanitize_text,
 )
 from aworld.self_evolve.regression_feedback import independent_regression_for_gate, independent_regression_repair_gates
+from aworld.self_evolve.repair_selection import selection_candidate_from_payload, with_repair_selection
 from aworld.self_evolve.types import EvaluationSummary, GateResult, to_json_dict
 from aworld.skills.structure_types import skill_structural_edit_intent_from_dict
 
@@ -391,7 +392,16 @@ def _repair_feedback_from_selected_candidate(
         feedback.append(EvaluationSummary(
             variant_id=candidate_id, metrics=metrics, dataset_split=split,
         ))
-    return tuple(feedback)
+    source = selection_candidate_from_payload(_stored_repair_candidate_payload(report_path=report_path, candidate_id=candidate_id))
+    if source is None:
+        return tuple(feedback)
+    return with_repair_selection(feedback, candidate=source,
+        summaries={split: EvaluationSummary(candidate_id, metrics, split) for split, metrics in metrics_by_split.items()},
+        split_gates={split: [GateResult(
+            gate_name=str(raw_gates[index].get("gate_name") or ""), passed=raw_gates[index].get("passed") is True,
+            reason=str(raw_gates[index].get("reason") or ""), details=raw_gates[index].get("details"),
+        ) for index, origin in gate_splits.items() if origin == split]
+                     for split in metrics_by_split})
 
 
 def _selected_candidate_judge_metrics(
@@ -668,7 +678,7 @@ def _repair_feedback_from_screening_report(
     return tuple(feedback)
 
 
-def _stored_repair_candidate_package(
+def _stored_repair_candidate_payload(
     *,
     report_path: Path,
     candidate_id: str,
@@ -693,6 +703,15 @@ def _stored_repair_candidate_package(
     if payload is None:
         return None
     if payload.get("candidate_id") != candidate_id:
+        return None
+    return payload
+
+
+def _stored_repair_candidate_package(
+    *, report_path: Path, candidate_id: str,
+) -> Mapping[str, object] | None:
+    payload = _stored_repair_candidate_payload(report_path=report_path, candidate_id=candidate_id)
+    if payload is None:
         return None
     raw_files = payload.get("files")
     if not isinstance(raw_files, list):
