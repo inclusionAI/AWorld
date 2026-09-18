@@ -28,6 +28,10 @@ _SHARED_PIPELINES: dict[str, Any] = {}
 _SHARED_PIPELINES_LOCK = threading.Lock()
 
 
+class PaddleOcrModelAssetsError(RuntimeError):
+    """A local pipeline model could not be acquired from the model hosts."""
+
+
 @dataclass(slots=True)
 class PaddleOcrPdfResult:
     """Normalized output of PaddleOCR-VL PDF parsing."""
@@ -274,7 +278,25 @@ class PaddleOcrPdfProvider:
         with _SHARED_PIPELINES_LOCK:
             self._pipeline = _SHARED_PIPELINES.get(cache_key)
             if self._pipeline is None:
-                self._pipeline = PaddleOCRVL(**kwargs)
+                try:
+                    self._pipeline = PaddleOCRVL(**kwargs)
+                except Exception as exc:
+                    if str(exc).strip() != (
+                        "No available model hosting platforms detected. "
+                        "Please check your network connection."
+                    ):
+                        raise
+                    raise PaddleOcrModelAssetsError(
+                        "PaddleOCR pipeline initialization could not find a required "
+                        "model in its local cache, and its model-weight download "
+                        "hosts are unavailable. Provision the enabled local models "
+                        "in the runtime image/cache. For layout detection, set "
+                        "FILEX_PADDLE_OCR_LAYOUT_DETECTION_MODEL_DIR to the installed "
+                        "layout model directory and make it visible in the task "
+                        "container. This error is about model-weight downloads; it "
+                        "does not establish that the configured VLM inference API "
+                        "is unavailable. Original error: " + str(exc)
+                    ) from exc
                 _SHARED_PIPELINES[cache_key] = self._pipeline
         return self._pipeline
 

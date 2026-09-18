@@ -113,6 +113,30 @@ A version 2 `result.json` records the layout format, source hash, all three outp
 hashes, and the unmodified FileX response. The task's requested `document.md` and
 `layout.json` are the submission artifacts; the other files retain provenance.
 
+Keep the exported `layout.json` structure. Each `items[].bbox` is a box object;
+each optional `items[].layout_segments[]` entry is itself a box object with
+`x`, `y`, `w`, `h`, `label`, and optional `confidence` directly on the entry:
+
+```json
+{
+  "type": "text",
+  "md": "Section heading",
+  "bbox": {"x": 10, "y": 20, "w": 180, "h": 24, "label": "section-header"},
+  "layout_segments": [
+    {"x": 10, "y": 20, "w": 180, "h": 24, "label": "section-header"}
+  ]
+}
+```
+
+Do not wrap a segment in another `bbox` object. When a valid item has only its
+single `bbox`, `layout_segments` may be omitted. Before finishing, check every
+page and every item/segment, not just whether JSON loads: page dimensions must
+be positive, coordinates must be finite numbers, `x`/`y` must be nonnegative,
+`w`/`h` must be positive, and boxes must stay within their page. Preserve the
+actual source geometry and Canonical17 labels. If you use another parser or
+edit the artifacts, repeat these checks; a well-formed JSON file alone does
+not establish that the layout follows the required schema.
+
 ParseOutput export requires a provider that emits real layout geometry. For
 PNG, JPG/JPEG, WebP, GIF, and BMP inputs with `--artifacts-dir` and
 `--layout-format parse-output`, the wrapper selects `paddle_ocr` when no
@@ -149,6 +173,15 @@ python3 /skills/filex/scripts/filex.py parse \
 Available providers depend on the file type and image configuration. They include Paddle OCR, LiteParse, PyPDF+VLM, native Office/text/table providers, image VLM, and local Whisper. Let FileX select the default unless the task requires a specific capability.
 
 For provider credentials or complex configuration, create a protected JSON file in the workspace and pass `--env-file`. Put `filex_parse_provider` in that file when selecting a provider. Do not combine `--provider` with `--env-file`.
+
+If PaddleOCR reports `No available model hosting platforms detected`, it was
+trying to acquire a missing local model from a model-weight download host.
+This does not show that the Agent model or configured VLM inference API is
+unreachable. Preserve the error and check whether the required layout model
+is installed and visible at `FILEX_PADDLE_OCR_LAYOUT_DETECTION_MODEL_DIR`.
+Operators must supply missing model assets in the image or cache; bypassing a
+host connectivity check does not install those assets. Do not claim successful
+parsing or invent replacement geometry when the parser failed.
 
 ## Parse a URL
 

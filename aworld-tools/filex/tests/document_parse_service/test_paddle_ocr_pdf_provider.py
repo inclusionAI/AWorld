@@ -6,6 +6,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from types import ModuleType
 
+import pytest
+
 
 def _load_provider_module():
     services_dir = (
@@ -412,6 +414,70 @@ def test_paddle_ocr_pipeline_is_shared_within_worker_process(monkeypatch) -> Non
     second = module.PaddleOcrPdfProvider(env_content={})
     assert first._resolve_pipeline() is second._resolve_pipeline()
     assert len(created) == 1
+
+
+def test_paddle_ocr_missing_model_hosts_explains_local_assets_and_can_retry(
+    monkeypatch,
+) -> None:
+    module = _load_provider_module()
+    original_error = Exception(
+        "No available model hosting platforms detected. "
+        "Please check your network connection."
+    )
+    attempts = []
+
+    class _FakePipeline:
+        def __init__(self, **kwargs):
+            attempts.append(kwargs)
+            if len(attempts) == 1:
+                raise original_error
+
+    paddleocr = ModuleType("paddleocr")
+    paddleocr.PaddleOCRVL = _FakePipeline
+    monkeypatch.setitem(sys.modules, "paddleocr", paddleocr)
+    monkeypatch.delenv("PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK", raising=False)
+    provider = module.PaddleOcrPdfProvider(
+        env_content={
+            "paddle_ocr_vl_rec_api_key": "private-test-key",
+            "paddle_ocr_vl_rec_server_url": "https://private-vlm.example/v1",
+        }
+    )
+
+    with pytest.raises(module.PaddleOcrModelAssetsError) as captured:
+        provider._resolve_pipeline()
+
+    assert captured.value.__cause__ is original_error
+    message = str(captured.value)
+    assert "model-weight download" in message
+    assert "FILEX_PADDLE_OCR_LAYOUT_DETECTION_MODEL_DIR" in message
+    assert "configured VLM inference API" in message
+    assert str(original_error) in message
+    assert "private-test-key" not in message
+    assert "private-vlm.example" not in message
+    assert "PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK" not in module.os.environ
+    assert isinstance(provider._resolve_pipeline(), _FakePipeline)
+    assert len(attempts) == 2
+
+
+def test_paddle_ocr_does_not_reclassify_inference_api_error(monkeypatch) -> None:
+    module = _load_provider_module()
+    original_error = RuntimeError("VLM server rejected API credentials")
+
+    class _FakePipeline:
+        def __init__(self, **_kwargs):
+            raise original_error
+
+    paddleocr = ModuleType("paddleocr")
+    paddleocr.PaddleOCRVL = _FakePipeline
+    monkeypatch.setitem(sys.modules, "paddleocr", paddleocr)
+    provider = module.PaddleOcrPdfProvider(
+        env_content={"paddle_ocr_vl_rec_api_model_name": "failing-api-fixture"}
+    )
+
+    with pytest.raises(RuntimeError) as captured:
+        provider._resolve_pipeline()
+
+    assert captured.value is original_error
 
 
 def test_paddle_ocr_pipeline_maps_concurrency_and_retries_429(monkeypatch) -> None:
