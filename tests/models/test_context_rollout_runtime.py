@@ -366,6 +366,57 @@ async def test_total_budget_recovery_uses_amni_and_preserves_cache_prefix(tmp_pa
 
 
 @pytest.mark.asyncio
+async def test_million_token_default_still_archives_and_restores_completed_history(tmp_path, monkeypatch):
+    import copy
+    from aworld.core.context.runtime_state import TaskRuntimeStateRegistry
+
+    context, checkpoints = _recovery_context(tmp_path, monkeypatch)
+    provider, calls = _azure_without_transport()
+    provider.model_name = "unregistered-deployment-alias"
+    provider.kwargs = {"params": {"max_completion_tokens": 32768}}
+    model = LLMModel(conf=ModelConfig(), custom_provider=provider)
+    model.provider_name = "azure_openai"
+    assert model.resolve_context_window().tokens == 1_000_000
+    assert model.resolve_context_window().source == "fallback"
+    assert model._context_checkpoint_policy == "adaptive"
+    assert model._context_artifact_offload is True
+
+    messages = _long_tool_exchange()
+    messages[2]["tool_calls"][0]["function"]["arguments"] = json.dumps({
+        "content": "archive-data\n" * 350000,
+    })
+    constraint = {"role": "user", "content": "Keep the original input files unchanged."}
+    messages.append(constraint)
+    original = copy.deepcopy(messages)
+    assert estimate_canonical_json_tokens(messages).value > 1_000_000
+    tools = _recovery_tools()
+    _publish_stable_amni_prefix(context, model, messages[0]["content"])
+    await model.acompletion(messages, context=context, tools=tools)
+
+    assert len(calls) == 1
+    assert messages == original
+    sent = provider._test_sent_params[-1]["messages"]
+    assert sent[:2] == original[:2]
+    assert sent[-1] == constraint
+    assert "context-history-" in sent[-2]["content"]
+    record = context.get_llm_calls()[-1]["context_rollout"]
+    assert record["context_window_resolution"]["tokens"] == 1_000_000
+    assert record["budget_recovery"][0]["status"] == "offloaded"
+    assert record["budget_recovery"][0]["tokens_before"] > 1_000_000
+    assert _reserved_output(context) == 32768
+    assert len(checkpoints) == 1
+    artifact = context._workspace.artifacts[0]
+    restored = json.loads(artifact.content.replace("\n", ""))
+    assert restored[0]["tool_calls"] == original[2]["tool_calls"]
+
+    # Durable recovery also prevents the full history being reinserted on resume.
+    context._task_runtime_state_registry = TaskRuntimeStateRegistry()
+    await model.acompletion(messages, context=context, tools=tools)
+    assert provider._test_sent_params[-1]["messages"] == sent
+    assert len(checkpoints) == 1
+
+
+@pytest.mark.asyncio
 async def test_recovery_preserves_pending_calls_and_all_user_constraints(tmp_path, monkeypatch):
     from aworld.core.context.budget_recovery import recover_context_budget
 
@@ -718,7 +769,8 @@ async def test_concurrent_output_reservations_remain_request_local(monkeypatch, 
     assert _reserved_output(low) == 8192
     assert [item["max_completion_tokens"] for item in provider._test_sent_params] == [32768, 8192]
     assert model.context_candidate_policy is shared_policy
-    assert shared_policy.final_policy.input_budget.reserved_output_tokens == 4096
+    # An unset reserve is not a hard floor; the fallback is request-local.
+    assert shared_policy.final_policy.input_budget.reserved_output_tokens == 0
 
 
 def test_output_reservation_larger_than_context_is_blocked_before_provider(monkeypatch):
@@ -759,6 +811,169 @@ async def test_output_reservation_includes_native_provider_default(shape):
     assert len(calls) == 1
     assert calls[-1]["max_tokens"] == 4096
     assert _reserved_output(context) == 4096
+
+
+def _adaptive_window_model(monkeypatch, name, **config):
+    provider, calls = _azure_without_transport()
+
+    def create_provider(model, **kwargs):
+        provider.kwargs = kwargs
+        provider.model_name = kwargs["model_name"]
+        model.provider = provider
+
+    monkeypatch.setattr(LLMModel, "_create_provider", create_provider)
+    candidate_policy = config.pop("candidate_policy", None)
+    compiler = {"checkpoint_policy": "explicit", **config.pop("context_compiler", {})}
+    model = LLMModel(conf=ModelConfig(
+        llm_provider="azure_openai", llm_model_name=name,
+        context_compiler=compiler, **config,
+    ), context_candidate_policy=candidate_policy)
+    return model, provider, calls
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("shape", ["sync", "async", "stream", "astream"])
+async def test_registered_million_window_accepts_more_than_128k_input(monkeypatch, shape):
+    model, provider, calls = _adaptive_window_model(
+        monkeypatch, "gemini-2.5-pro", params={"max_completion_tokens": 32768},
+    )
+    messages = [{"role": "user", "content": "x" * 600000}]
+    assert estimate_canonical_json_tokens(messages).value > 128000
+    context = _output_reservation_context(f"million-window-{shape}")
+    await _invoke_output_reservation_shape(model, shape, messages, context)
+    receipt = context.get_llm_calls()[-1]["context_rollout"]
+    assert calls
+    assert provider._test_sent_params[-1]["messages"] == messages
+    assert receipt["context_window_resolution"]["source"] == "model_registry"
+    assert receipt["final_compile"]["tokens"]["context_limit"]["value"] == 1048576
+    assert _reserved_output(context) == 32768
+    assert model._context_input_budget == 1048576 - 32768 - 256 - 512
+
+
+def test_per_call_model_switch_does_not_inherit_previous_deployment_window(monkeypatch):
+    model, provider, calls = _adaptive_window_model(
+        monkeypatch, "gateway-alias", max_model_len=1000000,
+        params={"max_completion_tokens": 1024},
+    )
+    shared = model.context_candidate_policy
+    blocked = _output_reservation_context("switch-small")
+    with pytest.raises(CandidateRequestNotEnforceable, match="required_context_budget_exceeded"):
+        model.completion(
+            [{"role": "user", "content": "x" * 40000}],
+            model_name="gpt-4", context=blocked,
+        )
+    assert calls == []
+    resolution = blocked.get_llm_calls()[-1]["context_rollout"]["context_window_resolution"]
+    assert resolution["tokens"] == 8192
+    assert resolution["source"] == "model_registry"
+    model.completion(
+        [{"role": "user", "content": "x" * 600000}],
+        context=_output_reservation_context("switch-original"),
+    )
+    assert len(calls) == 1
+    assert provider._test_sent_params[-1]["model"] == "gateway-alias"
+    assert model.context_candidate_policy is shared
+    assert shared.final_policy.input_budget.context_limit == 1000000
+
+
+@pytest.mark.parametrize("params,request_args", [
+    ({"model": "gpt-4", "max_completion_tokens": 1024}, {}),
+    ({"max_completion_tokens": 1024}, {"model_name": "gemini-2.5-pro", "model": "gpt-4"}),
+])
+def test_model_resolution_matches_provider_override_and_inference_profile(monkeypatch, params, request_args):
+    model, provider, calls = _adaptive_window_model(monkeypatch, "gemini-2.5-pro", params=params)
+    import aworld.models.llm as module
+    compile_request = module.compile_context_candidate
+    profiles = []
+
+    def capture(**kwargs):
+        profiles.append(kwargs["compiler_input"].inference_profile)
+        return compile_request(**kwargs)
+
+    monkeypatch.setattr(module, "compile_context_candidate", capture)
+    context = _output_reservation_context("model-override")
+    model.completion([{"role": "user", "content": "go"}], context=context, **request_args)
+    resolution = context.get_llm_calls()[-1]["context_rollout"]["context_window_resolution"]
+    assert provider._test_sent_params[-1]["model"] == profiles[-1].model == resolution["model_name"] == "gpt-4"
+    assert profiles[-1].context_limit == resolution["tokens"] == 8192
+    with pytest.raises(CandidateRequestNotEnforceable, match="required_context_budget_exceeded"):
+        model.completion(
+            [{"role": "user", "content": "x" * 40000}],
+            context=_output_reservation_context("model-override-overflow"), **request_args,
+        )
+    assert len(calls) == 1
+
+
+def test_small_model_with_small_output_does_not_inherit_implicit_4096_floor(monkeypatch):
+    model, provider, calls = _adaptive_window_model(monkeypatch, "llama-2", max_tokens=1024)
+    context = _output_reservation_context("small-window")
+    model.completion([{"role": "user", "content": "go"}], context=context)
+    assert calls
+    assert provider._test_sent_params[-1]["max_tokens"] == 1024
+    assert _reserved_output(context) == 1024
+    assert model._context_input_budget == 4096 - 1024 - 256 - 512
+
+
+@pytest.mark.parametrize("request_args,reserve", [({}, 4096), ({"max_completion_tokens": 1024}, 1024)])
+def test_readonly_budget_without_final_compiler_handles_default_and_small_caps(monkeypatch, request_args, reserve):
+    model, _provider, calls = _adaptive_window_model(
+        monkeypatch, "gateway-alias", context_compiler={"universal_final": False},
+    )
+    budget = model.resolve_request_context_budget(request_args)
+    assert budget.context_limit == 1000000
+    assert budget.reserved_output_tokens == reserve
+    assert budget.available_input_tokens == 1000000 - reserve - 256 - 512
+    assert calls == []
+
+
+def test_explicit_final_policy_controls_initial_hint_and_request_budget(monkeypatch):
+    from aworld.core.context.compiler import ContextInputBudget, FinalCompilePolicy
+    supplied = CandidateCompilePolicy(final_policy=FinalCompilePolicy(
+        compiler_version="test", policy_version="test",
+        input_budget=ContextInputBudget(
+            context_limit=500000, reserved_output_tokens=256,
+            provider_protocol_reserve=256, safety_margin_tokens=512,
+        ),
+    ))
+    model, _provider, calls = _adaptive_window_model(
+        monkeypatch, "gpt-4", candidate_policy=supplied,
+        params={"max_completion_tokens": 32768},
+    )
+    assert model._context_input_budget == 500000 - 32768 - 256 - 512
+    budget = model.resolve_request_context_budget({"model": "other-model", "max_completion_tokens": 1024})
+    assert budget.context_limit == 500000
+    assert budget.reserved_output_tokens == 1024
+    assert model.context_candidate_policy is supplied
+    from dataclasses import replace
+    updated = replace(supplied, final_policy=replace(
+        supplied.final_policy,
+        input_budget=replace(supplied.final_policy.input_budget, context_limit=700000),
+    ))
+    model.configure_context_compiler(mode=model.context_compiler_mode, candidate_policy=updated)
+    assert model._context_input_budget == 700000 - 32768 - 256 - 512
+    assert model.resolve_request_context_budget().context_limit == 700000
+    assert calls == []
+
+
+def test_unknown_sdk_target_does_not_reuse_deployment_provenance(monkeypatch):
+    model, _provider, calls = _adaptive_window_model(monkeypatch, "deployment-alias", max_model_len=1000000)
+    unknown = model.resolve_context_window({"extra_body": {"model": None}})
+    assert unknown.model_name is None
+    assert unknown.source == "fallback"
+    assert model.resolve_context_window().source == "explicit_max_model_len"
+    assert calls == []
+
+
+def test_sdk_output_override_is_rejected_before_provider_when_it_exceeds_window(monkeypatch):
+    model, _provider, calls = _adaptive_window_model(monkeypatch, "deployment-alias", max_model_len=1000000)
+    context = _output_reservation_context("sdk-output-overflow")
+    with pytest.raises(CandidateRequestNotEnforceable, match="required_context_budget_exceeded"):
+        model.completion(
+            [{"role": "user", "content": "go"}], context=context,
+            extra_body={"max_completion_tokens": 1000001},
+        )
+    assert calls == []
+    assert context.get_llm_calls()[-1]["status"] == "blocked_before_provider"
 
 
 def _counters() -> dict[str, int]:

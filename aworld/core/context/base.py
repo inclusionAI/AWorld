@@ -83,6 +83,7 @@ from aworld.core.llm_call_journal import (
     append_llm_call_snapshot,
 )
 from aworld.utils.common import nest_dict_counter, nest_dict_diff
+from aworld.models.context_window import DEFAULT_CONTEXT_WINDOW_TOKENS
 
 if TYPE_CHECKING:
     from aworld.core.task import Task, TaskResponse, TaskStatus, TaskStatusValue
@@ -93,11 +94,11 @@ if TYPE_CHECKING:
 
 @dataclass
 class ContextUsage:
-    total_context_length: int = 128000
+    total_context_length: int = DEFAULT_CONTEXT_WINDOW_TOKENS
     used_context_length: int = 0
 
     def __init__(
-        self, total_context_length: int = 128000, used_context_length: int = 0
+        self, total_context_length: int = DEFAULT_CONTEXT_WINDOW_TOKENS, used_context_length: int = 0
     ):
         self.total_context_length = total_context_length
         self.used_context_length = used_context_length

@@ -54,6 +54,8 @@ from aworld.models.kling_provider import KlingProvider
 from aworld.models.kling_avatar_provider import KlingAvatarProvider
 from aworld.models.volcano_seedance_provider import VolcanoSeedanceProvider
 from aworld.models.model_response import ModelResponse
+from aworld.models.context_window import resolve_model_context_window
+from aworld.models.request_model import effective_request_model_name, effective_request_output_limits
 from aworld.models.usage import build_cache_usage_receipt
 from aworld.core.context.base import Context
 from aworld.core.context.compiler import (
@@ -400,13 +402,34 @@ class LLMModel:
         self._context_checkpoint_policy = context_config_value(
             "checkpoint_policy", "explicit"
         )
-        configured_context_limit = context_config_value("context_limit", None)
-        if configured_context_limit is None:
-            configured_context_limit = conf_value("max_model_len") or 128000
+        self._context_model_name = (
+            kwargs.get("model_name") or conf_value("llm_model_name")
+            or getattr(custom_provider, "model_name", None)
+        )
+        self._context_explicit_limit = context_config_value("context_limit", None)
+        self._context_policy_version = context_config_value("policy_version", "v1")
+        self._context_explicit_model_len = conf_value("max_model_len")
+        self._context_window_resolution = resolve_model_context_window(
+            self._context_model_name,
+            context_limit=self._context_explicit_limit,
+            max_model_len=self._context_explicit_model_len,
+        )
+        configured_context_limit = self._context_window_resolution.tokens
         self._configured_max_tokens = conf_value("max_tokens")
+        self._context_provider_protocol_reserve = int(context_config_value("provider_protocol_reserve", 256))
+        self._context_safety_margin_tokens = int(context_config_value("safety_margin_tokens", 512))
+        self._context_output_reserve_explicit = (
+            "reserved_output_tokens" in runtime_config
+            if isinstance(runtime_config, dict)
+            else "reserved_output_tokens" in getattr(runtime_config, "model_fields_set", set())
+        )
+        self._context_default_output_reserve = int(context_config_value("reserved_output_tokens", 4096))
+        configured_params = conf_value("params") or {}
+        configured_completion_tokens = configured_params.get("max_completion_tokens")
         reserved_output_tokens = max(
             int(context_config_value("reserved_output_tokens", 4096)),
             int(self._configured_max_tokens or 0),
+            int(configured_completion_tokens or 0),
         )
         self._context_reserved_output_tokens = reserved_output_tokens
         self._context_input_budget = max(
@@ -419,22 +442,21 @@ class LLMModel:
         self._context_completion_mode = context_config_value(
             "completion_contract", "off"
         )
-        if candidate_policy is None:
+        automatic_context_policy = candidate_policy is None
+        if automatic_context_policy:
             final_policy = None
             if context_config_value("universal_final", True):
-                configured_context_limit = context_config_value("context_limit", None)
-                if configured_context_limit is None:
-                    configured_context_limit = conf_value("max_model_len") or 128000
                 final_policy = FinalCompilePolicy(
                     compiler_version=compiler_version,
                     policy_version=context_config_value("policy_version", "v1"),
                     input_budget=ContextInputBudget(
                         context_limit=configured_context_limit,
-                        # The shared policy holds the explicit minimum. The
-                        # effective output cap is resolved for each request so
-                        # a smaller override can reclaim input capacity.
-                        reserved_output_tokens=int(
-                            context_config_value("reserved_output_tokens", 4096)
+                        # Only an explicitly declared reserve is a hard floor.
+                        # The default is used when the request has no output
+                        # cap, allowing small models to use smaller outputs.
+                        reserved_output_tokens=(
+                            self._context_default_output_reserve
+                            if self._context_output_reserve_explicit else 0
                         ),
                         provider_protocol_reserve=context_config_value(
                             "provider_protocol_reserve", 256
@@ -456,6 +478,7 @@ class LLMModel:
             mode=resolved_compiler_mode,
             candidate_policy=candidate_policy,
         )
+        self._adaptive_context_policy = candidate_policy if automatic_context_policy else None
 
         self.llm_response_parser: ModelResponseParser = conf_value(
             "llm_response_parser"
@@ -469,6 +492,7 @@ class LLMModel:
                 )
             self.provider_name = "custom"
             self.provider = custom_provider
+            self._initialize_context_capacity()
             return
         # Get basic parameters
         base_url = kwargs.get("base_url") or (conf.llm_base_url if conf else None)
@@ -509,6 +533,34 @@ class LLMModel:
 
         # Create model provider based on provider_name
         self._create_provider(**kwargs)
+        self._initialize_context_capacity()
+
+    def _initialize_context_capacity(self) -> None:
+        """Bind default capacity and pressure hints after provider routing."""
+        self._context_model_name = effective_request_model_name(self.provider)
+        policy = self._context_candidate_policy
+        window = self._context_window_for_request(policy, self._context_model_name)
+        self._context_window_resolution = window
+        if policy.final_policy is None:
+            return
+        if policy is self._adaptive_context_policy:
+            policy = replace(policy, final_policy=replace(
+                policy.final_policy,
+                input_budget=replace(policy.final_policy.input_budget, context_limit=window.tokens),
+            ))
+            self._context_candidate_policy = self._adaptive_context_policy = policy
+        try:
+            active = self._context_policy_for_request(
+                policy=policy, max_tokens=self._configured_max_tokens,
+                request_kwargs={}, context_limit=window.tokens,
+            ).final_policy.input_budget
+            self._context_reserved_output_tokens = active.reserved_output_tokens
+            self._context_input_budget = active.available_input_tokens
+        except RequiredContextBudgetExceeded as exc:
+            # The actual call records a typed rejection. No history compaction
+            # can make an output cap larger than the model window fit.
+            self._context_reserved_output_tokens = exc.required_tokens
+            self._context_input_budget = 0
 
     def _transfer_conf_to_args(
         self, conf: Union[ConfigDict, AgentConfig] = None
@@ -566,6 +618,8 @@ class LLMModel:
             )
         self._context_compiler_mode = resolved_mode
         self._context_candidate_policy = candidate_policy
+        if hasattr(self, "provider") and hasattr(self, "_adaptive_context_policy"):
+            self._initialize_context_capacity()
 
     @property
     def context_compiler_mode(self) -> ContextCompilerMode:
@@ -1146,12 +1200,76 @@ class LLMModel:
                 "model_boundary_finalize_failed"
             ) from None
 
+    def _context_window_for_request(self, policy, model_name):
+        configured_model = getattr(self, "_context_model_name", None)
+        if policy is not getattr(self, "_adaptive_context_policy", None) and policy.final_policy is not None:
+            return resolve_model_context_window(
+                model_name,
+                context_limit=policy.final_policy.input_budget.context_limit,
+            )
+        selected_model = model_name
+        # A deployment window belongs to its configured model. An explicit
+        # per-call switch must resolve the new model instead of inheriting it.
+        model_changed = model_name != configured_model
+        deployment_window_applies = (
+            not model_changed and isinstance(model_name, str) and bool(model_name.strip())
+        )
+        return resolve_model_context_window(
+            selected_model,
+            context_limit=getattr(self, "_context_explicit_limit", None),
+            max_model_len=(
+                getattr(self, "_context_explicit_model_len", None)
+                if deployment_window_applies else None
+            ),
+        )
+
+    def resolve_context_window(self, request_kwargs: dict[str, Any] | None = None):
+        """Resolve a request's window without invoking the model service."""
+        return self._context_window_for_request(
+            self._context_candidate_policy,
+            effective_request_model_name(self.provider, request_kwargs),
+        )
+
+    def resolve_request_context_budget(
+        self, request_kwargs: dict[str, Any] | None = None, *, max_tokens: int | None = None,
+    ) -> ContextInputBudget:
+        """Return the immutable capacity used for this request, without I/O."""
+        routing = dict(request_kwargs or {})
+        requested_tokens = routing.pop("max_tokens", max_tokens)
+        if requested_tokens is None:
+            requested_tokens = self._configured_max_tokens
+        window = self.resolve_context_window(routing)
+        policy = self._context_candidate_policy
+        use_default_reserve = None
+        if policy.final_policy is None:
+            use_default_reserve = not self._context_output_reserve_explicit
+            policy = CandidateCompilePolicy(final_policy=FinalCompilePolicy(
+                compiler_version=policy.compiler_version,
+                policy_version=self._context_policy_version,
+                input_budget=ContextInputBudget(
+                    context_limit=window.tokens,
+                    reserved_output_tokens=(
+                        self._context_default_output_reserve
+                        if self._context_output_reserve_explicit else 0
+                    ),
+                    provider_protocol_reserve=self._context_provider_protocol_reserve,
+                    safety_margin_tokens=self._context_safety_margin_tokens,
+                ),
+            ))
+        return self._context_policy_for_request(
+            policy=policy, max_tokens=requested_tokens,
+            request_kwargs=routing, context_limit=window.tokens,
+            use_default_output_reserve=use_default_reserve,
+        ).final_policy.input_budget
+
     def _context_policy_for_request(
         self,
         *,
         policy: CandidateCompilePolicy,
         max_tokens: int | None,
         request_kwargs: dict[str, Any] | None,
+        context_limit: int | None = None,
+        use_default_output_reserve: bool | None = None,
     ) -> CandidateCompilePolicy:
         """Reserve the output limits actually passed by the provider adapter.
 
@@ -1160,34 +1278,28 @@ class LLMModel:
         """
         if policy.final_policy is None:
             return policy
-        output_limits = [max_tokens]
-        if isinstance(self.provider, OpenAIProvider):
-            # get_openai_params merges configured params, then call kwargs,
-            # then the named max_tokens argument (including None). Thus a
-            # configured params.max_tokens is not an effective fallback, and
-            # an explicit max_completion_tokens=None clears its configured cap.
-            params = self.provider.kwargs.get("params", {})
-            output_limits.append(
-                (request_kwargs or {}).get(
-                    "max_completion_tokens", params.get("max_completion_tokens")
-                )
-            )
-        elif isinstance(self.provider, AnthropicProvider):
-            # The native adapter supplies this default even when the caller
-            # lowers the compiler's explicit reservation minimum.
-            output_limits = [max_tokens or 4096]
+        output_limits = effective_request_output_limits(
+            self.provider, max_tokens=max_tokens, request_kwargs=request_kwargs,
+        )
         budget = policy.final_policy.input_budget
+        context_limit = budget.context_limit if context_limit is None else context_limit
         reserved_output = budget.reserved_output_tokens
+        has_output_limit = False
         for value in output_limits:
             if value is None:
                 continue
             if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
                 raise ValueError("request output token limits must be positive integers")
+            has_output_limit = True
             reserved_output = max(reserved_output, value)
-        if reserved_output == budget.reserved_output_tokens:
-            return policy
+        if use_default_output_reserve is None:
+            use_default_output_reserve = (
+                policy is self._adaptive_context_policy and not self._context_output_reserve_explicit
+            )
+        if not has_output_limit and use_default_output_reserve:
+            reserved_output = max(reserved_output, self._context_default_output_reserve)
         available_output = (
-            budget.context_limit
+            context_limit
             - budget.provider_protocol_reserve
             - budget.safety_margin_tokens
         )
@@ -1196,11 +1308,17 @@ class LLMModel:
                 required_tokens=reserved_output,
                 available_tokens=available_output,
             )
+        if (reserved_output == budget.reserved_output_tokens
+                and context_limit == budget.context_limit):
+            return policy
         return replace(
             policy,
             final_policy=replace(
                 policy.final_policy,
-                input_budget=replace(budget, reserved_output_tokens=reserved_output),
+                input_budget=replace(
+                    budget, context_limit=context_limit,
+                    reserved_output_tokens=reserved_output,
+                ),
             ),
         )
 
@@ -1547,12 +1665,34 @@ class LLMModel:
 
         output_budget_resolved = False
         try:
+            routing_kwargs = dict(request_kwargs or {})
+            if model_name is not None:
+                routing_kwargs.setdefault("model_name", model_name)
+            effective_model = effective_request_model_name(self.provider, routing_kwargs)
+            window = (
+                self._context_window_for_request(policy, effective_model)
+                if policy.final_policy is not None else None
+            )
+            if window is not None:
+                base_evidence["context_window_resolution"] = {
+                    "tokens": window.tokens, "source": window.source,
+                    "model_name": window.model_name, "matched_model": window.matched_model,
+                }
             policy = self._context_policy_for_request(
                 policy=policy,
                 max_tokens=max_tokens,
                 request_kwargs=request_kwargs,
+                context_limit=window.tokens if window is not None else None,
             )
             output_budget_resolved = True
+            if window is not None:
+                compiler_input = replace(
+                    compiler_input,
+                    inference_profile=replace(
+                        compiler_input.inference_profile,
+                        model=effective_model or "unknown-model", context_limit=window.tokens,
+                    ),
+                )
             candidate = compile_context_candidate(
                 compiler_input=compiler_input,
                 policy=policy,
@@ -1847,7 +1987,11 @@ class LLMModel:
             "provider_request_id": None,
             "task_id": context.task_id,
             "agent_id": agent_id,
-            "model": model_name or getattr(self.provider, "model_name", None),
+            "model": (
+                context_rollout["context_window_resolution"]["model_name"]
+                if isinstance((context_rollout or {}).get("context_window_resolution"), dict)
+                else model_name or getattr(self.provider, "model_name", None)
+            ),
             "provider_name": self.provider_name,
             "status": "in_progress",
             "started_at": started_at,

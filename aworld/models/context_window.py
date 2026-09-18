@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-DEFAULT_CONTEXT_WINDOW_TOKENS = 128000
+DEFAULT_CONTEXT_WINDOW_TOKENS = 1_000_000
 # Existing model registrations are retained, with exact matching. GPT-4o/turbo
 # use decimal 128000; GPT-4.1 uses the provider's documented 1,047,576 tokens:
 # https://developers.openai.com/api/docs/models/gpt-4.1
