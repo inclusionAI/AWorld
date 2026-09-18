@@ -216,6 +216,33 @@ def test_paddle_ocr_preserves_page_element_geometry() -> None:
     }
 
 
+@pytest.mark.parametrize(
+    ("env_content", "runtime_value", "expected"),
+    [
+        ({}, None, True),
+        ({"paddle_ocr_use_chart_recognition": True}, None, True),
+        ({"paddle_ocr_use_chart_recognition": False}, None, False),
+        ({}, "false", False),
+        ({}, "true", True),
+        ({"pdf_paddle_ocr_use_chart_recognition": False}, "true", False),
+        ({"paddle_ocr_use_chart_recognition": True}, "false", True),
+    ],
+)
+def test_chart_recognition_defaults_and_explicit_overrides(
+    monkeypatch, env_content, runtime_value, expected
+) -> None:
+    module = _load_provider_module()
+    setting = "FILEX_PADDLE_OCR_USE_CHART_RECOGNITION"
+    if runtime_value is None:
+        monkeypatch.delenv(setting, raising=False)
+    else:
+        monkeypatch.setenv(setting, runtime_value)
+    provider = module.PaddleOcrPdfProvider(env_content=env_content, pipeline=object())
+
+    assert provider._pipeline_kwargs()["use_chart_recognition"] is expected
+    assert provider._predict_kwargs()["use_chart_recognition"] is expected
+
+
 def test_paddle_ocr_metrics_report_effective_gateway_model() -> None:
     module = _load_provider_module()
     provider = module.PaddleOcrPdfProvider(
@@ -553,6 +580,7 @@ def test_chart_block_uses_vlm_recognition_and_survives_markdown_and_ir(
     """Exercise FileX through PaddleOCR-VL's real chart routing/formatting seam."""
 
     monkeypatch.setenv("PADDLE_PDX_CACHE_HOME", str(tmp_path / "paddlex-cache"))
+    monkeypatch.delenv("FILEX_PADDLE_OCR_USE_CHART_RECOGNITION", raising=False)
     from paddlex.inference.pipelines.paddleocr_vl.pipeline import (
         _PaddleOCRVLPipeline,
     )
@@ -585,7 +613,7 @@ def test_chart_block_uses_vlm_recognition_and_survives_markdown_and_ir(
                     [],
                     {
                         "image_labels": [],
-                        "use_chart_recognition": True,
+                        "use_chart_recognition": kwargs["use_chart_recognition"],
                         "use_seal_recognition": False,
                         "ocr_min_pixels": 1,
                         "ocr_max_pixels": 1000,
@@ -639,7 +667,7 @@ def test_chart_block_uses_vlm_recognition_and_survives_markdown_and_ir(
 
     pipeline = _ChartPipeline()
     provider = module.PaddleOcrPdfProvider(
-        env_content={"paddle_ocr_use_chart_recognition": True},
+        env_content={},
         pipeline=pipeline,
     )
 

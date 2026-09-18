@@ -322,6 +322,9 @@ class PaddleOcrPdfProvider:
     def _pipeline_kwargs(self) -> dict[str, Any]:
         kwargs: dict[str, Any] = {
             "vl_rec_backend": self._str_option("vl_rec_backend", "vllm-server"),
+            # Match the service path: recognize chart data instead of emitting
+            # only a cropped image under PaddleOCR-VL's disabled default.
+            "use_chart_recognition": True,
         }
         for key in (
             "pipeline_version",
@@ -428,7 +431,7 @@ class PaddleOcrPdfProvider:
         return min(max_ms, base_ms * (2 ** max(0, retry_count - 1)))
 
     def _predict_kwargs(self) -> dict[str, Any]:
-        kwargs: dict[str, Any] = {}
+        kwargs: dict[str, Any] = {"use_chart_recognition": True}
         for key in (
             "use_doc_orientation_classify",
             "use_doc_unwarping",

@@ -36,6 +36,13 @@ FileX writes under `~/workspace` by default. Use `FILEX_WORKSPACE_ROOT` to selec
 another workspace. Inputs must remain inside that workspace when using
 `--workspace-path`.
 
+The PaddleOCR provider enables chart recognition by default in both CLI and
+service use, so detected charts are sent to the configured VLM for their data
+instead of appearing only as cropped images. Set
+`FILEX_PADDLE_OCR_USE_CHART_RECOGNITION=false` to disable it, or pass
+`{"paddle_ocr_use_chart_recognition": false}` in the request's `env_content`.
+An explicit request setting takes precedence over the environment.
+
 ### AWorld all-in-one container
 
 Build from the AWorld repository root:
