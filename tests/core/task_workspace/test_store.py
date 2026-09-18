@@ -14,7 +14,7 @@ import sys
 import pytest
 
 from aworld.core.task_workspace.store import (
-    StoreConflictError, StoreIntegrityError, StorePolicyError, TaskWorkspaceStore,
+    StoreConflictError, StoreIntegrityError, StorePolicyError, TaskWorkspaceStore, assess_policy,
 )
 from aworld.core.task_workspace.store_io import canonical, fingerprint
 
@@ -478,3 +478,52 @@ def test_regular_file_replaced_by_fifo_during_open_cannot_block_snapshot(store, 
     monkeypatch.setattr(store_io, "identity", identity)
     with pytest.raises(StoreConflictError):
         store_io.capture(source, store.blobs, 1024)
+
+
+def test_shared_policy_assessment_gates_final_bytes_even_without_promotion():
+    actual = {"success": True, "checks": [{"id": "check", "success": True}],
+              "metrics": {"check.error": 2}, "execution_environment_sha256": "actual-env",
+              "bindings": {"check_definitions_sha256": "actual-checks"}}
+    policy = {"mandatory_checks": ["check"], "execution_environment_sha256": "expected-env",
+              "check_definitions_sha256": "expected-checks", "hard_constraints": [
+                  {"artifact": "output", "max_bytes": 4},
+                  {"metric": "check.error", "op": "<=", "value": 0}]}
+    violations = assess_policy({"output": {"state": "regular", "size": 5}}, actual, policy)
+    assert len(violations) == 4
+    valid = {**policy, "execution_environment_sha256": "actual-env",
+             "check_definitions_sha256": "actual-checks", "hard_constraints": []}
+    assert assess_policy({}, actual, valid) == []
+    assert assess_policy({}, actual, valid, require_objective=True) == ["missing_declared_objective"]
+
+
+def test_hot_sqlite_rollback_journal_recovers_committed_input_without_touching_original(store):
+    database = store.workspace / "records.data"
+    with sqlite3.connect(database) as connection:
+        connection.execute("PRAGMA journal_mode=DELETE")
+        connection.execute("CREATE TABLE sample(value TEXT)")
+        connection.executemany("INSERT INTO sample VALUES (?)", [("a" * 3000,)] * 100)
+    connection.close()
+    script = """import os,sqlite3,sys
+db=sqlite3.connect(sys.argv[1]);db.execute('PRAGMA cache_size=1')
+db.execute('BEGIN IMMEDIATE');db.execute('UPDATE sample SET value=?',('b'*3000,))
+os._exit(37)
+"""
+    result = subprocess.run([sys.executable, "-c", script, str(database)], check=False)
+    assert result.returncode == 37
+    journal = Path(str(database) + "-journal")
+    assert journal.is_file() and b"b" * 100 in database.read_bytes()
+    original_hash = hashlib.sha256(database.read_bytes()).hexdigest()
+    snapshot = store.protect_inputs([database])
+    assert str(journal) in snapshot["files"]
+    assert hashlib.sha256(database.read_bytes()).hexdigest() == original_hash
+    assert journal.is_file()
+    copied = store.working_copy(snapshot["snapshot_id"], store.workspace / "recovered")
+    with sqlite3.connect(copied["files"][str(database)]) as connection:
+        assert connection.execute("SELECT COUNT(*) FROM sample WHERE value=?", ("a" * 3000,)).fetchone() == (100,)
+    connection.close()
+    shutil.rmtree(store.workspace)
+    store.workspace.mkdir()
+    store.restore_inputs(snapshot["snapshot_id"])
+    with sqlite3.connect(database) as connection:
+        assert connection.execute("SELECT COUNT(*) FROM sample WHERE value=?", ("a" * 3000,)).fetchone() == (100,)
+    connection.close()

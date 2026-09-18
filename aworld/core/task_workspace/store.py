@@ -33,6 +33,65 @@ class StorePolicyError(StoreError):
     pass
 
 
+def assess_policy(files_metadata, validation, policy, require_objective=False):
+    """Assess caller policy using actual validator data, never authenticate it.
+
+    The session/store must obtain ``validation`` by executing its trusted
+    validator. This shared rule evaluator is also used for final artifacts that
+    have not passed through candidate promotion.
+    """
+    if not isinstance(policy, dict):
+        raise StorePolicyError("a caller-declared policy is required")
+    mandatory = policy.get("mandatory_checks")
+    if not isinstance(mandatory, list) or any(not isinstance(x, str) or not x for x in mandatory):
+        raise StorePolicyError("mandatory checks must be explicit check identities")
+    problems = []
+    checks = {c["id"]: c for c in validation.get("checks", [])}
+    for identifier in mandatory:
+        if checks.get(identifier, {}).get("success") is not True:
+            problems.append("mandatory_check:" + identifier)
+    if validation.get("success") is not True:
+        problems.append("validation_failed")
+    for key, actual in (
+        ("execution_environment_sha256", validation.get("execution_environment_sha256")),
+        ("check_definitions_sha256", (validation.get("bindings") or {}).get("check_definitions_sha256")),
+    ):
+        if key in policy and policy[key] != actual:
+            problems.append(key + ":mismatch")
+    metrics = validation.get("metrics") or {}
+    finite = lambda v: type(v) in (int, float) and math.isfinite(v)
+    objective = policy.get("objective")
+    if require_objective and objective is None:
+        problems.append("missing_declared_objective")
+    if objective is not None:
+        if (not isinstance(objective, dict) or not isinstance(objective.get("metric"), str)
+                or objective.get("direction") not in {"minimize", "maximize"}):
+            raise StorePolicyError("invalid declared objective")
+        if not finite(metrics.get(objective["metric"])):
+            problems.append("missing_objective:" + objective["metric"])
+    comparisons = {"<=": lambda a, b: a <= b, "<": lambda a, b: a < b,
+                   ">=": lambda a, b: a >= b, ">": lambda a, b: a > b,
+                   "==": lambda a, b: a == b}
+    for constraint in policy.get("hard_constraints", []):
+        if "artifact" in constraint:
+            entry = files_metadata.get(constraint["artifact"])
+            minimum, maximum = constraint.get("min_bytes", 0), constraint.get("max_bytes")
+            if (type(minimum) is not int or minimum < 0
+                    or (maximum is not None and (type(maximum) is not int or maximum < minimum))):
+                raise StorePolicyError("invalid artifact byte constraint")
+            ok = (isinstance(entry, dict) and entry.get("state", "regular") == "regular"
+                  and type(entry.get("size")) is int and entry["size"] >= minimum
+                  and (maximum is None or entry["size"] <= maximum))
+        else:
+            op, metric, threshold = constraint.get("op"), constraint.get("metric"), constraint.get("value")
+            if op not in comparisons or not finite(threshold):
+                raise StorePolicyError("invalid hard metric constraint")
+            ok = finite(metrics.get(metric)) and comparisons[op](metrics[metric], threshold)
+        if not ok:
+            problems.append("hard_constraint:" + fingerprint(constraint))
+    return problems
+
+
 class TaskWorkspaceStore:
     def __init__(self, workspace, scope: Mapping, *, root=None, declared_roots=None,
                  validator=None, policy=None, max_bytes=1024 * 1024 * 1024,
@@ -361,39 +420,13 @@ class TaskWorkspaceStore:
         return value
 
     def _eligibility(self, candidate, validation, policy):
-        problems = []
-        checks = {c["id"]: c for c in validation["checks"]}
-        for identifier in policy["mandatory_checks"]:
-            if checks.get(identifier, {}).get("success") is not True:
-                problems.append("mandatory_check:" + identifier)
-        if validation.get("success") is not True:
-            problems.append("validation_failed")
+        problems = assess_policy(candidate["files"], validation, policy)
         snapshot = self._input(candidate["input_snapshot_id"])
         for path in snapshot["immutable_paths"]:
             try:
                 verify_blob(Path(path), snapshot["files"][path])
             except (OSError, StoreError):
                 problems.append("immutable_input_changed:" + path)
-        metrics = validation["metrics"]
-        objective = (policy.get("objective") or {}).get("metric")
-        if objective and objective not in metrics:
-            problems.append("missing_objective:" + objective)
-        comparisons = {"<=": lambda a, b: a <= b, "<": lambda a, b: a < b,
-                       ">=": lambda a, b: a >= b, ">": lambda a, b: a > b,
-                       "==": lambda a, b: a == b}
-        for constraint in policy.get("hard_constraints", []):
-            if "artifact" in constraint:
-                entry = candidate["files"].get(constraint["artifact"])
-                ok = entry is not None
-                if entry is not None:
-                    ok = constraint.get("min_bytes", 0) <= entry["size"] <= constraint.get("max_bytes", self.max_bytes)
-            else:
-                op, metric = constraint.get("op"), constraint.get("metric")
-                if op not in comparisons or not isinstance(constraint.get("value"), (int, float)):
-                    raise StorePolicyError("invalid hard metric constraint")
-                ok = metric in metrics and comparisons[op](metrics[metric], constraint["value"])
-            if not ok:
-                problems.append("hard_constraint:" + fingerprint(constraint))
         return problems
 
     async def validate_candidate(self, candidate_id, checks, policy=None):

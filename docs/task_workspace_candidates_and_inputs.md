@@ -33,12 +33,14 @@ overwrites newer or damaged files: restore missing files or create a new
 
 Input grouping is format-based and pluggable through `InputGroupStrategy`.
 The SQLite strategy recognizes the database header, captures existing DB/WAL/SHM
-members with before/after identity checks, and rejects concurrent changes. It
+members and rollback `-journal` files with before/after identity checks, and rejects concurrent changes. It
 validates and backs up the captured group in a private directory to produce a
 committed working copy. It never opens the original database through SQLite.
 Current-epoch WAL header/frame checksums are checked before SQLite recovery, so
 SQLite cannot silently discard corrupted frames and advertise an incomplete
 dataset as a valid capture.
+Hot rollback journals are copied with their database and recovered only in the
+private copy, preserving committed values after interrupted DELETE-mode writes.
 Writers must be quiescent during capture; this is not a live transactional backup
 service. Raw sidecar bytes remain recoverable separately from the normalized view.
 
@@ -50,6 +52,10 @@ definitions/policy hashes. Model-provided pass/metric objects are not accepted.
 Executable/checker paths returned by the actual validator are rehashed before
 receipt registration, promotion and final readback. Caller-bound execution
 environment hashes are checked when present in the policy.
+`assess_policy(files_metadata, validation, policy, require_objective=False)` is
+the shared mandatory-check, hard-constraint, definition/environment-hash rule
+evaluator used by both candidate selection and final delivery. Its validation
+argument must come from the actual trusted executor, never model-supplied JSON.
 
 A policy has `mandatory_checks: [id, ...]`, optional `hard_constraints` such as
 `{artifact: "result.json", max_bytes: 1024}` or `{metric: "check.error", op: "<=",

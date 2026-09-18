@@ -52,7 +52,7 @@ class SQLiteGroupStrategy:
             return stream.read(16) == b"SQLite format 3\0"
 
     def members(self, path: Path) -> list[Path]:
-        return [path, *(Path(str(path) + suffix) for suffix in ("-wal", "-shm")
+        return [path, *(Path(str(path) + suffix) for suffix in ("-wal", "-shm", "-journal")
                         if Path(str(path) + suffix).exists()
                         or Path(str(path) + suffix).is_symlink())]
 
