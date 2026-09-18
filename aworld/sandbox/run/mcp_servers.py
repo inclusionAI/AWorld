@@ -1,5 +1,6 @@
 import asyncio
 import json
+import math
 import os
 import re
 import shlex
@@ -821,6 +822,31 @@ class McpServers:
             return False
         return bool(re.match(r"^(?:[A-Za-z]:[\\/]|\\\\)", candidate))
 
+    def _resolve_mcp_timeout(self, tool_identifier: str, parameter: Dict[str, Any]) -> float:
+        """Allow the tool's declared execution time plus MCP transport overhead."""
+        tool_timeout = parameter.get("timeout")
+        if "timeout" not in parameter:
+            for tool in self.tool_list or []:
+                function = tool.get("function", {})
+                if function.get("name") != tool_identifier:
+                    continue
+                schema = function.get("parameters", {})
+                properties = schema.get("properties", {})
+                timeout_schema = properties.get("timeout", {})
+                if isinstance(timeout_schema, dict):
+                    tool_timeout = timeout_schema.get("default")
+                break
+
+        if isinstance(tool_timeout, bool) or not isinstance(tool_timeout, (int, float)):
+            return 120.0
+        try:
+            seconds = float(tool_timeout)
+        except OverflowError:
+            return 120.0
+        if not math.isfinite(seconds) or seconds <= 0:
+            return 120.0
+        return max(seconds + 10, 120.0)
+
     async def call_tool(
             self,
             action_list: List[Dict[str, Any]] = None,
@@ -1089,15 +1115,8 @@ class McpServers:
 
                 sandbox_id = self.sandbox.sandbox_id if self.sandbox is not None else None
 
-                # Extract timeout from tool parameters if available, otherwise use default
-                # Add 10 seconds buffer for MCP communication overhead
-                tool_timeout = parameter.get("timeout", 30)
-                if isinstance(tool_timeout, (int, float)):
-                    mcp_timeout = max(float(tool_timeout) + 10, 120.0)
-                else:
-                    mcp_timeout = 120.0
-
-                logger.debug(f"Tool timeout: {tool_timeout}s, MCP timeout: {mcp_timeout}s")
+                mcp_timeout = self._resolve_mcp_timeout(result_key, parameter)
+                logger.debug(f"Tool: {result_key}, MCP timeout: {mcp_timeout}s")
                 retry_safe = mcp_tool_retry_safe(
                     self.mcp_config,
                     server_name,

@@ -529,6 +529,8 @@ async def run(mcp_servers: list[MCPServer], black_tool_actions: Dict[str, List[s
                                 "description": param_desc,
                                 "type": param_type,
                             }
+                        if "default" in param_info:
+                            properties[param_name]["default"] = param_info["default"]
 
                 openai_function_schema = {
                     "name": f"{server.name}__{tool.name}",
