@@ -64,6 +64,12 @@ Every candidate writes two files:
   with one-based page numbers, pixel dimensions, ordered items, and Canonical17
   labeled pixel `x,y,w,h` boxes. The task instructions include an example.
 
+Each `layout_segments` entry is a flat box with `x`, `y`, `w`, `h`, `label`, and
+`confidence`; it must not wrap those fields inside another `bbox` object. For an
+item with a single box, omit `layout_segments` to use its `bbox` as the segment.
+Validate both the item's `bbox` and every segment before submitting artifacts.
+Malformed geometry errors identify the page, item, segment, and field in the JSON.
+
 No FileX result envelope, provider name, API key, VLM call count, or model identity
 is required. The verifier supplies neutral inference metadata and calls the fixed
 upstream scoring implementation. It preserves the official five-dimensional

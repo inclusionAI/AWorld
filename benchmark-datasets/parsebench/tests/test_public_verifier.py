@@ -11,7 +11,7 @@ import sys
 from pathlib import Path
 
 import pytest
-from parsebench_dataset import verifier
+from parsebench_dataset import package_contract, verifier
 from parsebench_dataset.contracts import (
     DATASET_REVISION,
     GROUND_TRUTH_SCHEMA_VERSION,
@@ -117,6 +117,65 @@ def test_public_artifacts_need_no_result_producer_model_or_vlm_evidence(
         '{"filex":{"metrics":{"model":{"call_count":0}}}}'
     )
     assert verifier._snapshot_artifacts(**arguments) == snapshot
+
+
+@pytest.mark.parametrize("omit_segments", [False, True])
+def test_public_instruction_example_is_accepted_as_a_submission(
+    tmp_path: Path, omit_segments: bool
+) -> None:
+    arguments, _ = _fixture(tmp_path)
+    instruction = package_contract.instruction(
+        source_runtime_path="/workspace/input/document.pdf", page=None
+    ).decode()
+    payload = json.loads(instruction.split("```json\n", 1)[1].split("\n```", 1)[0])
+    item = payload["layout_pages"][0]["items"][0]
+    assert item["layout_segments"] == [item["bbox"]]
+    if omit_segments:
+        item.pop("layout_segments")
+    arguments["layout_path"].write_text(json.dumps(payload))
+
+    snapshot = verifier._snapshot_artifacts(**arguments)
+
+    actual = snapshot.layout["layout_pages"][0]["items"][0]
+    assert actual["layout_segments"] == [actual["bbox"]]
+
+
+def test_nested_segment_bbox_has_an_actionable_error_without_normalization(
+    tmp_path: Path,
+) -> None:
+    arguments, payload = _fixture(tmp_path)
+    item = payload["layout_pages"][0]["items"][0]
+    item["layout_segments"] = [{"bbox": copy.deepcopy(item["bbox"]), "md": "public"}]
+    arguments["layout_path"].write_text(json.dumps(payload))
+    with pytest.raises(verifier.ParseBenchVerificationError) as error:
+        verifier._snapshot_artifacts(**arguments)
+
+    assert error.value.code == "artifact_validation_failed"
+    assert str(error.value) == (
+        "layout_pages[0].items[0].layout_segments[0].x is missing; "
+        "x, y, w, h must be directly on the box object, not nested under bbox"
+    )
+    assert json.loads(arguments["layout_path"].read_text()) == payload
+
+
+@pytest.mark.parametrize("field", ["bbox", "layout_segments"])
+def test_invalid_coordinate_error_locates_the_exact_box(
+    tmp_path: Path, field: str
+) -> None:
+    arguments, payload = _fixture(tmp_path)
+    item = payload["layout_pages"][0]["items"][0]
+    if field == "bbox":
+        item["bbox"]["y"] = -1
+        expected_path = "layout_pages[0].items[0].bbox.y"
+    else:
+        valid = copy.deepcopy(item["bbox"])
+        invalid = {**valid, "y": -1}
+        item["layout_segments"] = [valid, invalid]
+        expected_path = "layout_pages[0].items[0].layout_segments[1].y"
+    arguments["layout_path"].write_text(json.dumps(payload))
+    with pytest.raises(verifier.ParseBenchVerificationError) as error:
+        verifier._snapshot_artifacts(**arguments)
+    assert str(error.value) == f"{expected_path} must be a finite number >= 0"
 
 
 def test_public_pipeline_metadata_cannot_change_scorer_routing(tmp_path: Path) -> None:

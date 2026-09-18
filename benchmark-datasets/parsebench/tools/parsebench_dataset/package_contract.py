@@ -83,17 +83,26 @@ def instruction(*, source_runtime_path: str, page: int | None) -> bytes:
         "and `items` in reading order. Each item may contain `type`, `md`/`html`, "
         "a `bbox`, and `layout_segments`. Boxes use pixel `x,y,w,h`, a canonical "
         "`label`, and confidence from 0 to 1. Coordinates must fit the page.\n\n"
+        "Each entry of `layout_segments` is a box object itself: `x`, `y`, `w`, "
+        "`h`, `label`, and `confidence` belong directly on that entry. Do not wrap "
+        "a segment in another `bbox` object. If an item has only one box, you may "
+        "omit `layout_segments`; the verifier uses the item's `bbox` as its segment.\n\n"
         "Example structure (replace values with your document predictions):\n"
         '```json\n{"layout_pages":[{"page_number":1,"width":100,"height":100,'
         '"md":"Example","items":[{"type":"text","md":"Example",'
-        '"bbox":{"x":1,"y":2,"w":50,"h":10,"label":"text","confidence":1}}]}]}\n```\n\n'
+        '"bbox":{"x":1,"y":2,"w":50,"h":10,"label":"text","confidence":1},'
+        '"layout_segments":[{"x":1,"y":2,"w":50,"h":10,"label":"text",'
+        '"confidence":1}]}]}]}\n```\n\n'
         "Canonical labels: caption, footnote, formula, list-item, page-footer, "
         "page-header, picture, section-header, table, text, title, document-index, "
         "code, checkbox-selected, checkbox-unselected, form, key-value-region.\n\n"
         "For a selected page, retain its original page number. Optional `pages` "
         "entries use zero-based `page_index` and `markdown`. Empty predictions are "
         "allowed: use empty Markdown and page objects with empty `items` when no "
-        "content was recovered. Do not use test answers or verifier-only files. "
+        "content was recovered. Before finishing, read both artifacts back and "
+        "check every `bbox` and every `layout_segments` entry against this "
+        "structure, including finite nonnegative coordinates, positive width/height, "
+        "page bounds, and canonical labels. Do not use test answers or verifier-only files. "
         "The independent verifier applies the fixed official ParseBench scoring rules.\n"
     ).encode()
 

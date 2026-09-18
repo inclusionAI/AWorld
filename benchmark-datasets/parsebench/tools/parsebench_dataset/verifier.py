@@ -758,13 +758,20 @@ def _artifact_page(value: object, description: str, *, zero_based: bool = False)
     return value
 
 
-def _public_segment(value: object, *, width: float, height: float) -> dict[str, Any]:
+def _public_segment(
+    value: object, *, width: float, height: float, path: str
+) -> dict[str, Any]:
     if not isinstance(value, dict):
-        raise _artifact_error("layout segment must be an object with x, y, w, h")
+        raise _artifact_error(f"{path} must be an object with x, y, w, h")
     segment = {}
     for coordinate in ("x", "y", "w", "h"):
+        if coordinate not in value:
+            raise _artifact_error(
+                f"{path}.{coordinate} is missing; x, y, w, h must be directly "
+                "on the box object, not nested under bbox"
+            )
         segment[coordinate] = _artifact_number(
-            value.get(coordinate), "layout coordinate"
+            value[coordinate], f"{path}.{coordinate}"
         )
     if (
         segment["w"] <= 0
@@ -773,20 +780,20 @@ def _public_segment(value: object, *, width: float, height: float) -> dict[str, 
         or segment["y"] + segment["h"] > height + 1e-6
     ):
         raise _artifact_error(
-            "layout segment must have positive extents within its page"
+            f"{path} must have positive extents within its page"
         )
     label = value.get("label")
     if not isinstance(label, str):
-        raise _artifact_error("layout segment must declare a canonical layout label")
+        raise _artifact_error(f"{path}.label must declare a canonical layout label")
     label = "-".join(label.strip().lower().replace("_", " ").split())
     if label not in _CANONICAL_LAYOUT_LABELS:
         raise _artifact_error(
-            "layout segment label is outside the official Canonical17 ontology"
+            f"{path}.label is outside the official Canonical17 ontology"
         )
     segment["label"] = label
-    confidence = _artifact_number(value.get("confidence", 1.0), "layout confidence")
+    confidence = _artifact_number(value.get("confidence", 1.0), f"{path}.confidence")
     if confidence > 1:
-        raise _artifact_error("layout confidence must be <= 1")
+        raise _artifact_error(f"{path}.confidence must be <= 1")
     segment["confidence"] = confidence
     for name in ("start_index", "end_index"):
         index = value.get(name)
@@ -794,7 +801,7 @@ def _public_segment(value: object, *, width: float, height: float) -> dict[str, 
             isinstance(index, bool) or not isinstance(index, int) or index < 0
         ):
             raise _artifact_error(
-                "layout text span offsets must be nonnegative integers"
+                f"{path}.{name} must be a nonnegative integer"
             )
         if index is not None:
             segment[name] = index
@@ -803,7 +810,7 @@ def _public_segment(value: object, *, width: float, height: float) -> dict[str, 
         and value.get("end_index") is not None
         and value["end_index"] < value["start_index"]
     ):
-        raise _artifact_error("layout text span end precedes its start")
+        raise _artifact_error(f"{path}.end_index precedes start_index")
     return segment
 
 
@@ -828,7 +835,7 @@ def _public_parse_output(
         raise _artifact_error("layout tasks require a page object; items may be empty")
     layout_pages: list[dict[str, Any]] = []
     page_numbers: set[int] = set()
-    for raw_page in raw_pages:
+    for page_index, raw_page in enumerate(raw_pages):
         if not isinstance(raw_page, dict):
             raise _artifact_error("layout page must be an object")
         number = _artifact_page(raw_page.get("page_number"), "layout page_number")
@@ -860,7 +867,7 @@ def _public_parse_output(
         if not isinstance(items, list):
             raise _artifact_error("layout page items must be an array")
         page["items"] = []
-        for raw_item in items:
+        for item_index, raw_item in enumerate(items):
             if not isinstance(raw_item, dict):
                 raise _artifact_error("layout item must be an object")
             item = {}
@@ -872,14 +879,22 @@ def _public_parse_output(
                         )
                     item[field] = raw_item[field]
             bbox = raw_item.get("bbox")
+            item_path = f"layout_pages[{page_index}].items[{item_index}]"
             if bbox is not None:
-                item["bbox"] = _public_segment(bbox, width=width, height=height)
+                item["bbox"] = _public_segment(
+                    bbox, width=width, height=height, path=f"{item_path}.bbox"
+                )
             segments = raw_item.get("layout_segments", [] if bbox is None else [bbox])
             if not isinstance(segments, list):
                 raise _artifact_error("layout_segments must be an array")
             item["layout_segments"] = [
-                _public_segment(segment, width=width, height=height)
-                for segment in segments
+                _public_segment(
+                    segment,
+                    width=width,
+                    height=height,
+                    path=f"{item_path}.layout_segments[{segment_index}]",
+                )
+                for segment_index, segment in enumerate(segments)
             ]
             page["items"].append(item)
         layout_pages.append(page)
