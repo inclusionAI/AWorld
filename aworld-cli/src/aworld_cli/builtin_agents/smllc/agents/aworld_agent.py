@@ -27,7 +27,7 @@ from aworld.core.tool.surface import (
 )
 from aworld.logs.util import logger
 from aworld_cli.core.context_tool import CONTEXT_TOOL
-from aworld_cli.core.model_profiles import resolve_context_window_env
+from aworld_cli.core.model_profiles import resolve_context_compiler_env, resolve_context_window_env
 from aworld.tools.workbench_tool import WORKBENCH, WORKBENCH_SCHEMA_IDS
 from aworld_cli.core.skill_registry import build_skill_resolver_inputs
 from .audio.audio import build_audio_swarm
@@ -617,6 +617,7 @@ def build_aworld_agent(include_skills: Optional[str] = None):
             llm_base_url=os.getenv("LLM_BASE_URL", "https://api.openai.com/v1"),
             llm_temperature=float(os.environ.get("LLM_TEMPERATURE", "0.1")),
             max_model_len=resolve_context_window_env(),
+            context_compiler=resolve_context_compiler_env(),
             params={"max_completion_tokens": max_completion_tokens},
             llm_stream_call=os.environ.get("STREAM", "0").lower() in ("1", "true", "yes")
         ),

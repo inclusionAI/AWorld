@@ -3,7 +3,9 @@ from unittest.mock import patch
 
 import pytest
 
-from aworld_cli.core.model_profiles import resolve_context_window_env, resolve_model_profile
+from aworld_cli.core.model_profiles import (
+    resolve_context_compiler_env, resolve_context_window_env, resolve_model_profile,
+)
 from aworld_cli.builtin_agents.smllc.agents.aworld_agent import build_aworld_agent
 
 
@@ -68,3 +70,46 @@ def test_default_global_profile_reaches_builtin_and_model_change_drops_only_prof
     config._apply_models_config_to_env({"default":{"model":"external-deployment", "api_key":"offline"}})
     third = next(iter(build_aworld_agent().agents.values()))
     assert third.conf.llm_config.max_model_len == 900000
+
+
+def test_default_profile_compiler_override_reaches_builtin_and_clears_on_switch(monkeypatch):
+    import aworld_cli.core.config as config
+    from aworld.models.context_window import resolve_model_context_window
+
+    monkeypatch.setenv("AWORLD_BUILTIN_SUBAGENTS", "none")
+    monkeypatch.delenv("AWORLD_CONTEXT_WINDOW_TOKENS", raising=False)
+    monkeypatch.delenv("AWORLD_CONTEXT_LIMIT_TOKENS", raising=False)
+    monkeypatch.setattr(config, "_profile_context_window_value", None)
+    monkeypatch.setattr(config, "_profile_context_limit_value", None)
+    config._apply_models_config_to_env({"default": {
+        "model": "profile-deployment", "api_key": "offline", "context_window": 1_000_000,
+        "context_compiler": {"context_limit": 900_000},
+    }})
+    first = next(iter(build_aworld_agent().agents.values())).conf.llm_config
+    assert first.max_model_len == 1_000_000
+    assert first.context_compiler.context_limit == 900_000
+    assert "reserved_output_tokens" not in first.context_compiler
+    resolved = resolve_model_context_window(
+        first.llm_model_name, max_model_len=first.max_model_len,
+        context_limit=first.context_compiler.context_limit,
+    )
+    assert resolved.tokens == 900_000 and resolved.source == "explicit_context_limit"
+    config._apply_models_config_to_env({"default": {"model": "gpt-4", "api_key": "offline"}})
+    second = next(iter(build_aworld_agent().agents.values())).conf.llm_config
+    assert second.context_compiler.context_limit is None
+    monkeypatch.setenv("AWORLD_CONTEXT_LIMIT_TOKENS", "7000")
+    config._apply_models_config_to_env({"default": {"model": "gpt-4", "api_key": "offline"}})
+    assert next(iter(build_aworld_agent().agents.values())).conf.llm_config.context_compiler.context_limit == 7000
+
+
+@pytest.mark.parametrize("raw,expected", [("", {}), (" \n\t", {}), (" 900000 ", {"context_limit": 900000})])
+def test_compiler_window_environment_preserves_undeclared_defaults(monkeypatch, raw, expected):
+    monkeypatch.setenv("AWORLD_CONTEXT_LIMIT_TOKENS", raw)
+    assert resolve_context_compiler_env() == expected
+
+
+@pytest.mark.parametrize("raw", ["0", "-1", "1.5", "true", "+1000", "1_000"])
+def test_invalid_compiler_window_environment_is_rejected(monkeypatch, raw):
+    monkeypatch.setenv("AWORLD_CONTEXT_LIMIT_TOKENS", raw)
+    with pytest.raises(ValueError, match="AWORLD_CONTEXT_LIMIT_TOKENS"):
+        resolve_context_compiler_env()

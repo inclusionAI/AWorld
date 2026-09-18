@@ -4318,7 +4318,6 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         resp_stream = acall_llm_model_stream(
             self.llm,
             messages=messages,
-            model=self.model_name,
             temperature=float_temperature,
             tools=tools,
             stream=True,
@@ -4751,7 +4750,6 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                             acall_llm_model(
                                 self.llm,
                                 messages=messages,
-                                model=self.model_name,
                                 temperature=float_temperature,
                                 tools=tools,
                                 stream=False,

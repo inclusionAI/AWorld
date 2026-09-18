@@ -633,15 +633,23 @@ def _apply_image_models_config(models_config: Dict[str, Any]) -> None:
 
 
 _profile_context_window_value: str | None = None
+_profile_context_limit_value: str | None = None
 
 
 def _apply_default_context_window(profile: Dict[str, Any]) -> None:
     """Bridge the selected default profile without retaining a previous model's window."""
-    global _profile_context_window_value
-    from aworld_cli.core.model_profiles import CONTEXT_WINDOW_ENV, _context_window_value, _profile_value
+    global _profile_context_window_value, _profile_context_limit_value
+    from aworld_cli.core.model_profiles import (
+        CONTEXT_WINDOW_ENV, CONTEXT_LIMIT_ENV, _context_window_value, _profile_value,
+    )
 
     raw = _profile_value(profile, "max_model_len", "context_window", "context_window_tokens", CONTEXT_WINDOW_ENV)
     window = _context_window_value(raw, "default model context window")
+    compiler = _profile_value(profile, "context_compiler")
+    compiler_limit = _context_window_value(
+        compiler.get("context_limit") if isinstance(compiler, dict) else None,
+        "default model context_compiler.context_limit",
+    )
     if window is not None:
         _profile_context_window_value = str(window)
         os.environ[CONTEXT_WINDOW_ENV] = _profile_context_window_value
@@ -650,6 +658,14 @@ def _apply_default_context_window(profile: Dict[str, Any]) -> None:
                 and os.environ.get(CONTEXT_WINDOW_ENV) == _profile_context_window_value):
             os.environ.pop(CONTEXT_WINDOW_ENV, None)
         _profile_context_window_value = None
+    if compiler_limit is not None:
+        _profile_context_limit_value = str(compiler_limit)
+        os.environ[CONTEXT_LIMIT_ENV] = _profile_context_limit_value
+    else:
+        if (_profile_context_limit_value is not None
+                and os.environ.get(CONTEXT_LIMIT_ENV) == _profile_context_limit_value):
+            os.environ.pop(CONTEXT_LIMIT_ENV, None)
+        _profile_context_limit_value = None
 
 
 def _apply_models_config_to_env(models_config: Dict[str, Any]) -> None:

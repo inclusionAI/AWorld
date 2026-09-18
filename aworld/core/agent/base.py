@@ -126,7 +126,18 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
             self.conf = ConfigDict(conf)
         elif isinstance(conf, AgentConfig):
             # To add flexibility
-            self.conf = ConfigDict(conf.model_dump())
+            values = conf.model_dump()
+            compiler = conf.llm_config.context_compiler
+            if isinstance(compiler, BaseModel):
+                reserve_field = type(compiler).model_fields.get("reserved_output_tokens")
+                if (reserve_field is not None
+                        and "reserved_output_tokens" not in compiler.model_fields_set
+                        and compiler.reserved_output_tokens == reserve_field.default):
+                    # A full dump must not turn the implicit compiler reserve
+                    # into an explicit floor. Retain all other config values,
+                    # including in-place edits and caller-supplied dicts.
+                    values["llm_config"]["context_compiler"].pop("reserved_output_tokens", None)
+            self.conf = ConfigDict(values)
         else:
             logger.warning(f"Unknown conf type: {type(conf)}")
 

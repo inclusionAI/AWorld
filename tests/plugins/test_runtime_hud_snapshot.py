@@ -11,7 +11,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "aworld-cli" / "src
 from aworld_cli.executors.local import LocalAgentExecutor
 from aworld_cli.executors.stats import StreamTokenStats, build_llm_usage_observability, resolve_stream_context_window
 from aworld.config.conf import ModelConfig
-from aworld.models.context_window import resolve_model_context_window
+from aworld.models.context_window import DEFAULT_CONTEXT_WINDOW_TOKENS, resolve_model_context_window
 from aworld_cli.executors.base_executor import BaseAgentExecutor
 from aworld_cli.runtime.base import BaseCliRuntime
 from aworld.plugins.discovery import discover_plugins
@@ -261,7 +261,7 @@ def test_stream_context_never_substitutes_a_different_request_or_agent(request_i
         None, context=SimpleNamespace(get_llm_calls=lambda: calls), task_id="task-1",
         request_id=request_id, agent_id=agent_id, model_name="gateway-alias",
     )
-    assert result.tokens == 128000 and result.source == "fallback"
+    assert result.tokens == DEFAULT_CONTEXT_WINDOW_TOKENS and result.source == "fallback"
 
 
 @pytest.mark.parametrize("model", [None, ""])
@@ -333,7 +333,7 @@ def test_stream_context_without_initialized_model_uses_registry_only():
     result = resolve_stream_context_window(
         SimpleNamespace(agents={"a": UninitializedAgent()}), agent_id="a", model_name="gateway-alias",
     )
-    assert result.tokens == 128000 and result.source == "fallback"
+    assert result.tokens == DEFAULT_CONTEXT_WINDOW_TOKENS and result.source == "fallback"
 
 def test_local_executor_publishes_stream_updates_to_runtime():
     runtime = DummyRuntime()

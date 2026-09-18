@@ -11,6 +11,7 @@ from aworld.config.conf import ModelConfig
 
 
 CONTEXT_WINDOW_ENV = "AWORLD_CONTEXT_WINDOW_TOKENS"
+CONTEXT_LIMIT_ENV = "AWORLD_CONTEXT_LIMIT_TOKENS"
 
 
 def _context_window_value(value, source: str) -> int | None:
@@ -28,6 +29,12 @@ def _context_window_value(value, source: str) -> int | None:
 def resolve_context_window_env() -> int | None:
     """Optional explicit deployment window; unset/blank keeps adaptive lookup."""
     return _context_window_value(os.environ.get(CONTEXT_WINDOW_ENV), CONTEXT_WINDOW_ENV)
+
+
+def resolve_context_compiler_env() -> dict[str, int]:
+    """Read an optional explicit compiler window without making defaults explicit."""
+    limit = _context_window_value(os.environ.get(CONTEXT_LIMIT_ENV), CONTEXT_LIMIT_ENV)
+    return {"context_limit": limit} if limit is not None else {}
 
 
 def resolve_model_profile(
@@ -138,6 +145,7 @@ def _profile_from_env() -> dict[str, Any] | None:
         "base_url": os.environ.get("LLM_BASE_URL"),
         "temperature": os.environ.get("LLM_TEMPERATURE"),
         "max_model_len": resolve_context_window_env(),
+        "context_compiler": resolve_context_compiler_env(),
     }
 
 

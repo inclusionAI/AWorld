@@ -162,6 +162,8 @@ Place the file in the directory specified by `LOCAL_AGENTS_DIR` or use `--agent-
 - `SKILLS_CACHE_DIR`: Custom cache directory for GitHub skill repositories (default: ~/.aworld/skills)
 - `AWORLD_DISABLE_CONSOLE_LOG`: Disable console logging (set to 'true')
 - `AWORLD_CONTROL_ROOT`: Optional directory for framework-owned runtime state such as cron state, session workspaces, transcripts, plugin state, and Tool-call logs. It does not change the task working directory.
+- `AWORLD_CONTEXT_WINDOW_TOKENS`: Optional positive integer declaring the selected deployment's context window (`ModelConfig.max_model_len`). Unset or blank preserves model-aware resolution.
+- `AWORLD_CONTEXT_LIMIT_TOKENS`: Optional positive integer for an explicit compiler window (`context_compiler.context_limit`), which takes precedence over the deployment window. Unset or blank adds no compiler override.
 - `AWORLD_COMPLETION_MODE`: Optional direct-run completion contract mode: `off` (default), `observe`, or `enforce`.
 - `AWORLD_INFER_REQUIRED_ARTIFACTS`: When true, infer required artifacts only from explicit output-path declarations in the task. Intended for controlled execution runtimes together with `AWORLD_COMPLETION_MODE`.
 - `AWORLD_REQUIRED_ARTIFACTS_JSON`: Optional JSON array of artifact paths supplied by a runtime instead of relying on inference.
@@ -172,6 +174,12 @@ Place the file in the directory specified by `LOCAL_AGENTS_DIR` or use `--agent-
 - `AWORLD_GENERATION_ACTION_REPAIR_MAX_OUTPUT_TOKENS`, `AWORLD_GENERATION_PARTIAL_RESPONSE_CONTEXT_CHARS`, and `AWORLD_GENERATION_ACTION_REPAIR_ENABLED`: Optional bounds for the single action-oriented continuation after a healthy tool-free stream exceeds its budget.
 
 **Note:** Built-in agents from `builtin_agents/*/agents` directories are always loaded automatically, regardless of environment variable configuration. Only the `agents` subdirectories are scanned to avoid loading unnecessary files.
+
+Model profiles accept `max_model_len` (also `context_window` or `context_window_tokens`)
+and `context_compiler.context_limit`. The selected global default profile forwards
+both window declarations to the built-in agent. A profile switch clears only
+window values previously supplied by that profile bridge. These are per-request
+context capacities; they do not impose a total task token or time budget.
 
 The local sandbox always runs in the same operating-system environment as the
 `aworld-cli` process. On a user's workstation that means the workstation; when
