@@ -3,8 +3,8 @@
 `aworld.core.task_workspace.validation.validate_candidate` is the shared async
 validator for the trusted task session and candidate store. It receives
 `candidate_files: Mapping[str, Path]`, `inputs: Mapping[str, Path]`, a nonempty
-list of check definitions, and caller-bound `scope`, `working_dir`, and optional
-`ValidationLimits`. File keys are opaque logical names: an absolute public output
+list of check definitions, and caller-bound `scope`, `working_dir`, optional
+`ValidationLimits`, and `env` mapping. File keys are opaque logical names: an absolute public output
 path is a valid key, but a check cannot invent another path outside the supplied
 mapping. The store must invoke this function itself and register/sign the result;
 a receipt supplied by the model is not trusted execution evidence.
@@ -97,6 +97,16 @@ return code, bounded stdout/stderr, full stream SHA-256 and byte counts, and
 fingerprints its executable, file arguments and explicit `checker_files`.
 Imported checker helpers should be listed in `checker_files`; an arbitrary
 language's import closure is not inferred.
+
+Command environment is the minimum OS execution defaults plus the trusted `env`
+argument and any per-check declared `env` overrides. A session can inject its
+bound task environment with `partial(validate_candidate, env=task_env)`; do not
+forward the full Runtime/AWorld process environment. This preserves legitimate
+task PYTHONPATH/LD_LIBRARY_PATH without exposing unrelated host credentials.
+`execution_environment_sha256` binds the explicit base `env` mapping (or `{}`),
+using the same canonical JSON hash as check definitions. The selection policy
+should bind this hash so a changed task environment invalidates an older receipt.
+Each process also records `environment_sha256` for its actual merged environment.
 
 Use `{artifact:logical-key}` and `{input:logical-key}` placeholders in argv.
 The checker must emit one complete JSON document on stdout:

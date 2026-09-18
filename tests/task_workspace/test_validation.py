@@ -298,3 +298,45 @@ def test_model_results_and_duplicate_check_ids_are_rejected(tmp_path):
     with pytest.raises(ValueError, match="unique"):
         validate({"out": output}, [dict(id="x", kind="exists", path="out")] * 2)
     assert "numeric" in describe_validation()["kinds"]
+
+
+def test_command_uses_host_bound_task_env_without_inheriting_runtime_env(
+    tmp_path, monkeypatch
+):
+    from aworld.core.task_workspace.validation import canonical
+
+    monkeypatch.setenv("PRIVATE_RUNTIME_TEST_TOKEN", "must-not-inherit")
+    modules = tmp_path / "modules"
+    modules.mkdir()
+    (modules / "task_checker_helper.py").write_text("expected = 'good'\n")
+    script = tmp_path / "checker.py"
+    script.write_text(
+        "import task_checker_helper as helper,json,os,pathlib,sys\n"
+        "assert os.getenv('PRIVATE_RUNTIME_TEST_TOKEN') is None\n"
+        "assert os.getenv('TASK_CHECK_VALUE')=='check-owned'\n"
+        "assert os.getenv('LD_LIBRARY_PATH')\n"
+        "passed=pathlib.Path(sys.argv[1]).read_text()==helper.expected\n"
+        "print(json.dumps({'schema_version':'aworld.check-report/v1','checks':[{'id':'value','passed':passed}]}))\n"
+    )
+    actual, wrong = write(tmp_path, "out", "good"), write(tmp_path, "wrong", "bad")
+    check = command_check(script)
+    check["env"] = {"TASK_CHECK_VALUE": "check-owned"}
+    missing = validate({"out": actual}, [check], {"wrong": wrong}, working_dir=tmp_path)
+    assert not missing["success"]
+    task_env = {
+        "PYTHONPATH": str(modules),
+        "LD_LIBRARY_PATH": str(modules),
+        "TASK_CHECK_VALUE": "host-owned",
+    }
+    result = validate(
+        {"out": actual}, [check], {"wrong": wrong}, working_dir=tmp_path, env=task_env
+    )
+    assert result["success"], result
+    assert (
+        result["execution_environment_sha256"]
+        == hashlib.sha256(canonical(task_env)).hexdigest()
+    )
+    assert (
+        "PRIVATE_RUNTIME_TEST_TOKEN"
+        not in result["checks"][0]["evidence"]["process"]["environment_keys"]
+    )

@@ -686,6 +686,7 @@ async def _command(
     *,
     working_dir: Path,
     limits: ValidationLimits,
+    env: Mapping[str, str] | None = None,
 ) -> tuple[str, dict, dict]:
     argv = check.get("argv")
     if (
@@ -705,7 +706,11 @@ async def _command(
         return [re.sub(r"\{(artifact|input):([^{}]+)\}", replace, arg) for arg in argv]
 
     command = resolve(files)
-    executable = shutil.which(command[0], path=isolated_env(check.get("env"))["PATH"])
+    declared_env = check.get("env") or {}
+    if not isinstance(declared_env, Mapping):
+        raise ValueError("check env must be a string mapping")
+    environment = isolated_env({**(env or {}), **declared_env})
+    executable = shutil.which(command[0], path=environment["PATH"])
     checker_files = {
         str(path): working_dir / path for path in check.get("checker_files", [])
     }
@@ -729,7 +734,7 @@ async def _command(
             raise ValueError("check timeout exceeds caller's operation bound")
         process_limits = replace(process_limits, timeout_seconds=timeout)
     process = await run_bounded(
-        command, cwd=working_dir, env=check.get("env"), limits=process_limits
+        command, cwd=working_dir, env=environment, limits=process_limits
     )
     passed, reported_metrics = _report(process)
     evidence = {
@@ -764,7 +769,7 @@ async def _command(
         negative = await run_bounded(
             resolve(altered),
             cwd=working_dir,
-            env=check.get("env"),
+            env=environment,
             limits=process_limits,
         )
         rejected, _ = _report(negative)
@@ -804,9 +809,14 @@ async def validate_candidate(
     scope: str = "",
     working_dir: Path | None = None,
     limits: ValidationLimits | None = None,
+    env: Mapping[str, str] | None = None,
 ) -> dict:
     """Execute checks against current bytes. No caller-provided pass/metrics are consumed."""
     limits = limits or ValidationLimits()
+    execution_environment_sha256 = hashlib.sha256(
+        canonical(dict(env or {}))
+    ).hexdigest()
+    base_environment = isolated_env(env)
     if (
         not isinstance(checks, (list, tuple))
         or not checks
@@ -864,7 +874,12 @@ async def validate_candidate(
                     )
                 if check["kind"] == "command":
                     status, measured, evidence = await _command(
-                        check, candidate_files, inputs, working_dir=cwd, limits=limits
+                        check,
+                        candidate_files,
+                        inputs,
+                        working_dir=cwd,
+                        limits=limits,
+                        env=base_environment,
                     )
                 else:
                     path = check.get("path")
@@ -931,6 +946,7 @@ async def validate_candidate(
     return {
         "schema_version": SCHEMA,
         "scope": scope,
+        "execution_environment_sha256": execution_environment_sha256,
         "success": success,
         "checks": results,
         "metrics": metrics,
