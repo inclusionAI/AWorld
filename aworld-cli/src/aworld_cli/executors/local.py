@@ -902,16 +902,29 @@ class LocalAgentExecutor(BaseAgentExecutor):
         task_input = hook_kwargs.get('task_input', task_input)
         image_urls = hook_kwargs.get('image_urls', image_urls) or []
 
-        # Direct benchmark callers may opt in to a high-confidence filesystem
-        # completion contract.  This validates declared outputs without changing
-        # the actual CLI/sandbox working directory. Run this after input hooks so
-        # a caller-installed contract always takes precedence.
+        # Bind native filesystem authority before preparing originals. Goal
+        # segments share a durable identity; ordinary requests never do.
+        goal_state = self._goal_session_state()
+        workspace_request = str(original_task_content or "")
+        if goal_state.get("active"):
+            workspace_request = str(goal_state.get("objective") or workspace_request)
+        root_agent = getattr(self.swarm, "communicate_agent", None)
+        if isinstance(root_agent, list):
+            root_agent = root_agent[0] if len(root_agent) == 1 else None
+        install_contract = getattr(root_agent, "_install_runtime_completion_contract", None)
+        if callable(install_contract):
+            install_contract(context)
+        local_path = getattr(root_agent, "_task_workspace_local_path", None)
+        if os.path.realpath(context.workspace_path) == local_path:
+            from aworld.core.task_workspace.session import bind_task_workspace, goal_workspace_identity
+            scope = {"session_id": str(session_id), "task_id": str(task_id)}
+            if goal_state.get("active"):
+                scope = {"session_id": str(session_id), "goal_id": goal_workspace_identity(goal_state)}
+            bind_task_workspace(context, context.workspace_path, scope)
         configure_runtime_completion(
-            context,
-            request=str(original_task_content or ""),
+            context, request=workspace_request,
             workspace_path=context.workspace_path,
         )
-        goal_state = self._goal_session_state()
         goal_commands = goal_state.get("verification_commands")
         if goal_state.get("active") and goal_commands:
             from aworld_cli.core.runtime_completion import configure_goal_completion

@@ -1,4 +1,5 @@
 import re
+import uuid
 from datetime import datetime, timezone
 
 
@@ -80,6 +81,7 @@ def new_goal_contract_state(
     return {
         "active": True,
         "status": "active",
+        "workspace_id": uuid.uuid4().hex,
         "objective": str(objective or "").strip(),
         "turn_count": 1,
         "max_turns": _max_turns(max_turns),

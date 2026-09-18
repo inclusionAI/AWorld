@@ -27,6 +27,7 @@ from aworld.core.tool.surface import (
 )
 from aworld.logs.util import logger
 from aworld_cli.core.context_tool import CONTEXT_TOOL
+from aworld.tools.workbench_tool import WORKBENCH, WORKBENCH_SCHEMA_IDS
 from aworld_cli.core.skill_registry import build_skill_resolver_inputs
 from .audio.audio import build_audio_swarm
 from .avatar.avatar import build_avatar_swarm
@@ -321,6 +322,7 @@ def _aworld_root_tool_policy(
 
     tool_names = [
         CONTEXT_TOOL,
+        WORKBENCH,
         *(
             [CAST_SEARCH]
             if _CAST_TOOLS_AVAILABLE and profile.profile_id == "general"
@@ -668,6 +670,12 @@ def build_aworld_agent(include_skills: Optional[str] = None):
         black_tool_actions=black_tool_actions,
         tool_surface_specs=(
             ToolCapabilitySpec(
+                capability_id="workbench",
+                schema_ids=WORKBENCH_SCHEMA_IDS,
+                lifecycle=ToolLifecycle.IMMEDIATE,
+                required=enforce_tool_surface,
+            ),
+            ToolCapabilitySpec(
                 capability_id="terminal",
                 schema_ids=("run_code",),
                 lifecycle=ToolLifecycle.IMMEDIATE,
@@ -683,6 +691,8 @@ def build_aworld_agent(include_skills: Optional[str] = None):
         **budgeted_agent_kwargs,
     )
     aworld_agent.tool_surface_profile = tool_surface_profile
+    # Native workbench operations share only this locally created Sandbox.
+    aworld_agent._task_workspace_local_path = os.path.realpath(os.getcwd())
 
     if sub_agents:
         logger.info(

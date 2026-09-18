@@ -205,8 +205,10 @@ async def test_local_executor_preserves_explicit_origin_user_input(
 
     assert captured["task_input"].task_content == "整理结果\n会话附加信息:\n - conversationId: conv-1"
     assert captured["task_input"].origin_user_input == "整理结果"
-    assert task.deadline_epoch_seconds == 12345
-    assert task.remaining_seconds() == 0
+    # The local CLI preserves the original user input but does not adopt an
+    # ambient aggregate deadline. This was already the a92 lifetime contract.
+    assert task.deadline_epoch_seconds is None
+    assert task.remaining_seconds() is None
 
 
 def test_local_executor_streaming_output_can_be_suppressed_for_interactive_steering(
