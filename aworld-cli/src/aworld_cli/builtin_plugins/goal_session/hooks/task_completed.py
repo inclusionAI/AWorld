@@ -1,6 +1,4 @@
 import re
-import math
-import time
 from datetime import datetime, timezone
 
 
@@ -43,6 +41,13 @@ def goal_status(state: dict | None) -> str:
     if not isinstance(state, dict):
         return "none"
     raw_status = str(state.get("status") or "").strip().lower()
+    if raw_status == "budget_limited" and (
+        state.get("max_turns") is None
+        or (_coerce_positive_int(state.get("turn_count"), 1) or 1) < _max_turns(state["max_turns"])
+    ):
+        # Older drafts persisted deadline/no-progress stops with this status.
+        # They remain resumable; only an actual attempt limit blocks resume.
+        return "paused"
     if raw_status in VISIBLE_GOAL_STATUSES:
         return raw_status
     if state.get("active"):
@@ -70,11 +75,7 @@ def new_goal_contract_state(
     max_turns: int | None = None,
     *,
     source: str = "goal",
-    timeout_seconds: float | None = None,
-    deadline_epoch_seconds: float | None = None,
 ) -> dict:
-    from aworld.core.task import Task
-    lifetime = Task(timeout=timeout_seconds, deadline_epoch_seconds=deadline_epoch_seconds)
     commands = [str(item).strip() for item in (verification_commands or []) if str(item).strip()]
     return {
         "active": True,
@@ -82,7 +83,6 @@ def new_goal_contract_state(
         "objective": str(objective or "").strip(),
         "turn_count": 1,
         "max_turns": _max_turns(max_turns),
-        "deadline_epoch_seconds": lifetime.deadline_epoch_seconds,
         "verification_commands": commands,
         "completion_promise": (completion_promise or "").strip() or None,
         "completion_promise_satisfied": False,
@@ -132,7 +132,7 @@ def build_goal_context_prompt(state: dict) -> str:
     else:
         lines.append("Completion promise: none")
         if status in {"active", "budget_limited"}:
-            lines.append("Keep iterating until the objective is verified complete, the operator pauses or clears it, or an explicitly supplied budget is exhausted.")
+            lines.append("Keep iterating until the objective is verified complete, the operator pauses or clears it, or the optional maximum number of attempts is reached.")
 
     if last_task_status:
         lines.append(f"Last task status: {last_task_status}")
@@ -156,7 +156,7 @@ def build_goal_context_prompt(state: dict) -> str:
 
 
 def apply_turn_outcome(state: dict, event: dict) -> tuple[dict, bool]:
-    updated = dict(state)
+    updated = _persistable_state(state)
     current_turn = _coerce_positive_int(updated.get("turn_count"), 1) or 1
     max_turns = _max_turns(updated.get("max_turns"))
     final_answer = event.get("final_answer") or ""
@@ -165,10 +165,6 @@ def apply_turn_outcome(state: dict, event: dict) -> tuple[dict, bool]:
     semantic_status = event.get("semantic_status")
     if semantic_status != "succeeded":
         satisfied_promise = False
-    deadlines = [d for d in (updated.get("deadline_epoch_seconds"), event.get("deadline_epoch_seconds")) if d is not None]
-    if any(isinstance(d, bool) or not isinstance(d, (float, int)) or not math.isfinite(d) or d < 0 for d in deadlines):
-        raise ValueError("invalid goal deadline")
-    updated["deadline_epoch_seconds"] = min(deadlines) if deadlines else None
 
     updated.update(
         {
@@ -186,13 +182,6 @@ def apply_turn_outcome(state: dict, event: dict) -> tuple[dict, bool]:
         }
     )
 
-    # A control stop always wins over a promise in model-authored text.
-    if updated.get("deadline_epoch_seconds") is not None and time.time() >= updated["deadline_epoch_seconds"]:
-        updated.update({"active": False, "status": "budget_limited"})
-        return updated, False
-    if event.get("recoverable") is False and semantic_status in {"incomplete", "budget_exhausted"}:
-        updated.update({"active": False, "status": "budget_limited" if semantic_status == "budget_exhausted" else "paused"})
-        return updated, False
     if satisfied_promise or (promise is None and semantic_status == "succeeded"):
         updated.update({"active": False, "status": "complete"})
         return updated, False
@@ -206,7 +195,10 @@ def apply_turn_outcome(state: dict, event: dict) -> tuple[dict, bool]:
 
 
 def _persistable_state(payload: dict) -> dict:
-    return {key: value for key, value in payload.items() if key != "__plugin_state__"}
+    # Discard the time-bound contract from early goal-state drafts. The CLI
+    # only stops on completion, operator control, or an optional attempt limit.
+    return {key: value for key, value in payload.items()
+            if key not in {"__plugin_state__", "timeout_seconds", "deadline_epoch_seconds"}}
 
 
 def handle_event(event, state):

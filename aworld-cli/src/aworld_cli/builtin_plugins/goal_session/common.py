@@ -24,8 +24,6 @@ def parse_goal_args(user_args: str) -> dict:
     parser.add_argument("--completion-promise", dest="completion_promise")
     parser.add_argument("--max-turns", dest="max_turns", type=int)
     parser.add_argument("--from-campaign", dest="from_campaign")
-    parser.add_argument("--timeout-seconds", type=float)
-    parser.add_argument("--deadline-epoch-seconds", type=float)
 
     tokens = shlex.split(user_args or "")
     namespace = parser.parse_args(tokens)
@@ -41,8 +39,6 @@ def parse_goal_args(user_args: str) -> dict:
         raise ValueError("missing task prompt")
     if namespace.max_turns is not None and namespace.max_turns < 1:
         raise ValueError("--max-turns must be >= 1")
-    from aworld.core.task import Task
-    Task(timeout=namespace.timeout_seconds, deadline_epoch_seconds=namespace.deadline_epoch_seconds)
 
     return {
         "prompt": prompt,
@@ -50,6 +46,4 @@ def parse_goal_args(user_args: str) -> dict:
         "completion_promise": (namespace.completion_promise or "").strip() or None,
         "max_turns": namespace.max_turns,
         "from_campaign": from_campaign,
-        "timeout_seconds": namespace.timeout_seconds,
-        "deadline_epoch_seconds": namespace.deadline_epoch_seconds,
     }

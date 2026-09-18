@@ -6,6 +6,7 @@ from aworld_cli.builtin_plugins.goal_session.common import (
     resolve_goal_control_action,
 )
 from aworld_cli.builtin_plugins.goal_session.hooks.task_completed import (
+    _persistable_state,
     build_goal_context_prompt,
     goal_status,
     is_goal_active,
@@ -33,15 +34,11 @@ class GoalCommand(PluginBoundCommand):
             handle = self.get_state_handle(context)
             current = handle.read() if handle else {}
             if goal_status(current) not in {"paused", "active"}:
-                return "Only a paused or active goal can resume; exhausted budgets require an explicit new goal."
+                return "Only a paused or active goal can resume; a reached attempt limit requires an explicit new goal."
             maximum = current.get("max_turns")
             if maximum is not None and current.get("turn_count", 1) >= maximum:
                 handle.update({"active": False, "status": "budget_limited"})
-                return "The goal's explicit turn budget is exhausted. Resume does not renew it."
-            from aworld.core.task import Task
-            if Task(deadline_epoch_seconds=current.get("deadline_epoch_seconds")).remaining_seconds() == 0:
-                handle.update({"active": False, "status": "budget_limited"})
-                return "The goal's explicit deadline has expired. Resume does not renew it."
+                return "The goal's maximum number of attempts was reached. Resume does not reset it."
         if resolve_goal_control_action(context.user_args):
             return None
         try:
@@ -63,11 +60,6 @@ class GoalCommand(PluginBoundCommand):
                 parsed["from_campaign"],
                 max_turns=parsed["max_turns"],
             )
-            from aworld.core.task import Task
-            state["deadline_epoch_seconds"] = Task(
-                timeout=parsed["timeout_seconds"],
-                deadline_epoch_seconds=parsed["deadline_epoch_seconds"],
-            ).deadline_epoch_seconds
         else:
             state = new_goal_contract_state(
                 objective=parsed["prompt"],
@@ -75,8 +67,6 @@ class GoalCommand(PluginBoundCommand):
                 completion_promise=parsed["completion_promise"],
                 max_turns=parsed["max_turns"],
                 source="goal",
-                timeout_seconds=parsed["timeout_seconds"],
-                deadline_epoch_seconds=parsed["deadline_epoch_seconds"],
             )
         handle.write(state)
         return state
@@ -165,13 +155,9 @@ class GoalCommand(PluginBoundCommand):
 
         if action == "resume":
             if goal_status(current) not in {"paused", "active"}:
-                return "Only a paused or active goal can resume; an exhausted explicit budget cannot be reset by resume."
-            import time
+                return "Only a paused or active goal can resume; a reached attempt limit cannot be reset by resume."
             maximum = current.get("max_turns")
             if maximum is not None and current.get("turn_count", 1) >= maximum:
-                return build_goal_context_prompt(handle.update({"active": False, "status": "budget_limited"}))
-            deadline = current.get("deadline_epoch_seconds")
-            if deadline is not None and time.time() >= deadline:
                 return build_goal_context_prompt(handle.update({"active": False, "status": "budget_limited"}))
             if context.executor is not None and current.get("last_task_id"):
                 context.executor._resume_context_checkpoint_once = True
@@ -180,10 +166,12 @@ class GoalCommand(PluginBoundCommand):
                     "source_task_epoch": current.get("last_task_epoch"),
                 }
                 context.executor._resume_goal_agent_ids_once = current.get("agent_ids_by_name") or {}
-            return build_goal_context_prompt(handle.update({
+            updated = _persistable_state({**current,
                 "active": True, "status": "active",
                 "turn_count": current.get("turn_count", 1) + 1,
-            }))
+            })
+            handle.write(updated)
+            return build_goal_context_prompt(updated)
 
         if action == "clear":
             if not current:

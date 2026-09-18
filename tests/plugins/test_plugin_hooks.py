@@ -656,7 +656,9 @@ async def test_goal_task_error_hook_persists_last_error_excerpt(tmp_path):
         state={"__plugin_state__": handle, **handle.read()},
     )
 
-    assert result.action == "allow"
+    assert result.action == "block_and_continue"
+    assert handle.read()["status"] == "active"
+    assert handle.read()["turn_count"] == 3
     assert handle.read()["last_task_status"] == "error"
     assert "pytest failed" in handle.read()["last_error"]
     assert "pytest failed" in handle.read()["last_error_excerpt"]

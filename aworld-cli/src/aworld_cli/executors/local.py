@@ -956,7 +956,6 @@ class LocalAgentExecutor(BaseAgentExecutor):
                 stream=False,
                 exit_on_failure=True
             ),
-            deadline_epoch_seconds=self._caller_deadline_from_environment(),
             observation=observation
         )
 
@@ -974,49 +973,16 @@ class LocalAgentExecutor(BaseAgentExecutor):
         self,
         message: Union[str, tuple[str, List[str]]],
         requested_skill_names: Optional[List[str]] = None,
-        *,
-        timeout: float | None = None,
-        deadline_epoch_seconds: float | None = None,
     ) -> str:
-        """Run a goal without recursion or an implicit aggregate time limit."""
-        state = self._goal_session_state()
-        if not state.get("active"):
-            # A completed/paused goal does not constrain ordinary later chats.
-            # Explicit resume reactivates the persisted contract first.
-            state = {}
-        deadlines = [d for d in (deadline_epoch_seconds, self._caller_deadline_from_environment(), state.get("deadline_epoch_seconds")) if d is not None]
-        # Validate each input before taking min; otherwise NaN could disappear.
-        for deadline in deadlines:
-            Task(deadline_epoch_seconds=deadline)
-        lifetime = Task(timeout=timeout, deadline_epoch_seconds=min(deadlines) if deadlines else None)
+        """Run until completion, user stop, or an optional goal attempt limit."""
         previous_context = None
         self._active_chat_task = asyncio.current_task()
         try:
             while True:
-                turn = self._chat_turn(
-                    message, requested_skill_names=requested_skill_names, _lifetime=lifetime,
+                result = await self._chat_turn(
+                    message, requested_skill_names=requested_skill_names,
                     _previous_goal_context=previous_context,
                 )
-                # Include context/hook construction in an explicitly requested
-                # aggregate limit. Unspecified lifetimes have no outer timer.
-                try:
-                    result = await asyncio.wait_for(turn, timeout=lifetime.remaining_seconds())
-                except asyncio.TimeoutError:
-                    if lifetime.remaining_seconds() != 0:
-                        raise
-                    self.last_task_response = TaskResponse(
-                        success=False, answer="", status="timeout",
-                        failure_origin="infrastructure", failure_code="task_timeout",
-                        semantic_status="budget_exhausted", completion_reason="task_timeout",
-                        recoverable=False,
-                    )
-                    await self._run_plugin_task_hook("task_completed", {
-                        "session_id": self.session_id, "task_status": "timeout",
-                        "semantic_status": "budget_exhausted", "recoverable": False,
-                        "completion_reason": "task_timeout",
-                        "deadline_epoch_seconds": lifetime.deadline_epoch_seconds,
-                    })
-                    return ""
                 if not isinstance(result, _GoalContinuation):
                     return result
                 message = result.prompt
@@ -1050,15 +1016,6 @@ class LocalAgentExecutor(BaseAgentExecutor):
             groups.setdefault(name, []).append(agent.id())
         return {name: ids[0] for name, ids in groups.items() if len(ids) == 1}
 
-    @staticmethod
-    def _caller_deadline_from_environment() -> float | None:
-        raw = os.environ.get("AWORLD_TASK_DEADLINE_EPOCH_SECONDS")
-        if raw is None:
-            return None
-        # Task validates finite/non-negative epoch values. Never fail open on an
-        # invalid caller budget (including an empty environment variable).
-        return Task(deadline_epoch_seconds=float(raw)).deadline_epoch_seconds
-
     def request_goal_pause(self) -> None:
         task = getattr(self, "_active_goal_task", None)
         if task is not None:
@@ -1072,7 +1029,6 @@ class LocalAgentExecutor(BaseAgentExecutor):
         message: Union[str, tuple[str, List[str]]],
         requested_skill_names: Optional[List[str]] = None,
         *,
-        _lifetime: Task | None = None,
         _previous_goal_context: Any = None,
     ) -> str | _GoalContinuation:
             """
@@ -1169,18 +1125,9 @@ class LocalAgentExecutor(BaseAgentExecutor):
             # Get updated task from kwargs
             task = hook_kwargs.get('task', task)
             if isinstance(task, Task):
-                if _lifetime is not None:
-                    task.parent_task = _lifetime
-                    task.bind_deadline()
-                    # A PRE_RUN_TASK caller may supply the finite budget. Bind
-                    # it to the entire continuation chain on its first turn.
-                    if task.deadline_epoch_seconds is not None:
-                        _lifetime.deadline_epoch_seconds = task.deadline_epoch_seconds
-                        _lifetime.bind_deadline()
                 state = self._goal_session_state()
                 if state.get("active") and state.get("__plugin_state__") is not None:
                     state["__plugin_state__"].update({
-                        "deadline_epoch_seconds": task.deadline_epoch_seconds,
                         "last_task_id": task.id,
                         "last_task_epoch": getattr(task.context, "task_epoch", None),
                         "agent_ids_by_name": self._goal_agent_ids(),
@@ -2039,7 +1986,6 @@ class LocalAgentExecutor(BaseAgentExecutor):
                         "semantic_status": getattr(final_task_response, "semantic_status", None),
                         "completion_reason": getattr(final_task_response, "completion_reason", None),
                         "recoverable": getattr(final_task_response, "recoverable", None),
-                        "deadline_epoch_seconds": getattr(task, "deadline_epoch_seconds", None),
                         "task_epoch": getattr(task.context, "task_epoch", None),
                         "final_answer": answer,
                         "usage": final_usage,
@@ -2091,11 +2037,18 @@ class LocalAgentExecutor(BaseAgentExecutor):
                     # Don't let hook errors mask the original error
                     if self.console:
                         self.console.print(f"[yellow]⚠️ Hook error: {hook_err}[/yellow]")
-                await self._run_plugin_task_hook(
+                self.last_task_response = TaskResponse(
+                    success=False, answer="", status="failed",
+                    failure_origin="infrastructure", failure_code="execution_error",
+                    semantic_status="incomplete", completion_reason=type(err).__name__,
+                    recoverable=True,
+                )
+                task_error_results = await self._run_plugin_task_hook(
                     "task_error",
                     {
                         "task_id": getattr(task, 'id', None) if 'task' in locals() else None,
                         "session_id": self.session_id,
+                        "task_epoch": getattr(getattr(task, "context", None), "task_epoch", None),
                         "task_status": "error",
                         "error": str(err),
                         "error_type": type(err).__name__,
@@ -2110,6 +2063,11 @@ class LocalAgentExecutor(BaseAgentExecutor):
                     self.console.print("[red]❌ [/red]", end=" ")
                     self.console.print(error_msg, markup=False)
                 self._publish_hud_task_finished(task.id, task_status="error")
+                for _, result in task_error_results:
+                    if getattr(result, "action", None) == "block_and_continue":
+                        prompt = self._resolve_hook_text(getattr(result, "follow_up_prompt", None))
+                        if prompt:
+                            return _GoalContinuation(prompt, task.context)
                 raise
     
     # Note: _format_tool_call, _format_tool_calls, _render_message_output,
