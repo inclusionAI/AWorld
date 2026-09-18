@@ -8685,18 +8685,24 @@ def _campaign_report_quality(report: Mapping[str, Any]) -> tuple[object, ...]:
         else (False, 0, 1, float("-inf"))
     )
     progress = self_improvement_progress(report)
-    repair_focus_present = isinstance(
-        report.get("repair_focus_candidate_id"), str
+    # Rejected evaluations may record their source in either field. This is
+    # an anchor, not proof of quality: keep measured authority and stage/quality
+    # comparisons independent of that serialization choice.
+    candidate_anchor_present = any(
+        isinstance(value, str) and bool(value.strip())
+        for value in (
+            report.get("repair_focus_candidate_id"),
+            report.get("selected_candidate_id"),
+        )
     )
     return (
         str(report.get("status") or "") == "succeeded",
         post_apply.get("release_state") in {"verified", "verified_only"},
-        repair_focus_present,
-        progress.deepest_stage_rank if repair_focus_present else 0,
         not measurement_required
         or measurement.get("promotion_eligible") is True,
         *trusted_measurement_quality,
-        isinstance(report.get("selected_candidate_id"), str),
+        candidate_anchor_present,
+        progress.deepest_stage_rank if candidate_anchor_present else 0,
         confidence.get("passed") is True,
         metrics.get("evidence_incomplete") is False,
         metrics.get("deterministic_signal") is True,

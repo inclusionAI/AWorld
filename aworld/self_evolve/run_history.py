@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from itertools import islice
 from pathlib import Path
 from typing import Any, Iterable, Mapping
 
@@ -26,6 +27,7 @@ from aworld.self_evolve.history_support import _load_json_mapping
 from aworld.self_evolve.lineage_history import _lineage_records_from_report
 
 _SEMANTIC_DEDUP_IDENTITY_VERSION = "aworld.self_evolve.semantic_dedup.v2"
+_FEEDBACK_REPORT_SCAN_MULTIPLIER = 4
 
 
 @dataclass(frozen=True)
@@ -117,14 +119,17 @@ def _load_prior_rejected_feedback(
     limit: int = 12,
     allowed_run_ids: Iterable[str] | None = None,
 ) -> tuple[EvaluationSummary, ...]:
+    if limit <= 0:
+        return ()
     root = store.artifact_root
     if not root.exists():
         return ()
-    feedback: list[EvaluationSummary] = []
+    groups: list[tuple[EvaluationSummary, ...]] = []
     report_paths = _prior_report_paths(
         store,
         current_run_id=current_run_id,
         allowed_run_ids=allowed_run_ids,
+        scan_limit=limit * _FEEDBACK_REPORT_SCAN_MULTIPLIER,
     )
     for report_path in report_paths:
         if report_path.parent.name == current_run_id:
@@ -139,10 +144,22 @@ def _load_prior_rejected_feedback(
             require_path=allowed_run_ids is None,
         ):
             continue
-        for item in _feedback_from_report(report, report_path=report_path):
-            feedback.append(item)
-            if len(feedback) >= limit:
-                return tuple(feedback)
+        group = tuple(
+            islice(_feedback_from_report(report, report_path=report_path), limit)
+        )
+        if group:
+            groups.append(group)
+            if len(groups) >= limit:
+                break
+    # Preserve each report's split/ownership order while giving other reports
+    # room to expose newer candidate checkpoints within the original limit.
+    feedback: list[EvaluationSummary] = []
+    for offset in range(max((len(group) for group in groups), default=0)):
+        for group in groups:
+            if offset < len(group):
+                feedback.append(group[offset])
+                if len(feedback) >= limit:
+                    return tuple(feedback)
     return tuple(feedback)
 
 
@@ -353,15 +370,21 @@ def _prior_report_paths(
     *,
     current_run_id: str,
     allowed_run_ids: Iterable[str] | None,
+    scan_limit: int | None = None,
 ) -> list[Path]:
     if allowed_run_ids is None:
-        return sorted(
+        paths = sorted(
             store.artifact_root.glob("*/report.json"),
             key=lambda path: path.stat().st_mtime,
             reverse=True,
         )
+        return paths[:scan_limit] if scan_limit is not None else paths
     paths: list[Path] = []
-    for run_id in reversed(tuple(dict.fromkeys(str(item) for item in allowed_run_ids))):
+    prioritized_ids = reversed(
+        tuple(dict.fromkeys(str(item) for item in allowed_run_ids))
+    )
+    # Count missing/invalid explicit IDs too, so they cannot bypass the bound.
+    for run_id in islice(prioritized_ids, scan_limit):
         if run_id == current_run_id:
             continue
         try:
