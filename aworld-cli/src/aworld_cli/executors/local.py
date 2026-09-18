@@ -41,7 +41,7 @@ from aworld_cli.core.skill_activation_resolver import (
 )
 from .base_executor import BaseAgentExecutor
 from .hooks import ExecutorHookPoint, ExecutorHook
-from .stats import StreamTokenStats, build_llm_usage_observability, format_elapsed
+from .stats import StreamTokenStats, build_llm_usage_observability, format_elapsed, resolve_stream_context_window
 from .stream import (
     ActiveSteeringCommitBuffer,
     StreamDisplayConfig,
@@ -1371,6 +1371,10 @@ class LocalAgentExecutor(BaseAgentExecutor):
                                             # Update stream_token_stats if we have any token data
                                             if input_tokens is not None or output_tokens is not None:
                                                 logger.info(f"📊 Updating token stats - agent: {current_agent_name}, model: {model_name}, input: {input_tokens}, output: {output_tokens}, tool_calls: {tool_calls_count}")
+                                                context_window = resolve_stream_context_window(
+                                                    self.swarm, model_name=model_name, agent_name=current_agent_name,
+                                                    context=task.context, task_id=task.id, output=output,
+                                                )
                                                 stream_token_stats.update(
                                                     agent_id=None,
                                                     agent_name=current_agent_name,
@@ -1380,7 +1384,9 @@ class LocalAgentExecutor(BaseAgentExecutor):
                                                     output_estimated=(output_tokens is not None and usage is None),
                                                     input_estimated=(input_tokens is not None and usage is None),
                                                     tool_calls_estimated=False,
-                                                    model_name=model_name,
+                                                    model_name=context_window.model_name,
+                                                    context_window=context_window.tokens,
+                                                    context_window_source=context_window.source,
                                                 )
                                                 logger.info(f"📊 Token stats successfully updated - current stats: {stream_token_stats.get_current_stats()}")
                                                 self._publish_hud_stream_update(
@@ -1651,6 +1657,11 @@ class LocalAgentExecutor(BaseAgentExecutor):
                                     # 🔧 FIX: Update token stats and log the update
                                     if out_tok is not None or inp_tok is not None or tc_count is not None:
                                         logger.debug(f"📊 Updating token stats - agent: {agent_name}, model: {model_name}, input: {inp_tok}, output: {out_tok}, tool_calls: {tc_count}")
+                                        context_window = resolve_stream_context_window(
+                                            self.swarm, model_name=model_name,
+                                            agent_id=agent_id, agent_name=agent_name,
+                                            context=task.context, task_id=task.id, output=output,
+                                        )
                                         stream_token_stats.update(
                                             agent_id, agent_name,
                                             out_tok if out_tok is not None else 0,
@@ -1663,7 +1674,9 @@ class LocalAgentExecutor(BaseAgentExecutor):
                                             tool_calls_content_estimated=tc_content_est,
                                             tool_calls=ctrl.buffer.accumulated_tool_calls if ctrl.buffer.accumulated_tool_calls else None,
                                             content=ctrl.buffer.accumulated_content if ctrl.buffer.accumulated_content else None,
-                                            model_name=model_name,
+                                            model_name=context_window.model_name,
+                                            context_window=context_window.tokens,
+                                            context_window_source=context_window.source,
                                         )
                                         logger.debug(f"📊 Token stats updated successfully - current stats: {stream_token_stats.get_current_stats()}")
                                         current_tool_name = None
