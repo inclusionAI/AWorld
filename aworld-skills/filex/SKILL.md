@@ -60,6 +60,37 @@ or media.
 
 Use the bundled wrapper for FileX `inspect`, `parse`, and `status`. It validates workspace paths, resolves supported URL sources, keeps credentials out of command-line arguments, preserves FileX JSON fields, and returns `output_path` for synchronous parsing.
 
+## Allow time for document parsing
+
+Run FileX parsing synchronously in the foreground. When using the terminal
+`run_code` tool, set its `timeout` explicitly, for example:
+
+```json
+{
+  "code": "python3 /skills/filex/scripts/filex.py parse --input /workspace/input/report.pdf --sync-mode sync --artifacts-dir /logs/artifacts",
+  "timeout": 900
+}
+```
+
+Use `timeout: 1800` for a larger document or extensive chart recognition when
+the remaining task budget permits it. These are terminal tool arguments, not
+FileX CLI flags. The framework caps the command at its configured maximum and
+the remaining task deadline, reserving time to finish the task.
+
+OCR and remote VLM chart recognition can take more than 120 seconds, even for
+one page. Wait for the tool result; elapsed time alone does not mean parsing
+failed. Do not wrap the command in `nohup` or `&`, start duplicate parses, or
+kill and restart a parser simply because it is slow. If a tool call actually
+times out, preserve its error and establish that the prior command has ended
+before retrying within the remaining task budget.
+
+The standalone CLI's `--sync-mode async` does not create a persistent worker:
+its background coroutine belongs to the CLI process and cannot be relied on
+after that process exits. Do not use it to produce task artifacts;
+`--artifacts-dir` requires synchronous parsing. A separately deployed
+`filex-server` offers asynchronous HTTP jobs through its own submission and
+job-status API; the local CLI `status` command is not that API.
+
 ## Parse a local file
 
 Confirm the file is under the sandbox workspace, normally `/root/workspace`, then run:
@@ -193,7 +224,7 @@ python3 /skills/filex/scripts/filex.py parse \
   --file-type pdf
 ```
 
-The default maximum download is 512 MiB and the default timeout is 120 seconds.
+The default maximum download is 512 MiB and the default download timeout is 120 seconds.
 Operators may adjust `FILEX_MAX_DOWNLOAD_BYTES` and
 `FILEX_DOWNLOAD_TIMEOUT_SECONDS` on the container.
 
@@ -229,7 +260,10 @@ the response.
 
 ## PDF page and batch controls
 
-For PDF only, use `--pages 1,3-5`, `--page-batch-size 10`, `--first-batch-pages 10`, or `--batch-resume-id stable-id`. Add `--sync-mode async` for background parsing.
+For PDF only, use `--pages 1,3-5`, `--page-batch-size 10`, `--first-batch-pages 10`,
+or `--batch-resume-id stable-id`. Keep parsing synchronous. After a failed
+command has ended, repeating the same parse with its stable resume id can reuse
+completed batches.
 
 Read resumable progress with:
 
@@ -240,11 +274,20 @@ python3 /skills/filex/scripts/filex.py status \
   --after-batch 0
 ```
 
+`status` reads saved PDF batch checkpoints. It does not launch or keep a worker
+alive, and a successful batch checkpoint does not replace the parse command's
+final artifact export. A completed synchronous parse must still return its
+output paths successfully.
+
 Use `--no-cache` to bypass cache or `--force-refresh` to refresh an existing result.
 
 ## Consume results
 
-For synchronous parsing, read `output_path` with the filesystem text tool or bounded terminal chunks. For asynchronous parsing, preserve the returned task/batch identifiers and poll `status`. Inspect the generated Markdown before claiming OCR, table, formula, layout, transcription, or image-understanding fidelity.
+After synchronous parsing succeeds, read `output_path` with the filesystem text
+tool or bounded terminal chunks. Preserve any task and batch identifiers for
+diagnostics and resuming completed batches. Inspect the generated Markdown
+before claiming OCR, table, formula, layout, transcription, or
+image-understanding fidelity.
 
 ## Guardrails
 

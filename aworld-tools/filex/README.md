@@ -100,6 +100,19 @@ filex parse /root/workspace/report.pdf \
   --batch-resume-id report-2026-01
 ```
 
+Keep CLI parsing synchronous. When invoking it through AWorld's terminal
+`run_code` tool, supply an explicit `timeout`, such as 900 seconds or 1800 for
+larger documents, within the remaining task budget. Chart recognition can
+legitimately take more than 120 seconds. Wait for the foreground command rather
+than starting duplicate parses or manually restarting a slow parser.
+
+The standalone CLI's `--sync-mode async` schedules a coroutine in the CLI's own
+event loop; it does not create a worker that survives CLI exit. It is unsuitable
+for producing durable task artifacts, and the skill wrapper requires
+synchronous parsing for `--artifacts-dir`. `filex status` only reads saved PDF
+batch checkpoints; it does not supervise a background job. Use the separately
+deployed HTTP service below when asynchronous job submission is needed.
+
 YouTube sources use a transcript-first policy. Discovery does not download
 media; audio fallback requires explicit permission and a rights basis:
 
