@@ -82,8 +82,15 @@ or task reward.
 
 `bindings` contains `artifacts` and `inputs`, mapping every logical key to
 `{state: "regular", size, sha256}`, plus `check_definitions_sha256`. Missing,
-nonregular, symlink, unreadable or oversized files cannot produce a successful
-receipt. Every supplied file is re-read after execution; mutation invalidates
+nonregular, symlink or unreadable files cannot produce a successful receipt.
+Fingerprints always stream the complete regular file in bounded chunks. Metadata,
+hash and command checks do not retain file contents, so a valid large binary can
+pass existence/nonempty/size/hash checks without fitting in the parser cache.
+`max_file_bytes` and `max_total_bytes` bound only the bytes retained for content
+parsing; a JSON/CSV/text/numeric/source check exceeding them reports an explicit
+content parsing limit while preserving the real file's regular/size/hash binding.
+Explicit `file_size.max_bytes` remains a separate caller-specified constraint.
+Every supplied file is re-read after execution; mutation invalidates
 the receipt and removes top-level metrics. Hashes describe actual bytes rather
 than a filename, model claim or stale earlier candidate. Check definitions use
 sorted-key compact UTF-8 JSON with nonfinite numbers forbidden. Scope, hashes,

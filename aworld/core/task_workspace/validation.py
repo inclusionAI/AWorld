@@ -42,6 +42,16 @@ KINDS = {
     "source_syntax",
     "command",
 }
+CONTENT_KINDS = {
+    "text",
+    "json",
+    "csv",
+    "table",
+    "numeric",
+    "compare",
+    "preserve",
+    "source_syntax",
+}
 CHECK_SCHEMA = {
     "type": "object",
     "required": ["id", "kind"],
@@ -206,6 +216,7 @@ def describe_validation() -> dict:
 
 @dataclass(frozen=True)
 class ValidationLimits:
+    # These two limits bound retained parsing bytes, not metadata/hash validity.
     max_file_bytes: int = 64 * 1024 * 1024
     max_total_bytes: int = 256 * 1024 * 1024
     max_rows: int = 100000
@@ -242,7 +253,7 @@ def definition_hash(checks: Sequence[dict]) -> str:
     return hashlib.sha256(canonical(checks)).hexdigest()
 
 
-def _read(path: Path, limit: int) -> tuple[dict, bytes | None]:
+def _read(path: Path, limit: int, *, retain: bool = False) -> tuple[dict, bytes | None]:
     try:
         fd = os.open(
             path,
@@ -254,20 +265,26 @@ def _read(path: Path, limit: int) -> tuple[dict, bytes | None]:
                 return {"state": "not_regular", "size": before.st_size}, None
             if Path(path).is_symlink():
                 return {"state": "symlink"}, None
-            if before.st_size > limit:
-                return {"state": "too_large", "size": before.st_size}, None
-            data = stream.read(limit + 1)
+            retained = bytearray() if retain and before.st_size <= limit else None
+            digest, size = hashlib.sha256(), 0
+            while chunk := stream.read(1024 * 1024):
+                size += len(chunk)
+                if size > before.st_size:
+                    return {"state": "changed_during_read"}, None
+                digest.update(chunk)
+                if retained is not None:
+                    retained.extend(chunk)
             after = os.fstat(stream.fileno())
-            if len(data) > limit or (before.st_size, before.st_mtime_ns) != (
+            if size != before.st_size or (before.st_size, before.st_mtime_ns) != (
                 after.st_size,
                 after.st_mtime_ns,
             ):
                 return {"state": "changed_during_read"}, None
             return {
                 "state": "regular",
-                "size": len(data),
-                "sha256": hashlib.sha256(data).hexdigest(),
-            }, data
+                "size": size,
+                "sha256": digest.hexdigest(),
+            }, bytes(retained) if retained is not None else None
     except FileNotFoundError:
         return {"state": "missing"}, None
     except OSError as error:
@@ -432,22 +449,23 @@ def _builtin(
         metrics["size_bytes"] = binding["size"]
     if kind in {"exists", "regular_file"}:
         return binding["state"] == "regular", metrics, {"file_state": binding["state"]}
-    if data is None:
+    if binding["state"] != "regular":
         return False, metrics, {"file_state": binding["state"]}
     if kind in {"nonempty", "file_size"}:
         minimum, maximum = (
             check.get("min_bytes", 1 if kind == "nonempty" else 0),
-            check.get("max_bytes", limits.max_file_bytes),
+            check.get("max_bytes"),
         )
         if (
-            not isinstance(minimum, int)
-            or not isinstance(maximum, int)
+            type(minimum) is not int
             or minimum < 0
-            or maximum < minimum
+            or maximum is not None
+            and (type(maximum) is not int or maximum < minimum)
         ):
             raise ValueError("invalid file size bounds")
         return (
-            minimum <= len(data) <= maximum,
+            minimum <= binding["size"]
+            and (maximum is None or binding["size"] <= maximum),
             metrics,
             {"min_bytes": minimum, "max_bytes": maximum},
         )
@@ -456,6 +474,10 @@ def _builtin(
         if not isinstance(expected, str) or not re.fullmatch(r"[0-9a-f]{64}", expected):
             raise ValueError("expected sha256 must be 64 lowercase hex characters")
         return binding["sha256"] == expected, metrics, {}
+    if data is None:
+        raise ValueError(
+            "content parsing exceeds the per-file or aggregate memory allowance"
+        )
     if kind == "text":
         text = data.decode(check.get("encoding", "utf-8"))
         return True, {**metrics, "character_count": len(text)}, {}
@@ -835,17 +857,28 @@ async def validate_candidate(
         raise ValueError("every check requires a unique stable id")
     if len(canonical(checks)) > 512 * 1024:
         raise ValueError("check definitions exceed operation bound")
-    bindings, contents, read_limits, total = {}, {}, {}, 0
+    needed_content = {
+        "artifacts": {c.get("path") for c in checks if c.get("kind") in CONTENT_KINDS},
+        "inputs": {
+            c.get(key)
+            for c in checks
+            if c.get("kind") in CONTENT_KINDS
+            for key in ("input", "same_rows_as")
+            if c.get(key)
+        },
+    }
+    bindings, contents, total = {}, {}, 0
     for label, mapping in (("artifacts", candidate_files), ("inputs", inputs)):
         bindings[label], contents[label] = {}, {}
-        read_limits[label] = {}
         for name, path in mapping.items():
             if not isinstance(name, str) or not name:
                 raise ValueError("file mappings require nonempty logical names")
-            read_limits[label][name] = min(
+            allowance = min(
                 limits.max_file_bytes, max(0, limits.max_total_bytes - total)
             )
-            binding, data = _read(Path(path), read_limits[label][name])
+            binding, data = _read(
+                Path(path), allowance, retain=name in needed_content[label]
+            )
             bindings[label][name] = binding
             if data is not None:
                 contents[label][name] = data
@@ -887,6 +920,17 @@ async def validate_candidate(
                         raise ValueError(
                             "check path is not a registered candidate artifact"
                         )
+                    for key in ("input", "same_rows_as"):
+                        reference = check.get(key)
+                        if (
+                            check["kind"] in CONTENT_KINDS
+                            and reference in bindings["inputs"]
+                            and bindings["inputs"][reference]["state"] == "regular"
+                            and reference not in contents["inputs"]
+                        ):
+                            raise ValueError(
+                                "reference input parsing exceeds the per-file or aggregate memory allowance"
+                            )
                     passed, measured, evidence = _builtin(
                         check,
                         contents["artifacts"].get(path),
@@ -926,10 +970,7 @@ async def validate_candidate(
                 result["error"] = str(error)[:2048]
             results.append(result)
     after = {
-        label: {
-            name: _read(Path(path), read_limits[label][name])[0]
-            for name, path in mapping.items()
-        }
+        label: {name: _read(Path(path), 0)[0] for name, path in mapping.items()}
         for label, mapping in (("artifacts", candidate_files), ("inputs", inputs))
     }
     unchanged = all(after[key] == bindings[key] for key in after)

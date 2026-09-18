@@ -196,7 +196,7 @@ def test_missing_symlink_fifo_directory_and_size_bounds(tmp_path):
         )["success"]
     assert not validate(
         {"x": target},
-        [dict(id="file", kind="nonempty", path="x")],
+        [dict(id="file", kind="text", path="x")],
         limits=ValidationLimits(max_file_bytes=2),
     )["success"]
 
@@ -340,3 +340,91 @@ def test_command_uses_host_bound_task_env_without_inheriting_runtime_env(
         "PRIVATE_RUNTIME_TEST_TOKEN"
         not in result["checks"][0]["evidence"]["process"]["environment_keys"]
     )
+
+
+def large_sparse_binary(path):
+    size = ValidationLimits().max_file_bytes + 65537
+    with path.open("wb") as stream:
+        stream.truncate(size)
+        stream.seek(size - 4)
+        stream.write(b"TAIL")
+    expected = hashlib.sha256()
+    zeroes = b"\0" * (1024 * 1024)
+    for _ in range((size - 4) // len(zeroes)):
+        expected.update(zeroes)
+    expected.update(zeroes[: (size - 4) % len(zeroes)])
+    expected.update(b"TAIL")
+    return size, expected.hexdigest()
+
+
+def large_file_checks(key, size, digest):
+    return [
+        dict(id="exists", kind="exists", path=key),
+        dict(id="regular", kind="regular_file", path=key),
+        dict(id="nonempty", kind="nonempty", path=key),
+        dict(id="size", kind="file_size", path=key, min_bytes=size),
+        dict(id="sha", kind="sha256", path=key, expected=digest),
+    ]
+
+
+def test_large_binary_streams_complete_hash_without_retaining_parsing_bytes(tmp_path):
+    import tracemalloc
+
+    path = tmp_path / "large.bin"
+    size, digest = large_sparse_binary(path)
+    tracemalloc.start()
+    result = validate({"model": path}, large_file_checks("model", size, digest))
+    _, peak = tracemalloc.get_traced_memory()
+    tracemalloc.stop()
+    assert result["success"], result
+    assert result["bindings"]["artifacts"]["model"] == {
+        "state": "regular",
+        "size": size,
+        "sha256": digest,
+    }
+    assert peak < 8 * 1024 * 1024
+    assert result["metrics"]["size.size_bytes"] == size
+    parsed = validate({"model": path}, [dict(id="text", kind="text", path="model")])
+    assert not parsed["success"]
+    assert parsed["bindings"]["artifacts"]["model"]["state"] == "regular"
+    assert "content parsing" in parsed["checks"][0]["error"]
+    wrong = write(tmp_path, "wrong.bin", "short")
+    script = write(
+        tmp_path,
+        "size_checker.py",
+        "import json,pathlib,sys\nsize=pathlib.Path(sys.argv[1]).stat().st_size\nprint(json.dumps({'schema_version':'aworld.check-report/v1','checks':[{'id':'size','passed':size==int(sys.argv[2])}],'metrics':{'bytes':size}}))\n",
+    )
+    command = {
+        "id": "large-command",
+        "kind": "command",
+        "argv": [sys.executable, str(script), "{artifact:model}", str(size)],
+        "negative_controls": [{"replacements": {"model": "wrong"}}],
+    }
+    result = validate(
+        {"model": path}, [command], {"wrong": wrong}, working_dir=tmp_path
+    )
+    assert result["success"] and result["metrics"]["large-command.bytes"] == size
+
+
+def test_large_binary_receipt_can_be_validated_and_promoted_by_real_store(tmp_path):
+    store_module = pytest.importorskip(
+        "aworld.core.task_workspace.store",
+        reason="A2 store required for integrated regression",
+    )
+    workspace = tmp_path / "task"
+    workspace.mkdir()
+    source = workspace / "large-candidate.bin"
+    size, digest = large_sparse_binary(source)
+    store = store_module.TaskWorkspaceStore(
+        workspace, {"task": "large-binary"}, root=tmp_path / "stores"
+    )
+    candidate = store.register_candidate({"model.bin": source})
+    checks = large_file_checks("model.bin", size, digest)
+    policy = {"mandatory_checks": [check["id"] for check in checks]}
+    receipt = asyncio.run(
+        store.validate_candidate(candidate["candidate_id"], checks, policy)
+    )
+    assert receipt["eligible"], receipt
+    promoted = store.promote(candidate["candidate_id"], receipt["receipt_id"], policy)
+    assert promoted["promoted"] and promoted["readback"]["valid"]
+    assert (workspace / "model.bin").stat().st_size == size
