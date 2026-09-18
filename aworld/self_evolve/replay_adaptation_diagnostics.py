@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import errno
 from collections.abc import Callable, Mapping
 from pathlib import Path
 
@@ -65,6 +66,32 @@ def _replay_adaptation_exception_details(
     ),
 ) -> dict[str, object]:
     reason = sanitize_text(str(exc), max_chars=240)
+    # This exception was raised in the host adaptation pipeline. A candidate
+    # compiler's stderr or a wrapped error message cannot establish host errno.
+    if isinstance(exc, OSError) and exc.errno == errno.ENOSPC:
+        event = ReplayFailureEvent(
+            code="replay_adaptation_storage_exhausted",
+            owner=FailureOwner.INFRASTRUCTURE,
+            stage=FailureStage.ADAPTATION,
+            scope=FailureScope.SHARED_RUN,
+            repairable=False,
+            category="replay_adaptation",
+            summary=reason,
+            diagnostics={"error_type": type(exc).__name__, "errno": exc.errno},
+        )
+        payload = event.to_dict()
+        return {
+            "code": event.code,
+            "failure_class": "infrastructure",
+            "failure_owner": FailureOwner.INFRASTRUCTURE.value,
+            "failure_scope": FailureScope.SHARED_RUN.value,
+            "failure_source": FailureEventSource.NATIVE.value,
+            "repairable": False,
+            "stage": FailureStage.ADAPTATION.value,
+            "error_errno": exc.errno,
+            "failure_event": payload,
+            "causal_failure_events": [payload],
+        }
     if candidate_capability:
         diagnostic: dict[str, object] = {
             "code": "invalid_replay_capability_compile",
