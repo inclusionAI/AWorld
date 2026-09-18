@@ -677,17 +677,15 @@ async def execute_candidate_evaluation(
                             if regression_evidence is not None
                             else ()
                         )
-                        for summary in (
-                            result.baseline_summary,
-                            result.candidate_summary,
-                        )
-                        if result.fresh_execution
+                        for summary in result.judge_summaries
+                        if result.fresh_execution or result.evaluation_summaries
                     )
                     judge_tokens, judge_source = (
                         runtime.judge_actual_token_usage(
                             baseline_summary,
                             candidate_summary,
                             held_out_summary,
+                            held_out_baseline_summary,
                             *score_tiebreak_budget_summaries,
                             *regression_judge_summaries,
                             expected_summary_count=(

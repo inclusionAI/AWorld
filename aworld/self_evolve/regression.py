@@ -7,7 +7,7 @@ import time
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Iterable, Mapping
+from typing import Any, Iterable
 
 from aworld.self_evolve.datasets import (
     EvalCase,
@@ -91,6 +91,7 @@ class RegressionSuiteResult:
     execution_id: str
     duration_ms: int
     fresh_execution: bool = True
+    evaluation_summaries: tuple[EvaluationSummary, ...] = ()
 
     def __post_init__(self) -> None:
         if not self.execution_id:
@@ -104,8 +105,17 @@ class RegressionSuiteResult:
     def passed(self) -> bool:
         return bool(self.gate_results) and all(gate.passed for gate in self.gate_results)
 
+    @property
+    def judge_summaries(self) -> tuple[EvaluationSummary, ...]:
+        """Raw evaluation rounds for accounting; pooled scores are not new calls."""
+
+        return self.evaluation_summaries or (
+            self.baseline_summary,
+            self.candidate_summary,
+        )
+
     def to_dict(self) -> dict[str, Any]:
-        return {
+        payload = {
             "spec": self.spec.to_dict(),
             "baseline_summary": to_json_dict(self.baseline_summary),
             "candidate_summary": to_json_dict(self.candidate_summary),
@@ -115,6 +125,9 @@ class RegressionSuiteResult:
             "fresh_execution": self.fresh_execution,
             "passed": self.passed,
         }
+        if self.evaluation_summaries:
+            payload["evaluation_summaries"] = to_json_dict(self.evaluation_summaries)
+        return payload
 
 
 @dataclass(frozen=True)

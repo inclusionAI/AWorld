@@ -63,6 +63,7 @@ class CandidateEvaluationAdmissionPolicy:
     judge_repetitions: int
     min_eval_cases: int = 30
     regression_suite_case_counts: tuple[int, ...] = ()
+    regression_replay_repetitions: int = 1
     challenger_enabled: bool = False
     challenger_max_cases: int = 1
 
@@ -90,6 +91,12 @@ class CandidateEvaluationAdmissionPolicy:
                 "regression_suite_case_counts must be non-negative integers"
             )
         object.__setattr__(self, "regression_suite_case_counts", counts)
+        if (
+            isinstance(self.regression_replay_repetitions, bool)
+            or not isinstance(self.regression_replay_repetitions, int)
+            or self.regression_replay_repetitions < 1
+        ):
+            raise ValueError("regression_replay_repetitions must be positive")
         if (
             isinstance(self.challenger_max_cases, bool)
             or not isinstance(self.challenger_max_cases, int)
@@ -258,11 +265,15 @@ def _evaluation_work_units(
         variants += 2
         if not reuse_single_case_validation:
             variants += 2
+        # Reserve both arms of the initial independent panel and its single
+        # bounded score tie-break before admitting any authoritative work.
         regression_units = sum(
-            max(1, count) * 2 for count in policy.regression_suite_case_counts
+            max(1, count) * 4 for count in policy.regression_suite_case_counts
         )
         if policy.challenger_enabled and policy.regression_suite_case_counts:
-            regression_units += policy.challenger_max_cases * 2
+            regression_units += policy.challenger_max_cases * 4
+        if policy.replay_enabled:
+            regression_units *= policy.regression_replay_repetitions
     return max(1, case_count * variants + regression_units)
 
 

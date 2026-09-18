@@ -155,11 +155,8 @@ def _execution_usage_report(
             summaries.extend(
                 summary
                 for result in evidence.suite_results
-                for summary in (
-                    result.baseline_summary,
-                    result.candidate_summary,
-                )
-                if result.fresh_execution
+                for summary in result.judge_summaries
+                if result.fresh_execution or result.evaluation_summaries
             )
         judge_summaries.extend(
             summary for summary in summaries if isinstance(summary, EvaluationSummary)

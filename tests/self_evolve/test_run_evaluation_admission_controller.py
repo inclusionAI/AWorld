@@ -215,7 +215,7 @@ async def test_judge_budget_denial_skips_replay_backend(tmp_path: Path) -> None:
     assert budget.ledger.total_spent().tokens == 0
 
 
-@pytest.mark.parametrize("total_tokens,denied", [(50, True), (110, False)])
+@pytest.mark.parametrize("total_tokens,denied", [(50, True), (110, True), (140, False)])
 def test_judge_preflight_accounts_for_held_replay_and_releases_forecast(
     total_tokens: int, denied: bool,
 ) -> None:
@@ -237,9 +237,9 @@ def test_judge_preflight_accounts_for_held_replay_and_releases_forecast(
         replay_case_count=3,
         candidate_repetitions=1,
     )
-    # 18 primary/held-out/challenge units + 4 regression + 2 challenger,
+    # 18 primary/held-out/tie-break units + 8 regression + 4 challenger,
     # followed by three judge repetitions; the replay reservation stays held.
-    assert [x[2] for x in budget.reservations] == [10, 24, 72]
+    assert [x[2] for x in budget.reservations] == [10, 30, 90]
     assert (gate is not None) is denied
     if gate is not None:
         assert gate.gate_name == "run_budget_judge"
@@ -418,7 +418,12 @@ def test_target_behavior_admission_preserves_support_prerequisite() -> None:
     ]
 
 
-def test_evaluation_planning_reserves_full_verified_workload() -> None:
+@pytest.mark.parametrize("replay_enabled,repetitions,expected_units", [
+    (False, 1, 32), (False, 3, 32), (True, 1, 32), (True, 2, 52), (True, 3, 72),
+])
+def test_evaluation_planning_reserves_full_verified_workload(
+    replay_enabled: bool, repetitions: int, expected_units: int,
+) -> None:
     budget = _BudgetContext()
     cases = tuple(
         EvalCase(
@@ -441,16 +446,18 @@ def test_evaluation_planning_reserves_full_verified_workload() -> None:
         dataset=dataset,
         apply_policy="verified_only",
         budget_context=budget,
+        replay_dataset=dataset if replay_enabled else None,
     )
 
     result = plan_candidate_evaluation_admission(
         request,
         CandidateEvaluationAdmissionPolicy(
-            replay_enabled=False,
+            replay_enabled=replay_enabled,
             evaluation_backend=_EvaluationBackend(),
             judge_repetitions=3,
             min_eval_cases=2,
             regression_suite_case_counts=(3,),
+            regression_replay_repetitions=repetitions,
             challenger_enabled=True,
             challenger_max_cases=2,
         ),
@@ -458,15 +465,15 @@ def test_evaluation_planning_reserves_full_verified_workload() -> None:
     )
 
     assert result.terminal_result is None
-    assert result.evaluation_units == 22
+    assert result.evaluation_units == expected_units
     assert result.expected_judge_summary_count == 2
     assert result.evaluation_budget is not None
     assert result.evaluation_budget.allowed is True
     assert result.judge_budget is not None
     assert result.judge_budget.allowed is True
     assert budget.reservations == [
-        (BudgetStage.EVALUATION, "candidate-1-evaluation", 22),
-        (BudgetStage.JUDGE, "candidate-1-judge", 66),
+        (BudgetStage.EVALUATION, "candidate-1-evaluation", expected_units),
+        (BudgetStage.JUDGE, "candidate-1-judge", expected_units * 3),
     ]
 
 

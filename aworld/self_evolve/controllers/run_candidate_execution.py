@@ -250,6 +250,10 @@ async def execute_iteration_candidate(
         judge_repetitions=policy.judge_repetitions,
         min_eval_cases=policy.min_eval_cases,
         regression_suite_case_counts=policy.regression_suite_case_counts,
+        regression_replay_repetitions=max(
+            policy.baseline_replay_repetitions,
+            policy.candidate_replay_repetitions,
+        ) if policy.replay_enabled and request.candidate.target.target_type == "skill" else 1,
         challenger_enabled=policy.challenger_enabled,
         challenger_max_cases=policy.challenger_max_cases,
     )

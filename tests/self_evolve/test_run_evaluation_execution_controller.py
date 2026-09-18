@@ -34,6 +34,10 @@ from aworld.self_evolve.controllers.run_evaluation_execution import (
 from aworld.self_evolve.controllers.run_execution import (
     CandidateEvaluationRequest,
 )
+from aworld.self_evolve.controllers.run_budget_support import (
+    _execution_usage_report,
+    _judge_actual_token_usage,
+)
 from aworld.self_evolve.controllers.run_replay_execution import (
     CandidateReplayExecutionResult,
 )
@@ -41,6 +45,11 @@ from aworld.self_evolve.datasets import EvalCase, SelfEvolveDataset
 from aworld.self_evolve.optimizers.base import (
     CandidateSourceDisposition,
     CandidateSourceKind,
+)
+from aworld.self_evolve.regression import (
+    RegressionEvidence,
+    RegressionSuiteResult,
+    RegressionSuiteSpec,
 )
 from aworld.self_evolve.types import (
     CandidateVariant,
@@ -294,6 +303,106 @@ async def test_evaluation_execution_settles_telemetry_and_judge_budget() -> None
     assert evaluation_observation.known_lower_bound.tokens == 17
     assert budget.debits[1]["tokens"] == 11
     assert budget.debits[1]["actual_source"] == "test_judge_tokens"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("usage_case", ["complete", "partial_tiebreak", "initial_failure"])
+async def test_regression_tiebreak_accounts_for_all_raw_rounds_once(
+    usage_case: str,
+) -> None:
+    budget = _BudgetContext()
+    raw = tuple(
+        EvaluationSummary(
+            variant_id=role,
+            dataset_split="regression",
+            metrics={
+                "evaluation_execution_id": f"regression-{index}",
+                "evaluation_fresh_execution": True,
+                "judge_attempt_count": 1,
+                "judge_estimated_input_tokens_total": tokens // 2,
+                **({} if usage_case == "initial_failure" or (
+                    usage_case == "partial_tiebreak" and index >= 2)
+                   else {"judge_total_tokens": tokens}),
+            },
+        )
+        for index, (role, tokens) in enumerate([
+            ("baseline", 10), ("candidate-1", 20),
+            ("baseline", 30), ("candidate-1", 40),
+        ][:2 if usage_case == "initial_failure" else 4])
+    )
+    # Pooled score summaries are not raw judge calls and must not be charged.
+    pooled = tuple(
+        replace(summary, metrics={
+            **summary.metrics, "judge_total_tokens": 999_999,
+            "judge_attempt_count": 6,
+        })
+        for summary in raw[-2:]
+    )
+    suite = RegressionSuiteResult(
+        spec=RegressionSuiteSpec(
+            suite_id="independent", source_kind="jsonl", source_ref="test.jsonl",
+            source_version="source", dataset_fingerprint="independent-dataset",
+            split_fingerprint="independent-split", case_fingerprints=("independent-case",),
+        ),
+        baseline_summary=pooled[0], candidate_summary=pooled[1],
+        gate_results=(GateResult("score_improvement", True, "pooled score accepted"),),
+        execution_id="regression-suite", duration_ms=1,
+        evaluation_summaries=raw,
+        fresh_execution=usage_case != "initial_failure",
+    )
+    evidence = RegressionEvidence(
+        candidate_id="candidate-1", selection_dataset_fingerprint="selection",
+        selection_case_fingerprints=("selection-case",), selection_backend_id="selection",
+        regression_backend_id="regression", suite_results=(suite,),
+    )
+
+    async def evaluate_pair(_backend, **kwargs):
+        split = kwargs["dataset_split"]
+        return tuple(
+            replace_split(_summary(role, score, execution_id=f"{role}-{split}"), split)
+            for role, score in [("baseline", 70.0), ("candidate-1", 82.0)]
+        )
+
+    async def regression(**_kwargs):
+        return evidence, None, GateResult("challenger_admission", True, "admitted")
+
+    request, policy = _request(
+        apply_policy="verified_only", budget_context=budget,
+        judge_budget=_decision(BudgetStage.JUDGE, "candidate-1-judge"),
+    )
+    dataset = request.admission.evaluation_dataset
+    dataset = replace(dataset, recipe=replace(
+        dataset.recipe, held_out_case_ids=("case-1",),
+        splits={"held_out": ["case-1"]}, trainable_case_ids=(),
+    ))
+    request = replace(
+        request, evaluation=replace(request.evaluation, dataset=dataset),
+        admission=replace(request.admission, evaluation_dataset=dataset),
+    )
+    runtime = replace(
+        _runtime(telemetry=SelfEvolveExecutionTelemetry(), evaluate_pair=evaluate_pair),
+        evaluate_independent_regression=regression,
+        judge_actual_token_usage=_judge_actual_token_usage,
+    )
+    result = await execute_candidate_evaluation(request, policy, runtime)
+    assert result.regression_evidence is evidence
+    assert len(budget.debits) == 1
+    debit = budget.debits[0]
+    if usage_case != "complete":
+        expected_lower_bound = 35 if usage_case == "initial_failure" else 85
+        assert debit["usage_observation"].known_lower_bound.tokens == expected_lower_bound
+        assert debit["actual_source"].startswith("known_lower_bound_")
+    else:
+        # 4 selection/held-out summaries x 5, then 10 + 20 + 30 + 40.
+        assert debit["tokens"] == 120
+        assert debit["actual_source"] == "judge_total_tokens"
+    usage = _execution_usage_report(
+        optimizer_diagnostics=[], iteration_states=[{"regression_evidence": evidence}], stages={},
+    )
+    assert usage["evaluation_usage"]["judge_attempt_count"] == len(raw)
+    assert usage["token_usage"]["judge_estimated_input_tokens"] == (
+        15 if usage_case == "initial_failure" else 50
+    )
 
 
 @pytest.mark.asyncio
