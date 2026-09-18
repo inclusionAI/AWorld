@@ -498,7 +498,8 @@ def _explicit_contract(request: str, workspace: Path, explicit: Mapping[str, Any
     for label, items in (("output", outputs), ("input", inputs),
                          ("check", [check for item in outputs for check in item["checks"]] + top_checks)):
         ids = [item.get("id") for item in items]
-        if any(not isinstance(value, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}", value)
+        if any(not isinstance(value, str) or not value or "\0" in value
+               or (label != "input" and not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}", value))
                for value in ids):
             raise ValueError(f"explicit {label} IDs must be stable strings")
         if len(set(ids)) != len(ids):

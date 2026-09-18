@@ -149,3 +149,10 @@ def test_explicit_checks_cannot_overwrite_other_evidence(tmp_path, checks):
     with pytest.raises(ValueError):
         derive_delivery_contract('', workspace_path=tmp_path,
                                  explicit={'outputs': [{'path': 'a.json', 'checks': checks}]})
+
+
+def test_explicit_legacy_immutable_input_ids_preserve_caller_identity(tmp_path):
+    path = str(tmp_path / 'source.csv')
+    contract = derive_delivery_contract('', workspace_path=tmp_path,
+        explicit={'inputs': [{'id': path, 'path': path, 'immutable': True}]})
+    assert contract['inputs'][0]['id'] == path
