@@ -385,7 +385,10 @@ def configure_goal_completion(context, *, verification_commands: Sequence[str], 
     if previous_resolver is not None and previous_resolver is not resolve_runtime_completion_evidence:
         async def resolver(target, configured):
             await previous_resolver(target, base_resolver_contract)
-            await resolve_runtime_completion_evidence(target, configured)
+            # The caller resolver owns the original checks. Only execute this
+            # goal's added commands here; rerunning caller commands could mutate
+            # outputs twice and overwrite their authoritative evidence.
+            await resolve_runtime_completion_evidence(target, replace(configured, validation_commands=checks))
     context.configure_completion_contract(contract, mode=CompletionMode.ENFORCE, evidence_resolver=resolver)
     context.context_info["runtime_completion_contract"] = {
         "mode": "enforce", "requested_mode": "enforce", "source": "explicit_goal_verification",

@@ -20,7 +20,7 @@ from aworld.core.task import Task
 from aworld.core.task_workspace.contracts import derive_delivery_contract
 from aworld.models.model_response import ModelResponse
 from aworld.core.exceptions import AWorldRuntimeException
-from aworld_cli.core.runtime_completion import build_runtime_completion_contract, configure_goal_completion, configure_runtime_completion
+from aworld_cli.core.runtime_completion import build_runtime_completion_contract, configure_goal_completion, configure_runtime_completion, resolve_runtime_completion_evidence
 from aworld_cli.executors.local import LocalAgentExecutor
 
 
@@ -258,3 +258,19 @@ async def test_agent_caller_contract_does_not_replace_workspace_or_goal_extensio
     context.configure_completion_contract(CompletionContract((), (), (), None, ()), mode=CompletionMode.ENFORCE)
     with pytest.raises(ValueError, match='conflicting completion contracts'):
         agent._install_runtime_completion_contract(context)
+
+
+@pytest.mark.asyncio
+async def test_goal_extension_executes_custom_caller_checks_once(tmp_path):
+    counter = tmp_path / 'caller-check-count.txt'
+    command = ValidationCommand('caller-once', (sys.executable, '-c',
+        'from pathlib import Path; import sys; p=Path(sys.argv[1]); p.write_text(p.read_text()+"x" if p.exists() else "x")',
+        str(counter)))
+    original = CompletionContract((), (), (command,), None, ())
+    context = Context(task_id='caller-execution-count')
+    async def caller_resolver(target, contract):
+        await resolve_runtime_completion_evidence(target, contract)
+    context.configure_completion_contract(original, mode=CompletionMode.ENFORCE, evidence_resolver=caller_resolver)
+    configure_goal_completion(context, verification_commands=['true'], workspace_path=tmp_path)
+    await context.resolve_completion_evidence()
+    assert counter.read_text() == 'x'
