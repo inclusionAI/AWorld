@@ -28,6 +28,7 @@ def test_known_models_resolve_capacity_independently_of_the_tokenizer(model, exp
 def test_unknown_aliases_have_an_explicit_operational_fallback(model):
     result = resolve_model_context_window(model)
     assert result.tokens == DEFAULT_CONTEXT_WINDOW_TOKENS
+    assert result.tokens == 1_000_000
     assert result.source == 'fallback' and result.matched_model is None
     assert ModelUtils.get_context_window(model) == result.tokens
 

@@ -308,6 +308,73 @@ def test_run_command_writes_minimal_atif_for_pre_execution_failure(
     assert _marker_payload(stderr, "AWORLD_RUN_OUTCOME=")["process_exit_code"] == 1
 
 
+def test_run_command_finalizes_caller_deadline_as_budget_exhaustion(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    tmp_path,
+) -> None:
+    from aworld_cli.async_runtime import DirectRunDeadlineExceeded
+
+    def deadline_exceeded(_coro):
+        _coro.close()
+        raise DirectRunDeadlineExceeded
+
+    monkeypatch.setattr(
+        "aworld_cli.top_level_commands.run_cmd.run_direct_async",
+        deadline_exceeded,
+    )
+    monkeypatch.setattr(
+        "aworld_cli.top_level_commands.run_cmd.bootstrap_runtime",
+        lambda **_kwargs: None,
+    )
+    monkeypatch.setenv("AWORLD_TASK_FAILURE_EXIT_CODE", "64")
+    trajectory_path = tmp_path / "trajectory.json"
+    outcome_path = tmp_path / "outcome.json"
+    args = SimpleNamespace(
+        task="perform a long task",
+        agent="Aworld",
+        skill=None,
+        max_runs=None,
+        max_cost=None,
+        max_duration=None,
+        completion_signal=None,
+        completion_threshold=3,
+        non_interactive=True,
+        session_id=None,
+        env_file=".env",
+        remote_backend=None,
+        agent_dir=None,
+        agent_file=None,
+        skill_path=None,
+        emit_trajectory=False,
+        trajectory_output=str(trajectory_path),
+        outcome_output=str(outcome_path),
+    )
+
+    exit_code = RunTopLevelCommand().run(
+        args,
+        SimpleNamespace(argv=("aworld-cli", "run")),
+    )
+
+    assert exit_code == 64
+    trajectory = json.loads(trajectory_path.read_text(encoding="utf-8"))
+    aworld = trajectory["extra"]["aworld"]
+    assert aworld["completion_state"] == "incomplete"
+    assert aworld["run_outcome"]["semantic_status"] == "task_failed"
+    assert aworld["run_outcome"]["process_exit_code"] == 64
+    assert aworld["run_outcome"]["failure"] == {
+        "stage": "agent_execution",
+        "error_code": "agent_budget_exhausted",
+    }
+    persisted = json.loads(outcome_path.read_text(encoding="utf-8"))
+    assert {
+        key: value for key, value in persisted.items() if key != "atif_export"
+    } == aworld["run_outcome"]
+    assert persisted["atif_export"]["status"] == "persisted"
+    stderr = capsys.readouterr().err
+    assert _marker_payload(stderr, "AWORLD_RUN_OUTCOME=") == persisted
+
+
 def test_run_command_writes_partial_atif_before_returning_task_failure(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],

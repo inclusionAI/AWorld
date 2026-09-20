@@ -2,14 +2,17 @@ from __future__ import annotations
 
 import asyncio
 import os
-from pathlib import Path
 import subprocess
 import sys
+import time
+from pathlib import Path
 
 import pytest
-
 from aworld_cli.async_runtime import (
     BOUNDED_ASYNC_SHUTDOWN_ENV,
+    TASK_COMPLETION_RESERVE_ENV,
+    TASK_DEADLINE_EPOCH_ENV,
+    DirectRunDeadlineExceeded,
     hard_exit_direct_run_if_configured,
     run_direct_async,
 )
@@ -21,6 +24,22 @@ def test_direct_async_keeps_standard_asyncio_run_by_default(
     monkeypatch.delenv(BOUNDED_ASYNC_SHUTDOWN_ENV, raising=False)
 
     assert run_direct_async(asyncio.sleep(0, result="complete")) == "complete"
+
+
+def test_direct_async_returns_at_caller_deadline_without_waiting_for_provider(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(BOUNDED_ASYNC_SHUTDOWN_ENV, "0.02")
+    monkeypatch.setenv(TASK_DEADLINE_EPOCH_ENV, str(time.time() + 0.05))
+    monkeypatch.setenv(TASK_COMPLETION_RESERVE_ENV, "0")
+
+    async def stubborn_provider() -> None:
+        await asyncio.Event().wait()
+
+    started = time.monotonic()
+    with pytest.raises(DirectRunDeadlineExceeded):
+        run_direct_async(stubborn_provider())
+    assert time.monotonic() - started < 1
 
 
 def test_bounded_shutdown_exits_process_with_stubborn_provider_task() -> None:

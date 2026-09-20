@@ -9,16 +9,23 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 import os
 import sys
+import time
 from collections.abc import Coroutine
 from typing import Any, TypeVar
 
-
 BOUNDED_ASYNC_SHUTDOWN_ENV = "AWORLD_DIRECT_RUN_SHUTDOWN_TIMEOUT_SECONDS"
+TASK_DEADLINE_EPOCH_ENV = "AWORLD_TASK_DEADLINE_EPOCH_SECONDS"
+TASK_COMPLETION_RESERVE_ENV = "AWORLD_TERMINAL_COMPLETION_RESERVE_SECONDS"
 _MAX_SHUTDOWN_TIMEOUT_SECONDS = 30.0
 _T = TypeVar("_T")
 logger = logging.getLogger(__name__)
+
+
+class DirectRunDeadlineExceeded(TimeoutError):
+    """The caller-owned task deadline expired before direct mode returned."""
 
 
 def _bounded_shutdown_timeout() -> float | None:
@@ -35,6 +42,50 @@ def _bounded_shutdown_timeout() -> float | None:
             f"than {_MAX_SHUTDOWN_TIMEOUT_SECONDS:g}"
         )
     return value
+
+
+def _direct_run_timeout() -> float | None:
+    """Return the time available before the caller's completion reserve.
+
+    The process supervisor owns the absolute deadline.  Direct mode must stop
+    early enough to replace its initial ``in_progress`` ATIF checkpoint with a
+    terminal outcome and atomically persist the matching outcome sidecar.
+    """
+
+    raw_deadline = os.environ.get(TASK_DEADLINE_EPOCH_ENV)
+    if raw_deadline is None or not raw_deadline.strip():
+        return None
+    raw_reserve = os.environ.get(TASK_COMPLETION_RESERVE_ENV, "0")
+    try:
+        deadline = float(raw_deadline)
+        reserve = float(raw_reserve)
+    except ValueError as exc:
+        raise ValueError(
+            f"{TASK_DEADLINE_EPOCH_ENV} and {TASK_COMPLETION_RESERVE_ENV} "
+            "must be numeric"
+        ) from exc
+    if not math.isfinite(deadline) or deadline <= 0:
+        raise ValueError(f"{TASK_DEADLINE_EPOCH_ENV} must be positive and finite")
+    if not math.isfinite(reserve) or reserve < 0:
+        raise ValueError(
+            f"{TASK_COMPLETION_RESERVE_ENV} must be non-negative and finite"
+        )
+    return max(0.0, deadline - time.time() - reserve)
+
+
+async def _run_until_deadline(
+    coro: Coroutine[Any, Any, _T], *, timeout: float
+) -> _T:
+    task = asyncio.create_task(coro)
+    done, _pending = await asyncio.wait({task}, timeout=timeout)
+    if task in done:
+        return task.result()
+    # Do not cancel provider-owned work here.  Cancellation handlers are
+    # outside our trust boundary and may block the loop synchronously.  The
+    # explicit one-shot process boundary reaps them after final evidence is
+    # persisted by the caller.
+    _silence_destroyed_task_warning(task)
+    raise DirectRunDeadlineExceeded
 
 
 def _silence_destroyed_task_warning(task: asyncio.Task[Any]) -> None:
@@ -101,13 +152,24 @@ def run_direct_async(coro: Coroutine[Any, Any, _T]) -> _T:
         coro.close()
         raise RuntimeError("run_direct_async() cannot be called from a running loop")
     try:
-        timeout = _bounded_shutdown_timeout()
+        shutdown_timeout = _bounded_shutdown_timeout()
+        direct_timeout = _direct_run_timeout()
     except BaseException:
         coro.close()
         raise
-    if timeout is None:
-        return asyncio.run(coro)
-    return _run_with_bounded_shutdown(coro, timeout)
+    if direct_timeout is not None and shutdown_timeout is None:
+        coro.close()
+        raise ValueError(
+            f"{TASK_DEADLINE_EPOCH_ENV} requires {BOUNDED_ASYNC_SHUTDOWN_ENV}"
+        )
+    bounded_coro = (
+        _run_until_deadline(coro, timeout=direct_timeout)
+        if direct_timeout is not None
+        else coro
+    )
+    if shutdown_timeout is None:
+        return asyncio.run(bounded_coro)
+    return _run_with_bounded_shutdown(bounded_coro, shutdown_timeout)
 
 
 def hard_exit_direct_run_if_configured(exit_code: int) -> None:
@@ -131,6 +193,9 @@ def hard_exit_direct_run_if_configured(exit_code: int) -> None:
 
 __all__ = [
     "BOUNDED_ASYNC_SHUTDOWN_ENV",
+    "TASK_COMPLETION_RESERVE_ENV",
+    "TASK_DEADLINE_EPOCH_ENV",
+    "DirectRunDeadlineExceeded",
     "hard_exit_direct_run_if_configured",
     "run_direct_async",
 ]

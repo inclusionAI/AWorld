@@ -9,7 +9,7 @@ import tempfile
 from dataclasses import replace
 from pathlib import Path
 
-from aworld_cli.async_runtime import run_direct_async
+from aworld_cli.async_runtime import DirectRunDeadlineExceeded, run_direct_async
 from aworld_cli.runtime_bootstrap import RuntimeBootstrapError, bootstrap_runtime
 
 
@@ -285,6 +285,13 @@ class RunTopLevelCommand:
                 agent_name=agent_name,
                 status=DirectRunStatus.CANCELLED,
                 process_exit_code=130,
+            )
+        except DirectRunDeadlineExceeded:
+            outcome = _direct_run_failure_outcome(
+                stage=DirectRunStage.AGENT_EXECUTION,
+                error_code=DirectRunErrorCode.AGENT_BUDGET_EXHAUSTED,
+                agent_name=agent_name,
+                status=DirectRunStatus.TASK_FAILED,
             )
         except Exception as exc:
             outcome = _direct_run_failure_outcome(
