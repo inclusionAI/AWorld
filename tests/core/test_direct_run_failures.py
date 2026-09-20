@@ -1,5 +1,6 @@
 import asyncio
 import json
+import time
 from types import SimpleNamespace
 
 import pytest
@@ -372,7 +373,80 @@ def test_run_command_finalizes_caller_deadline_as_budget_exhaustion(
     } == aworld["run_outcome"]
     assert persisted["atif_export"]["status"] == "persisted"
     stderr = capsys.readouterr().err
+    assert _marker_payload(stderr, "AWORLD_RUN_FAILURE=")["details"] == {
+        "error_type": "DirectRunDeadlineExceeded",
+        "phase": "task_deadline",
+    }
     assert _marker_payload(stderr, "AWORLD_RUN_OUTCOME=") == persisted
+
+
+def test_run_command_preserves_startup_watchdog_stage(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    tmp_path,
+) -> None:
+    from aworld_cli.async_runtime import DirectRunDeadlineExceeded
+
+    def startup_deadline_exceeded(_coro):
+        _coro.close()
+        raise DirectRunDeadlineExceeded(
+            stage="provider_start",
+            phase="awaiting_first_provider_attempt",
+        )
+
+    monkeypatch.setattr(
+        "aworld_cli.top_level_commands.run_cmd.run_direct_async",
+        startup_deadline_exceeded,
+    )
+    monkeypatch.setattr(
+        "aworld_cli.top_level_commands.run_cmd.bootstrap_runtime",
+        lambda **_kwargs: None,
+    )
+    monkeypatch.setenv("AWORLD_TASK_FAILURE_EXIT_CODE", "64")
+    trajectory_path = tmp_path / "trajectory.json"
+    args = SimpleNamespace(
+        task="stalled startup",
+        agent="Aworld",
+        skill=None,
+        max_runs=None,
+        max_cost=None,
+        max_duration=None,
+        completion_signal=None,
+        completion_threshold=3,
+        non_interactive=True,
+        session_id=None,
+        env_file=".env",
+        remote_backend=None,
+        agent_dir=None,
+        agent_file=None,
+        skill_path=None,
+        emit_trajectory=False,
+        trajectory_output=str(trajectory_path),
+        outcome_output=None,
+    )
+
+    assert RunTopLevelCommand().run(
+        args,
+        SimpleNamespace(argv=("aworld-cli", "run")),
+    ) == 1
+
+    trajectory = json.loads(trajectory_path.read_text(encoding="utf-8"))
+    failure = trajectory["extra"]["aworld"]["run_outcome"]["failure"]
+    assert failure == {
+        "stage": "provider_start",
+        "error_code": "provider_start_timeout",
+    }
+    assert trajectory["extra"]["aworld"]["run_outcome"]["semantic_status"] == (
+        "infrastructure_failed"
+    )
+    failure_marker = _marker_payload(
+        capsys.readouterr().err,
+        "AWORLD_RUN_FAILURE=",
+    )
+    assert failure_marker["details"] == {
+        "error_type": "DirectRunDeadlineExceeded",
+        "phase": "awaiting_first_provider_attempt",
+    }
 
 
 def test_run_command_writes_partial_atif_before_returning_task_failure(
@@ -685,6 +759,40 @@ def test_direct_run_outcome_uses_build_counts_and_last_successful_checkpoint() -
     }
 
 
+def test_live_provider_evidence_ignores_pre_provider_stream_state() -> None:
+    calls: list[dict] = []
+
+    class Context:
+        task_id = "task-current"
+
+        @staticmethod
+        def get_llm_calls():
+            return calls
+
+    executor = SimpleNamespace(context=Context())
+    cursor = main_module._live_provider_evidence_cursor(executor)
+    calls.append(
+        {
+            "task_id": "task-current",
+            "capture_stage": "compiled",
+            "provider_invoked": False,
+        }
+    )
+    # A StepOutput can exist before async_pre_run reaches the provider.  It
+    # must not be accepted as provider-start evidence.
+    executor._aworld_cli_execution_evidence_sequence = 99
+
+    assert not main_module._new_live_provider_evidence(executor, cursor=cursor)
+
+    calls[0].update(
+        {
+            "provider_invoked": True,
+            "provider_attempt_status": "attempted",
+        }
+    )
+    assert main_module._new_live_provider_evidence(executor, cursor=cursor)
+
+
 @pytest.mark.asyncio
 async def test_direct_run_defaults_to_one_complete_agent_run(
     monkeypatch: pytest.MonkeyPatch,
@@ -725,6 +833,64 @@ async def test_direct_run_defaults_to_one_complete_agent_run(
     await main_module._run_direct_mode(prompt="test", agent_name="Aworld")
 
     assert captured["max_runs"] == 1
+
+
+@pytest.mark.asyncio
+async def test_direct_run_watchdog_covers_pre_provider_executor_stall(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from aworld_cli.async_runtime import DirectRunDeadlineExceeded
+
+    selected_agent = SimpleNamespace(name="Aworld")
+    executor = SimpleNamespace(context=None)
+    release = asyncio.Event()
+
+    class DummyRuntime:
+        def __init__(self, *args, **kwargs) -> None:
+            self._scheduler = None
+
+        async def _load_agents(self):
+            return [selected_agent]
+
+        def _bind_scheduler_default_agent(self, _agent_name: str) -> None:
+            pass
+
+        async def _create_executor(self, _agent):
+            return executor
+
+        def _restore_executor_session(self, *_args, **_kwargs) -> None:
+            pass
+
+    class DummyContinuousExecutor:
+        def __init__(self, *_args, **_kwargs) -> None:
+            pass
+
+        async def run_continuous(self, **_kwargs):
+            await release.wait()
+
+    monkeypatch.setattr(main_module, "CliRuntime", DummyRuntime)
+    monkeypatch.setattr(main_module, "ContinuousExecutor", DummyContinuousExecutor)
+    monkeypatch.setattr("aworld.core.scheduler.get_scheduler", lambda: object())
+    monkeypatch.setenv(
+        "AWORLD_DIRECT_RUN_FIRST_PROVIDER_TIMEOUT_SECONDS",
+        "0.02",
+    )
+    monkeypatch.setenv(
+        "AWORLD_TASK_DEADLINE_EPOCH_SECONDS",
+        str(time.time() + 1),
+    )
+    monkeypatch.setenv("AWORLD_TERMINAL_COMPLETION_RESERVE_SECONDS", "0")
+
+    with pytest.raises(DirectRunDeadlineExceeded) as raised:
+        await main_module._run_direct_mode(
+            prompt="test",
+            agent_name="Aworld",
+            non_interactive=True,
+        )
+    assert raised.value.stage == "provider_start"
+    assert raised.value.phase == "awaiting_first_provider_attempt"
+    release.set()
+    await asyncio.sleep(0)
 
 
 @pytest.mark.asyncio

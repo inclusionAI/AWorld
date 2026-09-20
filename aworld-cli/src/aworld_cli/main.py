@@ -16,6 +16,10 @@ from typing import Optional
 
 from aworld.plugins.discovery import discover_plugins
 
+from .async_runtime import (
+    DirectRunDeadlineExceeded,
+    run_with_first_provider_start_watchdog,
+)
 from .run_outcome import (
     DirectRunErrorCode,
     DirectRunOutcome,
@@ -49,6 +53,49 @@ def _direct_run_has_provider_evidence(summary: object) -> bool:
         if isinstance(llm_calls, list) and llm_calls:
             return True
     return False
+
+
+def _live_provider_evidence_cursor(agent_executor: object) -> tuple[object, int]:
+    """Snapshot explicit provider-boundary evidence for the active task."""
+
+    context = getattr(agent_executor, "context", None)
+    calls: object = None
+    get_calls = getattr(context, "get_llm_calls", None)
+    if callable(get_calls):
+        try:
+            calls = get_calls()
+        except Exception:
+            calls = None
+    elif context is not None:
+        context_info = getattr(context, "context_info", None)
+        if isinstance(context_info, dict):
+            calls = context_info.get("llm_calls")
+    task_id = getattr(context, "task_id", None)
+    provider_evidence_count = sum(
+        1
+        for record in (calls if isinstance(calls, list) else ())
+        if isinstance(record, dict)
+        and (task_id is None or record.get("task_id") == task_id)
+        and (
+            record.get("provider_invoked") is True
+            or record.get("provider_attempt_status") == "attempted"
+        )
+    )
+    return context, provider_evidence_count
+
+
+def _new_live_provider_evidence(
+    agent_executor: object,
+    *,
+    cursor: tuple[object, int],
+) -> bool:
+    """Detect the current task's first explicit provider invocation."""
+
+    initial_context, initial_count = cursor
+    context, evidence_count = _live_provider_evidence_cursor(agent_executor)
+    return evidence_count > 0 and (
+        context is not initial_context or evidence_count > initial_count
+    )
 
 
 def _direct_run_succeeded(summary: object) -> bool:
@@ -1242,7 +1289,7 @@ def _direct_run_control_details(details: Optional[dict]) -> dict:
         value = details.get(key)
         if isinstance(value, bool):
             projected[key] = value
-    for key in ("error_type", "failure_code", "trajectory_capture_mode"):
+    for key in ("error_type", "failure_code", "phase", "trajectory_capture_mode"):
         value = details.get(key)
         if isinstance(value, str) and _CONTROL_DETAIL_IDENTIFIER.fullmatch(value):
             projected[key] = value
@@ -1593,19 +1640,26 @@ async def _run_direct_mode(
     summary = None
     try:
         for provider_attempt in range(1, max_provider_attempts + 1):
-            summary = await continuous_executor.run_continuous(
-                prompt=multimodal_prompt,
-                agent_name=agent_name,
-                requested_skill_names=requested_skill_names,
-                non_interactive=non_interactive,
-                max_runs=max_runs,
-                max_cost=max_cost,
-                max_duration=max_duration,
-                completion_signal=completion_signal,
-                completion_threshold=completion_threshold,
-                show_start_banner=show_start_banner,
-                show_iteration_header=show_iteration_header,
-                echo_prompt_as_turn=echo_prompt_as_turn,
+            evidence_cursor = _live_provider_evidence_cursor(agent_executor)
+            summary = await run_with_first_provider_start_watchdog(
+                continuous_executor.run_continuous(
+                    prompt=multimodal_prompt,
+                    agent_name=agent_name,
+                    requested_skill_names=requested_skill_names,
+                    non_interactive=non_interactive,
+                    max_runs=max_runs,
+                    max_cost=max_cost,
+                    max_duration=max_duration,
+                    completion_signal=completion_signal,
+                    completion_threshold=completion_threshold,
+                    show_start_banner=show_start_banner,
+                    show_iteration_header=show_iteration_header,
+                    echo_prompt_as_turn=echo_prompt_as_turn,
+                ),
+                evidence_observed=lambda: _new_live_provider_evidence(
+                    agent_executor,
+                    cursor=evidence_cursor,
+                ),
             )
             if _direct_run_cancelled(summary):
                 break
@@ -1631,6 +1685,8 @@ async def _run_direct_mode(
                 },
                 summary=summary,
             )
+    except DirectRunDeadlineExceeded:
+        raise
     except asyncio.CancelledError:
         summary = _prefer_captured_summary(
             summary,

@@ -286,12 +286,29 @@ class RunTopLevelCommand:
                 status=DirectRunStatus.CANCELLED,
                 process_exit_code=130,
             )
-        except DirectRunDeadlineExceeded:
+        except DirectRunDeadlineExceeded as exc:
+            try:
+                deadline_stage = DirectRunStage(exc.stage)
+            except (AttributeError, ValueError):
+                deadline_stage = DirectRunStage.AGENT_EXECUTION
+            startup_timeout = deadline_stage is DirectRunStage.PROVIDER_START
             outcome = _direct_run_failure_outcome(
-                stage=DirectRunStage.AGENT_EXECUTION,
-                error_code=DirectRunErrorCode.AGENT_BUDGET_EXHAUSTED,
+                stage=deadline_stage,
+                error_code=(
+                    DirectRunErrorCode.PROVIDER_START_TIMEOUT
+                    if startup_timeout
+                    else DirectRunErrorCode.AGENT_BUDGET_EXHAUSTED
+                ),
                 agent_name=agent_name,
-                status=DirectRunStatus.TASK_FAILED,
+                details={
+                    "error_type": type(exc).__name__,
+                    "phase": getattr(exc, "phase", "task_deadline"),
+                },
+                status=(
+                    DirectRunStatus.INFRASTRUCTURE_FAILED
+                    if startup_timeout
+                    else DirectRunStatus.TASK_FAILED
+                ),
             )
         except Exception as exc:
             outcome = _direct_run_failure_outcome(

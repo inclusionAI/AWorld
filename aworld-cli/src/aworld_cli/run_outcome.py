@@ -41,6 +41,7 @@ class DirectRunErrorCode(str, Enum):
     AGENT_NOT_FOUND = "agent_not_found"
     EXECUTOR_CREATION_FAILED = "executor_creation_failed"
     PROVIDER_CALL_NOT_CAPTURED = "provider_call_not_captured"
+    PROVIDER_START_TIMEOUT = "provider_start_timeout"
     AGENT_TASK_FAILED = "agent_task_failed"
     AGENT_INCOMPLETE = "agent_incomplete"
     AGENT_BUDGET_EXHAUSTED = "agent_budget_exhausted"

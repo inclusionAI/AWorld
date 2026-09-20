@@ -1998,6 +1998,7 @@ class LLMModel:
             "request": request,
             "context_observe": observe_payload,
             "attempt": 1,
+            "provider_invoked": bool(provider_invoked),
         }
         try:
             turn_receipt = context.record_model_turn(request_id, messages)
@@ -2014,8 +2015,6 @@ class LLMModel:
             }
         if context_rollout is not None:
             llm_call["context_rollout"] = self._safe_copy(context_rollout)
-        if not provider_invoked:
-            llm_call["provider_invoked"] = False
         llm_call["request_trace_match_scope"] = "aworld.standard.model_boundary.v1"
         if observation is not None:
             try:

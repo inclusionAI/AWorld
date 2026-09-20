@@ -1,5 +1,6 @@
 import abc
 import asyncio
+import contextlib
 from abc import abstractmethod
 from dataclasses import field, dataclass
 from typing import AsyncIterator, Any, Union, Iterator, Optional
@@ -11,6 +12,10 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from aworld.core.task import TaskResponse
+
+
+class StreamingOutputProtocolError(RuntimeError):
+    """The producer terminated without completing the stream protocol."""
 
 
 @dataclass
@@ -180,7 +185,7 @@ class StreamingOutputs(AsyncOutputs):
                     break
 
                 try:
-                    output = await self._output_queue.get()
+                    output = await self._next_output_or_producer_completion()
                     logger.info("Outputs got output: {}".format(output.output_type()))
                     self._visited_outputs.append(output)
 
@@ -202,6 +207,48 @@ class StreamingOutputs(AsyncOutputs):
         if self._stored_exception:
             logger.info(f"StreamingOutputs|stream_events|stored_exception|{self.task_id}|{self._stored_exception}")
             raise self._stored_exception
+
+    async def _next_output_or_producer_completion(self) -> Output:
+        """Wait for queue progress and producer termination without a lost wakeup.
+
+        The producer may fail after ``stream_events`` checks its state but
+        before it enqueues an output or completion sentinel.  Waiting only on
+        ``Queue.get`` in that window leaves the consumer asleep forever.
+        Racing the queue read with the producer task makes producer failure a
+        wake-up source while still preferring an output that arrived at the
+        same time.
+        """
+
+        producer = self._run_impl_task
+        if producer is None:
+            return await self._output_queue.get()
+
+        queue_read = asyncio.create_task(self._output_queue.get())
+        try:
+            done, _pending = await asyncio.wait(
+                {queue_read, producer},
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            if queue_read in done:
+                return queue_read.result()
+
+            # A completion callback and Queue wake-up can be scheduled in the
+            # same loop turn.  Preserve that final output before inspecting the
+            # producer's terminal state.
+            if not self._output_queue.empty():
+                return await queue_read
+
+            self._check_errors()
+            if self._stored_exception:
+                raise self._stored_exception
+            raise StreamingOutputProtocolError(
+                "stream producer completed without publishing a completion signal"
+            )
+        finally:
+            if not queue_read.done():
+                queue_read.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await queue_read
 
     def _check_errors(self):
         """Check for errors in the streaming process.

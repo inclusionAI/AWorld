@@ -1763,7 +1763,13 @@ class LocalAgentExecutor(BaseAgentExecutor):
                         logger.info(f"📊 consume_stream interrupted - token stats: {stream_token_stats.get_current_stats() if stream_token_stats else None}")
                         raise  # Re-raise so caller can handle (e.g. continue to next prompt)
                     except Exception as e:
-                        logger.error(f"📊 consume_stream error - token stats: {stream_token_stats.get_current_stats() if stream_token_stats else None}")
+                        logger.error(
+                            "📊 consume_stream error - error_type=%s token_stats=%s",
+                            type(e).__name__,
+                            stream_token_stats.get_current_stats()
+                            if stream_token_stats
+                            else None,
+                        )
                         if self.console and not active_event_mode:
                             error_body = Text("Error in stream consumption: ")
                             error_body.append(str(e))

@@ -10,11 +10,13 @@ from pathlib import Path
 import pytest
 from aworld_cli.async_runtime import (
     BOUNDED_ASYNC_SHUTDOWN_ENV,
+    FIRST_PROVIDER_START_TIMEOUT_ENV,
     TASK_COMPLETION_RESERVE_ENV,
     TASK_DEADLINE_EPOCH_ENV,
     DirectRunDeadlineExceeded,
     hard_exit_direct_run_if_configured,
     run_direct_async,
+    run_with_first_provider_start_watchdog,
 )
 
 
@@ -40,6 +42,106 @@ def test_direct_async_returns_at_caller_deadline_without_waiting_for_provider(
     with pytest.raises(DirectRunDeadlineExceeded):
         run_direct_async(stubborn_provider())
     assert time.monotonic() - started < 1
+
+
+@pytest.mark.asyncio
+async def test_first_provider_watchdog_bounds_pre_provider_startup(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    monkeypatch.setenv(FIRST_PROVIDER_START_TIMEOUT_ENV, "0.02")
+    monkeypatch.setenv(TASK_DEADLINE_EPOCH_ENV, str(time.time() + 1))
+    monkeypatch.setenv(TASK_COMPLETION_RESERVE_ENV, "0")
+    release = asyncio.Event()
+
+    secret_prompt = "PROMPT_MUST_NOT_APPEAR_IN_WATCHDOG_LOG"
+    secret_api_key = "sk-secret-must-not-appear"
+
+    async def stalled_startup() -> None:
+        # These locals intentionally verify that the diagnostic never formats
+        # frames, locals, coroutine/task reprs, or environment values.
+        assert secret_prompt and secret_api_key
+        await release.wait()
+
+    started = time.monotonic()
+    with pytest.raises(DirectRunDeadlineExceeded) as raised:
+        await run_with_first_provider_start_watchdog(
+            stalled_startup(),
+            evidence_observed=lambda: False,
+        )
+    assert time.monotonic() - started < 1
+    assert raised.value.stage == "provider_start"
+    assert raised.value.phase == "awaiting_first_provider_attempt"
+    assert '"function":"stalled_startup"' in caplog.text
+    assert '"file":"test_async_runtime.py"' in caplog.text
+    assert secret_prompt not in caplog.text
+    assert secret_api_key not in caplog.text
+    release.set()
+    await asyncio.sleep(0)
+
+
+@pytest.mark.asyncio
+async def test_provider_attempt_disarms_watchdog_before_long_generation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(FIRST_PROVIDER_START_TIMEOUT_ENV, "0.02")
+    monkeypatch.setenv(TASK_DEADLINE_EPOCH_ENV, str(time.time() + 1))
+    monkeypatch.setenv(TASK_COMPLETION_RESERVE_ENV, "0")
+    evidence = False
+
+    async def slow_generation() -> str:
+        nonlocal evidence
+        await asyncio.sleep(0.005)
+        # This models the LLM request journal being created before the
+        # provider begins a legitimately slow generation.
+        evidence = True
+        await asyncio.sleep(0.05)
+        return "complete"
+
+    assert (
+        await run_with_first_provider_start_watchdog(
+            slow_generation(),
+            evidence_observed=lambda: evidence,
+        )
+        == "complete"
+    )
+
+
+@pytest.mark.asyncio
+async def test_first_provider_watchdog_is_capped_by_absolute_caller_deadline(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(FIRST_PROVIDER_START_TIMEOUT_ENV, "10")
+    monkeypatch.setenv(TASK_DEADLINE_EPOCH_ENV, str(time.time() + 0.02))
+    monkeypatch.setenv(TASK_COMPLETION_RESERVE_ENV, "0")
+    release = asyncio.Event()
+
+    async def stalled_startup() -> None:
+        await release.wait()
+
+    started = time.monotonic()
+    with pytest.raises(DirectRunDeadlineExceeded):
+        await run_with_first_provider_start_watchdog(
+            stalled_startup(),
+            evidence_observed=lambda: False,
+        )
+    assert time.monotonic() - started < 1
+    release.set()
+    await asyncio.sleep(0)
+
+
+@pytest.mark.asyncio
+async def test_first_provider_watchdog_requires_caller_owned_deadline(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(FIRST_PROVIDER_START_TIMEOUT_ENV, "1")
+    monkeypatch.delenv(TASK_DEADLINE_EPOCH_ENV, raising=False)
+
+    with pytest.raises(ValueError, match=TASK_DEADLINE_EPOCH_ENV):
+        await run_with_first_provider_start_watchdog(
+            asyncio.sleep(0),
+            evidence_observed=lambda: False,
+        )
 
 
 def test_bounded_shutdown_exits_process_with_stubborn_provider_task() -> None:
