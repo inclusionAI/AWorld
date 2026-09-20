@@ -8,6 +8,7 @@ from typing import Iterable
 
 from aworld.self_evolve.candidate_package import (
     candidate_package_fingerprint,
+    candidate_package_reference_report,
     validate_candidate_files,
 )
 from aworld.self_evolve.replay_capability import fingerprint_skill_package
@@ -84,6 +85,32 @@ def create_candidate_skill_overlay(
     candidate_skill_path = candidate_dir / "SKILL.md"
     candidate_skill_path.write_text(candidate.content, encoding="utf-8")
     applied_files = _apply_candidate_files(candidate_dir, candidate)
+    reference_report = candidate_package_reference_report(
+        candidate,
+        package_root=candidate_dir,
+    )
+    if not reference_report["closed"]:
+        missing_references = reference_report["missing_referenced_paths"]
+        if missing_references:
+            raise ValueError(
+                "candidate skill overlay has missing referenced files: "
+                + ", ".join(missing_references)
+            )
+        incomplete_files = sorted(
+            {
+                path
+                for key in (
+                    "missing_candidate_file_paths",
+                    "mismatched_candidate_file_paths",
+                    "undeleted_candidate_file_paths",
+                )
+                for path in reference_report[key]
+            }
+        )
+        raise ValueError(
+            "candidate skill overlay file deltas were not materialized: "
+            + ", ".join(incomplete_files)
+        )
     candidate_skill_package_fingerprint = fingerprint_skill_package(candidate_dir)
 
     metadata_path = shadow_root.parent / "overlay.json"
@@ -98,6 +125,7 @@ def create_candidate_skill_overlay(
         "target_skill_path": str(target_path),
         "candidate_skill_path": str(candidate_skill_path),
         "candidate_files": applied_files,
+        "candidate_package_references": reference_report,
         "shadow_root": str(shadow_root),
         "baseline_skill_roots": [str(root) for root in roots],
     }

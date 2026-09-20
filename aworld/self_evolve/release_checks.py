@@ -3,6 +3,9 @@ from __future__ import annotations
 from typing import Any, Mapping, Sequence
 
 
+_VERIFIED_APPLY_POLICIES = {"auto_verified", "verified_only"}
+
+
 _RELEASE_CHECK_GROUPS = (
     {
         "check_id": "candidate_shape",
@@ -64,7 +67,11 @@ def build_release_checklist(
 
     gates_by_name = _gate_results_by_name(gate_results)
     checks = [
-        _build_group_check(group, gates_by_name, blocking=apply_policy == "auto_verified")
+        _build_group_check(
+            group,
+            gates_by_name,
+            blocking=apply_policy in _VERIFIED_APPLY_POLICIES,
+        )
         for group in _RELEASE_CHECK_GROUPS
     ]
     failed_blocking = [
@@ -76,7 +83,7 @@ def build_release_checklist(
         status = "blocked"
     elif not any(check["status"] != "not_run" for check in checks):
         status = "not_run"
-    elif apply_policy == "auto_verified" and all(
+    elif apply_policy in _VERIFIED_APPLY_POLICIES and all(
         check["status"] in {"passed", "not_run"} for check in checks
     ):
         status = "passed"

@@ -1,8 +1,41 @@
 from __future__ import annotations
 
+import pytest
 from aworld.self_evolve.patch_intent import apply_skill_patch_intent
 from aworld.skills.release import normalize_verified_skill_release
 from aworld.skills.structure import build_skill_structural_edit_intent
+
+
+@pytest.mark.parametrize("delete_baseline_block", [False, True])
+def test_parent_bound_intent_only_allows_independently_safe_release(
+    delete_baseline_block: bool,
+) -> None:
+    block = (
+        "```bash\nagent-browser open <URL>\n"
+        "agent-browser snapshot -i\nagent-browser click @e1\n```\n"
+    )
+    original = "---\nname: demo\n---\n# Demo\n\n## Workflow\n\n" + block + "\nInspect before acting.\n"
+    parent = original + "\nRead the complete page before acting.\n"
+    candidate = original + "\nRead only the relevant page region before acting.\n"
+    if delete_baseline_block:
+        candidate = candidate.replace(block, "")
+    intent = build_skill_structural_edit_intent(
+        original_content=parent,
+        candidate_content=candidate,
+        patch_intent={"operations": [{"op": "replace_section", "heading": "Workflow"}]},
+    )
+    normalized, metrics = normalize_verified_skill_release(
+        candidate,
+        original_content=original,
+        structural_edit_intent=intent,
+        require_exact_deletion_intent=True,
+        run_id="parent-repair",
+        candidate_id="parent-candidate",
+    )
+    assert metrics["normalization_equivalence_passed"] is (not delete_baseline_block)
+    assert metrics["normalization_redundant_intent_discarded"] is (not delete_baseline_block)
+    if not delete_baseline_block:
+        assert block in normalized
 
 
 def test_normalize_verified_skill_release_preserves_runtime_constraints() -> None:

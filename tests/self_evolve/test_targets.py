@@ -93,7 +93,10 @@ def test_skill_text_target_applies_and_rolls_back_candidate_package(tmp_path) ->
     candidate = CandidateVariant(
         candidate_id="cand-package",
         target=target.identity,
-        content=target.load_current_content().replace("Original", "Updated"),
+        content=(
+            target.load_current_content().replace("Original", "Updated")
+            + "\nRun `python3 replay/compiler.py`.\n"
+        ),
         rationale="add replay capability",
         files=(
             CandidateFileDelta(path="replay/existing.py", content="new\n"),
@@ -116,6 +119,30 @@ def test_skill_text_target_applies_and_rolls_back_candidate_package(tmp_path) ->
     assert "Original skill text." in skill_path.read_text(encoding="utf-8")
     assert existing.read_text(encoding="utf-8") == "old\n"
     assert not (replay_root / "compiler.py").exists()
+
+
+def test_skill_package_apply_rejects_missing_markdown_dependency_atomically(
+    tmp_path,
+) -> None:
+    skill_path = _write_skill(tmp_path)
+    original_content = skill_path.read_text(encoding="utf-8")
+    target = SkillTextTarget(skill_path, allow_auto_apply=True)
+    candidate = CandidateVariant(
+        candidate_id="cand-missing-dependency",
+        target=target.identity,
+        content=(
+            original_content.replace("Original", "Updated")
+            + "\nRun `python3 replay/missing_probe.py`.\n"
+        ),
+        rationale="publish a complete skill package",
+    )
+
+    with pytest.raises(ValueError, match="missing referenced files"):
+        target.apply_candidate_variant(candidate)
+
+    assert skill_path.read_text(encoding="utf-8") == original_content
+    assert not (skill_path.parent / "replay").exists()
+    assert not tuple(skill_path.parent.parent.glob(".demo.aworld-*"))
 
 
 def test_skill_package_apply_rejects_symlinked_skill_markdown(tmp_path) -> None:

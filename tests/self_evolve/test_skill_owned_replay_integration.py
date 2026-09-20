@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import socket
 from pathlib import Path
+from urllib.parse import urlsplit
 
 import pytest
 
@@ -100,7 +101,7 @@ result = {
         'protocol_probes': [
             {
                 'kind': 'http',
-                'path': '/',
+                'path': '/replay/data',
                 'timeout_seconds': 3,
                 'response_contains': 'recorded response',
             },
@@ -140,6 +141,10 @@ class Handler(BaseHTTPRequestHandler):
         trace('in', 'http_request', ['method', 'path'], {
             'method': 'GET', 'path': self.path,
         })
+        if self.path != '/replay/data':
+            self.send_response(404)
+            self.end_headers()
+            return
         self.send_response(200)
         self.end_headers()
         self.wfile.write(open(args.fixture, 'rb').read())
@@ -172,13 +177,31 @@ HTTPServer(('127.0.0.1', args.port), Handler).serve_forever()
             return OptimizerResult(candidates=(candidate,))
 
     observed_ports: list[int] = []
+    observed_skill_contents: list[str] = []
 
     async def executor(request: ReplayExecutionRequest) -> ReplayExecutionResult:
+        assert request.skill_root is not None
+        skill_files = [
+            path
+            for path in Path(request.skill_root).rglob("SKILL.md")
+            if path.parent.name == "demo"
+        ]
+        assert len(skill_files) == 1
+        active_skill_content = skill_files[0].read_text(encoding="utf-8")
+        observed_skill_contents.append(active_skill_content)
+        corrected_behavior_loaded = (
+            "Use recorded replay evidence." in active_skill_content
+        )
         url = request.task_input["content"].split()[-1]
-        port = int(url.rsplit(":", 1)[1])
+        parsed_url = urlsplit(url)
+        assert parsed_url.path == "/replay/data"
+        assert parsed_url.port is not None
+        port = parsed_url.port
         observed_ports.append(port)
         with socket.create_connection(("127.0.0.1", port), timeout=1) as connection:
-            connection.sendall(b"GET / HTTP/1.0\r\nHost: localhost\r\n\r\n")
+            connection.sendall(
+                b"GET /replay/data HTTP/1.0\r\nHost: localhost\r\n\r\n"
+            )
             response = b""
             while b"recorded response" not in response:
                 chunk = connection.recv(4096)
@@ -191,9 +214,19 @@ HTTPServer(('127.0.0.1', args.port), Handler).serve_forever()
             trajectory=[
                 {
                     "state": {"input": request.task_input},
-                    "action": {"content": request.variant_id},
+                    "action": {
+                        "content": (
+                            "corrected behavior"
+                            if corrected_behavior_loaded
+                            else "original behavior"
+                        )
+                    },
                 }
             ],
+            metrics={
+                "task_success": 1.0 if corrected_behavior_loaded else 0.0,
+                "loaded_skill_behavior_marker": corrected_behavior_loaded,
+            },
         )
 
     store = FilesystemSelfEvolveStore(tmp_path)
@@ -217,6 +250,9 @@ HTTPServer(('127.0.0.1', args.port), Handler).serve_forever()
     assert skill_path.read_text(encoding="utf-8") == original
     assert not (skill_path.parent / "replay").exists()
     assert len(observed_ports) == 2 and len(set(observed_ports)) == 2
+    assert len(observed_skill_contents) == 2
+    assert "Original guidance." in observed_skill_contents[0]
+    assert "Use recorded replay evidence." in observed_skill_contents[1]
     report = json.loads(
         (store.run_path("run-skill-owned-replay") / "report.json").read_text(
             encoding="utf-8"
@@ -226,6 +262,8 @@ HTTPServer(('127.0.0.1', args.port), Handler).serve_forever()
     assert report["replay_capability"]["ready"] is True
     baseline_metrics = report["replay"]["baseline"]["metrics"]
     candidate_metrics = report["replay"]["candidate"]["metrics"]
+    assert baseline_metrics["task_success"] == 0.0
+    assert candidate_metrics["task_success"] == 1.0
     assert baseline_metrics["frozen_capability_fingerprint"] == (
         candidate_metrics["frozen_capability_fingerprint"]
     )
@@ -240,6 +278,7 @@ HTTPServer(('127.0.0.1', args.port), Handler).serve_forever()
     loaded_service = loaded.request.replay_adaptation.replay_capability.services[0]
     assert loaded_service.runtime_entrypoint == "replay/runtime.py"
     assert loaded_service.protocol_probes[0].kind == "http"
+    assert loaded_service.task_entry_path == "/replay/data"
     assert loaded_service.protocol_probes[0].response_contains == "recorded response"
     assert (
         loaded.request.replay_adaptation.replay_capability.fingerprint

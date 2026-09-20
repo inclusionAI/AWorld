@@ -320,6 +320,12 @@ def test_online_job_worker_rejects_auto_verified_skill_candidate_on_replay_failu
     class FakeReplayBackend:
         async def replay_candidate(self, request, *, candidate, dataset):
             from aworld.self_evolve.replay import CandidateReplayResult, ReplayVariantResult
+            from aworld.self_evolve.failure_events import (
+                FailureOwner,
+                FailureScope,
+                FailureStage,
+                ReplayFailureEvent,
+            )
 
             return CandidateReplayResult(
                 request=request,
@@ -332,7 +338,15 @@ def test_online_job_worker_rejects_auto_verified_skill_candidate_on_replay_failu
                     variant_id=candidate.candidate_id,
                     status="failed",
                     trajectory=[],
-                    failure={"reason": "fake replay failure"},
+                    failure=ReplayFailureEvent(
+                        code="fake_candidate_replay_failure",
+                        owner=FailureOwner.CANDIDATE,
+                        stage=FailureStage.TASK_ROLLOUT,
+                        scope=FailureScope.CANDIDATE,
+                        repairable=True,
+                        category="test_candidate_replay",
+                        summary="fake replay failure",
+                    ),
                 ),
             )
 
@@ -395,6 +409,7 @@ def test_online_job_worker_rejects_auto_verified_skill_candidate_on_replay_failu
     assert saved["framework_status"] == "rejected"
     assert saved["campaign_status"] == "active"
     assert saved["self_improvement_disposition"]["kind"] == "continue_candidate"
+    assert saved["self_improvement_disposition"]["owner"] == "candidate"
     follow_up_jobs = sorted(result.job_path.parent.glob("*-campaign-002.json"))
     assert len(follow_up_jobs) == 1
     assert json.loads(follow_up_jobs[0].read_text(encoding="utf-8"))["status"] == (
@@ -450,6 +465,9 @@ def test_job_worker_passes_configured_judge_to_framework_job(monkeypatch, tmp_pa
                 candidate_screening_tokens_per_unit=200,
                 replay_tokens_per_unit=2_000,
                 evaluation_tokens_per_unit=500,
+                challenger_enabled=False,
+                challenger_max_cases=4,
+                replay_total_timeout_seconds=1_800,
             ),
         )
     )
@@ -464,7 +482,8 @@ def test_job_worker_passes_configured_judge_to_framework_job(monkeypatch, tmp_pa
     assert captured["replay_enabled"] is True
     assert captured["inferred_new_skill_policy"] == "draft_only"
     assert captured["replay_timeout_seconds"] == 600
-    assert captured["replay_max_steps"] == 1
+    assert captured["replay_total_timeout_seconds"] == 1_800
+    assert captured["replay_max_steps"] is None
     assert captured["replay_candidate_limit"] == 2
     assert captured["total_run_token_budget"] == 90_000
     assert captured["per_attempt_replay_token_limit"] == 9_000
@@ -474,6 +493,8 @@ def test_job_worker_passes_configured_judge_to_framework_job(monkeypatch, tmp_pa
     assert captured["candidate_screening_tokens_per_unit"] == 200
     assert captured["replay_tokens_per_unit"] == 2_000
     assert captured["evaluation_tokens_per_unit"] == 500
+    assert captured["challenger_enabled"] is False
+    assert captured["challenger_max_cases"] == 4
     assert captured["deprecated_config_mappings"] == ()
 
 
@@ -625,7 +646,7 @@ def test_job_worker_requeues_exactly_one_continuable_campaign_generation(tmp_pat
     assert pending[0]["campaign_cycle"] == 2
 
 
-def test_job_worker_forwards_runtime_registry_refresher_to_framework_job(
+def test_job_worker_forwards_runtime_effect_and_compensation_seams(
     monkeypatch,
     tmp_path,
 ) -> None:
@@ -653,6 +674,12 @@ def test_job_worker_forwards_runtime_registry_refresher_to_framework_job(
     def refresh_runtime(candidate):
         return {"status": "refreshed"}
 
+    def restore_registry(candidate, token):
+        return {"status": "restored"}
+
+    def restore_skill(candidate, token):
+        return {"status": "restored"}
+
     monkeypatch.setattr(
         "aworld.self_evolve.runner.optimize_from_cli_request",
         fake_optimize_from_cli_request,
@@ -661,10 +688,14 @@ def test_job_worker_forwards_runtime_registry_refresher_to_framework_job(
     drained = SelfEvolveJobWorker(
         workspace_root=tmp_path,
         runtime_registry_refresher=refresh_runtime,
+        runtime_registry_compensator=restore_registry,
+        runtime_skill_compensator=restore_skill,
     ).drain_pending_jobs()
 
     assert drained == 1
     assert calls["runtime_registry_refresher"] is refresh_runtime
+    assert calls["runtime_registry_compensator"] is restore_registry
+    assert calls["runtime_skill_compensator"] is restore_skill
 
 
 def test_job_worker_recovers_interrupted_apply_before_draining(tmp_path) -> None:

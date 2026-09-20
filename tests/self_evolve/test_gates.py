@@ -9,7 +9,9 @@ import pytest
 from aworld.self_evolve.evaluation import CandidateConfidenceDecision, ReplayCostEstimate
 from aworld.self_evolve.gates import (
     BudgetGate,
+    CandidatePackageGate,
     CostLatencyRegressionGate,
+    EvaluationComparabilityGate,
     EvidenceQualityGate,
     ExternalCodeEvolutionGate,
     GlobalRegressionBenchmarkGate,
@@ -28,8 +30,14 @@ from aworld.self_evolve.gates import (
     StoppingConditionGate,
     StoppingConditionState,
     TokenLimitGate,
+    TargetBehaviorDeltaGate,
     ToolDescriptionGate,
     TrustProvenanceGate,
+)
+from aworld.self_evolve.regression import (
+    RegressionEvidence,
+    RegressionSuiteResult,
+    RegressionSuiteSpec,
 )
 from aworld.self_evolve.replay_adaptation import (
     ReplayAdaptationBundle,
@@ -37,7 +45,13 @@ from aworld.self_evolve.replay_adaptation import (
     ReplayDependency,
 )
 from aworld.self_evolve.provenance import TargetMutationIntent, TargetProvenance
-from aworld.self_evolve.types import CandidateVariant, EvaluationSummary, SelfEvolveTargetRef
+from aworld.self_evolve.types import (
+    CandidateFileDelta,
+    CandidateVariant,
+    EvaluationSummary,
+    GateResult,
+    SelfEvolveTargetRef,
+)
 from aworld.self_evolve.patch_intent import apply_skill_patch_intent
 from aworld.skills.structure import (
     MAX_SKILL_MARKDOWN_CHARS,
@@ -62,6 +76,123 @@ def _candidate(
         target_fingerprint="sha256:old",
         structural_edit_intent=structural_edit_intent,
     )
+
+
+def test_target_behavior_delta_gate_blocks_support_only_candidate() -> None:
+    current = "---\nname: demo\n---\n# Demo\n"
+    candidate = replace(
+        _candidate(current),
+        files=(
+            CandidateFileDelta(
+                path="replay/runtime.py",
+                content="print('ready')\n",
+            ),
+        ),
+    )
+
+    result = TargetBehaviorDeltaGate().evaluate(
+        current_content=current,
+        candidate=candidate,
+    )
+
+    assert result.passed is False
+    assert result.details is not None
+    assert result.details["code"] == "evaluation_support_bootstrap_only"
+    assert result.details["candidate_status"] == "prerequisite"
+
+
+def test_target_behavior_delta_gate_accepts_target_and_support_composite() -> None:
+    current = "---\nname: demo\n---\n# Demo\n"
+    candidate = replace(
+        _candidate(current + "\n## Completion\nVerify the outcome.\n"),
+        files=(
+            CandidateFileDelta(
+                path="replay/runtime.py",
+                content="print('ready')\n",
+            ),
+        ),
+    )
+
+    result = TargetBehaviorDeltaGate().evaluate(
+        current_content=current,
+        candidate=candidate,
+    )
+
+    assert result.passed is True
+    assert result.details is not None
+    assert result.details["kind"] == "target_behavior_with_support"
+
+
+def test_noop_gate_rejects_json_formatting_only_support_delta(tmp_path: Path) -> None:
+    current = "---\nname: demo\n---\n# Demo\n"
+    skill_path = tmp_path / "demo" / "SKILL.md"
+    capability_path = skill_path.parent / "replay" / "capability.json"
+    capability_path.parent.mkdir(parents=True)
+    skill_path.write_text(current, encoding="utf-8")
+    capability_path.write_text(
+        '{\n  "capability_id": "demo",\n  "handles": ["http_resource"]\n}\n',
+        encoding="utf-8",
+    )
+    candidate = replace(
+        _candidate(current, path=str(skill_path)),
+        files=(
+            CandidateFileDelta(
+                path="replay/capability.json",
+                content='{"handles":["http_resource"],"capability_id":"demo"}',
+            ),
+        ),
+    )
+
+    result = NoopCandidateGate().evaluate(
+        current_content=current,
+        candidate=candidate,
+    )
+
+    assert result.passed is False
+    assert result.details["kind"] == "no_change"
+
+
+def test_candidate_package_gate_requires_referenced_release_files(tmp_path) -> None:
+    skill_path = tmp_path / "skills" / "demo" / "SKILL.md"
+    skill_path.parent.mkdir(parents=True)
+    skill_path.write_text("---\nname: demo\n---\n# Demo\n", encoding="utf-8")
+    content = (
+        "---\nname: demo\n---\n# Demo\n\n"
+        "Run `python3 replay/fixture_replay_probe.py`.\n"
+    )
+    missing = CandidateVariant(
+        candidate_id="cand-missing",
+        target=SelfEvolveTargetRef("skill", "demo", str(skill_path)),
+        content=content,
+        rationale="add a replay probe",
+    )
+
+    failed = CandidatePackageGate().evaluate(missing)
+
+    assert failed.passed is False
+    assert failed.details["code"] == "candidate_package_reference_missing"
+    assert failed.details["missing_referenced_paths"] == [
+        "replay/fixture_replay_probe.py"
+    ]
+
+    complete = replace(
+        missing,
+        candidate_id="cand-complete",
+        files=(
+            CandidateFileDelta(
+                path="replay/fixture_replay_probe.py",
+                content="print('ok')\n",
+            ),
+        ),
+    )
+
+    passed = CandidatePackageGate().evaluate(complete)
+
+    assert passed.passed is True
+    assert passed.details["closed"] is True
+    assert passed.details["candidate_owned_referenced_paths"] == [
+        "replay/fixture_replay_probe.py"
+    ]
 
 
 def test_replay_adaptation_gate_requires_deterministic_ready_cases() -> None:
@@ -162,6 +293,251 @@ def test_score_improvement_gate_rejects_inconclusive_baseline_judge_timeout() ->
     assert result.details["baseline_judge_success_count"] == 0
 
 
+def test_score_improvement_gate_uses_observed_judge_variance() -> None:
+    gate = ScoreImprovementGate(min_delta=1.0)
+
+    result = gate.evaluate(
+        baseline=EvaluationSummary(
+            variant_id="baseline",
+            metrics={
+                "score": 80.0,
+                "score_std": 4.0,
+                "judge_success_count": 3,
+            },
+        ),
+        candidate=EvaluationSummary(
+            variant_id="cand-1",
+            metrics={
+                "score": 82.0,
+                "score_std": 4.0,
+                "judge_success_count": 3,
+            },
+        ),
+    )
+
+    assert result.passed is False
+    assert result.details is not None
+    assert result.details["decision"] == "inconclusive"
+    assert result.details["tiebreak_eligible"] is True
+    assert result.details["failure_owner"] == "framework"
+
+
+def test_score_improvement_gate_treats_noisy_negative_delta_as_inconclusive() -> None:
+    result = ScoreImprovementGate(min_delta=0.0).evaluate(
+        baseline=EvaluationSummary(
+            variant_id="baseline",
+            metrics={
+                "score": 85.7,
+                "score_std": 0.42,
+                "score_sample_count": 4,
+                "judge_success_count": 1,
+            },
+        ),
+        candidate=EvaluationSummary(
+            variant_id="candidate",
+            metrics={
+                "score": 83.27,
+                "score_std": 7.73,
+                "score_sample_count": 4,
+                "judge_success_count": 1,
+            },
+        ),
+    )
+
+    assert result.passed is False
+    assert result.details["decision"] == "inconclusive"
+    assert result.details["tiebreak_eligible"] is False
+    assert result.details["tiebreak_ineligible_reason"] == (
+        "point_estimate_below_minimum_delta"
+    )
+    assert result.details["delta_confidence_upper_bound"] > 0
+    assert result.details["failure_class"] == "candidate"
+    assert result.details["failure_owner"] == "candidate"
+    assert result.details["failure_scope"] == "candidate"
+    assert result.details["repairable"] is True
+
+
+def test_score_improvement_gate_uses_paired_case_deltas_for_noninferiority() -> None:
+    result = ScoreImprovementGate(min_delta=0.0).evaluate(
+        baseline=EvaluationSummary(
+            variant_id="baseline",
+            metrics={
+                "score": 85.9333333333,
+                "score_samples": [86.8, 86.6, 84.4],
+                "judge_success_count": 3,
+            },
+        ),
+        candidate=EvaluationSummary(
+            variant_id="candidate",
+            metrics={
+                "score": 86.8,
+                "score_samples": [89.0, 87.4, 84.0],
+                "judge_success_count": 3,
+            },
+        ),
+    )
+
+    assert result.passed is True
+    assert result.details["code"] == "score_improvement_paired_noninferior"
+    assert result.details["uncertainty_model"] == "paired_standard_error"
+    assert result.details["paired_sample_count"] == 3
+    assert result.details["delta"] == pytest.approx(0.8666666667)
+
+
+def test_score_improvement_gate_accepts_small_positive_delta_with_noisy_judge() -> None:
+    """A positive point estimate may use the 2% practical margin.
+
+    Small trajectory sets make a 95% confidence interval wider than a useful
+    browser-skill improvement.  The primary gate must still require a positive
+    point estimate; the margin only prevents judge variance from making such an
+    improvement permanently unverifiable.
+    """
+    result = ScoreImprovementGate(min_delta=0.0).evaluate(
+        baseline=EvaluationSummary(
+            variant_id="baseline",
+            metrics={
+                "score": 87.8333,
+                "score_samples": [87.8333] * 12,
+                "judge_success_count": 12,
+            },
+        ),
+        candidate=EvaluationSummary(
+            variant_id="candidate",
+            metrics={
+                "score": 88.8,
+                "score_samples": [
+                    81.8333,
+                    83.8333,
+                    85.8333,
+                    86.8333,
+                    87.8333,
+                    88.8333,
+                    89.8333,
+                    90.8333,
+                    91.8333,
+                    92.8333,
+                    92.8333,
+                    91.8333,
+                ],
+                "judge_success_count": 12,
+            },
+        ),
+    )
+
+    assert result.passed is True
+    assert result.details["code"] == "score_improvement_paired_noninferior"
+    assert result.details["delta"] > 0
+    assert result.details["noninferiority_margin"] == pytest.approx(1.776)
+
+
+def test_score_improvement_gate_does_not_use_practical_margin_for_negative_delta() -> None:
+    result = ScoreImprovementGate(min_delta=0.0).evaluate(
+        baseline=EvaluationSummary(
+            variant_id="baseline",
+            metrics={
+                "score": 88.0,
+                "score_samples": [88.0, 86.0, 90.0, 88.0],
+                "judge_success_count": 4,
+            },
+        ),
+        candidate=EvaluationSummary(
+            variant_id="candidate",
+            metrics={
+                "score": 87.9,
+                "score_samples": [88.0, 86.0, 90.0, 87.6],
+                "judge_success_count": 4,
+            },
+        ),
+    )
+
+    assert result.passed is False
+    assert result.details["tiebreak_eligible"] is False
+    assert result.details["tiebreak_ineligible_reason"] == (
+        "point_estimate_below_minimum_delta"
+    )
+
+
+def test_score_improvement_gate_rejects_paired_material_regression() -> None:
+    result = ScoreImprovementGate(min_delta=0.0).evaluate(
+        baseline=EvaluationSummary(
+            variant_id="baseline",
+            metrics={
+                "score": 85.0,
+                "score_samples": [84.0, 85.0, 86.0],
+                "judge_success_count": 3,
+            },
+        ),
+        candidate=EvaluationSummary(
+            variant_id="candidate",
+            metrics={
+                "score": 80.0,
+                "score_samples": [79.0, 80.0, 81.0],
+                "judge_success_count": 3,
+            },
+        ),
+    )
+
+    assert result.passed is False
+    assert result.details["decision"] == "rejected"
+    assert result.details["uncertainty_model"] == "paired_standard_error"
+    assert result.details["failure_owner"] == "candidate"
+
+
+def test_evaluation_comparability_gate_rejects_mismatched_case_plans() -> None:
+    result = EvaluationComparabilityGate().evaluate(
+        baseline=EvaluationSummary(
+            variant_id="baseline",
+            metrics={
+                "comparison_plan_fingerprint": "sha256:baseline",
+                "comparison_effective_case_count": 2,
+                "comparison_case_ids": ["a", "b"],
+                "comparison_cardinality_preserved": True,
+            },
+        ),
+        candidate=EvaluationSummary(
+            variant_id="candidate",
+            metrics={
+                "comparison_plan_fingerprint": "sha256:candidate",
+                "comparison_effective_case_count": 3,
+                "comparison_case_ids": ["a", "b", "c"],
+                "comparison_cardinality_preserved": True,
+            },
+        ),
+    )
+
+    assert result.passed is False
+    assert result.details["failure_owner"] == "framework"
+    assert "effective_case_count_mismatch" in result.details["reasons"]
+
+
+def test_score_improvement_gate_accepts_confident_distribution_delta() -> None:
+    gate = ScoreImprovementGate(min_delta=1.0)
+
+    result = gate.evaluate(
+        baseline=EvaluationSummary(
+            variant_id="baseline",
+            metrics={
+                "score": 80.0,
+                "score_std": 0.5,
+                "judge_success_count": 3,
+            },
+        ),
+        candidate=EvaluationSummary(
+            variant_id="cand-1",
+            metrics={
+                "score": 84.0,
+                "score_std": 0.5,
+                "judge_success_count": 3,
+            },
+        ),
+    )
+
+    assert result.passed is True
+    assert result.details is not None
+    assert result.details["decision"] == "accepted"
+    assert result.details["delta_confidence_lower_bound"] > 1.0
+
+
 def test_cost_latency_regression_gate_limits_regressions() -> None:
     gate = CostLatencyRegressionGate(max_cost_regression_ratio=0.25, max_latency_regression_ratio=0.5)
 
@@ -189,6 +565,129 @@ def test_cost_latency_regression_gate_limits_regressions() -> None:
     assert passed.passed is True
     assert failed.passed is False
     assert failed.reason == "cost regression exceeds policy"
+
+
+def test_cost_latency_gate_normalizes_totals_per_effective_case() -> None:
+    result = CostLatencyRegressionGate(
+        max_cost_regression_ratio=0.25,
+        max_latency_regression_ratio=0.5,
+    ).evaluate(
+        baseline=EvaluationSummary(
+            variant_id="baseline",
+            metrics={"latency_ms": 200.0, "effective_case_count": 2},
+        ),
+        candidate=EvaluationSummary(
+            variant_id="candidate",
+            metrics={"latency_ms": 220.0, "effective_case_count": 2},
+        ),
+    )
+
+    assert result.passed is True
+    assert result.details["latency_regression_ratio"] == pytest.approx(0.1)
+    assert result.details["normalization"] == "per_effective_case_when_available"
+
+
+def test_cost_latency_gate_fails_closed_when_verified_resource_evidence_missing() -> None:
+    result = CostLatencyRegressionGate(
+        max_cost_regression_ratio=0.25,
+        max_latency_regression_ratio=0.5,
+        require_resource_evidence=True,
+    ).evaluate(
+        baseline=EvaluationSummary(
+            variant_id="baseline",
+            metrics={"score": 80.0},
+        ),
+        candidate=EvaluationSummary(
+            variant_id="candidate",
+            metrics={"score": 85.0},
+        ),
+    )
+
+    assert result.passed is False
+    assert result.details is not None
+    assert result.details["code"] == "resource_regression_evidence_missing"
+    assert result.details["failure_owner"] == "framework"
+    assert result.details["failure_class"] == "measurement"
+    assert result.details["repairable"] is True
+    assert result.details["next_action"] == "repair_measurement"
+
+
+def test_cost_latency_gate_excludes_judge_measurement_overhead() -> None:
+    result = CostLatencyRegressionGate(
+        max_cost_regression_ratio=0.25,
+        max_latency_regression_ratio=0.5,
+        require_resource_evidence=True,
+    ).evaluate(
+        baseline=EvaluationSummary(
+            variant_id="baseline",
+            metrics={
+                "judge_estimated_input_tokens_total": 100,
+                "judge_model_latency_ms_total": 1_000,
+            },
+        ),
+        candidate=EvaluationSummary(
+            variant_id="candidate",
+            metrics={
+                "judge_estimated_input_tokens_total": 110,
+                "judge_model_latency_ms_total": 1_200,
+            },
+        ),
+    )
+
+    assert result.passed is False
+    assert result.details is not None
+    assert result.details["code"] == "resource_regression_evidence_missing"
+
+
+def test_cost_latency_gate_uses_replay_runtime_proxies() -> None:
+    result = CostLatencyRegressionGate(
+        max_cost_regression_ratio=0.25,
+        max_latency_regression_ratio=0.5,
+        require_resource_evidence=True,
+    ).evaluate(
+        baseline=EvaluationSummary(
+            variant_id="baseline",
+            metrics={"replay_total_tokens": 100, "replay_latency_ms": 1_000},
+        ),
+        candidate=EvaluationSummary(
+            variant_id="candidate",
+            metrics={"replay_total_tokens": 110, "replay_latency_ms": 1_200},
+        ),
+    )
+
+    assert result.passed is True
+    assert result.details["cost_metric"] == "replay_total_tokens"
+    assert result.details["latency_metric"] == "replay_latency_ms"
+
+
+def test_cost_latency_gate_does_not_double_normalize_replay_resources() -> None:
+    result = CostLatencyRegressionGate(
+        max_cost_regression_ratio=0.25,
+        max_latency_regression_ratio=0.5,
+        require_resource_evidence=True,
+    ).evaluate(
+        baseline=EvaluationSummary(
+            variant_id="baseline",
+            metrics={
+                "replay_latency_ms": 100.0,
+                "effective_case_count": 2,
+            },
+        ),
+        candidate=EvaluationSummary(
+            variant_id="candidate",
+            metrics={
+                "replay_latency_ms": 160.0,
+                "effective_case_count": 2,
+            },
+        ),
+    )
+
+    assert result.passed is False
+    assert result.details["latency_regression_ratio"] == pytest.approx(0.6)
+    assert result.details["baseline_normalized_value"] == 100.0
+    assert result.details["candidate_normalized_value"] == 160.0
+    assert result.details["baseline_effective_case_count"] is None
+    assert result.details["candidate_effective_case_count"] is None
 
 
 def test_noop_and_skill_markdown_gates_reject_bad_candidates() -> None:
@@ -687,9 +1186,9 @@ def test_required_verification_gate_requires_all_commands_to_pass() -> None:
         EvaluationSummary(
             variant_id="cand-1",
             metrics={
-                "deterministic_signal": True,
-                "command_case_count": 2,
-                "command_pass_count": 2,
+                "deterministic_verification_source": "verification_command",
+                "deterministic_verification_case_count": 2,
+                "deterministic_verification_pass_count": 2,
             },
         )
     )
@@ -697,9 +1196,9 @@ def test_required_verification_gate_requires_all_commands_to_pass() -> None:
         EvaluationSummary(
             variant_id="cand-1",
             metrics={
-                "deterministic_signal": True,
-                "command_case_count": 2,
-                "command_pass_count": 1,
+                "deterministic_verification_source": "verification_command",
+                "deterministic_verification_case_count": 2,
+                "deterministic_verification_pass_count": 1,
             },
         )
     )
@@ -707,9 +1206,27 @@ def test_required_verification_gate_requires_all_commands_to_pass() -> None:
 
     assert passed.passed is True
     assert failed.passed is False
-    assert failed.reason == "required verification commands did not all pass"
+    assert failed.reason == "required independent deterministic verification did not all pass"
     assert missing.passed is False
-    assert missing.reason == "required deterministic verification command was not run"
+    assert missing.reason == "required independent deterministic verification was not run"
+
+
+def test_required_verification_does_not_accept_aworld_judge_aliases() -> None:
+    result = RequiredVerificationGate().evaluate(
+        EvaluationSummary(
+            variant_id="candidate",
+            metrics={
+                "evaluator_mode": "aworld_trajectory_evaluator",
+                "evaluator_gate_passed": True,
+                "deterministic_signal": True,
+                "command_case_count": 4,
+                "command_pass_count": 4,
+            },
+        )
+    )
+
+    assert result.passed is False
+    assert result.details["code"] == "deterministic_verification_not_available"
 
 
 def test_evidence_quality_gate_rejects_compacted_tool_evidence() -> None:
@@ -827,6 +1344,79 @@ def test_evidence_quality_gate_accepts_valid_bundle_despite_raw_compaction() -> 
     assert result.details["evidence_incomplete"] is False
     assert result.details["evidence_bundle_valid"] is True
     assert result.details["evidence_bundle_entry_count"] == 2
+
+
+def test_evidence_quality_gate_accepts_unchanged_baseline_constraints() -> None:
+    constraint = {
+        "schema_version": "aworld.self_evolve.evidence_repair_constraint.v1",
+        "subject_kind": "general_claim",
+        "failure_mode": "support_incomplete",
+        "source_layer": "candidate_output",
+        "required_action": "support_or_omit",
+        "owner": "candidate",
+        "occurrence_count": 1,
+    }
+    baseline = EvaluationSummary(
+        variant_id="baseline",
+        metrics={
+            "has_evidence": 1.0,
+            "evidence_incomplete": True,
+            "evidence_bundle_valid": True,
+            "evidence_bundle_entry_count": 1,
+            "evidence_repair_constraints": [constraint],
+        },
+    )
+    candidate = EvaluationSummary(
+        variant_id="candidate",
+        metrics={
+            **baseline.metrics,
+            "evidence_repair_constraints": [dict(constraint)],
+        },
+    )
+
+    result = EvidenceQualityGate().evaluate(candidate, baseline=baseline)
+
+    assert result.passed is True
+    assert result.details["evidence_comparison_mode"] == "baseline_relative"
+    assert result.details["evidence_constraint_regressions"] == []
+
+
+def test_evidence_quality_gate_rejects_worsened_baseline_constraint() -> None:
+    constraint = {
+        "schema_version": "aworld.self_evolve.evidence_repair_constraint.v1",
+        "subject_kind": "general_claim",
+        "failure_mode": "unsupported_claim",
+        "source_layer": "candidate_output",
+        "required_action": "support_or_omit",
+        "owner": "candidate",
+        "occurrence_count": 1,
+    }
+    baseline = EvaluationSummary(
+        variant_id="baseline",
+        metrics={
+            "has_evidence": 1.0,
+            "evidence_bundle_valid": True,
+            "evidence_bundle_entry_count": 1,
+            "evidence_repair_constraints": [constraint],
+        },
+    )
+    candidate_constraint = dict(constraint)
+    candidate_constraint["occurrence_count"] = 2
+    candidate = EvaluationSummary(
+        variant_id="candidate",
+        metrics={
+            **baseline.metrics,
+            "evidence_repair_constraints": [candidate_constraint],
+        },
+    )
+
+    result = EvidenceQualityGate().evaluate(candidate, baseline=baseline)
+
+    assert result.passed is False
+    assert result.reason == "candidate evidence quality regressed relative to baseline"
+    assert result.details["evidence_constraint_regressions"][0][
+        "occurrence_delta"
+    ] == 1
 
 
 def test_evidence_quality_gate_rejects_incomplete_canonical_bundle() -> None:
@@ -978,14 +1568,144 @@ def test_held_out_and_global_regression_gates_require_independent_verification()
     assert verified.passed is True
 
     regression_gate = GlobalRegressionBenchmarkGate()
+    legacy_summary = EvaluationSummary(
+        variant_id="cand-1",
+        metrics={"global_regression_passed": True},
+    )
     assert regression_gate.evaluate(
         _candidate("x"),
-        EvaluationSummary(variant_id="cand-1", metrics={"global_regression_passed": False}),
+        None,
     ).passed is False
+    # An evaluator-owned boolean can no longer approve a verified target.
+    assert legacy_summary.metrics["global_regression_passed"] is True
+    suite = RegressionSuiteSpec(
+        suite_id="regression-suite",
+        source_kind="jsonl",
+        source_ref="regression.jsonl",
+        source_version="sha256:source",
+        dataset_fingerprint="sha256:regression",
+        split_fingerprint="sha256:split",
+        case_fingerprints=("sha256:regression-case",),
+    )
+    evidence = RegressionEvidence(
+        candidate_id="cand-1",
+        selection_dataset_fingerprint="sha256:selection",
+        selection_case_fingerprints=("sha256:selection-case",),
+        selection_backend_id="selection.Backend",
+        regression_backend_id="regression.Backend",
+        suite_results=(
+            RegressionSuiteResult(
+                spec=suite,
+                baseline_summary=EvaluationSummary(
+                    variant_id="baseline", metrics={"score": 0.9}
+                ),
+                candidate_summary=EvaluationSummary(
+                    variant_id="cand-1", metrics={"score": 0.9}
+                ),
+                gate_results=(
+                    GateResult(
+                        gate_name="score_improvement",
+                        passed=True,
+                        reason="no regression",
+                    ),
+                ),
+                execution_id="fresh-execution",
+                duration_ms=1,
+            ),
+        ),
+    )
     assert regression_gate.evaluate(
         _candidate("x"),
-        EvaluationSummary(variant_id="cand-1", metrics={"global_regression_passed": True}),
+        evidence,
     ).passed is True
+    candidate_regression = regression_gate.evaluate(
+        _candidate("x"),
+        replace(
+            evidence,
+            suite_results=(
+                replace(
+                    evidence.suite_results[0],
+                    gate_results=(
+                        GateResult(
+                            gate_name="score_improvement",
+                            passed=False,
+                            reason="candidate regressed",
+                        ),
+                    ),
+                ),
+            ),
+        ),
+    )
+    assert candidate_regression.passed is False
+    assert candidate_regression.details["failure_owner"] == "candidate"
+    assert candidate_regression.details["repairable"] is True
+    mixed_regression = regression_gate.evaluate(
+        _candidate("x"),
+        replace(
+            evidence,
+            suite_results=(
+                replace(
+                    evidence.suite_results[0],
+                    gate_results=(
+                        GateResult(
+                            gate_name="score_improvement",
+                            passed=False,
+                            reason="fresh suite is inconclusive",
+                            details={
+                                "failure_class": "framework",
+                                "failure_owner": "framework",
+                                "code": "score_improvement_inconclusive",
+                            },
+                        ),
+                    ),
+                ),
+                replace(
+                    evidence.suite_results[0],
+                    spec=replace(suite, suite_id="challenger-suite"),
+                    gate_results=(
+                        GateResult(
+                            gate_name="score_improvement",
+                            passed=False,
+                            reason="candidate regressed",
+                            details={
+                                "failure_class": "candidate",
+                                "failure_owner": "candidate",
+                                "code": "score_regression",
+                            },
+                        ),
+                    ),
+                ),
+            ),
+        ),
+    )
+    assert mixed_regression.details["failure_owner"] == "candidate"
+    assert mixed_regression.details["repairable"] is True
+    assert mixed_regression.details["code"] == "independent_regression_failed"
+    infrastructure_regression = regression_gate.evaluate(
+        _candidate("x"),
+        replace(
+            evidence,
+            suite_results=(
+                replace(
+                    evidence.suite_results[0],
+                    fresh_execution=False,
+                    gate_results=(
+                        GateResult(
+                            gate_name="independent_regression_execution",
+                            passed=False,
+                            reason="backend failed",
+                            details={
+                                "failure_class": "infrastructure",
+                                "code": "regression_backend_failed",
+                            },
+                        ),
+                    ),
+                ),
+            ),
+        ),
+    )
+    assert infrastructure_regression.details["failure_owner"] == "framework"
+    assert infrastructure_regression.details["repairable"] is False
     assert regression_gate.evaluate(
         CandidateVariant(
             candidate_id="cand-1",
@@ -993,7 +1713,7 @@ def test_held_out_and_global_regression_gates_require_independent_verification()
             content="x",
             rationale="test",
         ),
-        EvaluationSummary(variant_id="cand-1", metrics={}),
+        None,
     ).passed is True
 
 
@@ -1040,6 +1760,28 @@ def test_held_out_gate_accepts_trajectory_set_validation() -> None:
     assert result.reason == "candidate is verified by trajectory-set validation"
     assert result.details["verification_mode"] == "trajectory_set_validation"
     assert result.details["held_out_case_count"] == 1
+
+
+def test_held_out_and_judge_only_gates_expose_negative_candidate_signal() -> None:
+    decision = CandidateConfidenceDecision(
+        confidence="limited",
+        reason="verified confidence requires a deterministic signal",
+        selection_split="validation",
+        verification_split="held_out",
+        deterministic_signal_present=False,
+        held_out_case_count=4,
+        verification_mode="held_out",
+    )
+
+    held_out = HeldOutVerificationGate(min_eval_cases=30).evaluate(decision)
+    judge_only = JudgeOnlySignalGate().evaluate(decision)
+
+    assert held_out.passed is False
+    assert held_out.details["deterministic_signal_present"] is False
+    assert held_out.details["decision_reason"] == decision.reason
+    assert judge_only.passed is False
+    assert judge_only.details["deterministic_signal_present"] is False
+    assert judge_only.details["decision_reason"] == decision.reason
 
 
 def test_trust_provenance_gate_rejects_protected_generated_and_external_targets() -> None:

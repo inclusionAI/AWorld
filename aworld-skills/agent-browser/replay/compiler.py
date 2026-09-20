@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 import argparse
 import json
-import os
-from pathlib import Path
+from pathlib import Path, PurePosixPath
+from urllib.parse import unquote, urlsplit
 
 SCHEMA = "aworld.replay.capability_result.v1"
 
@@ -89,6 +89,73 @@ def _derive_response_contains(fixture_path):
     return str(val)[:8192]
 
 
+def _derive_task_entry_path(identifier):
+    """Return a canonical compiler probe path for a requirement URL.
+
+    The framework's typed HTTP binder safely restores a non-root trailing-slash
+    path after parsing the generic root probe. Emitting that path directly here
+    would fail the compile-result canonical-path gate before typed binding.
+    """
+
+    if not isinstance(identifier, str) or not identifier.strip():
+        return "/"
+    parsed = urlsplit(identifier)
+    if parsed.scheme not in ("http", "https") or not parsed.netloc:
+        return "/"
+    path = parsed.path or "/"
+    decoded_path = unquote(path)
+    if "\\" in decoded_path or any(
+        part == ".." for part in PurePosixPath(decoded_path).parts
+    ):
+        # Preserve unsafe spellings so the framework's canonical-path gate
+        # rejects them; never hide traversal behind the generic root binder.
+        return path
+    if path != "/" and path.endswith("/"):
+        return "/"
+    return path
+
+
+def _derive_readiness_path(task_entry_path):
+    return "/_readiness" if task_entry_path == "/healthz" else "/healthz"
+
+
+def _select_source(evidence_refs, derivations):
+    """Prefer the evidence source with the richest recorded-response index."""
+
+    sources = [
+        source
+        for evidence_ref in evidence_refs
+        for source in derivations.get(evidence_ref, [])
+        if isinstance(source, dict)
+        and isinstance(source.get("path"), str)
+        and bool(source["path"])
+    ]
+    if not sources:
+        return None
+
+    recorded_sources = [
+        source
+        for source in sources
+        if isinstance(source.get("response_index_path"), str)
+        and bool(source["response_index_path"].strip())
+        and isinstance(source.get("response_record_count"), int)
+        and not isinstance(source.get("response_record_count"), bool)
+        and source["response_record_count"] > 0
+    ]
+    if recorded_sources:
+        return max(
+            recorded_sources,
+            key=lambda source: (
+                source["response_record_count"],
+                source.get("byte_length", 0)
+                if isinstance(source.get("byte_length"), int)
+                and not isinstance(source.get("byte_length"), bool)
+                else 0,
+            ),
+        )
+    return sources[0]
+
+
 def compile_request(request, output_dir):
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -110,15 +177,10 @@ def compile_request(request, output_dir):
         identifier = req.get("identifier", "")
         status = req.get("status", "")
 
-        sources = []
-        for ref in refs:
-            sources.extend(derivations.get(ref, []))
-
-        if not sources:
+        src = _select_source(refs, derivations)
+        if src is None:
             unhandled.append(rid)
             continue
-
-        src = sources[0]
         src_path = src.get("path")
         fixture_name = "fixture_{}.bin".format(len(fixtures))
         fixture_rel = "fixtures/{}".format(fixture_name)
@@ -145,6 +207,8 @@ def compile_request(request, output_dir):
             runtime_entrypoint = None
 
         response_contains = _derive_response_contains(str(fixture_abs))
+        task_entry_path = _derive_task_entry_path(identifier)
+        readiness_path = _derive_readiness_path(task_entry_path)
 
         service = {
             "service_id": service_id,
@@ -154,17 +218,18 @@ def compile_request(request, output_dir):
         }
         if runtime_entrypoint:
             service["runtime_entrypoint"] = runtime_entrypoint
+            service["task_entry_path"] = task_entry_path
         service["protocol_probes"] = [
             {
                 "kind": "http",
-                "path": "/",
+                "path": task_entry_path,
                 "timeout_seconds": 5,
                 "response_contains": response_contains,
             }
         ]
         service["readiness"] = {
             "kind": "http",
-            "path": "/healthz",
+            "path": readiness_path,
             "timeout_seconds": 5,
         }
         services.append(service)

@@ -15,6 +15,7 @@ _PROTECTED_REFERENCE_PATTERNS = (
     re.compile(r"(?<![\w.-])/(?:Users|private|var|tmp|home)/[^\s,;:'\")\]}]+"),
     re.compile(r"(?i)\b(ignore|disregard) (all )?(previous|prior|above) (instructions|messages)\b"),
 )
+_MARKDOWN_FENCE_OPEN = re.compile(r"^ {0,3}(`{3,}|~{3,})(.*)$")
 
 
 def apply_skill_patch_intent(
@@ -99,18 +100,20 @@ def validate_skill_patch_intent(patch_intent: Mapping[str, Any]) -> None:
 
 def _replace_section(content: str, *, heading: str, body: str) -> str:
     lines = content.splitlines()
+    heading_levels = _markdown_heading_levels(lines)
     heading_title = _heading_title(heading)
-    start = _find_heading_index(lines, heading_title)
+    start = _find_heading_index(lines, heading_title, heading_levels=heading_levels)
     if start is None:
         raise CandidateMaterializationError(
             CandidateMaterializationCode.PATCH_SECTION_NOT_FOUND,
             f"section not found: {heading}",
             field_path=CandidateFailureField.PATCH_HEADING,
         )
-    level = _heading_level(lines[start])
+    level = heading_levels[start]
+    assert level is not None
     end = start + 1
     while end < len(lines):
-        current_level = _heading_level(lines[end])
+        current_level = heading_levels[end]
         if current_level is not None and current_level <= level:
             break
         end += 1
@@ -119,27 +122,120 @@ def _replace_section(content: str, *, heading: str, body: str) -> str:
         "",
         *_body_lines(body, heading_title=heading_title),
     ]
-    return "\n".join([*lines[:start], *replacement, *lines[end:]])
+    replacement_heading_levels = _markdown_heading_levels(replacement)
+    replacement_peer_titles = {
+        replacement[index].lstrip("#").strip().lower()
+        for index, replacement_level in enumerate(replacement_heading_levels)
+        if replacement_level == level and index > 0
+    }
+    # Focused repair candidates are patched on top of the previously judged
+    # candidate.  A model can therefore encounter an already duplicated
+    # section and legitimately ask to replace/consolidate it.  Replacing only
+    # the first occurrence retained every stale copy and made each repair grow
+    # the target further.  Treat same-level, same-title sections as one logical
+    # patch target: keep the first position, replace its body, and remove later
+    # duplicates while preserving all intervening sections.
+    duplicate_ranges: list[tuple[int, int]] = []
+    normalized_title = heading_title.strip().lower()
+    for duplicate_start in range(end, len(lines)):
+        if heading_levels[duplicate_start] != level:
+            continue
+        title = lines[duplicate_start].lstrip("#").strip().lower()
+        # A focused consolidation may replace a contiguous group by putting
+        # its canonical peer sections in the replacement body.  Those peers
+        # supersede their old downstream copies just like another occurrence
+        # of the target heading.  Without this, every consolidation attempt
+        # appends the canonical group and retains the stale group, growing the
+        # Skill and making latency/evidence regressions worse.
+        if title != normalized_title and title not in replacement_peer_titles:
+            continue
+        duplicate_end = duplicate_start + 1
+        while duplicate_end < len(lines):
+            current_level = heading_levels[duplicate_end]
+            if current_level is not None and current_level <= level:
+                break
+            duplicate_end += 1
+        duplicate_ranges.append((duplicate_start, duplicate_end))
+
+    rendered = [*lines[:start], *replacement]
+    cursor = end
+    for duplicate_start, duplicate_end in duplicate_ranges:
+        rendered.extend(lines[cursor:duplicate_start])
+        cursor = duplicate_end
+    rendered.extend(lines[cursor:])
+    return "\n".join(rendered)
 
 
 def _append_section(content: str, *, heading: str, body: str) -> str:
     heading_title = _heading_title(heading)
+    lines = content.splitlines()
+    heading_levels = _markdown_heading_levels(lines)
+    if _find_heading_index(
+        lines,
+        heading_title,
+        heading_levels=heading_levels,
+    ) is not None:
+        # An append operation emitted during focused repair commonly means
+        # "publish this section" even though the parent candidate already has
+        # a version of it.  Upsert the logical section instead of silently
+        # manufacturing duplicate instructions.
+        return _replace_section(content, heading=heading_title, body=body)
     rendered = content.rstrip() + "\n\n"
     rendered += f"## {heading_title}\n\n"
     rendered += "\n".join(_body_lines(body, heading_title=heading_title))
     return rendered
 
 
-def _find_heading_index(lines: list[str], heading: str) -> int | None:
+def _find_heading_index(
+    lines: list[str],
+    heading: str,
+    *,
+    heading_levels: list[int | None] | None = None,
+) -> int | None:
     normalized = heading.strip().lower()
-    for index, line in enumerate(lines):
-        level = _heading_level(line)
+    levels = heading_levels or _markdown_heading_levels(lines)
+    for index, (line, level) in enumerate(zip(lines, levels, strict=True)):
         if level is None:
             continue
         title = line.lstrip("#").strip().lower()
         if title == normalized:
             return index
     return None
+
+
+def _markdown_heading_levels(lines: list[str]) -> list[int | None]:
+    """Return heading levels while ignoring heading-like text in code fences."""
+
+    levels: list[int | None] = []
+    fence_character: str | None = None
+    fence_length = 0
+    for line in lines:
+        if fence_character is not None:
+            stripped = line.lstrip(" ")
+            indentation = len(line) - len(stripped)
+            marker_length = len(stripped) - len(stripped.lstrip(fence_character))
+            if (
+                indentation <= 3
+                and marker_length >= fence_length
+                and not stripped[marker_length:].strip()
+            ):
+                fence_character = None
+                fence_length = 0
+            levels.append(None)
+            continue
+
+        fence_match = _MARKDOWN_FENCE_OPEN.match(line)
+        if fence_match is not None:
+            marker = fence_match.group(1)
+            info = fence_match.group(2)
+            if marker[0] == "~" or "`" not in info:
+                fence_character = marker[0]
+                fence_length = len(marker)
+                levels.append(None)
+                continue
+
+        levels.append(_heading_level(line))
+    return levels
 
 
 def _heading_level(line: str) -> int | None:

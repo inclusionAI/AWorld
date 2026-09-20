@@ -56,6 +56,7 @@ class FailureStage(str, Enum):
     CAPABILITY_COMPILE = "capability_compile"
     CAPABILITY_PREFLIGHT = "capability_preflight"
     TASK_ROLLOUT = "task_rollout"
+    EVIDENCE_FINALIZATION = "evidence_finalization"
     EVALUATION = "evaluation"
     RESULT_NORMALIZATION = "result_normalization"
     LEGACY_IMPORT = "legacy_import"
@@ -75,6 +76,18 @@ class FailureEventSource(str, Enum):
 
 
 def _bounded_value(value: Any, *, depth: int = 0) -> Any:
+    # Replay counterexamples are executable repair feedback, not display-only
+    # diagnostics.  Preserve their typed scalar fields before the generic depth
+    # budget stringifies deeply nested values.  Import locally to keep the
+    # failure-event transport independent during module initialization.
+    if isinstance(value, Mapping) and value.get("schema_version") == (
+        "aworld.replay.counterexample.v1"
+    ):
+        from aworld.self_evolve.counterexamples import normalize_counterexample
+
+        normalized = normalize_counterexample(value)
+        if normalized is not None:
+            return normalized
     if depth >= _MAX_DIAGNOSTIC_DEPTH:
         return sanitize_text(str(value), max_chars=256)
     if value is None or isinstance(value, (bool, int, float)):
@@ -553,6 +566,7 @@ class ReplayFailureEvent(Mapping[str, Any]):
             "capability_preflight": FailureStage.CAPABILITY_PREFLIGHT,
             "replay_capability": FailureStage.CAPABILITY_PREFLIGHT,
             "task_rollout": FailureStage.TASK_ROLLOUT,
+            "evidence_finalization": FailureStage.EVIDENCE_FINALIZATION,
             "evaluation": FailureStage.EVALUATION,
             "result_normalization": FailureStage.RESULT_NORMALIZATION,
         }
@@ -1520,6 +1534,23 @@ def observe_replay_failures(
                 )
             )
     return tuple(observations)
+
+
+def _typed_causal_feedback_event(
+    payload: Mapping[str, object],
+) -> AggregatedReplayFailure:
+    """Parse causal transport without routing typed scalars through sanitization."""
+
+    if str(payload.get("schema_version") or "").startswith(
+        "aworld.self_evolve.replay_failure_aggregate."
+    ):
+        return AggregatedReplayFailure.from_dict(payload)
+    if payload.get("schema_version") is not None:
+        event = ReplayFailureEvent.from_dict(payload)
+        return aggregate_replay_failure_observations(
+            (ReplayFailureObservation(event=event),)
+        )[0]
+    return AggregatedReplayFailure.from_dict(payload)
 
 
 def aggregate_replay_failures(

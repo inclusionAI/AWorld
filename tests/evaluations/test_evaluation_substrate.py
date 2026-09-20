@@ -4,6 +4,7 @@ import asyncio
 import base64
 import json
 from pathlib import Path
+from types import SimpleNamespace
 import pytest
 from pydantic import BaseModel, Field
 
@@ -51,6 +52,54 @@ class AliasJudgeOutput(BaseModel):
 class GenericJudgeOutput(BaseModel):
     decision: str
     confidence: float
+
+
+@pytest.mark.asyncio
+async def test_default_agent_judge_executor_uses_fresh_explicit_messages(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import aworld.models.llm as llm_module
+
+    captured: list[list[dict]] = []
+    model = object()
+
+    def fake_get_llm_model(**kwargs):
+        assert kwargs["model_name"] == "judge-model"
+        return model
+
+    async def fake_acall_llm_model(llm, *, messages, **kwargs):
+        assert llm is model
+        captured.append(messages)
+        return SimpleNamespace(content='{"score": 100}')
+
+    monkeypatch.setattr(llm_module, "get_llm_model", fake_get_llm_model)
+    monkeypatch.setattr(llm_module, "acall_llm_model", fake_acall_llm_model)
+    config = SimpleNamespace(
+        llm_provider="openai",
+        llm_api_key="test-key",
+        llm_model_name="judge-model",
+        llm_base_url="https://example.invalid/v1",
+        llm_temperature=0.1,
+    )
+
+    for prompt in ("first evaluation", "schema repair"):
+        result = await substrate_module._default_agent_judge_executor(
+            prompt,
+            "judge instructions",
+            model_config=config,
+        )
+        assert result == '{"score": 100}'
+
+    assert captured == [
+        [
+            {"role": "system", "content": "judge instructions"},
+            {"role": "user", "content": "first evaluation"},
+        ],
+        [
+            {"role": "system", "content": "judge instructions"},
+            {"role": "user", "content": "schema repair"},
+        ],
+    ]
 
 
 @pytest.fixture(autouse=True)
@@ -1362,6 +1411,69 @@ The candidate should not pass.
 
 
 @pytest.mark.asyncio
+async def test_agent_judge_backend_reclassifies_unattested_framework_projection() -> None:
+    async def fake_executor(prompt: str, system_prompt: str):
+        return {
+            "score": 73.0,
+            "verdict": "Marginal",
+            "evidence_repair_constraints": [
+                {
+                    "subject_kind": "configuration_claim",
+                    "failure_mode": "projection_compacted",
+                    "source_layer": "artifact_projection",
+                    "required_action": "expand_bounded_projection",
+                    "owner": "framework",
+                    "occurrence_count": 1,
+                },
+                {
+                    "subject_kind": "quantitative_claim",
+                    "failure_mode": "support_incomplete",
+                    "source_layer": "candidate_output",
+                    "required_action": "support_or_omit",
+                    "owner": "candidate",
+                    "occurrence_count": 1,
+                },
+            ],
+        }
+
+    backend = AgentJudgeBackend(
+        backend_id="agent-backend",
+        system_prompt="judge",
+        executor=fake_executor,
+        prompt_builder=lambda case_input, target, suite: json.dumps(
+            {
+                "artifact_backed_evidence": {
+                    "read_policy": {"max_rounds": 3},
+                    "artifacts": [],
+                }
+            }
+        ),
+    )
+
+    execution = await backend.execute(
+        case_input={"query": "evaluate"},
+        target={"answer": "done"},
+        suite=EvalSuiteDef(suite_id="trajectory-source-evaluator"),
+    )
+
+    constraints = execution.payload["evidence_repair_constraints"]
+    assert constraints[0] == {
+        "subject_kind": "configuration_claim",
+        "failure_mode": "support_incomplete",
+        "source_layer": "candidate_output",
+        "required_action": "support_or_omit",
+        "owner": "candidate",
+        "occurrence_count": 1,
+    }
+    assert constraints[1]["owner"] == "candidate"
+    assert execution.payload["evidence_projection_attestation"] == {
+        "framework_constraint_count": 1,
+        "runtime_attested_count": 0,
+        "reclassified_count": 1,
+    }
+
+
+@pytest.mark.asyncio
 async def test_agent_judge_backend_prefers_complete_judge_payload_over_nested_score_objects() -> None:
     async def fake_executor(prompt: str, system_prompt: str):
         return """
@@ -1804,7 +1916,20 @@ async def test_agent_judge_backend_requires_final_payload_after_read_round_budge
             "read_round_budget_exhausted"
         )
         assert "do not emit more" in payload["artifact_read_followup_instruction"]
-        return {"score": 70.0, "verdict": "Marginal"}
+        return {
+            "score": 70.0,
+            "verdict": "Marginal",
+            "evidence_repair_constraints": [
+                {
+                    "subject_kind": "artifact",
+                    "failure_mode": "projection_compacted",
+                    "source_layer": "artifact_projection",
+                    "required_action": "expand_bounded_projection",
+                    "owner": "framework",
+                    "occurrence_count": 1,
+                }
+            ],
+        }
 
     prompt = {
         "artifact_backed_evidence": {
@@ -1838,6 +1963,14 @@ async def test_agent_judge_backend_requires_final_payload_after_read_round_budge
     ]
     assert execution.diagnostics[-1]["artifact_read_budget_exhausted"] is True
     assert execution.diagnostics[-1]["artifact_read_projection_incomplete"] is True
+    assert execution.payload["evidence_repair_constraints"][0]["owner"] == (
+        "framework"
+    )
+    assert execution.payload["evidence_projection_attestation"] == {
+        "framework_constraint_count": 1,
+        "runtime_attested_count": 1,
+        "reclassified_count": 0,
+    }
 
 
 @pytest.mark.asyncio
@@ -2086,6 +2219,42 @@ async def test_agent_judge_backend_does_not_fallback_when_schema_matches_no_json
                 judge_schema=JudgeSchemaDef(output_model=GenericJudgeOutput),
             ),
         )
+
+
+@pytest.mark.asyncio
+async def test_agent_judge_backend_repairs_one_schema_invalid_response() -> None:
+    prompts: list[str] = []
+
+    async def fake_executor(prompt: str, system_prompt: str):
+        del system_prompt
+        prompts.append(prompt)
+        if len(prompts) == 1:
+            return '{"score": 3, "private_reasoning": "do not echo me"}'
+        return '{"decision": "accept", "confidence": 0.82}'
+
+    backend = AgentJudgeBackend(
+        backend_id="agent-backend",
+        system_prompt="judge",
+        executor=fake_executor,
+        prompt_builder=lambda case_input, target, suite: "judge this trajectory",
+    )
+
+    execution = await backend.execute(
+        case_input={"query": "evaluate"},
+        target={"answer": "done"},
+        suite=EvalSuiteDef(
+            suite_id="generic-json-judge",
+            judge_schema=JudgeSchemaDef(output_model=GenericJudgeOutput),
+        ),
+    )
+
+    assert execution.payload == {"decision": "accept", "confidence": 0.82}
+    assert [item["phase"] for item in execution.diagnostics] == [
+        "initial_judge",
+        "schema_repair",
+    ]
+    assert "required JSON schema" in prompts[1]
+    assert "do not echo me" not in prompts[1]
 
 
 @pytest.mark.asyncio

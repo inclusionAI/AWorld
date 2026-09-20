@@ -25,6 +25,134 @@ def test_default_retention_bounds_large_replay_workspace_history() -> None:
     assert policy.stale_run_retention_hours == 24
     assert policy.unreferenced_ingestion_retention_days == 7
     assert policy.prune_unselected_candidate_materializations is True
+    assert policy.max_cleanup_seconds == 5.0
+
+
+def test_cleanup_stops_at_global_time_budget(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    artifact_root = tmp_path / ".aworld" / "self_evolve"
+    for index in range(3):
+        run_dir = artifact_root / f"run-{index}"
+        _write_json(run_dir / "run.json", {"status": "rejected"})
+        _write_json(run_dir / "report.json", {"status": "rejected"})
+        _write_text(run_dir / "evidence" / "raw.txt")
+
+    clock = iter((0.0, 0.1, 0.2, 1.1, 1.2, 1.3, 1.4, 1.5))
+    monkeypatch.setattr(lifecycle_module.time, "monotonic", lambda: next(clock))
+    removed: list[Path] = []
+
+    def bounded_remove(path: Path, **kwargs: object) -> bool:
+        removed.append(path)
+        return True
+
+    monkeypatch.setattr(lifecycle_module, "_remove_path", bounded_remove)
+
+    result = cleanup_self_evolve_artifacts(
+        tmp_path,
+        policy=SelfEvolveArtifactRetentionPolicy(max_cleanup_seconds=1.0),
+    )
+
+    assert result["cleanup_budget_exhausted"] is True
+    assert len(removed) < 3
+
+
+def test_pending_measurement_work_protects_replay_runtime_seed(tmp_path: Path) -> None:
+    run_dir = tmp_path / ".aworld" / "self_evolve" / "run-pending-measurement"
+    candidate_id = "candidate"
+    plan_fingerprint = "sha256:" + "a" * 64
+    seed = (
+        run_dir
+        / "replay_adaptation"
+        / "dataset"
+        / "capability"
+        / "workspace_seed"
+    )
+    _write_text(seed / "source.py")
+    overlay = run_dir / "overlays" / candidate_id / "skills" / "SKILL.md"
+    candidate_materialization = run_dir / "candidates" / candidate_id / "SKILL.md"
+    _write_text(overlay)
+    _write_text(candidate_materialization)
+    _write_json(
+        run_dir / "measurement_control" / ("plan-" + "a" * 64) / "index.json",
+        {"work_units": [{"state": "checkpointed"}, {"state": "succeeded"}]},
+    )
+    _write_json(
+        run_dir / "replay" / candidate_id / "request.json",
+        {
+            "run_id": run_dir.name,
+            "candidate_id": candidate_id,
+            "measurement_plan": {
+                "measurement_plan_fingerprint": plan_fingerprint,
+            },
+        },
+    )
+
+    candidates = tuple(
+        lifecycle_module._terminal_cleanup_candidates(
+            tmp_path / ".aworld" / "self_evolve",
+            run_dir,
+            prune_unselected_candidate_materializations=True,
+        )
+    )
+
+    assert seed not in candidates
+    assert not any(path == run_dir / "overlays" for path in candidates)
+    assert candidate_materialization.parent not in candidates
+
+    _write_json(
+        run_dir / "measurement_control" / ("plan-" + "a" * 64) / "index.json",
+        {"work_units": [{"state": "succeeded"}, {"state": "task_failed"}]},
+    )
+    completed_candidates = tuple(
+        lifecycle_module._terminal_cleanup_candidates(
+            tmp_path / ".aworld" / "self_evolve",
+            run_dir,
+            prune_unselected_candidate_materializations=True,
+        )
+    )
+    assert seed in completed_candidates
+    assert run_dir / "overlays" in completed_candidates
+    assert candidate_materialization.parent in completed_candidates
+
+
+def test_screening_measurement_work_does_not_protect_authoritative_runtime(
+    tmp_path: Path,
+) -> None:
+    run_dir = tmp_path / ".aworld" / "self_evolve" / "run-screening-only"
+    seed = run_dir / "replay_adaptation" / "dataset" / "capability" / "workspace_seed"
+    _write_text(seed / "source.py")
+    fingerprint = "sha256:" + "b" * 64
+    _write_json(
+        run_dir / "measurement_control" / ("plan-" + "b" * 64) / "index.json",
+        {"work_units": [{"state": "checkpointed", "attempt_count": 1}]},
+    )
+    _write_json(
+        run_dir
+        / "screening"
+        / "case-1"
+        / "replay"
+        / "candidate"
+        / "request.json",
+        {
+            "run_id": run_dir.name,
+            "candidate_id": "candidate",
+            "measurement_plan": {
+                "measurement_plan_fingerprint": fingerprint,
+            },
+        },
+    )
+
+    candidates = tuple(
+        lifecycle_module._terminal_cleanup_candidates(
+            tmp_path / ".aworld" / "self_evolve",
+            run_dir,
+            prune_unselected_candidate_materializations=False,
+        )
+    )
+
+    assert seed in candidates
 
 
 def _write_json(path: Path, payload: object) -> None:
@@ -65,6 +193,28 @@ def test_cleanup_removes_only_expired_raw_artifacts_and_preserves_durable_run_fi
             {"run_id": run_dir.name},
         )
         _write_text(run_dir / "replay" / "cand-1" / "workspace" / "source.py")
+        _write_json(
+            run_dir
+            / "regression"
+            / "suite-one"
+            / "replay"
+            / "cand-1"
+            / "execution_request.json",
+            {"run_id": run_dir.name},
+        )
+        _write_text(
+            run_dir
+            / "regression"
+            / "suite-one"
+            / "replay"
+            / "cand-1"
+            / "workspace"
+            / "source.py"
+        )
+        _write_json(
+            run_dir / "regression" / "evidence" / "cand-1.json",
+            {"candidate_id": "cand-1", "passed": True},
+        )
         _write_json(
             run_dir / "replay_adaptation" / "dataset" / "capability" / "bundle.json",
             {"status": "compiled"},
@@ -122,9 +272,21 @@ def test_cleanup_removes_only_expired_raw_artifacts_and_preserves_durable_run_fi
         now=10_000.0,
     )
 
-    assert cleanup["removed_run_count"] == 2
+    assert cleanup["removed_run_count"] == 0
+    assert cleanup["removed_run_ids"] == []
+    assert cleanup["compacted_run_count"] == 2
+    assert cleanup["compacted_run_ids"] == ["run-old", "run-recent"]
     assert (old_run / "replay" / "cand-1" / "result.json").exists()
     assert not (old_run / "replay" / "cand-1" / "workspace").exists()
+    assert not (
+        old_run
+        / "regression"
+        / "suite-one"
+        / "replay"
+        / "cand-1"
+        / "workspace"
+    ).exists()
+    assert (old_run / "regression" / "evidence" / "cand-1.json").exists()
     assert (
         old_run / "replay_adaptation" / "dataset" / "capability" / "bundle.json"
     ).exists()
@@ -161,6 +323,15 @@ def test_cleanup_removes_only_expired_raw_artifacts_and_preserves_durable_run_fi
 
     assert (recent_run / "replay" / "cand-1" / "result.json").exists()
     assert not (recent_run / "replay" / "cand-1" / "workspace").exists()
+    assert not (
+        recent_run
+        / "regression"
+        / "suite-one"
+        / "replay"
+        / "cand-1"
+        / "workspace"
+    ).exists()
+    assert (recent_run / "regression" / "evidence" / "cand-1.json").exists()
     assert (
         recent_run / "replay_adaptation" / "dataset" / "capability" / "bundle.json"
     ).exists()
@@ -171,7 +342,7 @@ def test_cleanup_removes_only_expired_raw_artifacts_and_preserves_durable_run_fi
         / "capability"
         / "workspace_seed"
     ).exists()
-    assert not (recent_run / "repair_conformance").exists()
+    assert (recent_run / "repair_conformance").exists()
     assert not (recent_run / "candidates" / "cand-1.md").exists()
     assert not (recent_run / "candidates" / "cand-1").exists()
     assert not (recent_run / "overlays").exists()
@@ -231,7 +402,9 @@ def test_cleanup_skips_running_and_interrupted_apply_but_prunes_referenced_termi
         now=10_000.0,
     )
 
-    assert cleanup["removed_run_count"] == 1
+    assert cleanup["removed_run_count"] == 0
+    assert cleanup["compacted_run_count"] == 1
+    assert cleanup["compacted_run_ids"] == ["run-source"]
     assert (artifact_root / "run-running" / "replay").exists()
     assert (artifact_root / "run-apply" / "replay").exists()
     assert (artifact_root / "run-source" / "replay" / "cand-1" / "result.json").exists()
@@ -904,6 +1077,42 @@ def test_cleanup_recovers_atomically_quarantined_artifacts(tmp_path: Path) -> No
 
     assert not operation.parent.exists()
     assert str(operation) in cleanup["removed_paths"]
+
+
+def test_cleanup_defers_large_quarantine_deletion_after_logical_removal(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    artifact_root = tmp_path / ".aworld" / "self_evolve"
+    run_dir = artifact_root / "run-terminal"
+    replay = run_dir / "replay"
+    _write_json(
+        run_dir / "run.json",
+        {"run_id": run_dir.name, "status": "rejected"},
+    )
+    _write_json(replay / "candidate" / "execution_request.json", {})
+    _write_text(replay / "candidate" / "workspace" / "source.py")
+    _touch_tree(run_dir, 1_000.0)
+    monkeypatch.setattr(lifecycle_module, "_INLINE_QUARANTINE_DELETE_SECONDS", 0.0)
+
+    cleanup = cleanup_self_evolve_artifacts(
+        tmp_path,
+        policy=SelfEvolveArtifactRetentionPolicy(keep_latest_runs=0),
+        now=10_000.0,
+    )
+
+    removed_paths = [Path(value) for value in cleanup["removed_paths"]]
+    assert removed_paths
+    assert all(not path.exists() for path in removed_paths)
+    quarantine = artifact_root / ".artifact-retention-trash"
+    operations = list(quarantine.iterdir())
+    assert operations
+    assert all((operation / "owner.json").is_file() for operation in operations)
+    assert any(
+        path.name == "source.py"
+        for operation in operations
+        for path in (operation / "artifact").rglob("*")
+    )
 
 
 def test_cleanup_does_not_recover_live_quarantine_operation(tmp_path: Path) -> None:

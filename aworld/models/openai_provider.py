@@ -89,6 +89,14 @@ AZURE_OPENAI_CONTEXT_LOWERING = ProviderLoweringCapability(
 class OpenAIProvider(LLMProviderBase):
     """OpenAI provider implementation."""
 
+    def _authoritative_max_retries(self, *, http_handler: bool) -> int:
+        if os.getenv("AWORLD_SELF_EVOLVE_DISABLE_PROVIDER_RETRIES") == "1":
+            self.authoritative_usage_single_attempt = True
+            # The SDK counts retries after the first request; the local HTTP
+            # handler counts total attempts.
+            return 1 if http_handler else 0
+        return int(self.kwargs.get("max_retries", 3))
+
     def _supports_native_prompt_cache_control(self) -> bool:
         """Require explicit capability for arbitrary compatible endpoints.
 
@@ -171,7 +179,7 @@ class OpenAIProvider(LLMProviderBase):
                 base_url=base_url,
                 api_key=api_key,
                 model_name=self.model_name,
-                max_retries=self.kwargs.get("max_retries", 3),
+                max_retries=self._authoritative_max_retries(http_handler=True),
             )
             self.is_http_provider = True
             return self.http_provider
@@ -184,7 +192,7 @@ class OpenAIProvider(LLMProviderBase):
                 api_key=api_key,
                 base_url=base_url,
                 timeout=timeout,
-                max_retries=self.kwargs.get("max_retries", 3),
+                max_retries=self._authoritative_max_retries(http_handler=False),
                 http_client=http_client,
             )
 
@@ -218,7 +226,7 @@ class OpenAIProvider(LLMProviderBase):
             api_key=api_key,
             base_url=base_url,
             timeout=timeout,
-            max_retries=self.kwargs.get("max_retries", 3),
+            max_retries=self._authoritative_max_retries(http_handler=False),
             http_client=http_client,
         )
 

@@ -5,15 +5,19 @@ import contextvars
 import hashlib
 import inspect
 import json
+import math
 import os
+import signal
 import statistics
 import subprocess
 import sys
 import time
+import uuid
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+from enum import Enum
 from pathlib import Path
-from typing import Any, Callable, Mapping, Protocol
+from typing import Any, Callable, Mapping, MutableMapping, Protocol
 
 from aworld.config.conf import EvaluationConfig
 from aworld.core.context.amni.local import LocalIsolatedApplicationContext
@@ -35,7 +39,19 @@ from aworld.self_evolve.evidence_diagnostics import (
     EvidenceRepairConstraint,
     merge_evidence_repair_constraints,
 )
-from aworld.self_evolve.types import CandidateVariant, EvaluationSummary
+from aworld.self_evolve.candidate_package import candidate_package_fingerprint
+from aworld.self_evolve.sanitization import sanitize_text
+from aworld.self_evolve.task_context import task_context_text
+from aworld.self_evolve.types import (
+    CandidateVariant,
+    EvaluationSummary,
+    to_json_dict,
+)
+
+
+EVALUATION_IDENTITY_SCHEMA_VERSION = "aworld.self_evolve.evaluation_identity.v1"
+_MAX_AGGREGATED_EVIDENCE_ISSUES = 16
+_MAX_AGGREGATED_EVIDENCE_ISSUE_CHARS = 480
 
 
 @dataclass(frozen=True)
@@ -46,6 +62,75 @@ class EvaluationRequest:
     eval_config: EvaluationConfig | None = None
     dataset_split: str = "all"
     artifact_namespace: str | None = None
+    preserve_case_cardinality: bool = False
+
+
+@dataclass(frozen=True)
+class EvaluationIdentity:
+    """Content-addressed identity of one evaluation input and judge contract."""
+
+    fingerprint: str
+    role: str
+    dataset_fingerprint: str
+    backend_fingerprint: str
+    variant_fingerprint: str
+    dataset_split: str
+    schema_version: str = EVALUATION_IDENTITY_SCHEMA_VERSION
+
+    @property
+    def short_id(self) -> str:
+        return self.fingerprint.removeprefix("sha256:")[:16]
+
+    def to_dict(self) -> dict[str, str]:
+        return {
+            "schema_version": self.schema_version,
+            "fingerprint": self.fingerprint,
+            "role": self.role,
+            "dataset_fingerprint": self.dataset_fingerprint,
+            "backend_fingerprint": self.backend_fingerprint,
+            "variant_fingerprint": self.variant_fingerprint,
+            "dataset_split": self.dataset_split,
+        }
+
+
+def evaluation_request_identity(
+    backend: EvaluationBackend,
+    request: EvaluationRequest,
+    *,
+    baseline_target_fingerprint: str | None = None,
+) -> EvaluationIdentity:
+    role = "candidate" if request.candidate is not None else "baseline"
+    dataset_fingerprint = _evaluation_dataset_fingerprint(request.dataset)
+    backend_fingerprint = _evaluation_backend_fingerprint(backend)
+    variant_fingerprint = (
+        candidate_package_fingerprint(request.candidate)
+        if request.candidate is not None
+        else str(baseline_target_fingerprint or "baseline-target-unspecified")
+    )
+    eval_config = (
+        request.eval_config.model_dump(mode="json")
+        if request.eval_config is not None
+        else None
+    )
+    payload = {
+        "schema_version": EVALUATION_IDENTITY_SCHEMA_VERSION,
+        "role": role,
+        "dataset_fingerprint": dataset_fingerprint,
+        "backend_fingerprint": backend_fingerprint,
+        "variant_fingerprint": variant_fingerprint,
+        "dataset_split": request.dataset_split,
+        "preserve_case_cardinality": request.preserve_case_cardinality,
+        "eval_config": eval_config,
+    }
+    fingerprint = _fingerprint_payload(payload)
+    return EvaluationIdentity(
+        fingerprint=fingerprint,
+        role=role,
+        dataset_fingerprint=dataset_fingerprint,
+        backend_fingerprint=backend_fingerprint,
+        variant_fingerprint=variant_fingerprint,
+        dataset_split=request.dataset_split,
+    )
 
 
 @dataclass(frozen=True)
@@ -167,6 +252,13 @@ class CommandVerificationBackend:
             dataset_split=request.dataset_split,
             metrics={
                 "deterministic_signal": bool(case_results),
+                "deterministic_verification_source": "verification_command",
+                "deterministic_verification_case_count": len(case_results),
+                "deterministic_verification_pass_count": pass_count,
+                "deterministic_verification_failure_count": failure_count,
+                "deterministic_verification_pass_rate": pass_rate,
+                # Compatibility aliases for persisted pre-v2 reports.  Only
+                # CommandVerificationBackend is allowed to emit command_*.
                 "command_case_count": len(case_results),
                 "command_pass_count": pass_count,
                 "command_failure_count": failure_count,
@@ -272,6 +364,10 @@ class SkillCandidateOverlayBackend:
             metrics={
                 "score": score,
                 "deterministic_signal": True,
+                "deterministic_verification_source": "skill_candidate_overlay",
+                "deterministic_verification_case_count": 1,
+                "deterministic_verification_pass_count": 1,
+                "deterministic_verification_failure_count": 0,
                 "command_case_count": 1,
                 "command_pass_count": 1,
                 "command_failure_count": 0,
@@ -284,6 +380,8 @@ class SkillCandidateOverlayBackend:
 
 class AWorldTrajectoryEvaluatorBackend:
     """Evaluate baseline or candidate trajectories through AWorld evaluator runtime."""
+
+    probabilistic_only = True
 
     def __init__(
         self,
@@ -298,6 +396,9 @@ class AWorldTrajectoryEvaluatorBackend:
         judge_repetitions: int = 1,
         judge_failure_retries: int = 2,
         judge_timeout_seconds: float | None = 300.0,
+        judge_timeout_backoff: float = 1.5,
+        max_judge_timeout_multiplier: float = 3.0,
+        evaluation_timeout_seconds: float | None = None,
     ) -> None:
         selector_count = sum(
             bool(value)
@@ -318,9 +419,26 @@ class AWorldTrajectoryEvaluatorBackend:
             raise ValueError("judge_failure_retries must be non-negative")
         if judge_timeout_seconds is not None and judge_timeout_seconds <= 0:
             raise ValueError("judge_timeout_seconds must be positive")
+        if judge_timeout_backoff < 1.0:
+            raise ValueError("judge_timeout_backoff must be at least 1.0")
+        if max_judge_timeout_multiplier < 1.0:
+            raise ValueError("max_judge_timeout_multiplier must be at least 1.0")
         self.judge_repetitions = judge_repetitions
         self.judge_failure_retries = judge_failure_retries
         self.judge_timeout_seconds = judge_timeout_seconds
+        self.judge_timeout_backoff = judge_timeout_backoff
+        self.max_judge_timeout_multiplier = max_judge_timeout_multiplier
+        if evaluation_timeout_seconds is not None and evaluation_timeout_seconds <= 0:
+            raise ValueError("evaluation_timeout_seconds must be positive")
+        self.evaluation_timeout_seconds = (
+            float(evaluation_timeout_seconds)
+            if evaluation_timeout_seconds is not None
+            else (
+                max(300.0, float(judge_timeout_seconds) * 2.0)
+                if judge_timeout_seconds is not None
+                else None
+            )
+        )
 
     @property
     def task_local_runtime(self) -> bool:
@@ -360,7 +478,11 @@ class AWorldTrajectoryEvaluatorBackend:
         evaluation_cases = _evaluation_cases_for_split(request)
         original_case_count = len(evaluation_cases)
         effective_case_count = len(records)
-        deduplicated_case_count = max(0, original_case_count - effective_case_count)
+        comparison_metrics = _aworld_comparison_plan_metrics(
+            request=request,
+            evaluation_cases=evaluation_cases,
+            effective_case_count=effective_case_count,
+        )
         log_path.write_text(
             "\n".join(repr(record) for record in records) + "\n",
             encoding="utf-8",
@@ -379,6 +501,7 @@ class AWorldTrajectoryEvaluatorBackend:
                     "effective_case_count": 0,
                     "deduplicated_case_count": 0,
                     "evaluation_skip_reason": "dataset split has no evaluation cases",
+                    **comparison_metrics,
                 }
             )
             return EvaluationSummary(
@@ -414,16 +537,59 @@ class AWorldTrajectoryEvaluatorBackend:
             f"repetitions={self.judge_repetitions} "
             f"max_attempts={max_attempts} namespace={request.artifact_namespace or '-'}"
         )
+        evaluation_started_at = time.monotonic()
         for attempt_index in range(1, max_attempts + 1):
+            effective_timeout_seconds = self._effective_judge_timeout_seconds(
+                timeout_failure_count=_judge_failure_timeout_count(failures)
+            )
+            remaining_evaluation_seconds = (
+                self.evaluation_timeout_seconds
+                - (time.monotonic() - evaluation_started_at)
+                if self.evaluation_timeout_seconds is not None
+                else None
+            )
+            if (
+                remaining_evaluation_seconds is not None
+                and remaining_evaluation_seconds <= 0
+            ):
+                failures.append(
+                    {
+                        "attempt": attempt_index,
+                        "type": "TimeoutError",
+                        "reason": "evaluation deadline exhausted before judge retry",
+                        "timeout_phase": "evaluation_deadline",
+                        "timeout_seconds": self.evaluation_timeout_seconds,
+                    }
+                )
+                break
+            if remaining_evaluation_seconds is not None:
+                if effective_timeout_seconds is None:
+                    effective_timeout_seconds = remaining_evaluation_seconds
+                else:
+                    effective_timeout_seconds = min(
+                        float(effective_timeout_seconds),
+                        remaining_evaluation_seconds,
+                    )
+            attempt_runner_kwargs = dict(runner_kwargs)
+            attempt_runner_kwargs["judge_timeout_seconds"] = effective_timeout_seconds
+            if (
+                self.run_evaluator_source is None
+                and remaining_evaluation_seconds is not None
+            ):
+                attempt_runner_kwargs["_process_timeout_seconds"] = max(
+                    0.001,
+                    float(remaining_evaluation_seconds),
+                )
             logger.info(
                 "self_evolve.evaluator.attempt.start "
                 f"variant_id={request.variant_id} split={request.dataset_split} "
-                f"attempt={attempt_index}/{max_attempts}"
+                f"attempt={attempt_index}/{max_attempts} "
+                f"timeout_seconds={effective_timeout_seconds or '-'}"
             )
             try:
                 report = await self._run_evaluator_source_with_timeout(
                     runner,
-                    runner_kwargs=runner_kwargs,
+                    runner_kwargs=attempt_runner_kwargs,
                     log_path=runtime_log_path,
                 )
             except asyncio.TimeoutError as exc:
@@ -446,6 +612,7 @@ class AWorldTrajectoryEvaluatorBackend:
                     timeout_phase = diagnostics[-1].get("phase")
                     if isinstance(timeout_phase, str) and timeout_phase:
                         failure["timeout_phase"] = timeout_phase
+                failure["timeout_seconds"] = effective_timeout_seconds
                 failures.append(failure)
                 logger.info(
                     "self_evolve.evaluator.attempt.end "
@@ -466,6 +633,7 @@ class AWorldTrajectoryEvaluatorBackend:
                         "attempt": attempt_index,
                         "type": type(exc).__name__,
                         "reason": str(exc),
+                        "timeout_seconds": effective_timeout_seconds,
                     }
                 )
                 logger.info(
@@ -510,12 +678,36 @@ class AWorldTrajectoryEvaluatorBackend:
                     effective_case_count=effective_case_count,
                 )
             )
+            metrics.update(comparison_metrics)
             metrics["judge_attempt_count"] = len(reports) + len(failures)
             metrics["judge_success_count"] = len(reports)
             metrics["judge_failure_count"] = len(failures)
+            if isinstance(metrics.get("score"), (int, float)) and not isinstance(
+                metrics.get("score"), bool
+            ):
+                metrics["score_sample_count"] = max(
+                    effective_case_count,
+                    len(reports),
+                )
+            metrics["judge_timeout_count"] = (
+                _nonnegative_metric_count(metrics.get("judge_timeout_count"))
+                + _judge_failure_timeout_count(failures)
+            )
+            metrics["judge_retryable_failure_count"] = (
+                _judge_retryable_failure_count(failures)
+            )
             metrics["judge_repetitions"] = self.judge_repetitions
             if failures:
                 metrics["judge_failures"] = failures
+            if self.judge_timeout_seconds is not None:
+                metrics["judge_timeout_seconds"] = self.judge_timeout_seconds
+                metrics["judge_timeout_seconds_effective_max"] = max(
+                    float(item.get("timeout_seconds") or 0.0)
+                    for item in (
+                        *failures,
+                        {"timeout_seconds": effective_timeout_seconds},
+                    )
+                )
             if fallback_model_profile is not None:
                 metrics["judge_model_profile_fallback"] = fallback_model_profile
         else:
@@ -531,8 +723,11 @@ class AWorldTrajectoryEvaluatorBackend:
                     effective_case_count=effective_case_count,
                 )
             )
+            metrics.update(comparison_metrics)
             if fallback_model_profile is not None:
                 metrics["judge_model_profile_fallback"] = fallback_model_profile
+        if self.evaluation_timeout_seconds is not None:
+            metrics["evaluation_timeout_seconds"] = self.evaluation_timeout_seconds
         logger.info(
             "self_evolve.evaluator.end "
             f"variant_id={request.variant_id} split={request.dataset_split} "
@@ -559,7 +754,22 @@ class AWorldTrajectoryEvaluatorBackend:
         )
         if self.judge_timeout_seconds is None or self.run_evaluator_source is None:
             return await call
-        return await asyncio.wait_for(call, timeout=self.judge_timeout_seconds)
+        timeout = runner_kwargs.get("judge_timeout_seconds")
+        if not isinstance(timeout, (int, float)) or isinstance(timeout, bool):
+            timeout = self.judge_timeout_seconds
+        return await asyncio.wait_for(call, timeout=float(timeout))
+
+    def _effective_judge_timeout_seconds(
+        self,
+        *,
+        timeout_failure_count: int,
+    ) -> float | None:
+        if self.judge_timeout_seconds is None:
+            return None
+        base = float(self.judge_timeout_seconds)
+        multiplier = self.judge_timeout_backoff ** max(0, timeout_failure_count)
+        multiplier = min(multiplier, self.max_judge_timeout_multiplier)
+        return base * multiplier
 
     async def _run_evaluator_source(
         self,
@@ -626,20 +836,38 @@ def _run_evaluator_cli_subprocess(
     environment = os.environ.copy()
     environment["AWORLD_LOG_PATH"] = str(log_path)
     environment["AWORLD_TRAJECTORY_LOG_DISABLED"] = "1"
+    process_deadline = runner_kwargs.get("_process_timeout_seconds")
     timeout = runner_kwargs.get("judge_timeout_seconds")
-    process_timeout = (
-        float(timeout) + 30.0
-        if isinstance(timeout, (int, float)) and not isinstance(timeout, bool)
-        else None
-    )
-    completed = subprocess.run(
-        command,
-        cwd=workspace_root,
-        env=environment,
-        text=True,
-        capture_output=True,
-        timeout=process_timeout,
-    )
+    if isinstance(process_deadline, (int, float)) and not isinstance(
+        process_deadline, bool
+    ):
+        process_timeout = float(process_deadline)
+    else:
+        process_timeout = (
+            float(timeout) + 30.0
+            if isinstance(timeout, (int, float)) and not isinstance(timeout, bool)
+            else None
+        )
+    try:
+        completed = _run_isolated_evaluator_process(
+            command,
+            cwd=workspace_root,
+            environment=environment,
+            timeout_seconds=process_timeout,
+        )
+    except subprocess.TimeoutExpired as exc:
+        timeout_error = asyncio.TimeoutError(
+            "isolated evaluator process tree timed out after "
+            f"{process_timeout:g}s"
+        )
+        timeout_error.judge_diagnostics = [
+            {
+                "phase": "isolated_evaluator_process",
+                "timeout_seconds": process_timeout,
+                "process_tree_terminated": True,
+            }
+        ]
+        raise timeout_error from exc
     report_path = Path(output)
     if report_path.is_file():
         try:
@@ -662,6 +890,61 @@ def _run_evaluator_cli_subprocess(
         "isolated evaluator subprocess did not produce a report "
         f"(exit={completed.returncode}){diagnostic_suffix}"
     )
+
+
+def _run_isolated_evaluator_process(
+    command: list[str],
+    *,
+    cwd: Path,
+    environment: Mapping[str, str],
+    timeout_seconds: float | None,
+) -> subprocess.CompletedProcess[str]:
+    """Run an evaluator with a hard deadline covering its descendant tree."""
+
+    process = subprocess.Popen(
+        command,
+        cwd=cwd,
+        env=dict(environment),
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        start_new_session=True,
+    )
+    try:
+        stdout, stderr = process.communicate(timeout=timeout_seconds)
+    except subprocess.TimeoutExpired:
+        _terminate_process_group(process)
+        stdout, stderr = process.communicate()
+        raise subprocess.TimeoutExpired(
+            command,
+            timeout_seconds,
+            output=stdout,
+            stderr=stderr,
+        )
+    return subprocess.CompletedProcess(
+        command,
+        process.returncode,
+        stdout,
+        stderr,
+    )
+
+
+def _terminate_process_group(process: subprocess.Popen[str]) -> None:
+    if process.poll() is not None:
+        return
+    try:
+        os.killpg(process.pid, signal.SIGTERM)
+    except ProcessLookupError:
+        return
+    try:
+        process.wait(timeout=2.0)
+        return
+    except subprocess.TimeoutExpired:
+        pass
+    try:
+        os.killpg(process.pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
 
 
 @contextmanager
@@ -706,35 +989,101 @@ async def evaluate_baseline_and_candidate(
     task_batch_executor: DeterministicTaskBatchExecutor | None = None,
     max_concurrency: int = 1,
     execution_telemetry: SelfEvolveExecutionTelemetry | None = None,
+    baseline_cache: MutableMapping[str, EvaluationSummary] | None = None,
 ) -> tuple[EvaluationSummary, EvaluationSummary]:
+    namespace_root = artifact_namespace or (
+        f"evaluation-{uuid.uuid4().hex[:16]}"
+    )
+    baseline_request = EvaluationRequest(
+        variant_id=baseline_variant_id,
+        candidate=None,
+        dataset=dataset,
+        eval_config=eval_config,
+        dataset_split=dataset_split,
+        preserve_case_cardinality=True,
+    )
+    candidate_request = EvaluationRequest(
+        variant_id=candidate.candidate_id,
+        candidate=candidate,
+        dataset=dataset,
+        eval_config=eval_config,
+        dataset_split=dataset_split,
+        preserve_case_cardinality=True,
+    )
+    baseline_identity = evaluation_request_identity(
+        backend,
+        baseline_request,
+        baseline_target_fingerprint=candidate.target_fingerprint,
+    )
+    candidate_identity = evaluation_request_identity(
+        backend,
+        candidate_request,
+    )
+    baseline_namespace = (
+        f"{namespace_root}-baseline-{baseline_identity.short_id}"
+    )
+    candidate_namespace = (
+        f"{namespace_root}-candidate-{candidate_identity.short_id}"
+    )
+    cached_baseline = (
+        baseline_cache.get(baseline_identity.fingerprint)
+        if baseline_cache is not None
+        else None
+    )
     requests = (
-        EvaluationRequest(
-            variant_id=baseline_variant_id,
-            candidate=None,
-            dataset=dataset,
-            eval_config=eval_config,
-            dataset_split=dataset_split,
-            artifact_namespace=artifact_namespace,
-        ),
-        EvaluationRequest(
-            variant_id=candidate.candidate_id,
-            candidate=candidate,
-            dataset=dataset,
-            eval_config=eval_config,
-            dataset_split=dataset_split,
-            artifact_namespace=artifact_namespace,
-        ),
+        (
+            replace(baseline_request, artifact_namespace=baseline_namespace),
+            replace(candidate_request, artifact_namespace=candidate_namespace),
+        )
+        if cached_baseline is None
+        else (
+            replace(candidate_request, artifact_namespace=candidate_namespace),
+        )
     )
     summaries = await _execute_evaluation_requests(
         backend,
         requests=requests,
         task_batch_executor=task_batch_executor,
         max_concurrency=max_concurrency,
-        artifact_namespace=artifact_namespace,
+        artifact_namespace=namespace_root,
         dataset_split=dataset_split,
         execution_telemetry=execution_telemetry,
     )
-    return summaries[0], summaries[1]
+    if cached_baseline is None:
+        baseline_summary = _summary_with_evaluation_identity(
+            summaries[0],
+            identity=baseline_identity,
+            artifact_namespace=baseline_namespace,
+            fresh_execution=True,
+        )
+        candidate_summary = _summary_with_evaluation_identity(
+            summaries[1],
+            identity=candidate_identity,
+            artifact_namespace=candidate_namespace,
+            fresh_execution=True,
+        )
+        if baseline_cache is not None:
+            baseline_cache[baseline_identity.fingerprint] = baseline_summary
+    else:
+        baseline_summary = _summary_with_evaluation_identity(
+            cached_baseline,
+            identity=baseline_identity,
+            artifact_namespace=str(
+                cached_baseline.metrics.get("evaluation_artifact_namespace")
+                or baseline_namespace
+            ),
+            fresh_execution=False,
+            reused_from_execution_id=str(
+                cached_baseline.metrics.get("evaluation_execution_id") or ""
+            ),
+        )
+        candidate_summary = _summary_with_evaluation_identity(
+            summaries[0],
+            identity=candidate_identity,
+            artifact_namespace=candidate_namespace,
+            fresh_execution=True,
+        )
+    return baseline_summary, candidate_summary
 
 
 async def evaluate_variant_task(
@@ -754,6 +1103,115 @@ async def evaluate_variant_task(
         execution_telemetry=execution_telemetry,
     )
     return summaries[0]
+
+
+def _summary_with_evaluation_identity(
+    summary: EvaluationSummary,
+    *,
+    identity: EvaluationIdentity,
+    artifact_namespace: str,
+    fresh_execution: bool,
+    reused_from_execution_id: str | None = None,
+) -> EvaluationSummary:
+    execution_id = str(
+        summary.metrics.get("evaluation_execution_id")
+        or _fingerprint_payload(
+            {
+                "identity": identity.fingerprint,
+                "artifact_namespace": artifact_namespace,
+            }
+        )
+    )
+    return replace(
+        summary,
+        metrics={
+            **dict(summary.metrics),
+            "evaluation_identity": identity.to_dict(),
+            "evaluation_identity_fingerprint": identity.fingerprint,
+            "evaluation_execution_id": execution_id,
+            "evaluation_evidence_role": identity.role,
+            "evaluation_artifact_namespace": artifact_namespace,
+            "evaluation_fresh_execution": fresh_execution,
+            "evaluation_reused": not fresh_execution,
+            "evaluation_reused_from_execution_id": (
+                reused_from_execution_id or None
+            ),
+        },
+    )
+
+
+def _evaluation_dataset_fingerprint(dataset: SelfEvolveDataset) -> str:
+    return _fingerprint_payload(
+        {
+            "cases": to_json_dict(dataset.cases),
+            "recipe": to_json_dict(dataset.recipe),
+        }
+    )
+
+
+def _evaluation_backend_fingerprint(backend: object) -> str:
+    backend_type = type(backend)
+    try:
+        backend_attributes = vars(backend)
+    except TypeError:
+        backend_attributes = {}
+    configuration = {
+        key: normalized
+        for key, value in sorted(backend_attributes.items())
+        if not key.startswith("_")
+        and (normalized := _stable_identity_value(value)) is not None
+    }
+    return _fingerprint_payload(
+        {
+            "type": f"{backend_type.__module__}.{backend_type.__qualname__}",
+            "configuration": configuration,
+        }
+    )
+
+
+def _stable_identity_value(value: object, *, depth: int = 0) -> object | None:
+    if depth > 5:
+        return None
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    if isinstance(value, Enum):
+        return value.value
+    if isinstance(value, Path):
+        return str(value.resolve(strict=False))
+    if callable(value):
+        module = getattr(value, "__module__", type(value).__module__)
+        qualname = getattr(value, "__qualname__", type(value).__qualname__)
+        return {"callable": f"{module}.{qualname}"}
+    if isinstance(value, Mapping):
+        return {
+            str(key): normalized
+            for key, nested in sorted(value.items(), key=lambda item: str(item[0]))
+            if (normalized := _stable_identity_value(nested, depth=depth + 1))
+            is not None
+        }
+    if isinstance(value, (list, tuple, set, frozenset)):
+        normalized_items = [
+            normalized
+            for item in value
+            if (normalized := _stable_identity_value(item, depth=depth + 1))
+            is not None
+        ]
+        return sorted(normalized_items, key=lambda item: repr(item))
+    model_dump = getattr(value, "model_dump", None)
+    if callable(model_dump):
+        return _stable_identity_value(model_dump(mode="json"), depth=depth + 1)
+    return None
+
+
+def _fingerprint_payload(payload: object) -> str:
+    encoded = json.dumps(
+        payload,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        default=str,
+    ).encode("utf-8")
+    return "sha256:" + hashlib.sha256(encoded).hexdigest()
 
 
 async def _execute_evaluation_requests(
@@ -782,7 +1240,7 @@ async def _execute_evaluation_requests(
     for index, request in enumerate(requests):
         task_id = (
             "self-evolve-evaluation-"
-            f"{_safe_path_component(artifact_namespace or 'run')}-"
+            f"{_safe_path_component(request.artifact_namespace or artifact_namespace or 'run')}-"
             f"{_safe_path_component(request.variant_id)}-"
             f"{_safe_path_component(dataset_split)}"
         )
@@ -1018,7 +1476,7 @@ def determine_candidate_confidence(
         held_out_summary is not None
         and held_out_case_count > 0
         and deterministic_signal_present
-        and _has_trajectory_set_validation_source(dataset)
+        and has_trajectory_set_validation_source(dataset)
     ):
         return CandidateConfidenceDecision(
             confidence="verified",
@@ -1181,10 +1639,117 @@ def _successful_replay_count(payload: Any) -> int:
     return min(successful_count, repetition_count)
 
 
-def _has_trajectory_set_validation_source(dataset: SelfEvolveDataset) -> bool:
+def _paired_replay_independence_mapping_is_valid(
+    dataset: SelfEvolveDataset,
+    *,
+    original_case_count: int,
+    member_replay_count: int,
+    held_out_member_count: int,
+    replay_case_count: int,
+) -> bool:
+    if (
+        replay_case_count != len(dataset.cases)
+        or held_out_member_count > member_replay_count
+        or member_replay_count > original_case_count
+        or member_replay_count > replay_case_count
+    ):
+        return False
+
+    split_by_case_id: dict[str, str] = {}
+    for split, case_ids in dataset.recipe.splits.items():
+        for case_id in case_ids:
+            if case_id in split_by_case_id:
+                return False
+            split_by_case_id[case_id] = str(split)
+
+    source_to_unit: dict[str, str] = {}
+    unit_to_source: dict[str, str] = {}
+    source_to_split: dict[str, str] = {}
+    for case in dataset.cases:
+        replay = case.metadata.get("replay")
+        if not isinstance(replay, Mapping):
+            return False
+        source_case_id = replay.get("source_case_id")
+        independence_unit_id = replay.get("independence_unit_id")
+        if (
+            not isinstance(source_case_id, str)
+            or not source_case_id.strip()
+            or not isinstance(independence_unit_id, str)
+            or not independence_unit_id.strip()
+        ):
+            return False
+        split = split_by_case_id.get(case.case_id)
+        if split is None:
+            return False
+        if source_to_unit.setdefault(source_case_id, independence_unit_id) != independence_unit_id:
+            return False
+        if unit_to_source.setdefault(independence_unit_id, source_case_id) != source_case_id:
+            return False
+        if source_to_split.setdefault(source_case_id, split) != split:
+            return False
+
+    held_out_sources = {
+        source_case_id
+        for source_case_id, split in source_to_split.items()
+        if split == "held_out"
+    }
+    return bool(
+        len(source_to_unit) == member_replay_count
+        and len(held_out_sources) == held_out_member_count
+        and set(dataset.recipe.held_out_case_ids)
+        == set(dataset.recipe.splits.get("held_out", ()))
+    )
+
+
+def has_trajectory_set_validation_source(dataset: SelfEvolveDataset) -> bool:
+    """Return whether held-out rows represent independent trajectory members."""
+
     source = dataset.recipe.source
     if source.get("kind") == "trajectory_set":
         return True
+    if (
+        source.get("kind") == "trajectory_log"
+        and len(dataset.cases) > 1
+        and source.get("paired_replay") is not True
+    ):
+        return True
+    if (
+        source.get("kind") == "trajectory_log"
+        and source.get("paired_replay") is True
+    ):
+        original_case_count = source.get("original_case_count")
+        member_replay_count = source.get("member_replay_count")
+        held_out_member_count = source.get("held_out_member_count")
+        replay_case_count = source.get("replay_case_count")
+        # Paired replay can expand one source member into several repetition
+        # rows. Only the explicit independent-member cardinalities compiled by
+        # build_paired_replay_dataset may retain trajectory-set verification.
+        # Repetition-derived rows therefore cannot satisfy this branch.
+        if (
+            source.get("paired_replay_dataset_schema")
+            == "aworld.self_evolve.paired_replay_dataset.v1"
+            and isinstance(original_case_count, int)
+            and not isinstance(original_case_count, bool)
+            and original_case_count > 1
+            and isinstance(member_replay_count, int)
+            and not isinstance(member_replay_count, bool)
+            and member_replay_count > 1
+            and isinstance(held_out_member_count, int)
+            and not isinstance(held_out_member_count, bool)
+            and held_out_member_count > 1
+            and held_out_member_count <= member_replay_count
+            and member_replay_count <= original_case_count
+            and isinstance(replay_case_count, int)
+            and not isinstance(replay_case_count, bool)
+            and _paired_replay_independence_mapping_is_valid(
+                dataset,
+                original_case_count=original_case_count,
+                member_replay_count=member_replay_count,
+                held_out_member_count=held_out_member_count,
+                replay_case_count=replay_case_count,
+            )
+        ):
+            return True
     auto_grouping = source.get("auto_grouping")
     if not isinstance(auto_grouping, Mapping):
         return False
@@ -1192,6 +1757,11 @@ def _has_trajectory_set_validation_source(dataset: SelfEvolveDataset) -> bool:
         return False
     selected_count = auto_grouping.get("selected_case_count")
     return isinstance(selected_count, int) and selected_count > 1
+
+
+# Private compatibility alias for callers/tests written before the typed
+# verification-feasibility boundary was introduced.
+_has_trajectory_set_validation_source = has_trajectory_set_validation_source
 
 
 def _int_metric(metrics: Mapping[str, Any], key: str) -> int | None:
@@ -1232,7 +1802,7 @@ def _aworld_trajectory_records_for_request(
     seen_replay_fingerprints: set[str] = set()
     for case in _evaluation_cases_for_split(request):
         record = _aworld_trajectory_record(case, request=request)
-        if _case_uses_replay_variant(case):
+        if _case_uses_replay_variant(case) and not request.preserve_case_cardinality:
             fingerprint = _aworld_trajectory_record_fingerprint(record)
             if fingerprint in seen_replay_fingerprints:
                 continue
@@ -1278,6 +1848,18 @@ def _aworld_trajectory_record(
         "is_sub_task": False,
         "trajectory": json.dumps(trajectory, ensure_ascii=False),
     }
+    metadata = case.metadata if isinstance(case.metadata, Mapping) else {}
+    replay = metadata.get("replay")
+    replay_request = replay.get("request") if isinstance(replay, Mapping) else None
+    # Paired replay carries the validated, adapted input actually dispatched to
+    # both arms. It can differ from the source case after context preparation.
+    task_context = task_context_text(
+        replay_request["task_context"]
+        if isinstance(replay_request, Mapping) and "task_context" in replay_request
+        else case.input
+    )
+    if task_context is not None:
+        record["task_context"] = task_context
     evidence_bundle_path = _evidence_bundle_path_for_variant(case, request=request)
     if evidence_bundle_path:
         record["evidence_bundle_path"] = evidence_bundle_path
@@ -1301,6 +1883,7 @@ def _aworld_trajectory_record_fingerprint(record: Mapping[str, Any]) -> str:
     payload = {
         "trajectory": record.get("trajectory"),
         "evidence_bundle_path": record.get("evidence_bundle_path"),
+        "task_context": record.get("task_context"),
     }
     raw = json.dumps(payload, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
@@ -1404,9 +1987,17 @@ def _aworld_evaluator_metrics(
                 continue
             for metric_name, aggregate in suite_summary.items():
                 if isinstance(aggregate, Mapping) and isinstance(aggregate.get("mean"), (int, float)):
-                    metrics[str(metric_name)] = float(aggregate["mean"])
+                    metric_key = str(metric_name)
+                    metrics[metric_key] = float(aggregate["mean"])
+                    for suffix in ("min", "max", "std"):
+                        value = aggregate.get(suffix)
+                        if isinstance(value, (int, float)) and not isinstance(value, bool):
+                            metrics[f"{metric_key}_{suffix}"] = float(value)
     metrics.update(_aworld_evidence_quality_metrics(report))
     metrics.update(_aworld_judge_diagnostic_metrics(report))
+    score_samples = _aworld_evaluator_score_samples(report)
+    if score_samples:
+        metrics["score_samples"] = score_samples
 
     gate = report.get("gate")
     gate_status = gate.get("status") if isinstance(gate, Mapping) else None
@@ -1414,11 +2005,12 @@ def _aworld_evaluator_metrics(
     metrics["evaluator_gate_status"] = gate_status
     metrics["evaluator_gate_passed"] = gate_passed
     metrics["global_regression_passed"] = gate_status != "fail"
-    metrics["deterministic_signal"] = gate_passed
-    metrics["command_case_count"] = case_count
-    metrics["command_pass_count"] = case_count if gate_passed else 0
-    metrics["command_failure_count"] = 0 if gate_passed else case_count
-    metrics["command_pass_rate"] = 1.0 if gate_passed else 0.0
+    # A model judge is probabilistic evidence.  Its aggregate gate must not be
+    # relabelled as a deterministic signal or as verification-command output.
+    # Independent command/replay verification is merged through its own typed
+    # metrics later in the evaluation lifecycle.
+    metrics["judge_gate_status"] = gate_status
+    metrics["judge_gate_passed"] = gate_passed
 
     if isinstance(gate, Mapping):
         gate_value = gate.get("value")
@@ -1433,6 +2025,39 @@ def _aworld_evaluator_metrics(
     return metrics
 
 
+def _aworld_evaluator_score_samples(
+    report: Mapping[str, Any],
+) -> list[float]:
+    """Preserve ordered case scores for paired candidate comparisons."""
+
+    results = report.get("results")
+    if not isinstance(results, list):
+        return []
+    samples: list[float] = []
+    for result in results:
+        if not isinstance(result, Mapping):
+            return []
+        result_metrics = result.get("metrics")
+        score_metric = (
+            result_metrics.get("score")
+            if isinstance(result_metrics, Mapping)
+            else None
+        )
+        value = (
+            score_metric.get("value")
+            if isinstance(score_metric, Mapping)
+            else None
+        )
+        if (
+            isinstance(value, bool)
+            or not isinstance(value, (int, float))
+            or not math.isfinite(float(value))
+        ):
+            return []
+        samples.append(float(value))
+    return samples
+
+
 def _aworld_evaluator_case_count_metrics(
     *,
     original_case_count: int,
@@ -1443,6 +2068,56 @@ def _aworld_evaluator_case_count_metrics(
         "effective_case_count": effective_case_count,
         "deduplicated_case_count": max(0, original_case_count - effective_case_count),
     }
+
+
+def _aworld_comparison_plan_metrics(
+    *,
+    request: EvaluationRequest,
+    evaluation_cases: tuple[Any, ...],
+    effective_case_count: int,
+) -> dict[str, Any]:
+    case_ids = [str(case.case_id) for case in evaluation_cases]
+    return {
+        "comparison_plan_fingerprint": _fingerprint_payload(
+            {
+                "dataset_fingerprint": _evaluation_dataset_fingerprint(
+                    request.dataset
+                ),
+                "dataset_split": request.dataset_split,
+                "case_ids": case_ids,
+            }
+        ),
+        "comparison_case_ids": case_ids,
+        "comparison_case_count": len(case_ids),
+        "comparison_effective_case_count": effective_case_count,
+        "comparison_cardinality_preserved": request.preserve_case_cardinality,
+    }
+
+
+def _merge_aworld_evidence_issues(groups: list[Any]) -> list[str]:
+    """Keep distinct judge explanations within a fixed diagnostic budget.
+
+    Wording is probabilistic even when the observed failure is the same. Keep
+    the first occurrence of each bounded explanation; prose never determines
+    typed constraint identity, severity, or acceptance.
+    """
+
+    issues: list[str] = []
+    seen: set[str] = set()
+    for group in groups:
+        if not isinstance(group, list):
+            continue
+        for value in group:
+            if not isinstance(value, str):
+                continue
+            issue = sanitize_text(value, max_chars=_MAX_AGGREGATED_EVIDENCE_ISSUE_CHARS)
+            if not issue or issue in seen:
+                continue
+            seen.add(issue)
+            issues.append(issue)
+            if len(issues) >= _MAX_AGGREGATED_EVIDENCE_ISSUES:
+                return issues
+    return issues
 
 
 def _aggregate_aworld_evaluator_metrics(
@@ -1478,6 +2153,22 @@ def _aggregate_aworld_evaluator_metrics(
                     dict(item) for item in value if isinstance(item, Mapping)
                 )
             continue
+        if key == "score_samples":
+            score_samples: list[float] = []
+            for value in values:
+                if not isinstance(value, list):
+                    score_samples = []
+                    break
+                score_samples.extend(
+                    float(item)
+                    for item in value
+                    if isinstance(item, (int, float))
+                    and not isinstance(item, bool)
+                    and math.isfinite(float(item))
+                )
+            if score_samples:
+                aggregated[key] = score_samples
+            continue
         if key == "evidence_repair_constraints":
             constraint_groups = [
                 _parse_evidence_repair_constraints(value)
@@ -1490,6 +2181,11 @@ def _aggregate_aworld_evaluator_metrics(
                 aggregated[key] = [
                     constraint.to_dict() for constraint in constraints
                 ]
+            continue
+        if key == "evidence_issues":
+            issues = _merge_aworld_evidence_issues(values)
+            if issues:
+                aggregated[key] = issues
             continue
         if key in {"evidence_compacted", "evidence_incomplete"}:
             aggregated[key] = any(_truthy_metric(value) for value in values)
@@ -1531,11 +2227,10 @@ def _aggregate_aworld_evaluator_metrics(
 
     gate_passed = bool(aggregated.get("evaluator_gate_passed"))
     aggregated["global_regression_passed"] = gate_passed
-    aggregated["deterministic_signal"] = gate_passed
-    aggregated["command_case_count"] = case_count
-    aggregated["command_pass_count"] = case_count if gate_passed else 0
-    aggregated["command_failure_count"] = 0 if gate_passed else case_count
-    aggregated["command_pass_rate"] = 1.0 if gate_passed else 0.0
+    aggregated["judge_gate_status"] = (
+        "pass" if gate_passed else "fail"
+    )
+    aggregated["judge_gate_passed"] = gate_passed
     return aggregated
 
 
@@ -1755,17 +2450,71 @@ def _failed_aworld_evaluator_metrics(
         "evaluator_gate_status": "fail",
         "evaluator_gate_passed": False,
         "global_regression_passed": False,
-        "deterministic_signal": False,
-        "command_case_count": case_count,
-        "command_pass_count": 0,
-        "command_failure_count": case_count,
-        "command_pass_rate": 0.0,
+        "judge_gate_status": "fail",
+        "judge_gate_passed": False,
         "judge_attempt_count": len(failures),
         "judge_success_count": 0,
         "judge_failure_count": len(failures),
+        "judge_timeout_count": _judge_failure_timeout_count(failures),
+        "judge_retryable_failure_count": _judge_retryable_failure_count(
+            failures
+        ),
         "judge_repetitions": judge_repetitions,
         "judge_failures": list(failures),
     }
+
+
+def _judge_failure_timeout_count(
+    failures: list[Mapping[str, Any]],
+) -> int:
+    """Count outer evaluator-call timeouts from typed failure telemetry.
+
+    Judge reports can also contain per-model-call timeout diagnostics. Those
+    are aggregated separately. This helper covers failures raised by the
+    evaluator process itself, including ``subprocess.TimeoutExpired``.
+    """
+
+    timeout_types = {
+        "apitimeouterror",
+        "timeouterror",
+        "timeoutexpired",
+    }
+    return sum(
+        1
+        for failure in failures
+        if str(failure.get("type") or "")
+        .rsplit(".", 1)[-1]
+        .strip()
+        .casefold()
+        in timeout_types
+    )
+
+
+def _judge_retryable_failure_count(
+    failures: list[Mapping[str, Any]],
+) -> int:
+    """Count bounded transient judge failures eligible for campaign retry."""
+
+    retryable_protocol_markers = (
+        "judge response does not contain a valid json object",
+        "no json object matches judge schema",
+        "judge response results array is empty",
+    )
+    count = 0
+    for failure in failures:
+        if _judge_failure_timeout_count([failure]):
+            count += 1
+            continue
+        reason = str(failure.get("reason") or "").casefold()
+        if any(marker in reason for marker in retryable_protocol_markers):
+            count += 1
+    return count
+
+
+def _nonnegative_metric_count(value: Any) -> int:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return 0
+    return max(0, int(value))
 
 
 def _safe_path_component(value: str | None) -> str:
@@ -1786,7 +2535,32 @@ def _has_deterministic_signal(
     held_out_summary: EvaluationSummary | None,
 ) -> bool:
     summaries = (validation_summary,) if held_out_summary is None else (validation_summary, held_out_summary)
-    return any(summary.metrics.get("deterministic_signal") is True for summary in summaries)
+    return any(_summary_has_deterministic_verification(summary) for summary in summaries)
+
+
+def _summary_has_deterministic_verification(
+    summary: EvaluationSummary,
+) -> bool:
+    """Read typed deterministic evidence without treating judge output as such."""
+
+    metrics = summary.metrics
+    case_count = metrics.get("deterministic_verification_case_count")
+    pass_count = metrics.get("deterministic_verification_pass_count")
+    if (
+        isinstance(case_count, (int, float))
+        and not isinstance(case_count, bool)
+        and isinstance(pass_count, (int, float))
+        and not isinstance(pass_count, bool)
+        and int(case_count) > 0
+    ):
+        return int(pass_count) == int(case_count)
+    # Preserve compatibility for non-AWorld custom backends that predate the
+    # typed metrics.  AWorld judge summaries are explicitly excluded because
+    # their legacy deterministic_signal was derived from the judge gate.
+    return bool(
+        metrics.get("evaluator_mode") != "aworld_trajectory_evaluator"
+        and metrics.get("deterministic_signal") is True
+    )
 
 
 def _bounded_text(value: str, *, max_chars: int = 2000) -> str:

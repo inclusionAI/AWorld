@@ -762,7 +762,9 @@ class TestOptimizeCommand:
                     f"--from-trajectory {trajectory_path} --apply auto_verified "
                     "--new-skill-policy draft_only "
                     f"--judge-agent {judge_path} --replay-timeout 600 "
-                    "--replay-max-runs 1 --judge-timeout 120"
+                    "--replay-max-runs 1 --judge-timeout 120 "
+                    "--max-run-tokens 900000 "
+                    "--per-attempt-replay-token-limit 200000"
                 ),
             )
         )
@@ -780,8 +782,40 @@ class TestOptimizeCommand:
         assert calls["replay_max_steps"] == 1
         assert calls["judge_timeout_seconds"] == 120
         assert calls["max_improvement_cycles"] == 3
+        assert calls["total_run_token_budget"] == 900_000
+        assert calls["per_attempt_replay_token_limit"] == 200_000
         assert "Status: rejected" in result
         assert "Selected candidate: cand-1" in result
+
+    @pytest.mark.asyncio
+    async def test_optimize_forwards_measurement_options(self, monkeypatch, tmp_path):
+        cmd = CommandRegistry.get("optimize")
+        calls = {}
+
+        def fake_run_optimize_cli(**kwargs):
+            calls.update(kwargs)
+            return {"status": "rejected"}
+
+        monkeypatch.setattr(
+            "aworld_cli.commands.optimize_cmd.run_optimize_cli",
+            fake_run_optimize_cli,
+        )
+
+        await cmd.execute(
+            CommandContext(
+                cwd=str(tmp_path),
+                user_args=(
+                    "--from-trajectory trajectory.log "
+                    "--measurement-mode advisory "
+                    "--measurement-primary-metric score "
+                    "--measurement-minimum-effect 0.1"
+                ),
+            )
+        )
+
+        assert calls["measurement_mode"] == "advisory"
+        assert calls["measurement_primary_metric"] == "score"
+        assert calls["measurement_minimum_effect"] == pytest.approx(0.1)
 
     @pytest.mark.asyncio
     async def test_optimize_defaults_source_ingestor_to_auto(self, monkeypatch, tmp_path):
@@ -903,7 +937,7 @@ class TestOptimizeCommand:
         )
 
         assert result == (
-            "Optimize error: --resume-campaign requires --apply auto_verified"
+            "Optimize error: --resume-campaign requires a verified apply policy"
         )
 
     @pytest.mark.asyncio

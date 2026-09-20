@@ -1497,9 +1497,10 @@ class TaskEventRunner(TaskRunner):
         time_cost = time.time() - self.start_time
 
         # Check timeout
-        if 0 < self.task.timeout < time_cost:
+        timeout_elapsed = self.timeout_elapsed_seconds() if self.task.timeout > 0 else 0
+        if 0 < self.task.timeout < timeout_elapsed:
             logger.warn(
-                f"{task_flag} task {self.task.id} timeout after {time_cost} seconds.")
+                f"{task_flag} task {self.task.id} timeout after {timeout_elapsed} seconds.")
             self._task_response = TaskResponse(
                 answer='',
                 success=False,
@@ -1507,7 +1508,7 @@ class TaskEventRunner(TaskRunner):
                 id=self.task.id,
                 time_cost=(time.time() - self.start_time),
                 usage=self._current_token_usage(),
-                msg=f'Task timeout after {time_cost} seconds.',
+                msg=f'Task timeout after {timeout_elapsed} seconds.',
                 status=TaskStatusValue.TIMEOUT
             )
             await self.context.update_task_status(self.task.id, TaskStatusValue.TIMEOUT)

@@ -8,9 +8,14 @@ from aworld.config.conf import ModelConfig
 from aworld.core.agent.base import AgentFactory
 from aworld.core.context.base import Context
 from aworld.core.context.amni.local import LocalIsolatedApplicationContext
+from aworld.core.context.compiler import (
+    ReviewedProviderLoweringRegistry,
+    reviewed_provider_lowerings,
+)
 from aworld.core.common import TaskStatusValue
 from aworld.core.task import TaskResponse
 from aworld.models.model_response import ModelResponse
+from aworld.models.openai_provider import OPENAI_CONTEXT_LOWERING, OpenAIProvider
 from aworld.runner import Runners
 from aworld.self_evolve.runtime import SelfEvolveCandidateTaskRunner
 from aworld.self_evolve.candidate_generation import (
@@ -31,6 +36,27 @@ def test_candidate_generation_agent_registers_with_aworld_runtime() -> None:
     )
 
     assert AgentFactory.agent_instance(agent.id()) is agent
+
+
+def test_candidate_generation_sanitizer_preserves_reviewed_provider_lowering() -> None:
+    provider = object.__new__(OpenAIProvider)
+
+    capability = reviewed_provider_lowerings.resolve(
+        _SanitizingProvider(provider), "openai"
+    )
+
+    assert capability == OPENAI_CONTEXT_LOWERING
+
+
+def test_arbitrary_provider_proxy_cannot_register_for_lowering() -> None:
+    class UnreviewedProxy:
+        pass
+
+    with pytest.raises(ValueError, match="not framework-reviewed"):
+        ReviewedProviderLoweringRegistry().register_proxy(
+            UnreviewedProxy,
+            delegate_attribute="_delegate",
+        )
 
 
 def test_candidate_generation_default_output_budget_scales_with_model_window() -> None:
@@ -65,6 +91,75 @@ def test_candidate_generation_disables_forced_reasoning_for_structured_output() 
         }
     }
     assert model_config.params == {"extra_body": {"request_tag": "candidate"}}
+
+
+def test_candidate_generation_uses_native_json_for_official_openai() -> None:
+    agent = CandidateGenerationAgent(
+        model_config=ModelConfig(
+            llm_provider="openai",
+            llm_model_name="gpt-5-mini",
+            llm_api_key="test-key",
+        )
+    )
+
+    assert agent.structured_output_mode == (
+        "provider_native_json_authoritative_endpoint"
+    )
+    assert agent.conf.llm_config.params["response_format"] == {
+        "type": "json_object"
+    }
+
+
+def test_candidate_generation_does_not_assume_openai_compatible_json_support() -> None:
+    agent = CandidateGenerationAgent(
+        model_config=ModelConfig(
+            llm_provider="openai",
+            llm_model_name="glm-compatible-model",
+            llm_base_url="https://compatible.example/v1",
+            llm_api_key="test-key",
+        )
+    )
+
+    assert agent.structured_output_mode == "prompt_contract_with_parser_repair"
+    assert "response_format" not in agent.conf.llm_config.params
+
+
+def test_candidate_generation_accepts_explicit_json_capability_for_custom_endpoint() -> None:
+    agent = CandidateGenerationAgent(
+        model_config=ModelConfig(
+            llm_provider="openai",
+            llm_model_name="compatible-model",
+            llm_base_url="https://compatible.example/v1",
+            llm_api_key="test-key",
+            ext_config={"supports_json_object_response_format": True},
+        )
+    )
+
+    assert agent.structured_output_mode == (
+        "provider_native_json_explicit_capability"
+    )
+    assert agent.conf.llm_config.params["response_format"] == {
+        "type": "json_object"
+    }
+
+
+def test_candidate_generation_preserves_explicit_response_format() -> None:
+    response_format = {
+        "type": "json_schema",
+        "json_schema": {"name": "candidate", "schema": {"type": "object"}},
+    }
+    agent = CandidateGenerationAgent(
+        model_config=ModelConfig(
+            llm_provider="openai",
+            llm_model_name="compatible-model",
+            llm_base_url="https://compatible.example/v1",
+            llm_api_key="test-key",
+            params={"response_format": response_format},
+        )
+    )
+
+    assert agent.structured_output_mode == "explicit_response_format"
+    assert agent.conf.llm_config.params["response_format"] == response_format
 
 
 def test_candidate_generation_preserves_explicit_reasoning_profile() -> None:

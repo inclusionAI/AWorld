@@ -14,6 +14,7 @@ from aworld.config.conf import SelfEvolveConfig
 WriteJobCallable = Callable[[Path, Mapping[str, Any]], None]
 RunJobCallable = Callable[[Mapping[str, Any]], Mapping[str, Any] | None]
 RuntimeRegistryRefresher = Callable[[Any], Any]
+RuntimeEffectCompensator = Callable[[Any, object | None], Any]
 
 
 @dataclass(frozen=True)
@@ -126,13 +127,19 @@ class SelfEvolveJobWorker:
         workspace_root: str | Path,
         run_job: RunJobCallable | None = None,
         runtime_registry_refresher: RuntimeRegistryRefresher | None = None,
+        runtime_registry_compensator: RuntimeEffectCompensator | None = None,
+        runtime_skill_compensator: RuntimeEffectCompensator | None = None,
     ) -> None:
         self.workspace_root = Path(workspace_root)
         self.runtime_registry_refresher = runtime_registry_refresher
+        self.runtime_registry_compensator = runtime_registry_compensator
+        self.runtime_skill_compensator = runtime_skill_compensator
         self.run_job = run_job or (
             lambda payload: _run_framework_job(
                 payload,
                 runtime_registry_refresher=self.runtime_registry_refresher,
+                runtime_registry_compensator=self.runtime_registry_compensator,
+                runtime_skill_compensator=self.runtime_skill_compensator,
             )
         )
 
@@ -254,10 +261,14 @@ def drain_pending_self_evolve_jobs(
     workspace_root: str | Path,
     max_jobs: int | None = None,
     runtime_registry_refresher: RuntimeRegistryRefresher | None = None,
+    runtime_registry_compensator: RuntimeEffectCompensator | None = None,
+    runtime_skill_compensator: RuntimeEffectCompensator | None = None,
 ) -> int:
     return SelfEvolveJobWorker(
         workspace_root=workspace_root,
         runtime_registry_refresher=runtime_registry_refresher,
+        runtime_registry_compensator=runtime_registry_compensator,
+        runtime_skill_compensator=runtime_skill_compensator,
     ).drain_pending_jobs(max_jobs=max_jobs)
 
 
@@ -266,12 +277,21 @@ async def drain_pending_self_evolve_jobs_async(
     workspace_root: str | Path,
     max_jobs: int | None = None,
     runtime_registry_refresher: RuntimeRegistryRefresher | None = None,
+    runtime_registry_compensator: RuntimeEffectCompensator | None = None,
+    runtime_skill_compensator: RuntimeEffectCompensator | None = None,
 ) -> int:
+    drain_kwargs: dict[str, object] = {
+        "workspace_root": workspace_root,
+        "max_jobs": max_jobs,
+        "runtime_registry_refresher": runtime_registry_refresher,
+    }
+    if runtime_registry_compensator is not None:
+        drain_kwargs["runtime_registry_compensator"] = runtime_registry_compensator
+    if runtime_skill_compensator is not None:
+        drain_kwargs["runtime_skill_compensator"] = runtime_skill_compensator
     return await asyncio.to_thread(
         drain_pending_self_evolve_jobs,
-        workspace_root=workspace_root,
-        max_jobs=max_jobs,
-        runtime_registry_refresher=runtime_registry_refresher,
+        **drain_kwargs,
     )
 
 
@@ -279,6 +299,8 @@ def _run_framework_job(
     payload: Mapping[str, Any],
     *,
     runtime_registry_refresher: RuntimeRegistryRefresher | None = None,
+    runtime_registry_compensator: RuntimeEffectCompensator | None = None,
+    runtime_skill_compensator: RuntimeEffectCompensator | None = None,
 ) -> Mapping[str, Any]:
     from aworld.self_evolve.runner import optimize_from_cli_request
 
@@ -311,15 +333,45 @@ def _run_framework_job(
         judge_config=config.judge_config,
         replay_enabled=config.replay_enabled,
         replay_timeout_seconds=config.replay_timeout_seconds,
+        replay_total_timeout_seconds=config.replay_total_timeout_seconds,
         replay_max_steps=config.replay_max_steps,
         replay_candidate_limit=config.replay_candidate_limit,
+        candidate_screening_max_cases=config.candidate_screening_max_cases,
+        max_generated_candidates=config.max_generated_candidates,
+        max_full_evaluation_candidates=config.max_full_evaluation_candidates,
+        max_score_tiebreak_candidates=config.max_score_tiebreak_candidates,
         baseline_replay_repetitions=config.baseline_replay_repetitions,
         candidate_replay_repetitions=config.candidate_replay_repetitions,
         replay_stability_margin=config.replay_stability_margin,
+        measurement_mode=config.measurement_mode,
+        measurement_primary_metric=config.measurement_primary_metric,
+        measurement_minimum_effect=config.measurement_minimum_effect,
+        measurement_confidence_level=config.measurement_confidence_level,
+        measurement_min_independent_cases=(
+            config.measurement_min_independent_cases
+        ),
+        measurement_bootstrap_samples=config.measurement_bootstrap_samples,
+        measurement_zero_yield_patience=(
+            config.measurement_zero_yield_patience
+        ),
+        measurement_invalid_control_patience=(
+            config.measurement_invalid_control_patience
+        ),
+        measurement_maximum_interval_width=(
+            config.measurement_maximum_interval_width
+        ),
+        regression_benchmarks=config.regression_benchmarks,
+        challenger_enabled=config.challenger_enabled,
+        challenger_max_cases=config.challenger_max_cases,
         runtime_registry_refresher=runtime_registry_refresher,
+        runtime_registry_compensator=runtime_registry_compensator,
+        runtime_skill_compensator=runtime_skill_compensator,
     )
     apply_policy = _effective_background_apply_policy(config)
-    if apply_policy == "auto_verified" and config.max_improvement_cycles > 1:
+    if (
+        apply_policy in {"auto_verified", "verified_only"}
+        and config.max_improvement_cycles > 1
+    ):
         from aworld.self_evolve.campaign import run_self_improvement_campaign
 
         campaign_id = payload.get("campaign_id")

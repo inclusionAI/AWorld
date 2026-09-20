@@ -13,9 +13,10 @@ import shutil
 import subprocess
 import sys
 import time
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path, PurePosixPath
-from typing import Any, Mapping, Protocol, Sequence
+from typing import Any, Mapping, NoReturn, Protocol, Sequence
+from urllib.parse import unquote, urlsplit
 
 from aworld.self_evolve.replay_adaptation import (
     ReplayAdapterBinding,
@@ -27,9 +28,14 @@ from aworld.self_evolve.replay_adaptation import (
 from aworld.self_evolve.schema_diagnostics import (
     SchemaFieldRepairConstraint,
     SchemaFieldViolation,
+    aggregate_schema_field_violations,
     schema_field_diagnostic_details,
 )
 from aworld.self_evolve.sanitization import sanitize_text
+from aworld.skills.package_fingerprint import (
+    SkillPackageFingerprintError,
+    fingerprint_skill_package as _fingerprint_skill_package,
+)
 
 
 REPLAY_CAPABILITY_SCHEMA_VERSION = "aworld.skill.replay_capability.v1"
@@ -64,7 +70,12 @@ _MAX_READINESS_TIMEOUT_SECONDS = 30.0
 REPLAY_CAPABILITY_MAX_PROTOCOL_PROBES = 16
 REPLAY_CAPABILITY_MAX_RESPONSE_CONTAINS_CHARS = 4_096
 REPLAY_RESPONSE_INDEX_ENV = "AWORLD_REPLAY_RESPONSE_INDEX"
+REPLAY_RESPONSE_RECORD_ID_ENV = "AWORLD_REPLAY_RESPONSE_RECORD_ID"
+REPLAY_TASK_ENTRY_PATH_ENV = "AWORLD_REPLAY_TASK_ENTRY_PATH"
+REPLAY_RESPONSE_REQUIREMENT_ID_ENV = "AWORLD_REPLAY_REQUIREMENT_ID"
+REPLAY_RESPONSE_SERVICE_ID_ENV = "AWORLD_REPLAY_SERVICE_ID"
 REPLAY_RESPONSE_INDEX_CONSUMER = "json_sidecar_record_value_projector"
+REPLAY_RESPONSE_SELECTOR_POLICY = "framework_recorded_response_v1"
 
 REPLAY_CAPABILITY_SUPPORTED_READINESS_KINDS = tuple(
     sorted(_SUPPORTED_READINESS_KINDS)
@@ -157,17 +168,185 @@ class ReplayCapabilityError(RuntimeError):
         self.details = dict(details or {})
 
 
+def python_source_syntax_counterexample(
+    *,
+    source_path: str,
+    error: SyntaxError,
+    code: str = "runtime_python_syntax_invalid",
+) -> dict[str, object]:
+    """Build a stable, payload-free repair contract for invalid Python source."""
+
+    message = str(error.msg or "invalid Python syntax")
+    syntax_kind = (
+        "global_declaration_after_use"
+        if any(
+            marker in message
+            for marker in (
+                "used prior to global declaration",
+                "assigned to before global declaration",
+            )
+        )
+        else "python_compile_invalid"
+    )
+    source_role = "compiler" if code.startswith("compiler_") else "runtime"
+    required_action = (
+        "declare the global once before its first use in the function, or "
+        "remove the duplicate global declaration"
+        if syntax_kind == "global_declaration_after_use"
+        else f"make the candidate-owned Python {source_role} compile successfully"
+    )
+    identity_payload = {
+        "code": code,
+        "source_path": source_path,
+        "syntax_kind": syntax_kind,
+    }
+    identity = hashlib.sha256(
+        json.dumps(
+            identity_payload,
+            ensure_ascii=True,
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode("utf-8")
+    ).hexdigest()
+    return {
+        "schema_version": "aworld.self_evolve.python_source_counterexample.v1",
+        "counterexample_id": f"python-source-counterexample-{identity}",
+        "owner": "candidate",
+        **identity_payload,
+        "line": max(1, int(error.lineno or 1)),
+        "offset": max(0, int(error.offset or 0)),
+        "message": message,
+        "required_action": required_action,
+    }
+
+
+def _validate_discovered_python_entrypoint(
+    capability: DiscoveredReplayCapability,
+) -> None:
+    source_path = capability.manifest.entrypoint
+    try:
+        compile(capability.entrypoint.read_bytes(), source_path, "exec")
+    except SyntaxError as exc:
+        counterexample = python_source_syntax_counterexample(
+            source_path=source_path,
+            error=exc,
+            code="compiler_python_syntax_invalid",
+        )
+        raise ReplayCapabilityError(
+            (
+                "candidate replay Python compiler does not compile: "
+                f"{source_path}:{counterexample['line']}: "
+                f"{counterexample['message']}"
+            ),
+            code="compiler_python_syntax_invalid",
+            details={
+                "source_path": source_path,
+                "syntax_kind": counterexample["syntax_kind"],
+                "source_line": counterexample["line"],
+                "source_offset": counterexample["offset"],
+                "counterexample_contracts": [counterexample],
+            },
+        ) from exc
+    except (OSError, UnicodeError) as exc:
+        raise ReplayCapabilityError(
+            f"candidate replay Python compiler is unreadable: {source_path}",
+            code="compiler_python_source_unreadable",
+            details={"source_path": source_path},
+        ) from exc
+
+
+def _validate_frozen_python_runtime(
+    runtime_root: Path,
+    runtime_files: Sequence[FrozenReplayFile],
+) -> None:
+    for item in runtime_files:
+        if Path(item.path).suffix.casefold() != ".py":
+            continue
+        path = _resolve_output_file(runtime_root, item.path)
+        try:
+            compile(path.read_bytes(), item.path, "exec")
+        except SyntaxError as exc:
+            counterexample = python_source_syntax_counterexample(
+                source_path=item.path,
+                error=exc,
+            )
+            raise ReplayCapabilityError(
+                (
+                    "candidate replay Python runtime does not compile: "
+                    f"{item.path}:{counterexample['line']}: "
+                    f"{counterexample['message']}"
+                ),
+                code="runtime_python_syntax_invalid",
+                details={
+                    "source_path": item.path,
+                    "syntax_kind": counterexample["syntax_kind"],
+                    "source_line": counterexample["line"],
+                    "source_offset": counterexample["offset"],
+                    "counterexample_contracts": [counterexample],
+                },
+            ) from exc
+        except (OSError, UnicodeError) as exc:
+            raise ReplayCapabilityError(
+                f"candidate replay Python runtime is unreadable: {item.path}",
+                code="runtime_python_source_unreadable",
+                details={"source_path": item.path},
+            ) from exc
+
+
 def _raise_schema_field_error(
     message: str,
     violations: Sequence[SchemaFieldViolation],
-) -> None:
+    *,
+    extra_details: Mapping[str, object] | None = None,
+) -> NoReturn:
     if not violations:
         raise ValueError("schema field error requires at least one violation")
+    violations = aggregate_schema_field_violations(violations)
+    details = schema_field_diagnostic_details(violations)
+    details["counterexample_contracts"] = [
+        _schema_field_counterexample_contract(violation)
+        for violation in violations[:100]
+    ]
+    if extra_details:
+        details.update(dict(extra_details))
     raise ReplayCapabilityError(
         message,
         code="schema_field_validation_failed",
-        details=schema_field_diagnostic_details(violations),
+        details=details,
     )
+
+
+def _schema_field_counterexample_contract(
+    violation: SchemaFieldViolation,
+) -> dict[str, object]:
+    """Project a parse/schema violation into a payload-free executable check."""
+
+    identity_payload = {
+        "constraint_identity_digest": violation.constraint.identity_digest,
+    }
+    encoded = json.dumps(
+        identity_payload,
+        ensure_ascii=True,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("utf-8")
+    return {
+        "schema_version": "aworld.self_evolve.schema_counterexample.v1",
+        "counterexample_id": (
+            "schema-counterexample-" + hashlib.sha256(encoded).hexdigest()
+        ),
+        **identity_payload,
+        # Observed values explain this occurrence but do not define the
+        # counterexample.  Keeping them outside the ID makes repeated
+        # violations of the same schema contract converge across repair runs.
+        "actual_fingerprint": violation.actual_fingerprint,
+        "actual_type": violation.actual_type,
+        "constraint": violation.constraint.to_dict(),
+        "required_checks": [
+            "field_selector_resolves_subject",
+            "schema_constraint_accepts_subject",
+        ],
+    }
 
 
 def _schema_field_violation(
@@ -197,19 +376,151 @@ def _schema_field_violation(
     )
 
 
+def _absolute_path_violation(
+    *,
+    field_path: str,
+    value: Any,
+    occurrence_count: int = 1,
+) -> SchemaFieldViolation:
+    return _schema_field_violation(
+        schema_layer="compile_result",
+        field_path=field_path,
+        rule="starts_with",
+        expected=("/",),
+        value=value,
+        occurrence_count=occurrence_count,
+    )
+
+
+def _readiness_duplicate_violation(
+    value: Any,
+    *,
+    occurrence_count: int = 1,
+) -> SchemaFieldViolation:
+    return _schema_field_violation(
+        schema_layer="compile_result",
+        field_path="services[*].protocol_probes[*].path",
+        rule="enum",
+        expected=("fixture_derived_data_plane_probe",),
+        value=value,
+        occurrence_count=occurrence_count,
+        value_domain="source_behavior",
+        required_operations=(
+            "keep_readiness_in_readiness_field",
+            "declare_distinct_fixture_derived_data_plane_probe",
+        ),
+        forbidden_operations=(
+            "copy_readiness_endpoint_into_protocol_probes",
+        ),
+    )
+
+
+def _advertised_websocket_probe_violation() -> SchemaFieldViolation:
+    return _schema_field_violation(
+        schema_layer="compile_result",
+        field_path="services[*].protocol_probes",
+        rule="enum",
+        expected=("advertised_websocket_with_data_plane_probe",),
+        value="advertised_websocket_without_data_plane_probe",
+        value_domain="source_behavior",
+        required_operations=(
+            "declare_websocket_data_plane_probe",
+            "provide_websocket_request_text",
+            "provide_fixture_derived_websocket_response",
+        ),
+        forbidden_operations=(
+            "advertise_websocket_without_websocket_probe",
+        ),
+    )
+
+
+def _endpoint_replacement_entrypoint_violation(
+    value: Any,
+) -> SchemaFieldViolation:
+    """Describe a runtime without an unambiguous executable HTTP task entry."""
+
+    return _schema_field_violation(
+        schema_layer="compile_result",
+        field_path="services[*@endpoint_replacement].protocol_probes",
+        rule="contains_all",
+        expected=("unambiguous_http_task_entry_probe",),
+        value=value,
+        value_domain="source_behavior",
+        required_operations=(
+            "declare_one_http_task_entry_probe",
+            "serve_fixture_or_discovery_response_at_task_entry",
+        ),
+        forbidden_operations=(
+            "serve_fixture_only_on_undiscoverable_subpath",
+            "make_task_entry_readiness_only",
+        ),
+    )
+
+
 def fingerprint_skill_package(skill_root: str | Path) -> str:
+    try:
+        return _fingerprint_skill_package(skill_root)
+    except SkillPackageFingerprintError as exc:
+        raise ReplayCapabilityError(str(exc)) from exc
+
+
+def fingerprint_replay_capability_package(
+    skill_root: str | Path,
+    *,
+    manifest_path: str | Path,
+    entrypoint: str | Path,
+    runtime_files: Sequence[str | Path] = (),
+) -> str:
+    """Fingerprint only the declared replay-capability implementation surface.
+
+    Skill guidance and other release files affect the candidate package identity,
+    but they do not change the executable replay environment.  Keeping those two
+    identities separate allows sibling behavior candidates to reuse one compiled
+    replay adaptation and baseline while still preserving full-package release
+    fidelity checks.
+    """
+
     root = Path(skill_root).expanduser().resolve()
     if not root.is_dir():
         raise ReplayCapabilityError(f"skill root is not a directory: {root}")
-    package_entries: list[dict[str, Any]] = []
-    for path in sorted(root.rglob("*")):
-        if path.is_symlink():
-            raise ReplayCapabilityError("skill package cannot contain symlinks")
-        if path.is_file():
-            package_entries.append(
-                _file_manifest_entry(path, path.relative_to(root).as_posix())
+    resolved_manifest = Path(manifest_path).expanduser().resolve()
+    capability_root = resolved_manifest.parent
+    try:
+        capability_root.relative_to(root)
+    except ValueError as exc:
+        raise ReplayCapabilityError(
+            "replay capability manifest must be contained by the skill root"
+        ) from exc
+
+    # Only declared executable inputs may invalidate a compiled adaptation.
+    # Including every sibling under ``replay/`` made documentation, diagnostics,
+    # and undeclared proposal files look like baseline-affecting changes.  That
+    # prevented safe baseline reuse across behavior candidates and batches.
+    surface_paths: set[Path] = {resolved_manifest}
+    for declared_path in (entrypoint, *runtime_files):
+        resolved = Path(declared_path).expanduser().resolve()
+        try:
+            resolved.relative_to(root)
+        except ValueError as exc:
+            raise ReplayCapabilityError(
+                "declared replay capability file must be contained by the skill root"
+            ) from exc
+        if not resolved.is_file() or resolved.is_symlink():
+            raise ReplayCapabilityError(
+                "declared replay capability file must be a regular file"
             )
-    return _json_fingerprint({"files": package_entries})
+        surface_paths.add(resolved)
+
+    package_entries = [
+        _file_manifest_entry(path, path.relative_to(root).as_posix())
+        for path in sorted(surface_paths)
+    ]
+    return _json_fingerprint(
+        {
+            "surface": "replay_capability",
+            "files": package_entries,
+        }
+    )
 
 
 @dataclass(frozen=True)
@@ -235,9 +546,61 @@ class DiscoveredReplayCapability:
     package_fingerprint: str
 
 
+def _replay_capability_compile_request_identity(
+    payload: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Project a compile request onto stable, content-addressed identity.
+
+    Snapshot and derivation paths are locations of already fingerprinted
+    inputs.  Including those locations made identical campaign cycles produce
+    different capability identities solely because their artifact directory
+    names changed.
+    """
+
+    raw_derivations = payload.get("evidence_derivations")
+    stable_derivations: dict[str, list[dict[str, Any]]] = {}
+    if isinstance(raw_derivations, Mapping):
+        for evidence_ref, raw_entries in sorted(raw_derivations.items()):
+            entries: list[dict[str, Any]] = []
+            if isinstance(raw_entries, (list, tuple)):
+                for raw_entry in raw_entries:
+                    if not isinstance(raw_entry, Mapping):
+                        continue
+                    entries.append(
+                        {
+                            str(key): value
+                            for key, value in sorted(
+                                raw_entry.items(),
+                                key=lambda item: str(item[0]),
+                            )
+                            if str(key) not in {"path", "response_index_path"}
+                        }
+                    )
+            stable_derivations[str(evidence_ref)] = entries
+    raw_snapshots = payload.get("context_snapshots")
+    snapshot_ids = (
+        sorted(str(case_id) for case_id in raw_snapshots)
+        if isinstance(raw_snapshots, Mapping)
+        else []
+    )
+    return {
+        "schema_version": payload.get("schema_version"),
+        "capability_id": payload.get("capability_id"),
+        "requirements": payload.get("requirements"),
+        "context_snapshot_ids": snapshot_ids,
+        "task_inputs": payload.get("task_inputs"),
+        "evidence_derivations": stable_derivations,
+        "capability_package_fingerprint": payload.get(
+            "capability_package_fingerprint"
+        ),
+        "context_fingerprint": payload.get("context_fingerprint"),
+    }
+
+
 @dataclass(frozen=True)
 class ReplayCapabilityCompileRequest:
     schema_version: str
+    capability_id: str
     requirements: tuple[ReplayCapabilityRequirement, ...]
     context_snapshots: Mapping[str, str]
     task_inputs: Mapping[str, Any]
@@ -262,14 +625,21 @@ class ReplayCapabilityCompileRequest:
         ] | None = None,
     ) -> ReplayCapabilityCompileRequest:
         root = Path(capability_root).expanduser().resolve()
-        package_fingerprint = capability_package_fingerprint
-        if package_fingerprint is None:
-            capability = discover_replay_capability(root)
-            if capability is None:
-                raise ReplayCapabilityError(
-                    f"replay capability manifest not found under: {root}"
-                )
-            package_fingerprint = capability.package_fingerprint
+        discovered = discover_replay_capability(root)
+        if discovered is None:
+            raise ReplayCapabilityError(
+                f"replay capability manifest not found under: {root}"
+            )
+        package_fingerprint = (
+            capability_package_fingerprint
+            if capability_package_fingerprint is not None
+            else discovered.package_fingerprint
+        )
+        authoritative_capability_id = discovered.manifest.capability_id
+        authoritative_capability_id = _parse_identifier(
+            authoritative_capability_id,
+            label="compile request capability_id",
+        )
         normalized_derivations = {
             str(evidence_ref): [dict(item) for item in entries]
             for evidence_ref, entries in sorted(
@@ -278,6 +648,7 @@ class ReplayCapabilityCompileRequest:
         }
         payload = {
             "schema_version": REPLAY_CAPABILITY_REQUEST_SCHEMA_VERSION,
+            "capability_id": authoritative_capability_id,
             "requirements": [asdict(item) for item in requirements],
             "context_snapshots": dict(sorted(context_snapshots.items())),
             "task_inputs": dict(sorted(task_inputs.items())),
@@ -288,6 +659,7 @@ class ReplayCapabilityCompileRequest:
         }
         return cls(
             schema_version=REPLAY_CAPABILITY_REQUEST_SCHEMA_VERSION,
+            capability_id=authoritative_capability_id,
             requirements=tuple(requirements),
             context_snapshots=payload["context_snapshots"],
             task_inputs=payload["task_inputs"],
@@ -298,7 +670,9 @@ class ReplayCapabilityCompileRequest:
             capability_root=str(root),
             capability_package_fingerprint=package_fingerprint,
             context_fingerprint=context_fingerprint,
-            request_fingerprint=_json_fingerprint(payload),
+            request_fingerprint=_json_fingerprint(
+                _replay_capability_compile_request_identity(payload)
+            ),
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -320,6 +694,7 @@ class ReplayProtocolProbe:
     validate_advertised_websockets: bool = False
     request_text: str | None = None
     response_contains: str | None = None
+    response_record_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -336,6 +711,46 @@ class ReplayServiceSpec:
         )
     )
     protocol_probes: tuple[ReplayProtocolProbe, ...] = ()
+    # Derived from typed protocol probes. This exact path is appended to the
+    # allocated loopback authority before endpoint substitution into task input.
+    task_entry_path: str | None = None
+
+
+def _replay_service_fingerprint_payload(
+    service: ReplayServiceSpec,
+) -> dict[str, Any]:
+    """Keep v1 service identity compatible when the new path is absent."""
+
+    payload = asdict(service)
+    if service.task_entry_path is None:
+        payload.pop("task_entry_path", None)
+    return payload
+
+
+def _verified_replay_services_payload(
+    services: Sequence[ReplayServiceSpec],
+    manifest: Mapping[str, Any],
+) -> list[dict[str, Any]]:
+    """Mirror whether a v1 manifest historically encoded the optional null."""
+
+    raw_services = manifest.get("services")
+    payloads: list[dict[str, Any]] = []
+    for index, service in enumerate(services):
+        payload = _replay_service_fingerprint_payload(service)
+        raw_service = (
+            raw_services[index]
+            if isinstance(raw_services, list)
+            and index < len(raw_services)
+            and isinstance(raw_services[index], Mapping)
+            else None
+        )
+        if (
+            isinstance(raw_service, Mapping)
+            and "task_entry_path" in raw_service
+        ):
+            payload["task_entry_path"] = service.task_entry_path
+        payloads.append(payload)
+    return payloads
 
 
 @dataclass(frozen=True)
@@ -385,6 +800,42 @@ class FrozenReplayCapability:
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
+
+
+def replay_capability_semantic_fingerprint(
+    capability: FrozenReplayCapability,
+) -> str:
+    """Identify frozen replay behavior without run-local storage locations.
+
+    ``request_fingerprint`` in legacy artifacts included absolute compile and
+    evidence paths.  It remains part of the signed frozen-manifest fingerprint
+    for artifact verification, but it is not executable support identity.
+    """
+
+    return _json_fingerprint(
+        {
+            "schema_version": "aworld.self_evolve.replay_capability_identity.v1",
+            "capability_id": capability.capability_id,
+            "capability_package_fingerprint": (
+                capability.capability_package_fingerprint
+            ),
+            "handled_requirements": list(capability.handled_requirements),
+            "unhandled_requirements": list(capability.unhandled_requirements),
+            "evidence_refs": capability.evidence_refs,
+            "fixture_evidence_refs": capability.fixture_evidence_refs,
+            "fixtures": [asdict(item) for item in capability.fixtures],
+            "runtime_files": [asdict(item) for item in capability.runtime_files],
+            "endpoint_replacements": capability.endpoint_replacements,
+            "services": [
+                _replay_service_fingerprint_payload(item)
+                for item in capability.services
+            ],
+            "deterministic": capability.deterministic,
+            "concurrency_mode": capability.concurrency_mode,
+            "resource_key": capability.resource_key,
+            "binding_fingerprint": capability.binding_fingerprint,
+        }
+    )
 
 
 def frozen_replay_fixture_shape_fingerprints(
@@ -641,7 +1092,7 @@ class SubprocessReplayCapabilityExecutor:
     def __init__(
         self,
         *,
-        timeout_seconds: float = 30.0,
+        timeout_seconds: float = 120.0,
         max_output_chars: int = 64_000,
     ) -> None:
         if timeout_seconds <= 0:
@@ -704,6 +1155,15 @@ class SubprocessReplayCapabilityExecutor:
                     writable_roots=(run_root,),
                     allow_loopback=False,
                 )
+                command = build_replay_resource_limited_command(
+                    command,
+                    max_file_bytes=max(
+                        self.max_output_chars,
+                        _MAX_FIXTURE_FILE_BYTES,
+                    ),
+                    max_memory_bytes=512 * 1024 * 1024,
+                    cpu_seconds=max(1, math.ceil(self.timeout_seconds)),
+                )
                 process = subprocess.Popen(
                     command,
                     cwd=run_root,
@@ -713,14 +1173,6 @@ class SubprocessReplayCapabilityExecutor:
                     stdout=stdout_handle,
                     stderr=stderr_handle,
                     start_new_session=True,
-                    preexec_fn=replay_process_resource_limiter(
-                        max_file_bytes=max(
-                            self.max_output_chars,
-                            _MAX_FIXTURE_FILE_BYTES,
-                        ),
-                        max_memory_bytes=512 * 1024 * 1024,
-                        cpu_seconds=max(1, math.ceil(self.timeout_seconds)),
-                    ),
                 )
                 deadline = time.monotonic() + self.timeout_seconds
                 total_output_limit = _MAX_FIXTURE_TOTAL_BYTES + 4 * _MAX_JSON_BYTES
@@ -787,7 +1239,12 @@ def discover_replay_capability(
         manifest=manifest,
         entrypoint=entrypoint,
         runtime_files=runtime_files,
-        package_fingerprint=fingerprint_skill_package(root),
+        package_fingerprint=fingerprint_replay_capability_package(
+            root,
+            manifest_path=manifest_path,
+            entrypoint=entrypoint,
+            runtime_files=runtime_files,
+        ),
     )
 
 
@@ -812,6 +1269,7 @@ def compile_and_freeze_capability(
     compiler = executor or SubprocessReplayCapabilityExecutor()
     try:
         _verify_discovered_capability_unchanged(capability)
+        _validate_discovered_python_entrypoint(capability)
         first = compiler.execute(capability, request, compile_a)
         _verify_discovered_capability_unchanged(capability)
         second = compiler.execute(capability, request, compile_b)
@@ -834,10 +1292,129 @@ def compile_and_freeze_capability(
             frozen_root=frozen_root,
         )
         verify_frozen_replay_capability(frozen)
+    except ReplayCapabilityError as exc:
+        supplemental = _compile_failure_runtime_binding_diagnostics(
+            capability,
+            request=request,
+            output_roots=(compile_a / "output", compile_b / "output"),
+        )
+        _remove_path(frozen_root)
+        if supplemental is not None:
+            merged_details = dict(exc.details)
+            for key in (
+                "schema_field_constraints",
+                "schema_field_violations",
+                "source_behavior_proofs",
+            ):
+                existing = merged_details.get(key)
+                added = supplemental.get(key)
+                if isinstance(added, list):
+                    merged_details[key] = [
+                        *(existing if isinstance(existing, list) else []),
+                        *added,
+                    ]
+            merged_details["constraint_collection"] = "compile_and_runtime"
+            raise ReplayCapabilityError(
+                str(exc),
+                code=exc.code,
+                details=merged_details,
+            ) from exc
+        raise
     except Exception:
         _remove_path(frozen_root)
         raise
     return frozen
+
+
+def _compile_failure_runtime_binding_diagnostics(
+    capability: DiscoveredReplayCapability,
+    *,
+    request: ReplayCapabilityCompileRequest,
+    output_roots: Sequence[Path],
+) -> dict[str, object] | None:
+    """Collect an independent runtime invariant after compiler validation fails.
+
+    Compiler-result schema errors must not hide an already-provable runtime
+    failure. The check remains capability-generic: it activates only for a
+    runtime-required request whose compiler emitted a fixture with a recorded
+    non-empty response.
+    """
+
+    if not any(
+        requirement.status == "runtime_required"
+        for requirement in request.requirements
+    ):
+        return None
+    has_recorded_response = False
+    for root in output_roots:
+        if not root.is_dir():
+            continue
+        for path in sorted(root.rglob("*"))[:_MAX_FIXTURE_COUNT]:
+            if not path.is_file() or path.is_symlink():
+                continue
+            try:
+                if path.stat().st_size > _MAX_FIXTURE_FILE_BYTES:
+                    continue
+                response_index = _build_recorded_response_index(
+                    path.read_bytes(),
+                    observed_operations=(),
+                )
+            except OSError:
+                continue
+            records = response_index.get("records")
+            if isinstance(records, list) and any(
+                isinstance(record, Mapping)
+                and record.get("non_empty") is True
+                and "value" in record
+                for record in records
+            ):
+                has_recorded_response = True
+                break
+        if has_recorded_response:
+            break
+    if not has_recorded_response:
+        return None
+
+    proofs: list[dict[str, object]] = []
+    for runtime_path in capability.runtime_files:
+        if runtime_path.suffix.casefold() != ".py":
+            continue
+        try:
+            proof = recorded_response_index_source_behavior_proof(
+                runtime_path.read_text(encoding="utf-8")
+            )
+        except (OSError, UnicodeDecodeError):
+            continue
+        proofs.append(proof)
+        if proof.get("proven") is True:
+            return None
+    if not proofs:
+        return None
+
+    violation = _schema_field_violation(
+        schema_layer="runtime",
+        field_path=(
+            "environment.AWORLD_REPLAY_RESPONSE_INDEX.consumer"
+        ),
+        rule="enum",
+        expected=(REPLAY_RESPONSE_INDEX_CONSUMER,),
+        value="source_behavior_not_detected",
+        value_domain="source_behavior",
+        required_operations=(
+            "read_environment_binding_as_path",
+            "bind_environment_path_to_json_file_reader",
+            "access_records_array",
+            "project_record_value_field_directly",
+        ),
+        forbidden_operations=(
+            "coerce_environment_binding_to_numeric_index",
+            "hide_environment_read_behind_zero_arg_return_helper",
+            "substitute_raw_fixture_recursive_scan",
+        ),
+    )
+    details = schema_field_diagnostic_details((violation,))
+    details["source_behavior_proofs"] = proofs
+    return details
 
 
 def _verify_discovered_capability_unchanged(
@@ -887,7 +1464,10 @@ def verify_frozen_replay_capability(capability: FrozenReplayCapability) -> None:
         "fixtures": [asdict(item) for item in capability.fixtures],
         "runtime_files": [asdict(item) for item in capability.runtime_files],
         "endpoint_replacements": capability.endpoint_replacements,
-        "services": [asdict(item) for item in capability.services],
+        "services": _verified_replay_services_payload(
+            capability.services,
+            manifest,
+        ),
         "deterministic": capability.deterministic,
     }
     if any(
@@ -976,7 +1556,10 @@ def _verify_recorded_response_indexes_and_runtime_bindings(
             raise ReplayCapabilityError(
                 "skill runtime entrypoint must be readable UTF-8 source"
             ) from exc
-        if not _runtime_consumes_recorded_response_index(source):
+        source_behavior_proof = recorded_response_index_source_behavior_proof(
+            source
+        )
+        if source_behavior_proof.get("proven") is not True:
             _raise_schema_field_error(
                 "skill runtime with recorded responses must consume "
                 f"{REPLAY_RESPONSE_INDEX_ENV} as a JSON sidecar file path, "
@@ -1009,7 +1592,113 @@ def _verify_recorded_response_indexes_and_runtime_bindings(
                         ),
                     ),
                 ),
+                extra_details={
+                    "source_behavior_proofs": [source_behavior_proof],
+                },
             )
+
+
+def _require_recorded_response_fixture_for_sidecar_runtime(
+    *,
+    capability: DiscoveredReplayCapability,
+    request: ReplayCapabilityCompileRequest,
+    result: ReplayCapabilityCompileResult,
+    fixture: str,
+    response_index: Mapping[str, Any],
+) -> None:
+    """Reject a compiler selector that strands a proven sidecar consumer.
+
+    The framework may offer several immutable derivations for one evidence
+    reference.  A compact request/tool-call fragment can be the smallest
+    source while containing no recorded response at all.  If a declared skill
+    runtime is statically proven to consume ``AWORLD_REPLAY_RESPONSE_INDEX``,
+    launching it without a generated sidecar can only fail.  Detect that
+    candidate-owned source-selection error before operational conformance.
+    """
+
+    records = response_index.get("records")
+    if isinstance(records, list) and records:
+        return
+    requirements = {
+        item.requirement_id: item for item in request.requirements
+    }
+    affected_services: list[str] = []
+    available_recorded_source_count = 0
+    for service in result.services:
+        if (
+            service.response_fixture != fixture
+            or service.transport != "skill_runtime"
+            or service.runtime_entrypoint is None
+            or not service.protocol_probes
+        ):
+            continue
+        requirement = requirements.get(service.requirement_id)
+        if requirement is None:
+            continue
+        eligible_sources = [
+            source
+            for evidence_ref in requirement.evidence_refs
+            for source in request.evidence_derivations.get(evidence_ref, ())
+            if isinstance(source.get("response_index_path"), str)
+            and bool(str(source["response_index_path"]).strip())
+            and isinstance(source.get("response_record_count"), int)
+            and not isinstance(source.get("response_record_count"), bool)
+            and int(source["response_record_count"]) > 0
+        ]
+        if not eligible_sources:
+            continue
+        runtime_path = _resolve_skill_file(
+            capability.skill_root,
+            service.runtime_entrypoint,
+            label="runtime entrypoint",
+        )
+        try:
+            runtime_source = runtime_path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            continue
+        if recorded_response_index_source_behavior_proof(runtime_source).get(
+            "proven"
+        ) is not True:
+            continue
+        affected_services.append(service.service_id)
+        available_recorded_source_count += len(eligible_sources)
+    if not affected_services:
+        return
+
+    violation = _schema_field_violation(
+        schema_layer="compiler",
+        field_path="evidence_derivations[*].response_index_path",
+        rule="enum",
+        expected=("recorded_response_source",),
+        value="selected_fixture_without_recorded_response",
+        value_domain="source_behavior",
+        required_operations=(
+            "restrict_to_positive_recorded_response_sources",
+            "prefer_maximum_response_record_count",
+        ),
+        forbidden_operations=(
+            "rank_all_sources_by_minimum_byte_length_first",
+        ),
+    )
+    details = schema_field_diagnostic_details((violation,))
+    details.update(
+        {
+            "counterexample_contracts": [
+                _schema_field_counterexample_contract(violation)
+            ],
+            "fixture": fixture,
+            "affected_service_ids": sorted(affected_services),
+            "available_recorded_source_count": (
+                available_recorded_source_count
+            ),
+        }
+    )
+    raise ReplayCapabilityError(
+        "skill runtime consumes AWORLD_REPLAY_RESPONSE_INDEX but the compiler "
+        "selected a fixture without recorded responses",
+        code="recorded_response_fixture_unselected",
+        details=details,
+    )
 
 
 def _runtime_consumes_recorded_response_index(source: str) -> bool:
@@ -1023,43 +1712,750 @@ def _runtime_consumes_recorded_response_index(source: str) -> bool:
     the protocol probe.
     """
 
+    return recorded_response_index_source_behavior_proof(source).get(
+        "proven"
+    ) is True
+
+
+def recorded_response_index_source_behavior_proof(
+    source: str,
+) -> dict[str, object]:
+    """Return a bounded proof graph for the response-index source contract.
+
+    The result deliberately describes language-level operations and broken
+    propagation edges, never source excerpts or fixture payloads. It is safe to
+    pass through candidate repair feedback and gives a generator executable
+    evidence about *why* a data-flow claim was not proved.
+    """
+
+    required_operations = (
+        "read_environment_binding_as_path",
+        "bind_environment_path_to_json_file_reader",
+        "access_records_array",
+        "project_record_value_field_directly",
+    )
     try:
         tree = ast.parse(source)
-    except SyntaxError:
-        return False
+    except SyntaxError as exc:
+        operation_status = {
+            operation: False for operation in required_operations
+        }
+        topology = {
+            "operation_status": operation_status,
+            "unsupported_boundary_kinds": ["syntax_error"],
+        }
+        return {
+            "schema_version": "aworld.self_evolve.source_behavior_proof.v1",
+            "analyzer": "python_ast_bounded_dataflow",
+            "predicate": (
+                "environment.AWORLD_REPLAY_RESPONSE_INDEX.consumer"
+            ),
+            "expected_behavior": REPLAY_RESPONSE_INDEX_CONSUMER,
+            "proven": False,
+            "proof_fingerprint": _source_behavior_proof_fingerprint(topology),
+            "operation_status": operation_status,
+            "missing_operations": list(required_operations),
+            "unsupported_boundaries": [
+                {
+                    "kind": "syntax_error",
+                    "line": max(1, int(exc.lineno or 1)),
+                }
+            ],
+            "repair_guidance": [
+                "make the required source branch parseable before proving data flow"
+            ],
+        }
 
-    accessed_keys: set[object] = set()
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Subscript):
-            key_node = node.slice
-            if isinstance(key_node, ast.Constant):
-                accessed_keys.add(key_node.value)
-        elif (
-            isinstance(node, ast.Call)
-            and isinstance(node.func, ast.Attribute)
-            and node.args
-            and isinstance(node.args[0], ast.Constant)
-        ):
-            key = node.args[0].value
-            if node.func.attr == "get":
-                accessed_keys.add(key)
-    # The framework index builder only emits records whose projected values
-    # are non-empty. Runtimes may still inspect the ``non_empty`` metadata, but
-    # requiring that exact spelling would reject an equivalent bounded
-    # records/value projection before the precise protocol probe can verify it.
-    if not {"records", "value"}.issubset(accessed_keys):
-        return False
+    _inline_response_index_environment_key_constants(tree)
 
     function_scopes = _runtime_function_scopes(tree)
     reader_parameters = _runtime_file_reader_parameter_summaries(function_scopes)
-    return any(
-        _scope_reads_response_index_file(
+    named_scopes = _runtime_named_lexical_scopes(tree)
+    environment_sources: list[dict[str, object]] = []
+    file_readers: list[dict[str, object]] = []
+    unsupported_boundaries: list[dict[str, object]] = []
+    reader_binding_proven = False
+    projection_proofs: list[dict[str, object]] = []
+    for scope_name, scope_nodes in named_scopes:
+        reader_binding_proven = reader_binding_proven or (
+            _scope_reads_response_index_file(
+                scope_nodes,
+                reader_parameters=reader_parameters,
+                function_scopes=function_scopes,
+            )
+        )
+        environment_sources.extend(
+            _runtime_environment_source_locations(scope_name, scope_nodes)
+        )
+        file_readers.extend(
+            _runtime_file_reader_locations(scope_name, scope_nodes)
+        )
+        unsupported_boundaries.extend(
+            _runtime_attribute_storage_boundaries(scope_name, scope_nodes)
+        )
+        projection = _scope_response_index_projection_proof(
+            scope_name,
             scope_nodes,
             reader_parameters=reader_parameters,
             function_scopes=function_scopes,
         )
-        for scope_nodes in _runtime_lexical_scopes(tree)
+        if projection is not None:
+            projection_proofs.append(projection)
+
+    records_access_proven = any(
+        proof.get("records_access_proven") is True
+        for proof in projection_proofs
     )
+    value_projection_proven = any(
+        proof.get("value_projection_proven") is True
+        for proof in projection_proofs
+    )
+
+    operation_status = {
+        "read_environment_binding_as_path": bool(environment_sources),
+        "bind_environment_path_to_json_file_reader": reader_binding_proven,
+        "access_records_array": records_access_proven,
+        "project_record_value_field_directly": value_projection_proven,
+    }
+    missing_operations = [
+        operation
+        for operation in required_operations
+        if not operation_status[operation]
+    ]
+    proven = not missing_operations
+    boundary_kinds = sorted(
+        {
+            str(item.get("kind") or "unknown")
+            for item in unsupported_boundaries
+        }
+    )
+    environment_scope_names = {
+        str(item["scope"]) for item in environment_sources
+    }
+    reader_scope_names = {str(item["scope"]) for item in file_readers}
+    topology = {
+        "operation_status": operation_status,
+        "unsupported_boundary_kinds": boundary_kinds,
+        "environment_source_scope_count": len(environment_scope_names),
+        "file_reader_scope_count": len(reader_scope_names),
+        "source_reader_scope_overlap": bool(
+            environment_scope_names & reader_scope_names
+        ),
+        "projection_scope_count": len(projection_proofs),
+        "records_access_proven": records_access_proven,
+        "value_projection_proven": value_projection_proven,
+    }
+    guidance: list[str] = []
+    if not operation_status["read_environment_binding_as_path"]:
+        guidance.append(
+            "read the framework environment binding in the runtime source branch"
+        )
+    if not reader_binding_proven:
+        guidance.append(
+            "keep the environment-derived path and JSON file reader in one lexical scope or pass it only through explicit function parameters"
+        )
+    if unsupported_boundaries:
+        guidance.append(
+            "replace attribute or container state propagation with local assignments or explicit function arguments"
+        )
+    if not operation_status["access_records_array"]:
+        guidance.append("access the sidecar records field explicitly")
+    if not operation_status["project_record_value_field_directly"]:
+        guidance.append("project each record value field explicitly")
+    return {
+        "schema_version": "aworld.self_evolve.source_behavior_proof.v1",
+        "analyzer": "python_ast_bounded_dataflow",
+        "predicate": "environment.AWORLD_REPLAY_RESPONSE_INDEX.consumer",
+        "expected_behavior": REPLAY_RESPONSE_INDEX_CONSUMER,
+        "proven": proven,
+        "proof_fingerprint": _source_behavior_proof_fingerprint(topology),
+        "operation_status": operation_status,
+        "missing_operations": missing_operations,
+        "environment_sources": environment_sources[:16],
+        "file_readers": file_readers[:16],
+        "projection_proofs": projection_proofs[:16],
+        "topology": topology,
+        "unsupported_boundaries": unsupported_boundaries[:16],
+        "repair_guidance": guidance[:8],
+    }
+
+
+def _source_behavior_proof_fingerprint(topology: Mapping[str, object]) -> str:
+    encoded = json.dumps(
+        topology,
+        ensure_ascii=True,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("utf-8")
+    return "sha256:" + hashlib.sha256(encoded).hexdigest()
+
+
+def _inline_response_index_environment_key_constants(tree: ast.Module) -> None:
+    """Resolve safe module constants used only as environment lookup keys.
+
+    Generated runtimes commonly name the framework environment key before
+    reading it, for example ``INDEX_ENV = "AWORLD_REPLAY_RESPONSE_INDEX"``.
+    The data-flow analyzer previously required the literal to appear directly
+    in ``os.environ.get``/``os.getenv`` and therefore rejected that equivalent
+    local path flow.  Resolve only a direct, unique top-level string binding;
+    dynamic aliases, reassignments, destructuring, imports, and names declared
+    global inside a function remain outside the proof boundary.
+    """
+
+    candidates: set[str] = set()
+    for statement in tree.body:
+        target: ast.AST | None = None
+        value: ast.AST | None = None
+        if isinstance(statement, ast.Assign) and len(statement.targets) == 1:
+            target = statement.targets[0]
+            value = statement.value
+        elif isinstance(statement, ast.AnnAssign):
+            target = statement.target
+            value = statement.value
+        if not isinstance(target, ast.Name):
+            continue
+        if (
+            isinstance(value, ast.Constant)
+            and value.value == REPLAY_RESPONSE_INDEX_ENV
+        ):
+            candidates.add(target.id)
+
+    module_binding_counts: dict[str, int] = {}
+
+    class ModuleBindingCounter(ast.NodeVisitor):
+        def bind(self, name: str) -> None:
+            module_binding_counts[name] = module_binding_counts.get(name, 0) + 1
+
+        def visit_Name(self, node: ast.Name) -> None:
+            if isinstance(node.ctx, (ast.Store, ast.Del)):
+                self.bind(node.id)
+
+        def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+            self.bind(node.name)
+
+        def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
+            self.bind(node.name)
+
+        def visit_ClassDef(self, node: ast.ClassDef) -> None:
+            self.bind(node.name)
+
+        def visit_Lambda(self, node: ast.Lambda) -> None:
+            return None
+
+        def visit_Import(self, node: ast.Import) -> None:
+            for alias in node.names:
+                self.bind(alias.asname or alias.name.partition(".")[0])
+
+        def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
+            for alias in node.names:
+                self.bind(alias.asname or alias.name)
+
+    counter = ModuleBindingCounter()
+    for statement in tree.body:
+        counter.visit(statement)
+
+    global_mutations = {
+        name
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Global)
+        for name in node.names
+    }
+    safe_names = {
+        name
+        for name in candidates
+        if module_binding_counts.get(name) == 1 and name not in global_mutations
+    }
+    if not safe_names:
+        return
+
+    class EnvironmentKeyInliner(ast.NodeTransformer):
+        @staticmethod
+        def replacement(value: ast.AST) -> ast.AST:
+            if isinstance(value, ast.Name) and value.id in safe_names:
+                return ast.copy_location(
+                    ast.Constant(value=REPLAY_RESPONSE_INDEX_ENV),
+                    value,
+                )
+            return value
+
+        def visit_Call(self, node: ast.Call) -> ast.AST:
+            self.generic_visit(node)
+            if not node.args:
+                return node
+            if isinstance(node.func, ast.Attribute):
+                is_environment_get = (
+                    node.func.attr == "get"
+                    and _is_os_environ_expression(node.func.value)
+                ) or (
+                    node.func.attr == "getenv"
+                    and isinstance(node.func.value, ast.Name)
+                    and node.func.value.id == "os"
+                )
+            else:
+                is_environment_get = (
+                    isinstance(node.func, ast.Name)
+                    and node.func.id == "getenv"
+                )
+            if is_environment_get:
+                node.args[0] = self.replacement(node.args[0])
+            return node
+
+        def visit_Subscript(self, node: ast.Subscript) -> ast.AST:
+            self.generic_visit(node)
+            if _is_os_environ_expression(node.value):
+                node.slice = self.replacement(node.slice)
+            return node
+
+    EnvironmentKeyInliner().visit(tree)
+
+
+def _runtime_accessed_key_locations(
+    tree: ast.Module,
+) -> dict[str, list[dict[str, object]]]:
+    locations: dict[str, list[dict[str, object]]] = {}
+    for node in ast.walk(tree):
+        key: object | None = None
+        access_kind: str | None = None
+        if isinstance(node, ast.Subscript) and isinstance(node.slice, ast.Constant):
+            key = node.slice.value
+            access_kind = "subscript"
+        elif (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "get"
+            and node.args
+            and isinstance(node.args[0], ast.Constant)
+        ):
+            key = node.args[0].value
+            access_kind = "mapping_get"
+        if not isinstance(key, str) or access_kind is None:
+            continue
+        locations.setdefault(key, []).append(
+            {
+                "line": max(1, int(getattr(node, "lineno", 1))),
+                "access_kind": access_kind,
+            }
+        )
+    return locations
+
+
+def _scope_response_index_projection_proof(
+    scope_name: str,
+    nodes: Sequence[ast.AST],
+    *,
+    reader_parameters: Mapping[str, frozenset[int]],
+    function_scopes: Mapping[
+        str,
+        tuple[tuple[str, ...], tuple[ast.AST, ...]],
+    ],
+) -> dict[str, object] | None:
+    """Prove that ``records`` and ``value`` share the env-derived JSON root.
+
+    Token presence is not provenance.  This bounded lattice follows local
+    assignments, ``with open(...) as ...`` readers, transparent JSON-reader
+    helpers, record iteration/indexing, and selected-record aliases.  A loop
+    variable is valid only inside its own loop; reading it after selection has
+    finished is a stale-record bug and must be rejected by the static gate.
+    """
+
+    node_set = set(nodes)
+    parents: dict[ast.AST, ast.AST] = {}
+    for parent in nodes:
+        for child in ast.iter_child_nodes(parent):
+            if child in node_set:
+                parents.setdefault(child, parent)
+
+    path_names: set[str] = set()
+    reader_names: set[str] = set()
+    index_names: set[str] = set()
+    records_names: set[str] = set()
+    record_names: set[str] = set()
+    record_loops: dict[
+        str,
+        list[ast.For | ast.AsyncFor | ast.comprehension],
+    ] = {}
+
+    # Projection helpers are intentionally analyzable independently from the
+    # entrypoint that supplies their parameter.  Seed parameters as bounded
+    # possible path/index roots, then still require a complete
+    # index->records->record->value chain inside the helper.
+    scope_signature = function_scopes.get(scope_name)
+    if scope_signature is not None:
+        path_names.update(scope_signature[0])
+        index_names.update(scope_signature[0])
+
+    def key_access(expression: ast.AST) -> tuple[ast.AST, str] | None:
+        if (
+            isinstance(expression, ast.Subscript)
+            and isinstance(expression.slice, ast.Constant)
+            and isinstance(expression.slice.value, str)
+        ):
+            return expression.value, expression.slice.value
+        if (
+            isinstance(expression, ast.Call)
+            and isinstance(expression.func, ast.Attribute)
+            and expression.func.attr == "get"
+            and expression.args
+            and isinstance(expression.args[0], ast.Constant)
+            and isinstance(expression.args[0].value, str)
+        ):
+            return expression.func.value, expression.args[0].value
+        return None
+
+    def helper_returns_json_from_path(call: ast.Call) -> bool:
+        called_name = _runtime_called_function_name(call.func)
+        if called_name is None or called_name not in reader_parameters:
+            return False
+        parameters, helper_nodes = function_scopes[called_name]
+        has_json_reader = any(
+            isinstance(item, ast.Call)
+            and (
+                (
+                    isinstance(item.func, ast.Attribute)
+                    and isinstance(item.func.value, ast.Name)
+                    and item.func.value.id == "json"
+                    and item.func.attr in {"load", "loads"}
+                )
+                or (
+                    isinstance(item.func, ast.Name)
+                    and item.func.id in {"load", "loads"}
+                )
+            )
+            for item in helper_nodes
+        )
+        if not has_json_reader or not any(
+            isinstance(item, ast.Return) and item.value is not None
+            for item in helper_nodes
+        ):
+            return False
+        return any(
+            (
+                argument := _runtime_call_argument(call, parameter_index, parameters)
+            )
+            is not None
+            and expression_kind(argument) == "path"
+            for parameter_index in reader_parameters[called_name]
+        )
+
+    def helper_returns_environment_path(call: ast.Call) -> bool:
+        called_name = _runtime_called_function_name(call.func)
+        if called_name is None or called_name not in function_scopes:
+            return False
+        _, helper_nodes = function_scopes[called_name]
+        has_return = any(
+            isinstance(item, ast.Return) and item.value is not None
+            for item in helper_nodes
+        )
+        if not has_return:
+            return False
+        for item in helper_nodes:
+            if isinstance(item, ast.Subscript) and _is_os_environ_expression(
+                item.value
+            ):
+                return True
+            if not isinstance(item, ast.Call):
+                continue
+            if isinstance(item.func, ast.Attribute):
+                if (
+                    item.func.attr == "get"
+                    and _is_os_environ_expression(item.func.value)
+                ) or (
+                    item.func.attr == "getenv"
+                    and isinstance(item.func.value, ast.Name)
+                    and item.func.value.id == "os"
+                ):
+                    return True
+            elif isinstance(item.func, ast.Name) and item.func.id == "getenv":
+                return True
+        return False
+
+    def expression_kind(expression: ast.AST) -> str | None:
+        if isinstance(expression, ast.IfExp):
+            branch_kinds = {
+                kind
+                for branch in (expression.body, expression.orelse)
+                if (kind := expression_kind(branch)) is not None
+            }
+            if len(branch_kinds) == 1:
+                return next(iter(branch_kinds))
+        if isinstance(expression, ast.Name):
+            for kind, names in (
+                ("path", path_names),
+                ("reader", reader_names),
+                ("index", index_names),
+                ("records", records_names),
+                ("record", record_names),
+            ):
+                if expression.id in names:
+                    return kind
+        if _expression_depends_on_response_index(
+            expression,
+            set(),
+            include_environment_binding=True,
+        ):
+            return "path"
+        access = key_access(expression)
+        if access is not None:
+            owner, key = access
+            owner_kind = expression_kind(owner)
+            owner_is_index = owner_kind == "index" or (
+                isinstance(owner, ast.Name) and owner.id in index_names
+            )
+            if key == "records" and owner_is_index:
+                return "records"
+            if key == "value" and owner_kind == "record":
+                return "value"
+        if isinstance(expression, ast.Subscript):
+            if expression_kind(expression.value) == "records":
+                return "record"
+        if not isinstance(expression, ast.Call):
+            return None
+        if (
+            isinstance(expression.func, ast.Name)
+            and expression.func.id in {"Path", "PurePath", "PosixPath"}
+            and expression.args
+            and expression_kind(expression.args[0]) == "path"
+        ):
+            return "path"
+        if helper_returns_environment_path(expression):
+            return "path"
+        if isinstance(expression.func, ast.Name) and expression.func.id == "open":
+            if expression.args and expression_kind(expression.args[0]) == "path":
+                return "reader"
+        if (
+            isinstance(expression.func, ast.Attribute)
+            and expression.func.attr in {"open", "read_bytes", "read_text"}
+            and expression_kind(expression.func.value) == "path"
+        ):
+            return "reader"
+        if (
+            isinstance(expression.func, ast.Attribute)
+            and isinstance(expression.func.value, ast.Name)
+            and expression.func.value.id == "json"
+            and expression.func.attr in {"load", "loads"}
+            and expression.args
+            and expression_kind(expression.args[0]) in {"reader", "path"}
+        ):
+            return "index"
+        if helper_returns_json_from_path(expression):
+            return "index"
+        return None
+
+    def bind(target: ast.AST, kind: str) -> bool:
+        destination = {
+            "path": path_names,
+            "reader": reader_names,
+            "index": index_names,
+            "records": records_names,
+            "record": record_names,
+        }.get(kind)
+        if destination is None:
+            return False
+        changed = False
+        for name in _assigned_runtime_names(target):
+            if name not in destination:
+                destination.add(name)
+                changed = True
+        return changed
+
+    # Fixed point is bounded by the number of local names and loop targets.
+    for _ in range(1 + len(nodes)):
+        changed = False
+        for node in nodes:
+            if isinstance(node, (ast.Assign, ast.AnnAssign, ast.NamedExpr)):
+                targets: Sequence[ast.AST] = (
+                    node.targets if isinstance(node, ast.Assign) else (node.target,)
+                )
+                kind = expression_kind(node.value)
+                if kind in {"path", "reader", "index", "records", "record"}:
+                    changed = any(bind(target, kind) for target in targets) or changed
+            elif isinstance(node, (ast.With, ast.AsyncWith)):
+                for item in node.items:
+                    if item.optional_vars is None:
+                        continue
+                    if expression_kind(item.context_expr) == "reader":
+                        changed = bind(item.optional_vars, "reader") or changed
+            elif isinstance(node, (ast.For, ast.AsyncFor, ast.comprehension)):
+                if expression_kind(node.iter) != "records":
+                    continue
+                changed = bind(node.target, "record") or changed
+                for name in _assigned_runtime_names(node.target):
+                    loops = record_loops.setdefault(name, [])
+                    if node not in loops:
+                        loops.append(node)
+        if not changed:
+            break
+
+    def descendant_of(node: ast.AST, ancestor: ast.AST) -> bool:
+        current = node
+        while current in parents:
+            current = parents[current]
+            if current is ancestor:
+                return True
+        return False
+
+    def inside_record_binding(
+        node: ast.AST,
+        binding: ast.For | ast.AsyncFor | ast.comprehension,
+    ) -> bool:
+        if descendant_of(node, binding):
+            return True
+        # A comprehension's element and its generator clauses are siblings in
+        # the AST, but the generator target is in scope for that element.
+        if isinstance(binding, ast.comprehension):
+            container = parents.get(binding)
+            return container is not None and descendant_of(node, container)
+        return False
+
+    records_lines: list[int] = []
+    value_lines: list[int] = []
+    stale_record_lines: list[int] = []
+    for node in nodes:
+        access = key_access(node)
+        if access is None:
+            continue
+        owner, key = access
+        owner_kind = expression_kind(owner)
+        owner_is_index = owner_kind == "index" or (
+            isinstance(owner, ast.Name) and owner.id in index_names
+        )
+        line = max(1, int(getattr(node, "lineno", 1)))
+        if key == "records" and owner_is_index:
+            records_lines.append(line)
+        if key != "value" or owner_kind != "record":
+            continue
+        if isinstance(owner, ast.Name) and owner.id in record_loops and not any(
+            inside_record_binding(node, loop) for loop in record_loops[owner.id]
+        ):
+            stale_record_lines.append(line)
+            continue
+        value_lines.append(line)
+
+    if not records_lines and not value_lines and not stale_record_lines:
+        return None
+    return {
+        "scope": scope_name,
+        "records_access_proven": bool(records_lines),
+        "value_projection_proven": bool(value_lines),
+        "records_access_lines": sorted(set(records_lines))[:16],
+        "value_projection_lines": sorted(set(value_lines))[:16],
+        "stale_record_projection_lines": sorted(set(stale_record_lines))[:16],
+    }
+
+
+def _runtime_named_lexical_scopes(
+    tree: ast.Module,
+) -> tuple[tuple[str, tuple[ast.AST, ...]], ...]:
+    scopes: list[tuple[str, tuple[ast.AST, ...]]] = []
+    module_nodes = _collect_runtime_scope_nodes(tree.body)
+    if module_nodes:
+        scopes.append(("<module>", module_nodes))
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            function_nodes = _collect_runtime_scope_nodes(node.body)
+            if function_nodes:
+                scopes.append((node.name, function_nodes))
+    return tuple(scopes)
+
+
+def _runtime_environment_source_locations(
+    scope_name: str,
+    nodes: Sequence[ast.AST],
+) -> list[dict[str, object]]:
+    locations: list[dict[str, object]] = []
+    seen_lines: set[int] = set()
+    for node in nodes:
+        if not isinstance(node, (ast.Call, ast.Subscript)):
+            continue
+        if not _expression_depends_on_response_index(
+            node,
+            set(),
+            include_environment_binding=True,
+        ):
+            continue
+        line = max(1, int(getattr(node, "lineno", 1)))
+        if line in seen_lines:
+            continue
+        seen_lines.add(line)
+        locations.append({"scope": scope_name, "line": line})
+    return locations
+
+
+def _runtime_file_reader_locations(
+    scope_name: str,
+    nodes: Sequence[ast.AST],
+) -> list[dict[str, object]]:
+    locations: list[dict[str, object]] = []
+    for node in nodes:
+        if not isinstance(node, ast.Call):
+            continue
+        reader_kind: str | None = None
+        argument: ast.AST | None = None
+        if isinstance(node.func, ast.Name) and node.func.id == "open":
+            reader_kind = "open"
+            argument = node.args[0] if node.args else None
+        elif isinstance(node.func, ast.Attribute) and node.func.attr in {
+            "open",
+            "read_bytes",
+            "read_text",
+        }:
+            reader_kind = node.func.attr
+            argument = node.func.value
+        if reader_kind is None:
+            continue
+        locations.append(
+            {
+                "scope": scope_name,
+                "line": max(1, int(getattr(node, "lineno", 1))),
+                "reader_kind": reader_kind,
+                "argument_kind": (
+                    type(argument).__name__ if argument is not None else "missing"
+                ),
+            }
+        )
+    return locations
+
+
+def _runtime_attribute_storage_boundaries(
+    scope_name: str,
+    nodes: Sequence[ast.AST],
+) -> list[dict[str, object]]:
+    bound_names = _runtime_scope_tainted_names(
+        nodes,
+        initial_bound_names=set(),
+        include_environment_binding=True,
+    )
+    boundaries: list[dict[str, object]] = []
+    for node in nodes:
+        if not isinstance(node, (ast.Assign, ast.AnnAssign, ast.NamedExpr)):
+            continue
+        value = node.value
+        if not _expression_depends_on_response_index(
+            value,
+            bound_names,
+            include_environment_binding=True,
+        ):
+            continue
+        raw_targets: Sequence[ast.AST] = (
+            node.targets if isinstance(node, ast.Assign) else (node.target,)
+        )
+        for target in raw_targets:
+            for nested in ast.walk(target):
+                if not isinstance(nested, (ast.Attribute, ast.Subscript)):
+                    continue
+                boundaries.append(
+                    {
+                        "kind": (
+                            "attribute_storage"
+                            if isinstance(nested, ast.Attribute)
+                            else "container_storage"
+                        ),
+                        "scope": scope_name,
+                        "line": max(1, int(getattr(nested, "lineno", 1))),
+                    }
+                )
+                break
+    return boundaries
 
 
 def _runtime_lexical_scopes(tree: ast.Module) -> tuple[tuple[ast.AST, ...], ...]:
@@ -1202,38 +2598,11 @@ def _scope_taint_reaches_file_reader(
 ) -> bool:
     """Propagate one bounded source through assignments and local calls."""
 
-    bound_names = set(initial_bound_names)
-    assignments: list[tuple[tuple[str, ...], ast.AST]] = []
-    for node in nodes:
-        if isinstance(node, (ast.Assign, ast.AnnAssign, ast.NamedExpr)):
-            value = node.value
-            raw_targets: Sequence[ast.AST]
-            if isinstance(node, ast.Assign):
-                raw_targets = node.targets
-            else:
-                raw_targets = (node.target,)
-            target_names = tuple(
-                name
-                for target in raw_targets
-                for name in _assigned_runtime_names(target)
-            )
-            if target_names:
-                assignments.append((target_names, value))
-
-    changed = True
-    while changed:
-        changed = False
-        for target_names, value in assignments:
-            if not _expression_depends_on_response_index(
-                value,
-                bound_names,
-                include_environment_binding=include_environment_binding,
-            ):
-                continue
-            for name in target_names:
-                if name not in bound_names:
-                    bound_names.add(name)
-                    changed = True
+    bound_names = _runtime_scope_tainted_names(
+        nodes,
+        initial_bound_names=initial_bound_names,
+        include_environment_binding=include_environment_binding,
+    )
 
     for node in nodes:
         if not isinstance(node, ast.Call):
@@ -1269,6 +2638,49 @@ def _scope_taint_reaches_file_reader(
             ):
                 return True
     return False
+
+
+def _runtime_scope_tainted_names(
+    nodes: Sequence[ast.AST],
+    *,
+    initial_bound_names: set[str],
+    include_environment_binding: bool,
+) -> set[str]:
+    """Return local names transitively derived from one bounded source."""
+
+    bound_names = set(initial_bound_names)
+    assignments: list[tuple[tuple[str, ...], ast.AST]] = []
+    for node in nodes:
+        if isinstance(node, (ast.Assign, ast.AnnAssign, ast.NamedExpr)):
+            value = node.value
+            raw_targets: Sequence[ast.AST]
+            if isinstance(node, ast.Assign):
+                raw_targets = node.targets
+            else:
+                raw_targets = (node.target,)
+            target_names = tuple(
+                name
+                for target in raw_targets
+                for name in _assigned_runtime_names(target)
+            )
+            if target_names:
+                assignments.append((target_names, value))
+
+    changed = True
+    while changed:
+        changed = False
+        for target_names, value in assignments:
+            if not _expression_depends_on_response_index(
+                value,
+                bound_names,
+                include_environment_binding=include_environment_binding,
+            ):
+                continue
+            for name in target_names:
+                if name not in bound_names:
+                    bound_names.add(name)
+                    changed = True
+    return bound_names
 
 
 def _runtime_called_function_name(function: ast.AST) -> str | None:
@@ -1462,6 +2874,11 @@ def _parse_compile_result(
     output_root: Path,
 ) -> ReplayCapabilityCompileResult:
     raw = _read_json_object(result_path, label="replay capability result")
+    raw = _canonicalize_nested_fixture_paths(raw, output_root=output_root)
+    raw = _canonicalize_framework_owned_service_fields(
+        raw,
+        output_root=output_root,
+    )
     schema_version = _required_string(raw, "schema_version", "result")
     if schema_version != REPLAY_CAPABILITY_RESULT_SCHEMA_VERSION:
         _raise_schema_field_error(
@@ -1476,9 +2893,44 @@ def _parse_compile_result(
                 ),
             ),
         )
-    capability_id = _required_identifier(raw, "capability_id", "result")
+    raw_capability_id = raw.get("capability_id")
+    try:
+        capability_id = _parse_identifier(
+            raw_capability_id,
+            label="result capability_id",
+        )
+    except ReplayCapabilityError:
+        _raise_schema_field_error(
+            (
+                "replay capability result capability_id must match the "
+                "manifest capability_id"
+            ),
+            (
+                _schema_field_violation(
+                    schema_layer="compile_result",
+                    field_path="capability_id",
+                    rule="enum",
+                    expected=(capability.manifest.capability_id,),
+                    value=raw_capability_id,
+                ),
+            ),
+        )
     if capability_id != capability.manifest.capability_id:
-        raise ReplayCapabilityError("replay capability result capability_id mismatch")
+        _raise_schema_field_error(
+            (
+                "replay capability result capability_id must match the "
+                "manifest capability_id"
+            ),
+            (
+                _schema_field_violation(
+                    schema_layer="compile_result",
+                    field_path="capability_id",
+                    rule="enum",
+                    expected=(capability.manifest.capability_id,),
+                    value=capability_id,
+                ),
+            ),
+        )
     deterministic = raw.get("deterministic")
     if not isinstance(deterministic, bool):
         _raise_schema_field_error(
@@ -1499,8 +2951,35 @@ def _parse_compile_result(
     unhandled = _string_tuple(
         raw.get("unhandled_requirements", ()), label="unhandled_requirements"
     )
-    if len(set(handled)) != len(handled) or len(set(unhandled)) != len(unhandled):
-        raise ReplayCapabilityError("result requirement lists contain duplicates")
+    requirement_list_violations: list[SchemaFieldViolation] = []
+    for field_path, values in (
+        ("handled_requirements", handled),
+        ("unhandled_requirements", unhandled),
+    ):
+        duplicate_count = len(values) - len(set(values))
+        if duplicate_count <= 0:
+            continue
+        requirement_list_violations.append(
+            _schema_field_violation(
+                schema_layer="compile_result",
+                field_path=field_path,
+                rule="unique",
+                expected=(),
+                value=values,
+                occurrence_count=duplicate_count,
+            )
+        )
+    if requirement_list_violations:
+        _raise_schema_field_error(
+            "result requirement lists contain duplicates",
+            requirement_list_violations,
+            extra_details={
+                "required_collection_strategy": (
+                    "classify each request requirement exactly once and append "
+                    "its id to only one result collection"
+                ),
+            },
+        )
     if set(handled) & set(unhandled):
         raise ReplayCapabilityError("handled and unhandled requirements overlap")
     requirements = {item.requirement_id: item for item in request.requirements}
@@ -1543,20 +3022,82 @@ def _parse_compile_result(
         for item in _string_tuple(raw.get("fixtures", ()), label="fixtures")
     )
     if len(set(fixtures)) != len(fixtures):
-        raise ReplayCapabilityError("result fixtures contain duplicates")
+        _raise_schema_field_error(
+            "result fixtures contain duplicates",
+            (
+                _schema_field_violation(
+                    schema_layer="compile_result",
+                    field_path="fixtures",
+                    rule="unique",
+                    expected=(),
+                    value=fixtures,
+                    occurrence_count=len(fixtures) - len(set(fixtures)),
+                ),
+            ),
+            extra_details={
+                "required_collection_strategy": (
+                    "declare each relative fixture path once; when requirements "
+                    "share evidence either allocate requirement-qualified paths or "
+                    "reuse one fixture and merge its provenance bindings"
+                ),
+                "allowed_fixture_topologies": [
+                    "unique_path_per_requirement",
+                    "shared_path_with_merged_provenance",
+                ],
+            },
+        )
     if len(fixtures) > _MAX_FIXTURE_COUNT:
         raise ReplayCapabilityError("result fixture count exceeds limit")
     fixture_total_bytes = 0
     for fixture in fixtures:
-        fixture_path = _resolve_output_file(output_root, fixture)
+        try:
+            fixture_path = _resolve_output_file(output_root, fixture)
+        except ReplayCapabilityError:
+            _raise_schema_field_error(
+                "declared replay fixture path does not identify an emitted file",
+                (
+                    _schema_field_violation(
+                        schema_layer="compile_result",
+                        field_path="fixtures[*]",
+                        rule="enum",
+                        expected=("compiler_emitted_relative_path",),
+                        value=fixture,
+                        value_domain="source_behavior",
+                        required_operations=(
+                            "write_fixture_beneath_output_root",
+                            "declare_exact_output_relative_fixture_path",
+                            "reuse_exact_path_in_fixture_provenance_and_services",
+                        ),
+                        forbidden_operations=(
+                            "declare_fixture_basename_for_nested_output_file",
+                        ),
+                    ),
+                ),
+                extra_details={
+                    "code": "fixture_output_path_mismatch",
+                    "required_fixture_path_contract": (
+                        "fixtures, fixture_evidence_refs keys, and service "
+                        "response_fixture values must use the exact path relative "
+                        "to the compiler output directory"
+                    ),
+                },
+            )
         fixture_size = fixture_path.stat().st_size
         if fixture_size > _MAX_FIXTURE_FILE_BYTES:
             raise ReplayCapabilityError("result fixture exceeds byte limit")
         fixture_total_bytes += fixture_size
     if fixture_total_bytes > _MAX_FIXTURE_TOTAL_BYTES:
         raise ReplayCapabilityError("result fixture total exceeds byte limit")
-    fixture_evidence_refs = _validate_fixture_provenance(
+    raw_fixture_evidence_refs = _canonicalize_shared_fixture_provenance(
         raw.get("fixture_evidence_refs"),
+        raw_services=raw.get("services", ()),
+        fixtures=fixtures,
+        requirement_evidence_refs=evidence_refs,
+        request=request,
+        output_root=output_root,
+    )
+    fixture_evidence_refs = _validate_fixture_provenance(
+        raw_fixture_evidence_refs,
         fixtures=fixtures,
         requirement_evidence_refs=evidence_refs,
         request=request,
@@ -1571,6 +3112,7 @@ def _parse_compile_result(
         handled_requirements=set(handled),
         fixture_evidence_refs=fixture_evidence_refs,
         requirement_evidence_refs=evidence_refs,
+        requirements=requirements,
     )
     for requirement_id in handled:
         requirement = requirements[requirement_id]
@@ -1659,6 +3201,29 @@ def _parse_compile_result(
         if requirements[service.requirement_id].identifier != identifier:
             raise ReplayCapabilityError(
                 "endpoint replacement service is bound to a different requirement"
+            )
+        if service.transport != "skill_runtime":
+            continue
+        if service.task_entry_path is None:
+            _raise_schema_field_error(
+                "endpoint replacement skill runtime must expose a "
+                "single executable HTTP task entry",
+                (
+                    _endpoint_replacement_entrypoint_violation(
+                        [
+                            {
+                                "kind": probe.kind,
+                                "path": probe.path,
+                                "fixture_derived": bool(probe.response_contains),
+                            }
+                            for probe in service.protocol_probes
+                        ]
+                    ),
+                ),
+                extra_details={
+                    "code": "endpoint_replacement_entrypoint_missing",
+                    "service_id": service_id,
+                },
             )
     result_mode = str(
         raw.get("concurrency_mode") or capability.manifest.concurrency_mode
@@ -1775,6 +3340,244 @@ def _validate_fixture_provenance(
             )
         validated[fixture] = refs
     return dict(sorted(validated.items()))
+
+
+def _canonicalize_shared_fixture_provenance(
+    raw: Any,
+    *,
+    raw_services: Any,
+    fixtures: Sequence[str],
+    requirement_evidence_refs: Mapping[str, tuple[str, ...]],
+    request: ReplayCapabilityCompileRequest,
+    output_root: Path,
+) -> Any:
+    """Narrow shared-fixture provenance when the bytes prove a common source.
+
+    Generated compilers often deduplicate fixture files by source path while
+    retaining every evidence reference from the first requirement that used
+    the file.  A later requirement may share the exact source reference but
+    not the first requirement's additional references.  The resulting bytes
+    are safe to share, but the over-broad provenance annotation fails the
+    requirement boundary.
+
+    Normalize only when every service consuming the fixture has a common
+    evidence reference and the fixture bytes are directly derivable from that
+    reference.  This can only narrow authority; it never invents provenance or
+    relaxes the parser's containment check.
+    """
+
+    if not isinstance(raw, Mapping) or not isinstance(raw_services, list):
+        return raw
+    consumers: dict[str, set[str]] = {}
+    for service in raw_services:
+        if not isinstance(service, Mapping):
+            continue
+        fixture = service.get("response_fixture")
+        requirement_id = service.get("requirement_id")
+        if isinstance(fixture, str) and isinstance(requirement_id, str):
+            consumers.setdefault(fixture, set()).add(requirement_id)
+
+    normalized = dict(raw)
+    for fixture in fixtures:
+        requirement_ids = consumers.get(fixture, set())
+        if not requirement_ids or any(
+            requirement_id not in requirement_evidence_refs
+            for requirement_id in requirement_ids
+        ):
+            continue
+        declared = raw.get(fixture)
+        if not isinstance(declared, (list, tuple)) or not all(
+            isinstance(item, str) for item in declared
+        ):
+            continue
+        allowed_sets = [
+            set(requirement_evidence_refs[requirement_id])
+            for requirement_id in sorted(requirement_ids)
+        ]
+        if all(set(declared).issubset(allowed) for allowed in allowed_sets):
+            continue
+        common_refs = set.intersection(*allowed_sets)
+        if not common_refs:
+            continue
+        try:
+            fixture_bytes = _resolve_output_file(output_root, fixture).read_bytes()
+            proven_refs = tuple(
+                evidence_ref
+                for evidence_ref in sorted(common_refs)
+                if fixture_bytes
+                in _evidence_source_values(evidence_ref, request=request)
+            )
+        except (OSError, ReplayCapabilityError):
+            continue
+        if proven_refs:
+            normalized[fixture] = proven_refs
+    return normalized
+
+
+def _canonicalize_nested_fixture_paths(
+    raw: Mapping[str, Any],
+    *,
+    output_root: Path,
+) -> dict[str, Any]:
+    """Repair one provably equivalent fixture basename/path mismatch.
+
+    Candidate compilers commonly create ``output/fixtures/<name>`` but declare
+    only ``<name>`` in all compile-result fields.  Rewrite that metadata only
+    when the declared path is absent and the deterministic ``fixtures/``
+    counterpart is a regular, non-symlink file inside the output root.  All
+    linked result fields move atomically, preserving the strict undeclared-file
+    and provenance checks that run afterwards.
+    """
+
+    raw_fixtures = raw.get("fixtures")
+    raw_provenance = raw.get("fixture_evidence_refs")
+    raw_services = raw.get("services")
+    if (
+        not isinstance(raw_fixtures, list)
+        or not all(isinstance(item, str) for item in raw_fixtures)
+        or not isinstance(raw_provenance, Mapping)
+        or not isinstance(raw_services, list)
+    ):
+        return dict(raw)
+
+    replacements: dict[str, str] = {}
+    for declared in raw_fixtures:
+        try:
+            normalized = _normalized_relative_path(declared, label="fixture")
+        except ReplayCapabilityError:
+            return dict(raw)
+        exact = output_root.joinpath(*PurePosixPath(normalized).parts)
+        if exact.exists():
+            continue
+        if PurePosixPath(normalized).parts[:1] == ("fixtures",):
+            continue
+        nested = f"fixtures/{normalized}"
+        try:
+            _resolve_output_file(output_root, nested)
+        except ReplayCapabilityError:
+            continue
+        replacements[declared] = nested
+    if not replacements:
+        return dict(raw)
+
+    normalized_fixtures = [
+        replacements.get(item, item) for item in raw_fixtures
+    ]
+    if len(set(normalized_fixtures)) != len(normalized_fixtures):
+        return dict(raw)
+    normalized_provenance: dict[str, Any] = {}
+    for path, refs in raw_provenance.items():
+        normalized_path = replacements.get(path, path)
+        if normalized_path in normalized_provenance:
+            return dict(raw)
+        normalized_provenance[normalized_path] = refs
+    normalized_services: list[Any] = []
+    for service in raw_services:
+        if not isinstance(service, Mapping):
+            normalized_services.append(service)
+            continue
+        normalized_service = dict(service)
+        response_fixture = normalized_service.get("response_fixture")
+        if isinstance(response_fixture, str):
+            normalized_service["response_fixture"] = replacements.get(
+                response_fixture,
+                response_fixture,
+            )
+        normalized_services.append(normalized_service)
+
+    normalized_raw = dict(raw)
+    normalized_raw["fixtures"] = normalized_fixtures
+    normalized_raw["fixture_evidence_refs"] = normalized_provenance
+    normalized_raw["services"] = normalized_services
+    return normalized_raw
+
+
+def _canonicalize_framework_owned_service_fields(
+    raw: Mapping[str, Any],
+    *,
+    output_root: Path,
+) -> dict[str, Any]:
+    """Fill transport boilerplate that the framework can prove and execute.
+
+    TCP readiness only asserts that the framework-started service has bound its
+    assigned loopback port.  Likewise, an explicitly declared empty HTTP
+    response assertion can be replaced with the canonical assertion derived
+    from the immutable response fixture.  Neither transformation invents task
+    behavior; both remove model-authored duplication of framework-owned facts.
+    Invalid non-empty declarations remain subject to the strict validators.
+    """
+
+    raw_services = raw.get("services")
+    if not isinstance(raw_services, list):
+        return dict(raw)
+    assertions: dict[str, str | None] = {}
+    normalized_services: list[Any] = []
+    changed = False
+    for service in raw_services:
+        if not isinstance(service, Mapping):
+            normalized_services.append(service)
+            continue
+        normalized_service = dict(service)
+        if "readiness" not in normalized_service:
+            normalized_service["readiness"] = {
+                "kind": "tcp",
+                "timeout_seconds": 10.0,
+            }
+            changed = True
+        raw_probes = normalized_service.get("protocol_probes")
+        fixture = normalized_service.get("response_fixture")
+        if not isinstance(raw_probes, list) or not isinstance(fixture, str):
+            normalized_services.append(normalized_service)
+            continue
+        normalized_probes: list[Any] = []
+        for probe in raw_probes:
+            if not isinstance(probe, Mapping):
+                normalized_probes.append(probe)
+                continue
+            normalized_probe = dict(probe)
+            if (
+                normalized_probe.get("kind") == "http"
+                and normalized_probe.get("response_contains") == ""
+                and normalized_probe.get("validate_advertised_websockets")
+                is not True
+            ):
+                if fixture not in assertions:
+                    assertion: str | None = None
+                    try:
+                        fixture_bytes = _resolve_output_file(
+                            output_root,
+                            fixture,
+                        ).read_bytes()
+                        response_index = _build_recorded_response_index(
+                            fixture_bytes
+                        )
+                        assertion = next(
+                            (
+                                str(record["canonical_probe_assertion"])
+                                for record in response_index.get("records", ())
+                                if isinstance(record, Mapping)
+                                and record.get("non_empty") is True
+                                and isinstance(
+                                    record.get("canonical_probe_assertion"),
+                                    str,
+                                )
+                            ),
+                            None,
+                        )
+                    except (OSError, ReplayCapabilityError):
+                        assertion = None
+                    assertions[fixture] = assertion
+                if assertions[fixture] is not None:
+                    normalized_probe["response_contains"] = assertions[fixture]
+                    changed = True
+            normalized_probes.append(normalized_probe)
+        normalized_service["protocol_probes"] = normalized_probes
+        normalized_services.append(normalized_service)
+    if not changed:
+        return dict(raw)
+    normalized_raw = dict(raw)
+    normalized_raw["services"] = normalized_services
+    return normalized_raw
 
 
 def _evidence_source_values(
@@ -2097,6 +3900,14 @@ def _build_recorded_response_index(
             int(record.get("ordinal") or 0),
         )
     )
+    for record in records:
+        record["record_id"] = _recorded_response_record_id(record)
+        canonical_assertion = _canonical_recorded_response_assertion(
+            record.get("value")
+        )
+        if canonical_assertion is not None:
+            record["canonical_probe_assertion"] = canonical_assertion
+            record["selector_policy"] = REPLAY_RESPONSE_SELECTOR_POLICY
     # A trajectory may label the producer operation (for example
     # ``read_file``), while a skill-owned adapter receives a protocol method
     # (for example ``Runtime.evaluate``).  Alias each declared probe operation
@@ -2119,13 +3930,16 @@ def _build_recorded_response_index(
         if source is None:
             continue
         alias = dict(source)
+        alias.pop("record_id", None)
         alias["ordinal"] = len(records)
         alias["operation"] = normalized_operation
         alias["derived_operation"] = True
         alias["source_ordinal"] = source.get("ordinal")
+        alias["source_record_id"] = source.get("record_id")
         alias["payload_path"] = (
             f"{source.get('payload_path', '')}#derived:{normalized_operation}"
         )
+        alias["record_id"] = _recorded_response_record_id(alias)
         records.append(alias)
         operations.append(normalized_operation)
     return {
@@ -2134,6 +3948,156 @@ def _build_recorded_response_index(
         "operations": operations[:64],
         "records": records,
     }
+
+
+def _recorded_response_record_id(record: Mapping[str, Any]) -> str:
+    """Return a stable identity for one immutable response-index record."""
+
+    value = record.get("value")
+    try:
+        value_fingerprint = _json_fingerprint(value)
+    except (TypeError, ValueError):
+        value_fingerprint = _json_fingerprint(str(value))
+    payload = {
+        "gateway_key": record.get("gateway_key"),
+        "operation": record.get("operation"),
+        "payload_path": record.get("payload_path"),
+        "source_ordinal": record.get("source_ordinal", record.get("ordinal")),
+        "value_fingerprint": value_fingerprint,
+    }
+    return "response-record-" + _json_fingerprint(payload).removeprefix("sha256:")
+
+
+def _canonical_recorded_response_assertion(
+    value: Any,
+    *,
+    max_chars: int = REPLAY_CAPABILITY_MAX_RESPONSE_CONTAINS_CHARS,
+) -> str | None:
+    """Select one exact bounded scalar from a recorded response value.
+
+    The selector never truncates.  Compiler declarations, frozen response
+    indexes, conformance, and runtime probes can therefore share one identity
+    and one exact assertion instead of independently guessing a fixture leaf.
+    """
+
+    candidates: set[str] = set()
+    pending: list[tuple[Any, int]] = [(value, 0)]
+    visited = 0
+    while pending and visited < 4096:
+        current, decoded_depth = pending.pop()
+        visited += 1
+        if isinstance(current, Mapping):
+            pending.extend(
+                (nested, decoded_depth)
+                for nested in reversed(list(current.values())[:512])
+            )
+            continue
+        if isinstance(current, (list, tuple)):
+            pending.extend(
+                (nested, decoded_depth)
+                for nested in reversed(list(current)[:512])
+            )
+            continue
+        if isinstance(current, bool) or current is None:
+            continue
+        if isinstance(current, str):
+            normalized = current.strip()
+            if (
+                decoded_depth < 4
+                and normalized[:1] in {"{", "["}
+                and len(normalized) <= 64 * 1024
+            ):
+                try:
+                    decoded = json.loads(normalized)
+                except json.JSONDecodeError:
+                    decoded = None
+                if isinstance(decoded, (Mapping, list)):
+                    pending.append((decoded, decoded_depth + 1))
+            if normalized and len(normalized) <= max_chars:
+                candidates.add(normalized)
+            continue
+        if isinstance(current, (int, float)):
+            encoded = json.dumps(current, ensure_ascii=False)
+            if len(encoded) <= max_chars:
+                candidates.add(encoded)
+    if not candidates:
+        return None
+    # Prefer a discriminative recorded value while retaining deterministic
+    # ordering for equal-sized values.  The digest avoids value-dependent
+    # lexical preferences and is never exposed in public diagnostics.
+    return max(
+        candidates,
+        key=lambda item: (
+            len(item),
+            hashlib.sha256(item.encode("utf-8")).hexdigest(),
+        ),
+    )
+
+
+def _probe_operation(probe: ReplayProtocolProbe) -> str | None:
+    request_text = probe.request_text
+    if not isinstance(request_text, str) or not request_text.strip():
+        return None
+    try:
+        request = json.loads(request_text)
+    except (TypeError, json.JSONDecodeError):
+        return None
+    return _fixture_operation_hint(request)
+
+
+def _framework_bind_protocol_probes(
+    probes: Sequence[ReplayProtocolProbe],
+    *,
+    fixture_bytes: bytes,
+) -> tuple[ReplayProtocolProbe, ...]:
+    """Bind data-plane probes to immutable framework response records."""
+
+    observed_operations = tuple(
+        dict.fromkeys(
+            operation
+            for probe in probes
+            if (operation := _probe_operation(probe)) is not None
+        )
+    )
+    response_index = _build_recorded_response_index(
+        fixture_bytes,
+        observed_operations=observed_operations,
+    )
+    records = tuple(
+        record
+        for record in response_index.get("records", ())
+        if isinstance(record, Mapping)
+        and record.get("non_empty") is True
+        and isinstance(record.get("record_id"), str)
+        and isinstance(record.get("canonical_probe_assertion"), str)
+    )
+    if not records:
+        return tuple(probes)
+    bound: list[ReplayProtocolProbe] = []
+    for probe in probes:
+        if (
+            probe.response_contains is None
+            or (probe.kind == "http" and probe.validate_advertised_websockets)
+        ):
+            bound.append(probe)
+            continue
+        operation = _probe_operation(probe)
+        record = next(
+            (
+                item
+                for item in records
+                if operation is not None and item.get("operation") == operation
+            ),
+            records[0],
+        )
+        bound.append(
+            replace(
+                probe,
+                response_contains=str(record["canonical_probe_assertion"]),
+                response_record_id=str(record["record_id"]),
+            )
+        )
+    return tuple(bound)
 
 
 def _runtime_response_record_evidence(value: Any) -> tuple[int, bool]:
@@ -2438,6 +4402,7 @@ def _validate_compile_result_service_schema(raw: Any) -> None:
         )
     violations: list[SchemaFieldViolation] = []
     first_invalid_transport: object | None = None
+    semantic_failure_codes: set[str] = set()
     for service in raw:
         if not isinstance(service, Mapping):
             violations.append(
@@ -2456,7 +4421,7 @@ def _validate_compile_result_service_schema(raw: Any) -> None:
                     schema_layer="compile_result",
                     field_path="services[*].transport",
                     rule="required",
-                    expected=(),
+                    expected=REPLAY_CAPABILITY_SUPPORTED_SERVICE_TRANSPORTS,
                     value=None,
                 )
             )
@@ -2492,14 +4457,24 @@ def _validate_compile_result_service_schema(raw: Any) -> None:
                     rule=(
                         "required" if "kind" not in readiness else "enum"
                     ),
-                    expected=(
-                        ()
-                        if "kind" not in readiness
-                        else REPLAY_CAPABILITY_SUPPORTED_READINESS_KINDS
-                    ),
+                    expected=REPLAY_CAPABILITY_SUPPORTED_READINESS_KINDS,
                     value=readiness.get("kind"),
                 )
             )
+        elif (
+            "path" in readiness
+            and (
+                not isinstance(readiness.get("path"), str)
+                or not str(readiness.get("path")).startswith("/")
+            )
+        ):
+            violations.append(
+                _absolute_path_violation(
+                    field_path="services[*].readiness.path",
+                    value=readiness.get("path"),
+                )
+            )
+            semantic_failure_codes.add("readiness_path_invalid")
         raw_probes = service.get("protocol_probes")
         if raw_probes is None:
             continue
@@ -2538,6 +4513,32 @@ def _validate_compile_result_service_schema(raw: Any) -> None:
                             else REPLAY_CAPABILITY_SUPPORTED_PROTOCOL_PROBE_KINDS
                         ),
                         value=probe.get("kind"),
+                    )
+                )
+            probe_path = probe.get("path", "/")
+            if not isinstance(probe_path, str) or not probe_path.startswith("/"):
+                violations.append(
+                    _absolute_path_violation(
+                        field_path="services[*].protocol_probes[*].path",
+                        value=probe_path,
+                    )
+                )
+                semantic_failure_codes.add("protocol_probe_path_invalid")
+            validate_advertised = probe.get(
+                "validate_advertised_websockets",
+                False,
+            )
+            if not isinstance(validate_advertised, bool):
+                violations.append(
+                    _schema_field_violation(
+                        schema_layer="compile_result",
+                        field_path=(
+                            "services[*].protocol_probes[*]."
+                            "validate_advertised_websockets"
+                        ),
+                        rule="type",
+                        expected=("boolean",),
+                        value=validate_advertised,
                     )
                 )
             for field_name, max_chars in (
@@ -2583,6 +4584,59 @@ def _validate_compile_result_service_schema(raw: Any) -> None:
                             value=field_value,
                         )
                     )
+            if probe.get("kind") in {"tcp", "websocket"}:
+                for required_field in ("request_text", "response_contains"):
+                    if probe.get(required_field) is None:
+                        violations.append(
+                            _schema_field_violation(
+                                schema_layer="compile_result",
+                                field_path=(
+                                    "services[*].protocol_probes[*]."
+                                    + required_field
+                                ),
+                                rule="required",
+                                expected=(),
+                                value=None,
+                            )
+                        )
+        if service.get("transport") != "skill_runtime":
+            continue
+        probe_mappings = tuple(
+            probe for probe in raw_probes if isinstance(probe, Mapping)
+        )
+        if isinstance(readiness, Mapping):
+            readiness_kind = readiness.get("kind")
+            readiness_path = readiness.get("path", "/")
+            duplicates = tuple(
+                probe
+                for probe in probe_mappings
+                if probe.get("kind") == readiness_kind
+                and probe.get("path", "/") == readiness_path
+            )
+            if duplicates:
+                violations.append(
+                    _readiness_duplicate_violation(
+                        readiness_path,
+                        occurrence_count=len(duplicates),
+                    )
+                )
+                semantic_failure_codes.add(
+                    "protocol_probe_duplicates_readiness"
+                )
+        advertises_websocket = any(
+            probe.get("kind") == "http"
+            and probe.get("validate_advertised_websockets") is True
+            for probe in probe_mappings
+        )
+        has_websocket_data_plane = any(
+            probe.get("kind") == "websocket"
+            and bool(probe.get("request_text"))
+            and bool(probe.get("response_contains"))
+            for probe in probe_mappings
+        )
+        if advertises_websocket and not has_websocket_data_plane:
+            violations.append(_advertised_websocket_probe_violation())
+            semantic_failure_codes.add("advertised_websocket_probe_missing")
     if not violations:
         return
     message = "replay capability result violates schema field constraints"
@@ -2600,7 +4654,33 @@ def _validate_compile_result_service_schema(raw: Any) -> None:
             "protocol probe response_contains must be non-empty and at most "
             f"{REPLAY_CAPABILITY_MAX_RESPONSE_CONTAINS_CHARS} characters"
         )
-    _raise_schema_field_error(message, tuple(violations))
+    if len(semantic_failure_codes) == 1:
+        semantic_code = next(iter(semantic_failure_codes))
+        if semantic_code == "advertised_websocket_probe_missing":
+            message = (
+                "advertised WebSocket requires a websocket data-plane "
+                "protocol probe"
+            )
+        elif semantic_code == "protocol_probe_duplicates_readiness":
+            message = "protocol_probes must not duplicate readiness probes"
+        elif semantic_code == "protocol_probe_path_invalid":
+            message = "protocol probe path must start with /"
+        elif semantic_code == "readiness_path_invalid":
+            message = "HTTP readiness path must start with /"
+    else:
+        semantic_code = "compile_result_constraints_failed"
+    _raise_schema_field_error(
+        message,
+        tuple(violations),
+        extra_details=(
+            {
+                "code": semantic_code,
+                "constraint_failure_codes": sorted(semantic_failure_codes),
+            }
+            if semantic_failure_codes
+            else None
+        ),
+    )
 
 
 def _parse_services(
@@ -2612,10 +4692,12 @@ def _parse_services(
     handled_requirements: set[str],
     fixture_evidence_refs: Mapping[str, tuple[str, ...]],
     requirement_evidence_refs: Mapping[str, tuple[str, ...]],
+    requirements: Mapping[str, ReplayCapabilityRequirement] | None = None,
 ) -> tuple[ReplayServiceSpec, ...]:
     _validate_compile_result_service_schema(raw)
     if not isinstance(raw, list):
         raise AssertionError("schema validation did not reject invalid services")
+    _validate_conditional_service_fields(raw)
     services: list[ReplayServiceSpec] = []
     seen: set[str] = set()
     fixture_probe_violations: list[dict[str, object]] = []
@@ -2651,12 +4733,76 @@ def _parse_services(
         if not set(fixture_evidence_refs[response_fixture]).issubset(
             requirement_evidence_refs[requirement_id]
         ):
-            raise ReplayCapabilityError(
-                "replay service fixture evidence belongs to a different requirement"
+            _raise_schema_field_error(
+                "replay service fixture evidence belongs to a different requirement",
+                (
+                    _schema_field_violation(
+                        schema_layer="compile_result",
+                        field_path="services[*].response_fixture",
+                        rule="enum",
+                        expected=("requirement_scoped_fixture_provenance",),
+                        value=response_fixture,
+                        value_domain="source_behavior",
+                        required_operations=(
+                            "bind_fixture_to_requirement_evidence_subset",
+                            "allocate_requirement_qualified_fixture_when_needed",
+                        ),
+                        forbidden_operations=(
+                            "reuse_fixture_with_foreign_requirement_provenance",
+                        ),
+                    ),
+                ),
+                extra_details={
+                    "code": "service_fixture_requirement_mismatch",
+                    "required_fixture_strategy": (
+                        "reuse a fixture only when its proven evidence refs are "
+                        "a subset of every consuming requirement; otherwise emit "
+                        "a requirement-qualified fixture path"
+                    ),
+                },
             )
         runtime_entrypoint_raw = value.get("runtime_entrypoint")
         runtime_entrypoint: str | None = None
         protocol_probes: tuple[ReplayProtocolProbe, ...] = ()
+        readiness_raw = value.get("readiness", {})
+        if not isinstance(readiness_raw, dict):
+            raise ReplayCapabilityError(
+                f"replay service readiness must be an object: {service_id}"
+            )
+        kind = _required_string(readiness_raw, "kind", "readiness")
+        if kind not in _SUPPORTED_READINESS_KINDS:
+            raise ReplayCapabilityError(f"unsupported readiness kind: {kind}")
+        timeout = readiness_raw.get("timeout_seconds", 10.0)
+        if (
+            not isinstance(timeout, (int, float))
+            or isinstance(timeout, bool)
+            or timeout <= 0
+            or timeout > _MAX_READINESS_TIMEOUT_SECONDS
+        ):
+            raise ReplayCapabilityError(
+                "readiness timeout_seconds must be between 0 and "
+                f"{_MAX_READINESS_TIMEOUT_SECONDS}"
+            )
+        path = readiness_raw.get("path", "/")
+        if not isinstance(path, str) or not path.startswith("/"):
+            _raise_schema_field_error(
+                "HTTP readiness path must start with /",
+                (
+                    _absolute_path_violation(
+                        field_path="services[*].readiness.path",
+                        value=path,
+                    ),
+                ),
+                extra_details={
+                    "code": "readiness_path_invalid",
+                    "service_id": service_id,
+                },
+            )
+        readiness = ReplayReadinessProbe(
+            kind=kind,
+            timeout_seconds=float(timeout),
+            path=path,
+        )
         if transport == "skill_runtime":
             runtime_entrypoint = _normalize_runtime_entrypoint(
                 _required_string(value, "runtime_entrypoint", "service"),
@@ -2670,10 +4816,40 @@ def _parse_services(
                 value.get("protocol_probes"),
                 service_id=service_id,
             )
+            protocol_probes = _framework_bind_http_requirement_probe_path(
+                protocol_probes,
+                requirement=(
+                    requirements.get(requirement_id)
+                    if requirements is not None
+                    else None
+                ),
+            )
             if not any(_is_data_plane_probe(item) for item in protocol_probes):
                 raise ReplayCapabilityError(
                     "skill runtime service requires a data-plane protocol probe: "
                     f"{service_id}"
+                )
+            duplicate_readiness_probes = tuple(
+                probe
+                for probe in protocol_probes
+                if probe.kind == readiness.kind and probe.path == readiness.path
+            )
+            if duplicate_readiness_probes:
+                _raise_schema_field_error(
+                    "protocol_probes must not duplicate readiness probes: "
+                    f"{service_id} kind={readiness.kind} path={readiness.path}",
+                    (
+                        _readiness_duplicate_violation(
+                            value=readiness.path,
+                            occurrence_count=len(duplicate_readiness_probes),
+                        ),
+                    ),
+                    extra_details={
+                        "code": "protocol_probe_duplicates_readiness",
+                        "service_id": service_id,
+                        "probe_kind": readiness.kind,
+                        "probe_path": readiness.path,
+                    },
                 )
             if any(
                 item.kind == "http" and item.validate_advertised_websockets
@@ -2682,14 +4858,25 @@ def _parse_services(
                 item.kind == "websocket" and _is_data_plane_probe(item)
                 for item in protocol_probes
             ):
-                raise ReplayCapabilityError(
+                _raise_schema_field_error(
                     "advertised WebSocket requires a websocket data-plane protocol "
-                    f"probe: {service_id}"
+                    f"probe: {service_id}",
+                    (
+                        _advertised_websocket_probe_violation(),
+                    ),
+                    extra_details={
+                        "code": "advertised_websocket_probe_missing",
+                        "service_id": service_id,
+                    },
                 )
             fixture_bytes = _resolve_output_file(
                 output_root,
                 response_fixture,
             ).read_bytes()
+            protocol_probes = _framework_bind_protocol_probes(
+                protocol_probes,
+                fixture_bytes=fixture_bytes,
+            )
             for probe in protocol_probes:
                 if (
                     probe.response_contains is not None
@@ -2718,32 +4905,10 @@ def _parse_services(
                             "declared_response_shape": "utf8_text",
                         }
                     )
-        elif runtime_entrypoint_raw is not None:
-            raise ReplayCapabilityError(
-                "fixture service cannot declare a runtime entrypoint"
+        elif runtime_entrypoint_raw is not None:  # pragma: no cover - prevalidated
+            raise AssertionError(
+                "conditional service validation accepted fixture runtime entrypoint"
             )
-        readiness_raw = value.get("readiness", {})
-        if not isinstance(readiness_raw, dict):
-            raise ReplayCapabilityError(
-                f"replay service readiness must be an object: {service_id}"
-            )
-        kind = _required_string(readiness_raw, "kind", "readiness")
-        if kind not in _SUPPORTED_READINESS_KINDS:
-            raise ReplayCapabilityError(f"unsupported readiness kind: {kind}")
-        timeout = readiness_raw.get("timeout_seconds", 10.0)
-        if (
-            not isinstance(timeout, (int, float))
-            or isinstance(timeout, bool)
-            or timeout <= 0
-            or timeout > _MAX_READINESS_TIMEOUT_SECONDS
-        ):
-            raise ReplayCapabilityError(
-                "readiness timeout_seconds must be between 0 and "
-                f"{_MAX_READINESS_TIMEOUT_SECONDS}"
-            )
-        path = readiness_raw.get("path", "/")
-        if not isinstance(path, str) or not path.startswith("/"):
-            raise ReplayCapabilityError("HTTP readiness path must start with /")
         services.append(
             ReplayServiceSpec(
                 service_id=service_id,
@@ -2751,12 +4916,11 @@ def _parse_services(
                 transport=transport,
                 response_fixture=response_fixture,
                 runtime_entrypoint=runtime_entrypoint,
-                readiness=ReplayReadinessProbe(
-                    kind=kind,
-                    timeout_seconds=float(timeout),
-                    path=path,
-                ),
+                readiness=readiness,
                 protocol_probes=protocol_probes,
+                task_entry_path=_select_runtime_task_entry_path(
+                    protocol_probes
+                ),
             )
         )
     if fixture_probe_violations:
@@ -2801,6 +4965,157 @@ def _parse_services(
     return tuple(sorted(services, key=lambda item: item.service_id))
 
 
+def _framework_bind_http_requirement_probe_path(
+    probes: Sequence[ReplayProtocolProbe],
+    *,
+    requirement: ReplayCapabilityRequirement | None,
+) -> tuple[ReplayProtocolProbe, ...]:
+    """Bind one generic root data probe to its typed HTTP requirement path."""
+
+    if requirement is None or requirement.kind != "http_resource":
+        return tuple(probes)
+    identifier = requirement.identifier
+    if not isinstance(identifier, str) or not identifier.strip():
+        return tuple(probes)
+    parsed = urlsplit(identifier)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        return tuple(probes)
+    expected_path = parsed.path or "/"
+    decoded_path = unquote(expected_path)
+    if "\\" in decoded_path or any(
+        part == ".." for part in PurePosixPath(decoded_path).parts
+    ):
+        _raise_schema_field_error(
+            "HTTP replay requirement path must be canonical before probe binding",
+            (
+                _schema_field_violation(
+                    schema_layer="replay_requirement",
+                    field_path="identifier.path",
+                    rule="enum",
+                    expected=("canonical_absolute_path",),
+                    value=expected_path,
+                ),
+            ),
+            extra_details={
+                "code": "http_requirement_path_not_canonical",
+                "requirement_id": requirement.requirement_id,
+            },
+        )
+    data_plane_indexes = [
+        index
+        for index, probe in enumerate(probes)
+        if probe.kind == "http"
+        and probe.response_contains is not None
+        and not probe.validate_advertised_websockets
+    ]
+    if len(data_plane_indexes) != 1:
+        return tuple(probes)
+    target_index = data_plane_indexes[0]
+    target = probes[target_index]
+    if target.path != "/" or expected_path == "/":
+        return tuple(probes)
+    bound = list(probes)
+    bound[target_index] = replace(target, path=expected_path)
+    return tuple(bound)
+
+
+def _select_runtime_task_entry_path(
+    probes: Sequence[ReplayProtocolProbe],
+) -> str | None:
+    """Choose the HTTP path published by endpoint adaptation.
+
+    Root remains preferred for base-URL runtimes. A single non-root HTTP probe
+    is also safe: preflight executes that exact branch and adaptation exposes
+    the same URL to the task. Multiple non-root entries are ambiguous.
+    """
+
+    entries = tuple(
+        probe
+        for probe in probes
+        if probe.kind == "http" and bool(probe.response_contains)
+    )
+    if any(probe.path == "/" for probe in entries):
+        return "/"
+    unique_paths = tuple(dict.fromkeys(probe.path for probe in entries))
+    if len(unique_paths) == 1:
+        return unique_paths[0]
+    return None
+
+
+_SERVICE_CONDITIONAL_PRESENCE_RULES = (
+    {
+        "selector_field": "transport",
+        "selector_values": ("skill_runtime",),
+        "subject_field": "runtime_entrypoint",
+        "required": True,
+    },
+    {
+        "selector_field": "transport",
+        "selector_values": ("http_fixture", "tcp_fixture"),
+        "subject_field": "runtime_entrypoint",
+        "required": False,
+    },
+)
+
+
+def _validate_conditional_service_fields(
+    services: Sequence[Mapping[str, Any]],
+) -> None:
+    """Validate declarative cross-field presence rules before fail-fast parsing."""
+
+    violations: list[SchemaFieldViolation] = []
+    relationships: list[dict[str, object]] = []
+    for rule in _SERVICE_CONDITIONAL_PRESENCE_RULES:
+        selector_field = str(rule["selector_field"])
+        selector_values = tuple(str(item) for item in rule["selector_values"])
+        subject_field = str(rule["subject_field"])
+        required = rule["required"] is True
+        relationships.append(
+            {
+                "selector_field": selector_field,
+                "selector_values": list(selector_values),
+                "subject_field": subject_field,
+                "presence": "required" if required else "forbidden",
+            }
+        )
+        for service in services:
+            selector = service.get(selector_field)
+            if selector not in selector_values:
+                continue
+            subject_declared = (
+                subject_field in service
+                and service.get(subject_field) is not None
+            )
+            subject_present = bool(
+                subject_declared and service.get(subject_field) != ""
+            )
+            condition_satisfied = (
+                subject_present if required else not subject_declared
+            )
+            if condition_satisfied:
+                continue
+            predicate = f"{selector_field}:{selector}"
+            field_path = f"services[*@{predicate}].{subject_field}"
+            violations.append(
+                _schema_field_violation(
+                    schema_layer="compile_result",
+                    field_path=field_path,
+                    rule="required" if required else "type",
+                    expected=() if required else ("null",),
+                    value=service.get(subject_field),
+                )
+            )
+    if violations:
+        _raise_schema_field_error(
+            "compile-result service fields violate conditional presence rules",
+            violations,
+            extra_details={
+                "code": "service_conditional_field_validation_failed",
+                "conditional_field_rules": relationships,
+            },
+        )
+
+
 def _parse_protocol_probes(
     raw: Any,
     *,
@@ -2835,7 +5150,45 @@ def _parse_protocol_probes(
             )
         path = value.get("path", "/")
         if not isinstance(path, str) or not path.startswith("/"):
-            raise ReplayCapabilityError("HTTP protocol probe path must start with /")
+            _raise_schema_field_error(
+                "HTTP protocol probe path must start with /",
+                (
+                    _absolute_path_violation(
+                        field_path="services[*].protocol_probes[*].path",
+                        value=path,
+                    ),
+                ),
+                extra_details={
+                    "code": "protocol_probe_path_invalid",
+                    "service_id": service_id,
+                    "probe_kind": kind,
+                },
+            )
+        decoded_path = unquote(path)
+        if kind == "http" and (
+            (path != "/" and path.endswith("/"))
+            or "?" in path
+            or "#" in path
+            or "\\" in decoded_path
+            or any(part == ".." for part in PurePosixPath(decoded_path).parts)
+        ):
+            _raise_schema_field_error(
+                "HTTP protocol probe path must be canonical",
+                (
+                    _schema_field_violation(
+                        schema_layer="compile_result",
+                        field_path="services[*].protocol_probes[*].path",
+                        rule="enum",
+                        expected=("canonical_absolute_path",),
+                        value=path,
+                    ),
+                ),
+                extra_details={
+                    "code": "protocol_probe_path_not_canonical",
+                    "service_id": service_id,
+                    "probe_kind": kind,
+                },
+            )
         validate_links = value.get("validate_advertised_websockets", False)
         if not isinstance(validate_links, bool):
             raise ReplayCapabilityError(
@@ -3060,6 +5413,13 @@ def _freeze_compile_result(
             )
         except OSError:
             response_index = {"records": []}
+        _require_recorded_response_fixture_for_sidecar_runtime(
+            capability=capability,
+            request=request,
+            result=result,
+            fixture=relative,
+            response_index=response_index,
+        )
         if response_index.get("records"):
             response_index_path = destination.with_suffix(".responses.json")
             _write_json(response_index_path, response_index)
@@ -3072,6 +5432,7 @@ def _freeze_compile_result(
         shutil.copyfile(source, destination, follow_symlinks=False)
         destination.chmod(source.stat().st_mode & 0o777)
         frozen_runtime.append(_frozen_file(destination, relative))
+    _validate_frozen_python_runtime(runtime_root, frozen_runtime)
     payload = {
         "schema_version": REPLAY_CAPABILITY_RESULT_SCHEMA_VERSION,
         "capability_id": result.capability_id,
@@ -3084,7 +5445,10 @@ def _freeze_compile_result(
         "fixtures": [asdict(item) for item in frozen_fixtures],
         "runtime_files": [asdict(item) for item in frozen_runtime],
         "endpoint_replacements": result.endpoint_replacements,
-        "services": [asdict(item) for item in result.services],
+        "services": [
+            _replay_service_fingerprint_payload(item)
+            for item in result.services
+        ],
         "deterministic": result.deterministic,
         "concurrency_mode": result.concurrency_mode,
         "resource_key": result.resource_key,
@@ -3342,6 +5706,80 @@ def replay_process_resource_limiter(
             )
 
     return limit
+
+
+_RESOURCE_LIMIT_EXEC_CODE = r"""
+import json
+import os
+import resource
+import sys
+
+limits = json.loads(sys.argv[1])
+command = json.loads(sys.argv[2])
+
+
+def finite(value):
+    return value not in (-1, resource.RLIM_INFINITY) and value > 0
+
+
+def apply_limit(kind, soft, hard=None):
+    current_soft, current_hard = resource.getrlimit(kind)
+    requested_hard = soft if hard is None else hard
+    effective_hard = requested_hard
+    if finite(current_hard):
+        effective_hard = min(effective_hard, current_hard)
+    effective_soft = min(soft, effective_hard)
+    resource.setrlimit(kind, (effective_soft, effective_hard))
+
+
+apply_limit(resource.RLIMIT_FSIZE, limits["file_bytes"])
+apply_limit(resource.RLIMIT_CPU, limits["cpu_seconds"], limits["cpu_seconds"] + 1)
+if sys.platform != "darwin" and hasattr(resource, "RLIMIT_AS"):
+    apply_limit(resource.RLIMIT_AS, limits["memory_bytes"])
+if hasattr(resource, "RLIMIT_NPROC"):
+    apply_limit(resource.RLIMIT_NPROC, 32)
+os.execv(command[0], command)
+"""
+
+
+def build_replay_resource_limited_command(
+    command: Sequence[str],
+    *,
+    max_file_bytes: int,
+    max_memory_bytes: int,
+    cpu_seconds: int,
+) -> list[str]:
+    """Apply child limits after exec instead of using ``preexec_fn``.
+
+    Python documents ``preexec_fn`` as unsafe in threaded processes. Replay
+    repetitions intentionally run concurrently, so a child can otherwise hang
+    between fork and exec while appearing alive to the readiness watchdog. A
+    tiny isolated Python launcher installs the same limits in the child and
+    immediately execs the already-sandboxed command.
+    """
+
+    if not command:
+        raise ValueError("resource-limited replay command cannot be empty")
+    if os.name != "posix":
+        return list(command)
+    limits = {
+        "file_bytes": max_file_bytes,
+        "memory_bytes": max_memory_bytes,
+        "cpu_seconds": cpu_seconds,
+    }
+    if any(not isinstance(value, int) or value <= 0 for value in limits.values()):
+        raise ValueError("replay resource limits must be positive integers")
+    resolved_command = list(command)
+    executable = Path(resolved_command[0]).expanduser().resolve()
+    resolved_command[0] = str(executable)
+    return [
+        sys.executable,
+        "-I",
+        "-c",
+        _RESOURCE_LIMIT_EXEC_CODE,
+        json.dumps(limits, sort_keys=True, separators=(",", ":")),
+        json.dumps(resolved_command, separators=(",", ":")),
+    ]
 
 
 def replay_process_memory_bytes(process_id: int) -> int:

@@ -21,12 +21,14 @@ def _usage() -> str:
   /optimize --from-source <file-or-directory> --source-ingestor <registered-name> --target <target>
   /optimize --frozen-ingestion-id <id> --semantic-evidence-approval <approval.json> --semantic-qualification-report <report.json> --apply auto_verified
   /optimize --from-trajectory <trajectory.log> --apply proposal [--target <target>]
+  /optimize --from-trajectory <trajectory.log> --regression-benchmark <regression.log> --apply verified_only --target <target> --judge-agent <agent.md>
   /optimize --from-trajectory <trajectory.log> --apply auto_verified --new-skill-policy auto_verified --judge-agent <agent.md>
   /optimize --from-trajectory <multi-task-trajectory.log> --include-prior-runs --apply proposal
   /optimize --from-trajectory-set <trajectory-set.json> --apply auto_verified --judge-agent <agent.md>
   /optimize --from-trajectory-set <trajectory-set.json> --include-prior-runs --apply proposal
   /optimize --from-run <run-id-or-path> --rerun-evaluator --apply auto_verified --judge-agent <agent.md>
   /optimize --resume-campaign <campaign-id>
+  /optimize --from-trajectory <trajectory.log> --apply verified_only --max-run-tokens 1000000
   /optimize --target skill:<name> --dataset <eval.jsonl> --apply proposal
   /optimize --drain-pending
 
@@ -34,6 +36,7 @@ Examples:
   /optimize --from-source ~/Documents/domain-data --ingestion-only
   /optimize --frozen-ingestion-id <id> --semantic-evidence-approval ./approval.json --semantic-qualification-report ./qualification.json --apply auto_verified
   /optimize --from-trajectory ~/Documents/task.log --apply proposal
+  /optimize --from-trajectory ~/Documents/task.log --apply verified_only --target skill:media_comprehension --judge-agent ~/Documents/agent.md
   /optimize --from-trajectory ~/Documents/task.log --apply auto_verified --judge-agent ~/Documents/agent.md
   /optimize --from-trajectory-set ./trajectory-set.json --apply auto_verified --judge-agent ~/Documents/agent.md
   /optimize --from-run cli-123456789012 --rerun-evaluator --apply auto_verified --judge-agent ~/Documents/agent.md
@@ -74,9 +77,44 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--from-run", dest="from_run")
     parser.add_argument("--rerun-evaluator", action="store_true", dest="rerun_evaluator")
     parser.add_argument("--batch-config", dest="batch_config")
+    parser.add_argument(
+        "--regression-benchmark",
+        action="append",
+        default=[],
+        dest="regression_benchmarks",
+    )
+    parser.add_argument(
+        "--no-challenger",
+        action="store_false",
+        dest="challenger_enabled",
+        default=True,
+    )
+    parser.add_argument(
+        "--challenger-max-cases",
+        type=int,
+        default=2,
+        dest="challenger_max_cases",
+    )
     parser.add_argument("--iterations", type=int)
     parser.add_argument("--apply")
     parser.add_argument("--max-improvement-cycles", type=int, default=3, dest="max_improvement_cycles")
+    parser.add_argument(
+        "--max-run-tokens",
+        "--total-run-token-budget",
+        type=int,
+        dest="total_run_token_budget",
+    )
+    parser.add_argument("--max-run-cost-usd", type=float, dest="max_run_cost_usd")
+    parser.add_argument(
+        "--max-run-wall-seconds",
+        type=float,
+        dest="max_run_wall_seconds",
+    )
+    parser.add_argument(
+        "--per-attempt-replay-token-limit",
+        type=int,
+        dest="per_attempt_replay_token_limit",
+    )
     parser.add_argument("--resume-campaign", dest="resume_campaign")
     parser.add_argument(
         "--new-skill-policy",
@@ -89,11 +127,69 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--judge-backend-ref", dest="judge_backend_ref")
     parser.add_argument("--judge-model-profile", dest="judge_model_profile")
     parser.add_argument("--replay-timeout", type=int, dest="replay_timeout_seconds")
+    parser.add_argument(
+        "--replay-total-timeout",
+        type=int,
+        dest="replay_total_timeout_seconds",
+        help="Hard wall-time deadline for one complete paired replay.",
+    )
     parser.add_argument("--replay-max-runs", type=int, dest="replay_max_steps")
     parser.add_argument("--judge-repetitions", type=int, dest="judge_repetitions")
     parser.add_argument("--judge-timeout", type=int, dest="judge_timeout_seconds")
     parser.add_argument("--baseline-replay-repetitions", type=int, dest="baseline_replay_repetitions")
     parser.add_argument("--candidate-replay-repetitions", type=int, dest="candidate_replay_repetitions")
+    parser.add_argument(
+        "--measurement-mode",
+        choices=("off", "shadow", "advisory", "required"),
+        default=None,
+        dest="measurement_mode",
+    )
+    parser.add_argument(
+        "--measurement-primary-metric",
+        default="task_success",
+        dest="measurement_primary_metric",
+    )
+    parser.add_argument(
+        "--measurement-minimum-effect",
+        type=float,
+        default=0.0,
+        dest="measurement_minimum_effect",
+    )
+    parser.add_argument(
+        "--measurement-confidence-level",
+        type=float,
+        default=0.95,
+        dest="measurement_confidence_level",
+    )
+    parser.add_argument(
+        "--measurement-min-independent-cases",
+        type=int,
+        default=2,
+        dest="measurement_min_independent_cases",
+    )
+    parser.add_argument(
+        "--measurement-bootstrap-samples",
+        type=int,
+        default=2_000,
+        dest="measurement_bootstrap_samples",
+    )
+    parser.add_argument(
+        "--measurement-zero-yield-patience",
+        type=int,
+        default=2,
+        dest="measurement_zero_yield_patience",
+    )
+    parser.add_argument(
+        "--measurement-invalid-control-patience",
+        type=int,
+        default=2,
+        dest="measurement_invalid_control_patience",
+    )
+    parser.add_argument(
+        "--measurement-maximum-interval-width",
+        type=float,
+        dest="measurement_maximum_interval_width",
+    )
     parser.add_argument("--drain-pending", action="store_true", dest="drain_pending")
     parser.add_argument("--help", action="store_true")
     return parser
@@ -120,6 +216,7 @@ class OptimizeCommand(Command):
             "/optimize --from-trajectory": "Run self-evolve from one or more AWorld trajectory log records",
             "/optimize --from-trajectory-set": "Run self-evolve from an advanced explicit trajectory-set file",
             "/optimize --apply auto_verified": "Run verified replay/evaluation before applying",
+            "/optimize --apply verified_only": "Verify in a run-owned isolated target without publishing",
             "/optimize --drain-pending": "Drain pending post-run self-evolve jobs",
         }
 
@@ -147,20 +244,36 @@ class OptimizeCommand(Command):
 
         if args.drain_pending:
             runtime_registry_refresher = _runtime_registry_refresher(context.runtime)
+            runtime_registry_compensator = _runtime_registry_compensator(
+                context.runtime
+            )
             drain_kwargs = {"workspace_root": context.cwd}
             if runtime_registry_refresher is not None:
                 drain_kwargs["runtime_registry_refresher"] = runtime_registry_refresher
+            if runtime_registry_compensator is not None:
+                drain_kwargs["runtime_registry_compensator"] = (
+                    runtime_registry_compensator
+                )
             drained = await asyncio.to_thread(
                 drain_pending_self_evolve_jobs,
                 **drain_kwargs,
             )
             return f"Drained pending self-evolve jobs: {drained}"
 
-        if args.resume_campaign and args.apply not in {None, "auto_verified"}:
-            return "Optimize error: --resume-campaign requires --apply auto_verified"
+        if args.resume_campaign and args.apply not in {
+            None,
+            "auto_verified",
+            "verified_only",
+        }:
+            return (
+                "Optimize error: --resume-campaign requires a verified apply policy"
+            )
 
         try:
             runtime_registry_refresher = _runtime_registry_refresher(context.runtime)
+            runtime_registry_compensator = _runtime_registry_compensator(
+                context.runtime
+            )
             report = await asyncio.to_thread(
                 run_optimize_cli,
                 agent=args.agent,
@@ -186,8 +299,17 @@ class OptimizeCommand(Command):
                 from_run=args.from_run,
                 rerun_evaluator=args.rerun_evaluator,
                 batch_config=args.batch_config,
+                regression_benchmarks=tuple(args.regression_benchmarks),
+                challenger_enabled=args.challenger_enabled,
+                challenger_max_cases=args.challenger_max_cases,
                 iterations=args.iterations,
                 max_improvement_cycles=args.max_improvement_cycles,
+                total_run_token_budget=args.total_run_token_budget,
+                max_run_cost_usd=args.max_run_cost_usd,
+                max_run_wall_seconds=args.max_run_wall_seconds,
+                per_attempt_replay_token_limit=(
+                    args.per_attempt_replay_token_limit
+                ),
                 resume_campaign=args.resume_campaign,
                 apply=args.apply or ("auto_verified" if args.resume_campaign else "proposal"),
                 new_skill_policy=args.new_skill_policy,
@@ -200,10 +322,31 @@ class OptimizeCommand(Command):
                 judge_repetitions=args.judge_repetitions,
                 judge_timeout_seconds=args.judge_timeout_seconds,
                 replay_timeout_seconds=args.replay_timeout_seconds,
+                replay_total_timeout_seconds=args.replay_total_timeout_seconds,
                 replay_max_steps=args.replay_max_steps,
                 baseline_replay_repetitions=args.baseline_replay_repetitions,
                 candidate_replay_repetitions=args.candidate_replay_repetitions,
+                measurement_mode=args.measurement_mode,
+                measurement_primary_metric=args.measurement_primary_metric,
+                measurement_minimum_effect=args.measurement_minimum_effect,
+                measurement_confidence_level=args.measurement_confidence_level,
+                measurement_min_independent_cases=(
+                    args.measurement_min_independent_cases
+                ),
+                measurement_bootstrap_samples=(
+                    args.measurement_bootstrap_samples
+                ),
+                measurement_zero_yield_patience=(
+                    args.measurement_zero_yield_patience
+                ),
+                measurement_invalid_control_patience=(
+                    args.measurement_invalid_control_patience
+                ),
+                measurement_maximum_interval_width=(
+                    args.measurement_maximum_interval_width
+                ),
                 runtime_registry_refresher=runtime_registry_refresher,
+                runtime_registry_compensator=runtime_registry_compensator,
             )
         except (FileNotFoundError, ValueError, KeyError, NotImplementedError) as exc:
             return f"Optimize error: {exc}"
@@ -214,3 +357,12 @@ class OptimizeCommand(Command):
 def _runtime_registry_refresher(runtime):
     refresher = getattr(runtime, "refresh_skill_registry", None)
     return refresher if callable(refresher) else None
+
+
+def _runtime_registry_compensator(runtime):
+    compensator = getattr(
+        runtime,
+        "restore_skill_registry_after_self_evolve",
+        None,
+    )
+    return compensator if callable(compensator) else None

@@ -39,7 +39,10 @@ _CANDIDATE_OUTPUT_TEMPLATE: Mapping[str, object] = {
         "operations": [
             {
                 "op": "replace_section or append_section",
-                "heading": "existing or new Markdown heading",
+                "heading": (
+                    "for replace_section, an exact existing Markdown heading; "
+                    "for a new heading, use append_section"
+                ),
                 "content": "replacement section body",
             }
         ]
@@ -51,7 +54,11 @@ _CANDIDATE_OUTPUT_TEMPLATE: Mapping[str, object] = {
     "addressed_improvement_signal_ids": [],
     "files": [
         {
-            "path": "replay/<relative-path>",
+            "path": (
+                "replay/<relative-path>; every added or changed package file must "
+                "be included, and every concrete replay/... path named by content "
+                "must either exist in target_package_inventory or be upserted here"
+            ),
             "operation": "upsert or delete",
             "content": "UTF-8 text for upsert",
             "executable": False,
@@ -208,7 +215,16 @@ def merge_candidate_repair_output(
     runs on the merged object immediately afterwards.
     """
 
-    initial = _candidate_payload_fields(_decode_single_json_object(invalid_output))
+    try:
+        initial = _candidate_payload_fields(
+            _decode_single_json_object(invalid_output)
+        )
+    except CandidateProtocolError as decode_error:
+        if decode_error.code == "multiple_json_objects":
+            # There is no authoritative initial package to merge. The bounded
+            # repair response is the only unambiguous candidate object.
+            return repaired_output
+        raise
     repaired = _candidate_payload_fields(_decode_single_json_object(repaired_output))
     if getattr(error, "field_path", None) == (
         "addressed_improvement_signal_ids"
@@ -287,15 +303,12 @@ def _decode_single_json_object(raw_output: Any) -> dict[str, Any]:
     except json.JSONDecodeError:
         if text.startswith("{"):
             if _has_multiple_top_level_objects(text):
-                raise CandidateProtocolError(
-                    "multiple_json_objects",
-                    "candidate response must contain exactly one JSON object",
-                    repairable=False,
-                )
-            try:
-                decoded = json_repair.repair_json(text, return_objects=True)
-            except Exception:
-                decoded = _extract_one_surrounded_object(text)
+                decoded = _extract_unambiguous_candidate_object(text)
+            else:
+                try:
+                    decoded = json_repair.repair_json(text, return_objects=True)
+                except Exception:
+                    decoded = _extract_one_surrounded_object(text)
         else:
             decoded = _extract_one_surrounded_object(text)
     if not isinstance(decoded, Mapping):
@@ -304,6 +317,49 @@ def _decode_single_json_object(raw_output: Any) -> dict[str, Any]:
             "candidate response must contain one JSON object",
         )
     return dict(decoded)
+
+
+def _extract_unambiguous_candidate_object(text: str) -> Mapping[str, Any]:
+    """Recover one candidate object from harmless structured model chatter.
+
+    Models occasionally emit a small planning/diagnostic JSON object before the
+    actual candidate package.  Requiring another model call for that purely
+    representational defect makes the repair frontier depend on the repair
+    call's formatting.  Extraction remains fail-closed: two candidate-shaped
+    objects are ambiguous and still enter the bounded protocol-repair path.
+    """
+
+    decoder = json.JSONDecoder()
+    objects: list[Mapping[str, Any]] = []
+    cursor = 0
+    while cursor < len(text):
+        start = text.find("{", cursor)
+        if start < 0:
+            break
+        try:
+            value, relative_end = decoder.raw_decode(text[start:])
+        except json.JSONDecodeError:
+            cursor = start + 1
+            continue
+        cursor = start + relative_end
+        if isinstance(value, Mapping):
+            objects.append(value)
+
+    candidate_objects = [
+        value for value in objects if _looks_like_candidate_payload(value)
+    ]
+    if len(candidate_objects) == 1:
+        return candidate_objects[0]
+    raise CandidateProtocolError(
+        "multiple_json_objects",
+        "candidate response contains multiple ambiguous JSON objects",
+    )
+
+
+def _looks_like_candidate_payload(value: Mapping[str, Any]) -> bool:
+    envelope = value.get("candidate_output_contract")
+    candidate = envelope if isinstance(envelope, Mapping) else value
+    return any(key in candidate for key in ("content", "patch_intent", "files"))
 
 
 def _has_multiple_top_level_objects(text: str) -> bool:
@@ -361,12 +417,17 @@ def _extract_one_surrounded_object(text: str) -> Mapping[str, Any]:
             "candidate response does not contain a valid JSON object",
         )
     if len(matches) != 1:
-        raise CandidateProtocolError(
-            "multiple_json_objects",
-            "candidate response must contain exactly one JSON object",
-            repairable=False,
-        )
-    start, end, value = matches[0]
+        candidate_matches = [
+            match for match in matches if _looks_like_candidate_payload(match[2])
+        ]
+        if len(candidate_matches) != 1:
+            raise CandidateProtocolError(
+                "multiple_json_objects",
+                "candidate response contains multiple ambiguous JSON objects",
+            )
+        start, end, value = candidate_matches[0]
+    else:
+        start, end, value = matches[0]
     prefix = text[:start].strip()
     suffix = text[end:].strip()
     if (
@@ -404,11 +465,13 @@ def _validate_candidate_payload(
     has_content = isinstance(content, str)
     has_patch_intent = isinstance(patch_intent, Mapping)
     if has_content and has_patch_intent:
-        raise CandidateProtocolError(
-            "ambiguous_candidate_body",
-            "candidate must use exactly one of content or patch_intent",
-            field_path="content|patch_intent",
-        )
+        # Structured-output providers occasionally echo a complete content
+        # projection alongside the requested bounded patch intent.  The
+        # materializer already gives patch_intent precedence; normalize to that
+        # single representation here as well instead of spending the repair
+        # frontier on a harmless provider-shape ambiguity.  The patch still
+        # passes the full syntax and protected-reference validation below.
+        has_content = False
     if not has_content and not has_patch_intent and not has_package_file_delta:
         raise CandidateProtocolError(
             "missing_candidate_body",

@@ -1,6 +1,7 @@
 # coding: utf-8
 # Copyright (c) 2025 inclusionAI.
 import copy
+import math
 import os
 import traceback
 import uuid
@@ -284,13 +285,23 @@ class SelfEvolveConfig(BaseConfig):
     """Disabled-by-default self-evolve configuration for harness optimization."""
 
     mode: Literal["off", "offline", "shadow", "online"] = "off"
-    apply_policy: Literal["proposal", "auto_verified"] = "proposal"
+    measurement_mode: Literal["off", "shadow", "advisory", "required"] = "off"
+    measurement_primary_metric: str = "task_success"
+    measurement_minimum_effect: float = 0.0
+    measurement_confidence_level: float = 0.95
+    measurement_min_independent_cases: int = 2
+    measurement_bootstrap_samples: int = 2_000
+    measurement_zero_yield_patience: int = 2
+    measurement_invalid_control_patience: int = 2
+    measurement_maximum_interval_width: Optional[float] = None
+    replay_total_timeout_seconds: Optional[int] = None
+    apply_policy: Literal["proposal", "auto_verified", "verified_only"] = "proposal"
     inferred_new_skill_policy: Literal[
         "disabled", "draft_only", "auto_verified"
     ] = "auto_verified"
     # ``max_run_tokens`` remains readable for existing configs.  New callers
     # should use the explicit total-run ceiling below.
-    max_run_tokens: int = 500000
+    max_run_tokens: Optional[int] = None
     total_run_token_budget: Optional[int] = None
     per_attempt_replay_token_limit: Optional[int] = None
     max_run_cost_usd: Optional[float] = None
@@ -313,7 +324,7 @@ class SelfEvolveConfig(BaseConfig):
     judge_timeout_seconds: int = 300
     cooldown_seconds: int = 0
     max_iterations: int = 1
-    max_improvement_cycles: int = 3
+    max_improvement_cycles: int = 6
     min_improvement: float = 0.0
     max_background_jobs: int = 1
     auto_apply_target_types: tuple[str, ...] = ("skill",)
@@ -332,13 +343,26 @@ class SelfEvolveConfig(BaseConfig):
         "batch_config",
     )
     regression_benchmarks: tuple[str, ...] = ()
+    challenger_enabled: bool = True
+    challenger_max_cases: int = 2
     require_deterministic_signal_for_verified: bool = True
     requires_post_apply_reevaluation: bool = True
     judge_config: SelfEvolveJudgeConfig = Field(default_factory=SelfEvolveJudgeConfig)
     replay_enabled: bool = True
     replay_timeout_seconds: int = 600
-    replay_max_steps: Optional[int] = 1
+    # Match the direct ``aworld-cli run`` multi-step default.  A single model
+    # turn can issue a tool call but cannot observe its result and synthesize a
+    # terminal answer, which deterministically censors browser/tool replays.
+    replay_max_steps: Optional[int] = None
     replay_candidate_limit: int = 2
+    candidate_screening_max_cases: int = 3
+    # Leave enough implicit search width for multiple evidence-quality repairs
+    # after a near-pass.  Work is still metered in bounded 2M-token cycles and
+    # operators can explicitly lower any frontier; verified apply policies
+    # retain every release gate.
+    max_generated_candidates: int = 24
+    max_full_evaluation_candidates: int = 12
+    max_score_tiebreak_candidates: int = 1
     baseline_replay_repetitions: int = 1
     candidate_replay_repetitions: int = 1
     replay_stability_margin: float = 0.0
@@ -347,10 +371,23 @@ class SelfEvolveConfig(BaseConfig):
     def validate_apply_policy(self) -> "SelfEvolveConfig":
         if self.mode == "online" and self.apply_policy != "auto_verified":
             raise ValueError("online self-evolve requires apply_policy='auto_verified'")
-        if self.apply_policy == "auto_verified" and not self.requires_post_apply_reevaluation:
-            raise ValueError("auto_verified self-evolve requires post-apply re-evaluation")
+        if (
+            self.apply_policy in {"auto_verified", "verified_only"}
+            and not self.requires_post_apply_reevaluation
+        ):
+            raise ValueError(
+                "verified self-evolve policies require post-apply re-evaluation"
+            )
         if self.replay_candidate_limit <= 0:
             raise ValueError("replay_candidate_limit must be positive")
+        if self.candidate_screening_max_cases <= 0:
+            raise ValueError("candidate_screening_max_cases must be positive")
+        if self.max_generated_candidates <= 0:
+            raise ValueError("max_generated_candidates must be positive")
+        if self.max_full_evaluation_candidates <= 0:
+            raise ValueError("max_full_evaluation_candidates must be positive")
+        if self.max_score_tiebreak_candidates < 0:
+            raise ValueError("max_score_tiebreak_candidates must be non-negative")
         if self.baseline_replay_repetitions <= 0:
             raise ValueError("baseline_replay_repetitions must be positive")
         if self.candidate_replay_repetitions <= 0:
@@ -359,8 +396,47 @@ class SelfEvolveConfig(BaseConfig):
             raise ValueError("judge_timeout_seconds must be positive")
         if self.replay_timeout_seconds <= 0:
             raise ValueError("replay_timeout_seconds must be positive")
+        if (
+            self.replay_total_timeout_seconds is not None
+            and self.replay_total_timeout_seconds <= 0
+        ):
+            raise ValueError("replay_total_timeout_seconds must be positive")
         if self.replay_stability_margin < 0:
             raise ValueError("replay_stability_margin must be non-negative")
+        if not self.measurement_primary_metric.strip():
+            raise ValueError("measurement_primary_metric must be non-empty")
+        if not 0 < self.measurement_confidence_level < 1:
+            raise ValueError(
+                "measurement_confidence_level must be between 0 and 1"
+            )
+        if self.measurement_min_independent_cases <= 0:
+            raise ValueError(
+                "measurement_min_independent_cases must be positive"
+            )
+        if not 200 <= self.measurement_bootstrap_samples <= 100_000:
+            raise ValueError(
+                "measurement_bootstrap_samples must be between 200 and 100000"
+            )
+        if not math.isfinite(self.measurement_minimum_effect):
+            raise ValueError("measurement_minimum_effect must be finite")
+        if self.measurement_zero_yield_patience <= 0:
+            raise ValueError("measurement_zero_yield_patience must be positive")
+        if self.measurement_invalid_control_patience <= 0:
+            raise ValueError(
+                "measurement_invalid_control_patience must be positive"
+            )
+        if (
+            self.measurement_maximum_interval_width is not None
+            and (
+                not math.isfinite(self.measurement_maximum_interval_width)
+                or self.measurement_maximum_interval_width < 0
+            )
+        ):
+            raise ValueError(
+                "measurement_maximum_interval_width must be non-negative and finite"
+            )
+        if not 0 < self.challenger_max_cases <= 8:
+            raise ValueError("challenger_max_cases must be between 1 and 8")
         if self.max_improvement_cycles <= 0:
             raise ValueError("max_improvement_cycles must be positive")
         for field_name in (
@@ -393,12 +469,15 @@ class SelfEvolveConfig(BaseConfig):
             if value is not None and value < 0:
                 raise ValueError(f"{field_name} must be non-negative")
         deprecated_mappings = list(self.deprecated_config_mappings)
-        if self.total_run_token_budget is None:
+        if self.total_run_token_budget is None and self.max_run_tokens is not None:
             self.total_run_token_budget = self.max_run_tokens
             deprecated_mappings.append(
                 "max_run_tokens_to_total_run_token_budget"
             )
-        if self.per_attempt_replay_token_limit is None:
+        if (
+            self.per_attempt_replay_token_limit is None
+            and self.max_run_tokens is not None
+        ):
             self.per_attempt_replay_token_limit = self.max_run_tokens
             deprecated_mappings.append(
                 "max_run_tokens_to_per_attempt_replay_token_limit"

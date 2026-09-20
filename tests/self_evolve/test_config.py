@@ -12,13 +12,10 @@ def test_agent_config_disables_self_evolve_by_default() -> None:
     assert config.self_evolve_config.mode == "off"
     assert not hasattr(config.self_evolve_config, "enabled")
     assert not hasattr(config, "optimize")
-    assert config.self_evolve_config.max_run_tokens == 500_000
-    assert config.self_evolve_config.total_run_token_budget == 500_000
-    assert config.self_evolve_config.per_attempt_replay_token_limit == 500_000
-    assert config.self_evolve_config.deprecated_config_mappings == (
-        "max_run_tokens_to_total_run_token_budget",
-        "max_run_tokens_to_per_attempt_replay_token_limit",
-    )
+    assert config.self_evolve_config.max_run_tokens is None
+    assert config.self_evolve_config.total_run_token_budget is None
+    assert config.self_evolve_config.per_attempt_replay_token_limit is None
+    assert config.self_evolve_config.deprecated_config_mappings == ()
     assert config.self_evolve_config.min_eval_cases == 30
     assert config.self_evolve_config.judge_repetitions == 3
     assert config.self_evolve_config.judge_timeout_seconds == 300
@@ -27,14 +24,62 @@ def test_agent_config_disables_self_evolve_by_default() -> None:
     assert config.self_evolve_config.require_deterministic_signal_for_verified is True
     assert config.self_evolve_config.max_iterations == 1
     assert config.self_evolve_config.max_background_jobs == 1
-    assert config.self_evolve_config.max_improvement_cycles == 3
+    assert config.self_evolve_config.max_improvement_cycles == 6
     assert config.self_evolve_config.replay_enabled is True
     assert config.self_evolve_config.replay_timeout_seconds == 600
-    assert config.self_evolve_config.replay_max_steps == 1
+    assert config.self_evolve_config.replay_total_timeout_seconds is None
+    assert config.self_evolve_config.replay_max_steps is None
     assert config.self_evolve_config.replay_candidate_limit == 2
+    assert config.self_evolve_config.candidate_screening_max_cases == 3
+    assert config.self_evolve_config.max_generated_candidates == 24
+    assert config.self_evolve_config.max_full_evaluation_candidates == 12
+    assert config.self_evolve_config.max_score_tiebreak_candidates == 1
     assert config.self_evolve_config.baseline_replay_repetitions == 1
     assert config.self_evolve_config.candidate_replay_repetitions == 1
     assert config.self_evolve_config.replay_stability_margin == 0.0
+    assert config.self_evolve_config.measurement_mode == "off"
+    assert config.self_evolve_config.measurement_primary_metric == "task_success"
+    assert config.self_evolve_config.measurement_minimum_effect == 0.0
+    assert config.self_evolve_config.measurement_confidence_level == 0.95
+    assert config.self_evolve_config.measurement_min_independent_cases == 2
+    assert config.self_evolve_config.measurement_bootstrap_samples == 2_000
+    assert config.self_evolve_config.measurement_zero_yield_patience == 2
+    assert config.self_evolve_config.measurement_invalid_control_patience == 2
+    assert config.self_evolve_config.measurement_maximum_interval_width is None
+
+
+@pytest.mark.parametrize(
+    "mode",
+    ("off", "shadow", "advisory", "required"),
+)
+def test_self_evolve_measurement_modes_parse(mode: str) -> None:
+    assert SelfEvolveConfig(measurement_mode=mode).measurement_mode == mode
+
+
+@pytest.mark.parametrize(
+    ("payload", "message"),
+    [
+        ({"measurement_primary_metric": "  "}, "must be non-empty"),
+        ({"measurement_confidence_level": 0}, "between 0 and 1"),
+        ({"measurement_confidence_level": 1}, "between 0 and 1"),
+        ({"measurement_min_independent_cases": 0}, "must be positive"),
+        ({"measurement_bootstrap_samples": 0}, "between 200 and 100000"),
+        ({"measurement_minimum_effect": float("nan")}, "must be finite"),
+        ({"measurement_zero_yield_patience": 0}, "must be positive"),
+        ({"measurement_invalid_control_patience": 0}, "must be positive"),
+        ({"replay_total_timeout_seconds": 0}, "must be positive"),
+        (
+            {"measurement_maximum_interval_width": -0.1},
+            "must be non-negative and finite",
+        ),
+    ],
+)
+def test_self_evolve_measurement_config_rejects_invalid_values(
+    payload: dict,
+    message: str,
+) -> None:
+    with pytest.raises(ValidationError, match=message):
+        SelfEvolveConfig(**payload)
 
 
 @pytest.mark.parametrize("mode", ["off", "offline", "shadow"])
@@ -49,6 +94,14 @@ def test_self_evolve_online_requires_auto_verified_apply_policy() -> None:
     with pytest.raises(ValidationError, match="online self-evolve requires apply_policy='auto_verified'"):
         SelfEvolveConfig(mode="online")
 
+
+def test_self_evolve_rejects_non_positive_generated_candidate_limit() -> None:
+    with pytest.raises(
+        ValidationError,
+        match="max_generated_candidates must be positive",
+    ):
+        SelfEvolveConfig(max_generated_candidates=0)
+
     config = SelfEvolveConfig(mode="online", apply_policy="auto_verified")
 
     assert config.mode == "online"
@@ -56,9 +109,29 @@ def test_self_evolve_online_requires_auto_verified_apply_policy() -> None:
     assert config.requires_post_apply_reevaluation is True
 
 
+def test_self_evolve_offline_accepts_verified_only_apply_policy() -> None:
+    config = SelfEvolveConfig(mode="offline", apply_policy="verified_only")
+
+    assert config.apply_policy == "verified_only"
+    assert config.requires_post_apply_reevaluation is True
+
+
 def test_self_evolve_config_rejects_non_positive_campaign_cycles() -> None:
     with pytest.raises(ValidationError, match="max_improvement_cycles must be positive"):
         SelfEvolveConfig(max_improvement_cycles=0)
+
+
+@pytest.mark.parametrize("value", (0, 9))
+def test_self_evolve_config_bounds_challenger_cases(value: int) -> None:
+    with pytest.raises(ValidationError, match="challenger_max_cases"):
+        SelfEvolveConfig(challenger_max_cases=value)
+
+
+def test_self_evolve_config_enables_bounded_challenger_by_default() -> None:
+    config = SelfEvolveConfig()
+
+    assert config.challenger_enabled is True
+    assert config.challenger_max_cases == 2
 
 
 @pytest.mark.parametrize(
@@ -101,12 +174,15 @@ def test_self_evolve_budget_fields_parse() -> None:
         auto_apply_target_types=("skill", "prompt-section"),
         require_deterministic_signal_for_verified=False,
         regression_benchmarks=("global",),
+        challenger_enabled=False,
+        challenger_max_cases=4,
         max_iterations=2,
         min_improvement=0.1,
         target_types=("skill", "tool-description"),
         eval_sources=("jsonl", "trajectory_log"),
         max_background_jobs=2,
         replay_timeout_seconds=120,
+        replay_total_timeout_seconds=900,
         replay_max_steps=2,
         replay_candidate_limit=2,
         baseline_replay_repetitions=2,
@@ -138,6 +214,8 @@ def test_self_evolve_budget_fields_parse() -> None:
     assert config.cooldown_seconds == 600
     assert config.auto_apply_target_types == ("skill", "prompt-section")
     assert config.require_deterministic_signal_for_verified is False
+    assert config.challenger_enabled is False
+    assert config.challenger_max_cases == 4
     assert config.regression_benchmarks == ("global",)
     assert config.max_iterations == 2
     assert config.min_improvement == 0.1
@@ -145,6 +223,7 @@ def test_self_evolve_budget_fields_parse() -> None:
     assert config.eval_sources == ("jsonl", "trajectory_log")
     assert config.max_background_jobs == 2
     assert config.replay_timeout_seconds == 120
+    assert config.replay_total_timeout_seconds == 900
     assert config.replay_max_steps == 2
     assert config.replay_candidate_limit == 2
     assert config.baseline_replay_repetitions == 2

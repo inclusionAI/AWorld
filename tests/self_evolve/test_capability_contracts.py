@@ -145,6 +145,7 @@ def test_replay_authoring_contract_is_derived_from_public_protocol_constants() -
         "implement every interaction required by each handled stateful requirement; a readiness-only or discovery-only response is insufficient",
         "if HTTP readiness JSON advertises ws:// URLs, serve their valid WebSocket upgrade on the same allocated listener",
         "declare protocol_probes for every externally advertised protocol entry point; HTTP JSON discovery probes must enable advertised WebSocket validation",
+        "endpoint replacement publishes / when declared, otherwise the sole declared non-root HTTP protocol probe path; multiple non-root HTTP entries are ambiguous and rejected before task rollout",
         "include at least one data-plane probe with expected response content; a health-only probe is invalid",
         "for every runtime_required requirement use skill_runtime, not a static fixture transport",
         "treat fixture bytes as an arbitrary JSON root (object, array, scalar, or null) or non-JSON bytes; normalize the decoded value before mapping-only operations such as .get instead of assuming an object root",
@@ -154,7 +155,7 @@ def test_replay_authoring_contract_is_derived_from_public_protocol_constants() -
         "route Upgrade: websocket through the handler's actual GET dispatch and continue processing required frames; an unregistered helper or handshake-only stub is insufficient",
         "keep an upgraded WebSocket connection open for multiple frames, answer each client ping with a matching pong, then process the declared data request without closing after a one-shot unsolicited frame",
         "preserve opaque request correlation and routing metadata on synchronous responses and on follow-up completion events for multiplexed sessions or channels; matching only the numeric request id is insufficient when the client supplied an additional routing envelope",
-        "write a bounded protocol_trace.jsonl under the supplied scratch directory with one JSON object per line for each received request and emitted response or event; record direction, sequence, message kind, top-level field names, and opaque correlation or routing fields, but omit or redact payload bodies and credentials",
+        "write a bounded protocol_trace.jsonl under the supplied scratch directory with one JSON object per line for each received request and emitted response or event; use the exact v1 keys direction, sequence, kind, fields, and correlation from protocol_trace_schema; do not emit legacy message_kind or top_level_fields aliases; omit or redact payload bodies and credentials",
         "if a protocol handler raises, emit a bounded sanitized terminal trace or stderr diagnostic before closing the connection; do not silently swallow the exception and leave the client with only an incomplete frame",
         "derive responses only from the supplied recorded fixture; use bounded trace context only to infer reusable protocol behavior",
         "do not hard-code task identifiers, case identifiers, original endpoint values, or environment-specific paths",
@@ -162,6 +163,36 @@ def test_replay_authoring_contract_is_derived_from_public_protocol_constants() -
         "do not make outbound network connections",
         "be ready according to the declared readiness probe",
     ]
+    assert contract["runtime_service"]["protocol_trace_schema"] == {
+        "path": "<scratch>/protocol_trace.jsonl",
+        "format": "json_lines",
+        "required_record_fields": [
+            "direction",
+            "sequence",
+            "kind",
+            "fields",
+            "correlation",
+        ],
+        "record_shape": {
+            "direction": {
+                "type": "string",
+                "inbound_examples": ["in", "inbound", "received"],
+                "outbound_examples": ["out", "outbound", "emitted"],
+            },
+            "sequence": "non-negative integer",
+            "kind": "non-empty protocol message kind string",
+            "fields": "array of top-level field-name strings",
+            "correlation": "object containing only opaque routing metadata",
+        },
+        "required_traffic": [
+            "at least one inbound request record",
+            "at least one outbound response or event record",
+        ],
+        "legacy_aliases_forbidden_for_new_candidates": [
+            "message_kind",
+            "top_level_fields",
+        ],
+    }
     assert contract["runtime_service"]["validation"][
         "advertised_websocket_urls"
     ] == (

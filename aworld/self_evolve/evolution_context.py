@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Mapping, Sequence
 
 from aworld.self_evolve.candidate_protocol import (
@@ -11,6 +11,7 @@ from aworld.self_evolve.candidate_protocol import (
 from aworld.self_evolve.capability_contracts import (
     discover_applicable_capability_contracts,
 )
+from aworld.self_evolve.counterexamples import REPLAY_COUNTEREXAMPLE_FIELDS
 from aworld.self_evolve.feedback import normalize_feedback_summary
 from aworld.self_evolve.evidence_diagnostics import (
     EvidenceRepairConstraint,
@@ -38,6 +39,9 @@ from aworld.self_evolve.sanitization import (
     sanitize_source_text,
     sanitize_text,
 )
+from aworld.self_evolve.regression_feedback import bounded_independent_regression_feedback, has_judged_independent_regression
+from aworld.self_evolve.repair_selection import bounded_repair_selection, superseded_repair_indexes
+from aworld.self_evolve.handbook import HandbookLocatorIntegrityError
 
 
 EVOLUTION_CONTEXT_SCHEMA_VERSION = "aworld.self_evolve.evolution_context.v1"
@@ -52,6 +56,49 @@ MAX_TRACE_STEPS_PER_PACK = 8
 MAX_TRACE_TOOL_CALLS_PER_STEP = 2
 MAX_REPAIR_PROMPT_SOURCE_CHARS = 40_000
 MAX_PROMPT_FEEDBACK_CHARS = 16_000
+
+
+def _bind_existing_replay_manifest_contract(
+    contracts: Sequence[Mapping[str, object]],
+    target_package_sources: Mapping[str, Mapping[str, object]],
+) -> tuple[Mapping[str, object], ...]:
+    """Keep generated replay packages compatible with the installed package."""
+
+    source = target_package_sources.get("replay/capability.json")
+    content = source.get("content") if isinstance(source, Mapping) else None
+    if not isinstance(content, str):
+        return tuple(contracts)
+    try:
+        existing = json.loads(content)
+    except (TypeError, json.JSONDecodeError):
+        return tuple(contracts)
+    if not isinstance(existing, Mapping):
+        return tuple(contracts)
+    preserved = {
+        key: existing.get(key)
+        for key in ("capability_id", "protocol", "concurrency_mode")
+        if isinstance(existing.get(key), str) and existing.get(key)
+    }
+    if not preserved:
+        return tuple(contracts)
+    bound: list[Mapping[str, object]] = []
+    for raw_contract in contracts:
+        contract = dict(raw_contract)
+        if contract.get("capability_type") != "replay":
+            bound.append(contract)
+            continue
+        manifest = dict(contract.get("manifest") or {})
+        constraints = dict(manifest.get("field_constraints") or {})
+        for field_name, value in preserved.items():
+            constraints[field_name] = {
+                "enum": [value],
+                "preserve_existing": True,
+            }
+        manifest["field_constraints"] = constraints
+        manifest["preserved_existing_fields"] = preserved
+        contract["manifest"] = manifest
+        bound.append(contract)
+    return tuple(bound)
 
 
 @dataclass(frozen=True)
@@ -72,6 +119,11 @@ class EvolutionContext:
     population_strategies: tuple[str, ...]
     acceptance_constraints: tuple[str, ...]
     expected_output: Mapping[str, object]
+    target_package_sources: Mapping[str, Mapping[str, object]] = field(
+        default_factory=dict
+    )
+    handbook: Mapping[str, object] = field(default_factory=dict)
+    skill_evolution_contract: Mapping[str, object] = field(default_factory=dict)
 
     def repair_focus_for_candidate(
         self,
@@ -96,11 +148,22 @@ class EvolutionContext:
             candidate_index=candidate_index,
         )
         focused_repair = repair_focus is not None
+        generation_policy_focus = (
+            _focused_generation_policy_feedback(feedback)
+            if not focused_repair
+            else None
+        )
+        generation_policy_repair = generation_policy_focus is not None
+        if generation_policy_focus is not None:
+            feedback = (generation_policy_focus,)
         repair_conformance = (
             compile_repair_conformance_contract(repair_focus)
             if (
                 repair_focus is not None
                 and not _repair_feedback_reached_judged_task_output(repair_focus)
+                and not _repair_feedback_is_prerequisite_composition(
+                    repair_focus
+                )
             )
             else None
         )
@@ -109,6 +172,7 @@ class EvolutionContext:
             and repair_conformance is not None
             and (
                 repair_conformance.schema_field_constraints
+                or repair_conformance.runtime_artifact_constraints
                 or any(
                     "capability" in code or "compile" in code
                     for code in repair_conformance.failure_codes
@@ -123,6 +187,7 @@ class EvolutionContext:
                     if repair_conformance is not None
                     else ()
                 ),
+                target_package_sources=self.target_package_sources,
             )
             if repair_focus is not None
             else None
@@ -133,6 +198,7 @@ class EvolutionContext:
             else feedback
         )
         prompt_feedback = _budget_prompt_feedback(prompt_feedback)
+        compact_generation_context = focused_repair or generation_policy_repair
         payload: dict[str, object] = {
             "schema_version": self.schema_version,
             "candidate_index": candidate_index,
@@ -146,10 +212,16 @@ class EvolutionContext:
             # are available, they are the authoritative repair context. Repeating
             # the original trajectory and lessons makes the source delta harder to
             # attend to and can duplicate the same package in the prompt.
-            "trainable_cases": [] if focused_repair else list(self.trainable_cases),
-            "trace_evidence": [] if focused_repair else list(self.trace_evidence),
+            "trainable_cases": (
+                [] if compact_generation_context else list(self.trainable_cases)
+            ),
+            "trace_evidence": (
+                [] if compact_generation_context else list(self.trace_evidence)
+            ),
             "validation_feedback": list(prompt_feedback),
-            "lesson_records": [] if focused_repair else list(self.lesson_records),
+            "lesson_records": (
+                [] if compact_generation_context else list(self.lesson_records)
+            ),
             "observed_failures": list(self.observed_failures),
             "required_behaviors": list(self.required_behaviors),
             "preserved_behaviors": list(self.preserved_behaviors),
@@ -164,6 +236,12 @@ class EvolutionContext:
             "acceptance_constraints": list(self.acceptance_constraints),
             "expected_output": dict(self.expected_output),
         }
+        if self.skill_evolution_contract:
+            payload["skill_evolution_contract"] = dict(
+                self.skill_evolution_contract
+            )
+        if self.handbook:
+            payload["handbook"] = dict(self.handbook)
         if prompt_repair_focus is not None:
             payload["repair_context_mode"] = "focused_candidate_delta"
             payload["repair_focus"] = prompt_repair_focus
@@ -186,6 +264,14 @@ class EvolutionContext:
                 payload["repair_conformance"] = (
                     repair_conformance.to_public_dict()
                 )
+        elif generation_policy_focus is not None:
+            payload["repair_context_mode"] = "generation_policy_delta"
+            payload["repair_prompt_budget"] = {
+                "omitted_trainable_cases": len(self.trainable_cases),
+                "omitted_trace_evidence": len(self.trace_evidence),
+                "omitted_lesson_records": len(self.lesson_records),
+                "preserved_current_content_chars": len(self.current_content),
+            }
         if repair_support is not None:
             payload["repair_support"] = _repair_support_prompt_summary(
                 repair_support
@@ -224,6 +310,8 @@ def _public_repair_value(value: object) -> object:
         projected: dict[str, object] = {}
         for raw_key, item in value.items():
             key = str(raw_key)
+            if key == "repair_selection":
+                continue
             if key in _PRIVATE_REPAIR_VALUE_KEYS and isinstance(item, (str, bytes)):
                 encoded = item.encode("utf-8") if isinstance(item, str) else item
                 projected[f"{key}_fingerprint"] = (
@@ -287,16 +375,36 @@ def _compact_prompt_feedback_item(
     metrics = item.get("metrics")
     if isinstance(metrics, Mapping):
         compact["metrics"] = sanitize_metric_value(metrics, max_chars=120)
+    regression = bounded_independent_regression_feedback(item.get("independent_regression"))
+    if regression is not None:
+        compact["independent_regression"] = regression
+    evidence = item.get("evidence")
+    raw_issues = evidence.get("issues") if isinstance(evidence, Mapping) else None
+    if isinstance(raw_issues, list):
+        # Preserve the evaluator's causal explanation at the same 3 x 240
+        # limit as normalized feedback, including source-free repair support.
+        issues = [
+            sanitize_text(issue, max_chars=240)
+            for issue in raw_issues[:3]
+            if isinstance(issue, str) and issue.strip()
+        ]
+        if issues:
+            compact["evidence"] = {"issues": issues}
     diagnostics = item.get("candidate_validation_diagnostics")
     if isinstance(diagnostics, list):
-        compact["candidate_validation_diagnostics"] = [
+        compact["candidate_validation_diagnostics"] = (
+            _compact_prompt_causal_diagnostics(diagnostics)
+        )
+    counterexamples = item.get("replay_counterexamples")
+    if isinstance(counterexamples, list):
+        compact["replay_counterexamples"] = [
             {
-                key: sanitize_metric_value(diagnostic.get(key), max_chars=160)
-                for key in ("code", "stage", "reason", "field_path")
-                if diagnostic.get(key) is not None
+                key: sanitize_metric_value(counterexample.get(key), max_chars=160)
+                for key in REPLAY_COUNTEREXAMPLE_FIELDS
+                if counterexample.get(key) is not None
             }
-            for diagnostic in diagnostics[:4]
-            if isinstance(diagnostic, Mapping)
+            for counterexample in counterexamples[:4]
+            if isinstance(counterexample, Mapping)
         ]
     recovery_trace = validate_public_recovery_trace(item.get("recovery_trace"))
     if recovery_trace is not None:
@@ -320,20 +428,165 @@ def _compact_prompt_feedback_item(
     return compact
 
 
+_PROMPT_CAUSAL_DIAGNOSTIC_FIELDS = (
+    "code",
+    "stage",
+    "reason",
+    "error_type",
+    "failure_fingerprint",
+    "field_path",
+    "policy_id",
+    "enforcement",
+    "reason_codes",
+    "constraint_ids",
+    "active_frontier_key",
+    "affected_case_ids",
+    "required_action",
+    "probe_phase",
+    "phase",
+    "probe_kind",
+    "probe_path",
+    "observed_http_status",
+    "required_http_status_class",
+    "service_id",
+    "transport",
+    "runtime_artifact_constraints",
+    "runtime_response_constraints",
+    "runtime_route_constraints",
+    "runtime_response_observation",
+    "runtime_response_observations",
+    "schema_field_constraints",
+    "schema_field_violations",
+)
+
+
+def _compact_prompt_causal_diagnostics(
+    diagnostics: Sequence[object],
+) -> list[dict[str, object]]:
+    """Retain deepest typed causes instead of only outer gate wrappers."""
+
+    candidates: list[tuple[int, int, dict[str, object]]] = []
+    pending: list[tuple[object, int]] = [
+        (item, 0) for item in reversed(diagnostics[:32])
+    ]
+    visited = 0
+    ordinal = 0
+    while pending and visited < 512:
+        current, depth = pending.pop()
+        visited += 1
+        if isinstance(current, Mapping):
+            projected = {
+                key: sanitize_metric_value(
+                    current.get(key),
+                    max_chars=(320 if key == "reason" else 240),
+                )
+                for key in _PROMPT_CAUSAL_DIAGNOSTIC_FIELDS
+                if current.get(key) is not None
+            }
+            if projected:
+                typed_weight = 0
+                if projected.get("runtime_artifact_constraints"):
+                    typed_weight += 1_500
+                if projected.get("runtime_response_constraints"):
+                    typed_weight += 1_000
+                if projected.get("runtime_route_constraints"):
+                    typed_weight += 1_250
+                if projected.get("schema_field_constraints"):
+                    typed_weight += 500
+                code = str(projected.get("code") or "")
+                if code and code not in {"failed_gate", "candidate_rejected"}:
+                    typed_weight += 200
+                if projected.get("failure_fingerprint"):
+                    typed_weight += 100
+                candidates.append(
+                    (typed_weight + min(depth, 32), ordinal, projected)
+                )
+                ordinal += 1
+            if depth < 10:
+                for nested in reversed(list(current.values())[:128]):
+                    if isinstance(nested, (Mapping, list, tuple)):
+                        pending.append((nested, depth + 1))
+        elif isinstance(current, (list, tuple)) and depth < 10:
+            for nested in reversed(current[:128]):
+                pending.append((nested, depth + 1))
+
+    selected: list[dict[str, object]] = []
+    seen: set[str] = set()
+    for _, _, projected in sorted(
+        candidates,
+        key=lambda item: (-item[0], item[1]),
+    ):
+        identity = json.dumps(
+            projected,
+            ensure_ascii=True,
+            separators=(",", ":"),
+            sort_keys=True,
+            default=str,
+        )
+        if identity in seen:
+            continue
+        seen.add(identity)
+        selected.append(projected)
+        if len(selected) >= 8:
+            break
+    return selected
+
+
 def _bounded_repair_focus_for_prompt(
     repair_focus: Mapping[str, object],
     *,
     required_branch_paths: Sequence[str],
+    target_package_sources: Mapping[str, Mapping[str, object]] | None = None,
 ) -> Mapping[str, object]:
-    """Keep complete high-value source files and inventory omitted overlay files."""
+    """Keep a source-complete, bounded view of the required repair surface."""
 
     package = repair_focus.get("repair_candidate_package")
     if not isinstance(package, Mapping):
         return repair_focus
-    raw_files = package.get("files")
-    if not isinstance(raw_files, list):
+    package_files = package.get("files")
+    if not isinstance(package_files, list):
         return repair_focus
     required = frozenset(required_branch_paths)
+    raw_files = [
+        dict(item) for item in package_files if isinstance(item, Mapping)
+    ]
+    inherited_required_paths: list[str] = []
+    missing_required_paths: list[str] = []
+    source_inventory = target_package_sources or {}
+    for path in sorted(required):
+        matching_file = next(
+            (
+                item
+                for item in raw_files
+                if str(item.get("path") or "") == path
+            ),
+            None,
+        )
+        if (
+            isinstance(matching_file, Mapping)
+            and isinstance(matching_file.get("content"), str)
+            and bool(matching_file.get("content"))
+        ):
+            continue
+        source = source_inventory.get(path)
+        content = source.get("content") if isinstance(source, Mapping) else None
+        if not isinstance(content, str) or not content:
+            missing_required_paths.append(path)
+            continue
+        inherited_file = {
+            "path": path,
+            "operation": "upsert",
+            "content": content,
+            "executable": source.get("executable") is True,
+            "source_origin": "target_package_overlay",
+            "required_repair_source": True,
+        }
+        if matching_file is None:
+            raw_files.append(inherited_file)
+        else:
+            matching_file.clear()
+            matching_file.update(inherited_file)
+        inherited_required_paths.append(path)
     ranked_files = sorted(
         (
             (index, item)
@@ -390,6 +643,16 @@ def _bounded_repair_focus_for_prompt(
     prompt_focus = _public_repair_value(repair_focus)
     assert isinstance(prompt_focus, dict)
     prompt_focus["repair_candidate_package"] = prompt_package
+    omitted_required_paths = sorted(
+        required - included_paths - set(missing_required_paths)
+    )
+    prompt_focus["required_source_closure"] = {
+        "complete": not missing_required_paths and not omitted_required_paths,
+        "required_paths": sorted(required),
+        "inherited_target_paths": inherited_required_paths,
+        "missing_paths": missing_required_paths,
+        "omitted_paths": omitted_required_paths,
+    }
     return prompt_focus
 
 
@@ -425,6 +688,10 @@ def _focused_validation_feedback(
     ]
     if not repair_items:
         return tuple(feedback), None, None
+    superseded = superseded_repair_indexes([
+        (index, item) for index, item in repair_items if _repair_feedback_reached_judged_task_output(item)
+    ])
+    repair_items = [(index, item) for index, item in repair_items if index not in superseded]
 
     # The first population member exploits the deepest observed failure. The
     # remaining members preserve recency diversity so a newly-progressing
@@ -474,6 +741,28 @@ def _focused_validation_feedback(
     return tuple(contextual_feedback), focus, support
 
 
+def _focused_generation_policy_feedback(
+    feedback: Sequence[Mapping[str, object]],
+) -> Mapping[str, object] | None:
+    """Select the latest source-free policy repair without replaying history."""
+
+    for item in reversed(feedback):
+        diagnostics = item.get("candidate_validation_diagnostics")
+        if not isinstance(diagnostics, list):
+            continue
+        if any(
+            isinstance(diagnostic, Mapping)
+            and diagnostic.get("code")
+            in {
+                "candidate_generation_policy_filtered",
+                "candidate_generation_policy_frontier_stalled",
+            }
+            for diagnostic in diagnostics
+        ):
+            return item
+    return None
+
+
 def _repair_support_is_complementary(
     focus: Mapping[str, object],
     support: Mapping[str, object],
@@ -487,10 +776,13 @@ def _repair_support_is_complementary(
     """
 
     if _repair_feedback_reached_judged_task_output(focus):
-        # The focused package has already completed authoritative replay and
-        # exposed task output to a judge. Transplanting source from a lower
-        # replay/conformance frontier can only regress that verified runtime.
-        return False
+        # A judged package must never inherit source or diagnostics from a
+        # lower replay/conformance frontier.  A *second judged package* is
+        # different: it can carry a complementary gate checkpoint (for
+        # example, score improvement versus evidence completeness).  Support
+        # summaries omit candidate source, so exposing that typed checkpoint
+        # cannot expand the focused mutation surface or regress its runtime.
+        return _repair_feedback_reached_judged_task_output(support)
     focus_codes = _specific_repair_conformance_failure_codes(focus)
     if focus_codes:
         # A machine-checked conformance failure has an exact focused source and
@@ -539,6 +831,8 @@ def _repair_feedback_reached_task_plane(
 ) -> bool:
     if _repair_feedback_reached_judged_task_output(feedback):
         return True
+    if isinstance(feedback.get("replay_counterexamples"), list):
+        return True
     diagnostic_text = json.dumps(
         feedback.get("candidate_validation_diagnostics", ()),
         ensure_ascii=False,
@@ -551,6 +845,24 @@ def _repair_feedback_reached_task_plane(
         or "failed to deserialize" in diagnostic_text
         or "missing field" in diagnostic_text
         or '"requires_fixture_derived_probe": true' in diagnostic_text
+    )
+
+
+def _repair_feedback_is_prerequisite_composition(
+    feedback: Mapping[str, object],
+) -> bool:
+    metrics = feedback.get("metrics")
+    failed_gates = feedback.get("failed_gates", ())
+    if isinstance(failed_gates, str):
+        failed_gate_names = {failed_gates}
+    elif isinstance(failed_gates, (list, tuple)):
+        failed_gate_names = {str(item) for item in failed_gates}
+    else:
+        failed_gate_names = set()
+    return bool(
+        isinstance(metrics, Mapping)
+        and metrics.get("candidate_status") == "prerequisite"
+        and "target_behavior_delta" in failed_gate_names
     )
 
 
@@ -577,6 +889,10 @@ def _repair_feedback_reached_judged_task_output(
         if isinstance(failed_gates, (list, tuple))
         else set()
     )
+    if "global_regression_benchmark" in gate_names and has_judged_independent_regression(
+        feedback.get("independent_regression"), candidate_id=feedback.get("variant_id"),
+    ):
+        return True
     has_judge_metrics = any(
         key in metrics
         for key in (
@@ -606,6 +922,7 @@ def _repair_feedback_reached_judged_task_output(
                 "held_out_verification",
                 "required_verification",
                 "score_improvement",
+                "global_regression_benchmark",
             }
         )
     )
@@ -661,6 +978,23 @@ def _repair_feedback_priority(feedback: Mapping[str, object]) -> int:
             # and should remain visible to the focused repair prompt.
             recovery_frontier += min(16, repeated_constraints)
     frontier_progress = recovery_frontier + interaction_progress
+    prerequisite_failed_gates = feedback.get("failed_gates", ())
+    if isinstance(prerequisite_failed_gates, str):
+        prerequisite_failed_gate_names = {prerequisite_failed_gates}
+    elif isinstance(prerequisite_failed_gates, (list, tuple)):
+        prerequisite_failed_gate_names = {
+            str(item) for item in prerequisite_failed_gates
+        }
+    else:
+        prerequisite_failed_gate_names = set()
+    if (
+        isinstance(metrics, Mapping)
+        and metrics.get("candidate_status") == "prerequisite"
+        and "target_behavior_delta" in prerequisite_failed_gate_names
+    ):
+        # A verified evaluation-support package is deeper than replay repair:
+        # the next mutation must inherit it and add releasable target behavior.
+        return 190_000 + frontier_progress
     diagnostic_text = json.dumps(
         feedback.get("candidate_validation_diagnostics", ()),
         ensure_ascii=False,
@@ -679,7 +1013,7 @@ def _repair_feedback_priority(feedback: Mapping[str, object]) -> int:
         # its evidence contract before revisiting older replay/conformance
         # branches. Held-out feedback wins ties with validation from the same
         # evaluated package, while recency still breaks ties within each split.
-        split_offset = 5_000 if feedback.get("dataset_split") == "held_out" else 0
+        split_offset = {"held_out": 5_000, "regression": 10_000}.get(feedback.get("dataset_split"), 0)
         return 200_000 + split_offset + frontier_progress
     if (
         isinstance(metrics, Mapping)
@@ -743,6 +1077,13 @@ def _repair_feedback_priority(feedback: Mapping[str, object]) -> int:
 
 
 def compile_evolution_context(request: OptimizerRequest) -> EvolutionContext:
+    handbook = dict(request.handbook_slice or {})
+    if handbook and handbook.get("mutation_allowed") is not True:
+        frozen = handbook.get("frozen_locator_ids")
+        raise HandbookLocatorIntegrityError(
+            "self-evolve handbook contains frozen target locators: "
+            f"{frozen if isinstance(frozen, (list, tuple)) else 'unknown'}"
+        )
     current_feedback = _deduplicate_feedback(request.validation_feedback)
     prior_feedback = _deduplicate_feedback(request.prior_feedback)
     if any(
@@ -761,12 +1102,51 @@ def compile_evolution_context(request: OptimizerRequest) -> EvolutionContext:
         (*current_feedback, *prior_feedback)
     )
     feedback = _merge_typed_repair_constraints_across_feedback(feedback)
-    contracts = discover_applicable_capability_contracts(
-        request.replay_requirements
+    contracts = _bind_existing_replay_manifest_contract(
+        discover_applicable_capability_contracts(request.replay_requirements),
+        request.target_package_sources,
     )
     observed_failures = _feedback_string_values(feedback, "failed_gates")
-    required_behaviors = _feedback_string_values(feedback, "required_behaviors")
-    preserved_behaviors = _preserved_behaviors(request.lesson_records)
+    contract_payload = dict(request.skill_evolution_contract or {})
+    contract_capabilities = contract_payload.get("capabilities")
+    contract_required_behaviors = tuple(
+        str(item.get("description"))
+        for item in (
+            contract_capabilities
+            if isinstance(contract_capabilities, (list, tuple))
+            else ()
+        )
+        if isinstance(item, Mapping)
+        and item.get("required", True) is True
+        and isinstance(item.get("description"), str)
+        and item.get("description")
+    )
+    required_behaviors = tuple(
+        dict.fromkeys(
+            (
+                *_feedback_string_values(feedback, "required_behaviors"),
+                *contract_required_behaviors,
+            )
+        )
+    )
+    contract_invariants = contract_payload.get("preserved_invariants")
+    normalized_contract_invariants = (
+        tuple(
+            str(item)
+            for item in contract_invariants
+            if isinstance(item, str) and item
+        )
+        if isinstance(contract_invariants, (list, tuple))
+        else ()
+    )
+    preserved_behaviors = tuple(
+        dict.fromkeys(
+            (
+                *_preserved_behaviors(request.lesson_records),
+                *normalized_contract_invariants,
+            )
+        )
+    )
     return EvolutionContext(
         schema_version=EVOLUTION_CONTEXT_SCHEMA_VERSION,
         target={
@@ -786,6 +1166,20 @@ def compile_evolution_context(request: OptimizerRequest) -> EvolutionContext:
             sanitize_path_ref(item)
             for item in request.target_package_inventory[:256]
         ),
+        target_package_sources={
+            sanitize_path_ref(path): {
+                "content": sanitize_source_text(
+                    source.get("content"),
+                    max_chars=128_000,
+                    preserve_format=True,
+                ),
+                "executable": source.get("executable") is True,
+            }
+            for path, source in list(request.target_package_sources.items())[:256]
+            if isinstance(path, str)
+            and isinstance(source, Mapping)
+            and isinstance(source.get("content"), str)
+        },
         trainable_cases=_trainable_case_payloads(request.trainable_cases),
         trace_evidence=_trace_evidence_payloads(request.trace_packs),
         validation_feedback=feedback,
@@ -801,6 +1195,19 @@ def compile_evolution_context(request: OptimizerRequest) -> EvolutionContext:
             has_feedback=bool(feedback),
             has_current_validation_feedback=bool(request.validation_feedback),
             has_capability_contracts=bool(contracts),
+            requires_target_behavior_composition=any(
+                _repair_feedback_is_prerequisite_composition(item)
+                or _feedback_has_candidate_owned_task_behavior_frontier(item)
+                for item in feedback
+            ),
+            requires_evidence_quality_repair=(
+                "evidence_quality" in observed_failures
+                and any(
+                    _feedback_has_candidate_owned_evidence_frontier(item)
+                    for item in feedback
+                )
+            ),
+            consumed_mutation_families=request.consumed_mutation_families,
         ),
         acceptance_constraints=(
             "return_one_canonical_candidate_package",
@@ -817,6 +1224,8 @@ def compile_evolution_context(request: OptimizerRequest) -> EvolutionContext:
         expected_output=build_candidate_output_contract(
             exposed_improvement_signal_ids(request)
         ),
+        handbook=handbook,
+        skill_evolution_contract=contract_payload,
     )
 
 
@@ -832,7 +1241,15 @@ def _merge_typed_repair_constraints_across_feedback(
     constraint_context = {
         key: value
         for key, value in (merged or {}).items()
-        if key in {"fixture_probe_constraints", "schema_field_constraints"}
+        if key
+        in {
+            "artifact_lifecycle_constraint",
+            "fixture_probe_constraints",
+            "schema_field_constraints",
+            "runtime_artifact_constraints",
+            "runtime_response_constraints",
+            "runtime_route_constraints",
+        }
     }
     evidence_context = [
         constraint.to_dict() for constraint in evidence_constraints
@@ -842,7 +1259,7 @@ def _merge_typed_repair_constraints_across_feedback(
     result: list[Mapping[str, object]] = []
     for item in feedback:
         updated = dict(item)
-        if evidence_context:
+        if evidence_context and "independent_regression" not in item:
             updated["evidence_repair_constraints"] = evidence_context
         if not isinstance(item.get("repair_candidate_package"), Mapping):
             result.append(updated)
@@ -854,6 +1271,14 @@ def _merge_typed_repair_constraints_across_feedback(
             # mutation surface back into replay implementation files.
             result.append(updated)
             continue
+        raw_repair_contract = item.get("repair_conformance")
+        if isinstance(raw_repair_contract, Mapping):
+            updated_contract = merge_repair_conformance_constraint_context(
+                raw_repair_contract,
+                constraint_context,
+            )
+            if updated_contract is not None:
+                updated["repair_conformance"] = updated_contract
         raw_diagnostics = updated.get("candidate_validation_diagnostics")
         diagnostics = (
             [dict(value) for value in raw_diagnostics if isinstance(value, Mapping)]
@@ -892,6 +1317,102 @@ def _feedback_evidence_repair_constraints(
                 continue
         groups.append(tuple(constraints))
     return merge_evidence_repair_constraints(*groups)
+
+
+def _feedback_has_candidate_owned_evidence_frontier(
+    feedback: Mapping[str, object],
+) -> bool:
+    """Return whether evidence repair can be performed by the candidate.
+
+    The strategy decision is based on typed ownership, never on free-form judge
+    prose.  This prevents framework projection failures from expanding the
+    candidate mutation surface while giving candidate-output constraints a
+    dedicated, compositional repair pass.
+    """
+
+    constraints = _feedback_evidence_repair_constraints((feedback,))
+    if any(constraint.owner.value == "candidate" for constraint in constraints):
+        return True
+    failed_gates = feedback.get("failed_gates")
+    metrics = feedback.get("metrics")
+    typed_metrics = metrics if isinstance(metrics, Mapping) else {}
+    return bool(
+        isinstance(failed_gates, (list, tuple))
+        and "evidence_quality" in {str(value) for value in failed_gates}
+        and (
+            feedback.get("failure_owner")
+            or feedback.get("failure_class")
+            or typed_metrics.get("failure_owner")
+            or typed_metrics.get("failure_class")
+        )
+        == "candidate"
+        and (
+            feedback.get("repairable") is True
+            or typed_metrics.get("repairable") is True
+        )
+    )
+
+
+def _feedback_has_candidate_owned_task_behavior_frontier(
+    feedback: Mapping[str, object],
+) -> bool:
+    """Recognize typed task-rollout failures that require SKILL.md repair."""
+
+    metrics = feedback.get("metrics")
+    recovery_trace = feedback.get("recovery_trace")
+    regressed_member_count = (
+        recovery_trace.get("regressed_member_count")
+        if isinstance(recovery_trace, Mapping)
+        else None
+    )
+    recovery_success_delta = (
+        recovery_trace.get("recovery_success_delta")
+        if isinstance(recovery_trace, Mapping)
+        else None
+    )
+    if (
+        isinstance(metrics, Mapping)
+        and metrics.get("failure_class") == "candidate"
+        and metrics.get("repairable") is True
+        and isinstance(recovery_trace, Mapping)
+        and (
+            (
+                isinstance(regressed_member_count, (int, float))
+                and not isinstance(regressed_member_count, bool)
+                and regressed_member_count > 0
+            )
+            or (
+                isinstance(recovery_success_delta, (int, float))
+                and not isinstance(recovery_success_delta, bool)
+                and recovery_success_delta < 0
+            )
+        )
+    ):
+        return True
+    pending: list[object] = [feedback]
+    visited = 0
+    while pending and visited < 512:
+        current = pending.pop()
+        visited += 1
+        if isinstance(current, Mapping):
+            if (
+                current.get("owner") == "candidate"
+                and current.get("repairable") is True
+                and current.get("stage") == "task_rollout"
+                and (
+                    current.get("category") == "recovery_trace"
+                    or current.get("code")
+                    in {
+                        "candidate_recovery_incomplete",
+                        "target_behavior_completion_missing",
+                    }
+                )
+            ):
+                return True
+            pending.extend(current.values())
+        elif isinstance(current, (list, tuple)):
+            pending.extend(current[:128])
+    return False
 
 
 def _deduplicate_feedback(
@@ -947,6 +1468,12 @@ def _bounded_feedback_summary(
     summary: Mapping[str, Any],
 ) -> Mapping[str, object]:
     normalized = dict(sanitize_metric_value(summary))
+    regression = bounded_independent_regression_feedback(summary.get("independent_regression"))
+    if regression is not None:
+        normalized["independent_regression"] = regression
+    selection = bounded_repair_selection(summary.get("repair_selection"), candidate_id=summary.get("variant_id"))
+    if selection is not None:
+        normalized["repair_selection"] = selection
     for key, limit in (("failed_gates", 16), ("required_behaviors", 32)):
         raw = summary.get(key)
         if isinstance(raw, list):
@@ -973,6 +1500,12 @@ def _bounded_feedback_summary(
         # sanitizer. Running the generic metric sanitizer again would replace
         # executable assignments such as ``token = expression``.
         normalized["repair_candidate_package"] = repair_candidate_package
+    repair_conformance = summary.get("repair_conformance")
+    if isinstance(repair_conformance, Mapping):
+        # Typed repair contracts are execution context, not display diagnostics.
+        # Preserve their validated public projection instead of re-budgeting the
+        # nested constraint arrays through the generic metric sanitizer.
+        normalized["repair_conformance"] = dict(repair_conformance)
     return normalized
 
 
@@ -1381,12 +1914,18 @@ def _population_strategies(
     has_feedback: bool,
     has_current_validation_feedback: bool,
     has_capability_contracts: bool,
+    requires_target_behavior_composition: bool = False,
+    requires_evidence_quality_repair: bool = False,
+    consumed_mutation_families: tuple[str, ...] = (),
 ) -> tuple[str, ...]:
-    strategies = (
-        ["quality_regression_repair"]
-        if has_current_validation_feedback
-        else ["minimal_behavior_delta"]
-    )
+    if requires_target_behavior_composition:
+        strategies = ["target_behavior_composition"]
+    elif requires_evidence_quality_repair:
+        strategies = ["evidence_quality_repair"]
+    elif has_current_validation_feedback:
+        strategies = ["quality_regression_repair"]
+    else:
+        strategies = ["minimal_behavior_delta"]
     if has_capability_contracts:
         strategies.append("missing_capability_completion")
     if has_feedback and not has_current_validation_feedback:
@@ -1394,4 +1933,9 @@ def _population_strategies(
     if has_current_validation_feedback:
         strategies.append("minimal_behavior_delta")
     strategies.append("efficiency_and_robustness")
-    return tuple(strategies)
+    ordered = tuple(dict.fromkeys(strategies))
+    consumed = set(consumed_mutation_families)
+    return (
+        *(item for item in ordered if item not in consumed),
+        *(item for item in ordered if item in consumed),
+    )
