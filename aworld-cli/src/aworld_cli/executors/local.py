@@ -1139,6 +1139,7 @@ class LocalAgentExecutor(BaseAgentExecutor):
                                 if isinstance(output, MessageOutput):
                                     elapsed_sec = (datetime.now() - ctrl.status_start_time).total_seconds() if ctrl.status_start_time else None
                                     tool_calls = output.tool_calls if hasattr(output, "tool_calls") and output.tool_calls else []
+                                    self._track_tool_calls(tool_calls)
                                     current_tool_name = None
                                     if tool_calls and not active_event_mode:
                                         first_tool = tool_calls[0]

@@ -13,6 +13,7 @@ import sys
 import uuid
 import json
 import logging
+import time
 from abc import ABC, abstractmethod
 from datetime import datetime
 from pathlib import Path
@@ -131,6 +132,7 @@ class BaseAgentExecutor(ABC, AgentExecutor):
         self._setup_logging()
         # Initialize tool call logger
         self.tool_logger = get_tool_logger()
+        self._tool_call_started_at: Dict[str, float] = {}
         self._start_tool_logging()
 
     async def cleanup_resources(self) -> None:
@@ -1064,6 +1066,171 @@ class BaseAgentExecutor(ABC, AgentExecutor):
 
         return filtered_content
 
+    @staticmethod
+    def _decode_explicit_tool_result(data: Any) -> Dict[str, Any] | None:
+        """Decode a top-level ``success`` result envelope, if present."""
+
+        candidate = data
+        for _ in range(3):
+            if isinstance(candidate, list) and len(candidate) == 1:
+                candidate = candidate[0]
+                continue
+            if isinstance(candidate, str):
+                try:
+                    candidate = json.loads(candidate)
+                except (json.JSONDecodeError, TypeError):
+                    return None
+                continue
+            break
+        if isinstance(candidate, dict) and isinstance(candidate.get("success"), bool):
+            return candidate
+        return None
+
+    @staticmethod
+    def _tool_call_identity_and_args(tool_call_output: Any) -> tuple[str, Dict[str, Any]]:
+        tool_call = getattr(tool_call_output, "data", tool_call_output)
+        call_id = str(getattr(tool_call, "id", "") or "")
+        function = getattr(tool_call, "function", None)
+        raw_args = getattr(function, "arguments", None)
+        if isinstance(raw_args, dict):
+            return call_id, raw_args
+        if isinstance(raw_args, str) and raw_args:
+            try:
+                parsed = json.loads(raw_args)
+            except (json.JSONDecodeError, TypeError):
+                return call_id, {"raw_arguments": raw_args}
+            if isinstance(parsed, dict):
+                return call_id, parsed
+            return call_id, {"arguments": parsed}
+        return call_id, {}
+
+    def _track_tool_calls(self, tool_calls: Any) -> None:
+        """Remember model-emitted call start times for end-to-end duration."""
+
+        for tool_call in tool_calls or ():
+            call_id, _ = self._tool_call_identity_and_args(tool_call)
+            if call_id:
+                self._tool_call_started_at.setdefault(call_id, time.monotonic())
+
+    @staticmethod
+    def _tool_result_text(data: Any) -> str:
+        if data is None:
+            return ""
+        if isinstance(data, str):
+            return data
+        try:
+            return json.dumps(data, ensure_ascii=False, default=str)
+        except (TypeError, ValueError):
+            return str(data)
+
+    def _tool_result_log_fields(self, output: Any) -> Dict[str, Any]:
+        """Extract authoritative args, timing and status from a tool result."""
+
+        metadata = dict(getattr(output, "metadata", None) or {})
+        origin_tool_call = getattr(output, "origin_tool_call", None)
+        call_id, origin_args = self._tool_call_identity_and_args(origin_tool_call)
+        if not call_id:
+            call_id = str(metadata.get("tool_call_id") or "")
+
+        args = origin_args
+        if not args:
+            metadata_args = metadata.get("args")
+            if isinstance(metadata_args, dict):
+                args = metadata_args
+            elif metadata.get("command") is not None:
+                args = {"command": metadata["command"]}
+
+        duration = 0.0
+        for key in ("duration", "duration_seconds", "execution_time"):
+            value = metadata.get(key)
+            if isinstance(value, (int, float)) and not isinstance(value, bool):
+                duration = max(float(value), 0.0)
+                break
+        started_at = self._tool_call_started_at.pop(call_id, None) if call_id else None
+        if duration == 0.0 and started_at is not None:
+            duration = max(time.monotonic() - started_at, 0.0)
+
+        raw_data = getattr(output, "data", None)
+        envelope = self._decode_explicit_tool_result(raw_data)
+        explicit_success = None
+        for value in (
+            metadata.get("success"),
+            metadata.get("result_success"),
+            envelope.get("success") if envelope is not None else None,
+        ):
+            if isinstance(value, bool):
+                explicit_success = value
+                break
+
+        error_value = metadata.get("error") or metadata.get("result_error")
+        if not error_value and envelope is not None and explicit_success is False:
+            error_value = envelope.get("error") or envelope.get("message")
+
+        result_metadata = envelope.get("metadata") if envelope is not None else None
+        result_metadata = result_metadata if isinstance(result_metadata, dict) else {}
+        return_code = metadata.get("return_code", metadata.get("exit_code"))
+        if return_code is None:
+            return_code = result_metadata.get("return_code", result_metadata.get("exit_code"))
+        if isinstance(return_code, str) and return_code.strip().lstrip("-").isdigit():
+            return_code = int(return_code)
+        failed_return_code = isinstance(return_code, int) and return_code != 0
+
+        status_value = str(metadata.get("status") or "").strip().lower()
+        failed_status = status_value in {"error", "failed", "failure", "timeout", "cancelled"}
+        failed = (
+            explicit_success is False
+            or bool(error_value)
+            or failed_return_code
+            or failed_status
+        )
+        if failed and not error_value:
+            if failed_return_code:
+                error_value = f"tool exited with code {return_code}"
+            elif failed_status:
+                error_value = f"tool status is {status_value}"
+            else:
+                error_value = "tool returned success=false"
+        if error_value is not None and not isinstance(error_value, str):
+            error_value = self._tool_result_text(error_value)
+
+        return {
+            "args": args,
+            "duration": duration,
+            "status": "error" if failed else "success",
+            "error": error_value,
+            "output": self._tool_result_text(raw_data),
+            "tool_call_id": call_id,
+            "return_code": return_code,
+        }
+
+    def _log_tool_result_output(
+        self,
+        output: Any,
+        *,
+        tool_info: str,
+        summary: Any = None,
+        extra_metadata: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        fields = self._tool_result_log_fields(output)
+        log_metadata = dict(extra_metadata or {})
+        log_metadata.update(
+            {
+                "tool_call_id": fields["tool_call_id"],
+                "summary": summary,
+                "return_code": fields["return_code"],
+            }
+        )
+        self.tool_logger.log_tool_call(
+            tool_name=tool_info,
+            args=fields["args"],
+            output=fields["output"],
+            duration=fields["duration"],
+            status=fields["status"],
+            error=fields["error"],
+            metadata=log_metadata,
+            context={"session_id": self.session_id},
+        )
+
     def _format_tool_result_display_lines(
         self,
         output,
@@ -1188,47 +1355,19 @@ class BaseAgentExecutor(ABC, AgentExecutor):
         else:
             lines.append("  ⎿  [dim italic]No output[/dim italic]")
 
-        # Log tool call for debugging and AI diagnosis
+        # Log the unabridged result and authoritative execution metadata.  The
+        # display preview above is intentionally lossy and must not become the
+        # audit record.
         try:
-            # Extract tool arguments
-            tool_args = {}
-            if hasattr(output, 'metadata') and output.metadata:
-                # Try to get args from metadata
-                if 'args' in output.metadata:
-                    tool_args = output.metadata.get('args', {})
-                # For bash/terminal tools, extract command
-                elif 'command' in output.metadata:
-                    tool_args = {'command': output.metadata['command']}
-
-            # Extract execution time
-            duration = 0.0
-            if hasattr(output, 'metadata') and output.metadata:
-                duration = output.metadata.get('duration', 0.0)
-
-            # Determine status
-            status = "success"
-            error_msg = None
-            if hasattr(output, 'metadata') and output.metadata:
-                if output.metadata.get('error'):
-                    status = "error"
-                    error_msg = str(output.metadata.get('error'))
-
-            # Log to file
-            self.tool_logger.log_tool_call(
-                tool_name=tool_info,
-                args=tool_args,
-                output=display_content or result_content or "",
-                duration=duration,
-                status=status,
-                error=error_msg,
-                metadata={
+            self._log_tool_result_output(
+                output,
+                tool_info=tool_info,
+                summary=summary,
+                extra_metadata={
                     'summary': summary,
                     'tool_name': tool_name,
                     'action_name': action_name
                 },
-                context={
-                    'session_id': self.session_id
-                }
             )
         except Exception as e:
             # Logging is non-critical, don't break formatting
@@ -1405,45 +1544,14 @@ class BaseAgentExecutor(ABC, AgentExecutor):
 
         # Log tool call for debugging and AI diagnosis
         try:
-            # Extract tool arguments
-            tool_args = {}
-            if hasattr(output, 'metadata') and output.metadata:
-                # Try to get args from metadata
-                if 'args' in output.metadata:
-                    tool_args = output.metadata.get('args', {})
-                # For bash/terminal tools, extract command
-                elif 'command' in output.metadata:
-                    tool_args = {'command': output.metadata['command']}
-
-            # Extract execution time
-            duration = 0.0
-            if hasattr(output, 'metadata') and output.metadata:
-                duration = output.metadata.get('duration', 0.0)
-
-            # Determine status
-            status = "success"
-            error_msg = None
-            if hasattr(output, 'metadata') and output.metadata:
-                if output.metadata.get('error'):
-                    status = "error"
-                    error_msg = str(output.metadata.get('error'))
-
-            # Log to file
-            self.tool_logger.log_tool_call(
-                tool_name=tool_info,
-                args=tool_args,
-                output=display_content or result_content or "",
-                duration=duration,
-                status=status,
-                error=error_msg,
-                metadata={
+            self._log_tool_result_output(
+                output,
+                tool_info=tool_info,
+                summary=summary,
+                extra_metadata={
                     'tool_call_id': tool_call_id,
-                    'summary': summary,
                     'tool_type': tool_type
                 },
-                context={
-                    'session_id': self.session_id
-                }
             )
         except Exception as e:
             # Logging is non-critical, don't break rendering

@@ -1,8 +1,8 @@
 ---
 name: filex
 description: Parse workspace files, HTTP(S) file URLs, or supported source URLs such as YouTube into Markdown, inspect source routing, and inspect resumable PDF batch status with the FileX CLI inside an AWorld sandbox. Use for reading, extracting, transcribing, inspecting, summarizing, or answering questions about PDF, Word, PowerPoint, Excel, CSV, text, Markdown, image, audio, or video files.
-default_enabled: true
 metadata:
+  default_enabled: true
   match_keywords:
     - pdf
     - docx
@@ -70,7 +70,7 @@ python3 /skills/filex/scripts/filex.py --help
 
 Do not change into `/app/mcp_servers/filesystem_server`, call `./bin/filex`, or
 use `/root/fs_workspace`. Those paths belong to a different MCP filesystem-server
-image. In the Harbor/ParseBench AWorld runtime, `FILEX_WORKSPACE_ROOT` is
+image. In a managed AWorld sandbox, `FILEX_WORKSPACE_ROOT` is commonly
 `/workspace`; standalone AWorld images may use `$HOME/workspace`. Use the
 runtime-provided value and the task's supplied path instead of deriving a path
 from the current directory. `/skills/filex` is read-only and is never an output
@@ -165,6 +165,37 @@ python3 /skills/filex/scripts/filex.py parse \
   --artifacts-dir /logs/artifacts
 ```
 
+For any workflow whose result is accepted only with machine-verifiable artifacts,
+treat the following as one canonical command shape. Substitute the actual source,
+artifact directory, and registered provider without dropping any option:
+
+```bash
+python3 /skills/filex/scripts/filex.py parse \
+  --input "$SOURCE_PATH" \
+  --provider "$FILEX_PROVIDER" \
+  --no-cache \
+  --layout-format parse-output \
+  --artifacts-dir "$ARTIFACTS_DIR"
+```
+
+Invoke that wrapper directly as the terminal tool command. Do not append a shell
+pipeline such as `| tail` or `| tee`, combine it with `2>&1`, redirect its JSON
+stdout, add `|| true`, or wrap it in a command whose status can replace the
+wrapper's exit status. The terminal tool already captures bounded stdout and
+stderr. Success requires both a zero process status and JSON `success: true`.
+
+If a retry is justified, preserve the source/page selection, `--artifacts-dir`,
+`--layout-format parse-output`, `--no-cache`, and the same `--provider` or
+`--env-file`. A deliberate provider fallback must name another registered FileX
+provider, retain all artifact-contract options, and be reported as a provider
+change; never turn an omitted option into an accidental fallback. Wait for each
+attempt to end before starting the next one.
+
+If every FileX attempt fails, preserve the last nonzero status and JSON error and
+fail the artifact-producing task. Do not use Python, shell, another parser, or
+manual editing to synthesize `document.md`, `layout.json`, or `result.json` after
+FileX failed. Such files do not prove FileX execution.
+
 When `--layout-format document-ir` is selected, the bundle contains
 `document.md`, FileX Document IR as `layout.json`, and a version 1 `result.json`
 with source/output hashes and the unmodified FileX response.
@@ -185,7 +216,11 @@ pixel `x`, `y`, `w`, `h` coordinates with Canonical17 labels, and preserves sour
 page numbers and reading order. Tables retain their Markdown/HTML content. The
 original Document IR is separately preserved byte for byte as `document-ir.json`.
 A version 2 `result.json` records the layout format, source hash, all three output
-hashes, and the unmodified FileX response. The task's requested `document.md` and
+hashes, the unmodified FileX response, and a `filex_provenance` receipt. The
+receipt identifies the effective provider and binds the source, original Document
+IR, exported Markdown/layout, and FileX response by SHA-256. Treat the export as
+FileX-produced only when the receipt says `producer: filex`, `status: succeeded`,
+and its hashes match the current files. The task's requested `document.md` and
 `layout.json` are the submission artifacts; the other files retain provenance.
 
 Keep the exported `layout.json` structure. Each `items[].bbox` is a box object;
@@ -229,9 +264,9 @@ dimensions, boxes, or a supported label, export reports a clear error. Actual
 empty page/item lists are preserved; text-layer spans without complete boxes
 remain in the original Document IR.
 
-The Harbor/ParseBench runtime sets `FILEX_LAYOUT_FORMAT=parse-output`; the
-standalone wrapper falls back to `document-ir` when the variable is absent. An
-explicit `--layout-format` takes precedence, so specify it when the artifact
+A managed artifact-producing runtime may set `FILEX_LAYOUT_FORMAT=parse-output`;
+the standalone wrapper falls back to `document-ir` when the variable is absent.
+An explicit `--layout-format` takes precedence, so specify it when the artifact
 contract must be deterministic. The wheel supplies the format converter.
 `FILEX_PYTHON` selects the Python environment containing that FileX wheel when it
 differs from the wrapper's Python; by default the wrapper uses its own Python.
@@ -303,10 +338,10 @@ other sensitive or structured values belong in the protected JSON file, never
 inline in a command.
 
 The AWorld runtime supplies the selected FileX VLM independently of the Agent
-model through `GATEWAY_VLLM_*`. In Harbor/ParseBench, do not put a
-`gateway_vllm` object in `--env-file`: it would override the VLM selected by the
-runtime, weaken reproducibility, and may use mismatched credentials. Never copy
-the Agent model credentials into the task. A standalone operator that needs a
+model through `GATEWAY_VLLM_*`. When a managed runtime supplies that profile, do
+not put a `gateway_vllm` object in `--env-file`: it would override the selected
+VLM, weaken reproducibility, and may use mismatched credentials. Never copy the
+Agent model credentials into the task. A standalone operator that needs a
 different VLM must configure that runtime outside the agent's parsing command.
 
 If PaddleOCR reports `No available model hosting platforms detected`, it was

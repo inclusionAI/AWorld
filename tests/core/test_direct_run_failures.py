@@ -409,6 +409,105 @@ def test_run_command_writes_partial_atif_before_returning_task_failure(
     assert final_outcome["atif_export"]["status"] == "persisted"
 
 
+def test_run_command_replaces_checkpoint_before_stubborn_cleanup_finishes(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    async def stubborn_cleanup() -> None:
+        while True:
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                continue
+
+    summary = {
+        "results": [
+            {
+                "iteration": 1,
+                "response": "done",
+                "success": True,
+                "completed": True,
+                "trajectory_capture_mode": "task_response",
+                "trajectory": [
+                    {
+                        "meta": {"session_id": "session-1", "step": 1},
+                        "action": {
+                            "content": "done",
+                            "tool_calls": [
+                                {
+                                    "id": "tool-1",
+                                    "function": {
+                                        "name": "run_code",
+                                        "arguments": {"code": "echo done"},
+                                    },
+                                }
+                            ],
+                        },
+                    }
+                ],
+                "llm_calls": [{"request_id": "request-1"}],
+            }
+        ]
+    }
+    outcome = DirectRunOutcome.from_summary(
+        summary,
+        status=DirectRunStatus.SUCCEEDED,
+    )
+
+    async def completed_direct_run(**_kwargs):
+        asyncio.create_task(stubborn_cleanup())
+        await asyncio.sleep(0)
+        return outcome
+
+    monkeypatch.delenv(
+        "AWORLD_DIRECT_RUN_SHUTDOWN_TIMEOUT_SECONDS",
+        raising=False,
+    )
+    monkeypatch.setattr(main_module, "_run_direct_mode", completed_direct_run)
+    monkeypatch.setattr(
+        "aworld_cli.top_level_commands.run_cmd.bootstrap_runtime",
+        lambda **_kwargs: None,
+    )
+    output_path = tmp_path / "trajectory.json"
+    outcome_path = tmp_path / "outcome.json"
+    args = SimpleNamespace(
+        task="test",
+        agent="Aworld",
+        skill=None,
+        max_runs=None,
+        max_cost=None,
+        max_duration=None,
+        completion_signal=None,
+        completion_threshold=3,
+        non_interactive=True,
+        session_id=None,
+        env_file=".env",
+        remote_backend=None,
+        agent_dir=None,
+        agent_file=None,
+        skill_path=None,
+        emit_trajectory=False,
+        trajectory_output=str(output_path),
+        outcome_output=str(outcome_path),
+    )
+
+    exit_code = RunTopLevelCommand().run(
+        args,
+        SimpleNamespace(argv=("aworld-cli", "run")),
+    )
+
+    assert exit_code == 0
+    trajectory = json.loads(output_path.read_text(encoding="utf-8"))
+    assert trajectory["extra"]["aworld"]["completion_state"] == "complete"
+    assert trajectory["extra"]["aworld"]["tool_call_count"] == 1
+    assert trajectory["steps"][1]["tool_calls"][0]["arguments"] == {
+        "code": "echo done"
+    }
+    persisted_outcome = json.loads(outcome_path.read_text(encoding="utf-8"))
+    assert persisted_outcome["semantic_status"] == "succeeded"
+    assert persisted_outcome["tool_call_count"] == 1
+
+
 def test_run_command_export_failure_forces_infrastructure_exit(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],

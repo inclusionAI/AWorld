@@ -267,7 +267,8 @@ class RunTopLevelCommand:
                         judge_backend_ref=judge_backend_ref,
                         judge_model_profile=judge_model_profile,
                     ),
-                )
+                ),
+                one_shot=bool(args.non_interactive),
             )
             outcome = coerce_direct_run_outcome(direct_run_result)
         except KeyboardInterrupt:

@@ -41,7 +41,7 @@ def test_filex_skill_documents_adapted_workflow_and_runtime_boundaries() -> None
     assert "AFTS" not in usage
 
 
-def test_filex_skill_examples_use_the_harbor_workspace_contract() -> None:
+def test_filex_skill_examples_use_the_managed_workspace_contract() -> None:
     provider = FilesystemSkillProvider("repo", REPO_ROOT / "aworld-skills")
     descriptor = next(item for item in provider.list_descriptors() if item.skill_name == "filex")
     usage = provider.load_content(descriptor.skill_id).usage
@@ -49,7 +49,7 @@ def test_filex_skill_examples_use_the_harbor_workspace_contract() -> None:
     assert "--input /workspace/input.docx" in usage
     assert "--input /workspace/report.pdf" in usage
     assert "--input /root/workspace/" not in usage
-    assert "Harbor/ParseBench runtime sets `FILEX_LAYOUT_FORMAT=parse-output`" in usage
+    assert "managed artifact-producing runtime may set `FILEX_LAYOUT_FORMAT=parse-output`" in usage
     assert "PDF already defaults to Paddle" not in usage
 
 

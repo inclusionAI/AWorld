@@ -47,6 +47,8 @@ if args[0] == "parse":
         "document_file_path": str(document.relative_to(workspace)),
         "metrics": {"provider": "python_docx", "provider_version": "1"},
     }
+    if os.environ.get("FILEX_FAKE_OMIT_METRICS") == "1":
+        payload.pop("metrics")
 elif args[0] == "inspect":
     payload = {
         "success": True,
@@ -298,12 +300,18 @@ def _public_export(
     mutate_ir=None,
     markdown: str = "public\r\n",
     exporter_python: str | None = None,
+    stale_receipt: bool = False,
 ):
     workspace, args_log, env = _environment(tmp_path)
     source = workspace / "input.pdf"
     source.write_bytes(b"%PDF public source")
     artifacts = tmp_path / "logs/artifacts"
     env["FILEX_ARTIFACTS_ROOT"] = str(artifacts)
+    if stale_receipt:
+        artifacts.mkdir(parents=True)
+        (artifacts / "result.json").write_text(
+            '{"status":"stale-success"}\n', encoding="utf-8"
+        )
     ir = {
         "schema_version": "filex-document-ir-v2",
         "coordinate_system": "pixel_top_left_xyxy",
@@ -383,6 +391,35 @@ def test_filex_wrapper_exports_parse_output_and_preserves_raw_ir_and_hashes(
     assert result["filex"]["metrics"] == {
         "provider": "python_docx",
         "provider_version": "1",
+    }
+    provenance = result["filex_provenance"]
+    assert stdout["filex_provenance"] == provenance
+    assert provenance == {
+        "schema_version": "filex.provenance/v1",
+        "status": "succeeded",
+        "producer": "filex",
+        "exporter": "aworld-skill-wrapper",
+        "provider": "python_docx",
+        "provider_version": "1",
+        "task_id": "fake-task",
+        "layout_format": "parse-output",
+        "source_sha256": result["source"]["sha256"],
+        "document_ir_sha256": result["artifacts"]["document_ir"]["sha256"],
+        "document_sha256": result["artifacts"]["document"]["sha256"],
+        "layout_sha256": result["artifacts"]["layout"]["sha256"],
+        "filex_response_sha256": "sha256:"
+        + hashlib.sha256(
+            (
+                json.dumps(
+                    result["filex"],
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                    allow_nan=False,
+                )
+                + "\n"
+            ).encode()
+        ).hexdigest(),
     }
     cli_args = json.loads(args_log.read_bytes())
     assert cli_args[cli_args.index("--pages") + 1] == "3"
@@ -477,6 +514,7 @@ def test_filex_wrapper_reports_invalid_geometry_without_committing_receipt(
     completed, artifacts, _, _, _ = _public_export(
         tmp_path,
         mutate_ir=lambda ir: ir["pages"][0]["elements"][0].update(bbox=[]),
+        stale_receipt=True,
     )
     assert completed.returncode == 2
     response = json.loads(completed.stdout)
@@ -484,6 +522,41 @@ def test_filex_wrapper_reports_invalid_geometry_without_committing_receipt(
     assert "element bbox" in response["message"]
     assert not (artifacts / "result.json").exists()
     assert not (artifacts / "layout.json").exists()
+
+
+def test_filex_wrapper_refuses_parse_output_without_provider_provenance(
+    tmp_path: Path,
+) -> None:
+    workspace, _, env = _environment(tmp_path)
+    source = workspace / "input.pdf"
+    source.write_bytes(b"%PDF public source")
+    artifacts = tmp_path / "logs/artifacts"
+    env["FILEX_ARTIFACTS_ROOT"] = str(artifacts)
+    env["FILEX_FAKE_OMIT_METRICS"] = "1"
+
+    completed = subprocess.run(
+        [
+            sys.executable,
+            str(FILEX_SCRIPT),
+            "parse",
+            "--input",
+            str(source),
+            "--layout-format",
+            "parse-output",
+            "--artifacts-dir",
+            str(artifacts),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+
+    assert completed.returncode == 2
+    response = json.loads(completed.stdout)
+    assert response["error_type"] == "OutputError"
+    assert "provider metrics" in response["message"]
+    assert not (artifacts / "result.json").exists()
 
 
 def test_filex_wrapper_uses_the_configured_exporter_python(tmp_path: Path) -> None:

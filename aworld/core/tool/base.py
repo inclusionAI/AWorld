@@ -52,6 +52,30 @@ ToolInput = TypeVar("ToolInput")
 action_executor = None
 
 
+def _tool_result_output_metadata(action_result: ActionResult) -> Dict[str, Any]:
+    """Expose canonical execution status on every streamed tool result.
+
+    Tool-specific metadata is intentionally retained, while the framework's
+    ``ActionResult`` remains authoritative for success/error.  CLI and other
+    stream consumers should not need to reverse-engineer a serialized payload
+    merely to decide whether the call failed.
+    """
+
+    metadata = dict(action_result.metadata or {})
+    fields_set = getattr(action_result, "model_fields_set", set())
+    status_is_explicit = "success" in fields_set or bool(action_result.error)
+    if status_is_explicit:
+        metadata["success"] = bool(action_result.success)
+    if action_result.error:
+        metadata["error"] = str(action_result.error)
+    elif status_is_explicit and action_result.success:
+        metadata.pop("error", None)
+        metadata.pop("result_error", None)
+    if action_result.parameter and "args" not in metadata:
+        metadata["args"] = action_result.parameter
+    return metadata
+
+
 def _journal_model_visible_tool_observation(context, actions, observation) -> None:
     """Persist the exact bounded ActionResults that can enter model history."""
     if context is None:
@@ -500,7 +524,9 @@ class Tool(BaseTool[Observation, List[ActionModel]]):
             return
         for idx, act in enumerate(action):
             if eventbus is not None:
-                metadata = dict(step_res[0].action_result[idx].metadata or {})
+                metadata = _tool_result_output_metadata(
+                    step_res[0].action_result[idx]
+                )
                 if input_message.headers.get("system_message"):
                     metadata["system_message"] = input_message.headers["system_message"]
                 updated_output = input_message.headers.get("updated_output")
@@ -769,7 +795,9 @@ class AsyncTool(AsyncBaseTool[Observation, List[ActionModel]]):
         for idx, act in enumerate(action):
             # send tool results output
             if eventbus is not None:
-                metadata = dict(step_res[0].action_result[idx].metadata or {})
+                metadata = _tool_result_output_metadata(
+                    step_res[0].action_result[idx]
+                )
                 if input_message.headers.get("system_message"):
                     metadata["system_message"] = input_message.headers["system_message"]
                 updated_output = input_message.headers.get("updated_output")

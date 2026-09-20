@@ -46,9 +46,11 @@ An explicit request setting takes precedence over the environment.
 For an external gateway VLM, FileX replaces PaddleX's abbreviated chart task
 token with a strict chart-to-table prompt. Every detected chart block must
 return a multi-column Markdown or HTML table with at least one independent
-numeric cell. A narrative response or a one-column "summary table" is retried
-once and then fails with `PaddleOcrChartContractError`; it is never published as
-a valid chart artifact that silently scores zero. Set
+numeric cell. A narrative response or a one-column "summary table" triggers a
+bounded retry with a stricter correction prompt that asks the gateway VLM to
+read the chart image again. Output that still violates the contract fails with
+`PaddleOcrChartContractError`; narrative is never published as a valid chart
+artifact that silently scores zero. Set
 `FILEX_PADDLE_OCR_CHART_CONTRACT_RETRIES` to change the bounded retry count.
 `FILEX_PADDLE_OCR_CHART_PROMPT_MODE=legacy` keeps the native Paddle task token,
 and `FILEX_PADDLE_OCR_CHART_OUTPUT_CONTRACT=off` disables validation for

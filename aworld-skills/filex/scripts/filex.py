@@ -150,6 +150,54 @@ def _sha256(content: bytes) -> str:
     return "sha256:" + hashlib.sha256(content).hexdigest()
 
 
+def _canonical_json_bytes(value: Any) -> bytes:
+    return (
+        json.dumps(
+            value,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        )
+        + "\n"
+    ).encode("utf-8")
+
+
+def _filex_provenance(
+    *,
+    payload: dict[str, Any],
+    source_bytes: bytes,
+    markdown_bytes: bytes,
+    layout_bytes: bytes,
+    document_ir_bytes: bytes,
+) -> dict[str, Any]:
+    metrics = payload.get("metrics")
+    if not isinstance(metrics, dict):
+        raise ValueError("FileX response is missing provider metrics")
+    provider = str(metrics.get("provider") or "").strip()
+    if not provider:
+        raise ValueError("FileX response is missing the effective provider")
+    task_id = str(payload.get("task_id") or "").strip()
+    if not task_id:
+        raise ValueError("FileX response is missing task_id provenance")
+    provider_version = str(metrics.get("provider_version") or "").strip()
+    return {
+        "schema_version": "filex.provenance/v1",
+        "status": "succeeded",
+        "producer": "filex",
+        "exporter": "aworld-skill-wrapper",
+        "provider": provider,
+        "provider_version": provider_version,
+        "task_id": task_id,
+        "layout_format": "parse-output",
+        "source_sha256": _sha256(source_bytes),
+        "document_ir_sha256": _sha256(document_ir_bytes),
+        "document_sha256": _sha256(markdown_bytes),
+        "layout_sha256": _sha256(layout_bytes),
+        "filex_response_sha256": _sha256(_canonical_json_bytes(payload)),
+    }
+
+
 def _unique_json_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
     value: dict[str, Any] = {}
     for key, item in pairs:
@@ -205,6 +253,11 @@ def _export_artifact_bundle(
             f"Artifact destination is not a regular directory: {destination}"
         )
     destination.mkdir(parents=True, exist_ok=True)
+    result_output = destination / "result.json"
+    # A failed retry must never leave an older success receipt behind. The
+    # receipt is committed last, after every artifact and provenance hash has
+    # been derived from the current FileX response.
+    result_output.unlink(missing_ok=True)
 
     document_ir = _workspace_artifact_path(
         payload, "document_file_path", workspace, "Document IR"
@@ -243,7 +296,6 @@ def _export_artifact_bundle(
 
     document_output = destination / "document.md"
     layout_output = destination / "layout.json"
-    result_output = destination / "result.json"
     result = {
         "schema_version": "filex.skill.parse-result/v1"
         if layout_format == "document-ir"
@@ -271,6 +323,13 @@ def _export_artifact_bundle(
     if layout_format == "parse-output":
         raw_ir_output = destination / "document-ir.json"
         result["layout_format"] = layout_format
+        result["filex_provenance"] = _filex_provenance(
+            payload=payload,
+            source_bytes=source_bytes,
+            markdown_bytes=markdown_bytes,
+            layout_bytes=layout_bytes,
+            document_ir_bytes=original_ir_bytes,
+        )
         result["artifacts"]["document_ir"] = {
             "path": str(raw_ir_output),
             "size": len(original_ir_bytes),
@@ -292,6 +351,11 @@ def _export_artifact_bundle(
         "artifacts_dir": str(destination),
         "artifact_result": str(result_output),
         "layout_format": layout_format,
+        **(
+            {"filex_provenance": result["filex_provenance"]}
+            if layout_format == "parse-output"
+            else {}
+        ),
     }
 
 

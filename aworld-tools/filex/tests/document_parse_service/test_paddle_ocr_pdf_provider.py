@@ -260,6 +260,30 @@ def test_paddle_ocr_metrics_report_effective_gateway_model() -> None:
     assert provider._model_info()["chart_output_contract"] == "strict"
 
 
+def test_gateway_chart_capabilities_are_all_enabled_by_default(monkeypatch) -> None:
+    module = _load_provider_module()
+    for setting in (
+        "FILEX_PADDLE_OCR_USE_CHART_RECOGNITION",
+        "FILEX_PADDLE_OCR_CHART_PROMPT_MODE",
+        "FILEX_PADDLE_OCR_CHART_OUTPUT_CONTRACT",
+    ):
+        monkeypatch.delenv(setting, raising=False)
+    provider = module.PaddleOcrPdfProvider(
+        env_content={
+            "gateway_vllm": {
+                "base_url": "https://gateway.example/v1",
+                "model_name": "gateway-vlm",
+            }
+        },
+        pipeline=object(),
+    )
+
+    assert provider._pipeline_kwargs()["use_chart_recognition"] is True
+    assert provider._predict_kwargs()["use_chart_recognition"] is True
+    assert provider._model_info()["chart_prompt_mode"] == "structured"
+    assert provider._model_info()["chart_output_contract"] == "strict"
+
+
 def test_native_paddle_keeps_legacy_chart_prompt_by_default() -> None:
     module = _load_provider_module()
     provider = module.PaddleOcrPdfProvider(env_content={}, pipeline=object())
@@ -736,10 +760,23 @@ def test_chart_contract_retries_narrative_output_then_accepts_table() -> None:
     class _Pipeline:
         def __init__(self) -> None:
             self.calls = 0
+            self.prompts: list[str] = []
+
+        @staticmethod
+        def _paddleocr_vl_collect_page_vlm_entries_core(*_args, **_kwargs):
+            return ([(object(), "chart", {}, "Chart Recognition:")], False, False)
 
         def predict(self, _input_path, **_kwargs):
             self.calls += 1
-            content = narrative if self.calls == 1 else structured
+            entries, _has_spotting, _drop_figures = (
+                self._paddleocr_vl_collect_page_vlm_entries_core()
+            )
+            prompt = entries[0][3]
+            self.prompts.append(prompt)
+            # Model a general gateway VLM which only corrects its output after
+            # FileX sends a distinct contract-repair prompt. Repeating the same
+            # request would remain narrative and fail this behavior test.
+            content = structured if "CORRECTION ATTEMPT" in prompt else narrative
             return [
                 {
                     "page_index": 0,
@@ -779,6 +816,9 @@ def test_chart_contract_retries_narrative_output_then_accepts_table() -> None:
     )
 
     assert pipeline.calls == 2
+    assert pipeline.prompts[0] == provider._chart_recognition_prompt()
+    assert "CORRECTION ATTEMPT 1" in pipeline.prompts[1]
+    assert pipeline.prompts[1] != pipeline.prompts[0]
     assert result.retry_count == 1
     assert result.markdown_text == structured
 

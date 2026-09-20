@@ -35,6 +35,15 @@ Put every label, series name, category, date or year, and numeric value in its o
 Use one data point per row. For approximate points, emit one best numeric estimate rather
 than a range. Preserve panel titles as a table column or a short heading immediately before
 the corresponding table. Never wrap a narrative sentence in a one-column table."""
+_CHART_CORRECTION_PROMPT = """Chart Recognition:
+CORRECTION ATTEMPT {attempt}: the previous response violated the chart table contract.
+Read the chart image again; do not reformat or summarize the previous answer.
+Return one or more Markdown tables and nothing else. Every table must have at least two
+columns. Put labels/categories/series in separate cells and every visible numeric value in
+its own numeric cell. Use one observation per row. Do not emit prose, bullets, JSON,
+one-column tables, ranges, or commentary. If a value is approximate, emit one best numeric
+estimate with an optional ~ prefix. Never invent a value that is not visible in the chart.
+The rejected output failed these checks: {failures}"""
 _MARKDOWN_SEPARATOR_CELL = re.compile(r"^:?-{3,}:?$")
 _NUMERIC_CHART_CELL = re.compile(
     r"^[~≈]?\s*[$€£¥]?\s*[-+]?(?:\d[\d, ]*|\d*\.\d+)"
@@ -45,6 +54,7 @@ _HTML_TABLE = re.compile(r"<table\b[^>]*>(.*?)</table>", re.IGNORECASE | re.DOTA
 _HTML_ROW = re.compile(r"<tr\b[^>]*>(.*?)</tr>", re.IGNORECASE | re.DOTALL)
 _HTML_CELL = re.compile(r"<t[dh]\b[^>]*>(.*?)</t[dh]>", re.IGNORECASE | re.DOTALL)
 _HTML_TAG = re.compile(r"<[^>]+>")
+_CHART_PROMPT_CONTEXT = threading.local()
 
 
 class PaddleOcrModelAssetsError(RuntimeError):
@@ -376,19 +386,23 @@ class PaddleOcrPdfProvider:
         """
 
         prompt = self._chart_recognition_prompt()
-        if prompt == _LEGACY_CHART_PROMPT:
+        if (
+            prompt == _LEGACY_CHART_PROMPT
+            and self._chart_output_contract_mode() == "off"
+        ):
             return
         target = getattr(pipeline, "paddlex_pipeline", pipeline)
         method_name = "_paddleocr_vl_collect_page_vlm_entries_core"
-        original = getattr(target, method_name, None)
-        if not callable(original):
+        installed = getattr(target, method_name, None)
+        if not callable(installed):
             logger.warning(
                 "paddle_ocr chart prompt override unavailable; output contract "
                 "validation remains active"
             )
             return
-        if getattr(original, "__filex_structured_chart_prompt__", None) == prompt:
+        if getattr(installed, "__filex_structured_chart_prompt__", None) == prompt:
             return
+        original = getattr(installed, "__filex_chart_prompt_original__", installed)
 
         def collect_with_structured_chart_prompt(*args: Any, **kwargs: Any) -> Any:
             result = original(*args, **kwargs)
@@ -398,6 +412,9 @@ class PaddleOcrPdfProvider:
             if not isinstance(entries, list):
                 return result
             updated: list[Any] = []
+            active_prompt = str(
+                getattr(_CHART_PROMPT_CONTEXT, "prompt", prompt) or prompt
+            )
             for entry in entries:
                 if (
                     isinstance(entry, tuple)
@@ -405,13 +422,16 @@ class PaddleOcrPdfProvider:
                     and str(entry[3]).strip() == _LEGACY_CHART_PROMPT
                 ):
                     values = list(entry)
-                    values[3] = prompt
+                    values[3] = active_prompt
                     entry = tuple(values)
                 updated.append(entry)
             return (updated, *result[1:])
 
         collect_with_structured_chart_prompt.__filex_structured_chart_prompt__ = (  # type: ignore[attr-defined]
             prompt
+        )
+        collect_with_structured_chart_prompt.__filex_chart_prompt_original__ = (  # type: ignore[attr-defined]
+            original
         )
         try:
             setattr(target, method_name, collect_with_structured_chart_prompt)
@@ -509,16 +529,36 @@ class PaddleOcrPdfProvider:
         retry_count = 0
         transport_retry_count = 0
         chart_retry_count = 0
+        chart_failures: list[str] = []
         while True:
             try:
                 raw_results = []
                 first_batch_elapsed_ms = 0.0
-                for raw_result in pipeline.predict(str(file_path), **predict_kwargs):
-                    raw_results.append(raw_result)
-                    if not first_batch_elapsed_ms:
-                        first_batch_elapsed_ms = round(
-                            (time.monotonic() - started_at) * 1000, 2
-                        )
+                retry_prompt = (
+                    self._chart_correction_prompt(chart_retry_count, chart_failures)
+                    if chart_retry_count
+                    else None
+                )
+                previous_prompt = getattr(_CHART_PROMPT_CONTEXT, "prompt", None)
+                if retry_prompt:
+                    _CHART_PROMPT_CONTEXT.prompt = retry_prompt
+                try:
+                    for raw_result in pipeline.predict(
+                        str(file_path), **predict_kwargs
+                    ):
+                        raw_results.append(raw_result)
+                        if not first_batch_elapsed_ms:
+                            first_batch_elapsed_ms = round(
+                                (time.monotonic() - started_at) * 1000, 2
+                            )
+                finally:
+                    if previous_prompt is None:
+                        try:
+                            del _CHART_PROMPT_CONTEXT.prompt
+                        except AttributeError:
+                            pass
+                    else:
+                        _CHART_PROMPT_CONTEXT.prompt = previous_prompt
                 chart_failures = self._chart_contract_failures(raw_results)
                 if chart_failures:
                     if chart_retry_count >= chart_contract_retries:
@@ -557,6 +597,20 @@ class PaddleOcrPdfProvider:
                     exc,
                 )
                 time.sleep(delay_ms / 1000)
+
+    @staticmethod
+    def _chart_correction_prompt(attempt: int, failures: list[str]) -> str:
+        failure_summary = (
+            f"{len(failures)} detected chart block(s) lacked a valid multi-column "
+            "table with an independent numeric cell"
+            if failures
+            else "invalid chart table output"
+        )
+        prompt = _CHART_CORRECTION_PROMPT.format(
+            attempt=attempt,
+            failures=failure_summary,
+        )
+        return prompt[:4096]
 
     def _chart_contract_failures(self, raw_results: list[Any]) -> list[str]:
         mode = self._chart_output_contract_mode()
