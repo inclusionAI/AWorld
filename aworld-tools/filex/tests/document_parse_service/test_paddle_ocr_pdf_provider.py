@@ -256,6 +256,16 @@ def test_paddle_ocr_metrics_report_effective_gateway_model() -> None:
     )
 
     assert provider._model_info()["vl_rec_api_model_name"] == ("gemini-3.1-pro-preview")
+    assert provider._model_info()["chart_prompt_mode"] == "structured"
+    assert provider._model_info()["chart_output_contract"] == "strict"
+
+
+def test_native_paddle_keeps_legacy_chart_prompt_by_default() -> None:
+    module = _load_provider_module()
+    provider = module.PaddleOcrPdfProvider(env_content={}, pipeline=object())
+
+    assert provider._model_info()["chart_prompt_mode"] == "legacy"
+    assert provider._model_info()["chart_output_contract"] == "off"
 
 
 def test_paddle_ocr_uses_protected_runtime_environment(monkeypatch) -> None:
@@ -598,6 +608,21 @@ def test_chart_block_uses_vlm_recognition_and_survives_markdown_and_ir(
         def __init__(self) -> None:
             self.vlm_prompts = []
 
+        def _paddleocr_vl_collect_page_vlm_entries_core(
+            self,
+            page_idx,
+            blocks_for_img,
+            imgs_in_doc_for_img,
+            layout_prep_cfg,
+        ):
+            return _PaddleOCRVLPipeline._paddleocr_vl_collect_page_vlm_entries_core(
+                None,
+                page_idx,
+                blocks_for_img,
+                imgs_in_doc_for_img,
+                layout_prep_cfg,
+            )
+
         def predict(self, _input_path, **kwargs):
             assert kwargs["use_chart_recognition"] is True
             chart_block = {
@@ -606,8 +631,7 @@ def test_chart_block_uses_vlm_recognition_and_survives_markdown_and_ir(
                 "box": [10, 20, 310, 220],
             }
             entries, _has_spotting, _drop_figures = (
-                _PaddleOCRVLPipeline._paddleocr_vl_collect_page_vlm_entries_core(
-                    None,
+                self._paddleocr_vl_collect_page_vlm_entries_core(
                     0,
                     [chart_block],
                     [],
@@ -667,7 +691,7 @@ def test_chart_block_uses_vlm_recognition_and_survives_markdown_and_ir(
 
     pipeline = _ChartPipeline()
     provider = module.PaddleOcrPdfProvider(
-        env_content={},
+        env_content={"paddle_ocr_chart_prompt_mode": "structured"},
         pipeline=pipeline,
     )
 
@@ -680,7 +704,8 @@ def test_chart_block_uses_vlm_recognition_and_survives_markdown_and_ir(
     )
     artifact = provider.to_markdown_artifact(result)
 
-    assert pipeline.vlm_prompts == ["Chart Recognition:"]
+    assert pipeline.vlm_prompts == [provider._chart_recognition_prompt()]
+    assert "Markdown tables only" in pipeline.vlm_prompts[0]
     assert "<table" in artifact.markdown_text
     assert "Quarter" in artifact.markdown_text
     assert "Revenue" in artifact.markdown_text
@@ -698,3 +723,149 @@ def test_chart_block_uses_vlm_recognition_and_survives_markdown_and_ir(
             "group_id": 0,
         }
     ]
+
+
+def test_chart_contract_retries_narrative_output_then_accepts_table() -> None:
+    module = _load_provider_module()
+    narrative = """<table><tr><th>Chart summary</th></tr>
+<tr><td>USA was approximately 38 in November 2025.</td></tr></table>"""
+    structured = (
+        "| Country | Date | Value |\n| --- | --- | ---: |\n| USA | November 2025 | 38 |"
+    )
+
+    class _Pipeline:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def predict(self, _input_path, **_kwargs):
+            self.calls += 1
+            content = narrative if self.calls == 1 else structured
+            return [
+                {
+                    "page_index": 0,
+                    "page_count": 1,
+                    "width": 400,
+                    "height": 300,
+                    "markdown_texts": content,
+                    "parsing_res_list": [
+                        {
+                            "label": "chart",
+                            "bbox": [10, 20, 310, 220],
+                            "content": content,
+                        }
+                    ],
+                }
+            ]
+
+        @staticmethod
+        def concatenate_markdown_pages(markdown_list):
+            return "\n\n".join(item["markdown_texts"] for item in markdown_list)
+
+    pipeline = _Pipeline()
+    provider = module.PaddleOcrPdfProvider(
+        env_content={
+            "paddle_ocr_chart_output_contract": "strict",
+            "paddle_ocr_chart_contract_retries": 1,
+        },
+        pipeline=pipeline,
+    )
+
+    result = asyncio.run(
+        provider.understand_pdf(
+            file_path=Path("/tmp/chart.pdf"),
+            task_id="task-chart-retry",
+            source_file_name="chart",
+        )
+    )
+
+    assert pipeline.calls == 2
+    assert result.retry_count == 1
+    assert result.markdown_text == structured
+
+
+def test_chart_contract_rejects_persistent_narrative_table() -> None:
+    module = _load_provider_module()
+    narrative = """<table><tr><th>Chart summary</th></tr>
+<tr><td>USA was approximately 38 in November 2025.</td></tr></table>"""
+
+    class _Pipeline:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def predict(self, _input_path, **_kwargs):
+            self.calls += 1
+            return [
+                {
+                    "page_index": 0,
+                    "page_count": 1,
+                    "markdown_texts": narrative,
+                    "parsing_res_list": [
+                        {
+                            "label": "chart",
+                            "block_id": "panel-a",
+                            "bbox": [10, 20, 310, 220],
+                            "content": narrative,
+                        }
+                    ],
+                }
+            ]
+
+    pipeline = _Pipeline()
+    provider = module.PaddleOcrPdfProvider(
+        env_content={
+            "paddle_ocr_chart_output_contract": "strict",
+            "paddle_ocr_chart_contract_retries": 1,
+        },
+        pipeline=pipeline,
+    )
+
+    with pytest.raises(module.PaddleOcrChartContractError) as captured:
+        asyncio.run(
+            provider.understand_pdf(
+                file_path=Path("/tmp/chart.pdf"),
+                task_id="task-chart-invalid",
+                source_file_name="chart",
+            )
+        )
+
+    assert pipeline.calls == 2
+    assert "page=1 block=panel-a" in str(captured.value)
+    assert "38" not in str(captured.value)
+
+
+@pytest.mark.parametrize(
+    ("content", "expected"),
+    [
+        (
+            "| Country | Value |\n| --- | ---: |\n| USA | ~38 |",
+            True,
+        ),
+        (
+            (
+                "<table><tr><th>Country</th><th>Value</th></tr>"
+                "<tr><td>USA</td><td>38</td></tr></table>"
+            ),
+            True,
+        ),
+        (
+            (
+                "<table><tr><th>Summary</th></tr>"
+                "<tr><td>USA was approximately 38.</td></tr></table>"
+            ),
+            False,
+        ),
+        (
+            "| Country | Value |\n| --- | --- |\n| USA | 35-40 |",
+            False,
+        ),
+    ],
+)
+def test_chart_contract_requires_independent_numeric_cells(
+    content: str, expected: bool
+) -> None:
+    module = _load_provider_module()
+
+    assert (
+        module.PaddleOcrPdfProvider._has_scorer_compatible_chart_table(content)
+        is expected
+    )
