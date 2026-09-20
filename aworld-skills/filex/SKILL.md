@@ -156,7 +156,9 @@ FileX supports:
 Omit `--output` to keep FileX's generated Markdown path. Use `--file-type` only when extension or content detection is insufficient. Parse stdout as JSON and continue only when `success` is `true`.
 
 When a task requires durable, machine-verifiable output, use `--artifacts-dir`. The
-directory must be under `FILEX_ARTIFACTS_ROOT` (normally `/logs/artifacts`):
+wrapper validates that the directory is under `FILEX_ARTIFACTS_ROOT` (normally
+`/logs/artifacts`) and passes the request to the FileX CLI. FileX itself creates
+and commits the bundle, so this contract works through other callers and harnesses:
 
 ```bash
 python3 /skills/filex/scripts/filex.py parse \
@@ -197,8 +199,9 @@ manual editing to synthesize `document.md`, `layout.json`, or `result.json` afte
 FileX failed. Such files do not prove FileX execution.
 
 When `--layout-format document-ir` is selected, the bundle contains
-`document.md`, FileX Document IR as `layout.json`, and a version 1 `result.json`
-with source/output hashes and the unmodified FileX response.
+`document.md`, FileX Document IR as `layout.json`, and a
+`filex.artifact-bundle/v1` `result.json` with source/output hashes and the
+unmodified FileX response.
 
 When the task requests `document.md` and a public ParseOutput `layout.json`
 containing `layout_pages`, export that format explicitly:
@@ -215,13 +218,14 @@ This preserves the generated Markdown exactly, exports actual element boxes as
 pixel `x`, `y`, `w`, `h` coordinates with Canonical17 labels, and preserves source
 page numbers and reading order. Tables retain their Markdown/HTML content. The
 original Document IR is separately preserved byte for byte as `document-ir.json`.
-A version 2 `result.json` records the layout format, source hash, all three output
-hashes, the unmodified FileX response, and a `filex_provenance` receipt. The
-receipt identifies the effective provider and binds the source, original Document
-IR, exported Markdown/layout, and FileX response by SHA-256. Treat the export as
-FileX-produced only when the receipt says `producer: filex`, `status: succeeded`,
-and its hashes match the current files. The task's requested `document.md` and
-`layout.json` are the submission artifacts; the other files retain provenance.
+The `filex.artifact-bundle/v1` `result.json` records the layout format, source
+hash, all three output hashes, the unmodified FileX response, and a
+`filex_provenance` receipt. The receipt identifies the effective provider and
+binds the source, original Document IR, exported Markdown/layout, and FileX
+response by SHA-256. Treat the export as FileX-produced only when the receipt
+says `producer: filex`, `exporter: filex-cli`, `status: succeeded`, and its hashes
+match the current files. The task's requested `document.md` and `layout.json` are
+the submission artifacts; the other files retain provenance.
 
 Keep the exported `layout.json` structure. Each `items[].bbox` is a box object;
 each optional `items[].layout_segments[]` entry is itself a box object with
@@ -249,7 +253,7 @@ not establish that the layout follows the required schema.
 
 ParseOutput export requires a provider that emits real layout geometry. For
 PNG, JPG/JPEG, WebP, GIF, and BMP inputs with `--artifacts-dir` and
-`--layout-format parse-output`, the wrapper selects `paddle_ocr` when no
+`--layout-format parse-output`, FileX selects `paddle_ocr` when no
 `--provider` or `--env-file` was supplied. This also applies when the format comes
 from `FILEX_LAYOUT_FORMAT`. Explicit provider/configuration choices and the
 legacy `document-ir` behavior stay unchanged. For PDF, do not rely on a
@@ -267,9 +271,8 @@ remain in the original Document IR.
 A managed artifact-producing runtime may set `FILEX_LAYOUT_FORMAT=parse-output`;
 the standalone wrapper falls back to `document-ir` when the variable is absent.
 An explicit `--layout-format` takes precedence, so specify it when the artifact
-contract must be deterministic. The wheel supplies the format converter.
-`FILEX_PYTHON` selects the Python environment containing that FileX wheel when it
-differs from the wrapper's Python; by default the wrapper uses its own Python.
+contract must be deterministic. The FileX wheel supplies and invokes the format
+converter directly; the AWorld wrapper does not maintain a second exporter.
 These controls select an output representation and do not select a model or run
 evaluation.
 

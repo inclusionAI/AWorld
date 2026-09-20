@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import asyncio
 import io
+import json
+from pathlib import Path
 
 import document_parse_service.cli as cli_module
 import pytest
@@ -134,3 +136,131 @@ def test_parse_rejects_media_download_authorization_for_plain_http() -> None:
 
     with pytest.raises(ValueError, match="only supported by the YouTube"):
         asyncio.run(cli_module._run_parse(args, trace_id="test-trace"))
+
+
+def _fake_parse_result(workspace: Path, *, task_id: str | None = None) -> dict:
+    output = workspace / "document_parse" / "result.md"
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text("native FileX CLI\n", encoding="utf-8")
+    document = output.with_suffix(".document.json")
+    document.write_text(
+        json.dumps(
+            {
+                "schema_version": "filex-document-ir-v2",
+                "coordinate_system": "pixel_top_left_xyxy",
+                "pages": [
+                    {
+                        "page_index": 0,
+                        "width": 100,
+                        "height": 100,
+                        "elements": [],
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    return {
+        "success": True,
+        **({"task_id": task_id} if task_id else {}),
+        "file_path": str(output.relative_to(workspace)),
+        "document_file_path": str(document.relative_to(workspace)),
+        "metrics": {"provider": "python_docx", "provider_version": "1"},
+    }
+
+
+def test_native_cli_exports_parse_output_bundle_with_stable_task_id(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    source = tmp_path / "input.docx"
+    source.write_bytes(b"docx fixture")
+    artifacts = tmp_path / "artifacts"
+
+    class FakeService:
+        async def parse(self, **_kwargs):
+            return _fake_parse_result(tmp_path)
+
+    monkeypatch.setattr(cli_module, "FS_WORKSPACE_ROOT", tmp_path)
+    monkeypatch.setattr(cli_module, "DocumentParseService", FakeService)
+    args = cli_module._build_parser().parse_args(
+        [
+            "parse",
+            "--workspace-path",
+            str(source),
+            "--artifacts-dir",
+            str(artifacts),
+            "--layout-format",
+            "parse-output",
+        ]
+    )
+
+    result = asyncio.run(cli_module._run_parse(args, trace_id="stable-trace"))
+
+    receipt = json.loads((artifacts / "result.json").read_bytes())
+    assert result["artifact_result"] == str(artifacts / "result.json")
+    assert receipt["schema_version"] == "filex.artifact-bundle/v1"
+    assert receipt["filex"]["task_id"] == "stable-trace"
+    assert receipt["filex_provenance"]["task_id"] == "stable-trace"
+    assert receipt["filex_provenance"]["exporter"] == "filex-cli"
+
+
+def test_failed_native_parse_removes_stale_receipt_but_keeps_diagnostics(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    source = tmp_path / "input.pdf"
+    source.write_bytes(b"%PDF fixture")
+    artifacts = tmp_path / "artifacts"
+    artifacts.mkdir()
+    (artifacts / "result.json").write_text('{"status":"succeeded"}\n')
+    (artifacts / "layout.json").write_text('{"old":true}\n')
+
+    class FailingService:
+        async def parse(self, **_kwargs):
+            raise RuntimeError("provider failed")
+
+    monkeypatch.setattr(cli_module, "FS_WORKSPACE_ROOT", tmp_path)
+    monkeypatch.setattr(cli_module, "DocumentParseService", FailingService)
+    args = cli_module._build_parser().parse_args(
+        ["parse", str(source), "--artifacts-dir", str(artifacts)]
+    )
+
+    with pytest.raises(RuntimeError, match="provider failed"):
+        asyncio.run(cli_module._run_parse(args, trace_id="failed-trace"))
+
+    assert not (artifacts / "result.json").exists()
+    assert (artifacts / "layout.json").is_file()
+
+
+def test_native_cli_selects_layout_capable_image_provider_generically(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    source = tmp_path / "input.png"
+    source.write_bytes(b"png fixture")
+    captured = {}
+
+    class FakeService:
+        async def parse(self, **kwargs):
+            captured.update(kwargs)
+            result = _fake_parse_result(tmp_path, task_id="image-task")
+            result["metrics"] = {
+                "provider": "paddle_ocr",
+                "provider_version": "v1.6",
+            }
+            return result
+
+    monkeypatch.setattr(cli_module, "FS_WORKSPACE_ROOT", tmp_path)
+    monkeypatch.setattr(cli_module, "DocumentParseService", FakeService)
+    args = cli_module._build_parser().parse_args(
+        [
+            "parse",
+            str(source),
+            "--artifacts-dir",
+            str(tmp_path / "artifacts"),
+            "--layout-format",
+            "parse-output",
+        ]
+    )
+
+    asyncio.run(cli_module._run_parse(args, trace_id="image-trace"))
+
+    assert captured["env_content"]["filex_parse_provider"] == "paddle_ocr"

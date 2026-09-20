@@ -22,6 +22,11 @@ import os
 import pathlib
 import sys
 
+from document_parse_service.artifact_bundle import (
+    export_artifact_bundle,
+    prepare_artifact_destination,
+)
+
 args = sys.argv[1:]
 pathlib.Path(os.environ["FILEX_ARGS_LOG"]).write_text(
     json.dumps(args), encoding="utf-8"
@@ -29,6 +34,11 @@ pathlib.Path(os.environ["FILEX_ARGS_LOG"]).write_text(
 workspace = pathlib.Path(os.environ["FILEX_WORKSPACE_ROOT"])
 
 if args[0] == "parse":
+    artifacts = None
+    if "--artifacts-dir" in args:
+        artifacts = prepare_artifact_destination(
+            args[args.index("--artifacts-dir") + 1]
+        )
     result = workspace / "document_parse" / "fake-task" / "result.md"
     result.parent.mkdir(parents=True, exist_ok=True)
     result.write_text(
@@ -49,6 +59,22 @@ if args[0] == "parse":
     }
     if os.environ.get("FILEX_FAKE_OMIT_METRICS") == "1":
         payload.pop("metrics")
+    if artifacts is not None:
+        try:
+            payload.update(export_artifact_bundle(
+                destination=artifacts,
+                source=args[args.index("--workspace-path") + 1],
+                markdown=result,
+                document_ir=document,
+                filex_response=dict(payload),
+                layout_format=args[args.index("--layout-format") + 1],
+            ))
+        except ValueError as exc:
+            payload = {
+                "success": False,
+                "message": str(exc),
+                "error_type": "ValidationError",
+            }
 elif args[0] == "inspect":
     payload = {
         "success": True,
@@ -59,6 +85,7 @@ else:
     payload = {"success": True, "status": "parsing", "completed_batches": 2}
 
 print(json.dumps(payload))
+raise SystemExit(0 if payload.get("success") else 1)
 """,
         encoding="utf-8",
     )
@@ -82,7 +109,6 @@ def _environment(tmp_path: Path) -> tuple[Path, Path, dict[str, str]]:
         + os.pathsep
         + env.get("PYTHONPATH", "")
     )
-    env["FILEX_PYTHON"] = sys.executable
     env.pop("FILEX_LAYOUT_FORMAT", None)
     return workspace, args_log, env
 
@@ -211,7 +237,7 @@ def test_filex_wrapper_exports_generic_artifact_bundle(tmp_path: Path) -> None:
 
     assert completed.returncode == 0, completed.stdout
     result = json.loads((artifacts / "result.json").read_text())
-    assert result["schema_version"] == "filex.skill.parse-result/v1"
+    assert result["schema_version"] == "filex.artifact-bundle/v1"
     assert result["source"]["sha256"].startswith("sha256:")
     assert result["artifacts"]["document"]["path"] == str(artifacts / "document.md")
     assert (artifacts / "document.md").read_text() == "# Parsed by FileX\n"
@@ -299,7 +325,7 @@ def _public_export(
     env_format: str | None = None,
     mutate_ir=None,
     markdown: str = "public\r\n",
-    exporter_python: str | None = None,
+    filex_python: str | None = None,
     stale_receipt: bool = False,
 ):
     workspace, args_log, env = _environment(tmp_path)
@@ -337,8 +363,8 @@ def _public_export(
     raw = json.dumps(ir, indent=2) + "\n"
     env["FILEX_FAKE_DOCUMENT_JSON"] = raw
     env["FILEX_FAKE_MARKDOWN"] = markdown
-    if exporter_python is not None:
-        env["FILEX_PYTHON"] = exporter_python
+    if filex_python is not None:
+        env["FILEX_PYTHON"] = filex_python
     if env_format is not None:
         env["FILEX_LAYOUT_FORMAT"] = env_format
     command = [
@@ -368,7 +394,7 @@ def test_filex_wrapper_exports_parse_output_and_preserves_raw_ir_and_hashes(
     stdout = json.loads(completed.stdout)
     result = json.loads((artifacts / "result.json").read_bytes())
     assert stdout["layout_format"] == result["layout_format"] == "parse-output"
-    assert result["schema_version"] == "filex.skill.parse-result/v2"
+    assert result["schema_version"] == "filex.artifact-bundle/v1"
     assert (artifacts / "document-ir.json").read_bytes() == raw.encode()
     assert (artifacts / "document.md").read_bytes() == b"public\r\n"
     output = json.loads((artifacts / "layout.json").read_bytes())
@@ -398,7 +424,7 @@ def test_filex_wrapper_exports_parse_output_and_preserves_raw_ir_and_hashes(
         "schema_version": "filex.provenance/v1",
         "status": "succeeded",
         "producer": "filex",
-        "exporter": "aworld-skill-wrapper",
+        "exporter": "filex-cli",
         "provider": "python_docx",
         "provider_version": "1",
         "task_id": "fake-task",
@@ -423,7 +449,8 @@ def test_filex_wrapper_exports_parse_output_and_preserves_raw_ir_and_hashes(
     }
     cli_args = json.loads(args_log.read_bytes())
     assert cli_args[cli_args.index("--pages") + 1] == "3"
-    assert "--layout-format" not in cli_args
+    assert cli_args[cli_args.index("--layout-format") + 1] == "parse-output"
+    assert cli_args[cli_args.index("--artifacts-dir") + 1] == str(artifacts)
 
 
 @pytest.mark.parametrize(
@@ -444,7 +471,7 @@ def test_filex_wrapper_layout_flag_overrides_runtime_default(
     assert json.loads(completed.stdout)["layout_format"] == expected
     result = json.loads((artifacts / "result.json").read_bytes())
     if expected == "document-ir":
-        assert result["schema_version"] == "filex.skill.parse-result/v1"
+        assert result["schema_version"] == "filex.artifact-bundle/v1"
         assert set(result["artifacts"]) == {"document", "layout"}
         assert not (artifacts / "document-ir.json").exists()
 
@@ -518,7 +545,7 @@ def test_filex_wrapper_reports_invalid_geometry_without_committing_receipt(
     )
     assert completed.returncode == 2
     response = json.loads(completed.stdout)
-    assert response["error_type"] == "OutputError"
+    assert response["error_type"] == "ValidationError"
     assert "element bbox" in response["message"]
     assert not (artifacts / "result.json").exists()
     assert not (artifacts / "layout.json").exists()
@@ -554,18 +581,17 @@ def test_filex_wrapper_refuses_parse_output_without_provider_provenance(
 
     assert completed.returncode == 2
     response = json.loads(completed.stdout)
-    assert response["error_type"] == "OutputError"
+    assert response["error_type"] == "ValidationError"
     assert "provider metrics" in response["message"]
     assert not (artifacts / "result.json").exists()
 
 
-def test_filex_wrapper_uses_the_configured_exporter_python(tmp_path: Path) -> None:
+def test_filex_bundle_export_does_not_depend_on_a_second_python(tmp_path: Path) -> None:
     completed, artifacts, _, _, _ = _public_export(
-        tmp_path, exporter_python="/missing-filex-python"
+        tmp_path, filex_python="/missing-filex-python"
     )
-    assert completed.returncode == 2
-    assert "FILEX_PYTHON" in json.loads(completed.stdout)["message"]
-    assert not (artifacts / "result.json").exists()
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    assert (artifacts / "result.json").is_file()
 
 
 def _image_export_command(
@@ -608,12 +634,11 @@ def _image_export_command(
 @pytest.mark.parametrize(
     "suffix", [".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp", ".JPG"]
 )
-def test_public_image_artifacts_select_paddle_for_real_geometry(
+def test_wrapper_leaves_default_image_provider_selection_to_filex(
     tmp_path: Path, suffix: str
 ) -> None:
     arguments = _image_export_command(tmp_path, suffix=suffix)
-    configuration = json.loads(arguments[arguments.index("--env-content-json") + 1])
-    assert configuration == {"filex_parse_provider": "paddle_ocr"}
+    assert "--env-content-json" not in arguments
     assert "--pages" not in arguments
 
 
@@ -624,9 +649,9 @@ def test_public_image_artifacts_select_paddle_for_real_geometry(
         ({"artifacts": False}, None, False),
         ({"provider": "image_vlm"}, "image_vlm", False),
         ({"env_file": True}, None, True),
-        ({"suffix": ".data", "file_type": "PNG"}, "paddle_ocr", False),
+        ({"suffix": ".data", "file_type": "PNG"}, None, False),
         ({"suffix": ".pdf"}, None, False),
-        ({"layout_format": None, "env_format": "parse-output"}, "paddle_ocr", False),
+        ({"layout_format": None, "env_format": "parse-output"}, None, False),
         ({"layout_format": "document-ir", "env_format": "parse-output"}, None, False),
     ],
 )

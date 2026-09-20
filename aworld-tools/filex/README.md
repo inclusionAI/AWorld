@@ -113,6 +113,25 @@ filex parse /root/workspace/report.pdf \
   --batch-resume-id report-2026-01
 ```
 
+For a synchronous local parse, the FileX CLI can atomically produce a
+self-verifying artifact bundle without an agent-specific exporter:
+
+```bash
+filex parse /root/workspace/report.pdf \
+  --no-cache \
+  --layout-format parse-output \
+  --artifacts-dir /logs/artifacts
+```
+
+The CLI writes `document.md`, public `layout.json`, original
+`document-ir.json`, and a commit-marker `result.json`. The receipt uses
+`filex.artifact-bundle/v1`; its `filex_provenance` uses
+`filex.provenance/v1` with `exporter: filex-cli` and hashes the source,
+Document IR, Markdown, layout, and unmodified FileX response. `result.json` is
+invalidated before provider execution and written last, so a failed retry
+cannot leave an earlier attempt looking successful. Use `document-ir` instead
+of `parse-output` when the native FileX IR should be `layout.json`.
+
 Keep CLI parsing synchronous. When invoking it through AWorld's terminal
 `run_code` tool, supply an explicit `timeout`, such as 900 seconds or 1800 for
 larger documents, within the remaining task budget. Chart recognition can
@@ -121,8 +140,8 @@ than starting duplicate parses or manually restarting a slow parser.
 
 The standalone CLI's `--sync-mode async` schedules a coroutine in the CLI's own
 event loop; it does not create a worker that survives CLI exit. It is unsuitable
-for producing durable task artifacts, and the skill wrapper requires
-synchronous parsing for `--artifacts-dir`. `filex status` only reads saved PDF
+for producing durable task artifacts, and the CLI requires synchronous local
+parsing for `--artifacts-dir`. `filex status` only reads saved PDF
 batch checkpoints; it does not supervise a background job. Use the separately
 deployed HTTP service below when asynchronous job submission is needed.
 
