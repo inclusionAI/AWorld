@@ -357,7 +357,11 @@ class ContextManager(BaseModel):
     ###########################  Checkpoint Backend ###########################
 
     async def save_context_checkpoint(
-        self, context: "ApplicationContext", **kwargs
+        self,
+        context: "ApplicationContext",
+        *,
+        cache_boundary: bool = True,
+        **kwargs,
     ) -> Checkpoint:
         start = time.time()
         logger.info(
@@ -368,7 +372,8 @@ class ContextManager(BaseModel):
 
         from aworld.core.context.compiler import LifecycleAction
 
-        context.advance_context_lifecycle(LifecycleAction.CHECKPOINT)
+        if cache_boundary:
+            context.advance_context_lifecycle(LifecycleAction.CHECKPOINT)
         # Use new Context functionality to create complete session state snapshot
         values = context.to_dict()
 

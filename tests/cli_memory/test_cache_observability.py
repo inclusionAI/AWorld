@@ -34,6 +34,9 @@ def test_summarize_cache_observability_aggregates_request_linked_usage(tmp_path)
                         "model": "gpt-4.1",
                         "request": {"messages": repeated_prefix + [{"role": "assistant", "content": "Working..."}]},
                         "usage_raw": {
+                            "prompt_tokens": 100,
+                            "completion_tokens": 5,
+                            "total_tokens": 105,
                             "cache_hit_tokens": 80,
                             "cache_write_tokens": 20,
                             "prompt_tokens_details": {"cached_tokens": 80},
@@ -46,6 +49,9 @@ def test_summarize_cache_observability_aggregates_request_linked_usage(tmp_path)
                         "model": "gpt-4.1",
                         "request": {"messages": repeated_prefix + [{"role": "assistant", "content": "Done."}]},
                         "usage_raw": {
+                            "prompt_tokens": 100,
+                            "completion_tokens": 5,
+                            "total_tokens": 105,
                             "cache_hit_tokens": 40,
                             "prompt_tokens_details": {"cached_tokens": 40},
                         },
@@ -61,9 +67,15 @@ def test_summarize_cache_observability_aggregates_request_linked_usage(tmp_path)
     assert summary.calls_with_cache_usage == 2
     assert summary.total_cache_hit_tokens == 120
     assert summary.total_cache_write_tokens == 20
+    assert summary.exact_cache_usage_calls == 2
+    assert summary.exact_cache_usage_coverage == 1.0
+    assert summary.total_uncached_input_tokens == 80
+    assert summary.cache_usage_fidelity_counts == {"exact": 2}
     assert summary.by_model == {"gpt-4.1": 2}
     assert [item.request_id for item in summary.recent_requests] == ["llm_req_2", "llm_req_1"]
     assert summary.recent_requests[0].provider_request_id == "req_provider_2"
+    assert summary.recent_requests[0].cache_usage_fidelity == "exact"
+    assert summary.recent_requests[0].uncached_input_tokens == 60
     assert summary.prefix_candidates[0].occurrences == 2
     assert summary.prefix_candidates[0].request_ids == ("llm_req_1", "llm_req_2")
     assert "You are Aworld" in summary.prefix_candidates[0].preview
@@ -88,5 +100,8 @@ def test_summarize_cache_observability_ignores_entries_without_llm_calls(tmp_pat
 
     assert summary.total_llm_calls == 0
     assert summary.calls_with_cache_usage == 0
+    assert summary.exact_cache_usage_calls == 0
+    assert summary.exact_cache_usage_coverage == 0.0
+    assert summary.cache_usage_fidelity_counts == {}
     assert summary.recent_requests == ()
     assert summary.prefix_candidates == ()

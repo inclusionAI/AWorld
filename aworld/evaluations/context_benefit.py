@@ -18,6 +18,7 @@ from aworld.core.context.compiler.frozen_json import (
 
 _ALLOWED_VARIANT_FIELDS = {
     "agent_memory_config",
+    "context_cache",
     "context_compiler",
     "docker_output_policy",
     "tool_output_policy",
@@ -25,6 +26,11 @@ _ALLOWED_VARIANT_FIELDS = {
     "progressive_skills",
     "progressive_tools",
     "completion_contract",
+}
+_ALLOWED_CONTEXT_CACHE_FIELDS = {
+    "enabled",
+    "allow_provider_native_cache",
+    "provider_cache_namespace",
 }
 _ALLOWED_AGENT_MEMORY_FIELDS = {
     "history_scope",
@@ -82,9 +88,17 @@ class ContextAblationComponent(str, Enum):
     TOOL_OUTPUT = "tool_output"
     ADAPTIVE_CHECKPOINT = "adaptive_checkpoint"
     COMPLETION_CONTRACT = "completion_contract"
+    CACHE = "cache"
 
 
 _ABLATION_COMPONENT_PATHS = {
+    ContextAblationComponent.CACHE: frozenset(
+        {
+            "context_cache.enabled",
+            "context_cache.allow_provider_native_cache",
+            "context_cache.provider_cache_namespace",
+        }
+    ),
     ContextAblationComponent.FINAL_COMPILER: frozenset(
         {
             "context_compiler.mode",
@@ -247,6 +261,23 @@ class ContextVariant:
             or set(docker_output) - _ALLOWED_DOCKER_OUTPUT_FIELDS
         ):
             raise ValueError("docker_output_policy variant contains unknown fields")
+        context_cache = settings.get("context_cache")
+        if context_cache is not None:
+            if (
+                not isinstance(context_cache, dict)
+                or set(context_cache) - _ALLOWED_CONTEXT_CACHE_FIELDS
+            ):
+                raise ValueError("context_cache variant contains unknown fields")
+            for field in ("enabled", "allow_provider_native_cache"):
+                if field in context_cache and not isinstance(context_cache[field], bool):
+                    raise TypeError(f"context_cache.{field} must be a boolean")
+            namespace = context_cache.get("provider_cache_namespace")
+            if namespace is not None and (
+                not isinstance(namespace, str) or not namespace.strip()
+            ):
+                raise ValueError(
+                    "context_cache.provider_cache_namespace must be a non-empty string or null"
+                )
         for field in ("artifact_offload", "progressive_skills", "progressive_tools"):
             if field in settings and not isinstance(settings[field], bool):
                 raise TypeError(f"{field} must be a boolean")

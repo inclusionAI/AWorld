@@ -245,6 +245,7 @@ def test_benefit_report_consumes_real_artifact_contract_and_stays_not_ready_for_
 
     assert report["combined_benefit"]["mean_reward_delta"] == 1.0
     assert report["benefit_evidence"]["path"] == "quality"
+    assert report["attributed_benefit_evidence"] == report["benefit_evidence"]
     assert report["combined_benefit"]["metric_means"]["prompt_tokens"] == -40.0
     assert report["combined_benefit"]["metric_means"]["normalized_cost"] == -40.0
     assert (
@@ -322,6 +323,172 @@ def test_benefit_report_accepts_provider_work_reduction_with_quality_non_regress
         "reason": "quality_non_regression_and_provider_work_confidence_upper_bound_negative",
         "cost_metric": "provider_call_count",
     }
+
+
+def test_benefit_report_accepts_exact_uncached_input_reduction():
+    reporter = _load_reporter()
+    summary = SimpleNamespace(
+        reward_interval=SimpleNamespace(lower=0.0, upper=0.0),
+        metric_intervals={
+            "uncached_input_tokens_exact": SimpleNamespace(
+                lower=-200.0, upper=-20.0
+            )
+        },
+    )
+
+    evidence = reporter.benefit_evidence(summary)
+
+    assert evidence["proven"] is True
+    assert evidence["path"] == "execution_efficiency"
+    assert evidence["cost_metric"] == "uncached_input_tokens_exact"
+
+
+def test_cache_ablation_evidence_revalidates_plan_and_generic_preflight():
+    reporter = _load_reporter()
+    variants = [
+        {
+            "name": "adaptive-cache-off",
+            "context_cache": {
+                "enabled": False,
+                "allow_provider_native_cache": False,
+            },
+            "context_compiler": {"mode": "enforce"},
+        },
+        {
+            "name": "adaptive-cache-on",
+            "context_cache": {
+                "enabled": True,
+                "allow_provider_native_cache": True,
+            },
+            "context_compiler": {"mode": "enforce"},
+        },
+    ]
+    before = reporter.ContextVariant.build(
+        variants[0]["name"], reporter.variant_settings(variants[0])
+    )
+    after = reporter.ContextVariant.build(
+        variants[1]["name"], reporter.variant_settings(variants[1])
+    )
+    contrast = reporter.ContextAblationContrast.build(
+        baseline=before,
+        candidate=after,
+        component=reporter.ContextAblationComponent.CACHE,
+    )
+    plan = reporter.ContextAblationPlan.build(
+        name="generic-cache",
+        variants=(before, after),
+        contrasts=(contrast,),
+    )
+    manifest = {
+        "variants": variants,
+        "ablation_plan": plan.to_dict(),
+        "cache_usage_preflight": {
+            "schema_version": "aworld.cache-conformance-preflight/v1",
+            "status": "passed",
+            "cache_capability_observed": True,
+            "exact_usage_coverage": 1.0,
+            "observation_count": 8,
+            "validated_modes": ["nonstream", "stream"],
+            "failure_codes": [],
+            "process_exit_code": 0,
+            "run_nonce_hash": "sha256:" + "a" * 64,
+        },
+    }
+
+    evidence = reporter.cache_ablation_evidence(
+        manifest,
+        baseline="adaptive-cache-off",
+        candidate="adaptive-cache-on",
+    )
+
+    assert evidence["status"] == "available"
+    assert evidence["changed_paths"] == [
+        "context_cache.allow_provider_native_cache",
+        "context_cache.enabled",
+    ]
+    manifest["cache_usage_preflight"]["exact_usage_coverage"] = 0.875
+    unavailable = reporter.cache_ablation_evidence(
+        manifest,
+        baseline="adaptive-cache-off",
+        candidate="adaptive-cache-on",
+    )
+    assert unavailable == {
+        "status": "unavailable",
+        "reason_code": "cache_preflight_not_exact",
+    }
+
+
+def test_cache_lowering_distinguishes_native_control_from_safety_only_prefix():
+    reporter = _load_reporter()
+
+    def call(status: str, strategy: str) -> dict:
+        return {
+            "context_rollout": {
+                "provider_lowering": {
+                    "cache_lowering_status": status,
+                    "cache_lowering_strategy": strategy,
+                }
+            }
+        }
+
+    disabled = reporter.cache_lowering_run_evidence(
+        [call("disabled", "explicit_opt_out")], cache_enabled=False
+    )
+    explicit = reporter.cache_lowering_run_evidence(
+        [call("applied", "prompt_cache_key")], cache_enabled=True
+    )
+    anthropic = reporter.cache_lowering_run_evidence(
+        [call("applied", "anthropic_cache_control")], cache_enabled=True
+    )
+    automatic = reporter.cache_lowering_run_evidence(
+        [call("preserved", "exact_prefix_no_hint")], cache_enabled=True
+    )
+    unverified = reporter.cache_lowering_run_evidence(
+        [call("unsupported", "provider_capability_not_declared")],
+        cache_enabled=True,
+    )
+
+    assert disabled["status"] == "available"
+    assert explicit["status"] == "available"
+    assert anthropic["status"] == "available"
+    assert automatic["status"] == "safety_only"
+    assert automatic["reason_code"] == "provider_native_cache_control_not_applied"
+    assert unverified["status"] == "safety_only"
+    assert (
+        unverified["reason_code"]
+        == "provider_native_cache_capability_unverified"
+    )
+
+
+def test_cache_lowering_fails_closed_for_missing_or_mixed_receipts():
+    reporter = _load_reporter()
+    assert reporter.cache_lowering_run_evidence([], cache_enabled=True) == {
+        "status": "unavailable",
+        "reason_code": "provider_calls_missing",
+    }
+    evidence = reporter.cache_lowering_run_evidence(
+        [
+            {
+                "context_rollout": {
+                    "provider_lowering": {
+                        "cache_lowering_status": "applied",
+                        "cache_lowering_strategy": "prompt_cache_key",
+                    }
+                }
+            },
+            {
+                "context_rollout": {
+                    "provider_lowering": {
+                        "cache_lowering_status": "preserved",
+                        "cache_lowering_strategy": "exact_prefix_no_hint",
+                    }
+                }
+            },
+        ],
+        cache_enabled=True,
+    )
+    assert evidence["status"] == "unavailable"
+    assert evidence["reason_code"] == "explicit_provider_cache_lowering_incomplete"
 
 
 def test_benefit_report_reads_frozen_intervals_from_real_summary_contract():
@@ -530,6 +697,122 @@ def test_normalized_usage_fails_closed_on_missing_or_conflicting_truth():
     assert reporter.authoritative_normalized_usage([cache_exceeds_input]) == (
         None,
         "provider_cache_usage_exceeds_input",
+    )
+
+
+def test_provider_metrics_report_exact_cache_coverage_without_false_zero():
+    reporter = _load_reporter()
+    exact = {
+        "usage_normalized": {
+            "prompt_tokens": 10,
+            "completion_tokens": 2,
+            "cache_hit_tokens": 3,
+        },
+        "usage_raw": {
+            "prompt_tokens": 10,
+            "completion_tokens": 2,
+            "prompt_tokens_details": {"cached_tokens": 3},
+        },
+    }
+    missing = {
+        "usage_normalized": {"prompt_tokens": 20, "completion_tokens": 4},
+        "usage_raw": {"prompt_tokens": 20, "completion_tokens": 4},
+    }
+
+    metrics = reporter.authoritative_provider_metrics([exact, missing])
+
+    assert metrics["cache_usage_exact_call_count"] == 1
+    assert metrics["cache_usage_exact_coverage"] == 0.5
+    assert metrics["cache_usage_bounded_call_count"] == 1
+    assert metrics["cache_read_tokens"] == 3
+    assert metrics["cache_usage_exact_input_tokens"] == 10
+    assert metrics["uncached_input_tokens_exact"] == 7
+
+
+def test_trial_drops_provisional_uncached_tokens_when_provider_coverage_is_partial(
+    tmp_path, monkeypatch
+):
+    reporter = _load_reporter()
+    experiment = tmp_path / "experiment"
+    run_dir = experiment / "runs" / "case" / "candidate" / "repeat-00"
+    run_dir.mkdir(parents=True)
+    (run_dir / "provider_calls.json").write_text("[{}]", encoding="utf-8")
+    monkeypatch.setattr(
+        reporter,
+        "authoritative_provider_metrics",
+        lambda calls: {
+            "cache_usage_exact_coverage": 0.5,
+            "uncached_input_tokens_exact": 7,
+        },
+    )
+    manifest = reporter.ContextEvaluationManifest.build(
+        experiment_id="cache-evidence",
+        workload_id="tool",
+        workload_kind="tool_research",
+        dataset_checksum="sha256:" + "1" * 64,
+        repository_snapshot="commit:abc",
+        environment_hash="sha256:" + "2" * 64,
+        inference_profile_hash="sha256:" + "3" * 64,
+        variants=(
+            reporter.ContextVariant.build("baseline", {}),
+            reporter.ContextVariant.build("candidate", {}),
+        ),
+        case_ids=("case",),
+        repeats=1,
+        interleaving_seed=1,
+        independent_verifier_id="exact-json-v1",
+    )
+
+    trial, _ = reporter.trial_from_result(
+        experiment,
+        manifest,
+        {
+            "task": "case",
+            "variant": "candidate",
+            "repetition": 0,
+            "reward": 1,
+            "agent_exit_code": 0,
+            "context_metrics": {"uncached_input_tokens_exact": 999},
+        },
+    )
+
+    assert trial is not None
+    assert "uncached_input_tokens_exact" not in trial.metrics
+    assert trial.metrics["cache_usage_exact_coverage"] == 0.5
+
+
+def test_captured_cache_receipt_mismatch_fails_closed():
+    reporter = _load_reporter()
+    call = {
+        "provider_invoked": True,
+        "provider_attempt_status": "attempted",
+        "status": "success",
+        "usage_normalized": {
+            "prompt_tokens": 10,
+            "completion_tokens": 2,
+            "cache_hit_tokens": 3,
+        },
+        "usage_raw": {
+            "prompt_tokens": 10,
+            "completion_tokens": 2,
+            "prompt_tokens_details": {"cached_tokens": 3},
+        },
+        "cache_usage_receipt": {
+            "schema_version": "aworld.cache-usage-receipt.v1",
+            "fidelity": "exact",
+            "input_tokens": 10,
+            "output_tokens": 2,
+            "cache_read_tokens": 9,
+        },
+    }
+
+    receipt = reporter.authoritative_cache_usage_receipt(call)
+
+    assert receipt["fidelity"] == "conflicting"
+    assert receipt["reason_code"] == "captured_cache_usage_receipt_mismatch"
+    assert reporter.authoritative_normalized_usage([call]) == (
+        None,
+        "provider_cache_usage_receipt_conflict",
     )
 
 

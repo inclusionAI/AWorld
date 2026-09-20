@@ -87,7 +87,10 @@ class LocalAgentExecutor(BaseAgentExecutor):
     TASK_PROGRESS_HOOK_MIN_INTERVAL_SECONDS = 2.0
 
     def _context_entry_point(self) -> str:
-        return "resume" if getattr(self, "_aworld_cli_resumed", False) else "cli"
+        resumed = getattr(self, "_aworld_cli_resumed", False) or getattr(
+            self, "_context_checkpoint_restored_for_task", False
+        )
+        return "resume" if resumed else "cli"
 
     def _attest_context_entry_point(self, context: ApplicationContext) -> None:
         context._aworld_context_entrypoint_claim = _issue_context_entrypoint_claim(
@@ -148,6 +151,8 @@ class LocalAgentExecutor(BaseAgentExecutor):
             console=self.console
         )
         self._last_task_progress_hook_at: float | None = None
+        self._resume_context_checkpoint_once = False
+        self._context_checkpoint_restored_for_task = False
 
     def _record_cli_session_transcript_turn(
         self,
@@ -920,11 +925,20 @@ class LocalAgentExecutor(BaseAgentExecutor):
         # 4. Build context
         async def build_context(_task_input: TaskInput, _swarm: Swarm, _workspace) -> ApplicationContext:
             """Build application context from task input and swarm."""
-            _context = await ApplicationContext.from_input(
-                _task_input, 
-                workspace=_workspace,
-                context_config=self.context_config
+            resume_checkpoint = bool(
+                getattr(self, "_resume_context_checkpoint_once", False)
             )
+            self._context_checkpoint_restored_for_task = False
+            context_kwargs = {
+                "workspace": _workspace,
+                "context_config": self.context_config,
+            }
+            if resume_checkpoint:
+                context_kwargs["use_checkpoint"] = True
+            _context = await ApplicationContext.from_input(_task_input, **context_kwargs)
+            if resume_checkpoint:
+                self._resume_context_checkpoint_once = False
+                self._context_checkpoint_restored_for_task = True
             _context.get_config().debug_mode=True
             await _context.init_swarm_state(_swarm)
             return _context

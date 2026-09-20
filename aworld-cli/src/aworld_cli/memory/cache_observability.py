@@ -7,6 +7,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from aworld.models.usage import reconcile_cache_usage_receipt
+
 
 CACHE_USAGE_KEYS = {
     "cache_hit_tokens",
@@ -26,6 +28,8 @@ class CacheRequestObservation:
     cache_hit_tokens: int
     cache_write_tokens: int
     cached_tokens: int
+    cache_usage_fidelity: str
+    uncached_input_tokens: int | None
 
 
 @dataclass(frozen=True)
@@ -46,9 +50,18 @@ class CacheObservabilitySummary:
     calls_with_cache_usage: int
     total_cache_hit_tokens: int
     total_cache_write_tokens: int
+    exact_cache_usage_calls: int
+    total_uncached_input_tokens: int
+    cache_usage_fidelity_counts: dict[str, int]
     by_model: dict[str, int]
     recent_requests: tuple[CacheRequestObservation, ...]
     prefix_candidates: tuple[CachePrefixCandidate, ...]
+
+    @property
+    def exact_cache_usage_coverage(self) -> float:
+        if self.total_llm_calls == 0:
+            return 0.0
+        return self.exact_cache_usage_calls / self.total_llm_calls
 
 
 def session_logs_dir(workspace_path: str | os.PathLike[str]) -> Path:
@@ -73,6 +86,9 @@ def summarize_cache_observability(
             calls_with_cache_usage=0,
             total_cache_hit_tokens=0,
             total_cache_write_tokens=0,
+            exact_cache_usage_calls=0,
+            total_uncached_input_tokens=0,
+            cache_usage_fidelity_counts={},
             by_model={},
             recent_requests=(),
             prefix_candidates=(),
@@ -90,6 +106,9 @@ def summarize_cache_observability(
     calls_with_cache_usage = 0
     total_cache_hit_tokens = 0
     total_cache_write_tokens = 0
+    exact_cache_usage_calls = 0
+    total_uncached_input_tokens = 0
+    cache_usage_fidelity_counts: Counter[str] = Counter()
     by_model: Counter[str] = Counter()
     recent_requests: list[CacheRequestObservation] = []
     prefix_buckets: dict[str, dict[str, Any]] = {}
@@ -127,6 +146,27 @@ def summarize_cache_observability(
                 usage_raw = llm_call.get("usage_raw")
                 if not isinstance(usage_raw, dict):
                     usage_raw = {}
+                captured_receipt = llm_call.get("cache_usage_receipt")
+                receipt_payload = reconcile_cache_usage_receipt(
+                    captured_receipt=captured_receipt,
+                    raw_usage=usage_raw,
+                    normalized_usage=llm_call.get("usage_normalized"),
+                ).to_dict()
+                cache_usage_fidelity = _coerce_text(
+                    receipt_payload.get("fidelity")
+                ) or "unavailable"
+                cache_usage_fidelity_counts[cache_usage_fidelity] += 1
+                uncached_input_tokens = receipt_payload.get(
+                    "uncached_input_tokens"
+                )
+                if isinstance(uncached_input_tokens, bool) or not isinstance(
+                    uncached_input_tokens, int
+                ):
+                    uncached_input_tokens = None
+                if cache_usage_fidelity == "exact":
+                    exact_cache_usage_calls += 1
+                    if uncached_input_tokens is not None:
+                        total_uncached_input_tokens += uncached_input_tokens
                 cache_hit_tokens = _coerce_int(usage_raw.get("cache_hit_tokens"))
                 cache_write_tokens = _coerce_int(usage_raw.get("cache_write_tokens"))
                 cached_tokens = _coerce_int(
@@ -155,6 +195,8 @@ def summarize_cache_observability(
                         cache_hit_tokens=cache_hit_tokens,
                         cache_write_tokens=cache_write_tokens,
                         cached_tokens=cached_tokens,
+                        cache_usage_fidelity=cache_usage_fidelity,
+                        uncached_input_tokens=uncached_input_tokens,
                     )
                 )
 
@@ -230,6 +272,11 @@ def summarize_cache_observability(
         calls_with_cache_usage=calls_with_cache_usage,
         total_cache_hit_tokens=total_cache_hit_tokens,
         total_cache_write_tokens=total_cache_write_tokens,
+        exact_cache_usage_calls=exact_cache_usage_calls,
+        total_uncached_input_tokens=total_uncached_input_tokens,
+        cache_usage_fidelity_counts=dict(
+            sorted(cache_usage_fidelity_counts.items())
+        ),
         by_model=dict(sorted(by_model.items())),
         recent_requests=tuple(recent_requests[: max(recent_limit, 0)]),
         prefix_candidates=tuple(deduped_candidates[: max(top_prefixes, 0)]),
@@ -250,9 +297,25 @@ def format_cache_observability_summary(summary: CacheObservabilitySummary) -> st
         f"Session log files: {len(summary.session_files)}",
         f"LLM calls analyzed: {summary.total_llm_calls}",
         f"Calls with cache usage: {summary.calls_with_cache_usage}",
+        (
+            "Exact cache usage coverage: "
+            f"{summary.exact_cache_usage_calls}/{summary.total_llm_calls} "
+            f"({summary.exact_cache_usage_coverage:.1%})"
+        ),
         f"Total cache hit tokens: {summary.total_cache_hit_tokens}",
         f"Total cache write tokens: {summary.total_cache_write_tokens}",
+        (
+            "Total uncached input tokens from exact calls: "
+            f"{summary.total_uncached_input_tokens}"
+        ),
     ]
+
+    if summary.cache_usage_fidelity_counts:
+        fidelity = ", ".join(
+            f"{name}={count}"
+            for name, count in summary.cache_usage_fidelity_counts.items()
+        )
+        lines.append(f"Cache usage fidelity: {fidelity}")
 
     if summary.by_model:
         lines.append("Models:")
@@ -271,10 +334,12 @@ def format_cache_observability_summary(summary: CacheObservabilitySummary) -> st
                 f" cache_hit={item.cache_hit_tokens}"
                 f" cache_write={item.cache_write_tokens}"
                 f" cached_tokens={item.cached_tokens}"
+                f" fidelity={item.cache_usage_fidelity}"
+                f" uncached_input={item.uncached_input_tokens if item.uncached_input_tokens is not None else 'unknown'}"
             )
 
     if summary.prefix_candidates:
-        lines.append("Stable cacheable prefix candidates:")
+        lines.append("Heuristic stable-prefix candidates (not provider cache proof):")
         for index, item in enumerate(summary.prefix_candidates, start=1):
             lines.append(
                 f"{index}. occurrences={item.occurrences} "
@@ -285,7 +350,7 @@ def format_cache_observability_summary(summary: CacheObservabilitySummary) -> st
             lines.append(f"   request_ids={', '.join(item.request_ids)}")
             lines.append(f"   preview={item.preview}")
     else:
-        lines.append("Stable cacheable prefix candidates: none yet")
+        lines.append("Heuristic stable-prefix candidates: none yet")
 
     return "\n".join(lines)
 

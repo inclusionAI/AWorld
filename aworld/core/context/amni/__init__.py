@@ -191,7 +191,12 @@ class AmniContext(Context):
         pass
 
 
-    async def snapshot(self, *, checkpoint_only: bool = False):
+    async def snapshot(
+        self,
+        *,
+        checkpoint_only: bool = False,
+        cache_boundary: bool = True,
+    ):
         """Persist a restorable Amni context snapshot.
 
         Adaptive Context checkpoints are intra-task recovery points. Their
@@ -204,8 +209,10 @@ class AmniContext(Context):
         """
         manager = get_context_manager()
         if checkpoint_only:
-            return await manager.save_context_checkpoint(self)
-        return await manager.save_context(self)
+            return await manager.save_context_checkpoint(
+                self, cache_boundary=cache_boundary
+            )
+        return await manager.save_context(self, cache_boundary=cache_boundary)
 
     @trace.func_span(span_name="ApplicationContext#consolidation")
     async def consolidation(self):
@@ -1730,6 +1737,9 @@ class ApplicationContext(AmniContext):
                 "branch_id": self.context_lifecycle_state.branch_id,
                 "checkpoint_revision": self.context_lifecycle_state.checkpoint_revision,
             },
+            "pending_cache_break_reasons": [
+                reason.value for reason in self.get_pending_cache_break_reasons()
+            ],
             "progressive_state": self.export_progressive_state(),
         }
 
@@ -1762,6 +1772,7 @@ class ApplicationContext(AmniContext):
     @classmethod
     def from_dict(cls, data: dict) -> 'ApplicationContext':
         progressive_restore_attempted = False
+        cache_lifecycle_restore_attempted = False
         try:
             # Deserialize task_state
             task_state = None
@@ -1790,10 +1801,25 @@ class ApplicationContext(AmniContext):
 
             context = cls(task_state=task_state, workspace=workspace)
             lifecycle = data.get("context_lifecycle")
-            if isinstance(lifecycle, dict):
-                from aworld.core.context.compiler import ContextLifecycleState
+            if (
+                "context_lifecycle" in data
+                or "pending_cache_break_reasons" in data
+            ):
+                cache_lifecycle_restore_attempted = True
+                if not isinstance(lifecycle, dict):
+                    raise ValueError("context lifecycle must be an object")
+                from aworld.core.context.compiler import (
+                    CacheBreakReason,
+                    ContextLifecycleState,
+                )
 
                 context._context_lifecycle_state = ContextLifecycleState(**lifecycle)
+                pending_breaks = data.get("pending_cache_break_reasons", ())
+                if not isinstance(pending_breaks, (list, tuple)):
+                    raise ValueError("pending cache break reasons must be a sequence")
+                context._pending_cache_break_reasons = {
+                    CacheBreakReason(reason) for reason in pending_breaks
+                }
             progressive_state = data.get("progressive_state")
             if progressive_state is not None:
                 progressive_restore_attempted = True
@@ -1802,10 +1828,10 @@ class ApplicationContext(AmniContext):
 
         except Exception as e:
             logger.error(f"Failed to deserialize ApplicationContext: {e}")
-            if progressive_restore_attempted:
+            if progressive_restore_attempted or cache_lifecycle_restore_attempted:
                 # Versioned sticky Skill/Tool state is correctness-critical.
-                # A malformed or tampered snapshot must not silently resume
-                # as an empty catalog in the same task epoch.
+                # Cache epochs and pending invalidations are equally critical:
+                # a malformed snapshot must not silently resume as epoch zero.
                 raise
             # Return a basic ApplicationContext
             return cls(task_state=ApplicationTaskContextState())

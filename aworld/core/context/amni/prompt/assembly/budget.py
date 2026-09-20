@@ -283,6 +283,7 @@ class BudgetedPromptAssemblyProvider(PromptAssemblyProvider):
         )
         return BudgetedPromptAssemblyPlan(
             messages=final_plan.messages,
+            system_sections=final_plan.system_sections,
             stable_system_sections=final_plan.stable_system_sections,
             dynamic_system_sections=final_plan.dynamic_system_sections,
             conversation_messages=final_plan.conversation_messages,

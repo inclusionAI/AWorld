@@ -116,6 +116,7 @@ from .budget import (
     plan_context_budget,
 )
 from .cache import (
+    CachePlan,
     InsufficientSerializedPrefixEvidence,
     ProviderVerifiedCacheIdentity,
     SerializedPrefixEvidence,
@@ -333,6 +334,7 @@ __all__ = [
     "CandidateRequestForbidden",
     "CandidateRequestNotEnforceable",
     "CandidateRequestRequired",
+    "CachePlan",
     "ChildResult",
     "ChildStatus",
     "ChildUsage",

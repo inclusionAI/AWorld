@@ -12,6 +12,7 @@ from aworld.core.context.compiler import (
     ArtifactEvidence,
     ArtifactRequirement,
     Authority,
+    CacheBreakReason,
     CatalogChangeAction,
     ChildResult,
     ChildStatus,
@@ -256,6 +257,28 @@ def test_provider_wire_cache_continuity_consumes_lifecycle_breaks():
     broken = context.commit_provider_cache_identity(identity("r3"))
     assert broken["status"] == "broken"
     assert broken["break_reasons"] == ["history_compaction"]
+
+
+def test_cache_plan_attempt_consumes_only_the_epoch_it_was_compiled_for():
+    context = Context(task_id="cache-plan-attempt")
+    context.advance_context_lifecycle(LifecycleAction.CHECKPOINT)
+    first_epoch = context.context_lifecycle_state.checkpoint_revision
+    first_breaks = context.get_pending_cache_break_reasons()
+
+    context.advance_context_lifecycle(LifecycleAction.CHECKPOINT)
+    assert context.acknowledge_cache_plan_attempt(
+        cache_epoch=first_epoch,
+        break_reasons=first_breaks,
+    ) is False
+    assert context.get_pending_cache_break_reasons() == (
+        CacheBreakReason.HISTORY_COMPACTION,
+    )
+
+    assert context.acknowledge_cache_plan_attempt(
+        cache_epoch=context.context_lifecycle_state.checkpoint_revision,
+        break_reasons=context.get_pending_cache_break_reasons(),
+    ) is True
+    assert context.get_pending_cache_break_reasons() == ()
 
 
 def test_tool_output_boundary_offloads_and_retrieves_raw_bytes(tmp_path):

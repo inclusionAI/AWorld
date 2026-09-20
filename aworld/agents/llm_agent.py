@@ -13,7 +13,12 @@ from datetime import datetime
 from typing import Dict, Any, List, Callable, Optional, Union
 
 import aworld.trace as trace
-from aworld.config.conf import AgentConfig, TaskConfig, TaskRunMode
+from aworld.config.conf import (
+    AgentConfig,
+    TaskConfig,
+    TaskRunMode,
+    resolve_provider_native_cache_intent,
+)
 from aworld.core.agent.agent_desc import get_agent_desc
 from aworld.core.agent.base import (
     BaseAgent,
@@ -30,7 +35,10 @@ from aworld.core.common import (
     TaskItem,
     TaskStatusValue,
 )
-from aworld.core.context.amni.prompt.assembly import DefaultPromptAssemblyProvider
+from aworld.core.context.amni.prompt.assembly import (
+    DefaultPromptAssemblyProvider,
+    validated_amni_system_sections,
+)
 from aworld.core.context.base import Context
 from aworld.core.context.compiler.frozen_json import canonical_json_hash
 from aworld.core.context.compiler import CandidateRequestNotEnforceable
@@ -72,6 +80,7 @@ from aworld.memory.models import (
     MemoryItem,
     MemoryAIMessage,
     MemoryMessage,
+    MemorySystemMessage,
     MemoryToolMessage,
 )
 from aworld.memory.history_replay import causalize_memory_history
@@ -702,6 +711,31 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         value = getattr(mode, "value", mode)
         return value if value in {"observe", "shadow", "enforce"} else "off"
 
+    def _bind_context_output_budget(self, request_kwargs: dict[str, Any]) -> None:
+        """Bind the reserved Context output budget to the real model request.
+
+        The compiler cannot reason about an input budget while the corresponding
+        provider output remains unbounded. Explicit caller/model limits win.
+        A compiler reserve is not itself a provider output limit: silently
+        imposing the default reserve can truncate reasoning models.
+        """
+        if request_kwargs.get("max_tokens") is not None:
+            return
+        llm_config = getattr(self.conf, "llm_config", None)
+        params = getattr(llm_config, "params", None)
+        configured_limit = getattr(llm_config, "max_tokens", None)
+        if configured_limit is None and isinstance(params, dict):
+            configured_limit = params.get("max_tokens")
+        if configured_limit is None:
+            return
+        if (
+            isinstance(configured_limit, bool)
+            or not isinstance(configured_limit, int)
+            or configured_limit < 1
+        ):
+            raise ValueError("model max_tokens must be a positive integer")
+        request_kwargs["max_tokens"] = configured_limit
+
     def _get_agent_context_cache_config(self, context: Any):
         if context is None or not hasattr(context, "get_agent_context_config"):
             return None
@@ -741,17 +775,10 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             return False
         agent_config = self._get_agent_context_cache_config(context)
         model_config = self._get_model_context_cache_config()
-        agent_enabled = (
-            True
-            if agent_config is None
-            else bool(getattr(agent_config, "allow_provider_native_cache", True))
+        configs = tuple(
+            config for config in (agent_config, model_config) if config is not None
         )
-        model_enabled = (
-            True
-            if model_config is None
-            else bool(getattr(model_config, "allow_provider_native_cache", True))
-        )
-        return agent_enabled and model_enabled
+        return resolve_provider_native_cache_intent(configs)
 
     def _usage_has_cache_tokens(self, usage: Dict[str, Any] | None) -> bool:
         if not isinstance(usage, dict):
@@ -769,9 +796,14 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         *,
         stable_prefix_hash: str | None = None,
     ) -> bool:
-        if not self._allow_provider_native_cache(context):
-            return False
         if not supports_provider_native_prompt_cache(provider_name):
+            return False
+        # A caller-provided OpenAI cache key is itself an explicit per-request
+        # opt-in. Framework-derived stable hashes still require the typed
+        # Context policy opt-in below.
+        if resolve_provider_prompt_cache_key(provider_name, request_kwargs):
+            return True
+        if not self._allow_provider_native_cache(context):
             return False
         return should_request_provider_native_cache(
             provider_name,
@@ -810,10 +842,14 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             stable_prefix_hash=stable_hash,
         )
         metadata["provider_native_cache"] = provider_native_cache
-        prompt_cache_key = resolve_provider_prompt_cache_key(
-            provider_name,
-            request_kwargs,
-            stable_prefix_hash=stable_hash,
+        prompt_cache_key = (
+            resolve_provider_prompt_cache_key(
+                provider_name,
+                request_kwargs,
+                stable_prefix_hash=stable_hash,
+            )
+            if provider_native_cache
+            else None
         )
         if prompt_cache_key:
             metadata["prompt_cache_key"] = prompt_cache_key
@@ -837,6 +873,69 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         if context_observations:
             observability["context_observations"] = context_observations
         return plan, to_serializable(assembled_messages), observability
+
+    def _publish_prompt_assembly_system_sections(
+        self,
+        *,
+        context: Any,
+        plan: Any,
+        messages: List[Dict[str, Any]],
+        provider: Any,
+    ) -> bool:
+        """Publish exact framework-owned stable/dynamic system semantics.
+
+        Custom PromptAssembly providers remain fail-closed: an arbitrary
+        provider cannot promote its own content into the stable cache prefix.
+        Explicit Amni folded/section ownership also wins over this fallback.
+        """
+        from aworld.core.context.amni.prompt.assembly import (
+            CacheAwarePromptAssemblyProvider,
+        )
+
+        if type(provider) is not CacheAwarePromptAssemblyProvider:
+            return False
+        observations = context.get_context_observations(namespace=self.id())
+        if any(
+            sidecar.owner
+            in {
+                "amni.folded_system",
+                "amni.restored_folded_system",
+                "amni.system_sections",
+            }
+            for sidecar in observations
+        ):
+            return False
+        sections = getattr(plan, "system_sections", None)
+        if not isinstance(sections, list) or not sections:
+            return False
+        from aworld.agents.final_context_adapter import (
+            adapt_prompt_assembly_system_sections,
+        )
+        from aworld.core.context.compiler import ContextObservationSidecar
+
+        source_identity = (
+            f"agent-prompt-assembly://{self.id()}/task-{context.task_id}/"
+            f"epoch-{context.task_epoch}"
+        )
+        result = adapt_prompt_assembly_system_sections(
+            sections=sections,
+            messages=messages,
+            source_identity=source_identity,
+            task_id=context.task_id,
+            task_epoch=context.task_epoch,
+            agent_id=self.id(),
+            user_controlled=self._is_amni_context(context),
+        )
+        context.publish_context_observation(
+            ContextObservationSidecar.from_adapter_result(
+                owner="agent.prompt_assembly_system_sections",
+                namespace=self.id(),
+                source_identity=source_identity,
+                result=result,
+                task_epoch=context.task_epoch,
+            )
+        )
+        return True
 
     def _redacted_context_observations(
         self, context: Any = None
@@ -1336,7 +1435,11 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                                 f"tool_call_id={history.tool_call_id}, agent={self.id()}"
                             )
                     else:
-                        messages.append(history.to_openai_message())
+                        system_sections = self._amni_system_section_messages(history)
+                        if system_sections is not None:
+                            messages.extend(system_sections)
+                        else:
+                            messages.append(history.to_openai_message())
                         if isinstance(history, MemoryAIMessage) and history.tool_calls:
                             last_tool_calls.extend(
                                 [tool_call.id for tool_call in history.tool_calls]
@@ -1847,6 +1950,7 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             compact_message_history,
             estimate_canonical_json_tokens,
             evaluate_adaptive_checkpoint,
+            LifecycleAction,
             restore_adaptive_continuation,
         )
 
@@ -2121,11 +2225,28 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         checkpoint_context = (
             state_context if self._is_amni_context(state_context) else context
         )
-        checkpoint = (
-            await checkpoint_context.snapshot(checkpoint_only=True)
-            if self._is_amni_context(checkpoint_context)
-            else await checkpoint_context.snapshot()
-        )
+        if self._is_amni_context(checkpoint_context):
+            checkpoint = (
+                await checkpoint_context.snapshot(checkpoint_only=True)
+                if receipt is not None
+                else await checkpoint_context.snapshot(
+                    checkpoint_only=True,
+                    cache_boundary=False,
+                )
+            )
+        else:
+            checkpoint = (
+                await checkpoint_context.snapshot()
+                if receipt is not None
+                else await checkpoint_context.snapshot(cache_boundary=False)
+            )
+        # Both Context.snapshot() and Amni save_context_checkpoint() own the
+        # lifecycle transition so the persisted snapshot contains the exact
+        # epoch it creates.  A transport/deep-copy Context is not mutated by
+        # that root snapshot; mirror the same single boundary there only after
+        # persistence succeeds.
+        if receipt is not None and checkpoint_context is not context:
+            context.advance_context_lifecycle(LifecycleAction.CHECKPOINT)
         adaptive_state["last_checkpoint_id"] = getattr(checkpoint, "id", None)
         adaptive_state["checkpoint_snapshot_state"] = "captured"
         save_adaptive_state()
@@ -2156,6 +2277,7 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         self.context = message.context
         self._install_runtime_completion_contract(message.context)
         context_compiler_mode = self._context_compiler_mode_value()
+        self._bind_context_output_budget(kwargs)
         # A turn boundary expires single-call/turn sidecars before new owner
         # observations are collected for this request.
         if context_compiler_mode != "off":
@@ -2409,6 +2531,12 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                 request_kwargs=kwargs,
             )
         )
+        # Retain the owner that produced the plan.  The transport provider
+        # below has a different responsibility and cannot attest prompt
+        # section stability.
+        prompt_assembly_provider = self._get_prompt_assembly_provider(
+            message.context
+        )
 
         # Provider structural lowering is part of the final compiler input,
         # not an unobserved post-compile mutation. The LLM model boundary runs
@@ -2508,6 +2636,12 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                             source_identity=source_identity,
                             result=tool_result,
                         )
+                    )
+                    self._publish_prompt_assembly_system_sections(
+                        context=message.context,
+                        plan=prompt_assembly_plan,
+                        messages=messages,
+                        provider=prompt_assembly_provider,
                     )
                 except Exception as exc:
                     logger.warning(
@@ -3318,6 +3452,24 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         except Exception as e:
             logger.warning(f"Failed to process messages in messages_transform: {e}")
             logger.debug(f"Process messages error details: {traceback.format_exc()}")
+        return messages
+
+    @staticmethod
+    def _amni_system_section_messages(
+        history: MemoryMessage,
+    ) -> List[Dict[str, Any]] | None:
+        """Expand only checksum-equivalent structured Amni system metadata."""
+        if not isinstance(history, MemorySystemMessage):
+            return None
+        sections = validated_amni_system_sections(
+            content=history.content,
+            metadata=history.metadata,
+        )
+        if sections is None:
+            return None
+        messages = []
+        for section in sections:
+            messages.append({"role": "system", "content": section["content"]})
         return messages
 
     def _process_messages(
