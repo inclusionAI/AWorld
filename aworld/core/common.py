@@ -90,6 +90,9 @@ class ActionModel(BaseModel):
 class TaskItem(BaseModel):
     data: Optional[Any]
     msg: Optional[str] = None
+    # Content-free typed failure evidence must survive message transports that
+    # retain payloads but rebuild or filter headers.
+    failure: Optional[Dict[str, str]] = None
     stop: bool = False
     success: bool = False
     action_name: Optional[str] = None

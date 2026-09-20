@@ -13,6 +13,13 @@ whole: no prefix of the batch is executed. Exhaustion produces an `incomplete`
 execution state. Repeated response repair without an executable response is not
 automatically retried forever by a goal.
 
+Benchmark runtimes set `AWORLD_REQUIRE_STREAM_FINISH_REASON=true`. In that mode,
+an implicit end-of-stream without a provider `finish_reason` is treated as an
+incomplete response and enters the same bounded retry path. A one-shot action
+repair must also be complete: a truncated or unterminated repair raises the
+typed `action_repair_exhausted` stop instead of being returned as normal output.
+Standalone integrations retain the compatibility default unless they opt in.
+
 A step-budget finalization is a handoff summary. It always produces
 `budget_exhausted`, including when the summary sounds successful. The state is
 stored under `agent_execution_state`, with task/epoch identity, reason, and

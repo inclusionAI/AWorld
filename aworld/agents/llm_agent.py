@@ -4454,6 +4454,13 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                     await task.outputs.add_output(
                         ChunkOutput(data=chunk, metadata=metadata)
                     )
+            require_terminal_reason = os.environ.get(
+                "AWORLD_REQUIRE_STREAM_FINISH_REASON", ""
+            ).strip().lower() in {"1", "true", "yes", "on"}
+            if require_terminal_reason:
+                llm_response.message["aworld_stream_terminal_observed"] = (
+                    llm_response.finish_reason is not None
+                )
             return llm_response
         except asyncio.CancelledError:
             controller.cancelled_partial_response = llm_response
@@ -4465,6 +4472,11 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
     def _incomplete_model_response_reason(response: ModelResponse | None) -> str | None:
         if response is None:
             return None
+        response_message = (
+            response.message if isinstance(response.message, dict) else {}
+        )
+        if response_message.get("aworld_stream_terminal_observed") is False:
+            return "model_stream_ended_without_finish_reason"
         if response.finish_reason in {"length", "max_tokens", "max_output_tokens"}:
             return "model_output_truncated"
         if response.finish_reason in {"content_filter", "error", "cancelled"}:
@@ -4589,6 +4601,19 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         except GenerationBudgetExceeded as exc:
             self._record_generation_budget_exception(message.context, exc)
             raise
+        incomplete_reason = self._incomplete_model_response_reason(response)
+        if incomplete_reason:
+            content_chars, tool_call_count = self._generation_partial_counts(response)
+            exhausted = GenerationBudgetExceeded(
+                controller.receipt(
+                    GenerationStopReason.ACTION_REPAIR_EXHAUSTED,
+                    partial_response_chars=content_chars,
+                    tool_call_count=tool_call_count,
+                ),
+                partial_response=response,
+            )
+            self._record_generation_budget_exception(message.context, exhausted)
+            raise exhausted
         if response and (
             response.content or response.tool_calls or response.reasoning_content
         ):

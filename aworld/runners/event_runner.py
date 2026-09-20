@@ -895,7 +895,7 @@ class TaskEventRunner(TaskRunner):
                 failure = classify_task_exception(e)
                 error_msg = Message(
                     category=Constants.TASK,
-                    payload=TaskItem(msg=str(e), data=message),
+                    payload=TaskItem(msg=str(e), data=message, failure=failure),
                     sender=self.name,
                     session_id=self.context.session_id,
                     topic=TopicType.ERROR,
@@ -1071,7 +1071,7 @@ class TaskEventRunner(TaskRunner):
             failure = classify_task_exception(e)
             error_msg = Message(
                 category=Constants.TASK,
-                payload=TaskItem(msg=str(e), data=message),
+                payload=TaskItem(msg=str(e), data=message, failure=failure),
                 sender=self.name,
                 session_id=self.context.session_id,
                 topic=TopicType.ERROR,

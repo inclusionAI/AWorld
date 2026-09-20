@@ -150,6 +150,52 @@ async def test_wrapped_agent_budget_failure_keeps_origin_across_execution_layers
 
 
 @pytest.mark.asyncio
+async def test_typed_runtime_failure_survives_filtered_message_headers():
+    runner, context = _runner()
+    emitted = []
+
+    class _Events:
+        async def emit_message(self, event):
+            emitted.append(event)
+
+    runner.event_mng = _Events()
+
+    async def failing_handler(_message):
+        raise RuntimeError("provider transport failed")
+
+    await runner._handle_task(
+        Message(headers={"context": context}),
+        failing_handler,
+    )
+
+    error_event = emitted[0]
+    assert error_event.payload.failure == {
+        "origin": "infrastructure",
+        "code": "runtime_exception",
+        "error_type": "RuntimeError",
+    }
+    error_event.headers = {"context": context}
+    runner.should_stop_task = lambda _message: _async_result(False)
+    runner.stop = lambda: _async_result(None)
+
+    response_events = [
+        event async for event in DefaultTaskHandler(runner).handle(error_event)
+    ]
+    response = response_events[-1].payload
+    result = {
+        "iteration": 1,
+        "response": response.answer,
+        "success": response.success,
+        "completed": False,
+    }
+    ContinuousExecutor._attach_task_response_evidence(result, response)
+    failure = _direct_run_infrastructure_failure({"results": [result]})
+
+    assert failure["failure_code"] == "runtime_exception"
+    assert failure["error_type"] == "RuntimeError"
+
+
+@pytest.mark.asyncio
 async def test_finalize_waits_for_high_watermark_before_storage_snapshot(monkeypatch):
     runner, context = _runner()
     registry = context.trajectory_update_registry

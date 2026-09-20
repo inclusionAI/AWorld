@@ -48,6 +48,39 @@ async def test_stream_length_response_is_recovered_before_tool_execution(monkeyp
 
 
 @pytest.mark.asyncio
+async def test_required_stream_terminal_reason_retries_implicit_eof(monkeypatch):
+    calls = 0
+
+    async def stream(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            yield ModelResponse(id="cut", model="fake", content="I will write")
+            return
+        yield ModelResponse(
+            id="complete",
+            model="fake",
+            tool_calls=[tool('{"path":"out.txt","text":"done"}')],
+        )
+        yield ModelResponse(
+            id="complete", model="fake", finish_reason="tool_calls"
+        )
+
+    monkeypatch.setenv("AWORLD_REQUIRE_STREAM_FINISH_REASON", "true")
+    monkeypatch.setattr(module, "acall_llm_model_stream", stream)
+    agent = _agent(policy=GenerationBudgetPolicy(total_timeout_seconds=5), attempts=2)
+    message = _message("implicit-eof")
+
+    result = await agent.invoke_model(
+        [{"role": "user", "content": "write"}], message=message, stream=True
+    )
+
+    assert calls == 2
+    assert result.finish_reason == "tool_calls"
+    assert json.loads(result.tool_calls[0].function.arguments)["text"] == "done"
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("bad,reason", [
     (ModelResponse(id="x", model="f", content="Unfinished plan", finish_reason="length"), "model_output_truncated"),
     (ModelResponse(id="x", model="f", reasoning_content="Need more work", finish_reason="stop"), "reasoning_only_response"),

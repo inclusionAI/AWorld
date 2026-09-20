@@ -55,6 +55,28 @@ def test_task_failure_exit_code_is_opt_in_for_supervised_runtimes(
     assert main_module._direct_run_failure_outcome(**kwargs).process_exit_code == 1
 
 
+def test_outcome_preserves_safe_nested_failure_diagnostics() -> None:
+    outcome = DirectRunOutcome.from_summary(
+        None,
+        status=DirectRunStatus.INFRASTRUCTURE_FAILED,
+        failure_record={
+            "stage": "agent_execution",
+            "error_code": "agent_execution_infrastructure_failed",
+            "details": {
+                "failure_code": "runtime_exception",
+                "error_type": "ProviderConnectionError",
+                "message": "must not enter the control-plane outcome",
+            },
+        },
+    )
+
+    assert outcome.to_dict()["failure"] == {
+        "stage": "agent_execution",
+        "error_code": "agent_execution_infrastructure_failed",
+        "failure_code": "runtime_exception",
+        "error_type": "ProviderConnectionError",
+    }
+
 @pytest.mark.asyncio
 async def test_direct_run_reports_agent_load_failure_and_returns_typed_outcome(
     monkeypatch: pytest.MonkeyPatch,
@@ -406,6 +428,7 @@ def test_run_command_finalizes_caller_deadline_as_budget_exhaustion(
     assert aworld["run_outcome"]["failure"] == {
         "stage": "agent_execution",
         "error_code": "agent_budget_exhausted",
+        "error_type": "DirectRunDeadlineExceeded",
     }
     persisted = json.loads(outcome_path.read_text(encoding="utf-8"))
     assert {
@@ -475,6 +498,7 @@ def test_run_command_preserves_startup_watchdog_stage(
     assert failure == {
         "stage": "provider_start",
         "error_code": "provider_start_timeout",
+        "error_type": "DirectRunDeadlineExceeded",
     }
     assert trajectory["extra"]["aworld"]["run_outcome"]["semantic_status"] == (
         "infrastructure_failed"

@@ -100,6 +100,8 @@ class DefaultTaskHandler(TaskHandler):
             logger.warning(f"{task_flag} task {self.runner.task.id} stop, cause: {task_item.msg}")
             failure = message.headers.get("task_failure")
             if not isinstance(failure, dict):
+                failure = task_item.failure
+            if not isinstance(failure, dict):
                 failure = {}
             origin = failure.get("origin")
             if origin not in {item.value for item in TaskFailureOrigin}:
