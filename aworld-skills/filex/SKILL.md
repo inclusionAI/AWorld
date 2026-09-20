@@ -167,6 +167,27 @@ python3 /skills/filex/scripts/filex.py parse \
   --artifacts-dir /logs/artifacts
 ```
 
+On success, the wrapper returns `canonical_artifact_contract` with
+`status: committed`, `mutation_policy: immutable`, the canonical `artifacts_dir`
+and `result_path`, and `provenance_authority: filex-cli`. This is a boundary
+declaration, not a second exporter: FileX remains the only component that creates
+the bundle and provenance receipt.
+
+Once that contract is committed, treat the artifact directory as sealed. Do not
+edit, normalize, pretty-print, rename, replace, or delete `result.json` or any
+artifact named by its manifest, and do not change or recreate its embedded
+`filex_provenance`. Do not add summaries or other derived files to that directory.
+If another parse or output representation is required after success, run FileX
+into a fresh artifact directory instead of changing the committed bundle.
+
+Write every downstream transformation—including summaries, excerpts, redactions,
+reformatted Markdown, and schema adapters—outside `artifacts_dir`. Treat it as
+derived output, not as a FileX artifact. It may reference the canonical receipt,
+but it must not copy a `filex_provenance` receipt, assert `producer: filex` or
+`exporter: filex-cli`, or otherwise claim that FileX produced the transformed
+content. When using `--output` together with `--artifacts-dir`, the wrapper
+enforces that this convenience copy is outside the artifact directory.
+
 For any workflow whose result is accepted only with machine-verifiable artifacts,
 treat the following as one canonical command shape. Substitute the actual source,
 artifact directory, and registered provider without dropping any option:
@@ -225,7 +246,8 @@ binds the source, original Document IR, exported Markdown/layout, and FileX
 response by SHA-256. Treat the export as FileX-produced only when the receipt
 says `producer: filex`, `exporter: filex-cli`, `status: succeeded`, and its hashes
 match the current files. The task's requested `document.md` and `layout.json` are
-the submission artifacts; the other files retain provenance.
+the canonical submission artifacts. The manifest, every artifact it names, and
+the embedded receipt remain an immutable unit after the successful command.
 
 Keep the exported `layout.json` structure. Each `items[].bbox` is a box object;
 each optional `items[].layout_segments[]` entry is itself a box object with
@@ -247,9 +269,11 @@ single `bbox`, `layout_segments` may be omitted. Before finishing, check every
 page and every item/segment, not just whether JSON loads: page dimensions must
 be positive, coordinates must be finite numbers, `x`/`y` must be nonnegative,
 `w`/`h` must be positive, and boxes must stay within their page. Preserve the
-actual source geometry and Canonical17 labels. If you use another parser or
-edit the artifacts, repeat these checks; a well-formed JSON file alone does
-not establish that the layout follows the required schema.
+actual source geometry and Canonical17 labels. These are acceptance checks on
+FileX's committed output, never instructions to repair it in place. If a check
+fails, preserve the bundle as evidence and rerun FileX into a fresh artifact
+directory with corrected inputs or configuration. A well-formed JSON file alone
+does not establish that the layout follows the required schema.
 
 ParseOutput export requires a provider that emits real layout geometry. For
 PNG, JPG/JPEG, WebP, GIF, and BMP inputs with `--artifacts-dir` and
@@ -441,6 +465,12 @@ for synchronous parsing, a readable `output_path`. Do not guess a result path
 such as `/root/fs_workspace/document_parse/<task_id>/...`. Use only the paths
 returned by the wrapper.
 
+When `canonical_artifact_contract` is present, use its `result_path` as the
+authority for the committed bundle. `output_path` remains a readable parse output
+or convenience copy; it does not authorize changing the canonical artifact
+directory. Downstream work must read the canonical files and write any new files
+outside that directory without adopting FileX provenance.
+
 For a lightweight format smoke test, parse one small file through the same
 wrapper and check both the JSON and `output_path`. Do not rely on provider log
 lines: the wrapper's bounded JSON response is the observable contract.
@@ -471,3 +501,4 @@ lines: the wrapper's bounded JSON response is the observable contract.
 - Prefer a workspace path for private files; use `--url` only for a trusted HTTP(S) source.
 - Do not use MCP filesystem-server paths or repository-local smoke scripts unless they are actually mounted in this runtime.
 - Preserve FileX error messages, task ids, warnings, metrics, and partial-success information.
+- After a canonical artifact contract is committed, keep its manifest, artifacts, and provenance immutable; place all derived output outside its artifact directory and never represent derived content as FileX-produced.

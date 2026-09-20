@@ -237,6 +237,7 @@ def test_filex_wrapper_exports_generic_artifact_bundle(tmp_path: Path) -> None:
 
     assert completed.returncode == 0, completed.stdout
     result = json.loads((artifacts / "result.json").read_text())
+    stdout = json.loads(completed.stdout)
     assert result["schema_version"] == "filex.artifact-bundle/v1"
     assert result["source"]["sha256"].startswith("sha256:")
     assert result["artifacts"]["document"]["path"] == str(artifacts / "document.md")
@@ -245,6 +246,51 @@ def test_filex_wrapper_exports_generic_artifact_bundle(tmp_path: Path) -> None:
         json.loads((artifacts / "layout.json").read_text())["pages"][0]["page_index"]
         == 0
     )
+    assert stdout["canonical_artifact_contract"] == {
+        "schema_version": "aworld.filex-canonical-artifacts/v1",
+        "status": "committed",
+        "artifacts_dir": str(artifacts),
+        "result_path": str(artifacts / "result.json"),
+        "mutation_policy": "immutable",
+        "derived_output_policy": "outside-artifacts-dir",
+        "provenance_authority": "filex-cli",
+    }
+
+
+def test_filex_wrapper_rejects_derived_output_inside_artifact_directory(
+    tmp_path: Path,
+) -> None:
+    workspace, args_log, env = _environment(tmp_path)
+    source = workspace / "input.pdf"
+    source.write_bytes(b"%PDF-test")
+    artifacts = workspace / "artifacts"
+    env["FILEX_ARTIFACTS_ROOT"] = str(artifacts)
+
+    completed = subprocess.run(
+        [
+            sys.executable,
+            str(FILEX_SCRIPT),
+            "parse",
+            "--input",
+            str(source),
+            "--output",
+            str(artifacts / "summary.md"),
+            "--artifacts-dir",
+            str(artifacts),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+
+    assert completed.returncode == 2
+    assert json.loads(completed.stdout) == {
+        "success": False,
+        "message": "Derived --output must be outside the FileX artifact directory",
+        "error_type": "InputError",
+    }
+    assert not args_log.exists()
 
 
 def test_filex_wrapper_inspects_youtube_without_media_download(tmp_path: Path) -> None:

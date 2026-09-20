@@ -12,6 +12,9 @@ from pathlib import Path
 from typing import Any
 
 
+CANONICAL_ARTIFACT_CONTRACT_SCHEMA = "aworld.filex-canonical-artifacts/v1"
+
+
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Use FileX from an AWorld sandbox")
     parser.add_argument(
@@ -150,6 +153,47 @@ def _artifacts_destination(raw_path: str) -> Path:
     return destination
 
 
+def _is_within(path: Path, directory: Path) -> bool:
+    try:
+        path.relative_to(directory)
+    except ValueError:
+        return False
+    return True
+
+
+def _canonical_artifact_contract(
+    payload: dict[str, Any], destination: Path
+) -> dict[str, Any]:
+    """Describe FileX's committed bundle without recreating or rewriting it."""
+
+    raw_directory = str(payload.get("artifacts_dir") or "").strip()
+    raw_result = str(payload.get("artifact_result") or "").strip()
+    if not raw_directory or not raw_result:
+        raise ValueError(
+            "FileX succeeded without committed artifacts_dir/artifact_result fields"
+        )
+
+    returned_directory = Path(raw_directory).expanduser().resolve()
+    returned_result = Path(raw_result).expanduser().resolve()
+    expected_result = destination / "result.json"
+    if returned_directory != destination:
+        raise ValueError(
+            "FileX returned an artifact directory other than the requested destination"
+        )
+    if returned_result != expected_result or not returned_result.is_file():
+        raise ValueError("FileX did not commit the expected artifact result.json")
+
+    return {
+        "schema_version": CANONICAL_ARTIFACT_CONTRACT_SCHEMA,
+        "status": "committed",
+        "artifacts_dir": str(returned_directory),
+        "result_path": str(returned_result),
+        "mutation_policy": "immutable",
+        "derived_output_policy": "outside-artifacts-dir",
+        "provenance_authority": "filex-cli",
+    }
+
+
 def _run(command: list[str]) -> tuple[int, dict[str, Any]]:
     try:
         completed = subprocess.run(command, check=False, capture_output=True, text=True)
@@ -202,6 +246,7 @@ def _parse(args: argparse.Namespace, executable: str, workspace: Path) -> int:
     command = [executable, "parse"]
     source_path: Path | None = None
     artifacts_destination: Path | None = None
+    output_destination: Path | None = None
     try:
         if args.input:
             source_path = _inside_workspace(args.input, workspace, must_exist=True)
@@ -213,6 +258,14 @@ def _parse(args: argparse.Namespace, executable: str, workspace: Path) -> int:
             command.extend(["--env-content-file", str(env_file)])
         if args.artifacts_dir:
             artifacts_destination = _artifacts_destination(args.artifacts_dir)
+        if args.output:
+            output_destination = _inside_workspace(args.output, workspace)
+            if artifacts_destination is not None and _is_within(
+                output_destination, artifacts_destination
+            ):
+                raise ValueError(
+                    "Derived --output must be outside the FileX artifact directory"
+                )
     except ValueError as exc:
         return _fail(str(exc), error_type="InputError")
 
@@ -269,13 +322,17 @@ def _parse(args: argparse.Namespace, executable: str, workspace: Path) -> int:
         return return_code
     try:
         result = _result_path(payload, workspace)
-        if args.output:
-            output = _inside_workspace(args.output, workspace)
+        if output_destination is not None:
+            output = output_destination
             output.parent.mkdir(parents=True, exist_ok=True)
             if output != result:
                 shutil.copy2(result, output)
         else:
             output = result
+        if artifacts_destination is not None:
+            payload["canonical_artifact_contract"] = _canonical_artifact_contract(
+                payload, artifacts_destination
+            )
     except ValueError as exc:
         return _fail(str(exc), error_type="OutputError")
     payload["input_path"] = str(source_path) if source_path else args.url
