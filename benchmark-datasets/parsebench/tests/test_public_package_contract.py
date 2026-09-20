@@ -33,6 +33,11 @@ def test_public_submission_contract_has_no_solver_requirement():
     ).decode()
     assert "one-indexed page 5" in instruction
     assert "layout_pages" in instruction and "document.md" in instruction
+    assert "accurate `rowspan`/`colspan`" in instruction
+    assert "each data point in its own value cell" in instruction
+    assert "A prose chart summary alone" in instruction
+    assert "superscript, subscript" in instruction
+    assert "use only observed page geometry" in instruction
     assert not any(
         value in instruction.lower()
         for value in ("aworld", "filex", "paddle", "result.json")
