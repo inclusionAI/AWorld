@@ -227,10 +227,20 @@ class TaskEventRunner(TaskRunner):
         return execution.result()
 
     async def _caller_requested_stop(self) -> bool:
-        context = getattr(self, "context", None) or self.task.context
+        # ``task.context`` may be a fully constructed ApplicationContext whose
+        # Task binding is intentionally deferred to ``TaskRunner.pre_run``.
+        # Use it as response evidence, but never call its task-status API until
+        # the runner-owned context has been installed and bound by pre_run.
+        runtime_context = getattr(self, "context", None)
+        response_context = runtime_context or self.task.context
+        get_bound_task = getattr(runtime_context, "get_task", None)
+        runtime_context_bound = callable(get_bound_task) and get_bound_task() is self.task
         status = self.task.task_status
-        if status not in {TaskStatusValue.INTERRUPTED, TaskStatusValue.CANCELLED} and context:
-            status = await context.get_task_status()
+        if (
+            status not in {TaskStatusValue.INTERRUPTED, TaskStatusValue.CANCELLED}
+            and runtime_context_bound
+        ):
+            status = await runtime_context.get_task_status()
         remaining = self.task.remaining_seconds()
         cancelled = status in {TaskStatusValue.INTERRUPTED, TaskStatusValue.CANCELLED}
         if not cancelled and (remaining is None or remaining > 0):
@@ -238,14 +248,14 @@ class TaskEventRunner(TaskRunner):
         status = status if cancelled else TaskStatusValue.TIMEOUT
         code = ("cancelled" if status == TaskStatusValue.CANCELLED else "interrupted") if cancelled else "task_timeout"
         self._task_response = TaskResponse(
-            id=self.task.id, context=context, answer="", success=False, status=status,
+            id=self.task.id, context=response_context, answer="", success=False, status=status,
             msg=f"Task stopped: {code}", failure_code=code,
             failure_origin=TaskFailureOrigin.CANCELLED.value if cancelled else TaskFailureOrigin.INFRASTRUCTURE.value,
             semantic_status="incomplete" if cancelled else "budget_exhausted",
             completion_reason=code, recoverable=False,
         )
-        if context:
-            await context.update_task_status(self.task.id, status)
+        if runtime_context_bound:
+            await runtime_context.update_task_status(self.task.id, status)
         return True
 
     async def _run_lifecycle(self) -> Any:

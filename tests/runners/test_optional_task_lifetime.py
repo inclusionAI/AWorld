@@ -69,10 +69,196 @@ def test_live_budget_does_not_extend_on_wall_clock_rollback(clock):
 def runner_for(task):
     runner = TaskEventRunner(task, agent_oriented=False)
     runner.context = SimpleNamespace(
+        get_task=lambda: task,
         get_task_status=AsyncMock(return_value=TaskStatusValue.RUNNING),
         update_task_status=AsyncMock(),
     )
     return runner
+
+
+def task_with_unbound_application_context(**task_kwargs):
+    from aworld.core.context.amni import ApplicationContext
+
+    task_id = task_kwargs.pop("id", "prebuilt-context-task")
+    context = ApplicationContext.create(
+        task_id=task_id,
+        task_content="test",
+    )
+    task = Task(id=task_id, input="test", context=context, **task_kwargs)
+    assert context.root.get_task() is None
+    return task, context
+
+
+@pytest.mark.asyncio
+async def test_unexpired_prebuilt_context_is_not_queried_before_pre_run_binding():
+    task, context = task_with_unbound_application_context()
+    context.get_task_status = AsyncMock(
+        side_effect=AssertionError("unbound context status must not be read")
+    )
+    runner = TaskEventRunner(task, agent_oriented=False)
+    runner._run_lifecycle = AsyncMock(return_value="completed")
+
+    assert await runner.run() == "completed"
+    runner._run_lifecycle.assert_awaited_once()
+    context.get_task_status.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_expired_prebuilt_context_stops_without_unbound_context_access(clock):
+    task, context = task_with_unbound_application_context(
+        deadline_epoch_seconds=clock.wall - 1,
+    )
+    context.get_task_status = AsyncMock(
+        side_effect=AssertionError("unbound context status must not be read")
+    )
+    context.update_task_status = AsyncMock(
+        side_effect=AssertionError("unbound context status must not be updated")
+    )
+    task.outputs = SimpleNamespace(mark_completed=AsyncMock())
+    runner = TaskEventRunner(task, agent_oriented=False)
+    runner._run_lifecycle = AsyncMock()
+    runner._finalize_execution_not_started_for_delivery = AsyncMock()
+
+    response = await runner.run()
+
+    runner._run_lifecycle.assert_not_called()
+    context.get_task_status.assert_not_awaited()
+    context.update_task_status.assert_not_awaited()
+    task.outputs.mark_completed.assert_awaited_once_with(response)
+    assert response.context is context
+    assert response.status == TaskStatusValue.TIMEOUT
+    assert response.semantic_status == "budget_exhausted"
+
+
+@pytest.mark.asyncio
+async def test_stale_context_binding_is_not_treated_as_current_task(clock):
+    task, context = task_with_unbound_application_context(
+        deadline_epoch_seconds=clock.wall - 1,
+    )
+    previous_task = Task(id="previous-task")
+    previous_task.request_cancel()
+    context.set_task(previous_task)
+    context.get_task_status = AsyncMock(
+        side_effect=AssertionError("stale context status must not be read")
+    )
+    context.update_task_status = AsyncMock(
+        side_effect=AssertionError("stale context status must not be updated")
+    )
+    task.outputs = SimpleNamespace(mark_completed=AsyncMock())
+    runner = TaskEventRunner(task, agent_oriented=False)
+    runner.context = context
+    runner._run_lifecycle = AsyncMock()
+    runner._finalize_execution_not_started_for_delivery = AsyncMock()
+
+    response = await runner.run()
+
+    runner._run_lifecycle.assert_not_called()
+    context.get_task_status.assert_not_awaited()
+    context.update_task_status.assert_not_awaited()
+    assert context.get_task() is previous_task
+    assert response.status == TaskStatusValue.TIMEOUT
+
+
+@pytest.mark.asyncio
+async def test_stale_cancelled_task_does_not_stop_current_task():
+    task, context = task_with_unbound_application_context()
+    previous_task = Task(id="previous-cancelled-task")
+    previous_task.request_cancel()
+    context.set_task(previous_task)
+    context.get_task_status = AsyncMock(
+        side_effect=AssertionError("stale context status must not be read")
+    )
+    runner = TaskEventRunner(task, agent_oriented=False)
+    runner.context = context
+    runner._run_lifecycle = AsyncMock(return_value="completed")
+
+    assert await runner.run() == "completed"
+    runner._run_lifecycle.assert_awaited_once()
+    context.get_task_status.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("request_method", "expected_status"),
+    [
+        ("request_cancel", TaskStatusValue.CANCELLED),
+        ("request_pause", TaskStatusValue.INTERRUPTED),
+    ],
+)
+async def test_pre_requested_stop_does_not_update_unbound_context(
+    request_method,
+    expected_status,
+):
+    task, context = task_with_unbound_application_context()
+    getattr(task, request_method)()
+    context.get_task_status = AsyncMock(
+        side_effect=AssertionError("unbound context status must not be read")
+    )
+    context.update_task_status = AsyncMock(
+        side_effect=AssertionError("unbound context status must not be updated")
+    )
+    task.outputs = SimpleNamespace(mark_completed=AsyncMock())
+    runner = TaskEventRunner(task, agent_oriented=False)
+    runner._run_lifecycle = AsyncMock()
+    runner._finalize_execution_not_started_for_delivery = AsyncMock()
+
+    response = await runner.run()
+
+    runner._run_lifecycle.assert_not_called()
+    context.get_task_status.assert_not_awaited()
+    context.update_task_status.assert_not_awaited()
+    assert response.context is context
+    assert response.status == expected_status
+    assert response.semantic_status == "incomplete"
+
+
+@pytest.mark.asyncio
+async def test_bootstrap_polling_waits_for_context_binding_before_status_access():
+    task, context = task_with_unbound_application_context()
+    original_get_status = context.get_task_status
+    original_update_status = context.update_task_status
+    context.get_task_status = AsyncMock(wraps=original_get_status)
+    context.update_task_status = AsyncMock(wraps=original_update_status)
+    runner = TaskEventRunner(task, agent_oriented=False)
+    bootstrap_entered = asyncio.Event()
+    allow_binding = asyncio.Event()
+    context_bound = asyncio.Event()
+    lifecycle_cancelled = asyncio.Event()
+
+    async def blocked_bootstrap():
+        bootstrap_entered.set()
+        await allow_binding.wait()
+        runner.context = context
+        context.set_task(task)
+        runner._bootstrap_complete.set()
+        context_bound.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            lifecycle_cancelled.set()
+
+    runner._run_lifecycle = blocked_bootstrap
+    running = asyncio.create_task(runner.run())
+    await bootstrap_entered.wait()
+
+    # Exercise at least one supervisor poll while the prebuilt context still
+    # has no Task binding.
+    await asyncio.sleep(0.12)
+    assert not running.done()
+    assert context.root.get_task() is None
+    context.get_task_status.assert_not_awaited()
+
+    allow_binding.set()
+    await context_bound.wait()
+    task.request_cancel()
+    response = await asyncio.wait_for(running, 1)
+
+    assert lifecycle_cancelled.is_set()
+    context.update_task_status.assert_awaited_once_with(
+        task.id,
+        TaskStatusValue.CANCELLED,
+    )
+    assert response.status == TaskStatusValue.CANCELLED
 
 
 @pytest.mark.asyncio
