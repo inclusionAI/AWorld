@@ -793,6 +793,89 @@ def test_live_provider_evidence_ignores_pre_provider_stream_state() -> None:
     assert main_module._new_live_provider_evidence(executor, cursor=cursor)
 
 
+def test_live_provider_evidence_reads_shared_deep_copy_fan_in() -> None:
+    from aworld.core.context.amni import ApplicationContext
+
+    context = ApplicationContext.create(
+        task_id="task-current",
+        task_content="test",
+    )
+    executor = SimpleNamespace(context=context)
+    cursor = main_module._live_provider_evidence_cursor(executor)
+    transport_copy = context.deep_copy()
+    transport_copy.append_llm_call(
+        {
+            "task_id": "task-current",
+            "request_id": "request-1",
+            "provider_invoked": True,
+            "provider_attempt_status": "attempted",
+        }
+    )
+
+    assert context.get_llm_calls() == []
+    assert main_module._new_live_provider_evidence(executor, cursor=cursor)
+
+
+@pytest.mark.asyncio
+async def test_deep_copy_provider_attempt_disarms_startup_watchdog(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from aworld.core.context.amni import ApplicationContext
+
+    monkeypatch.setenv("AWORLD_DIRECT_RUN_FIRST_PROVIDER_TIMEOUT_SECONDS", "0.02")
+    monkeypatch.setenv("AWORLD_TASK_DEADLINE_EPOCH_SECONDS", str(time.time() + 1))
+    monkeypatch.setenv("AWORLD_TERMINAL_COMPLETION_RESERVE_SECONDS", "0")
+    context = ApplicationContext.create(
+        task_id="task-current",
+        task_content="test",
+    )
+    executor = SimpleNamespace(context=context)
+    cursor = main_module._live_provider_evidence_cursor(executor)
+
+    async def provider_work() -> str:
+        await asyncio.sleep(0.005)
+        transport_copy = context.deep_copy()
+        transport_copy.append_llm_call(
+            {
+                "task_id": "task-current",
+                "request_id": "request-1",
+                "provider_invoked": True,
+                "provider_attempt_status": "attempted",
+            }
+        )
+        await asyncio.sleep(0.05)
+        return "complete"
+
+    assert await main_module.run_with_first_provider_start_watchdog(
+        provider_work(),
+        evidence_observed=lambda: main_module._new_live_provider_evidence(
+            executor,
+            cursor=cursor,
+        ),
+    ) == "complete"
+
+
+def test_live_provider_evidence_probe_errors_reach_fail_open_boundary(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    class BrokenContext:
+        task_id = "task-current"
+
+        @staticmethod
+        def get_reconciled_llm_calls():
+            raise RuntimeError("fan-in unavailable")
+
+    with pytest.raises(RuntimeError, match="fan-in unavailable"):
+        main_module._live_provider_evidence_cursor(
+            SimpleNamespace(context=BrokenContext())
+        )
+
+    assert main_module._initial_live_provider_evidence_cursor(
+        SimpleNamespace(context=BrokenContext())
+    ) is None
+    assert "initial provider-evidence probe failed open" in caplog.text
+
+
 @pytest.mark.asyncio
 async def test_direct_run_defaults_to_one_complete_agent_run(
     monkeypatch: pytest.MonkeyPatch,

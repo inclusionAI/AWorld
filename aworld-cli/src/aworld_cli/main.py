@@ -30,6 +30,7 @@ from .run_outcome import (
 
 _AWORLD_PRE_PROVIDER_MAX_ATTEMPTS = 2
 _CONTROL_DETAIL_IDENTIFIER = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
+_LOGGER = logging.getLogger(__name__)
 
 
 def _direct_run_summary(value: object) -> dict | None:
@@ -60,12 +61,16 @@ def _live_provider_evidence_cursor(agent_executor: object) -> tuple[object, int]
 
     context = getattr(agent_executor, "context", None)
     calls: object = None
-    get_calls = getattr(context, "get_llm_calls", None)
+    get_calls = getattr(context, "get_reconciled_llm_calls", None)
+    if not callable(get_calls):
+        get_calls = getattr(context, "get_llm_calls", None)
     if callable(get_calls):
-        try:
-            calls = get_calls()
-        except Exception:
-            calls = None
+        # Let probe failures reach the watchdog's fail-open boundary.  Treating
+        # an observability exception as zero evidence turns a healthy task into
+        # a false provider-start timeout.
+        calls = get_calls()
+        if not isinstance(calls, list):
+            raise TypeError("provider evidence probe must return a list")
     elif context is not None:
         context_info = getattr(context, "context_info", None)
         if isinstance(context_info, dict):
@@ -96,6 +101,23 @@ def _new_live_provider_evidence(
     return evidence_count > 0 and (
         context is not initial_context or evidence_count > initial_count
     )
+
+
+def _initial_live_provider_evidence_cursor(
+    agent_executor: object,
+) -> tuple[object, int] | None:
+    """Capture the baseline or disable the watchdog when observation is broken."""
+
+    try:
+        return _live_provider_evidence_cursor(agent_executor)
+    except Exception as exc:
+        # Provider evidence is advisory. An unavailable initial snapshot must
+        # not turn a healthy task into an orchestration failure or timeout.
+        _LOGGER.warning(
+            "Direct-run initial provider-evidence probe failed open; error_type=%s",
+            type(exc).__name__,
+        )
+        return None
 
 
 def _direct_run_succeeded(summary: object) -> bool:
@@ -1640,7 +1662,7 @@ async def _run_direct_mode(
     summary = None
     try:
         for provider_attempt in range(1, max_provider_attempts + 1):
-            evidence_cursor = _live_provider_evidence_cursor(agent_executor)
+            evidence_cursor = _initial_live_provider_evidence_cursor(agent_executor)
             summary = await run_with_first_provider_start_watchdog(
                 continuous_executor.run_continuous(
                     prompt=multimodal_prompt,
@@ -1656,7 +1678,8 @@ async def _run_direct_mode(
                     show_iteration_header=show_iteration_header,
                     echo_prompt_as_turn=echo_prompt_as_turn,
                 ),
-                evidence_observed=lambda: _new_live_provider_evidence(
+                evidence_observed=lambda: evidence_cursor is None
+                or _new_live_provider_evidence(
                     agent_executor,
                     cursor=evidence_cursor,
                 ),

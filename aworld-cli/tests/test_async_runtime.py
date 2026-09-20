@@ -108,6 +108,33 @@ async def test_provider_attempt_disarms_watchdog_before_long_generation(
 
 
 @pytest.mark.asyncio
+async def test_provider_evidence_probe_failure_disables_watchdog(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    monkeypatch.setenv(FIRST_PROVIDER_START_TIMEOUT_ENV, "0.01")
+    monkeypatch.setenv(TASK_DEADLINE_EPOCH_ENV, str(time.time() + 1))
+    monkeypatch.setenv(TASK_COMPLETION_RESERVE_ENV, "0")
+
+    async def healthy_task() -> str:
+        await asyncio.sleep(0.03)
+        return "complete"
+
+    def broken_probe() -> bool:
+        raise RuntimeError("probe unavailable")
+
+    assert (
+        await run_with_first_provider_start_watchdog(
+            healthy_task(),
+            evidence_observed=broken_probe,
+        )
+        == "complete"
+    )
+    assert "provider-evidence probe failed open" in caplog.text
+    assert "startup watchdog expired" not in caplog.text
+
+
+@pytest.mark.asyncio
 async def test_first_provider_watchdog_is_capped_by_absolute_caller_deadline(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
