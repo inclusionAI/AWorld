@@ -60,6 +60,49 @@ or media.
 
 Use the bundled wrapper for FileX `inspect`, `parse`, and `status`. It validates workspace paths, resolves supported URL sources, keeps credentials out of command-line arguments, preserves FileX JSON fields, and returns `output_path` for synchronous parsing.
 
+## Use the AWorld runtime contract
+
+Invoke FileX through the bundled AWorld wrapper from any working directory:
+
+```bash
+python3 /skills/filex/scripts/filex.py --help
+```
+
+Do not change into `/app/mcp_servers/filesystem_server`, call `./bin/filex`, or
+use `/root/fs_workspace`. Those paths belong to a different MCP filesystem-server
+image. In the Harbor/ParseBench AWorld runtime, `FILEX_WORKSPACE_ROOT` is
+`/workspace`; standalone AWorld images may use `$HOME/workspace`. Use the
+runtime-provided value and the task's supplied path instead of deriving a path
+from the current directory. `/skills/filex` is read-only and is never an output
+location.
+
+The wrapper accepts local `--input` files under `FILEX_WORKSPACE_ROOT` and
+HTTP(S) `--url` sources. Keep the skill focused on those ordinary AWorld source
+flows rather than deployment-specific object-store workflows.
+
+## Follow the parsing workflow
+
+1. Identify the source and confirm that a local file already resides under
+   `FILEX_WORKSPACE_ROOT`; otherwise use a trusted HTTP(S) URL or ask the caller
+   to stage it. Do not make an unnecessary base64 copy of a mounted file.
+2. Let FileX infer the file type when the suffix and content are reliable. Use
+   `--file-type` only to resolve ambiguity.
+3. Let the configured provider handle ordinary files. Select an explicit
+   provider only when the task needs a known capability such as scanned-page
+   OCR, real layout geometry, or text-layer-first VLM fallback.
+4. Keep a simple provider choice in `--provider`. Put provider-private settings
+   and structured values in a protected workspace JSON file and use
+   `--env-file`; never combine those two options.
+5. Run the parse synchronously in the foreground with enough terminal-tool
+   time. For evaluation or durable handoff, request an artifact bundle and an
+   explicit layout format.
+6. Validate the JSON result, then read `output_path` and inspect the generated
+   Markdown or artifact bundle. Logs are diagnostic evidence, not the result
+   contract.
+7. On failure, preserve the wrapper's JSON error, provider/model identity, task
+   id, and any checkpoint. Retry only after the first process has ended and the
+   failure is understood.
+
 ## Allow time for document parsing
 
 Run FileX parsing synchronously in the foreground. When using the terminal
@@ -93,12 +136,13 @@ job-status API; the local CLI `status` command is not that API.
 
 ## Parse a local file
 
-Confirm the file is under the sandbox workspace, normally `/root/workspace`, then run:
+Confirm the file is under the sandbox workspace. In the Harbor runtime this is
+normally `/workspace`, then run:
 
 ```bash
 python3 /skills/filex/scripts/filex.py parse \
-  --input /root/workspace/input.docx \
-  --output /root/workspace/input.md
+  --input /workspace/input.docx \
+  --output /workspace/input.md
 ```
 
 FileX supports:
@@ -121,9 +165,9 @@ python3 /skills/filex/scripts/filex.py parse \
   --artifacts-dir /logs/artifacts
 ```
 
-The default `--layout-format document-ir` writes `document.md`, FileX Document IR
-as `layout.json`, and a version 1 `result.json` containing source/output hashes
-and the unmodified FileX response.
+When `--layout-format document-ir` is selected, the bundle contains
+`document.md`, FileX Document IR as `layout.json`, and a version 1 `result.json`
+with source/output hashes and the unmodified FileX response.
 
 When the task requests `document.md` and a public ParseOutput `layout.json`
 containing `layout_pages`, export that format explicitly:
@@ -172,9 +216,10 @@ ParseOutput export requires a provider that emits real layout geometry. For
 PNG, JPG/JPEG, WebP, GIF, and BMP inputs with `--artifacts-dir` and
 `--layout-format parse-output`, the wrapper selects `paddle_ocr` when no
 `--provider` or `--env-file` was supplied. This also applies when the format comes
-from `FILEX_LAYOUT_FORMAT`. PDF already defaults to Paddle in FileX. Explicit
-provider/configuration choices and the legacy `document-ir` behavior stay
-unchanged; choose a layout-capable provider when overriding this export path.
+from `FILEX_LAYOUT_FORMAT`. Explicit provider/configuration choices and the
+legacy `document-ir` behavior stay unchanged. For PDF, do not rely on a
+deployment's provider default when real geometry is required; explicitly choose
+a layout-capable provider such as `paddle_ocr`.
 
 Use the task's source path, selected pages, artifact paths, and output format.
 For a selected PDF page, include `--pages` with the original one-based page
@@ -184,8 +229,10 @@ dimensions, boxes, or a supported label, export reports a clear error. Actual
 empty page/item lists are preserved; text-layer spans without complete boxes
 remain in the original Document IR.
 
-Operators can set `FILEX_LAYOUT_FORMAT=parse-output` as the default; an explicit
-`--layout-format` takes precedence. The wheel supplies the format converter.
+The Harbor/ParseBench runtime sets `FILEX_LAYOUT_FORMAT=parse-output`; the
+standalone wrapper falls back to `document-ir` when the variable is absent. An
+explicit `--layout-format` takes precedence, so specify it when the artifact
+contract must be deterministic. The wheel supplies the format converter.
 `FILEX_PYTHON` selects the Python environment containing that FileX wheel when it
 differs from the wrapper's Python; by default the wrapper uses its own Python.
 These controls select an output representation and do not select a model or run
@@ -193,17 +240,74 @@ evaluation.
 
 ## Select a provider
 
-Use `--provider` when the provider needs no credentials on the command line:
+For PDF input, choose only providers registered in this AWorld FileX build:
+
+| Provider | Aliases | Use it for |
+| --- | --- | --- |
+| `liteparse` | none | Native-text or general PDF parsing, with optional OCR configured through an environment file |
+| `paddle_ocr` | `paddleocr`, `paddle` | Scans, layout, tables, and chart-aware OCR; requires the Paddle models to be present |
+| `pypdf_vlm` | `pypdf+vlm`, `vlm_pdf` | Text-layer-first parsing with per-page VLM fallback |
+
+`unlimited_ocr` and `page_images` are not providers in this release. Likewise,
+the wrapper does not accept another distribution's `--parse-provider`,
+`--unlimited-ocr-*`, `--page-images-*`, or provider-specific direct flags.
+Use `python3 /skills/filex/scripts/filex.py parse --help` to inspect the wrapper
+syntax. Provider availability is governed by this AWorld build's registry, not
+by flags shown in another distribution's help.
+
+Use `--provider` for a simple provider choice that needs no request-specific
+configuration:
 
 ```bash
 python3 /skills/filex/scripts/filex.py parse \
-  --input /root/workspace/report.pdf \
+  --input /workspace/report.pdf \
   --provider liteparse
 ```
 
-Available providers depend on the file type and image configuration. They include Paddle OCR, LiteParse, PyPDF+VLM, native Office/text/table providers, image VLM, and local Whisper. Let FileX select the default unless the task requires a specific capability.
+Available providers depend on the file type and installed dependencies. Native
+Office/text/table providers, image VLM, and local Whisper are selected for their
+matching formats. Do not assume the PDF default is Paddle: the bundled FileX
+configuration may select LiteParse. Choose `paddle_ocr` explicitly when real
+layout geometry, scanned-page OCR, or chart-aware parsing is required.
 
-For provider credentials or complex configuration, create a protected JSON file in the workspace and pass `--env-file`. Put `filex_parse_provider` in that file when selecting a provider. Do not combine `--provider` with `--env-file`.
+For provider-private or low-frequency settings, create a protected JSON object
+inside the workspace and pass `--env-file`. Put `filex_parse_provider` in that
+file when selecting a provider. Do not combine `--provider` with `--env-file`.
+For example, `/workspace/filex-options.json` may contain:
+
+```json
+{
+  "filex_parse_provider": "pypdf_vlm",
+  "pdf_vlm_max_pages": 20,
+  "pdf_vlm_max_concurrency": 2,
+  "pdf_vlm_max_retries": 3,
+  "pdf_vlm_timeout_seconds": 600,
+  "pdf_render_dpi": 150,
+  "pdf_jpeg_quality": 85
+}
+```
+
+Then run:
+
+```bash
+chmod 600 /workspace/filex-options.json
+python3 /skills/filex/scripts/filex.py parse \
+  --input /workspace/report.pdf \
+  --env-file /workspace/filex-options.json
+```
+
+Other supported families include `liteparse_*` settings and `paddle_ocr_*`
+settings. Keep exact JSON scalar types: booleans must be JSON booleans and
+numeric limits must be numbers. Passwords, long prompts, `extra_body`, and any
+other sensitive or structured values belong in the protected JSON file, never
+inline in a command.
+
+The AWorld runtime supplies the selected FileX VLM independently of the Agent
+model through `GATEWAY_VLLM_*`. In Harbor/ParseBench, do not put a
+`gateway_vllm` object in `--env-file`: it would override the VLM selected by the
+runtime, weaken reproducibility, and may use mismatched credentials. Never copy
+the Agent model credentials into the task. A standalone operator that needs a
+different VLM must configure that runtime outside the agent's parsing command.
 
 If PaddleOCR reports `No available model hosting platforms detected`, it was
 trying to acquire a missing local model from a model-weight download host.
@@ -227,6 +331,11 @@ python3 /skills/filex/scripts/filex.py parse \
 The default maximum download is 512 MiB and the default download timeout is 120 seconds.
 Operators may adjust `FILEX_MAX_DOWNLOAD_BYTES` and
 `FILEX_DOWNLOAD_TIMEOUT_SECONDS` on the container.
+
+Do not base64-encode a large host file into a terminal command. Harbor mounts
+task files into its workspace; use that path when present. In a standalone
+runtime, mount or stage the file first. Otherwise use an authorized URL. This
+avoids shell quoting damage and command-length limits.
 
 ## Inspect and parse YouTube
 
@@ -289,10 +398,38 @@ diagnostics and resuming completed batches. Inspect the generated Markdown
 before claiming OCR, table, formula, layout, transcription, or
 image-understanding fidelity.
 
+Treat stdout as the result contract. Success requires JSON `success: true` and,
+for synchronous parsing, a readable `output_path`. Do not guess a result path
+such as `/root/fs_workspace/document_parse/<task_id>/...`. Use only the paths
+returned by the wrapper.
+
+For a lightweight format smoke test, parse one small file through the same
+wrapper and check both the JSON and `output_path`. Do not rely on provider log
+lines: the wrapper's bounded JSON response is the observable contract.
+
+## Troubleshoot the AWorld deployment
+
+- `Path must be inside the FileX workspace`: use the existing task path under
+  `FILEX_WORKSPACE_ROOT` (`/workspace` in Harbor), not `/root/fs_workspace`, the
+  host path, or a path under `/skills`.
+- `FileX executable not found`: confirm `command -v filex`; report a missing or
+  stale FileX-enabled runtime image instead of installing an ad-hoc local copy.
+- A dependency appears missing on the host: reproduce through the sandbox
+  wrapper. A host virtual environment does not establish what is installed in
+  the AWorld runtime.
+- JSON reports success but no inline Markdown: use the wrapper's `output_path`.
+  The content is intentionally kept in a file rather than copied into stdout.
+- Office conversion fails: preserve the FileX JSON error and task id. Do not
+  infer success from an intermediate conversion phase.
+- A VLM request returns 401/403: preserve the requested provider and model
+  identity. This is a FileX VLM profile/credential problem, not evidence that
+  the independently configured AWorld Agent model is unavailable.
+
 ## Guardrails
 
 - Confirm `command -v filex` before use. Report a missing FileX-enabled image instead of falling back to AWorld's unsupported built-in PDF parser.
 - Keep source files unchanged and keep every local input, output, and environment file inside the workspace.
 - Never place credentials directly in a command, prompt, log, skill file, or generated Markdown.
 - Prefer a workspace path for private files; use `--url` only for a trusted HTTP(S) source.
+- Do not use MCP filesystem-server paths or repository-local smoke scripts unless they are actually mounted in this runtime.
 - Preserve FileX error messages, task ids, warnings, metrics, and partial-success information.

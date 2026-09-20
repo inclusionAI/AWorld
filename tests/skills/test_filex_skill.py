@@ -23,6 +23,36 @@ def test_filex_skill_is_discoverable_with_remote_execution_asset() -> None:
     assert "/skills/filex/scripts/filex.py" in content.usage
 
 
+def test_filex_skill_documents_adapted_workflow_and_runtime_boundaries() -> None:
+    provider = FilesystemSkillProvider("repo", REPO_ROOT / "aworld-skills")
+    descriptor = next(item for item in provider.list_descriptors() if item.skill_name == "filex")
+    usage = provider.load_content(descriptor.skill_id).usage
+
+    assert "FILEX_WORKSPACE_ROOT" in usage
+    assert "AWorld runtime supplies the selected FileX VLM" in usage
+    assert "`gateway_vllm` object in `--env-file`" in usage
+    assert "weaken reproducibility" in usage
+    assert "`output_path`" in usage
+    assert "`unlimited_ocr` and `page_images` are not providers" in usage
+    assert "Follow the parsing workflow" in usage
+    assert "Do not change into `/app/mcp_servers/filesystem_server`" in usage
+    assert "use `/root/fs_workspace`" in usage
+    assert "file-id" not in usage
+    assert "AFTS" not in usage
+
+
+def test_filex_skill_examples_use_the_harbor_workspace_contract() -> None:
+    provider = FilesystemSkillProvider("repo", REPO_ROOT / "aworld-skills")
+    descriptor = next(item for item in provider.list_descriptors() if item.skill_name == "filex")
+    usage = provider.load_content(descriptor.skill_id).usage
+
+    assert "--input /workspace/input.docx" in usage
+    assert "--input /workspace/report.pdf" in usage
+    assert "--input /root/workspace/" not in usage
+    assert "Harbor/ParseBench runtime sets `FILEX_LAYOUT_FORMAT=parse-output`" in usage
+    assert "PDF already defaults to Paddle" not in usage
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("file_name", ["input.pdf", "input.docx", "input.mp3"])
 async def test_file_parse_hook_keeps_binary_reference_for_filex(
