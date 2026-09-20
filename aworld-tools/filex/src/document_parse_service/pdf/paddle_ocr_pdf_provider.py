@@ -362,13 +362,11 @@ class PaddleOcrPdfProvider:
     def _chart_prompt_mode(self) -> str:
         configured = self._option("chart_prompt_mode")
         if configured in (None, ""):
-            gateway_vllm = self._gateway_vllm_config()
-            external_model = (
-                self._option("vl_rec_api_model_name")
-                or gateway_vllm.get("http_model_name")
-                or gateway_vllm.get("model_name")
-            )
-            return "structured" if external_model not in (None, "") else "legacy"
+            # The native task token is the broadest compatibility contract for
+            # both Paddle's own model and OpenAI-compatible gateway VLMs. Some
+            # gateway models can spend their entire request timeout following
+            # the longer structured prompt, so opt in to that prompt explicitly.
+            return "legacy"
         mode = str(configured).strip().lower()
         if mode not in {"structured", "legacy"}:
             raise ValueError(
@@ -396,8 +394,8 @@ class PaddleOcrPdfProvider:
         installed = getattr(target, method_name, None)
         if not callable(installed):
             logger.warning(
-                "paddle_ocr chart prompt override unavailable; output contract "
-                "validation remains active"
+                "paddle_ocr chart prompt override unavailable; using the "
+                "pipeline's native chart prompt"
             )
             return
         if getattr(installed, "__filex_structured_chart_prompt__", None) == prompt:
@@ -437,8 +435,8 @@ class PaddleOcrPdfProvider:
             setattr(target, method_name, collect_with_structured_chart_prompt)
         except (AttributeError, TypeError):
             logger.warning(
-                "paddle_ocr chart prompt override could not be installed; output "
-                "contract validation remains active",
+                "paddle_ocr chart prompt override could not be installed; using "
+                "the pipeline's native chart prompt",
                 exc_info=True,
             )
 
@@ -520,12 +518,8 @@ class PaddleOcrPdfProvider:
         predict_kwargs: dict[str, Any],
         started_at: float,
     ) -> tuple[list[Any], int, float]:
-        max_retries = max(0, int(self._option("vlm_max_retries") or 3))
-        configured_chart_retries = self._option("chart_contract_retries")
-        chart_contract_retries = max(
-            0,
-            int(1 if configured_chart_retries is None else configured_chart_retries),
-        )
+        max_retries = self._vlm_max_retries()
+        chart_contract_retries = self._chart_contract_retries()
         retry_count = 0
         transport_retry_count = 0
         chart_retry_count = 0
@@ -598,6 +592,14 @@ class PaddleOcrPdfProvider:
                 )
                 time.sleep(delay_ms / 1000)
 
+    def _vlm_max_retries(self) -> int:
+        configured = self._option("vlm_max_retries")
+        return max(0, int(1 if configured is None else configured))
+
+    def _chart_contract_retries(self) -> int:
+        configured = self._option("chart_contract_retries")
+        return max(0, int(0 if configured is None else configured))
+
     @staticmethod
     def _chart_correction_prompt(attempt: int, failures: list[str]) -> str:
         failure_summary = (
@@ -656,12 +658,12 @@ class PaddleOcrPdfProvider:
     def _chart_output_contract_mode(self) -> str:
         configured = self._option("chart_output_contract")
         if configured in (None, ""):
-            has_custom_prompt = self._option("chart_prompt") not in (None, "")
-            return (
-                "strict"
-                if has_custom_prompt or self._chart_prompt_mode() == "structured"
-                else "off"
-            )
+            # Structured prompting is safe as a best-effort quality hint, while
+            # strict post-validation is an execution policy. Keep those choices
+            # independent: a failed chart contract can otherwise replay the
+            # entire document through PaddleOCR-VL, which is both expensive and
+            # surprising for callers that only selected an external VLM.
+            return "off"
         mode = str(configured).strip().lower()
         if mode not in {"strict", "off"}:
             raise ValueError(
@@ -1045,6 +1047,8 @@ class PaddleOcrPdfProvider:
             else self._chart_prompt_mode()
         )
         info["chart_output_contract"] = self._chart_output_contract_mode()
+        info["vlm_max_retries"] = self._vlm_max_retries()
+        info["chart_contract_retries"] = self._chart_contract_retries()
         return info
 
     def _option(self, key: str) -> Any:

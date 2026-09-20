@@ -256,11 +256,11 @@ def test_paddle_ocr_metrics_report_effective_gateway_model() -> None:
     )
 
     assert provider._model_info()["vl_rec_api_model_name"] == ("gemini-3.1-pro-preview")
-    assert provider._model_info()["chart_prompt_mode"] == "structured"
-    assert provider._model_info()["chart_output_contract"] == "strict"
+    assert provider._model_info()["chart_prompt_mode"] == "legacy"
+    assert provider._model_info()["chart_output_contract"] == "off"
 
 
-def test_gateway_chart_capabilities_are_all_enabled_by_default(monkeypatch) -> None:
+def test_gateway_chart_defaults_preserve_compatibility(monkeypatch) -> None:
     module = _load_provider_module()
     for setting in (
         "FILEX_PADDLE_OCR_USE_CHART_RECOGNITION",
@@ -280,8 +280,10 @@ def test_gateway_chart_capabilities_are_all_enabled_by_default(monkeypatch) -> N
 
     assert provider._pipeline_kwargs()["use_chart_recognition"] is True
     assert provider._predict_kwargs()["use_chart_recognition"] is True
-    assert provider._model_info()["chart_prompt_mode"] == "structured"
-    assert provider._model_info()["chart_output_contract"] == "strict"
+    assert provider._model_info()["chart_prompt_mode"] == "legacy"
+    assert provider._model_info()["chart_output_contract"] == "off"
+    assert provider._model_info()["vlm_max_retries"] == 1
+    assert provider._model_info()["chart_contract_retries"] == 0
 
 
 def test_native_paddle_keeps_legacy_chart_prompt_by_default() -> None:
@@ -583,6 +585,52 @@ def test_paddle_ocr_pipeline_maps_concurrency_and_retries_429(monkeypatch) -> No
     assert provider.to_markdown_artifact(result).diagnostics["model_retry_count"] == 1
 
 
+@pytest.mark.parametrize(
+    ("configured_retries", "expected_calls", "expected_limit"),
+    [
+        (None, 2, 1),
+        (0, 1, 0),
+        (2, 3, 2),
+    ],
+)
+def test_transport_retry_limit_is_bounded_and_honors_explicit_zero(
+    monkeypatch, configured_retries, expected_calls, expected_limit
+) -> None:
+    module = _load_provider_module()
+
+    class _AlwaysUnavailablePipeline:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def predict(self, _input_path, **_kwargs):
+            self.calls += 1
+            raise RuntimeError("503 upstream unavailable")
+
+    monkeypatch.setattr(module.time, "sleep", lambda _seconds: None)
+    pipeline = _AlwaysUnavailablePipeline()
+    env_content = (
+        {}
+        if configured_retries is None
+        else {"paddle_ocr_vlm_max_retries": configured_retries}
+    )
+    provider = module.PaddleOcrPdfProvider(
+        env_content=env_content,
+        pipeline=pipeline,
+    )
+
+    with pytest.raises(RuntimeError, match="503 upstream unavailable"):
+        asyncio.run(
+            provider.understand_pdf(
+                file_path=Path("/tmp/demo.pdf"),
+                task_id="task-retry-limit",
+                source_file_name="demo",
+            )
+        )
+
+    assert pipeline.calls == expected_calls
+    assert provider._model_info()["vlm_max_retries"] == expected_limit
+
+
 def test_replace_markdown_asset_references_prefers_remote_url() -> None:
     module = _load_provider_module()
     asset = module.DocumentAsset(
@@ -821,6 +869,118 @@ def test_chart_contract_retries_narrative_output_then_accepts_table() -> None:
     assert pipeline.prompts[1] != pipeline.prompts[0]
     assert result.retry_count == 1
     assert result.markdown_text == structured
+
+
+@pytest.mark.parametrize(
+    ("prompt_config", "expected_prompt_mode"),
+    [
+        ({}, "legacy"),
+        ({"paddle_ocr_chart_prompt_mode": "structured"}, "structured"),
+    ],
+)
+def test_chart_prompt_modes_do_not_enforce_or_replay_by_default(
+    prompt_config, expected_prompt_mode
+) -> None:
+    module = _load_provider_module()
+    narrative = "Chart summary: USA was approximately 38 in November 2025."
+
+    class _Pipeline:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def predict(self, _input_path, **_kwargs):
+            self.calls += 1
+            return [
+                {
+                    "page_index": 0,
+                    "page_count": 1,
+                    "markdown_texts": narrative,
+                    "parsing_res_list": [
+                        {
+                            "label": "chart",
+                            "block_id": "panel-a",
+                            "content": narrative,
+                        }
+                    ],
+                }
+            ]
+
+        @staticmethod
+        def concatenate_markdown_pages(markdown_list):
+            return "\n\n".join(item["markdown_texts"] for item in markdown_list)
+
+    pipeline = _Pipeline()
+    provider = module.PaddleOcrPdfProvider(
+        env_content={
+            "gateway_vllm": {
+                "base_url": "https://gateway.example/v1",
+                "model_name": "external-chart-model",
+            },
+            **prompt_config,
+        },
+        pipeline=pipeline,
+    )
+
+    result = asyncio.run(
+        provider.understand_pdf(
+            file_path=Path("/tmp/chart.pdf"),
+            task_id="task-chart-best-effort",
+            source_file_name="chart",
+        )
+    )
+
+    assert provider._chart_prompt_mode() == expected_prompt_mode
+    if expected_prompt_mode == "structured":
+        assert "Markdown tables only" in provider._chart_recognition_prompt()
+    else:
+        assert provider._chart_recognition_prompt() == "Chart Recognition:"
+    assert provider._chart_output_contract_mode() == "off"
+    assert pipeline.calls == 1
+    assert result.retry_count == 0
+    assert result.markdown_text == narrative
+
+
+def test_strict_chart_contract_does_not_replay_without_explicit_retry_budget() -> None:
+    module = _load_provider_module()
+    narrative = "Chart summary: USA was approximately 38 in November 2025."
+
+    class _Pipeline:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def predict(self, _input_path, **_kwargs):
+            self.calls += 1
+            return [
+                {
+                    "page_index": 0,
+                    "page_count": 1,
+                    "markdown_texts": narrative,
+                    "parsing_res_list": [
+                        {
+                            "label": "chart",
+                            "block_id": "panel-a",
+                            "content": narrative,
+                        }
+                    ],
+                }
+            ]
+
+    pipeline = _Pipeline()
+    provider = module.PaddleOcrPdfProvider(
+        env_content={"paddle_ocr_chart_output_contract": "strict"},
+        pipeline=pipeline,
+    )
+
+    with pytest.raises(module.PaddleOcrChartContractError):
+        asyncio.run(
+            provider.understand_pdf(
+                file_path=Path("/tmp/chart.pdf"),
+                task_id="task-chart-strict-once",
+                source_file_name="chart",
+            )
+        )
+
+    assert pipeline.calls == 1
 
 
 def test_chart_contract_rejects_persistent_narrative_table() -> None:

@@ -43,18 +43,31 @@ instead of appearing only as cropped images. Set
 `{"paddle_ocr_use_chart_recognition": false}` in the request's `env_content`.
 An explicit request setting takes precedence over the environment.
 
-For an external gateway VLM, FileX replaces PaddleX's abbreviated chart task
-token with a strict chart-to-table prompt. Every detected chart block must
-return a multi-column Markdown or HTML table with at least one independent
-numeric cell. A narrative response or a one-column "summary table" triggers a
-bounded retry with a stricter correction prompt that asks the gateway VLM to
-read the chart image again. Output that still violates the contract fails with
-`PaddleOcrChartContractError`; narrative is never published as a valid chart
-artifact that silently scores zero. Set
-`FILEX_PADDLE_OCR_CHART_CONTRACT_RETRIES` to change the bounded retry count.
-`FILEX_PADDLE_OCR_CHART_PROMPT_MODE=legacy` keeps the native Paddle task token,
-and `FILEX_PADDLE_OCR_CHART_OUTPUT_CONTRACT=off` disables validation for
-diagnostic compatibility only.
+FileX uses PaddleX's native `Chart Recognition:` task token and does not enforce
+a chart output contract by default. This compatibility mode applies to native
+and external gateway VLMs: FileX accepts the first completed document even when
+a chart response is narrative, so a slow chart request is not followed by a
+silent replay of the complete document or a failure after useful output was
+produced.
+
+Models known to handle a detailed chart-to-table instruction can opt in with
+`FILEX_PADDLE_OCR_CHART_PROMPT_MODE=structured`. Deployments that also require
+an enforced chart contract can independently set
+`FILEX_PADDLE_OCR_CHART_OUTPUT_CONTRACT=strict`. Strict mode requires every
+detected chart block to contain a multi-column Markdown or HTML table with an
+independent numeric cell and otherwise raises `PaddleOcrChartContractError`.
+It validates one pass by default. Set
+`FILEX_PADDLE_OCR_CHART_CONTRACT_RETRIES` to a positive number only when replaying
+the complete document is acceptable. Each explicit contract retry asks the VLM
+to read the chart again with a correction prompt; it is not a local reformatting
+pass. Prompt selection and contract enforcement are independent settings, so
+either can be enabled without the other.
+
+Transient VLM transport failures retry the complete document at most once by
+default. Set `FILEX_PADDLE_OCR_VLM_MAX_RETRIES=0` to disable that replay, or set
+an explicit higher value only when the caller's time budget can accommodate
+multiple full parsing attempts. The effective transport and chart retry limits
+are included in the provider's `model_info` diagnostics.
 
 ### AWorld all-in-one container
 
