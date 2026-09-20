@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import pytest
 
 from aworld_cli.atif import (
     AtifExportStatus,
@@ -8,6 +9,79 @@ from aworld_cli.atif import (
     try_write_atif_trajectory,
     write_atif_trajectory,
 )
+
+
+def test_atif_exports_complete_provider_usage_without_counting_mirrored_calls():
+    call = {
+        "request_id": "r1",
+        "usage_available": True,
+        "usage_raw": {"prompt_tokens": 7, "completion_tokens": 3},
+    }
+    trajectory = build_atif_trajectory(
+        {"llm_calls": [call, dict(call)]},
+        prompt="work",
+        agent_name="Aworld",
+        agent_version="dev",
+        run_outcome={"llm_call_count": 1},
+    )
+    assert trajectory["final_metrics"]["total_prompt_tokens"] == 7
+    assert trajectory["final_metrics"]["total_completion_tokens"] == 3
+
+
+@pytest.mark.parametrize(
+    "missing",
+    [
+        {
+            "request_id": "r2",
+            "usage_available": False,
+            "usage_raw": {"prompt_tokens": 0, "completion_tokens": 0},
+        },
+        {"request_id": "r2", "usage_raw": {"prompt_tokens": 0, "completion_tokens": 0}},
+        {
+            "request_id": "r2",
+            "usage_available": True,
+            "usage_raw": {"prompt_tokens": 7},
+        },
+    ],
+)
+def test_atif_does_not_turn_partial_or_missing_usage_into_run_totals(missing):
+    trajectory = build_atif_trajectory(
+        {
+            "llm_calls": [
+                {
+                    "request_id": "r1",
+                    "usage_raw": {"prompt_tokens": 7, "completion_tokens": 3},
+                },
+                missing,
+            ]
+        },
+        prompt="work",
+        agent_name="Aworld",
+        agent_version="dev",
+        run_outcome={"llm_call_count": 2},
+    )
+    assert "total_prompt_tokens" not in trajectory["final_metrics"]
+    assert "total_completion_tokens" not in trajectory["final_metrics"]
+
+
+def test_atif_keeps_explicit_zero_usage_distinct_from_unknown():
+    trajectory = build_atif_trajectory(
+        {
+            "llm_calls": [
+                {
+                    "request_id": "r1",
+                    "usage_available": True,
+                    "usage_raw": {"prompt_tokens": 0, "completion_tokens": 0},
+                }
+            ]
+        },
+        prompt="work",
+        agent_name="Aworld",
+        agent_version="dev",
+        run_outcome={"llm_call_count": 1},
+    )
+    assert trajectory["final_metrics"]["total_prompt_tokens"] == 0
+    assert trajectory["final_metrics"]["total_completion_tokens"] == 0
 
 
 def test_build_atif_trajectory_preserves_tools_and_observations():

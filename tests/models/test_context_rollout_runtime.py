@@ -661,7 +661,7 @@ def _azure_without_transport() -> tuple[AzureOpenAIProvider, list[str]]:
         lambda self, response: CountingProvider._response("completion"), provider
     )
     provider.postprocess_stream_response = MethodType(
-        lambda self, chunk: (CountingProvider._response("stream"), "stop"),
+        lambda self, chunk, **kwargs: (CountingProvider._response("stream"), "stop"),
         provider,
     )
     return provider, calls
