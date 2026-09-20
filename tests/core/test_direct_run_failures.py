@@ -316,9 +316,42 @@ def test_run_command_finalizes_caller_deadline_as_budget_exhaustion(
 ) -> None:
     from aworld_cli.async_runtime import DirectRunDeadlineExceeded
 
-    def deadline_exceeded(_coro):
+    live_summary = {
+        "results": [
+            {
+                "iteration": 1,
+                "response": "",
+                "success": False,
+                "completed": False,
+                "trajectory_capture_mode": "live_context",
+                "trajectory": [
+                    {
+                        "meta": {"session_id": "session-live", "step": 1},
+                        "action": {
+                            "content": "Installing the requested runtime.",
+                            "tool_calls": [
+                                {
+                                    "id": "tool-1",
+                                    "function": {
+                                        "name": "terminal",
+                                        "arguments": '{"command":"install"}',
+                                    },
+                                }
+                            ],
+                        },
+                    }
+                ],
+                "llm_calls": [
+                    {"request_id": "request-1"},
+                    {"request_id": "request-2"},
+                ],
+            }
+        ]
+    }
+
+    def deadline_exceeded(_coro, **_kwargs):
         _coro.close()
-        raise DirectRunDeadlineExceeded
+        raise DirectRunDeadlineExceeded(summary=live_summary)
 
     monkeypatch.setattr(
         "aworld_cli.top_level_commands.run_cmd.run_direct_async",
@@ -359,10 +392,17 @@ def test_run_command_finalizes_caller_deadline_as_budget_exhaustion(
 
     assert exit_code == 64
     trajectory = json.loads(trajectory_path.read_text(encoding="utf-8"))
+    assert trajectory["agent"]["version"] != "unknown"
     aworld = trajectory["extra"]["aworld"]
     assert aworld["completion_state"] == "incomplete"
     assert aworld["run_outcome"]["semantic_status"] == "task_failed"
     assert aworld["run_outcome"]["process_exit_code"] == 64
+    assert aworld["trajectory_fidelity"] == "partial"
+    assert aworld["llm_call_count"] == 2
+    assert aworld["tool_call_count"] == 1
+    assert aworld["action_count"] == 1
+    assert len(trajectory["steps"]) == 2
+    assert trajectory["steps"][1]["tool_calls"][0]["function_name"] == "terminal"
     assert aworld["run_outcome"]["failure"] == {
         "stage": "agent_execution",
         "error_code": "agent_budget_exhausted",
@@ -387,7 +427,7 @@ def test_run_command_preserves_startup_watchdog_stage(
 ) -> None:
     from aworld_cli.async_runtime import DirectRunDeadlineExceeded
 
-    def startup_deadline_exceeded(_coro):
+    def startup_deadline_exceeded(_coro, **_kwargs):
         _coro.close()
         raise DirectRunDeadlineExceeded(
             stage="provider_start",
@@ -713,6 +753,166 @@ def test_summary_payload_preserves_zero_step_task_response_evidence() -> None:
     assert len(payload["llm_calls"]) == 2
     assert payload["trajectory_build_results"][0]["llm_call_count"] == 2
     assert payload["trajectory_capture_mode"] == "task_response"
+
+
+def test_live_partial_summary_uses_reconciled_calls_and_projects_atif_steps() -> None:
+    from aworld.core.context.amni import ApplicationContext
+    from aworld_cli.atif import build_atif_trajectory
+
+    context = ApplicationContext.create(
+        session_id="session-live",
+        task_id="task-live",
+        task_content="test",
+    )
+    transport_copy = context.deep_copy()
+    transport_copy.append_llm_call(
+        {
+            "task_id": "task-live",
+            "agent_id": "Aworld",
+            "request_id": "request-1",
+            "provider_invoked": True,
+            "provider_attempt_status": "attempted",
+            "status": "success",
+            "finished_at": 1_700_000_000,
+            "response": {
+                "message": {
+                    "role": "assistant",
+                    "content": "Inspecting the workspace.",
+                    "tool_calls": [
+                        {
+                            "id": "tool-1",
+                            "function": {
+                                "name": "WORKBENCH",
+                                "arguments": "{}",
+                            },
+                        }
+                    ],
+                }
+            },
+        }
+    )
+    transport_copy.append_llm_call(
+        {
+            "task_id": "task-live",
+            "agent_id": "Aworld",
+            "request_id": "request-2",
+            "provider_invoked": True,
+            "provider_attempt_status": "attempted",
+            "status": "success",
+            "finished_at": 1_700_000_001,
+            "response": {
+                "message": {
+                    "role": "assistant",
+                    "content": "Installing R.",
+                    "tool_calls": [
+                        {
+                            "id": "tool-2",
+                            "function": {
+                                "name": "terminal",
+                                "arguments": '{"command":"apt-get install r-base"}',
+                            },
+                        }
+                    ],
+                }
+            },
+        }
+    )
+
+    summary = main_module._partial_summary_from_agent_executor(
+        SimpleNamespace(context=context, last_task_response=None)
+    )
+    outcome = DirectRunOutcome.from_summary(
+        summary,
+        status=DirectRunStatus.TASK_FAILED,
+    )
+    payload = main_module._trajectory_payload_from_direct_run_summary(
+        summary,
+        prompt="test",
+        agent_name="Aworld",
+    )
+    trajectory = build_atif_trajectory(
+        payload,
+        prompt="test",
+        agent_name="Aworld",
+        agent_version="0.2.8",
+        run_outcome=outcome.to_dict(),
+    )
+
+    assert context.get_llm_calls() == []
+    assert outcome.llm_call_count == 2
+    assert outcome.tool_call_count == 2
+    assert outcome.action_count == 2
+    assert outcome.trajectory_fidelity == "partial"
+    assert payload["trajectory_capture_mode"] == "live_context"
+    assert [step["message"] for step in trajectory["steps"][1:]] == [
+        "Inspecting the workspace.",
+        "Installing R.",
+    ]
+    assert [
+        step["tool_calls"][0]["function_name"]
+        for step in trajectory["steps"][1:]
+    ] == ["WORKBENCH", "terminal"]
+
+
+@pytest.mark.asyncio
+async def test_live_partial_summary_copy_failure_does_not_mask_deadline(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    from aworld_cli.async_runtime import DirectRunDeadlineExceeded
+
+    class BrokenDeepCopy:
+        def __deepcopy__(self, _memo):
+            raise RuntimeError("copy unavailable")
+
+    context = SimpleNamespace(
+        task_id="task-live",
+        get_reconciled_llm_calls=lambda: [
+            {
+                "task_id": "task-live",
+                "request_id": "request-1",
+                "provider_invoked": True,
+                "response": {"message": {"content": BrokenDeepCopy()}},
+            }
+        ],
+    )
+    executor = SimpleNamespace(context=context, last_task_response=None)
+
+    class DummyRuntime:
+        def __init__(self, *args, **kwargs) -> None:
+            self._scheduler = None
+
+        async def _load_agents(self):
+            return [SimpleNamespace(name="Aworld")]
+
+        def _bind_scheduler_default_agent(self, _agent_name: str) -> None:
+            pass
+
+        async def _create_executor(self, _agent):
+            return executor
+
+        def _restore_executor_session(self, *_args, **_kwargs) -> None:
+            pass
+
+    class DummyContinuousExecutor:
+        def __init__(self, *_args, **_kwargs) -> None:
+            pass
+
+        async def run_continuous(self, **_kwargs):
+            raise DirectRunDeadlineExceeded()
+
+    monkeypatch.setattr(main_module, "CliRuntime", DummyRuntime)
+    monkeypatch.setattr(main_module, "ContinuousExecutor", DummyContinuousExecutor)
+    monkeypatch.setattr("aworld.core.scheduler.get_scheduler", lambda: object())
+
+    with pytest.raises(DirectRunDeadlineExceeded) as raised:
+        await main_module._run_direct_mode(
+            prompt="test",
+            agent_name="Aworld",
+        )
+
+    assert raised.value.summary is None
+    assert "live evidence recovery failed open" in caplog.text
 
 
 def test_direct_run_outcome_uses_build_counts_and_last_successful_checkpoint() -> None:

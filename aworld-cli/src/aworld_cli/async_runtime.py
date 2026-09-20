@@ -14,7 +14,7 @@ import math
 import os
 import sys
 import time
-from collections.abc import Callable, Coroutine
+from collections.abc import Callable, Coroutine, Mapping
 from typing import Any, TypeVar
 
 BOUNDED_ASYNC_SHUTDOWN_ENV = "AWORLD_DIRECT_RUN_SHUTDOWN_TIMEOUT_SECONDS"
@@ -37,9 +37,11 @@ class DirectRunDeadlineExceeded(TimeoutError):
         *,
         stage: str = "agent_execution",
         phase: str = "task_deadline",
+        summary: Mapping[str, Any] | None = None,
     ) -> None:
         self.stage = stage
         self.phase = phase
+        self.summary = dict(summary) if isinstance(summary, Mapping) else None
         super().__init__(f"direct-run deadline exceeded during {phase}")
 
 
@@ -86,6 +88,87 @@ def _safe_task_stack(
             }
         )
     return result
+
+
+def _safe_await_chain_stack(
+    task: asyncio.Task[Any],
+    *,
+    limit: int = 16,
+) -> list[dict[str, object]]:
+    """Return the suspended coroutine chain without formatting user data.
+
+    ``Task.get_stack()`` commonly exposes only the task's outermost suspended
+    frame.  Startup diagnostics need the actual awaited executor/provider
+    frame to distinguish a loader stall from a tool or model stall, while
+    retaining the existing rule that locals, source text and coroutine reprs
+    never enter logs.
+    """
+
+    frames: list[dict[str, object]] = []
+    try:
+        current: object | None = task.get_coro()
+    except Exception:
+        current = None
+    seen: set[int] = set()
+    while current is not None and len(frames) < limit:
+        identity = id(current)
+        if identity in seen:
+            break
+        seen.add(identity)
+
+        frame = None
+        awaited = None
+        for frame_attribute, await_attribute in (
+            ("cr_frame", "cr_await"),
+            ("ag_frame", "ag_await"),
+            ("gi_frame", "gi_yieldfrom"),
+        ):
+            candidate = getattr(current, frame_attribute, None)
+            if candidate is not None:
+                frame = candidate
+                awaited = getattr(current, await_attribute, None)
+                break
+        if frame is None:
+            break
+        code = frame.f_code
+        frames.append(
+            {
+                "module": _bounded_stack_label(
+                    frame.f_globals.get("__name__"),
+                    fallback="unknown",
+                ),
+                "file": _bounded_stack_label(
+                    os.path.basename(code.co_filename),
+                    fallback="unknown",
+                ),
+                "function": _bounded_stack_label(
+                    code.co_name,
+                    fallback="unknown",
+                ),
+                "line": max(0, int(frame.f_lineno)),
+            }
+        )
+        current = awaited
+
+    return frames or _safe_task_stack(task, limit=min(limit, 8))
+
+
+def _capture_deadline_summary(
+    provider: Callable[[], Mapping[str, Any] | None] | None,
+) -> dict[str, Any] | None:
+    """Best-effort snapshot of evidence before the one-shot loop closes."""
+
+    if provider is None:
+        return None
+    try:
+        summary = provider()
+    except Exception as exc:
+        logger.warning(
+            "Direct-run deadline evidence snapshot failed open; error_type=%s",
+            type(exc).__name__,
+        )
+        return None
+    return dict(summary) if isinstance(summary, Mapping) else None
 
 
 def _bounded_shutdown_timeout() -> float | None:
@@ -213,7 +296,7 @@ async def run_with_first_provider_start_watchdog(
         if remaining <= 0:
             _silence_destroyed_task_warning(task)
             safe_stack = json.dumps(
-                _safe_task_stack(task),
+                _safe_await_chain_stack(task),
                 ensure_ascii=True,
                 separators=(",", ":"),
                 sort_keys=True,
@@ -243,7 +326,10 @@ async def run_with_first_provider_start_watchdog(
 
 
 async def _run_until_deadline(
-    coro: Coroutine[Any, Any, _T], *, timeout: float
+    coro: Coroutine[Any, Any, _T],
+    *,
+    timeout: float,
+    deadline_summary: Callable[[], Mapping[str, Any] | None] | None = None,
 ) -> _T:
     task = asyncio.create_task(coro)
     done, _pending = await asyncio.wait({task}, timeout=timeout)
@@ -254,7 +340,9 @@ async def _run_until_deadline(
     # explicit one-shot process boundary reaps them after final evidence is
     # persisted by the caller.
     _silence_destroyed_task_warning(task)
-    raise DirectRunDeadlineExceeded()
+    raise DirectRunDeadlineExceeded(
+        summary=_capture_deadline_summary(deadline_summary),
+    )
 
 
 def _silence_destroyed_task_warning(task: asyncio.Task[Any]) -> None:
@@ -310,7 +398,11 @@ def _run_with_bounded_shutdown(coro: Coroutine[Any, Any, _T], timeout: float) ->
             loop.close()
 
 
-def run_direct_async(coro: Coroutine[Any, Any, _T]) -> _T:
+def run_direct_async(
+    coro: Coroutine[Any, Any, _T],
+    *,
+    deadline_summary: Callable[[], Mapping[str, Any] | None] | None = None,
+) -> _T:
     """Run direct-mode work with optional one-shot shutdown enforcement."""
 
     try:
@@ -332,7 +424,11 @@ def run_direct_async(coro: Coroutine[Any, Any, _T]) -> _T:
             f"{TASK_DEADLINE_EPOCH_ENV} requires {BOUNDED_ASYNC_SHUTDOWN_ENV}"
         )
     bounded_coro = (
-        _run_until_deadline(coro, timeout=direct_timeout)
+        _run_until_deadline(
+            coro,
+            timeout=direct_timeout,
+            deadline_summary=deadline_summary,
+        )
         if direct_timeout is not None
         else coro
     )

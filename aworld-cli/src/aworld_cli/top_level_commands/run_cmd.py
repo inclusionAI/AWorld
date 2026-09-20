@@ -13,6 +13,24 @@ from aworld_cli.async_runtime import DirectRunDeadlineExceeded, run_direct_async
 from aworld_cli.runtime_bootstrap import RuntimeBootstrapError, bootstrap_runtime
 
 
+def _aworld_agent_version() -> str:
+    """Resolve the installed AWorld package version for ATIF metadata."""
+
+    try:
+        import aworld
+
+        public_version = getattr(aworld, "__version__", None)
+        if isinstance(public_version, str) and public_version.strip():
+            return public_version.strip()
+        from aworld.version_gen import __version__ as generated_version
+
+        if isinstance(generated_version, str) and generated_version.strip():
+            return generated_version.strip()
+    except Exception:
+        pass
+    return "unknown"
+
+
 def _write_final_markers(lines: list[str]) -> None:
     """Flush prior output, then append grouped diagnostic marker lines."""
 
@@ -170,6 +188,7 @@ class RunTopLevelCommand:
 
     def run(self, args, context) -> int | None:
         from aworld_cli.main import (
+            DirectRunLiveSummary,
             _direct_run_failure_outcome,
             _resolve_agent_dirs,
             _run_direct_mode,
@@ -243,6 +262,7 @@ class RunTopLevelCommand:
                 outcome=outcome,
             )
 
+        live_summary = DirectRunLiveSummary()
         try:
             direct_run_result = run_direct_async(
                 _run_direct_mode(
@@ -267,7 +287,9 @@ class RunTopLevelCommand:
                         judge_backend_ref=judge_backend_ref,
                         judge_model_profile=judge_model_profile,
                     ),
-                )
+                    live_summary=live_summary,
+                ),
+                deadline_summary=live_summary.snapshot,
             )
             outcome = coerce_direct_run_outcome(direct_run_result)
         except KeyboardInterrupt:
@@ -309,6 +331,7 @@ class RunTopLevelCommand:
                     if startup_timeout
                     else DirectRunStatus.TASK_FAILED
                 ),
+                summary=getattr(exc, "summary", None),
             )
         except Exception as exc:
             outcome = _direct_run_failure_outcome(
@@ -338,12 +361,7 @@ class RunTopLevelCommand:
             return None
         from aworld_cli.atif import build_atif_trajectory, try_write_atif_trajectory
 
-        try:
-            import aworld
-
-            agent_version = getattr(aworld, "__version__", "unknown")
-        except Exception:
-            agent_version = "unknown"
+        agent_version = _aworld_agent_version()
         try:
             trajectory = build_atif_trajectory(
                 {
@@ -427,12 +445,7 @@ class RunTopLevelCommand:
         )
         if trajectory_output:
             try:
-                try:
-                    import aworld
-
-                    agent_version = getattr(aworld, "__version__", "unknown")
-                except Exception:
-                    agent_version = "unknown"
+                agent_version = _aworld_agent_version()
                 run_outcome_payload = outcome.to_dict()
                 trajectory = build_atif_trajectory(
                     trajectory_payload,

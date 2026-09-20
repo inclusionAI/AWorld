@@ -39,9 +39,52 @@ def test_direct_async_returns_at_caller_deadline_without_waiting_for_provider(
         await asyncio.Event().wait()
 
     started = time.monotonic()
-    with pytest.raises(DirectRunDeadlineExceeded):
-        run_direct_async(stubborn_provider())
+    live_summary = {
+        "results": [
+            {
+                "llm_calls": [{"request_id": "request-1"}],
+                "trajectory": [{"action": {"content": "working"}}],
+            }
+        ]
+    }
+    with pytest.raises(DirectRunDeadlineExceeded) as raised:
+        run_direct_async(
+            stubborn_provider(),
+            deadline_summary=lambda: live_summary,
+        )
     assert time.monotonic() - started < 1
+    assert raised.value.summary == live_summary
+
+
+@pytest.mark.asyncio
+async def test_startup_watchdog_reports_nested_await_chain_without_locals(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    monkeypatch.setenv(FIRST_PROVIDER_START_TIMEOUT_ENV, "0.02")
+    monkeypatch.setenv(TASK_DEADLINE_EPOCH_ENV, str(time.time() + 1))
+    monkeypatch.setenv(TASK_COMPLETION_RESERVE_ENV, "0")
+    release = asyncio.Event()
+    secret = "NESTED_SECRET_MUST_NOT_APPEAR"
+
+    async def actual_child_provider_wait() -> None:
+        assert secret
+        await release.wait()
+
+    async def executor_wrapper() -> None:
+        await actual_child_provider_wait()
+
+    with pytest.raises(DirectRunDeadlineExceeded):
+        await run_with_first_provider_start_watchdog(
+            executor_wrapper(),
+            evidence_observed=lambda: False,
+        )
+
+    assert '"function":"executor_wrapper"' in caplog.text
+    assert '"function":"actual_child_provider_wait"' in caplog.text
+    assert secret not in caplog.text
+    release.set()
+    await asyncio.sleep(0)
 
 
 @pytest.mark.asyncio

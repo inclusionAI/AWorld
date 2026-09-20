@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import copy
 import json
 import logging
 import os
@@ -234,6 +235,7 @@ def _trajectory_payload_from_direct_run_summary(
         llm_calls: list[dict] = []
         trajectory_build_results: list[dict] = []
         saw_task_response_capture = False
+        capture_modes: list[str] = []
         fidelities: list[str] = []
         for result in summary.get("results") or []:
             if not isinstance(result, dict):
@@ -250,6 +252,9 @@ def _trajectory_payload_from_direct_run_summary(
                 llm_calls.extend(item for item in raw_llm_calls if isinstance(item, dict))
             if result.get("trajectory_capture_mode") == "task_response":
                 saw_task_response_capture = True
+            capture_mode = result.get("trajectory_capture_mode")
+            if isinstance(capture_mode, str) and capture_mode:
+                capture_modes.append(capture_mode)
             raw_build_result = result.get("trajectory_build_result")
             if isinstance(raw_build_result, dict):
                 saw_task_response_capture = True
@@ -267,7 +272,11 @@ def _trajectory_payload_from_direct_run_summary(
         if saw_task_response_capture:
             payload = {
                 "trajectory": task_response_trajectory,
-                "trajectory_capture_mode": "task_response",
+                "trajectory_capture_mode": (
+                    "live_context"
+                    if "live_context" in capture_modes
+                    else "task_response"
+                ),
             }
             payload["llm_calls"] = llm_calls
             if trajectory_build_results:
@@ -1408,11 +1417,30 @@ def _direct_run_failure_outcome(
 
 
 def _partial_summary_from_agent_executor(agent_executor: object) -> dict | None:
-    """Recover the latest finalized TaskResponse after orchestration failure."""
+    """Recover finalized or live task evidence after orchestration failure.
+
+    A caller-owned deadline can stop direct mode before EventRunner publishes a
+    ``TaskResponse``. Provider records are journaled earlier, on transport
+    copies of the task context, so use the reconciled fan-in as the live
+    fallback. Evidence recovery is observability and must always fail open.
+    """
+
+    try:
+        return _build_partial_summary_from_agent_executor(agent_executor)
+    except Exception as exc:
+        _LOGGER.warning(
+            "Direct-run live summary recovery failed open; error_type=%s",
+            type(exc).__name__,
+        )
+        return None
+
+
+def _build_partial_summary_from_agent_executor(
+    agent_executor: object,
+) -> dict | None:
+    """Build a partial summary; callers must wrap this best-effort projection."""
 
     task_response = getattr(agent_executor, "last_task_response", None)
-    if task_response is None:
-        return None
     result = {
         "iteration": 1,
         "response": "",
@@ -1420,9 +1448,27 @@ def _partial_summary_from_agent_executor(agent_executor: object) -> dict | None:
         "completed": False,
         "success": False,
     }
-    try:
+    if task_response is not None:
         ContinuousExecutor._attach_task_response_evidence(result, task_response)
-    except Exception:
+
+    context = getattr(agent_executor, "context", None)
+    live_calls = _live_provider_call_records(context)
+    captured_calls = result.get("llm_calls")
+    if live_calls and (
+        not isinstance(captured_calls, list)
+        or len(live_calls) > len(captured_calls)
+    ):
+        result["llm_calls"] = live_calls
+        result["trajectory_capture_mode"] = "live_context"
+
+    captured_trajectory = result.get("trajectory")
+    if not isinstance(captured_trajectory, list) or not captured_trajectory:
+        live_trajectory = _live_trajectory_from_llm_calls(live_calls, context=context)
+        if live_trajectory:
+            result["trajectory"] = live_trajectory
+            result["trajectory_capture_mode"] = "live_context"
+
+    if task_response is None and not live_calls and not result.get("trajectory"):
         return None
     return {
         "total_runs": 1,
@@ -1430,6 +1476,99 @@ def _partial_summary_from_agent_executor(agent_executor: object) -> dict | None:
         "total_cost": 0.0,
         "results": [result],
     }
+
+
+def _live_provider_call_records(context: object) -> list[dict]:
+    """Copy task-scoped provider attempts from a live Context, fail open."""
+
+    if context is None:
+        return []
+    get_calls = getattr(context, "get_reconciled_llm_calls", None)
+    if not callable(get_calls):
+        get_calls = getattr(context, "get_llm_calls", None)
+    try:
+        calls = get_calls() if callable(get_calls) else []
+        if not isinstance(calls, list):
+            return []
+        task_id = getattr(context, "task_id", None)
+        selected = [
+            record
+            for record in calls
+            if isinstance(record, dict)
+            and (task_id is None or record.get("task_id") in {None, task_id})
+            and record.get("request_id")
+            and (
+                record.get("provider_invoked") is True
+                or record.get("provider_attempt_status") == "attempted"
+            )
+        ]
+        return copy.deepcopy(selected)
+    except Exception as exc:
+        _LOGGER.warning(
+            "Direct-run live evidence recovery failed open; error_type=%s",
+            type(exc).__name__,
+        )
+        return []
+
+
+def _live_trajectory_from_llm_calls(
+    calls: list[dict],
+    *,
+    context: object,
+) -> list[dict]:
+    """Project completed provider responses into the native trajectory shape."""
+
+    trajectory: list[dict] = []
+    task_id = getattr(context, "task_id", None)
+    session_id = getattr(context, "session_id", None)
+    for record in calls:
+        response = record.get("response")
+        if not isinstance(response, dict):
+            continue
+        message = response.get("message")
+        if not isinstance(message, dict):
+            continue
+        raw_tool_calls = message.get("tool_calls")
+        tool_calls = (
+            [copy.deepcopy(call) for call in raw_tool_calls if isinstance(call, dict)]
+            if isinstance(raw_tool_calls, list)
+            else []
+        )
+        content = message.get("content")
+        if content is None and not tool_calls:
+            continue
+        meta = {
+            "step": len(trajectory) + 1,
+            "task_id": record.get("task_id") or task_id,
+            "session_id": session_id,
+            "agent_id": record.get("agent_id"),
+            "execute_time": record.get("finished_at") or record.get("started_at"),
+        }
+        trajectory.append(
+            {
+                "meta": {key: value for key, value in meta.items() if value is not None},
+                "action": {
+                    "content": content if isinstance(content, str) else str(content or ""),
+                    "tool_calls": tool_calls,
+                },
+            }
+        )
+    return trajectory
+
+
+class DirectRunLiveSummary:
+    """Invocation-local bridge from the running executor to its supervisor."""
+
+    def __init__(self) -> None:
+        self._agent_executor: object | None = None
+
+    def bind(self, agent_executor: object) -> None:
+        self._agent_executor = agent_executor
+
+    def snapshot(self) -> dict | None:
+        if self._agent_executor is None:
+            return None
+        return _partial_summary_from_agent_executor(self._agent_executor)
 
 
 def _prefer_captured_summary(
@@ -1470,6 +1609,7 @@ async def _run_direct_mode(
     show_iteration_header: bool = True,
     echo_prompt_as_turn: bool = False,
     self_evolve_config=None,
+    live_summary: DirectRunLiveSummary | None = None,
 ) -> object:
     """
     Run agent in direct mode (non-interactive).
@@ -1588,6 +1728,9 @@ async def _run_direct_mode(
             error_code=DirectRunErrorCode.EXECUTOR_CREATION_FAILED,
             agent_name=agent_name,
         )
+
+    if live_summary is not None:
+        live_summary.bind(agent_executor)
 
     # Match interactive mode so direct runs can access runtime-scoped features
     # such as steering checkpoints and HUD state.
@@ -1708,7 +1851,13 @@ async def _run_direct_mode(
                 },
                 summary=summary,
             )
-    except DirectRunDeadlineExceeded:
+    except DirectRunDeadlineExceeded as exc:
+        recovered = _prefer_captured_summary(
+            summary,
+            agent_executor=agent_executor,
+        )
+        if recovered is not None:
+            exc.summary = recovered
         raise
     except asyncio.CancelledError:
         summary = _prefer_captured_summary(
