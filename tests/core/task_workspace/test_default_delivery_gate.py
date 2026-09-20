@@ -193,6 +193,54 @@ async def test_repair_trampoline_respects_existing_attempt_limit_and_preserves_i
 
 
 @pytest.mark.asyncio
+async def test_configured_three_repairs_terminate_after_the_third_retry(
+    monkeypatch,
+    tmp_path,
+):
+    monkeypatch.setenv('AWORLD_COMPLETION_MAX_REPAIRS', '3')
+    contract = build_runtime_completion_contract(
+        '', workspace_path=tmp_path, explicit_paths=['out.json']
+    )
+    assert contract is not None and contract.max_repairs == 3
+    context = Context(task_id='three-repairs')
+    context.set_task(Task(id='three-repairs', input='finish'))
+    context.configure_completion_contract(
+        contract, mode=CompletionMode.ENFORCE
+    )
+    agent = _agent(context, max_loop_steps=0)
+    message = Message(category=Constants.AGENT, headers={'context': context})
+    observation = Observation(content='still missing output')
+
+    for expected_count in (1, 2, 3):
+        result = await agent._retry_for_result_validation(
+            validation_feedback='required artifact missing',
+            observation=observation,
+            info={},
+            message=message,
+            kwargs={},
+            iterative=True,
+        )
+        assert isinstance(result, _ValidationRepairContinuation)
+        assert context.context_info[
+            agent._result_validation_retry_key(agent.id())
+        ] == expected_count
+
+    result = await agent._retry_for_result_validation(
+        validation_feedback='required artifact missing',
+        observation=observation,
+        info={},
+        message=message,
+        kwargs={},
+        iterative=True,
+    )
+
+    assert result[0].policy_info.endswith('not claiming success.')
+    assert agent.finished is True
+    assert get_execution_state(context)['status'] == 'incomplete'
+    assert get_execution_state(context)['reason'] == 'validation_repair_exhausted'
+
+
+@pytest.mark.asyncio
 async def test_repair_trampoline_records_empty_followup_as_incomplete(tmp_path):
     context = Context(task_id='empty-repair')
     context.set_task(Task(id='empty-repair', input='finish'))
@@ -232,6 +280,14 @@ async def test_completion_feedback_identifies_bounded_failed_checks_without_raw_
     assert 'check-7' not in feedback and 'RAW_CONTENT_MUST_NOT_APPEAR' not in feedback
     assert 'readback is invalid' in feedback and 'bytes changed' in feedback
     assert 'WORKBENCH inspect' in feedback
+
+    recovery = _agent(context)._build_result_validation_recovery_brief(
+        authoritative_request='Write /outputs/file-0.json.',
+        validation_feedback=feedback,
+    )
+    assert 'execute at least one concrete tool action' in recovery
+    assert 'changes the result or verifies it against the failed requirement' in recovery
+    assert 'Do not repeat a completion claim without new tool evidence' in recovery
 
 
 @pytest.mark.asyncio

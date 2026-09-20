@@ -28,6 +28,12 @@ It enables enforcement by default unless `AWORLD_COMPLETION_MODE` is explicitly
 set. Optional natural-language output inference remains advisory and must not
 add guessed requirements to an explicit contract.
 
+`AWORLD_COMPLETION_MAX_REPAIRS` optionally limits model-driven completion repair
+turns with a non-negative integer. Unset or blank retains the historical
+unbounded contract, while `0` prevents a repair turn after a rejected completion
+claim. The repair prompt instructs the Agent to take a concrete Tool action that
+changes or verifies the result before attempting another final answer.
+
 `AWORLD_VALIDATION_COMMANDS_JSON` accepts explicit objects containing
 `command_id`, `argv`, optional `cwd`, and optional `timeout_seconds`. Validation
 commands are not inferred from model or tool text. They execute at the completion
@@ -60,8 +66,11 @@ without a usable checkpoint destination retain in-memory state and report
 untrusted values inside an escaped data boundary. They never promote text inside
 a tool result into instructions or verification.
 
-Three identical reads without a changed result produce an advisory recovery
-hint. Reads remain allowed; changed results or a write reset the advisory window.
+Three occurrences of the same operation/result pair inside the bounded recent
+window produce an advisory recovery guard, including interleaved A-B-A-B-A
+cycles. The next action must mutate a task artifact or produce new validation
+evidence; reads remain allowed, while real artifact or evidence progress resets
+the window.
 A goal may explicitly call `carry_goal_work_state` to transfer historical evidence
 to a new execution segment, or `resume_goal_work_state` to rebind a named prior
 segment loaded from a checkpoint. Completion state and fresh verification receipts

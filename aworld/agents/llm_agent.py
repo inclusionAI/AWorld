@@ -3621,7 +3621,12 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             "2. If current evidence clearly points to a different target or scope, discard it and search again.\n"
             "3. Do not require every anchor string to appear verbatim; use anchors only to orient the target.\n"
             "4. Only continue blocking when the requested outcome was not produced or evidence conflicts with the goal.\n"
-            "5. If you still cannot verify the outcome, explain the practical mismatch and the next evidence needed.\n"
+            "5. Before attempting another final answer, execute at least one "
+            "concrete tool action that changes the result or verifies it against "
+            "the failed requirement.\n"
+            "6. Do not repeat a completion claim without new tool evidence. If "
+            "you still cannot verify the outcome, explain the practical mismatch "
+            "and the next evidence needed.\n"
         )
 
     @staticmethod

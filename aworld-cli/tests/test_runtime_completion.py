@@ -6,8 +6,10 @@ from aworld.core.context.base import Context
 from aworld.core.context.compiler import CompletionMode, CompletionStatus
 from aworld_cli.core.runtime_completion import (
     build_runtime_completion_contract,
+    configure_goal_completion,
     configure_runtime_completion,
     infer_declared_output_paths,
+    resolve_completion_max_repairs,
 )
 
 
@@ -272,7 +274,11 @@ def test_inference_keeps_direct_coordinated_actions(task_text: str) -> None:
     assert infer_declared_output_paths(task_text) == ("output.csv",)
 
 
-def test_contract_resolves_relative_paths_against_task_workspace(tmp_path: Path) -> None:
+def test_contract_resolves_relative_paths_against_task_workspace(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.delenv("AWORLD_COMPLETION_MAX_REPAIRS", raising=False)
     contract = build_runtime_completion_contract(
         "Save it to ./answer.json",
         workspace_path=tmp_path,
@@ -284,6 +290,76 @@ def test_contract_resolves_relative_paths_against_task_workspace(tmp_path: Path)
         str((tmp_path / "answer.json").resolve()),
     )
     assert contract.max_repairs is None
+
+
+def test_completion_max_repairs_env_applies_to_runtime_contracts(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setenv("AWORLD_COMPLETION_MAX_REPAIRS", "3")
+
+    artifact_contract = build_runtime_completion_contract(
+        "Save it to ./answer.json",
+        workspace_path=tmp_path,
+        infer_paths=True,
+    )
+    assert artifact_contract is not None
+    assert artifact_contract.max_repairs == 3
+
+    fallback_context = Context(task_id="completion-max-repairs-fallback")
+    monkeypatch.setenv("AWORLD_REQUIRED_ARTIFACTS_JSON", "[]")
+    fallback_contract = configure_runtime_completion(
+        fallback_context,
+        request="Do the requested work",
+        workspace_path=tmp_path,
+    )
+    assert fallback_contract is not None
+    assert fallback_contract.max_repairs == 3
+    assert fallback_context.context_info["runtime_completion_contract"][
+        "max_repairs"
+    ] == 3
+
+    goal_context = Context(task_id="completion-max-repairs-goal")
+    goal_contract = configure_goal_completion(
+        goal_context,
+        verification_commands=("true",),
+        workspace_path=tmp_path,
+    )
+    assert goal_contract is not None
+    assert goal_contract.max_repairs == 3
+    assert goal_context.context_info["runtime_completion_contract"][
+        "max_repairs"
+    ] == 3
+
+
+def test_completion_max_repairs_unset_preserves_unbounded_compatibility(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("AWORLD_COMPLETION_MAX_REPAIRS", raising=False)
+
+    assert resolve_completion_max_repairs() is None
+
+
+@pytest.mark.parametrize("value", ("-1", "+1", "1.5", "three"))
+def test_completion_max_repairs_rejects_invalid_values(
+    monkeypatch: pytest.MonkeyPatch,
+    value: str,
+) -> None:
+    monkeypatch.setenv("AWORLD_COMPLETION_MAX_REPAIRS", value)
+
+    with pytest.raises(
+        ValueError,
+        match="AWORLD_COMPLETION_MAX_REPAIRS must be a non-negative integer",
+    ):
+        resolve_completion_max_repairs()
+
+
+def test_completion_max_repairs_accepts_zero(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("AWORLD_COMPLETION_MAX_REPAIRS", "0")
+
+    assert resolve_completion_max_repairs() == 0
 
 
 def test_unbound_context_keeps_coverage_without_reading_host_outputs(

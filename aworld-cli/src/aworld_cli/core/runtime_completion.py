@@ -32,6 +32,7 @@ from aworld.core.task_workspace.contracts import derive_delivery_contract, infer
 
 
 COMPLETION_MODE_ENV = "AWORLD_COMPLETION_MODE"
+COMPLETION_MAX_REPAIRS_ENV = "AWORLD_COMPLETION_MAX_REPAIRS"
 INFER_ARTIFACTS_ENV = "AWORLD_INFER_REQUIRED_ARTIFACTS"
 REQUIRED_ARTIFACTS_ENV = "AWORLD_REQUIRED_ARTIFACTS_JSON"
 VALIDATION_COMMANDS_ENV = "AWORLD_VALIDATION_COMMANDS_JSON"
@@ -51,6 +52,29 @@ def resolve_completion_mode(value: str | None = None) -> CompletionMode:
     except ValueError as exc:
         allowed = ", ".join(item.value for item in CompletionMode)
         raise ValueError(f"{COMPLETION_MODE_ENV} must be one of: {allowed}") from exc
+
+
+def resolve_completion_max_repairs(value: str | None = None) -> int | None:
+    """Resolve an optional runtime-owned completion repair limit.
+
+    An unset or blank value preserves the historical unbounded runtime contract.
+    Callers can opt into a finite limit with any non-negative integer, including
+    zero when no model-driven repair turn should be attempted.
+    """
+
+    raw_value = (
+        os.environ.get(COMPLETION_MAX_REPAIRS_ENV)
+        if value is None
+        else value
+    )
+    if raw_value is None or not raw_value.strip():
+        return None
+    normalized = raw_value.strip()
+    if not re.fullmatch(r"[0-9]+", normalized):
+        raise ValueError(
+            f"{COMPLETION_MAX_REPAIRS_ENV} must be a non-negative integer"
+        )
+    return int(normalized)
 
 
 def _configured_artifact_paths(raw_value: str | None = None) -> tuple[str, ...]:
@@ -167,7 +191,7 @@ def build_runtime_completion_contract(
                                   for command in validation_commands),
         max_evidence_age_seconds=None,
         required_final_evidence=("agent_final_response",),
-        max_repairs=None,
+        max_repairs=resolve_completion_max_repairs(),
     )
 
 
@@ -311,13 +335,21 @@ def configure_runtime_completion(
             validation_commands=validation_commands,
         )
         if contract is None:
-            contract = CompletionContract((), (), (), None, ("agent_final_response",), max_repairs=None)
+            contract = CompletionContract(
+                (),
+                (),
+                (),
+                None,
+                ("agent_final_response",),
+                max_repairs=resolve_completion_max_repairs(),
+            )
         context.configure_completion_contract(contract, mode=mode,
                                               evidence_resolver=resolve_runtime_completion_evidence)
         context.context_info["runtime_completion_contract"] = {
             "mode": mode.value, "requested_mode": mode.value, "source": "explicit_structured",
             "required_artifacts": [item.path for item in contract.required_artifacts],
             "provided_fields": ["outputs"] if artifact_field_provided else [],
+            "max_repairs": contract.max_repairs,
         }
         if binding is not None:
             from aworld.core.task_workspace.session import prepare_task_workspace
@@ -350,7 +382,7 @@ def configure_runtime_completion(
         required_artifacts=requirements, immutable_inputs=inputs,
         validation_commands=(), required_self_check_ids=check_ids,
         max_evidence_age_seconds=None, required_final_evidence=("agent_final_response",),
-        max_repairs=None,
+        max_repairs=resolve_completion_max_repairs(),
     )
     context.configure_completion_contract(contract, mode=mode,
                                           evidence_resolver=resolve_runtime_completion_evidence)
@@ -361,6 +393,7 @@ def configure_runtime_completion(
         "source_hash": delivery["source_hash"], "coverage_status": delivery["coverage_status"],
         "required_artifacts": [item.path for item in requirements],
         "delivery_check_ids": list(check_ids),
+        "max_repairs": contract.max_repairs,
     }
     return contract
 
@@ -411,7 +444,11 @@ def configure_goal_completion(context, *, verification_commands: Sequence[str], 
         validation_commands=base_checks + checks,
         max_evidence_age_seconds=previous.max_evidence_age_seconds if previous else None,
         required_final_evidence=tuple(dict.fromkeys((previous.required_final_evidence if previous else ()) + ("agent_final_response",))),
-        max_repairs=previous.max_repairs if previous else None,
+        max_repairs=(
+            previous.max_repairs
+            if previous
+            else resolve_completion_max_repairs()
+        ),
         required_self_check_ids=previous.required_self_check_ids if previous else (),
     )
     resolver = resolve_runtime_completion_evidence
@@ -430,6 +467,7 @@ def configure_goal_completion(context, *, verification_commands: Sequence[str], 
         "required_artifacts": [item.path for item in contract.required_artifacts],
         "validation_command_ids": [item.command_id for item in checks],
         "delivery_check_ids": metadata.get("delivery_check_ids", []),
+        "max_repairs": contract.max_repairs,
     }
     context._goal_completion_owned_contract = contract
     context._goal_completion_base_contract = base_resolver_contract
@@ -439,6 +477,7 @@ def configure_goal_completion(context, *, verification_commands: Sequence[str], 
 
 __all__ = [
     "COMPLETION_MODE_ENV",
+    "COMPLETION_MAX_REPAIRS_ENV",
     "INFER_ARTIFACTS_ENV",
     "REQUIRED_ARTIFACTS_ENV",
     "VALIDATION_COMMANDS_ENV",
@@ -447,5 +486,6 @@ __all__ = [
     "configure_goal_completion",
     "infer_declared_output_paths",
     "resolve_completion_mode",
+    "resolve_completion_max_repairs",
     "resolve_runtime_completion_evidence",
 ]
