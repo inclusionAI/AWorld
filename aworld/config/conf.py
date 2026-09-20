@@ -164,7 +164,11 @@ class ContextCompilerRuntimeConfig(BaseConfig):
     reserved_output_tokens: int = 4096
     provider_protocol_reserve: int = 256
     safety_margin_tokens: int = 512
-    max_item_tokens: int = 10000
+    # Offload controls how much Tool output stays inline; the final compiler
+    # controls the total request budget. Do not impose a second implicit cap
+    # on an indivisible assistant/tool exchange that fits that total budget.
+    # Callers can still opt into a hard per-item contract explicitly.
+    max_item_tokens: Optional[int] = Field(default=None, gt=0)
     require_proven_semantics_for_enforce: bool = True
     scoped_instructions: Literal["workspace_only", "nested"] = "nested"
     progressive_skills: bool = True

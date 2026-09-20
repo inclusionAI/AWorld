@@ -17,6 +17,13 @@ from aworld_cli.builtin_agents.smllc.agents.aworld_agent import (
 from aworld.core.tool.surface import ToolLifecycle
 
 
+def test_default_aworld_context_enables_knowledge_without_planning_orchestrator():
+    config = aworld_agent.build_context_config(debug_mode=False)
+    assert config.agent_config.automated_cognitive_ingestion is True
+    assert config.agent_config.automated_reasoning_orchestrator is False
+    assert config.agent_config.neuron_names == ["task_grounding", "skills"]
+
+
 def test_render_aworld_system_prompt_injects_beijing_datetime() -> None:
     prompt = render_aworld_system_prompt(
         now=datetime(2026, 5, 10, 1, 8, 7, tzinfo=ZoneInfo("UTC"))

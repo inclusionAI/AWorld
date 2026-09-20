@@ -433,6 +433,10 @@ class KnowledgeService(IKnowledgeService):
             
             # Adjust end_line if it exceeds total lines
             actual_end_line = min(end_line, total_lines)
+            # Recovery archives wrap data at 512 characters per line. Keep
+            # readback small even if a model asks to reload the entire history.
+            if artifact.metadata.get("context_history_source_hash"):
+                actual_end_line = min(actual_end_line, start_line + 3)
             
             # Extract lines (convert to 0-based indexing)
             selected_lines = lines[start_line - 1:actual_end_line]

@@ -144,6 +144,30 @@ def test_input_budget_uses_all_reserves_without_mutating_output_reserve() -> Non
         )
 
 
+def test_unset_item_cap_still_enforces_total_budget_and_reserves():
+    candidate = _candidate(_item("long-required", required=True), 12000)
+    budget = ContextInputBudget(15000, 2000, 500, 500)
+    assert plan_context_budget((candidate,), budget).selected_items == (candidate.item,)
+
+    with pytest.raises(RequiredContextBudgetExceeded) as error:
+        plan_context_budget((candidate,), ContextInputBudget(14999, 2000, 500, 500))
+    assert error.value.required_tokens == 12000
+    assert error.value.available_tokens == 11999
+
+
+@pytest.mark.parametrize("global_limit,item_limit,expected", [
+    (10000, None, 10000), (None, 8000, 8000), (10000, 8000, 8000),
+])
+def test_explicit_item_contracts_remain_enforced(global_limit, item_limit, expected):
+    candidate = _candidate(
+        _item("long-required", required=True, token_limit=item_limit), 12000
+    )
+    with pytest.raises(ItemTokenLimitExceeded) as error:
+        plan_context_budget((candidate,), ContextInputBudget(30000, 0, 0, 0, global_limit))
+    assert error.value.limit == expected
+    assert error.value.tokens == 12000
+
+
 def test_budget_keeps_required_then_explicit_priority_but_preserves_request_order() -> None:
     candidates = (
         _candidate(_item("low", priority=1), 4),

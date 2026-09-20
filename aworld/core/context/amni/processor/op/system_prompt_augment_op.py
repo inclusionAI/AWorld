@@ -130,7 +130,7 @@ class SystemPromptAugmentOp(BaseOp):
                 neuron_names.insert(insert_at, RELEVANT_MEMORY_NEURON_NAME)
 
         # Enable Planing Feature
-        if agent_context_config.automated_cognitive_ingestion:
+        if agent_context_config.automated_reasoning_orchestrator:
             from aworld.core.context.amni.prompt.neurons.todo_neuron import TODO_NEURON_NAME
             if TODO_NEURON_NAME not in neuron_names:
                neuron_names.append(TODO_NEURON_NAME)

@@ -1322,6 +1322,12 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             logger.warning(
                 f"{self.id()} get tools desc fail, no tool to use. error: {traceback.format_exc()}"
             )
+        recovery_tool = self._context_budget_recovery_tool(context)
+        if recovery_tool and not any(
+            tool.get("function", {}).get("name") == recovery_tool["function"]["name"]
+            for tool in self.tools
+        ):
+            self.tools.append(recovery_tool)
         # Agents as tool
         try:
             self.tools.extend(
@@ -2621,6 +2627,13 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             getattr(self.llm, "_context_progressive_tools", True)
             and progressive_tool_base_tools is not None
         )
+        # Keep the bounded readback action stable from the first request. A
+        # recovery must not have to expand the progressive catalog mid-task.
+        if explicit_progressive_catalog:
+            from aworld.core.context.budget_recovery import READ_TOOL
+
+            if any(tool.get("function", {}).get("name") == READ_TOOL for tool in (tools or ())):
+                progressive_tool_base_tools = tuple(dict.fromkeys((*progressive_tool_base_tools, READ_TOOL)))
         available_tool_ids = tuple(
             str(function.get("name"))
             for schema in (tools or ())
@@ -5022,6 +5035,25 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             self._finished = True
         return self.finished
 
+    def _context_budget_recovery_tool(self, context: Context):
+        """Provide only bounded workspace readback, without enabling ingestion."""
+        if not self._is_amni_context(context):
+            return None
+        if (
+            self._context_compiler_mode_value() != "enforce"
+            or getattr(self.llm, "_context_checkpoint_policy", "explicit") not in {"adaptive", "budget_pressure"}
+            or not getattr(self.llm, "_context_artifact_offload", True)
+        ):
+            return None
+        from aworld.core.context.amni.tool.context_knowledge_tool import CONTEXT_KNOWLEDGE
+        from aworld.core.context.budget_recovery import READ_TOOL
+
+        schemas = tool_desc_transform(
+            get_tool_desc(), tools=[CONTEXT_KNOWLEDGE],
+            black_tool_actions=getattr(self, "black_tool_actions", {}) or {},
+        )
+        return next((schema for schema in schemas if schema.get("function", {}).get("name") == READ_TOOL), None)
+
     async def _filter_tools(self, context: Context) -> List[Dict[str, Any]]:
         from aworld.core.context.amni import AmniContext
 
@@ -5044,12 +5076,19 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             )
             return []
 
-        return await skill_translate_tools(
+        selected = await skill_translate_tools(
             skills=skills,
             skill_configs=self.skill_configs,
             tools=self.tools,
             tool_mapping=self.tool_mapping,
         )
+        recovery_tool = self._context_budget_recovery_tool(context)
+        if recovery_tool and not any(
+            tool.get("function", {}).get("name") == recovery_tool["function"]["name"]
+            for tool in selected
+        ):
+            selected.append(recovery_tool)
+        return selected
 
     @staticmethod
     def _requested_skill_names_from_context(context: Context) -> List[str]:

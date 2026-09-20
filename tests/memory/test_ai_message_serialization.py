@@ -138,7 +138,7 @@ def test_memory_ai_message_keeps_list_reasoning_details():
     assert openai_message["reasoning_details"] == reasoning_details
 
 
-def test_memory_ai_message_canonicalizes_small_tool_call_arguments_for_replay():
+def test_memory_ai_message_preserves_valid_tool_call_wire_arguments():
     message = MemoryAIMessage(
         content="I will run a tool.",
         tool_calls=[
@@ -162,10 +162,10 @@ def test_memory_ai_message_canonicalizes_small_tool_call_arguments_for_replay():
 
     openai_message = message.to_openai_message()
 
-    assert openai_message["tool_calls"][0]["function"]["arguments"] == '{"a":1,"b":2}'
+    assert openai_message["tool_calls"][0]["function"]["arguments"] == '{\n  "b": 2,\n  "a": 1\n}'
 
 
-def test_memory_ai_message_compacts_oversized_tool_call_arguments_for_replay():
+def test_memory_ai_message_preserves_oversized_tool_call_arguments_for_context_owner():
     message = MemoryAIMessage(
         content="I will run a tool.",
         tool_calls=[
@@ -194,13 +194,7 @@ def test_memory_ai_message_compacts_oversized_tool_call_arguments_for_replay():
     )
 
     openai_message = message.to_openai_message()
-    compacted_args = json.loads(openai_message["tool_calls"][0]["function"]["arguments"])
-
-    assert compacted_args["cmd"] == "python script.py"
-    assert compacted_args["cwd"] == "/tmp/workspace"
-    assert compacted_args["payload"]["_aworld_replay"] == "compacted_string_field"
-    assert compacted_args["payload"]["sanitized_reason"] == "oversized_string_field_compaction"
-    assert compacted_args["payload"]["content_hash"].startswith("sha256:")
+    assert openai_message["tool_calls"][0]["function"]["arguments"] == message.tool_calls[0].function.arguments
 
 
 def test_normalize_tool_call_arguments_preserves_bounded_execution_critical_fields():

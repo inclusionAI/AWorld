@@ -129,7 +129,7 @@ class AgentContextConfig(BaseConfig):
 
     # Automated Cognitive Ingestion
     automated_cognitive_ingestion: bool = Field(default=False,
-                                   description="Enable automated cognitive ingestion. Knowledge for agents is cognition. Ingestion is a professional term from big data engineering (ingestion/absorption). Like an oil refinery automatically extracting crude oil, the agent automatically ingests fragmented information during runtime and transforms it into structured cognitive assets.")
+                                   description="Expose workspace knowledge tools and action-info prompt context. Does not enable TODO orchestration or background file ingestion.")
 
     # Recursive Experience Loop
     automated_memory_recursive: bool = Field(default=False,
