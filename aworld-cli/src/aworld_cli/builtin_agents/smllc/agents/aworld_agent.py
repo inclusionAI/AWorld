@@ -59,7 +59,7 @@ from aworld.config import AgentConfig, ModelConfig
 CAST_ANALYSIS = "CAST_ANALYSIS"
 CAST_CODER = "CAST_CODER"
 CAST_SEARCH = "CAST_SEARCH"
-AWORLD_MAX_LOOP_STEPS_HARD_LIMIT = 240
+AWORLD_MAX_LOOP_STEPS_HARD_LIMIT = 1024
 AWORLD_DEFAULT_MAX_COMPLETION_TOKENS = 16384
 AWORLD_MAX_COMPLETION_TOKENS_HARD_LIMIT = 64000
 AWORLD_BUILTIN_SUBAGENT_NAMES = (
@@ -392,13 +392,18 @@ def load_aworld_system_prompt(
 
 
 def resolve_aworld_max_loop_steps() -> int:
-    """Resolve the bounded step limit for one execution segment.
+    """Resolve an optional step guard for one execution segment.
 
-    Exhaustion is a checkpointed budget_exhausted outcome, never success. A
-    goal may continue in another segment under its original caller deadline.
+    AWorld owns this harness guard instead of relying on Harbor policy. The
+    default of 1024 prevents an unbounded model/tool loop while leaving normal
+    benchmark work to the caller-owned task deadline. Callers may opt into a
+    smaller positive guard; exhaustion is a checkpointed budget_exhausted
+    outcome, never success.
     """
 
-    raw_value = os.environ.get("AWORLD_MAX_LOOP_STEPS", "120")
+    raw_value = os.environ.get("AWORLD_MAX_LOOP_STEPS")
+    if raw_value is None or not raw_value.strip():
+        return AWORLD_MAX_LOOP_STEPS_HARD_LIMIT
     try:
         max_loop_steps = int(raw_value)
     except ValueError as exc:

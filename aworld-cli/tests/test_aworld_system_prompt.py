@@ -56,10 +56,20 @@ def test_render_aworld_system_prompt_disables_unavailable_delegation() -> None:
     assert "developer" not in prompt
 
 
-def test_aworld_max_loop_steps_defaults_to_120(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_aworld_max_loop_steps_defaults_to_harness_guard(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     monkeypatch.delenv("AWORLD_MAX_LOOP_STEPS", raising=False)
 
-    assert resolve_aworld_max_loop_steps() == 120
+    assert resolve_aworld_max_loop_steps() == 1024
+
+
+def test_aworld_max_loop_steps_blank_uses_harness_guard(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("AWORLD_MAX_LOOP_STEPS", "  ")
+
+    assert resolve_aworld_max_loop_steps() == 1024
 
 
 def test_aworld_max_completion_tokens_defaults_to_16384(
@@ -303,9 +313,9 @@ def test_aworld_max_loop_steps_rejects_invalid_values(
 def test_aworld_max_loop_steps_cannot_exceed_hard_limit(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setenv("AWORLD_MAX_LOOP_STEPS", "241")
+    monkeypatch.setenv("AWORLD_MAX_LOOP_STEPS", "1025")
 
-    with pytest.raises(ValueError, match="hard limit of 240"):
+    with pytest.raises(ValueError, match="hard limit of 1024"):
         resolve_aworld_max_loop_steps()
 
 
