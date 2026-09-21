@@ -24,6 +24,79 @@ def tool(arguments, call_id="call-1"):
     return ToolCall(id=call_id, function=Function(name="workspace__write", arguments=arguments))
 
 
+@pytest.mark.parametrize(
+    "content",
+    (
+        "I need to see the rest of sim.c first. Let me read the rest of the file.",
+        "The download is at 86%. Let me wait for it to complete.",
+        "Next, I will run the focused tests.",
+        "I am going to continue with the implementation",
+    ),
+)
+def test_explicit_future_action_is_not_a_completion(content):
+    response = ModelResponse(
+        id="future-work", model="fake", content=content, finish_reason="stop"
+    )
+
+    assert (
+        module.LLMAgent._incomplete_model_response_reason(response)
+        == "model_declared_future_work"
+    )
+
+
+@pytest.mark.parametrize(
+    "content",
+    (
+        "Implemented the change and all focused tests pass.",
+        "The next step for an operator is deployment.",
+        "Everything is complete. Let me know if you need anything else.",
+        "The phrase `Let me read the file` is an example of unfinished work.",
+        "```text\nLet me read the file.\n```\nThe analysis is complete.",
+    ),
+)
+def test_completion_detector_does_not_reject_reports_or_conversational_closers(content):
+    response = ModelResponse(
+        id="complete", model="fake", content=content, finish_reason="stop"
+    )
+
+    assert module.LLMAgent._incomplete_model_response_reason(response) is None
+
+
+@pytest.mark.asyncio
+async def test_declared_future_work_gets_a_bounded_continuation_turn(monkeypatch):
+    calls = []
+
+    async def response(*args, **kwargs):
+        calls.append(kwargs["messages"])
+        if len(calls) == 1:
+            return ModelResponse(
+                id="unfinished",
+                model="fake",
+                content="The download is at 86%. Let me wait for it to complete.",
+                finish_reason="stop",
+            )
+        return ModelResponse(
+            id="complete",
+            model="fake",
+            content="The download completed and the requested artifacts were generated.",
+            finish_reason="stop",
+        )
+
+    monkeypatch.setattr(module, "acall_llm_model", response)
+    agent = _agent(policy=GenerationBudgetPolicy(total_timeout_seconds=5), attempts=2)
+    message = _message("future-work-recovery")
+
+    result = await agent.invoke_model(
+        [{"role": "user", "content": "finish the download"}],
+        message=message,
+        stream=False,
+    )
+
+    assert len(calls) == 2
+    assert "model_declared_future_work" in calls[1][-1]["content"]
+    assert result.content.startswith("The download completed")
+
+
 @pytest.mark.asyncio
 async def test_stream_length_response_is_recovered_before_tool_execution(monkeypatch):
     calls = []

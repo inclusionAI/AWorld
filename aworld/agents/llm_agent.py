@@ -4479,6 +4479,42 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             await self._close_generation_stream(resp_stream)
 
     @staticmethod
+    def _declares_future_work(content: str | None) -> bool:
+        """Return whether the final sentence explicitly promises another action.
+
+        This is intentionally narrower than generic intent classification.  A
+        normal answer may discuss future work, but a tool-using agent response
+        that ends with an imperative-to-self such as ``Let me read ...`` or
+        ``I need to check ...`` has not actually finished that action.  Fenced
+        examples are ignored and conversational closers such as ``let me know``
+        are deliberately outside the action vocabulary.
+        """
+
+        if not content or not content.strip():
+            return False
+        prose = re.sub(r"```.*?```", " ", content, flags=re.DOTALL)
+        sentences = [
+            item.strip().strip("\"'`*_ -")
+            for item in re.split(r"(?<=[.!?])\s+|\n+", prose.strip())
+            if item.strip()
+        ]
+        if not sentences:
+            return False
+        final_sentence = sentences[-1]
+        return bool(
+            re.match(
+                r"^(?:(?:next|now|then),?\s+)?"
+                r"(?:let me|i(?:'ll| will| need to| am going to| plan to))\s+"
+                r"(?:now\s+)?"
+                r"(?:continue(?:\s+(?:to|with))?|read|check|inspect|wait|monitor|"
+                r"resume|run|test|build|implement|fix|download|look|examine|"
+                r"finish|complete)\b",
+                final_sentence,
+                flags=re.IGNORECASE,
+            )
+        )
+
+    @staticmethod
     def _incomplete_model_response_reason(response: ModelResponse | None) -> str | None:
         if response is None:
             return None
@@ -4508,6 +4544,8 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             return None
         if not str(response.content or "").strip():
             return "reasoning_only_response" if response.reasoning_content else None
+        if LLMAgent._declares_future_work(response.content):
+            return "model_declared_future_work"
         return None
 
     @staticmethod
