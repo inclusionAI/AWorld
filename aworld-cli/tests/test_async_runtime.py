@@ -256,6 +256,48 @@ print("direct-run process exited", flush=True)
     assert "closing the event loop" in completed.stderr
 
 
+def test_one_shot_run_finalizes_before_stubborn_provider_cleanup_without_env() -> None:
+    source_root = Path(__file__).resolve().parents[1] / "src"
+    script = """
+import asyncio
+from aworld_cli.async_runtime import hard_exit_direct_run_if_configured, run_direct_async
+
+async def stubborn_provider():
+    while True:
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            continue
+
+async def direct_run():
+    asyncio.create_task(stubborn_provider())
+    await asyncio.sleep(0)
+    return "task response with real trajectory"
+
+result = run_direct_async(direct_run(), one_shot=True)
+print("outcome and trajectory finalized: " + result, flush=True)
+hard_exit_direct_run_if_configured(0, one_shot=True)
+"""
+    env = os.environ.copy()
+    env.pop(BOUNDED_ASYNC_SHUTDOWN_ENV, None)
+    env["PYTHONPATH"] = os.pathsep.join(
+        filter(None, (str(source_root), env.get("PYTHONPATH")))
+    )
+
+    completed = subprocess.run(
+        [sys.executable, "-c", script],
+        env=env,
+        text=True,
+        capture_output=True,
+        timeout=1,
+        check=False,
+    )
+
+    assert completed.returncode == 0
+    assert "outcome and trajectory finalized" in completed.stdout
+    assert "closing the event loop" in completed.stderr
+
+
 def test_one_shot_hard_exit_does_not_wait_for_stubborn_executor_thread() -> None:
     source_root = Path(__file__).resolve().parents[1] / "src"
     script = """

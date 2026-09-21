@@ -818,6 +818,13 @@ def _build_trajectory_prompt(case_input: dict, target: dict, suite) -> str:
             "Otherwise, use the bounded extracted_trajectory payload. "
             "When extracted_trajectory.evidence_bundle.valid is true, treat that canonical bundle as the "
             "primary evidence; raw evidence and steps may be metadata-only execution context. "
+            "Use evidence_digest.manifest_scopes to check counts for the exact named manifest. "
+            "An agent-authored manifest and the framework canonical inventory may contain different "
+            "numbers of records; that difference alone is not a count error for either named file. "
+            "Compare reported counts with the independently verified count for that scope, and still "
+            "check unsupported or fabricated citations against all canonical evidence. The observation "
+            "verifies the file after task exit; use trajectory evidence for its earlier contents. "
+            "Missing or unverified observations do not establish the agent manifest's contents. "
             "Evidence content may be bounded for prompt size; use evidence_summary to account for compaction. "
             "Before setting evidence_incomplete solely because required detail is outside a bounded excerpt, "
             "request the corresponding indexed source artifact within artifact_backed_evidence.read_policy. "
@@ -898,6 +905,21 @@ def _evidence_digest(
     manifest = evidence_bundle.get("manifest")
     if isinstance(manifest, Mapping) and manifest:
         digest["manifest"] = dict(manifest)
+        source_path = str(manifest.get("source_path") or manifest.get("path") or "")
+        digest["manifest_scopes"] = {
+            "canonical_bundle_manifest": {
+                "role": "canonical_evidence_inventory",
+                "source_path": source_path,
+                "filename": Path(source_path).name,
+                "entry_count": manifest.get("entry_count"),
+                "record_count_verified": manifest.get("valid") is True,
+                "authoritative_evidence": bundle_valid and manifest.get("valid") is True,
+            },
+            "agent_authored_manifest": dict(
+                evidence_bundle.get("agent_manifest_observation")
+                or {"observation_available": False}
+            ),
+        }
     return digest
 
 
@@ -1370,6 +1392,9 @@ def _load_prompt_evidence_bundle(value: object) -> dict[str, Any]:
     )
     if manifest.get("valid") is not True:
         validation_errors.append("manifest_validation_failed")
+    verified_agent_observation = _verify_agent_manifest_observation(
+        bundle.get("agent_manifest_observation"), bundle_path=path
+    )
     return {
         "path": str(path),
         "format": str(bundle.get("format") or ""),
@@ -1386,8 +1411,40 @@ def _load_prompt_evidence_bundle(value: object) -> dict[str, Any]:
         "entries": entries[:5],
         "artifact_entries": artifact_entries,
         "manifest": manifest,
+        "agent_manifest_observation": verified_agent_observation,
         "validation_errors": validation_errors,
     }
+
+
+def _verify_agent_manifest_observation(
+    value: object, *, bundle_path: Path,
+) -> dict[str, Any]:
+    """Verify a parent-observed file count without admitting advisory claims."""
+
+    if not isinstance(value, Mapping):
+        return {"observation_available": False}
+    observed = _validate_prompt_evidence_manifest(
+        value,
+        bundle_path=bundle_path,
+        declared_manifest_path=value.get("path"),
+        expected_entries=[],
+        observation_only=True,
+    )
+    source_path = str(observed.get("path") or "")
+    result: dict[str, Any] = {
+        "role": "agent_authored_advisory_manifest",
+        "observation_available": True,
+        "observation_stage": "after_task_exit_before_canonical_manifest",
+        "source_path": source_path,
+        "filename": Path(source_path).name,
+        "authoritative_evidence": False,
+        "record_count_verified": observed.get("valid") is True,
+        "validation_errors": list(observed.get("validation_errors") or []),
+    }
+    if observed.get("valid") is True:
+        result["entry_count"] = observed["entry_count"]
+        result["fingerprint"] = observed["fingerprint"]
+    return result
 
 
 def _prompt_evidence_bundle_entry_error(entry: Mapping[str, Any]) -> str | None:
@@ -1414,6 +1471,7 @@ def _validate_prompt_evidence_manifest(
     bundle_path: Path,
     declared_manifest_path: object,
     expected_entries: list[Mapping[str, Any]],
+    observation_only: bool = False,
 ) -> dict[str, Any]:
     claimed = _compact_prompt_evidence_manifest(
         value,
@@ -1563,7 +1621,11 @@ def _validate_prompt_evidence_manifest(
     result["entry_count"] = len(records)
     if claimed.get("entry_count") != len(records):
         add_error("manifest_entry_count_mismatch")
-    if len(expected_entries) != len(records):
+    if observation_only:
+        # Count verification does not admit this advisory file or its claims as
+        # canonical evidence. The canonical manifest still takes the full path.
+        pass
+    elif len(expected_entries) != len(records):
         add_error("manifest_bundle_entry_count_mismatch")
     else:
         for index, (manifest_entry, bundle_entry) in enumerate(
@@ -1592,8 +1654,8 @@ def _validate_prompt_evidence_manifest(
                     )
                 )
     result["invalid_entry_count"] = len(record_errors)
-    result["valid"] = not errors and bool(records)
-    if result["valid"] is True:
+    result["valid"] = not errors and (bool(records) or observation_only)
+    if result["valid"] is True and not observation_only:
         (
             snapshot_path,
             snapshot_session,

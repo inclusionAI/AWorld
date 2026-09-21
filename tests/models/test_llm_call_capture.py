@@ -11,8 +11,24 @@ from aworld.core.context.compiler import canonical_json_hash
 from aworld.core.task import Task, TaskResponse
 from aworld.models.llm import AWORLD_CONTEXT_CALL_ID_KWARG, LLMModel
 from aworld.models.model_response import ModelResponse
+from aworld.models.openai_provider import OpenAIProvider
 from aworld.core.llm_provider import LLMProviderBase
 from aworld.runners.event_runner import TaskEventRunner
+
+
+def test_openai_provider_disables_hidden_retries_for_authoritative_usage(
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("AWORLD_SELF_EVOLVE_DISABLE_PROVIDER_RETRIES", "1")
+    provider = OpenAIProvider(
+        model_name="gpt-4.1",
+        sync_enabled=False,
+        async_enabled=False,
+    )
+
+    assert provider._authoritative_max_retries(http_handler=False) == 0
+    assert provider._authoritative_max_retries(http_handler=True) == 1
+    assert provider.authoritative_usage_single_attempt is True
 
 
 class RecordingLLMProvider(LLMProviderBase):

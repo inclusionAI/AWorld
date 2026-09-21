@@ -6,15 +6,22 @@ from dataclasses import replace
 import pytest
 
 from aworld.self_evolve.repair_conformance import (
+    ArtifactLifecycleConstraint,
     ExactRepairProbe,
     FixtureDerivedProbeConstraint,
     RepairConformanceContract,
+    RepairConformanceResult,
+    RuntimeArtifactConstraint,
+    RuntimeResponseConstraint,
+    RuntimeRouteConstraint,
     build_repair_conformance_probe_plan,
     compile_repair_conformance_contract,
+    evaluate_artifact_lifecycle_conformance,
     evaluate_candidate_source_conformance,
     evaluate_compiled_probe_conformance,
     merge_repair_conformance_constraint_context,
     project_replay_capability_for_probe_group,
+    repair_conformance_contract_identity,
 )
 from aworld.self_evolve.replay_capability import (
     FrozenReplayCapability,
@@ -25,7 +32,10 @@ from aworld.self_evolve.replay_capability import (
 )
 from aworld.self_evolve.replay_adaptation import ReplayCapabilityRequirement
 from aworld.self_evolve.sanitization import public_diagnostic_projection
-from aworld.self_evolve.schema_diagnostics import SchemaFieldRepairConstraint
+from aworld.self_evolve.schema_diagnostics import (
+    SchemaFieldRepairConstraint,
+    _schema_field_contract_fingerprint,
+)
 from aworld.self_evolve.types import CandidateFileDelta, CandidateVariant, SelfEvolveTargetRef
 
 
@@ -60,6 +70,274 @@ def _package(runtime_source: str = "def respond():\n    return {}\n") -> dict[st
             },
         ],
     }
+
+
+def test_repair_contract_consumes_counterexample_runtime_transition() -> None:
+    repair_focus = {
+        "repair_candidate_package": _package(),
+        "replay_counterexamples": [
+            {
+                "schema_version": "aworld.replay.counterexample.v1",
+                "sequence": 1,
+                "failure_code": "repeated_failed_action_limit",
+                "owner": "candidate",
+                "stage": "task_rollout",
+                "state_before": "collecting",
+                "trigger": "tool_call",
+                "action_fingerprint": "sha256:" + "a" * 64,
+                "consecutive_failure_count": 2,
+                "required_transition": (
+                    "switch_strategy_or_fail_with_observed_reason"
+                ),
+            }
+        ],
+    }
+
+    contract = compile_repair_conformance_contract(repair_focus)
+
+    assert contract is not None
+    assert "repeated_failed_action_limit" in contract.failure_codes
+    assert contract.required_runtime_transitions == (
+        "switch_strategy_or_fail_with_observed_reason",
+    )
+    restored = RepairConformanceContract.from_dict(contract.to_dict())
+    assert restored.required_runtime_transitions == (
+        "switch_strategy_or_fail_with_observed_reason",
+    )
+
+
+def test_repair_contract_identity_changes_with_actionable_source_owner() -> None:
+    compiler_contract = RepairConformanceContract(
+        focus_candidate_id="candidate-parent",
+        failure_codes=("schema_field_validation_failed",),
+        interaction_progress=0,
+        base_file_fingerprints={"replay/compiler.py": "sha256:base"},
+        required_branch_paths=("replay/compiler.py",),
+        base_branch_fingerprints={},
+        compiler_path="replay/compiler.py",
+        runtime_paths=("replay/runtime.py",),
+    )
+    runtime_contract = replace(
+        compiler_contract,
+        required_branch_paths=("replay/runtime.py",),
+    )
+
+    assert compiler_contract.contract_identity == (
+        repair_conformance_contract_identity(compiler_contract.to_public_dict())
+    )
+    assert compiler_contract.contract_identity != runtime_contract.contract_identity
+
+
+def test_artifact_limit_counterexample_compiles_executable_lifecycle_contract() -> None:
+    repair_focus = {
+        "repair_candidate_package": _package(),
+        "replay_counterexamples": [
+            {
+                "schema_version": "aworld.replay.counterexample.v1",
+                "sequence": 1,
+                "failure_code": "artifact_file_limit_exhausted",
+                "owner": "candidate",
+                "stage": "task_rollout",
+                "state_before": "collecting",
+                "trigger": "tool_call",
+                "manifest_entry_count": 0,
+                "artifact_file_count": 8,
+                "artifact_file_limit": 8,
+                "artifact_bytes": 4_096,
+                "artifact_byte_limit": 2_000_000,
+                "tool_call_attempt_count": 6,
+                "required_transition": (
+                    "persist_bounded_evidence_or_reduce_collection"
+                ),
+            }
+        ],
+    }
+
+    contract = compile_repair_conformance_contract(repair_focus)
+
+    assert contract is not None
+    constraint = contract.artifact_lifecycle_constraint
+    assert constraint == ArtifactLifecycleConstraint(
+        max_artifact_files=1,
+        max_artifact_bytes=2_000_000,
+        max_collection_tool_calls=5,
+    )
+    restored = RepairConformanceContract.from_public_dict(
+        contract.to_public_dict()
+    )
+    assert restored.artifact_lifecycle_constraint == constraint
+    projected = public_diagnostic_projection(contract.to_public_dict())
+    assert projected["artifact_lifecycle_constraint"] == constraint.to_dict()
+
+
+def test_artifact_lifecycle_contract_owns_skill_content_without_replay_files() -> None:
+    repair_focus = {
+        "repair_candidate_package": {
+            "candidate_id": "candidate-failed",
+            "content": "# Skill\n\nCollect every artifact before returning.\n",
+            "files": [],
+        },
+        "replay_counterexamples": [
+            {
+                "schema_version": "aworld.replay.counterexample.v1",
+                "sequence": 1,
+                "failure_code": "artifact_file_limit_exhausted",
+                "owner": "candidate",
+                "stage": "task_rollout",
+                "state_before": "collecting",
+                "trigger": "tool_call",
+                "artifact_file_count": 8,
+                "artifact_file_limit": 8,
+                "required_transition": (
+                    "persist_bounded_evidence_or_reduce_collection"
+                ),
+            }
+        ],
+    }
+
+    contract = compile_repair_conformance_contract(repair_focus)
+    assert contract is not None
+    assert contract.required_branch_paths == ("SKILL.md",)
+
+    changed = CandidateVariant(
+        candidate_id="candidate-repair",
+        target=SelfEvolveTargetRef(target_type="skill", target_id="generic"),
+        content=(
+            "# Skill\n\nPersist the first valid artifact, reuse it, and return.\n"
+        ),
+        rationale="bounded evidence lifecycle",
+    )
+    unchanged = replace(
+        changed,
+        content="# Skill\n\nCollect every artifact before returning.\n",
+    )
+
+    assert evaluate_candidate_source_conformance(changed, contract).passed is True
+    unchanged_result = evaluate_candidate_source_conformance(unchanged, contract)
+    assert unchanged_result.passed is False
+    assert unchanged_result.code == "repair_branch_unchanged"
+
+
+def test_task_rollout_repair_coowns_and_requires_skill_content() -> None:
+    parent_content = "# Skill\n\nKeep collecting evidence after the answer is known.\n"
+    runtime_source = "def respond():\n    return {'value': 'recorded'}\n"
+    repair_focus = {
+        "repair_candidate_package": {
+            "candidate_id": "candidate-failed",
+            "content": parent_content,
+            "files": [
+                {
+                    "path": "replay/runtime.py",
+                    "operation": "upsert",
+                    "content": runtime_source,
+                }
+            ],
+        },
+        "replay_counterexamples": [
+            {
+                "schema_version": "aworld.replay.counterexample.v1",
+                "sequence": 1,
+                "failure_code": "replay_evidence_invariant_regression",
+                "owner": "candidate",
+                "stage": "task_rollout",
+                "state_before": "evidence_ready",
+                "trigger": "tool_call",
+                "required_transition": "repair_candidate_task_behavior",
+            }
+        ],
+    }
+
+    contract = compile_repair_conformance_contract(repair_focus)
+
+    assert contract is not None
+    assert contract.required_branch_paths == (
+        "replay/runtime.py",
+        "SKILL.md",
+    )
+    assert "SKILL.md" in contract.base_file_fingerprints
+
+    support_only = CandidateVariant(
+        candidate_id="support-only",
+        target=SelfEvolveTargetRef(target_type="skill", target_id="generic"),
+        content=parent_content,
+        rationale="change only runtime",
+        files=(
+            CandidateFileDelta(
+                path="replay/runtime.py",
+                content="def respond():\n    return {'value': 'changed'}\n",
+            ),
+        ),
+    )
+    behavior_repair = replace(
+        support_only,
+        candidate_id="behavior-repair",
+        content=(
+            "# Skill\n\nPersist the first valid evidence artifact and return "
+            "without further collection.\n"
+        ),
+    )
+
+    support_result = evaluate_candidate_source_conformance(
+        support_only,
+        contract,
+    )
+    assert support_result.passed is False
+    assert support_result.code == "repair_target_behavior_unchanged"
+    assert evaluate_candidate_source_conformance(
+        behavior_repair,
+        contract,
+    ).passed is True
+
+
+def test_artifact_lifecycle_conformance_requires_runtime_behavioral_proof() -> None:
+    contract = RepairConformanceContract(
+        focus_candidate_id="candidate-failed",
+        failure_codes=("artifact_file_limit_exhausted",),
+        interaction_progress=1,
+        base_file_fingerprints={},
+        required_branch_paths=(),
+        base_branch_fingerprints={},
+        artifact_lifecycle_constraint=ArtifactLifecycleConstraint(
+            max_collection_tool_calls=5,
+        ),
+    )
+    passing = {
+        "case_id": "case-1",
+        "execution_succeeded": True,
+        "policy_active": True,
+        "policy_passed": True,
+        "artifact_file_count": 1,
+        "artifact_bytes": 512,
+        "tool_call_attempt_count": 4,
+        "manifest_entry_count": 1,
+        "manifest_valid": True,
+    }
+
+    passed = evaluate_artifact_lifecycle_conformance((passing,), contract)
+    exceeded = evaluate_artifact_lifecycle_conformance(
+        (
+            {
+                **passing,
+                "artifact_file_count": 2,
+                "tool_call_attempt_count": 6,
+            },
+        ),
+        contract,
+    )
+    unavailable = evaluate_artifact_lifecycle_conformance((), contract)
+
+    assert passed is not None and passed.passed is True
+    assert exceeded is not None and exceeded.passed is False
+    assert exceeded.code == "artifact_lifecycle_conformance_failed"
+    assert exceeded.failure_class == "candidate"
+    assert set(exceeded.details["violations"][0]["failed_checks"]) == {
+        "artifact_reuse_not_proven",
+        "collection_attempt_bound_exceeded",
+        "single_reusable_artifact_not_observed",
+    }
+    assert unavailable is not None and unavailable.passed is False
+    assert unavailable.code == "artifact_lifecycle_evidence_unavailable"
+    assert unavailable.failure_class == "framework"
 
 
 def _candidate(*, runtime_source: str, compiler_source: str | None = None) -> CandidateVariant:
@@ -554,6 +832,263 @@ def test_compile_probe_failure_requires_compiler_change_not_runtime_change() -> 
     assert evaluate_candidate_source_conformance(compiler_only, contract).passed is True
 
 
+def test_fixture_compile_failure_is_not_redirected_by_inherited_runtime_constraint() -> None:
+    runtime_constraint = SchemaFieldRepairConstraint(
+        schema_layer="runtime",
+        field_path="environment.AWORLD_REPLAY_RESPONSE_INDEX.consumer",
+        rule="enum",
+        expected=("json_sidecar_record_value_projector",),
+        value_domain="source_behavior",
+        required_operations=(
+            "read_environment_binding_as_path",
+            "bind_environment_path_to_json_file_reader",
+            "access_records_array",
+            "project_record_value_field_directly",
+        ),
+    )
+    inherited = RepairConformanceContract(
+        focus_candidate_id="candidate-parent",
+        failure_codes=("inherited_typed_repair_constraints",),
+        interaction_progress=0,
+        base_file_fingerprints={"replay/runtime.py": "sha256:base"},
+        required_branch_paths=("replay/runtime.py",),
+        base_branch_fingerprints={},
+        manifest_path="replay/capability.json",
+        compiler_path="replay/compiler.py",
+        runtime_paths=("replay/runtime.py",),
+        schema_field_constraints=(runtime_constraint,),
+    )
+    contract = compile_repair_conformance_contract(
+        {
+            "repair_candidate_package": _package(),
+            "candidate_validation_diagnostics": [
+                {
+                    "code": "repair_capability_compile_failed",
+                    "capability_error_code": (
+                        "protocol_probe_not_fixture_derived"
+                    ),
+                    "fixture_probe_constraints": [
+                        {
+                            "requirement_id": "requirement-1",
+                            "kind": "http",
+                            "path": "/",
+                            "max_response_chars": 4096,
+                        }
+                    ],
+                    "repair_conformance": inherited.to_public_dict(),
+                }
+            ],
+        }
+    )
+
+    assert contract is not None
+    assert contract.required_branch_paths == ("replay/compiler.py",)
+    assert contract.compiler_path == "replay/compiler.py"
+    assert contract.runtime_paths == ("replay/runtime.py",)
+    assert contract.requires_compiler_fixture_reconstruction is True
+    assert contract.requires_fixture_derived_probe is False
+
+    runtime_only = _candidate(
+        compiler_source="def compile_request():\n    return None\n",
+        runtime_source=(
+            "import json, os\n"
+            "def respond():\n"
+            "    path = os.getenv('AWORLD_REPLAY_RESPONSE_INDEX')\n"
+            "    with open(path) as stream:\n"
+            "        index = json.load(stream)\n"
+            "    records = index['records']\n"
+            "    return records[0]['value']\n"
+        ),
+    )
+    result = evaluate_candidate_source_conformance(runtime_only, contract)
+    assert result.passed is False
+    assert result.code == "repair_branch_unchanged"
+    assert result.details["required_changed_paths"] == [
+        "replay/compiler.py"
+    ]
+
+
+def test_unresolved_compiler_owner_survives_new_runtime_constraint() -> None:
+    inherited = RepairConformanceContract(
+        focus_candidate_id="candidate-parent",
+        failure_codes=("protocol_probe_not_fixture_derived",),
+        interaction_progress=0,
+        base_file_fingerprints={"replay/runtime.py": "sha256:base"},
+        required_branch_paths=("replay/runtime.py",),
+        base_branch_fingerprints={},
+        manifest_path="replay/capability.json",
+        compiler_path="replay/compiler.py",
+        runtime_paths=("replay/runtime.py",),
+    )
+    contract = compile_repair_conformance_contract(
+        {
+            "repair_candidate_package": _package(),
+            "candidate_validation_diagnostics": [
+                {
+                    "code": "source_behavior_proof_failed",
+                    "schema_field_constraints": [
+                        {
+                            "schema_layer": "runtime",
+                            "field_path": (
+                                "environment.AWORLD_REPLAY_RESPONSE_INDEX.consumer"
+                            ),
+                            "rule": "enum",
+                            "expected": ["json_sidecar_record_value_projector"],
+                            "value_domain": "source_behavior",
+                        }
+                    ],
+                    "repair_conformance": inherited.to_public_dict(),
+                }
+            ],
+        }
+    )
+
+    assert contract is not None
+    assert contract.required_branch_paths == (
+        "replay/runtime.py",
+        "replay/compiler.py",
+    )
+    assert contract.requires_compiler_fixture_reconstruction is True
+    assert contract.fixture_probe_constraints == ()
+
+
+def test_inconsistent_compiler_owner_contract_is_framework_failure() -> None:
+    contract = RepairConformanceContract(
+        focus_candidate_id="candidate-parent",
+        failure_codes=("protocol_probe_not_fixture_derived",),
+        interaction_progress=0,
+        base_file_fingerprints={"replay/runtime.py": "sha256:base"},
+        required_branch_paths=("replay/runtime.py",),
+        base_branch_fingerprints={},
+        manifest_path="replay/capability.json",
+        compiler_path="replay/compiler.py",
+        runtime_paths=("replay/runtime.py",),
+    )
+
+    result = evaluate_candidate_source_conformance(
+        _candidate(runtime_source="def respond():\n    return None\n"),
+        contract,
+    )
+
+    assert result.passed is False
+    assert result.code == "repair_contract_owner_inconsistent"
+    assert result.failure_class == "framework"
+    assert result.repairable is False
+    assert "required_branch_paths.compiler" in result.details[
+        "missing_contract_fields"
+    ]
+
+
+def test_runtime_response_constraint_targets_response_producer_and_round_trips() -> None:
+    runtime_constraint = RuntimeResponseConstraint(
+        constraint_kind="recorded_response_context",
+        response_source="AWORLD_REPLAY_RESPONSE_INDEX",
+        minimum_recorded_value_matches=2,
+        maximum_response_bytes=48 * 1024,
+        preserve_decoded_container=True,
+        allow_bounded_projection=True,
+        projection_minimum_scalar_descendants=2,
+        probe_kind="http",
+        probe_path="/",
+    )
+    inherited_compile_constraint = SchemaFieldRepairConstraint(
+        schema_layer="compile_result",
+        field_path="services[*].protocol_probes[*].response_contains",
+        rule="enum",
+        expected=("fixture_derived_scalar",),
+    )
+    contract = compile_repair_conformance_contract(
+        {
+            "repair_candidate_package": _package(),
+            "candidate_validation_diagnostics": [
+                {
+                    "code": "repair_probe_execution_failed",
+                    "details": {
+                        "diagnostics": [
+                            {
+                                "code": "recorded_response_context_incomplete",
+                                "stage": "capability_preflight",
+                                "runtime_response_constraints": [
+                                    runtime_constraint.to_dict()
+                                ],
+                                "runtime_response_observation": {
+                                    "observed_recorded_value_matches": 1,
+                                    "response_payload_bytes": 2048,
+                                    "response_shape": "json_object",
+                                },
+                            }
+                        ],
+                        "schema_field_constraints": [
+                            inherited_compile_constraint.to_dict()
+                        ],
+                    },
+                }
+            ],
+        }
+    )
+
+    assert contract is not None
+    assert contract.required_branch_paths == ("replay/runtime.py",)
+    assert contract.runtime_response_constraints == (runtime_constraint,)
+    assert "recorded_response_context_incomplete" in contract.failure_codes
+    assert "preserve_recorded_response_context" in (
+        contract.required_runtime_transitions
+    )
+    restored = RepairConformanceContract.from_dict(contract.to_dict())
+    assert restored.runtime_response_constraints == (runtime_constraint,)
+    public = public_diagnostic_projection(contract.to_public_dict())
+    assert public["runtime_response_constraints"] == [
+        runtime_constraint.to_dict()
+    ]
+
+
+def test_runtime_route_constraint_targets_dispatcher_and_round_trips() -> None:
+    route_constraint = RuntimeRouteConstraint()
+    contract = compile_repair_conformance_contract(
+        {
+            "repair_candidate_package": _package(),
+            "candidate_validation_diagnostics": [
+                {
+                    "code": "replay_service_http_status_mismatch",
+                    "probe_phase": "protocol_probe",
+                    "probe_path": "/abs/2605.11182",
+                    "observed_http_status": 404,
+                    "runtime_route_constraints": [route_constraint.to_dict()],
+                }
+            ],
+        }
+    )
+
+    assert contract is not None
+    assert contract.required_branch_paths == ("replay/runtime.py",)
+    assert contract.runtime_route_constraints == (route_constraint,)
+    assert "serve_framework_bound_task_entry_path" in (
+        contract.required_runtime_transitions
+    )
+    restored = RepairConformanceContract.from_dict(contract.to_dict())
+    assert restored.runtime_route_constraints == (route_constraint,)
+    public = public_diagnostic_projection(contract.to_public_dict())
+    assert public["runtime_route_constraints"] == [route_constraint.to_dict()]
+
+    first_fingerprint = _schema_field_contract_fingerprint(
+        {
+            "probe_path": "/abs/2605.11182",
+            "observed_http_status": 404,
+            "runtime_route_constraints": [route_constraint.to_dict()],
+        }
+    )
+    second_fingerprint = _schema_field_contract_fingerprint(
+        {
+            "probe_path": "/lotte/status/2056754091817361670",
+            "observed_http_status": 404,
+            "runtime_route_constraints": [route_constraint.to_dict()],
+        }
+    )
+    assert first_fingerprint == second_fingerprint
+    assert first_fingerprint is not None
+    assert first_fingerprint.startswith("runtime-route:sha256:")
+
+
 def test_compile_runtime_semantics_failure_still_requires_runtime_change() -> None:
     contract = compile_repair_conformance_contract(
         {
@@ -1036,6 +1571,64 @@ def test_source_conformance_rejects_fixture_probe_filter_or_hash_fallback() -> N
     )
 
 
+def test_source_conformance_rejects_combined_fixture_scalar_assertion() -> None:
+    base_runtime = "def respond(value):\n    return value\n"
+    contract = compile_repair_conformance_contract(
+        {
+            "repair_candidate_package": _package(base_runtime),
+            "candidate_validation_diagnostics": [
+                {
+                    "code": "invalid_replay_capability_compile",
+                    "capability_error_code": (
+                        "protocol_probe_not_fixture_derived"
+                    ),
+                    "fixture_probe_constraints": [
+                        {
+                            "requirement_id": "requirement-1",
+                            "kind": "http",
+                            "path": "/",
+                            "max_response_chars": 4096,
+                        }
+                    ],
+                }
+            ],
+        }
+    )
+    assert contract is not None
+    combined = _candidate(
+        runtime_source=base_runtime,
+        compiler_source=(
+            "def select_bounded_response_value(root):\n"
+            "    scalars = collect_scalar_descendants(root)\n"
+            "    selected = scalars[:2]\n"
+            "    return ' | '.join(selected)\n"
+        ),
+    )
+
+    result = evaluate_candidate_source_conformance(combined, contract)
+
+    assert result.passed is False
+    assert result.code == "forbidden_fixture_probe_derivation"
+    assert result.details["violations"] == [
+        {
+            "path": "replay/compiler.py",
+            "function": "select_bounded_response_value",
+            "line": 4,
+            "construct": "multiple_fixture_scalars_combined",
+        }
+    ]
+
+    single = _candidate(
+        runtime_source=base_runtime,
+        compiler_source=(
+            "def select_bounded_response_value(root):\n"
+            "    scalars = collect_scalar_descendants(root)\n"
+            "    return scalars[0] if scalars else None\n"
+        ),
+    )
+    assert evaluate_candidate_source_conformance(single, contract).passed is True
+
+
 def test_source_conformance_requires_gateway_branch_after_outside_payload_failure() -> None:
     base_runtime = (
         "def handle(operation, value):\n"
@@ -1244,6 +1837,61 @@ def test_source_conformance_rejects_gateway_container_and_boolean_metadata() -> 
         "gateway_container_selected_instead_of_subtree",
         "boolean_metadata_not_excluded",
     }
+    diagnostic = result.to_dict()
+    assert diagnostic["failure_class"] == "candidate"
+    assert diagnostic["repairable"] is True
+    assert diagnostic["failure_fingerprint"].startswith("sha256:")
+
+
+def test_conformance_failure_fingerprint_ignores_names_and_lines() -> None:
+    first = RepairConformanceResult(
+        passed=False,
+        code="forbidden_fixture_probe_derivation",
+        reason="invalid fixture selector",
+        details={
+            "violations": [
+                {
+                    "construct": "boolean_metadata_not_excluded",
+                    "function": "select_fixture_value",
+                    "line": 12,
+                    "path": "replay/compiler.py",
+                }
+            ]
+        },
+    )
+    renamed = RepairConformanceResult(
+        passed=False,
+        code="forbidden_fixture_probe_derivation",
+        reason="same invalid fixture selector with renamed helper",
+        details={
+            "violations": [
+                {
+                    "construct": "boolean_metadata_not_excluded",
+                    "function": "collect_scalar_descendants",
+                    "line": 97,
+                    "path": "replay/compiler.py",
+                }
+            ]
+        },
+    )
+    different = RepairConformanceResult(
+        passed=False,
+        code="forbidden_fixture_probe_derivation",
+        reason="different invalid fixture selector",
+        details={
+            "violations": [
+                {
+                    "construct": "regex_scalar_filter",
+                    "function": "select_fixture_value",
+                    "line": 12,
+                    "path": "replay/compiler.py",
+                }
+            ]
+        },
+    )
+
+    assert first.failure_fingerprint == renamed.failure_fingerprint
+    assert first.failure_fingerprint != different.failure_fingerprint
 
 
 def test_source_conformance_accepts_explicit_boolean_guard() -> None:
@@ -1612,6 +2260,8 @@ def test_compile_contract_preserves_typed_fixture_probe_constraints() -> None:
 
     assert contract is not None
     assert "protocol_probe_not_fixture_derived" in contract.failure_codes
+    assert contract.requires_compiler_fixture_reconstruction is True
+    assert contract.requires_fixture_derived_probe is False
     assert set(contract.fixture_probe_constraints) == {
         FixtureDerivedProbeConstraint(
             requirement_id="requirement-1",
@@ -1769,6 +2419,144 @@ def test_compile_contract_preserves_schema_field_constraints_across_repairs() ->
     assert inherited.required_branch_paths == ("replay/compiler.py",)
 
 
+def test_compile_contract_joins_complete_and_bounded_feedback_copies() -> None:
+    constraint = SchemaFieldRepairConstraint(
+        schema_layer="compile_result",
+        field_path="services[*].protocol_probes[*].path",
+        rule="enum",
+        expected=("fixture_derived_data_plane_probe",),
+    )
+    original = compile_repair_conformance_contract(
+        {
+            "repair_candidate_package": _package(),
+            "candidate_validation_diagnostics": [
+                {
+                    "code": "invalid_replay_capability_compile",
+                    "capability_error_code": "schema_field_validation_failed",
+                    "schema_field_constraints": [constraint.to_dict()],
+                }
+            ],
+        }
+    )
+    assert original is not None
+    complete = original.to_public_dict()
+    bounded = {
+        **complete,
+        "schema_field_constraints": [],
+    }
+
+    inherited = compile_repair_conformance_contract(
+        {
+            "repair_candidate_package": _package(
+                "def respond():\n    return {'changed': True}\n"
+            ),
+            "repair_conformance": complete,
+            "candidate_validation_diagnostics": [
+                {
+                    "code": "repair_branch_unchanged",
+                    "details": {"repair_conformance": bounded},
+                }
+            ],
+        }
+    )
+
+    assert inherited is not None
+    assert inherited.schema_field_constraints == (constraint,)
+    assert inherited.required_branch_paths == ("replay/compiler.py",)
+
+
+def test_current_typed_failure_owns_mutation_surface_and_preserves_history() -> None:
+    runtime_constraint = SchemaFieldRepairConstraint(
+        schema_layer="runtime",
+        field_path="environment.RESPONSE_INDEX.consumer",
+        rule="enum",
+        expected=("record_projector",),
+    )
+    compiler_constraint = SchemaFieldRepairConstraint(
+        schema_layer="compile_result",
+        field_path="services[*].protocol_probes[*].path",
+        rule="enum",
+        expected=("fixture_derived_data_plane_probe",),
+    )
+    inherited = RepairConformanceContract(
+        focus_candidate_id="candidate-parent",
+        failure_codes=("runtime_response_incomplete",),
+        interaction_progress=1,
+        base_file_fingerprints={
+            "replay/compiler.py": "sha256:compiler",
+            "replay/runtime.py": "sha256:runtime",
+        },
+        required_branch_paths=("replay/runtime.py",),
+        base_branch_fingerprints={},
+        manifest_path="replay/capability.json",
+        compiler_path="replay/compiler.py",
+        runtime_paths=("replay/runtime.py",),
+        schema_field_constraints=(runtime_constraint,),
+    )
+
+    contract = compile_repair_conformance_contract(
+        {
+            "repair_candidate_package": _package(),
+            "repair_conformance": inherited.to_public_dict(),
+            "candidate_validation_diagnostics": [
+                {
+                    "code": "repair_capability_compile_failed",
+                    "capability_error_code": "schema_field_validation_failed",
+                    "constraint_failure_codes": [
+                        "protocol_probe_duplicates_readiness"
+                    ],
+                    "schema_field_constraints": [compiler_constraint.to_dict()],
+                }
+            ],
+        }
+    )
+
+    assert contract is not None
+    assert contract.required_branch_paths == ("replay/compiler.py",)
+    assert contract.schema_field_constraints == (
+        runtime_constraint,
+        compiler_constraint,
+    )
+    assert "protocol_probe_duplicates_readiness" in contract.failure_codes
+
+
+def test_same_failure_with_multiple_typed_layers_authorizes_owner_union() -> None:
+    constraints = (
+        SchemaFieldRepairConstraint(
+            schema_layer="compile_result",
+            field_path="services[*].transport",
+            rule="enum",
+            expected=("skill_runtime",),
+        ),
+        SchemaFieldRepairConstraint(
+            schema_layer="runtime",
+            field_path="environment.RESPONSE_INDEX.consumer",
+            rule="enum",
+            expected=("record_projector",),
+        ),
+    )
+
+    contract = compile_repair_conformance_contract(
+        {
+            "repair_candidate_package": _package(),
+            "candidate_validation_diagnostics": [
+                {
+                    "code": "schema_field_validation_failed",
+                    "schema_field_constraints": [
+                        constraint.to_dict() for constraint in constraints
+                    ],
+                }
+            ],
+        }
+    )
+
+    assert contract is not None
+    assert contract.required_branch_paths == (
+        "replay/compiler.py",
+        "replay/runtime.py",
+    )
+
+
 def test_public_projection_preserves_nested_typed_repair_contract() -> None:
     schema_constraint = SchemaFieldRepairConstraint(
         schema_layer="compile_result",
@@ -1869,6 +2657,86 @@ def test_runtime_schema_constraint_recomputes_runtime_required_branch() -> None:
     assert contract.required_branch_paths == ("replay/runtime.py",)
 
 
+def _response_index_source_behavior_contract() -> RepairConformanceContract:
+    return RepairConformanceContract(
+        focus_candidate_id="candidate-failed",
+        failure_codes=("invalid_replay_capability_compile",),
+        interaction_progress=0,
+        base_file_fingerprints={"replay/runtime.py": "sha256:base"},
+        required_branch_paths=("replay/runtime.py",),
+        base_branch_fingerprints={},
+        schema_field_constraints=(
+            SchemaFieldRepairConstraint(
+                schema_layer="runtime",
+                field_path=(
+                    "environment.AWORLD_REPLAY_RESPONSE_INDEX.consumer"
+                ),
+                rule="enum",
+                expected=("json_sidecar_record_value_projector",),
+                value_domain="source_behavior",
+                required_operations=(
+                    "read_environment_binding_as_path",
+                    "bind_environment_path_to_json_file_reader",
+                    "access_records_array",
+                    "project_record_value_field_directly",
+                ),
+            ),
+        ),
+    )
+
+
+def test_source_behavior_conformance_reports_broken_proof_edge() -> None:
+    result = evaluate_candidate_source_conformance(
+        _candidate(
+            runtime_source=(
+                "import json, os\n"
+                "class Runtime:\n"
+                "    path = None\n"
+                "def respond(path):\n"
+                "    with open(path) as stream:\n"
+                "        index = json.load(stream)\n"
+                "    return index['records'][0]['value']\n"
+                "def main():\n"
+                "    path = os.getenv('AWORLD_REPLAY_RESPONSE_INDEX')\n"
+                "    Runtime.path = path\n"
+                "    return respond(Runtime.path)\n"
+            )
+        ),
+        _response_index_source_behavior_contract(),
+    )
+
+    assert result.passed is False
+    assert result.code == "source_behavior_proof_failed"
+    assert result.details["missing_operations"] == [
+        "bind_environment_path_to_json_file_reader"
+    ]
+    assert result.details["unsupported_boundary_kinds"] == [
+        "attribute_storage"
+    ]
+    assert result.details["source_behavior_proofs"][0]["path"] == (
+        "replay/runtime.py"
+    )
+
+
+def test_source_behavior_conformance_accepts_explicit_local_dataflow() -> None:
+    result = evaluate_candidate_source_conformance(
+        _candidate(
+            runtime_source=(
+                "import json, os\n"
+                "def respond():\n"
+                "    path = os.getenv('AWORLD_REPLAY_RESPONSE_INDEX')\n"
+                "    with open(path) as stream:\n"
+                "        index = json.load(stream)\n"
+                "    return index['records'][0]['value']\n"
+            )
+        ),
+        _response_index_source_behavior_contract(),
+    )
+
+    assert result.passed is True
+    assert result.code == "repair_branch_changed"
+
+
 def test_constraint_context_merges_multi_member_schema_and_fixture_rules() -> None:
     inherited_fixture = FixtureDerivedProbeConstraint(
         requirement_id="member-a-requirement",
@@ -1949,6 +2817,50 @@ def test_constraint_context_merges_multi_member_schema_and_fixture_rules() -> No
     }
     assert len(compiled.fixture_probe_constraints) == 2
     assert compiled.required_branch_paths == ("replay/compiler.py",)
+
+
+def test_constraint_context_keeps_runtime_artifact_owner_with_compiler_failure() -> None:
+    trace_constraint = RuntimeArtifactConstraint(
+        artifact_kind="protocol_trace",
+        relative_path="protocol_trace.jsonl",
+        producer_layer="runtime",
+        availability_milestone="post_probe_pre_shutdown",
+        write_mode="incremental",
+        maximum_bytes=65_536,
+        require_nonempty=True,
+    )
+    compiler_constraint = SchemaFieldRepairConstraint(
+        schema_layer="compile_result",
+        field_path="services[*].protocol_probes[*].path",
+        rule="enum",
+        expected=("fixture_derived_data_plane_probe",),
+    )
+    inherited = RepairConformanceContract(
+        focus_candidate_id="candidate-parent",
+        failure_codes=("protocol_trace_contract_failed",),
+        interaction_progress=1,
+        base_file_fingerprints={},
+        required_branch_paths=("replay/runtime.py",),
+        base_branch_fingerprints={},
+        manifest_path="replay/capability.json",
+        compiler_path="replay/compiler.py",
+        runtime_paths=("replay/runtime.py",),
+        runtime_artifact_constraints=(trace_constraint,),
+    ).to_public_dict()
+
+    merged = merge_repair_conformance_constraint_context(
+        inherited,
+        {
+            "code": "repair_capability_compile_failed",
+            "schema_field_constraints": [compiler_constraint.to_dict()],
+        },
+    )
+
+    assert merged is not None
+    assert merged["required_branch_paths"] == [
+        "replay/compiler.py",
+        "replay/runtime.py",
+    ]
 
 
 def test_fixture_probe_constraints_validate_every_distinct_fixture_shape() -> None:
@@ -2572,3 +3484,136 @@ def test_repair_contract_inherits_task_plane_constraints_across_failed_repairs()
     )
     assert inherited.interaction_progress == 152
     assert "implement_observed_endpoint_interactions" in inherited.failure_codes
+
+
+def test_runtime_artifact_failure_retargets_owner_without_losing_inherited_schema() -> None:
+    compiler_constraint = SchemaFieldRepairConstraint(
+        schema_layer="compile_result",
+        field_path="services[*].transport",
+        rule="enum",
+        expected=("skill_runtime",),
+    )
+    inherited = RepairConformanceContract(
+        focus_candidate_id="candidate-parent",
+        failure_codes=(
+            "schema_field_validation_failed",
+            "protocol_probe_not_fixture_derived",
+        ),
+        interaction_progress=1,
+        base_file_fingerprints={},
+        required_branch_paths=("replay/compiler.py",),
+        base_branch_fingerprints={},
+        manifest_path="replay/capability.json",
+        compiler_path="replay/compiler.py",
+        runtime_paths=("replay/runtime.py",),
+        schema_field_constraints=(compiler_constraint,),
+    )
+    trace_constraint = RuntimeArtifactConstraint(
+        artifact_kind="protocol_trace",
+        relative_path="protocol_trace.jsonl",
+        producer_layer="runtime",
+        availability_milestone="post_probe_pre_shutdown",
+        write_mode="incremental",
+        maximum_bytes=65_536,
+        require_nonempty=True,
+        required_record_fields=(
+            "direction",
+            "sequence",
+            "kind",
+            "fields",
+            "correlation",
+        ),
+        required_directions=("in", "out"),
+    )
+
+    contract = compile_repair_conformance_contract(
+        {
+            "repair_candidate_package": _package(),
+            "candidate_validation_diagnostics": [
+                {
+                    "code": "repair_probe_execution_failed",
+                    "runtime_artifact_constraints": [trace_constraint.to_dict()],
+                    "repair_conformance": inherited.to_public_dict(),
+                }
+            ],
+        }
+    )
+
+    assert contract is not None
+    assert contract.required_branch_paths == ("replay/runtime.py",)
+    assert contract.schema_field_constraints == (compiler_constraint,)
+    assert contract.runtime_artifact_constraints == (trace_constraint,)
+    assert RepairConformanceContract.from_dict(contract.to_dict()) == contract
+    assert public_diagnostic_projection(contract)[
+        "runtime_artifact_constraints"
+    ] == [trace_constraint.to_dict()]
+
+    malformed = replace(
+        contract,
+        required_branch_paths=("replay/compiler.py",),
+    )
+    result = evaluate_candidate_source_conformance(
+        _candidate(runtime_source="def respond():\n    return {}\n"),
+        malformed,
+    )
+    assert result.passed is False
+    assert result.code == "repair_contract_owner_inconsistent"
+    assert result.failure_class == "framework"
+    assert "required_branch_paths.runtime_artifact_owner" in result.details[
+        "missing_contract_fields"
+    ]
+
+
+def test_compiler_failure_keeps_inherited_runtime_artifact_owner_authorized() -> None:
+    trace_constraint = RuntimeArtifactConstraint(
+        artifact_kind="protocol_trace",
+        relative_path="protocol_trace.jsonl",
+        producer_layer="runtime",
+        availability_milestone="post_probe_pre_shutdown",
+        write_mode="incremental",
+        maximum_bytes=65_536,
+        require_nonempty=True,
+        required_record_fields=("direction", "sequence", "kind"),
+        required_directions=("in", "out"),
+    )
+    inherited = RepairConformanceContract(
+        focus_candidate_id="candidate-parent",
+        failure_codes=("protocol_trace_contract_failed",),
+        interaction_progress=1,
+        base_file_fingerprints={},
+        required_branch_paths=("replay/runtime.py",),
+        base_branch_fingerprints={},
+        manifest_path="replay/capability.json",
+        compiler_path="replay/compiler.py",
+        runtime_paths=("replay/runtime.py",),
+        runtime_artifact_constraints=(trace_constraint,),
+    )
+
+    contract = compile_repair_conformance_contract(
+        {
+            "repair_candidate_package": _package(),
+            "candidate_validation_diagnostics": [
+                {
+                    "code": "repair_capability_compile_failed",
+                    "capability_error_code": "recorded_response_fixture_unselected",
+                    "reason": "compiler did not select recorded response evidence",
+                    "repair_conformance": inherited.to_public_dict(),
+                }
+            ],
+        }
+    )
+
+    assert contract is not None
+    assert contract.required_branch_paths == (
+        "replay/compiler.py",
+        "replay/runtime.py",
+    )
+    assert contract.runtime_artifact_constraints == (trace_constraint,)
+    result = evaluate_candidate_source_conformance(
+        _candidate(
+            compiler_source="def compile_request():\n    return {'changed': True}\n",
+            runtime_source="def respond():\n    return {'changed': True}\n",
+        ),
+        contract,
+    )
+    assert result.code != "repair_contract_owner_inconsistent"

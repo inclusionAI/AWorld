@@ -18,6 +18,12 @@ from urllib.request import Request, urlopen
 
 from utils import generate_trace_id, set_trace_id
 
+from .artifact_bundle import (
+    LAYOUT_FORMATS,
+    export_artifact_bundle,
+    prepare_artifact_destination,
+)
+from .media_file_types import IMAGE_FILE_TYPES
 from .paths import DOCUMENT_PARSE_WORKSPACE, FS_WORKSPACE_ROOT
 from .pdf.pdf_batch_checkpoint import PdfBatchCheckpointStore
 from .service import DocumentParseService, normalize_env_content
@@ -174,6 +180,16 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Bypass result cache reads and writes",
     )
+    parse.add_argument(
+        "--artifacts-dir",
+        help=("Write a self-verifying artifact bundle for a synchronous local parse"),
+    )
+    parse.add_argument(
+        "--layout-format",
+        choices=sorted(LAYOUT_FORMATS),
+        default=os.getenv("FILEX_LAYOUT_FORMAT", "document-ir"),
+        help="Bundle layout format (default: FILEX_LAYOUT_FORMAT or document-ir)",
+    )
     _add_env_content_args(parse, required=False)
 
     inspect_parser = subparsers.add_parser(
@@ -224,11 +240,16 @@ def _add_env_content_args(parser: argparse.ArgumentParser, *, required: bool) ->
 
 
 async def _run_parse(args: argparse.Namespace, *, trace_id: str) -> dict[str, Any]:
-    service = DocumentParseService()
     env_content = _load_optional_json_argument(
         args.env_content_json, args.env_content_file
     )
     source_kind, source_value = _resolve_parse_source(args)
+    if args.layout_format not in LAYOUT_FORMATS:
+        raise ValueError("FILEX_LAYOUT_FORMAT must be document-ir or parse-output")
+    if args.artifacts_dir and (source_kind != "local" or args.sync_mode != "sync"):
+        raise ValueError(
+            "--artifacts-dir requires synchronous parsing of a local source"
+        )
     if args.rights_basis and not args.allow_media_download:
         raise ValueError("--rights-basis requires --allow-media-download")
     if source_kind != "youtube" and (args.allow_media_download or args.rights_basis):
@@ -261,6 +282,19 @@ async def _run_parse(args: argparse.Namespace, *, trace_id: str) -> dict[str, An
     else:
         workspace_path = source_value
         resolved_file_type = args.file_type
+    if args.artifacts_dir and args.layout_format == "parse-output":
+        requested_provider = str(env_content.get("filex_parse_provider") or "").strip()
+        file_type = (
+            str(resolved_file_type or Path(workspace_path).suffix).lower().lstrip(".")
+        )
+        if not requested_provider and file_type in IMAGE_FILE_TYPES:
+            # Image VLM output does not guarantee spatial layout.  Paddle OCR is
+            # FileX's registered layout-capable image provider.
+            env_content["filex_parse_provider"] = "paddle_ocr"
+    artifact_destination: Path | None = None
+    if args.artifacts_dir:
+        # Invalidate the prior attempt's commit marker before any provider work.
+        artifact_destination = prepare_artifact_destination(args.artifacts_dir)
     if args.pages:
         env_content["pdf_pages"] = args.pages
     if args.first_batch_pages is not None:
@@ -277,6 +311,7 @@ async def _run_parse(args: argparse.Namespace, *, trace_id: str) -> dict[str, An
         env_content["filex_force_refresh"] = True
     if args.no_cache:
         env_content["filex_no_cache"] = True
+    service = DocumentParseService()
     result = await service.parse(
         workspace_path=workspace_path,
         file_type=resolved_file_type,
@@ -287,7 +322,43 @@ async def _run_parse(args: argparse.Namespace, *, trace_id: str) -> dict[str, An
     )
     if source_resolution is not None:
         _attach_source_manifest(result, source_resolution.manifest)
+    result["task_id"] = result.get("task_id") or args.task_id or trace_id
+    if artifact_destination is not None:
+        filex_response = dict(result)
+        result.update(
+            export_artifact_bundle(
+                destination=artifact_destination,
+                source=Path(workspace_path),
+                markdown=_workspace_result_file(
+                    filex_response, "file_path", "Markdown"
+                ),
+                document_ir=_workspace_result_file(
+                    filex_response, "document_file_path", "Document IR"
+                ),
+                filex_response=filex_response,
+                layout_format=args.layout_format,
+            )
+        )
     return result
+
+
+def _workspace_result_file(payload: dict[str, Any], key: str, label: str) -> Path:
+    raw_path = str(payload.get(key) or "").strip()
+    if not raw_path:
+        raise ValueError(f"FileX succeeded without a {label} path")
+    path = Path(raw_path).expanduser()
+    if not path.is_absolute():
+        path = FS_WORKSPACE_ROOT / path
+    path = path.resolve()
+    try:
+        path.relative_to(FS_WORKSPACE_ROOT.resolve())
+    except ValueError as exc:
+        raise ValueError(
+            f"FileX {label} path is outside the workspace: {path}"
+        ) from exc
+    if not path.is_file():
+        raise ValueError(f"FileX {label} file does not exist: {path}")
+    return path
 
 
 async def _run_inspect(args: argparse.Namespace) -> dict[str, Any]:

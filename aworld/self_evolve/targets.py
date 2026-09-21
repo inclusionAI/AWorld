@@ -9,7 +9,10 @@ from pathlib import Path
 from typing import Protocol
 
 from aworld.self_evolve.atomic_fs import atomic_exchange_paths
-from aworld.self_evolve.candidate_package import validate_candidate_files
+from aworld.self_evolve.candidate_package import (
+    candidate_package_reference_report,
+    validate_candidate_files,
+)
 from aworld.self_evolve.replay_capability import (
     discover_replay_capability,
     fingerprint_skill_package,
@@ -160,6 +163,34 @@ class SkillTextTarget:
                 mode = destination.stat().st_mode
                 destination.chmod(
                     (mode | 0o111) if item.executable else (mode & ~0o111)
+                )
+            reference_report = candidate_package_reference_report(
+                candidate,
+                package_root=staging,
+            )
+            if not reference_report["closed"]:
+                missing_references = reference_report[
+                    "missing_referenced_paths"
+                ]
+                if missing_references:
+                    raise ValueError(
+                        "candidate package has missing referenced files: "
+                        + ", ".join(missing_references)
+                    )
+                incomplete_files = sorted(
+                    {
+                        path
+                        for key in (
+                            "missing_candidate_file_paths",
+                            "mismatched_candidate_file_paths",
+                            "undeleted_candidate_file_paths",
+                        )
+                        for path in reference_report[key]
+                    }
+                )
+                raise ValueError(
+                    "candidate package file deltas were not materialized: "
+                    + ", ".join(incomplete_files)
                 )
             discover_replay_capability(staging)
             if expected_package_fingerprint is not None:

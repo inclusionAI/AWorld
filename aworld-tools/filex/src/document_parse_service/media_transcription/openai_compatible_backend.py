@@ -256,6 +256,7 @@ class OpenAICompatibleMediaTranscriptionBackend:
     def _resolve_model(options: dict[str, Any]) -> str:
         model = str(
             options.get("model")
+            or os.getenv("GATEWAY_VLLM_HTTP_MODEL_NAME")
             or os.getenv("GATEWAY_VLLM_MODEL_NAME")
             or os.getenv("OPENAI_COMPATIBLE_MEDIA_MODEL")
             or os.getenv("OPENAI_MODEL")

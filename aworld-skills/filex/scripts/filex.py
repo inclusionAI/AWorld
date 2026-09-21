@@ -12,6 +12,9 @@ from pathlib import Path
 from typing import Any
 
 
+CANONICAL_ARTIFACT_CONTRACT_SCHEMA = "aworld.filex-canonical-artifacts/v1"
+
+
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Use FileX from an AWorld sandbox")
     parser.add_argument(
@@ -34,6 +37,19 @@ def _parser() -> argparse.ArgumentParser:
     source.add_argument("--url", help="HTTP(S) file URL")
     parse.add_argument(
         "--output", help="Optional Markdown destination inside the workspace"
+    )
+    parse.add_argument(
+        "--artifacts-dir",
+        help=(
+            "Optional directory for a self-verifying FileX artifact bundle. "
+            "Must be inside FILEX_ARTIFACTS_ROOT (default: /logs/artifacts)."
+        ),
+    )
+    parse.add_argument(
+        "--layout-format",
+        choices=("document-ir", "parse-output"),
+        default=os.environ.get("FILEX_LAYOUT_FORMAT", "document-ir"),
+        help="Artifact layout format (default: FILEX_LAYOUT_FORMAT or document-ir)",
     )
     parse.add_argument(
         "--file-type", help="Explicit source type; otherwise infer from the file"
@@ -114,6 +130,70 @@ def _result_path(payload: dict[str, Any], workspace: Path) -> Path:
     return _inside_workspace(str(result), workspace, must_exist=True)
 
 
+def _artifacts_destination(raw_path: str) -> Path:
+    """Validate the AWorld deployment boundary; FileX owns bundle creation."""
+
+    root = (
+        Path(os.environ.get("FILEX_ARTIFACTS_ROOT", "/logs/artifacts"))
+        .expanduser()
+        .resolve()
+    )
+    supplied = Path(raw_path).expanduser()
+    if supplied.exists() and supplied.is_symlink():
+        raise ValueError(f"Artifact directory must not be a symlink: {supplied}")
+    destination = supplied.resolve()
+    try:
+        destination.relative_to(root)
+    except ValueError as exc:
+        raise ValueError(
+            f"Artifact directory must be inside FILEX_ARTIFACTS_ROOT {root}: {destination}"
+        ) from exc
+    if destination.exists() and not destination.is_dir():
+        raise ValueError(f"Artifact destination is not a directory: {destination}")
+    return destination
+
+
+def _is_within(path: Path, directory: Path) -> bool:
+    try:
+        path.relative_to(directory)
+    except ValueError:
+        return False
+    return True
+
+
+def _canonical_artifact_contract(
+    payload: dict[str, Any], destination: Path
+) -> dict[str, Any]:
+    """Describe FileX's committed bundle without recreating or rewriting it."""
+
+    raw_directory = str(payload.get("artifacts_dir") or "").strip()
+    raw_result = str(payload.get("artifact_result") or "").strip()
+    if not raw_directory or not raw_result:
+        raise ValueError(
+            "FileX succeeded without committed artifacts_dir/artifact_result fields"
+        )
+
+    returned_directory = Path(raw_directory).expanduser().resolve()
+    returned_result = Path(raw_result).expanduser().resolve()
+    expected_result = destination / "result.json"
+    if returned_directory != destination:
+        raise ValueError(
+            "FileX returned an artifact directory other than the requested destination"
+        )
+    if returned_result != expected_result or not returned_result.is_file():
+        raise ValueError("FileX did not commit the expected artifact result.json")
+
+    return {
+        "schema_version": CANONICAL_ARTIFACT_CONTRACT_SCHEMA,
+        "status": "committed",
+        "artifacts_dir": str(returned_directory),
+        "result_path": str(returned_result),
+        "mutation_policy": "immutable",
+        "derived_output_policy": "outside-artifacts-dir",
+        "provenance_authority": "filex-cli",
+    }
+
+
 def _run(command: list[str]) -> tuple[int, dict[str, Any]]:
     try:
         completed = subprocess.run(command, check=False, capture_output=True, text=True)
@@ -126,8 +206,8 @@ def _run(command: list[str]) -> tuple[int, dict[str, Any]]:
     try:
         payload = json.loads(completed.stdout)
         if not isinstance(payload, dict):
-            raise ValueError("JSON result is not an object")
-    except (json.JSONDecodeError, ValueError) as exc:
+            raise TypeError("JSON result is not an object")
+    except (json.JSONDecodeError, TypeError, ValueError) as exc:
         detail = completed.stderr.strip()
         return 2, {
             "success": False,
@@ -139,10 +219,20 @@ def _run(command: list[str]) -> tuple[int, dict[str, Any]]:
 
 
 def _parse(args: argparse.Namespace, executable: str, workspace: Path) -> int:
+    if args.layout_format not in {"document-ir", "parse-output"}:
+        return _fail(
+            "FILEX_LAYOUT_FORMAT must be document-ir or parse-output",
+            error_type="InputError",
+        )
     if args.provider and args.env_file:
         return _fail(
             "Use --provider without --env-file, or put filex_parse_provider "
             "in the env file.",
+            error_type="InputError",
+        )
+    if args.artifacts_dir and (not args.input or args.sync_mode != "sync"):
+        return _fail(
+            "--artifacts-dir requires synchronous parsing of a local --input",
             error_type="InputError",
         )
     for name in ("page_batch_size", "first_batch_pages"):
@@ -155,6 +245,8 @@ def _parse(args: argparse.Namespace, executable: str, workspace: Path) -> int:
 
     command = [executable, "parse"]
     source_path: Path | None = None
+    artifacts_destination: Path | None = None
+    output_destination: Path | None = None
     try:
         if args.input:
             source_path = _inside_workspace(args.input, workspace, must_exist=True)
@@ -164,6 +256,16 @@ def _parse(args: argparse.Namespace, executable: str, workspace: Path) -> int:
         if args.env_file:
             env_file = _inside_workspace(args.env_file, workspace, must_exist=True)
             command.extend(["--env-content-file", str(env_file)])
+        if args.artifacts_dir:
+            artifacts_destination = _artifacts_destination(args.artifacts_dir)
+        if args.output:
+            output_destination = _inside_workspace(args.output, workspace)
+            if artifacts_destination is not None and _is_within(
+                output_destination, artifacts_destination
+            ):
+                raise ValueError(
+                    "Derived --output must be outside the FileX artifact directory"
+                )
     except ValueError as exc:
         return _fail(str(exc), error_type="InputError")
 
@@ -179,7 +281,19 @@ def _parse(args: argparse.Namespace, executable: str, workspace: Path) -> int:
         command.extend(["--file-type", args.file_type])
     if args.provider:
         command.extend(
-            ["--env-content-json", json.dumps({"filex_parse_provider": args.provider})]
+            [
+                "--env-content-json",
+                json.dumps({"filex_parse_provider": args.provider}),
+            ]
+        )
+    if artifacts_destination is not None:
+        command.extend(
+            [
+                "--artifacts-dir",
+                str(artifacts_destination),
+                "--layout-format",
+                args.layout_format,
+            ]
         )
     for flag, value in (
         ("--task-id", args.task_id),
@@ -208,13 +322,17 @@ def _parse(args: argparse.Namespace, executable: str, workspace: Path) -> int:
         return return_code
     try:
         result = _result_path(payload, workspace)
-        if args.output:
-            output = _inside_workspace(args.output, workspace)
+        if output_destination is not None:
+            output = output_destination
             output.parent.mkdir(parents=True, exist_ok=True)
             if output != result:
                 shutil.copy2(result, output)
         else:
             output = result
+        if artifacts_destination is not None:
+            payload["canonical_artifact_contract"] = _canonical_artifact_contract(
+                payload, artifacts_destination
+            )
     except ValueError as exc:
         return _fail(str(exc), error_type="OutputError")
     payload["input_path"] = str(source_path) if source_path else args.url

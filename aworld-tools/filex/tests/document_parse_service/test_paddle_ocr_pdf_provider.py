@@ -6,9 +6,13 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from types import ModuleType
 
+import pytest
+
 
 def _load_provider_module():
-    services_dir = Path(__file__).resolve().parent.parent.parent / "src" / "document_parse_service"
+    services_dir = (
+        Path(__file__).resolve().parent.parent.parent / "src" / "document_parse_service"
+    )
     module_path = services_dir / "paddle_ocr_pdf_provider.py"
     package_root = "aworld_test_paddle_pdf_pkg"
     services_package = f"{package_root}.document_parse_service"
@@ -18,7 +22,9 @@ def _load_provider_module():
     root_module.__path__ = []  # type: ignore[attr-defined]
     services_module = ModuleType(services_package)
     services_module.__path__ = [str(services_dir)]  # type: ignore[attr-defined]
-    document_artifact_models_stub = ModuleType(f"{services_package}.document_artifact_models")
+    document_artifact_models_stub = ModuleType(
+        f"{services_package}.document_artifact_models"
+    )
     paths_stub = ModuleType(f"{services_package}.paths")
 
     @dataclass
@@ -66,7 +72,9 @@ def _load_provider_module():
     try:
         sys.modules[package_root] = root_module
         sys.modules[services_package] = services_module
-        sys.modules[f"{services_package}.document_artifact_models"] = document_artifact_models_stub
+        sys.modules[f"{services_package}.document_artifact_models"] = (
+            document_artifact_models_stub
+        )
         sys.modules[f"{services_package}.paths"] = paths_stub
         spec = importlib.util.spec_from_file_location(module_name, module_path)
         module = importlib.util.module_from_spec(spec)
@@ -208,6 +216,149 @@ def test_paddle_ocr_preserves_page_element_geometry() -> None:
     }
 
 
+@pytest.mark.parametrize(
+    ("env_content", "runtime_value", "expected"),
+    [
+        ({}, None, True),
+        ({"paddle_ocr_use_chart_recognition": True}, None, True),
+        ({"paddle_ocr_use_chart_recognition": False}, None, False),
+        ({}, "false", False),
+        ({}, "true", True),
+        ({"pdf_paddle_ocr_use_chart_recognition": False}, "true", False),
+        ({"paddle_ocr_use_chart_recognition": True}, "false", True),
+    ],
+)
+def test_chart_recognition_defaults_and_explicit_overrides(
+    monkeypatch, env_content, runtime_value, expected
+) -> None:
+    module = _load_provider_module()
+    setting = "FILEX_PADDLE_OCR_USE_CHART_RECOGNITION"
+    if runtime_value is None:
+        monkeypatch.delenv(setting, raising=False)
+    else:
+        monkeypatch.setenv(setting, runtime_value)
+    provider = module.PaddleOcrPdfProvider(env_content=env_content, pipeline=object())
+
+    assert provider._pipeline_kwargs()["use_chart_recognition"] is expected
+    assert provider._predict_kwargs()["use_chart_recognition"] is expected
+
+
+def test_paddle_ocr_metrics_report_effective_gateway_model() -> None:
+    module = _load_provider_module()
+    provider = module.PaddleOcrPdfProvider(
+        env_content={
+            "gateway_vllm": {
+                "base_url": "https://gateway.example/v1",
+                "model_name": "gemini-3.1-pro-preview",
+            }
+        },
+        pipeline=object(),
+    )
+
+    assert provider._model_info()["vl_rec_api_model_name"] == ("gemini-3.1-pro-preview")
+    assert provider._model_info()["chart_prompt_mode"] == "legacy"
+    assert provider._model_info()["chart_output_contract"] == "off"
+
+
+def test_gateway_chart_defaults_preserve_compatibility(monkeypatch) -> None:
+    module = _load_provider_module()
+    for setting in (
+        "FILEX_PADDLE_OCR_USE_CHART_RECOGNITION",
+        "FILEX_PADDLE_OCR_CHART_PROMPT_MODE",
+        "FILEX_PADDLE_OCR_CHART_OUTPUT_CONTRACT",
+    ):
+        monkeypatch.delenv(setting, raising=False)
+    provider = module.PaddleOcrPdfProvider(
+        env_content={
+            "gateway_vllm": {
+                "base_url": "https://gateway.example/v1",
+                "model_name": "gateway-vlm",
+            }
+        },
+        pipeline=object(),
+    )
+
+    assert provider._pipeline_kwargs()["use_chart_recognition"] is True
+    assert provider._predict_kwargs()["use_chart_recognition"] is True
+    assert provider._model_info()["chart_prompt_mode"] == "legacy"
+    assert provider._model_info()["chart_output_contract"] == "off"
+    assert provider._model_info()["vlm_max_retries"] == 1
+    assert provider._model_info()["chart_contract_retries"] == 0
+
+
+def test_native_paddle_keeps_legacy_chart_prompt_by_default() -> None:
+    module = _load_provider_module()
+    provider = module.PaddleOcrPdfProvider(env_content={}, pipeline=object())
+
+    assert provider._model_info()["chart_prompt_mode"] == "legacy"
+    assert provider._model_info()["chart_output_contract"] == "off"
+
+
+def test_paddle_ocr_uses_protected_runtime_environment(monkeypatch) -> None:
+    module = _load_provider_module()
+    monkeypatch.setenv("GATEWAY_VLLM_BASE_URL", "https://gateway.example/v1")
+    monkeypatch.setenv("GATEWAY_VLLM_MODEL_NAME", "gemini-3.1-pro-preview")
+    monkeypatch.setenv("GATEWAY_VLLM_HTTP_MODEL_NAME", "gemini-http-model")
+    monkeypatch.setenv("GATEWAY_VLLM_API_KEY", "protected-key")
+    monkeypatch.setenv(
+        "FILEX_PADDLE_OCR_LAYOUT_DETECTION_MODEL_DIR", "/opt/models/layout"
+    )
+    monkeypatch.setenv("FILEX_PADDLE_OCR_USE_CHART_RECOGNITION", "true")
+    provider = module.PaddleOcrPdfProvider(env_content={}, pipeline=object())
+
+    options = provider._pipeline_kwargs()
+
+    assert options["vl_rec_server_url"] == "https://gateway.example/v1"
+    assert options["vl_rec_api_model_name"] == "gemini-http-model"
+    assert options["vl_rec_api_key"] == "protected-key"
+    assert options["layout_detection_model_dir"] == "/opt/models/layout"
+    assert options["use_chart_recognition"] is True
+    assert provider._model_info()["vl_rec_api_model_name"] == "gemini-http-model"
+
+
+def test_request_config_takes_precedence_over_runtime_environment(monkeypatch) -> None:
+    module = _load_provider_module()
+    monkeypatch.setenv("GATEWAY_VLLM_BASE_URL", "https://runtime.example/v1")
+    monkeypatch.setenv("GATEWAY_VLLM_MODEL_NAME", "runtime-model")
+    provider = module.PaddleOcrPdfProvider(
+        env_content={
+            "gateway_vllm": {
+                "base_url": "https://request.example/v1",
+                "model_name": "request-model",
+            }
+        },
+        pipeline=object(),
+    )
+
+    options = provider._pipeline_kwargs()
+
+    assert options["vl_rec_server_url"] == "https://request.example/v1"
+    assert options["vl_rec_api_model_name"] == "request-model"
+
+
+def test_paddle_ocr_uses_dedicated_recognition_model_and_secret(monkeypatch) -> None:
+    module = _load_provider_module()
+    monkeypatch.setenv("GATEWAY_VLLM_BASE_URL", "https://gateway.example/v1")
+    monkeypatch.setenv("GATEWAY_VLLM_HTTP_MODEL_NAME", "kimi-http-model")
+    monkeypatch.setenv("GATEWAY_VLLM_API_KEY", "gateway-protected-key")
+    monkeypatch.setenv(
+        "FILEX_PADDLE_OCR_VL_REC_SERVER_URL", "https://paddle.example/v1"
+    )
+    monkeypatch.setenv(
+        "FILEX_PADDLE_OCR_VL_REC_API_MODEL_NAME", "paddle-recognition-model"
+    )
+    monkeypatch.setenv(
+        "FILEX_PADDLE_OCR_VL_REC_API_KEY", "paddle-protected-key"
+    )
+    provider = module.PaddleOcrPdfProvider(env_content={}, pipeline=object())
+
+    options = provider._pipeline_kwargs()
+
+    assert options["vl_rec_server_url"] == "https://paddle.example/v1"
+    assert options["vl_rec_api_model_name"] == "paddle-recognition-model"
+    assert options["vl_rec_api_key"] == "paddle-protected-key"
+
+
 def test_text_layer_formatting_recovers_sparse_bold_title() -> None:
     module = _load_provider_module()
     formatting = sys.modules[f"{module.__package__}.pdf.text_layer_formatting"]
@@ -328,6 +479,70 @@ def test_paddle_ocr_pipeline_is_shared_within_worker_process(monkeypatch) -> Non
     assert len(created) == 1
 
 
+def test_paddle_ocr_missing_model_hosts_explains_local_assets_and_can_retry(
+    monkeypatch,
+) -> None:
+    module = _load_provider_module()
+    original_error = Exception(
+        "No available model hosting platforms detected. "
+        "Please check your network connection."
+    )
+    attempts = []
+
+    class _FakePipeline:
+        def __init__(self, **kwargs):
+            attempts.append(kwargs)
+            if len(attempts) == 1:
+                raise original_error
+
+    paddleocr = ModuleType("paddleocr")
+    paddleocr.PaddleOCRVL = _FakePipeline
+    monkeypatch.setitem(sys.modules, "paddleocr", paddleocr)
+    monkeypatch.delenv("PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK", raising=False)
+    provider = module.PaddleOcrPdfProvider(
+        env_content={
+            "paddle_ocr_vl_rec_api_key": "private-test-key",
+            "paddle_ocr_vl_rec_server_url": "https://private-vlm.example/v1",
+        }
+    )
+
+    with pytest.raises(module.PaddleOcrModelAssetsError) as captured:
+        provider._resolve_pipeline()
+
+    assert captured.value.__cause__ is original_error
+    message = str(captured.value)
+    assert "model-weight download" in message
+    assert "FILEX_PADDLE_OCR_LAYOUT_DETECTION_MODEL_DIR" in message
+    assert "configured VLM inference API" in message
+    assert str(original_error) in message
+    assert "private-test-key" not in message
+    assert "private-vlm.example" not in message
+    assert "PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK" not in module.os.environ
+    assert isinstance(provider._resolve_pipeline(), _FakePipeline)
+    assert len(attempts) == 2
+
+
+def test_paddle_ocr_does_not_reclassify_inference_api_error(monkeypatch) -> None:
+    module = _load_provider_module()
+    original_error = RuntimeError("VLM server rejected API credentials")
+
+    class _FakePipeline:
+        def __init__(self, **_kwargs):
+            raise original_error
+
+    paddleocr = ModuleType("paddleocr")
+    paddleocr.PaddleOCRVL = _FakePipeline
+    monkeypatch.setitem(sys.modules, "paddleocr", paddleocr)
+    provider = module.PaddleOcrPdfProvider(
+        env_content={"paddle_ocr_vl_rec_api_model_name": "failing-api-fixture"}
+    )
+
+    with pytest.raises(RuntimeError) as captured:
+        provider._resolve_pipeline()
+
+    assert captured.value is original_error
+
+
 def test_paddle_ocr_pipeline_maps_concurrency_and_retries_429(monkeypatch) -> None:
     module = _load_provider_module()
 
@@ -370,6 +585,52 @@ def test_paddle_ocr_pipeline_maps_concurrency_and_retries_429(monkeypatch) -> No
     assert provider.to_markdown_artifact(result).diagnostics["model_retry_count"] == 1
 
 
+@pytest.mark.parametrize(
+    ("configured_retries", "expected_calls", "expected_limit"),
+    [
+        (None, 2, 1),
+        (0, 1, 0),
+        (2, 3, 2),
+    ],
+)
+def test_transport_retry_limit_is_bounded_and_honors_explicit_zero(
+    monkeypatch, configured_retries, expected_calls, expected_limit
+) -> None:
+    module = _load_provider_module()
+
+    class _AlwaysUnavailablePipeline:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def predict(self, _input_path, **_kwargs):
+            self.calls += 1
+            raise RuntimeError("503 upstream unavailable")
+
+    monkeypatch.setattr(module.time, "sleep", lambda _seconds: None)
+    pipeline = _AlwaysUnavailablePipeline()
+    env_content = (
+        {}
+        if configured_retries is None
+        else {"paddle_ocr_vlm_max_retries": configured_retries}
+    )
+    provider = module.PaddleOcrPdfProvider(
+        env_content=env_content,
+        pipeline=pipeline,
+    )
+
+    with pytest.raises(RuntimeError, match="503 upstream unavailable"):
+        asyncio.run(
+            provider.understand_pdf(
+                file_path=Path("/tmp/demo.pdf"),
+                task_id="task-retry-limit",
+                source_file_name="demo",
+            )
+        )
+
+    assert pipeline.calls == expected_calls
+    assert provider._model_info()["vlm_max_retries"] == expected_limit
+
+
 def test_replace_markdown_asset_references_prefers_remote_url() -> None:
     module = _load_provider_module()
     asset = module.DocumentAsset(
@@ -384,9 +645,427 @@ def test_replace_markdown_asset_references_prefers_remote_url() -> None:
     )
 
     updated = module.PaddleOcrPdfProvider.replace_markdown_asset_references(
-        "![图](images/fig.png)\n<img src=\"images/fig.png\">",
+        '![图](images/fig.png)\n<img src="images/fig.png">',
         [asset],
     )
 
-    assert '<img src="https://mdn.example/file.jpg" data-file-id="A*remote" alt="图" />' in updated
+    assert (
+        '<img src="https://mdn.example/file.jpg" data-file-id="A*remote" alt="图" />'
+        in updated
+    )
     assert '<img src="https://mdn.example/file.jpg" data-file-id="A*remote">' in updated
+
+
+def test_chart_block_uses_vlm_recognition_and_survives_markdown_and_ir(
+    monkeypatch, tmp_path
+) -> None:
+    """Exercise FileX through PaddleOCR-VL's real chart routing/formatting seam."""
+
+    monkeypatch.setenv("PADDLE_PDX_CACHE_HOME", str(tmp_path / "paddlex-cache"))
+    monkeypatch.delenv("FILEX_PADDLE_OCR_USE_CHART_RECOGNITION", raising=False)
+    from paddlex.inference.pipelines.paddleocr_vl.pipeline import (
+        _PaddleOCRVLPipeline,
+    )
+    from paddlex.inference.pipelines.paddleocr_vl.result import (
+        PaddleOCRVLBlock,
+        PaddleOCRVLResult,
+    )
+
+    module = _load_provider_module()
+    recognized_chart = "| Quarter | Revenue |\n| --- | ---: |\n| Q1 | 42 |"
+
+    class _ChartPipeline:
+        vlm_prompts: list[str]
+
+        def __init__(self) -> None:
+            self.vlm_prompts = []
+
+        def _paddleocr_vl_collect_page_vlm_entries_core(
+            self,
+            page_idx,
+            blocks_for_img,
+            imgs_in_doc_for_img,
+            layout_prep_cfg,
+        ):
+            return _PaddleOCRVLPipeline._paddleocr_vl_collect_page_vlm_entries_core(
+                None,
+                page_idx,
+                blocks_for_img,
+                imgs_in_doc_for_img,
+                layout_prep_cfg,
+            )
+
+        def predict(self, _input_path, **kwargs):
+            assert kwargs["use_chart_recognition"] is True
+            chart_block = {
+                "img": object(),
+                "label": "chart",
+                "box": [10, 20, 310, 220],
+            }
+            entries, _has_spotting, _drop_figures = (
+                self._paddleocr_vl_collect_page_vlm_entries_core(
+                    0,
+                    [chart_block],
+                    [],
+                    {
+                        "image_labels": [],
+                        "use_chart_recognition": kwargs["use_chart_recognition"],
+                        "use_seal_recognition": False,
+                        "ocr_min_pixels": 1,
+                        "ocr_max_pixels": 1000,
+                        "table_min_pixels": 1,
+                        "table_max_pixels": 1000,
+                        "chart_min_pixels": 2,
+                        "chart_max_pixels": 900,
+                        "formula_min_pixels": 1,
+                        "formula_max_pixels": 1000,
+                        "seal_min_pixels": 1,
+                        "seal_max_pixels": 1000,
+                    },
+                )
+            )
+            self.vlm_prompts = [entry[3] for entry in entries]
+
+            yield PaddleOCRVLResult(
+                {
+                    "input_path": "chart.pdf",
+                    "page_index": 0,
+                    "page_count": 1,
+                    "width": 400,
+                    "height": 300,
+                    "model_settings": {
+                        "use_doc_preprocessor": False,
+                        "use_layout_detection": True,
+                        "use_chart_recognition": True,
+                        "use_seal_recognition": False,
+                        "use_ocr_for_image_block": False,
+                        "format_block_content": False,
+                        "markdown_ignore_labels": [],
+                    },
+                    "parsing_res_list": [
+                        PaddleOCRVLBlock(
+                            label="chart",
+                            bbox=chart_block["box"],
+                            content=recognized_chart,
+                        )
+                    ],
+                    "imgs_in_doc": [],
+                    "doc_preprocessor_res": {},
+                    "layout_det_res": {},
+                    "table_res_list": [],
+                    "spotting_res": None,
+                }
+            )
+
+        @staticmethod
+        def concatenate_markdown_pages(markdown_list):
+            return "\n\n".join(item["markdown_texts"] for item in markdown_list)
+
+    pipeline = _ChartPipeline()
+    provider = module.PaddleOcrPdfProvider(
+        env_content={"paddle_ocr_chart_prompt_mode": "structured"},
+        pipeline=pipeline,
+    )
+
+    result = asyncio.run(
+        provider.understand_pdf(
+            file_path=Path("/tmp/chart.pdf"),
+            task_id="task-chart",
+            source_file_name="chart",
+        )
+    )
+    artifact = provider.to_markdown_artifact(result)
+
+    assert pipeline.vlm_prompts == [provider._chart_recognition_prompt()]
+    assert "Markdown tables only" in pipeline.vlm_prompts[0]
+    assert "<table" in artifact.markdown_text
+    assert "Quarter" in artifact.markdown_text
+    assert "Revenue" in artifact.markdown_text
+    assert "Q1" in artifact.markdown_text
+    assert "42" in artifact.markdown_text
+    assert "![" not in artifact.markdown_text
+    assert artifact.assets == []
+    assert artifact.document_ir["pages"][0]["elements"] == [
+        {
+            "id": "p0-b1",
+            "type": "chart",
+            "bbox": [10.0, 20.0, 310.0, 220.0],
+            "text": recognized_chart,
+            "reading_order": None,
+            "group_id": 0,
+        }
+    ]
+
+
+def test_chart_contract_retries_narrative_output_then_accepts_table() -> None:
+    module = _load_provider_module()
+    narrative = """<table><tr><th>Chart summary</th></tr>
+<tr><td>USA was approximately 38 in November 2025.</td></tr></table>"""
+    structured = (
+        "| Country | Date | Value |\n| --- | --- | ---: |\n| USA | November 2025 | 38 |"
+    )
+
+    class _Pipeline:
+        def __init__(self) -> None:
+            self.calls = 0
+            self.prompts: list[str] = []
+
+        @staticmethod
+        def _paddleocr_vl_collect_page_vlm_entries_core(*_args, **_kwargs):
+            return ([(object(), "chart", {}, "Chart Recognition:")], False, False)
+
+        def predict(self, _input_path, **_kwargs):
+            self.calls += 1
+            entries, _has_spotting, _drop_figures = (
+                self._paddleocr_vl_collect_page_vlm_entries_core()
+            )
+            prompt = entries[0][3]
+            self.prompts.append(prompt)
+            # Model a general gateway VLM which only corrects its output after
+            # FileX sends a distinct contract-repair prompt. Repeating the same
+            # request would remain narrative and fail this behavior test.
+            content = structured if "CORRECTION ATTEMPT" in prompt else narrative
+            return [
+                {
+                    "page_index": 0,
+                    "page_count": 1,
+                    "width": 400,
+                    "height": 300,
+                    "markdown_texts": content,
+                    "parsing_res_list": [
+                        {
+                            "label": "chart",
+                            "bbox": [10, 20, 310, 220],
+                            "content": content,
+                        }
+                    ],
+                }
+            ]
+
+        @staticmethod
+        def concatenate_markdown_pages(markdown_list):
+            return "\n\n".join(item["markdown_texts"] for item in markdown_list)
+
+    pipeline = _Pipeline()
+    provider = module.PaddleOcrPdfProvider(
+        env_content={
+            "paddle_ocr_chart_output_contract": "strict",
+            "paddle_ocr_chart_contract_retries": 1,
+        },
+        pipeline=pipeline,
+    )
+
+    result = asyncio.run(
+        provider.understand_pdf(
+            file_path=Path("/tmp/chart.pdf"),
+            task_id="task-chart-retry",
+            source_file_name="chart",
+        )
+    )
+
+    assert pipeline.calls == 2
+    assert pipeline.prompts[0] == provider._chart_recognition_prompt()
+    assert "CORRECTION ATTEMPT 1" in pipeline.prompts[1]
+    assert pipeline.prompts[1] != pipeline.prompts[0]
+    assert result.retry_count == 1
+    assert result.markdown_text == structured
+
+
+@pytest.mark.parametrize(
+    ("prompt_config", "expected_prompt_mode"),
+    [
+        ({}, "legacy"),
+        ({"paddle_ocr_chart_prompt_mode": "structured"}, "structured"),
+    ],
+)
+def test_chart_prompt_modes_do_not_enforce_or_replay_by_default(
+    prompt_config, expected_prompt_mode
+) -> None:
+    module = _load_provider_module()
+    narrative = "Chart summary: USA was approximately 38 in November 2025."
+
+    class _Pipeline:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def predict(self, _input_path, **_kwargs):
+            self.calls += 1
+            return [
+                {
+                    "page_index": 0,
+                    "page_count": 1,
+                    "markdown_texts": narrative,
+                    "parsing_res_list": [
+                        {
+                            "label": "chart",
+                            "block_id": "panel-a",
+                            "content": narrative,
+                        }
+                    ],
+                }
+            ]
+
+        @staticmethod
+        def concatenate_markdown_pages(markdown_list):
+            return "\n\n".join(item["markdown_texts"] for item in markdown_list)
+
+    pipeline = _Pipeline()
+    provider = module.PaddleOcrPdfProvider(
+        env_content={
+            "gateway_vllm": {
+                "base_url": "https://gateway.example/v1",
+                "model_name": "external-chart-model",
+            },
+            **prompt_config,
+        },
+        pipeline=pipeline,
+    )
+
+    result = asyncio.run(
+        provider.understand_pdf(
+            file_path=Path("/tmp/chart.pdf"),
+            task_id="task-chart-best-effort",
+            source_file_name="chart",
+        )
+    )
+
+    assert provider._chart_prompt_mode() == expected_prompt_mode
+    if expected_prompt_mode == "structured":
+        assert "Markdown tables only" in provider._chart_recognition_prompt()
+    else:
+        assert provider._chart_recognition_prompt() == "Chart Recognition:"
+    assert provider._chart_output_contract_mode() == "off"
+    assert pipeline.calls == 1
+    assert result.retry_count == 0
+    assert result.markdown_text == narrative
+
+
+def test_strict_chart_contract_does_not_replay_without_explicit_retry_budget() -> None:
+    module = _load_provider_module()
+    narrative = "Chart summary: USA was approximately 38 in November 2025."
+
+    class _Pipeline:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def predict(self, _input_path, **_kwargs):
+            self.calls += 1
+            return [
+                {
+                    "page_index": 0,
+                    "page_count": 1,
+                    "markdown_texts": narrative,
+                    "parsing_res_list": [
+                        {
+                            "label": "chart",
+                            "block_id": "panel-a",
+                            "content": narrative,
+                        }
+                    ],
+                }
+            ]
+
+    pipeline = _Pipeline()
+    provider = module.PaddleOcrPdfProvider(
+        env_content={"paddle_ocr_chart_output_contract": "strict"},
+        pipeline=pipeline,
+    )
+
+    with pytest.raises(module.PaddleOcrChartContractError):
+        asyncio.run(
+            provider.understand_pdf(
+                file_path=Path("/tmp/chart.pdf"),
+                task_id="task-chart-strict-once",
+                source_file_name="chart",
+            )
+        )
+
+    assert pipeline.calls == 1
+
+
+def test_chart_contract_rejects_persistent_narrative_table() -> None:
+    module = _load_provider_module()
+    narrative = """<table><tr><th>Chart summary</th></tr>
+<tr><td>USA was approximately 38 in November 2025.</td></tr></table>"""
+
+    class _Pipeline:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def predict(self, _input_path, **_kwargs):
+            self.calls += 1
+            return [
+                {
+                    "page_index": 0,
+                    "page_count": 1,
+                    "markdown_texts": narrative,
+                    "parsing_res_list": [
+                        {
+                            "label": "chart",
+                            "block_id": "panel-a",
+                            "bbox": [10, 20, 310, 220],
+                            "content": narrative,
+                        }
+                    ],
+                }
+            ]
+
+    pipeline = _Pipeline()
+    provider = module.PaddleOcrPdfProvider(
+        env_content={
+            "paddle_ocr_chart_output_contract": "strict",
+            "paddle_ocr_chart_contract_retries": 1,
+        },
+        pipeline=pipeline,
+    )
+
+    with pytest.raises(module.PaddleOcrChartContractError) as captured:
+        asyncio.run(
+            provider.understand_pdf(
+                file_path=Path("/tmp/chart.pdf"),
+                task_id="task-chart-invalid",
+                source_file_name="chart",
+            )
+        )
+
+    assert pipeline.calls == 2
+    assert "page=1 block=panel-a" in str(captured.value)
+    assert "38" not in str(captured.value)
+
+
+@pytest.mark.parametrize(
+    ("content", "expected"),
+    [
+        (
+            "| Country | Value |\n| --- | ---: |\n| USA | ~38 |",
+            True,
+        ),
+        (
+            (
+                "<table><tr><th>Country</th><th>Value</th></tr>"
+                "<tr><td>USA</td><td>38</td></tr></table>"
+            ),
+            True,
+        ),
+        (
+            (
+                "<table><tr><th>Summary</th></tr>"
+                "<tr><td>USA was approximately 38.</td></tr></table>"
+            ),
+            False,
+        ),
+        (
+            "| Country | Value |\n| --- | --- |\n| USA | 35-40 |",
+            False,
+        ),
+    ],
+)
+def test_chart_contract_requires_independent_numeric_cells(
+    content: str, expected: bool
+) -> None:
+    module = _load_provider_module()
+
+    assert (
+        module.PaddleOcrPdfProvider._has_scorer_compatible_chart_table(content)
+        is expected
+    )

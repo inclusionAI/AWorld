@@ -8,13 +8,21 @@ on:
     paths:
       - ".github/workflows/self-evolve.yml"
       - "aworld/self_evolve/**"
+      - "aworld/agents/llm_agent.py"
       - "aworld/config/conf.py"
+      - "aworld/core/context/base.py"
+      - "aworld/core/llm_provider.py"
       - "aworld/evaluations/**"
+      - "aworld/models/**"
+      - "aworld/utils/serialized_util.py"
       - "aworld-cli/src/aworld_cli/**"
       - "aworld-skills/self_evolve/**"
       - "tests/core/test_evaluator_runtime.py"
       - "tests/core/test_optimize_top_level_command.py"
       - "tests/evaluations/**"
+      - "tests/executors/**"
+      - "tests/models/**"
+      - "tests/plugins/**"
       - "tests/self_evolve/**"
       - "tests/test_slash_commands.py"
       - "pytest.ini"
@@ -25,13 +33,21 @@ on:
     paths:
       - ".github/workflows/self-evolve.yml"
       - "aworld/self_evolve/**"
+      - "aworld/agents/llm_agent.py"
       - "aworld/config/conf.py"
+      - "aworld/core/context/base.py"
+      - "aworld/core/llm_provider.py"
       - "aworld/evaluations/**"
+      - "aworld/models/**"
+      - "aworld/utils/serialized_util.py"
       - "aworld-cli/src/aworld_cli/**"
       - "aworld-skills/self_evolve/**"
       - "tests/core/test_evaluator_runtime.py"
       - "tests/core/test_optimize_top_level_command.py"
       - "tests/evaluations/**"
+      - "tests/executors/**"
+      - "tests/models/**"
+      - "tests/plugins/**"
       - "tests/self_evolve/**"
       - "tests/test_slash_commands.py"
       - "pytest.ini"
@@ -67,6 +83,23 @@ jobs:
           python setup.py install
       - name: Run self-evolve tests
         run: python -m pytest ${{ matrix.pytest_args }}
+      - name: Run cross-module self-evolve contracts
+        if: runner.os == 'Linux'
+        run: |
+          python -m pytest -q \
+            tests/core/test_optimize_top_level_command.py \
+            tests/core/test_skill_cli.py \
+            tests/core/tool/test_replay_policy_profile.py \
+            tests/core/tool/test_runtime_tool_call_budget.py \
+            tests/evaluations/test_evaluation_input_sources.py \
+            tests/evaluations/test_evaluation_substrate.py \
+            tests/executors/test_continuous.py \
+            tests/executors/test_local_active_steering.py \
+            tests/models/test_llm_call_capture.py \
+            tests/models/test_model_response_llm_calls.py \
+            tests/plugins/test_runtime_hud_snapshot.py \
+            tests/runners/test_deterministic_task_batch.py \
+            tests/test_slash_commands.py
       - name: Run framework contract matrix on native sandbox host
         if: runner.os == 'macOS'
         run: python -m pytest tests/self_evolve/test_framework_contract_matrix.py -q

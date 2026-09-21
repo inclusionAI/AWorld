@@ -1,7 +1,6 @@
 # coding: utf-8
 # Copyright (c) 2025 inclusionAI.
 import abc
-import time
 
 from typing import TypeVar, Generic, AsyncGenerator
 
@@ -68,6 +67,23 @@ class DefaultHandler(Handler[Message, AsyncGenerator[Message, None]]):
         # The runner owns the absolute deadline and cancellation projection.
         # Recomputing a duration here used to reset retry lifetimes and required
         # every caller to manufacture a numeric timeout for unbounded tasks.
+        timeout = message.context.get_task().timeout
+        bounded_timeout = (
+            isinstance(timeout, (int, float))
+            and not isinstance(timeout, bool)
+            and timeout > 0
+        )
+        time_cost = self.runner.timeout_elapsed_seconds() if bounded_timeout else 0
+        if message.topic != TopicType.CANCEL and bounded_timeout and time_cost > timeout:
+            logger.warn(
+                f"[{self.name()}] {message.context.get_task().id} task timeout after {time_cost} seconds.")
+            yield CancelMessage(
+                payload=TaskItem(msg="task timeout.", data=message, stop=True),
+                sender=self.name(),
+                session_id=self.runner.context.session_id,
+                headers={"context": message.context}
+            )
+            return
         async for event in self._do_handle(message):
             msg = await self.post_handle(input=message, output=event)
             if msg:

@@ -6,9 +6,15 @@ from typing import Any
 
 from aworld.plugins.discovery import discover_plugins
 from aworld.skills.compat_provider import build_compat_provider
+from aworld.skills.package_fingerprint import (
+    SkillPackageFingerprintError,
+    fingerprint_skill_package,
+)
 from aworld.skills.plugin_provider import PluginSkillProvider
 from aworld.skills.release import is_self_evolve_release_visible
 from aworld.skills.registry import SkillRegistry as FrameworkSkillRegistry
+
+from aworld_cli.core.builtin_skills import build_builtin_skill_providers
 
 
 _SCOPE_ORDER = {
@@ -30,6 +36,14 @@ class SkillResolverRequest:
     include_default_disabled: bool = False
     compatibility_sources: tuple[str, ...] = ()
     compatibility_skill_patterns: tuple[str, ...] = ()
+    default_skill_names: tuple[str, ...] = ()
+    # Self-evolve replay evaluates an unpublished candidate in an isolated
+    # child process.  These sources are intentionally distinct from ordinary
+    # compatibility sources: they take precedence over ambient installations
+    # and may expose an unreleased skill only when that skill was explicitly
+    # requested.  The replay parent still verifies the exact package
+    # fingerprint from activation evidence before accepting the result.
+    isolated_candidate_sources: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -37,6 +51,7 @@ class ResolvedSkillSet:
     skill_configs: dict[str, dict[str, Any]]
     active_skill_names: tuple[str, ...]
     available_skill_names: tuple[str, ...]
+    activation_evidence: tuple[dict[str, str], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -58,35 +73,83 @@ class SkillActivationResolver:
 
     def _build_registry(
         self, request: SkillResolverRequest
-    ) -> tuple[FrameworkSkillRegistry, set[str]]:
+    ) -> tuple[FrameworkSkillRegistry, set[str], set[str]]:
         providers = []
         compatibility_provider_ids: set[str] = set()
+        isolated_candidate_provider_ids: set[str] = set()
+        seen_provider_ids: set[str] = set()
+
+        # Candidate sources must be registered first so an installed skill
+        # with the same name cannot silently win the registry's first-match
+        # deduplication.
+        for source in request.isolated_candidate_sources:
+            provider = build_compat_provider(source)
+            provider_id = provider.provider_id()
+            if provider_id in seen_provider_ids:
+                continue
+            providers.append(provider)
+            seen_provider_ids.add(provider_id)
+            compatibility_provider_ids.add(provider_id)
+            isolated_candidate_provider_ids.add(provider_id)
 
         for plugin in discover_plugins(request.plugin_roots):
-            providers.append(PluginSkillProvider(plugin))
+            provider = PluginSkillProvider(plugin)
+            provider_id = provider.provider_id()
+            if provider_id in seen_provider_ids:
+                continue
+            providers.append(provider)
+            seen_provider_ids.add(provider_id)
 
         for source in request.compatibility_sources:
             provider = build_compat_provider(source)
+            provider_id = provider.provider_id()
+            if provider_id in seen_provider_ids:
+                continue
             providers.append(provider)
-            compatibility_provider_ids.add(provider.provider_id())
+            seen_provider_ids.add(provider_id)
+            compatibility_provider_ids.add(provider_id)
 
-        return FrameworkSkillRegistry(providers), compatibility_provider_ids
+        # Built-ins remain available without --skill or agent source hints, but
+        # explicit plugin/user definitions with the same name take precedence.
+        providers.extend(build_builtin_skill_providers())
+
+        return (
+            FrameworkSkillRegistry(providers),
+            compatibility_provider_ids,
+            isolated_candidate_provider_ids,
+        )
 
     def _load_candidates(
         self, request: SkillResolverRequest
     ) -> list[ResolvedSkillCandidate]:
         candidates: list[ResolvedSkillCandidate] = []
         seen: set[str] = set()
-        registry, compatibility_provider_ids = self._build_registry(request)
+        (
+            registry,
+            compatibility_provider_ids,
+            isolated_candidate_provider_ids,
+        ) = self._build_registry(request)
         compatibility_patterns = tuple(request.compatibility_skill_patterns)
+        explicitly_requested = set(request.requested_skill_names)
 
         for descriptor in registry.list_descriptors():
-            if not is_self_evolve_release_visible(descriptor.metadata):
+            is_isolated_candidate = (
+                descriptor.provider_id in isolated_candidate_provider_ids
+                and descriptor.skill_name in explicitly_requested
+            )
+            if (
+                not is_self_evolve_release_visible(descriptor.metadata)
+                and not is_isolated_candidate
+            ):
                 continue
             if (
                 descriptor.provider_id in compatibility_provider_ids
+                and not is_isolated_candidate
                 and compatibility_patterns
-                and not self._matches_patterns(descriptor.skill_name, compatibility_patterns)
+                and not self._matches_patterns(
+                    descriptor.skill_name,
+                    compatibility_patterns,
+                )
             ):
                 continue
 
@@ -193,26 +256,36 @@ class SkillActivationResolver:
                     requested.append(skill_name)
             return tuple(requested)
 
+        # Agent defaults are active without task keywords, while explicit task
+        # selection above and the availability/disable filters stay authoritative.
         enabled_skill_names = {
             str(skill_name).strip().lower()
             for skill_name in request.enabled_skill_names
             if str(skill_name).strip()
         }
+        eligible = [
+            candidate
+            for candidate in candidates
+            if candidate.metadata.get("default_enabled", True) is not False
+            or candidate.skill_name.strip().lower() in enabled_skill_names
+        ]
+        available = {candidate.skill_name for candidate in eligible}
+        defaults = tuple(
+            dict.fromkeys(name for name in request.default_skill_names if name in available)
+        )
         scored = sorted(
             (
                 (
                     self._score_candidate(candidate, request.task_text or ""),
                     candidate.skill_name,
                 )
-                for candidate in candidates
-                if candidate.metadata.get("default_enabled", True) is not False
-                or candidate.skill_name.strip().lower() in enabled_skill_names
+                for candidate in eligible
             ),
             key=lambda item: (-item[0], item[1]),
         )
         if not scored or scored[0][0] <= 0:
-            return tuple()
-        return (scored[0][1],)
+            return defaults
+        return tuple(dict.fromkeys((*defaults, scored[0][1])))
 
     def _score_candidate(
         self, candidate: ResolvedSkillCandidate, task_text: str
@@ -244,10 +317,33 @@ class SkillActivationResolver:
             candidate.skill_name: self._candidate_to_skill_config(candidate, active_names)
             for candidate in ordered_candidates
         }
+        activation_evidence: list[dict[str, str]] = []
+        for candidate in ordered_candidates:
+            if candidate.skill_name not in active_names:
+                continue
+            skill_file = Path(candidate.skill_path).expanduser().resolve()
+            try:
+                package_fingerprint = fingerprint_skill_package(
+                    skill_file.parent
+                )
+            except (OSError, SkillPackageFingerprintError, ValueError):
+                # Missing/unreadable packages deliberately produce no activation
+                # evidence.  A caller that requires an attestation must fail closed.
+                continue
+            activation_evidence.append(
+                {
+                    "skill_name": candidate.skill_name,
+                    "canonical_skill_file": str(skill_file),
+                    "canonical_skill_root": str(skill_file.parent),
+                    "package_fingerprint": package_fingerprint,
+                    "source": "aworld_cli_skill_activation_resolver",
+                }
+            )
         return ResolvedSkillSet(
             skill_configs=skill_configs,
             active_skill_names=active_skill_names,
             available_skill_names=tuple(skill_configs),
+            activation_evidence=tuple(activation_evidence),
         )
 
     def _candidate_to_skill_config(

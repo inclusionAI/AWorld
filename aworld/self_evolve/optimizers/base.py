@@ -43,6 +43,7 @@ class CandidateSemanticValidationError(ValueError):
         representation: str | None = None,
         repairable: bool = True,
         allowed_improvement_signal_ids: tuple[str, ...] = (),
+        details: Mapping[str, object] | None = None,
     ) -> None:
         self.code = str(code)
         self.field_path = field_path
@@ -55,6 +56,7 @@ class CandidateSemanticValidationError(ValueError):
         self.allowed_improvement_signal_ids = tuple(
             allowed_improvement_signal_ids
         )
+        self.details = dict(details or {})
         self.contract_fingerprint = candidate_output_contract_fingerprint(
             self.allowed_improvement_signal_ids
         )
@@ -75,6 +77,8 @@ class CandidateSemanticValidationError(ValueError):
             diagnostic["field_path"] = self.field_path
         if self.representation is not None:
             diagnostic["representation"] = self.representation
+        if self.details:
+            diagnostic["details"] = dict(self.details)
         return diagnostic
 
 
@@ -83,6 +87,150 @@ class CandidateSourceKind(str, Enum):
 
     GENERATED = "generated"
     STORED_EVIDENCE_RERUN = "stored_evidence_rerun"
+
+
+class CandidateGenerationOutcomeKind(str, Enum):
+    """Terminal generation-layer disposition for one scheduled model slot."""
+
+    ADMITTED = "admitted"
+    POLICY_FILTERED = "policy_filtered"
+    NOOP_FILTERED = "noop_filtered"
+    DUPLICATE_FILTERED = "duplicate_filtered"
+    MATERIALIZATION_FAILED = "materialization_failed"
+    PROTOCOL_INVALID = "protocol_invalid"
+    INFRASTRUCTURE_FAILED = "infrastructure_failed"
+
+
+@dataclass(frozen=True)
+class CandidateGenerationOutcome:
+    """Content-free causal result preserved across optimizer orchestration.
+
+    Candidate source is deliberately excluded.  Stable identities and typed
+    constraints are sufficient for lifecycle accounting, focused repair, and
+    Campaign disposition without leaking a rejected package into diagnostics.
+    """
+
+    candidate_index: int
+    kind: CandidateGenerationOutcomeKind
+    candidate_id: str | None = None
+    candidate_fingerprint: str | None = None
+    semantic_fingerprint: str | None = None
+    policy_id: str | None = None
+    enforcement: str | None = None
+    repairable: bool = False
+    reason_codes: tuple[str, ...] = ()
+    constraint_ids: tuple[str, ...] = ()
+    active_frontier_key: str | None = None
+    affected_case_ids: tuple[str, ...] = ()
+    strategy_id: str | None = None
+    schema_version: str = "aworld.self_evolve.candidate_generation_outcome.v1"
+
+    def __post_init__(self) -> None:
+        if self.schema_version != "aworld.self_evolve.candidate_generation_outcome.v1":
+            raise ValueError("unsupported candidate generation outcome schema")
+        if isinstance(self.candidate_index, bool) or self.candidate_index < 0:
+            raise ValueError("candidate generation index must be non-negative")
+        object.__setattr__(
+            self,
+            "kind",
+            CandidateGenerationOutcomeKind(self.kind),
+        )
+        if self.enforcement not in {None, "hard", "heuristic"}:
+            raise ValueError("candidate policy enforcement must be hard or heuristic")
+        if self.kind is CandidateGenerationOutcomeKind.POLICY_FILTERED:
+            if not self.policy_id or self.enforcement != "hard":
+                raise ValueError("policy-filtered outcome requires a hard policy_id")
+        if self.kind is CandidateGenerationOutcomeKind.ADMITTED and not self.candidate_id:
+            raise ValueError("admitted generation outcome requires candidate_id")
+        for field_name in (
+            "reason_codes",
+            "constraint_ids",
+            "affected_case_ids",
+        ):
+            values = getattr(self, field_name)
+            if any(not isinstance(item, str) or not item for item in values):
+                raise ValueError(f"{field_name} must contain non-empty strings")
+            object.__setattr__(self, field_name, tuple(dict.fromkeys(values)))
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "schema_version": self.schema_version,
+            "candidate_index": self.candidate_index,
+            "kind": self.kind.value,
+            "candidate_id": self.candidate_id,
+            "candidate_fingerprint": self.candidate_fingerprint,
+            "semantic_fingerprint": self.semantic_fingerprint,
+            "policy_id": self.policy_id,
+            "enforcement": self.enforcement,
+            "repairable": self.repairable,
+            "reason_codes": list(self.reason_codes),
+            "constraint_ids": list(self.constraint_ids),
+            "active_frontier_key": self.active_frontier_key,
+            "affected_case_ids": list(self.affected_case_ids),
+            "strategy_id": self.strategy_id,
+        }
+
+    @classmethod
+    def from_dict(
+        cls,
+        value: Mapping[str, object],
+    ) -> "CandidateGenerationOutcome":
+        def strings(field_name: str) -> tuple[str, ...]:
+            raw = value.get(field_name)
+            if not isinstance(raw, (list, tuple)):
+                return ()
+            return tuple(item for item in raw if isinstance(item, str) and item)
+
+        raw_index = value.get("candidate_index")
+        if not isinstance(raw_index, int) or isinstance(raw_index, bool):
+            raise ValueError("candidate generation outcome requires candidate_index")
+        return cls(
+            candidate_index=raw_index,
+            kind=CandidateGenerationOutcomeKind(str(value.get("kind") or "")),
+            candidate_id=(
+                value.get("candidate_id")
+                if isinstance(value.get("candidate_id"), str)
+                else None
+            ),
+            candidate_fingerprint=(
+                value.get("candidate_fingerprint")
+                if isinstance(value.get("candidate_fingerprint"), str)
+                else None
+            ),
+            semantic_fingerprint=(
+                value.get("semantic_fingerprint")
+                if isinstance(value.get("semantic_fingerprint"), str)
+                else None
+            ),
+            policy_id=(
+                value.get("policy_id")
+                if isinstance(value.get("policy_id"), str)
+                else None
+            ),
+            enforcement=(
+                value.get("enforcement")
+                if isinstance(value.get("enforcement"), str)
+                else None
+            ),
+            repairable=value.get("repairable") is True,
+            reason_codes=strings("reason_codes"),
+            constraint_ids=strings("constraint_ids"),
+            active_frontier_key=(
+                value.get("active_frontier_key")
+                if isinstance(value.get("active_frontier_key"), str)
+                else None
+            ),
+            affected_case_ids=strings("affected_case_ids"),
+            strategy_id=(
+                value.get("strategy_id")
+                if isinstance(value.get("strategy_id"), str)
+                else None
+            ),
+            schema_version=str(
+                value.get("schema_version")
+                or "aworld.self_evolve.candidate_generation_outcome.v1"
+            ),
+        )
 
 
 @dataclass(frozen=True)
@@ -140,8 +288,15 @@ class OptimizerRequest:
     max_candidates: int = 1
     replay_requirements: tuple[ReplayCapabilityRequirement, ...] = ()
     target_package_inventory: tuple[str, ...] = ()
+    target_package_sources: Mapping[str, Mapping[str, object]] = field(
+        default_factory=dict
+    )
+    handbook_slice: Mapping[str, object] | None = None
     evolution_context: EvolutionContext | None = None
     improvement_signal_set_fingerprint: str | None = None
+    consumed_mutation_families: tuple[str, ...] = ()
+    active_repair_frontier_keys: tuple[str | None, ...] = ()
+    skill_evolution_contract: Mapping[str, object] | None = None
 
     @classmethod
     def from_dataset(
@@ -158,6 +313,13 @@ class OptimizerRequest:
         max_candidates: int = 1,
         replay_requirements: tuple[ReplayCapabilityRequirement, ...] = (),
         target_package_inventory: tuple[str, ...] = (),
+        target_package_sources: Mapping[
+            str, Mapping[str, object]
+        ] | None = None,
+        handbook_slice: Mapping[str, object] | None = None,
+        consumed_mutation_families: tuple[str, ...] = (),
+        active_repair_frontier_keys: tuple[str | None, ...] = (),
+        skill_evolution_contract: Mapping[str, object] | None = None,
     ) -> "OptimizerRequest":
         trainable_ids = set(dataset.recipe.trainable_case_ids)
         return cls(
@@ -174,6 +336,15 @@ class OptimizerRequest:
             max_candidates=max_candidates,
             replay_requirements=tuple(replay_requirements),
             target_package_inventory=tuple(target_package_inventory),
+            target_package_sources=dict(target_package_sources or {}),
+            handbook_slice=handbook_slice,
+            consumed_mutation_families=tuple(consumed_mutation_families),
+            active_repair_frontier_keys=tuple(active_repair_frontier_keys),
+            skill_evolution_contract=(
+                dict(skill_evolution_contract)
+                if skill_evolution_contract is not None
+                else None
+            ),
             improvement_signal_set_fingerprint=(
                 str(
                     dataset.recipe.source[
@@ -259,6 +430,7 @@ class OptimizerResult:
     source_disposition: CandidateSourceDisposition = field(
         default_factory=CandidateSourceDisposition
     )
+    generation_outcomes: tuple[CandidateGenerationOutcome, ...] = ()
 
 
 class CandidateOptimizer(Protocol):

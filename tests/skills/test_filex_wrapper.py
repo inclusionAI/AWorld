@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import subprocess
 import sys
 from pathlib import Path
+
+import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 FILEX_SCRIPT = REPO_ROOT / "aworld-skills" / "filex" / "scripts" / "filex.py"
@@ -19,6 +22,11 @@ import os
 import pathlib
 import sys
 
+from document_parse_service.artifact_bundle import (
+    export_artifact_bundle,
+    prepare_artifact_destination,
+)
+
 args = sys.argv[1:]
 pathlib.Path(os.environ["FILEX_ARGS_LOG"]).write_text(
     json.dumps(args), encoding="utf-8"
@@ -26,15 +34,47 @@ pathlib.Path(os.environ["FILEX_ARGS_LOG"]).write_text(
 workspace = pathlib.Path(os.environ["FILEX_WORKSPACE_ROOT"])
 
 if args[0] == "parse":
+    artifacts = None
+    if "--artifacts-dir" in args:
+        artifacts = prepare_artifact_destination(
+            args[args.index("--artifacts-dir") + 1]
+        )
     result = workspace / "document_parse" / "fake-task" / "result.md"
     result.parent.mkdir(parents=True, exist_ok=True)
-    result.write_text("# Parsed by FileX\\n", encoding="utf-8")
+    result.write_text(
+        os.environ.get("FILEX_FAKE_MARKDOWN", "# Parsed by FileX\\n"), encoding="utf-8"
+    )
+    document = result.with_suffix(".document.json")
+    document.write_text(os.environ.get("FILEX_FAKE_DOCUMENT_JSON") or json.dumps({
+        "schema_version": "filex-document-ir-v2",
+        "coordinate_system": "pixel_top_left_xyxy",
+        "pages": [{"page_index": 0, "width": 100, "height": 200, "elements": []}],
+    }), encoding="utf-8")
     payload = {
         "success": True,
         "task_id": "fake-task",
         "file_path": str(result.relative_to(workspace)),
-        "metrics": {"provider": "python_docx"},
+        "document_file_path": str(document.relative_to(workspace)),
+        "metrics": {"provider": "python_docx", "provider_version": "1"},
     }
+    if os.environ.get("FILEX_FAKE_OMIT_METRICS") == "1":
+        payload.pop("metrics")
+    if artifacts is not None:
+        try:
+            payload.update(export_artifact_bundle(
+                destination=artifacts,
+                source=args[args.index("--workspace-path") + 1],
+                markdown=result,
+                document_ir=document,
+                filex_response=dict(payload),
+                layout_format=args[args.index("--layout-format") + 1],
+            ))
+        except ValueError as exc:
+            payload = {
+                "success": False,
+                "message": str(exc),
+                "error_type": "ValidationError",
+            }
 elif args[0] == "inspect":
     payload = {
         "success": True,
@@ -45,6 +85,7 @@ else:
     payload = {"success": True, "status": "parsing", "completed_batches": 2}
 
 print(json.dumps(payload))
+raise SystemExit(0 if payload.get("success") else 1)
 """,
         encoding="utf-8",
     )
@@ -63,6 +104,12 @@ def _environment(tmp_path: Path) -> tuple[Path, Path, dict[str, str]]:
     env["PATH"] = f"{bin_dir}{os.pathsep}{env.get('PATH', '')}"
     env["FILEX_WORKSPACE_ROOT"] = str(workspace)
     env["FILEX_ARGS_LOG"] = str(args_log)
+    env["PYTHONPATH"] = (
+        str(REPO_ROOT / "aworld-tools/filex/src")
+        + os.pathsep
+        + env.get("PYTHONPATH", "")
+    )
+    env.pop("FILEX_LAYOUT_FORMAT", None)
     return workspace, args_log, env
 
 
@@ -165,6 +212,87 @@ def test_filex_wrapper_reads_batch_status(tmp_path: Path) -> None:
     assert "--include-results" in cli_args
 
 
+def test_filex_wrapper_exports_generic_artifact_bundle(tmp_path: Path) -> None:
+    workspace, _, env = _environment(tmp_path)
+    source = workspace / "input.pdf"
+    source.write_bytes(b"%PDF-test")
+    artifacts = tmp_path / "logs" / "artifacts"
+    env["FILEX_ARTIFACTS_ROOT"] = str(artifacts)
+
+    completed = subprocess.run(
+        [
+            sys.executable,
+            str(FILEX_SCRIPT),
+            "parse",
+            "--input",
+            str(source),
+            "--artifacts-dir",
+            str(artifacts),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+
+    assert completed.returncode == 0, completed.stdout
+    result = json.loads((artifacts / "result.json").read_text())
+    stdout = json.loads(completed.stdout)
+    assert result["schema_version"] == "filex.artifact-bundle/v1"
+    assert result["source"]["sha256"].startswith("sha256:")
+    assert result["artifacts"]["document"]["path"] == str(artifacts / "document.md")
+    assert (artifacts / "document.md").read_text() == "# Parsed by FileX\n"
+    assert (
+        json.loads((artifacts / "layout.json").read_text())["pages"][0]["page_index"]
+        == 0
+    )
+    assert stdout["canonical_artifact_contract"] == {
+        "schema_version": "aworld.filex-canonical-artifacts/v1",
+        "status": "committed",
+        "artifacts_dir": str(artifacts),
+        "result_path": str(artifacts / "result.json"),
+        "mutation_policy": "immutable",
+        "derived_output_policy": "outside-artifacts-dir",
+        "provenance_authority": "filex-cli",
+    }
+
+
+def test_filex_wrapper_rejects_derived_output_inside_artifact_directory(
+    tmp_path: Path,
+) -> None:
+    workspace, args_log, env = _environment(tmp_path)
+    source = workspace / "input.pdf"
+    source.write_bytes(b"%PDF-test")
+    artifacts = workspace / "artifacts"
+    env["FILEX_ARTIFACTS_ROOT"] = str(artifacts)
+
+    completed = subprocess.run(
+        [
+            sys.executable,
+            str(FILEX_SCRIPT),
+            "parse",
+            "--input",
+            str(source),
+            "--output",
+            str(artifacts / "summary.md"),
+            "--artifacts-dir",
+            str(artifacts),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+
+    assert completed.returncode == 2
+    assert json.loads(completed.stdout) == {
+        "success": False,
+        "message": "Derived --output must be outside the FileX artifact directory",
+        "error_type": "InputError",
+    }
+    assert not args_log.exists()
+
+
 def test_filex_wrapper_inspects_youtube_without_media_download(tmp_path: Path) -> None:
     _, args_log, env = _environment(tmp_path)
     url = "https://www.youtube.com/watch?v=abc123"
@@ -234,3 +362,493 @@ def test_filex_wrapper_rejects_local_input_outside_workspace(tmp_path: Path) -> 
 
     assert completed.returncode == 2
     assert "inside the FileX workspace" in json.loads(completed.stdout)["message"]
+
+
+def _public_export(
+    tmp_path: Path,
+    *,
+    flag: str | None = "parse-output",
+    env_format: str | None = None,
+    mutate_ir=None,
+    markdown: str = "public\r\n",
+    filex_python: str | None = None,
+    stale_receipt: bool = False,
+):
+    workspace, args_log, env = _environment(tmp_path)
+    source = workspace / "input.pdf"
+    source.write_bytes(b"%PDF public source")
+    artifacts = tmp_path / "logs/artifacts"
+    env["FILEX_ARTIFACTS_ROOT"] = str(artifacts)
+    if stale_receipt:
+        artifacts.mkdir(parents=True)
+        (artifacts / "result.json").write_text(
+            '{"status":"stale-success"}\n', encoding="utf-8"
+        )
+    ir = {
+        "schema_version": "filex-document-ir-v2",
+        "coordinate_system": "pixel_top_left_xyxy",
+        "pages": [
+            {
+                "page_index": 2,
+                "width": 100,
+                "height": 200,
+                "elements": [
+                    {
+                        "type": "text",
+                        "text": "public",
+                        "bbox": [10, 20, 30, 60],
+                        "reading_order": 1,
+                    }
+                ],
+                "spans": [],
+            }
+        ],
+    }
+    if mutate_ir is not None:
+        mutate_ir(ir)
+    raw = json.dumps(ir, indent=2) + "\n"
+    env["FILEX_FAKE_DOCUMENT_JSON"] = raw
+    env["FILEX_FAKE_MARKDOWN"] = markdown
+    if filex_python is not None:
+        env["FILEX_PYTHON"] = filex_python
+    if env_format is not None:
+        env["FILEX_LAYOUT_FORMAT"] = env_format
+    command = [
+        sys.executable,
+        str(FILEX_SCRIPT),
+        "parse",
+        "--input",
+        str(source),
+        "--pages",
+        "3",
+        "--artifacts-dir",
+        str(artifacts),
+    ]
+    if flag is not None:
+        command.extend(["--layout-format", flag])
+    completed = subprocess.run(
+        command, check=False, capture_output=True, text=True, env=env
+    )
+    return completed, artifacts, source, args_log, raw
+
+
+def test_filex_wrapper_exports_parse_output_and_preserves_raw_ir_and_hashes(
+    tmp_path: Path,
+) -> None:
+    completed, artifacts, source, args_log, raw = _public_export(tmp_path)
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    stdout = json.loads(completed.stdout)
+    result = json.loads((artifacts / "result.json").read_bytes())
+    assert stdout["layout_format"] == result["layout_format"] == "parse-output"
+    assert result["schema_version"] == "filex.artifact-bundle/v1"
+    assert (artifacts / "document-ir.json").read_bytes() == raw.encode()
+    assert (artifacts / "document.md").read_bytes() == b"public\r\n"
+    output = json.loads((artifacts / "layout.json").read_bytes())
+    assert output["pages"][0]["page_index"] == 2
+    assert output["layout_pages"][0]["page_number"] == 3
+    assert output["markdown"] == "public\r\n"
+    assert output["layout_pages"][0]["items"][0]["bbox"] == {
+        "x": 10,
+        "y": 20,
+        "w": 20,
+        "h": 40,
+        "label": "text",
+    }
+    for item in [result["source"], *result["artifacts"].values()]:
+        content = Path(item["path"]).read_bytes()
+        assert item["size"] == len(content)
+        assert item["sha256"] == "sha256:" + hashlib.sha256(content).hexdigest()
+    assert result["source"]["path"] == str(source)
+    assert "input_path" not in result["filex"]  # Unmodified FileX control response.
+    assert result["filex"]["metrics"] == {
+        "provider": "python_docx",
+        "provider_version": "1",
+    }
+    provenance = result["filex_provenance"]
+    assert stdout["filex_provenance"] == provenance
+    assert provenance == {
+        "schema_version": "filex.provenance/v1",
+        "status": "succeeded",
+        "producer": "filex",
+        "exporter": "filex-cli",
+        "provider": "python_docx",
+        "provider_version": "1",
+        "task_id": "fake-task",
+        "layout_format": "parse-output",
+        "source_sha256": result["source"]["sha256"],
+        "document_ir_sha256": result["artifacts"]["document_ir"]["sha256"],
+        "document_sha256": result["artifacts"]["document"]["sha256"],
+        "layout_sha256": result["artifacts"]["layout"]["sha256"],
+        "filex_response_sha256": "sha256:"
+        + hashlib.sha256(
+            (
+                json.dumps(
+                    result["filex"],
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                    allow_nan=False,
+                )
+                + "\n"
+            ).encode()
+        ).hexdigest(),
+    }
+    cli_args = json.loads(args_log.read_bytes())
+    assert cli_args[cli_args.index("--pages") + 1] == "3"
+    assert cli_args[cli_args.index("--layout-format") + 1] == "parse-output"
+    assert cli_args[cli_args.index("--artifacts-dir") + 1] == str(artifacts)
+
+
+@pytest.mark.parametrize(
+    ("flag", "env_format", "expected"),
+    [
+        (None, "parse-output", "parse-output"),
+        ("document-ir", "parse-output", "document-ir"),
+        ("parse-output", "document-ir", "parse-output"),
+    ],
+)
+def test_filex_wrapper_layout_flag_overrides_runtime_default(
+    tmp_path: Path, flag: str | None, env_format: str, expected: str
+) -> None:
+    completed, artifacts, _, _, _ = _public_export(
+        tmp_path, flag=flag, env_format=env_format
+    )
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    assert json.loads(completed.stdout)["layout_format"] == expected
+    result = json.loads((artifacts / "result.json").read_bytes())
+    if expected == "document-ir":
+        assert result["schema_version"] == "filex.artifact-bundle/v1"
+        assert set(result["artifacts"]) == {"document", "layout"}
+        assert not (artifacts / "document-ir.json").exists()
+
+
+def test_filex_wrapper_rejects_invalid_runtime_layout_default_before_parsing(
+    tmp_path: Path,
+) -> None:
+    completed, _, _, args_log, _ = _public_export(
+        tmp_path, flag=None, env_format="unknown"
+    )
+    assert completed.returncode == 2
+    assert json.loads(completed.stdout)["error_type"] == "InputError"
+    assert not args_log.exists()
+
+
+def test_filex_output_is_accepted_by_public_verifier_without_filex_evidence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    completed, artifacts, source, _, _ = _public_export(tmp_path)
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    monkeypatch.syspath_prepend(str(REPO_ROOT / "benchmark-datasets/parsebench/tools"))
+    from parsebench_dataset import verifier
+    from parsebench_dataset.contracts import ParseBenchDimension
+
+    truth = verifier._GroundTruth(
+        task_id="public-task",
+        dimensions=(ParseBenchDimension.LAYOUT,),
+        rules=(),
+        source=verifier._GroundTruthSource(
+            logical_path="docs/input.pdf",
+            runtime_path=source,
+            size=source.stat().st_size,
+            sha256="sha256:" + hashlib.sha256(source.read_bytes()).hexdigest(),
+            page=3,
+        ),
+    )
+    verifier._validate_source_integrity(truth.source, workspace_root=source.parent)
+    (
+        artifacts / "result.json"
+    ).unlink()  # The public contract needs no producer receipt.
+    snapshot = verifier._snapshot_artifacts(
+        ground_truth=truth,
+        result_path=artifacts / "result.json",
+        markdown_path=artifacts / "document.md",
+        layout_path=artifacts / "layout.json",
+        workspace_root=source.parent,
+    )
+    assert snapshot.layout["markdown"] == "public\r\n"
+    assert snapshot.layout["layout_pages"][2]["page_number"] == 3
+    assert snapshot.layout["layout_pages"][2]["items"][0]["bbox"]["x"] == 10
+
+
+def test_filex_wrapper_preserves_actual_empty_document_output(tmp_path: Path) -> None:
+    completed, artifacts, _, _, _ = _public_export(
+        tmp_path,
+        markdown="",
+        mutate_ir=lambda ir: ir.update(pages=[]),
+    )
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    assert (artifacts / "document.md").read_bytes() == b""
+    assert json.loads((artifacts / "layout.json").read_bytes())["layout_pages"] == []
+
+
+def test_filex_wrapper_reports_invalid_geometry_without_committing_receipt(
+    tmp_path: Path,
+) -> None:
+    completed, artifacts, _, _, _ = _public_export(
+        tmp_path,
+        mutate_ir=lambda ir: ir["pages"][0]["elements"][0].update(bbox=[]),
+        stale_receipt=True,
+    )
+    assert completed.returncode == 2
+    response = json.loads(completed.stdout)
+    assert response["error_type"] == "ValidationError"
+    assert "element bbox" in response["message"]
+    assert not (artifacts / "result.json").exists()
+    assert not (artifacts / "layout.json").exists()
+
+
+def test_filex_wrapper_refuses_parse_output_without_provider_provenance(
+    tmp_path: Path,
+) -> None:
+    workspace, _, env = _environment(tmp_path)
+    source = workspace / "input.pdf"
+    source.write_bytes(b"%PDF public source")
+    artifacts = tmp_path / "logs/artifacts"
+    env["FILEX_ARTIFACTS_ROOT"] = str(artifacts)
+    env["FILEX_FAKE_OMIT_METRICS"] = "1"
+
+    completed = subprocess.run(
+        [
+            sys.executable,
+            str(FILEX_SCRIPT),
+            "parse",
+            "--input",
+            str(source),
+            "--layout-format",
+            "parse-output",
+            "--artifacts-dir",
+            str(artifacts),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+
+    assert completed.returncode == 2
+    response = json.loads(completed.stdout)
+    assert response["error_type"] == "ValidationError"
+    assert "provider metrics" in response["message"]
+    assert not (artifacts / "result.json").exists()
+
+
+def test_filex_bundle_export_does_not_depend_on_a_second_python(tmp_path: Path) -> None:
+    completed, artifacts, _, _, _ = _public_export(
+        tmp_path, filex_python="/missing-filex-python"
+    )
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    assert (artifacts / "result.json").is_file()
+
+
+def _image_export_command(
+    tmp_path: Path,
+    *,
+    suffix: str = ".png",
+    layout_format: str | None = "parse-output",
+    artifacts: bool = True,
+    provider: str | None = None,
+    env_file: bool = False,
+    file_type: str | None = None,
+    env_format: str | None = None,
+):
+    workspace, args_log, env = _environment(tmp_path)
+    source = workspace / f"input{suffix}"
+    source.write_bytes(b"image input fixture")
+    env["FILEX_ARTIFACTS_ROOT"] = str(tmp_path / "artifacts")
+    if env_format is not None:
+        env["FILEX_LAYOUT_FORMAT"] = env_format
+    command = [sys.executable, str(FILEX_SCRIPT), "parse", "--input", str(source)]
+    if layout_format is not None:
+        command.extend(["--layout-format", layout_format])
+    if artifacts:
+        command.extend(["--artifacts-dir", env["FILEX_ARTIFACTS_ROOT"]])
+    if provider is not None:
+        command.extend(["--provider", provider])
+    if env_file:
+        configuration = workspace / "provider.json"
+        configuration.write_text('{"filex_parse_provider":"image_vlm"}')
+        command.extend(["--env-file", str(configuration)])
+    if file_type is not None:
+        command.extend(["--file-type", file_type])
+    result = subprocess.run(
+        command, check=False, capture_output=True, text=True, env=env
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    return json.loads(args_log.read_bytes())
+
+
+@pytest.mark.parametrize(
+    "suffix", [".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp", ".JPG"]
+)
+def test_wrapper_leaves_default_image_provider_selection_to_filex(
+    tmp_path: Path, suffix: str
+) -> None:
+    arguments = _image_export_command(tmp_path, suffix=suffix)
+    assert "--env-content-json" not in arguments
+    assert "--pages" not in arguments
+
+
+@pytest.mark.parametrize(
+    ("options", "expected_provider", "expected_env_file"),
+    [
+        ({"layout_format": "document-ir"}, None, False),
+        ({"artifacts": False}, None, False),
+        ({"provider": "image_vlm"}, "image_vlm", False),
+        ({"env_file": True}, None, True),
+        ({"suffix": ".data", "file_type": "PNG"}, None, False),
+        ({"suffix": ".pdf"}, None, False),
+        ({"layout_format": None, "env_format": "parse-output"}, None, False),
+        ({"layout_format": "document-ir", "env_format": "parse-output"}, None, False),
+    ],
+)
+def test_image_layout_selection_preserves_explicit_and_legacy_choices(
+    tmp_path: Path,
+    options: dict,
+    expected_provider: str | None,
+    expected_env_file: bool,
+) -> None:
+    arguments = _image_export_command(tmp_path, **options)
+    if expected_provider is None:
+        assert "--env-content-json" not in arguments
+    else:
+        assert json.loads(arguments[arguments.index("--env-content-json") + 1]) == {
+            "filex_parse_provider": expected_provider,
+        }
+    assert ("--env-content-file" in arguments) is expected_env_file
+
+
+@pytest.mark.docker_integration
+def test_exported_filex_page_is_scored_by_the_public_official_verifier(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    image = os.environ.get("PARSEBENCH_SCORER_TEST_IMAGE")
+    if not image:
+        pytest.skip("Set PARSEBENCH_SCORER_TEST_IMAGE for offline official scoring")
+    completed, artifacts, source, _, _ = _public_export(tmp_path)
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    (artifacts / "result.json").unlink()
+    monkeypatch.syspath_prepend(str(REPO_ROOT / "benchmark-datasets/parsebench/tools"))
+    from parsebench_dataset.contracts import (
+        DATASET_REVISION,
+        GROUND_TRUTH_SCHEMA_VERSION,
+        SCORER_REVISION,
+    )
+    from parsebench_dataset.dataset import _verifier_runtime_modules
+
+    tests = tmp_path / "tests"
+    package = tests / "parsebench_verifier"
+    package.mkdir(parents=True)
+    for name, content in _verifier_runtime_modules().items():
+        if name != "artifacts.py":
+            (package / name).write_bytes(content)
+    (tests / "ground_truth.json").write_text(
+        json.dumps(
+            {
+                "schema_version": GROUND_TRUTH_SCHEMA_VERSION,
+                "dataset_revision": DATASET_REVISION,
+                "scorer_revision": SCORER_REVISION,
+                "task_id": "public-page-3",
+                "dimensions": ["layout"],
+                "source": {
+                    "path": "docs/input.pdf",
+                    "runtime_path": "/workspace/input.pdf",
+                    "size": source.stat().st_size,
+                    "sha256": "sha256:"
+                    + hashlib.sha256(source.read_bytes()).hexdigest(),
+                    "page": 3,
+                },
+                "rules": [
+                    {
+                        "id": "public-layout",
+                        "dimension": "layout",
+                        "type": "layout",
+                        "rule": {
+                            "bbox": [0.1, 0.1, 0.2, 0.2],
+                            "canonical_class": "Text",
+                            "content": {"type": "text", "text": "public"},
+                        },
+                        "page": 3,
+                        "expected_markdown": None,
+                        "tags": [],
+                        "provenance": {
+                            "source_jsonl": "layout.jsonl",
+                            "source_line": 1,
+                        },
+                    }
+                ],
+            }
+        )
+    )
+    (tests / "parsebench-scope.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "aworld-parsebench-scope/v1",
+                "kind": "smoke",
+                "selection_manifest_sha256": "sha256:" + "0" * 64,
+                "publishable": False,
+                "non_publishable_reasons": ["smoke_selection"],
+                "selected_execution_count": 1,
+                "runtime_image": "python:3.12-slim",
+                "dataset_revision": DATASET_REVISION,
+                "scorer_revision": SCORER_REVISION,
+            }
+        )
+    )
+    (tests / "run.py").write_text("""from pathlib import Path
+from parsebench_verifier.verifier import verify_parsebench_task
+outcome = verify_parsebench_task(
+    ground_truth_path=Path("/case/tests/ground_truth.json"),
+    markdown_path=Path("/case/logs/artifacts/document.md"),
+    layout_path=Path("/case/logs/artifacts/layout.json"),
+    workspace_root=Path("/case/workspace"),
+    verifier_output=Path("/case/verifier"),
+)
+print(outcome.stdout_line)
+assert outcome.result.reward_payload()["parsebench_layout_score"] == 1.0
+""")
+    created = subprocess.run(
+        [
+            "docker",
+            "create",
+            "--network",
+            "none",
+            image,
+            "python",
+            "/case/tests/run.py",
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    container = created.stdout.strip()
+    try:
+        subprocess.run(
+            ["docker", "cp", str(tmp_path), f"{container}:/case"],
+            check=True,
+            capture_output=True,
+            timeout=30,
+        )
+        result = subprocess.run(
+            ["docker", "start", "-a", container],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+        assert result.returncode == 0, result.stdout + result.stderr
+        subprocess.run(
+            ["docker", "cp", f"{container}:/case/verifier", str(tmp_path / "verifier")],
+            check=True,
+            capture_output=True,
+            timeout=30,
+        )
+        reward = json.loads((tmp_path / "verifier/reward.json").read_bytes())
+        assert reward["parsebench_layout_score"] == 1.0
+    finally:
+        subprocess.run(
+            ["docker", "rm", "-f", container],
+            check=True,
+            capture_output=True,
+            timeout=30,
+        )

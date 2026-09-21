@@ -17,6 +17,29 @@ rejection. It is the self-improvement link between ordinary runs: only typed
 candidate progress or retryable infrastructure can authorize another cycle.
 Framework mutation remains behind the existing Goal authority boundary.
 
+## Architecture Overview
+
+![AWorld self-evolve architecture](../imgs/aworld-self-evolve-architecture.png)
+
+The architecture separates execution, evidence, optimization, and authority:
+
+- **AWorld Runtime** executes tasks, compiles and runs replay environments, and
+  owns verified apply and rollback. Runtime results are evidence, not permission
+  to publish a candidate.
+- **Self-Evolve Optimizer** selects the target, mines typed lessons, generates a
+  bounded candidate population, and focuses repair using failed gates and replay
+  counterexamples.
+- **Evidence & Evaluation Layer** combines source trajectories, paired
+  baseline/candidate replay, and independent held-out, challenger, and regression
+  checks. Only this verified path can produce a releasable artifact.
+- **Run** owns one variation, selection, and verification experiment.
+  **Campaign** carries typed causal progress and lineage across bounded runs.
+  **Goal session** is outside candidate evolution and is entered only through an
+  explicit framework/shared-code handoff.
+- A verified artifact returns to the agent harness through release control;
+  lessons and lineage may inform later Campaign cycles without granting mutation
+  authority over framework code.
+
 ## What It Optimizes
 
 Self-evolve works on target references rather than arbitrary files. A target records the artifact type, id, optional path, and provenance used by the framework gates.
@@ -83,6 +106,18 @@ The loop makes three boundaries visible: target selection is limited by register
 10. Re-evaluate the applied artifact through the runtime loader and roll back if post-apply verification fails.
 
 This keeps the self-evolve loop outside the task response path. Post-run scheduling is best effort: a failed enqueue is logged and does not change the completed `TaskResponse`.
+
+For a named Skill, an optional `SkillEvolutionContract` makes the target
+capabilities part of the Campaign identity. Its capability descriptions and
+preserved invariants enter `EvolutionContext`; each capability is bound to
+frozen dataset case IDs. Coverage is credited only from authoritative replay
+members that succeeded with exact candidate activation attestation and an
+observed candidate intervention. A Campaign cannot complete until required
+coverage and the configured number of consecutive stable cycles are both met.
+The isolated candidate source takes precedence over an ambient same-name
+installation, but this exception applies only to the explicitly requested
+self-evolve candidate; ordinary runtime discovery still filters unpublished
+release states.
 
 ### Cross-run Campaign loop
 
@@ -201,9 +236,15 @@ Recovery attribution also has an intervention boundary. Framework startup and
 protocol probes establish that a candidate runtime is valid, but they are cleared
 from the task-plane trace before rollout. A replay-only candidate is considered a
 repair cause only when the task actually exchanges traffic with that intervention.
-Otherwise the typed cause is `candidate_intervention_unobserved`, owned by replay
-adaptation/target selection, and the framework must repair context or targeting
-instead of repeatedly mutating the candidate.
+If the candidate executes without exchanging that traffic, the typed cause is
+`candidate_intervention_unobserved`, owned by replay adaptation/target selection,
+and the framework must repair context or targeting instead of repeatedly mutating
+the candidate. A blocked or not-run candidate has no behavioral observation and
+therefore cannot emit this cause; its control/deadline event remains authoritative.
+The gate also reports `candidate_service_intervention_observed` and
+`candidate_skill_activation_observed` separately, so a missing task-plane
+service call is distinguishable from a missing exact-package activation
+attestation.
 
 ### Candidate Generation and Focused Repair
 
@@ -372,9 +413,28 @@ For a repairable skill-owned replay failure, the framework validates a candidate
 2. **Compile and freeze** rebuilds the candidate-owned replay capability, verifies fixture provenance and immutable package fingerprints, and constructs an operation-indexed recorded response map exposed to the runtime as `AWORLD_REPLAY_RESPONSE_INDEX`.
 3. **Probe conformance** requires the declared HTTP/TCP/WebSocket probe to cover the observed operation and to assert a non-empty scalar derived from the recorded response payload, not a mapping key, request token, placeholder, hash, or control-plane handshake.
 4. **Execution preflight** starts the frozen service in the replay subprocess sandbox and executes every declared readiness/protocol probe. WebSocket probes validate the upgrade, ping/text exchange, operation correlation, non-empty result, and recorded-response binding when required.
-5. **Representative screening** runs one bounded baseline/candidate pair only after conformance passes. Screening is a cost filter, not acceptance evidence; an inconclusive baseline preserves the ranked population for authoritative replay.
+5. **Representative screening** runs one bounded baseline/candidate pair only after conformance passes. Screening is a cost filter, not acceptance evidence; an inconclusive baseline preserves the ranked population for authoritative replay. Reaching the deliberately smaller screening deadline is recorded as right-censored and promotes one ranked candidate to authoritative replay, including when the baseline deadline prevents candidate execution. It does not consume control fallbacks. A genuinely invalid control that is unrelated to the bounded screening horizon exhausts the distinct cases in the already-bounded predeclared panel before blocking the population. Invalid controls are quarantined for the same dataset, target baseline, and Campaign, including after process restart, so later cycles select fresh controls rather than replaying the same failure. A sole new candidate may proceed directly, but a repair lineage carrying an authoritative replay counterexample must clear that counterexample here. Reproducing a candidate-owned failure returns it to repair instead of spending another full-panel slot.
 
 Failures in the first four layers are reported through the `candidate_repair_conformance` gate. When execution preflight is reached, bounded service/probe artifacts are stored under `repair_conformance/<candidate_id>/`. The failure becomes generic repair feedback for the next iteration and does not enter the full task rollout. The contracts are derived from observed operations, package structure, fixture provenance, and protocol traces; they do not contain target-specific fixes for a particular training case.
+
+Unresolved typed failures retain their source owners when a later failure adds a second owner. For example, a compiler-side fixture reconstruction failure and a runtime-side source invariant authorize both branches instead of allowing the latest diagnostic to hide the compiler. A contract that names a compiler failure without authorizing its compiler is classified as a shared framework failure and does not consume the candidate repair frontier.
+
+Structural strategy switches are evidence-based. The runner fingerprints the authorized owner paths, edited package paths, and value-free source control-flow shape before requesting a switch. `conformance_strategy_switch_request_count` records requests, while `conformance_strategy_switch_count` increases only after a different topology is observed. `conformance_strategy_switch_not_materialized=true` explains an early stop where only the strategy label changed.
+
+Campaign attribution follows terminal causal precedence. A shared invalid control
+is reported as measurement repair only after the current candidate has passed its
+deterministic capability prerequisites and entered the measurement plane. An
+unresolved candidate-owned compile, conformance, or execution-preflight failure
+remains candidate repair even when required mode also emits a derived
+`trusted_improvement_measurement` release guard. Conversely, a later candidate
+that passes the same typed contract closes that historical conformance frontier;
+`resolved_conformance_frontiers` records the closed identities and they no longer
+compete for Campaign primary failure.
+
+The terminal gate, rejection attribution, Campaign attribution, disposition, and
+Goal handoff retain the same owner, scope, stage, repair action, and bounded
+diagnostic artifact references. This prevents a shared measurement failure from
+being rewritten as an unrepairable adaptation failure at a later reporting layer.
 
 A candidate package that reached judge-scored task output is a deeper causal
 frontier than rejected sibling compiler/runtime candidates. Its replay-file set
@@ -384,6 +444,13 @@ siblings remain lesson evidence but cannot expand that judge frontier's mutation
 surface back into replay implementation files. Target-only packages therefore
 remain first-class repair inputs rather than being dropped during feedback
 normalization.
+
+Compiler/runtime-focused repair also treats its parent candidate as an atomic
+package. The framework inherits parent target content and every unchanged
+candidate-owned file deterministically, then applies model output only to the
+typed source-owner paths authorized by the conformance contract. A provider that
+echoes repository-current Markdown cannot silently erase the focused parent's
+target behavior or turn a source-only repair into a target rewrite.
 
 Candidate-owned replay files also require an explicit mutation authority: either
 the active replay preflight contains a capability requirement, or the focused
@@ -405,6 +472,102 @@ machine. Self-evolve uses three distinct trajectories:
 Only the paired replay baseline/candidate comparison is used to attribute an
 improvement to the skill change. The historical trajectory is not substituted for a
 missing replay baseline.
+
+Authoritative replay expands only candidates admitted by representative
+screening. Every representative qualification case first freezes a distinct v2
+plan whose visibility role is `repair_screening`. The candidate ID remains the
+canonical package identity across qualification, control fallback, and
+authoritative replay; `screening/<case-id>` separates execution artifacts
+without manufacturing `--screening` or `--control-N` candidates. Screening
+observations therefore cannot be promoted as authoritative evidence, while the
+same immutable candidate can continue into the full-panel experiment.
+
+The v2 scheduler preserves `baseline -> candidate` ordering inside
+each case pair while allowing at most two independent pairs to run concurrently
+when replay adaptation proves distinct workspace, runtime, browser-profile,
+endpoint, evidence, service, resource, and cleanup ownership. Otherwise it
+deterministically uses one exclusive lane. This progressive pairing produces
+usable causal evidence early and prevents a late control timeout from erasing
+every candidate observation. The queue covers first repetitions in frozen
+stratified order, then uses measured information-per-cost and invalid-control
+risk to prioritize remaining eligible pairs without starving them. Within that expansion,
+the rollout timeout is a hard per-member phase
+deadline across retries, not a fresh allowance for every retry. Baseline members
+are committed to an incremental cache as soon as they complete. If repeated
+framework or infrastructure failures make the control group invalid,
+`advisory` and `required` modes use the frozen trusted-measurement patience
+policy to stop the remaining panel and record unused members as blocked. `off`
+and `shadow` do not alter replay decisions. Operators may also set
+`--replay-total-timeout` as a
+hard deadline for the complete paired replay; completed control evidence remains
+available for a compatible retry. Replay also persists a bounded
+`members/paired_replay_checkpoint.json` cursor after every phase. Timeout gates
+reference that cursor, the request, and the incremental baseline manifest so a
+compatible Campaign cycle can continue measurement without reconstructing the
+completed controls. Verified CLI execution uses the v2 measurement-control
+scheduler by default; only an explicit `measurement_mode="off"` selects the
+bounded legacy path. Cancellation crosses
+the batch boundary and tears down the replay process group, so a displayed hard
+deadline cannot be converted into a normal batch result or leave an orphaned
+rollout. In verified mode, the first non-comparable baseline member makes the
+full paired panel unreachable: remaining baseline and candidate members are
+recorded as blocked, and a shared measurement timeout terminates the current
+candidate population rather than triggering more mutations.
+
+The scheduler/control boundary is intentionally smaller than the replay
+artifact boundary. A member may produce a multi-megabyte trajectory, but the
+scheduler receives only a bounded canonical projection with typed lifecycle
+state and hashes of the immutable trajectory, metrics, failure, and lifecycle
+files. Reuse revalidates those hashes before decoding the control. Once a work
+unit reaches `running`, every ordinary exception either records a terminal
+observation or a resumable checkpoint plus bounded diagnostics; a serialization
+or persistence exception cannot silently strand the lease.
+
+Control qualification precedes candidate attribution. Artifact-count and byte
+budgets constrain evidence growth, not read-only inspection of files already
+inside the trusted root. Only recognized read-only actions without command or
+output parameters may continue at the quota; everything unknown remains
+fail-closed. A policy that rejects the unchanged baseline yields the typed
+shared cause `baseline_evidence_policy_infeasible`, stops treatment admission,
+and requests a framework policy amendment rather than consuming candidate or
+measurement-retry capacity.
+
+On datasets meeting the frozen minimum independent-case count, verified replay
+defaults to one baseline and one candidate observation per case. Confidence is
+derived from independent cases; sparse datasets continue to use configured
+repetitions, and explicit repetition options remain authoritative. Compatible
+baseline members are shared across candidates and campaign
+retries. Once a candidate member is incomparable, the runner stops its remaining
+members because they cannot repair the already-invalid authoritative comparison.
+Invalid controls are framework/shared failures; candidate-owned incomparable
+members are candidate failures and become counterexamples for the next admission
+screen.
+
+The verification funnel reports both
+`authoritative_candidate_attempt_count` and `authoritative_candidate_count`.
+The first is observability for entries into the authoritative plane; the second
+is the Campaign quota actually consumed. A shared framework-owned measurement
+failure before any candidate observation releases the reservation. Candidate
+execution, a candidate evaluation summary, or a candidate-owned authoritative
+failure consumes it. A control-only result is reusable evidence but is not a
+conclusion about the candidate and therefore does not exhaust the candidate
+frontier.
+
+A measurement checkpoint is created only for a candidate whose deterministic
+prerequisites passed and whose shared measurement experiment can be resumed.
+Restoring that immutable package is reported as `measurement_resume`; it does
+not appear as candidate generation and does not consume a generated-candidate
+slot. If capability compilation fails first, the typed schema/probe
+counterexample is fed to the normal candidate-repair generator instead of
+replaying the same immutable package as a measurement retry.
+
+A failure to freeze or admit the qualification plan is owned by the shared
+measurement framework, not by candidate generation. The population stops before
+physical replay, preserves the source candidate and package fingerprint for
+continuation, and does not spend sibling or authoritative slots. With no paired
+observation, the report records measurement as `not_started` with
+`prerequisite_blocked`; it must not synthesize `control_not_comparable` from an
+empty experiment.
 
 Before `build_replay_request()`, `ReplayAdaptationCompiler` rewrites workspace paths
 to `${AWORLD_REPLAY_WORKSPACE}`, creates a filtered workspace seed and environment
@@ -482,6 +645,46 @@ Modes:
 - `online`: post-run jobs may apply allowlisted targets only after verified replay, evaluator gates, and post-apply re-evaluation.
 
 `online` requires `apply_policy="auto_verified"`. `auto_verified` also requires `requires_post_apply_reevaluation=True`, which is the default. Useful verification knobs include `replay_timeout_seconds`, `replay_max_steps`, `baseline_replay_repetitions`, `candidate_replay_repetitions`, `replay_candidate_limit`, `replay_stability_margin`, `judge_repetitions`, and `judge_timeout_seconds`.
+
+Trusted improvement measurement is independently configurable. Verified CLI
+replay defaults to `shadow` until calibration is accepted; SDK/background
+configuration remains explicit. Select `required` only after reviewing shadow
+validity, evaluator-drift, budget-overhead, and transfer-panel evidence:
+
+```python
+SelfEvolveConfig(
+    mode="shadow",
+    measurement_mode="shadow",
+    measurement_primary_metric="task_success",
+    measurement_minimum_effect=0.02,
+    measurement_confidence_level=0.95,
+    measurement_min_independent_cases=10,
+)
+```
+
+`measurement_mode` accepts `off`, `shadow`, `advisory`, and `required`.
+`shadow` and `advisory` record controlled evidence without changing the existing
+promotion decision. `required` adds a fail-closed promotion gate: the control and
+treatment must differ on exactly one declared axis, frozen identities must match,
+independent cases must meet the configured floor, the confidence interval must
+support the minimum effect, and token/wall usage must be complete. Repetitions
+estimate stability within a case; they never increase the independent-case count.
+
+Before rollout, the framework freezes and reports the complete measurement
+preflight: work-unit counts and reuse, stage panels, safe lanes and fallback,
+minimum/P50/P90 time-to-decision, checkpoint quanta, estimate confidence, and
+stopping policy. The EvidencePolicy profile binds the observation plan, target
+adapter, replay capability, evaluator, resource policy, and exact dynamic
+loopback endpoints into every work-unit identity.
+
+The authoritative queue is adaptive but causally bounded. Frozen stratified
+case order and required coverage are hard tiers. Among otherwise eligible
+pairs, the scheduler uses framework-observed information value, pair cost, and
+invalid-control risk, updates the ranking at pair boundaries, and keeps stable
+ties deterministic. Expansion chooses only from its sealed stage, admits no
+more than the frozen batch size, prefers stratum diversity, and records expected
+information plus the unused case budget. These signals affect execution order,
+not estimator weights or candidate feedback.
 
 `max_improvement_cycles` is the cross-run hard cap and defaults to `3`.
 `max_background_jobs` still limits how many queued generations one drain call
@@ -727,6 +930,41 @@ Each run writes durable artifacts under `.aworld/self_evolve/<run_id>/`:
 - `repair_conformance/<candidate_id>/`: bounded service stdout/stderr, probe traces, and frozen-capability diagnostics produced by pre-rollout repair validation.
 - `population` in `report.json`: candidate generation, screening attempts, selection reason, repair telemetry, and token/concurrency usage.
 - `artifact_retention` in `report.json`: cleanup policy, protected runs, skipped runs, and removed paths from startup and terminal cleanup.
+- `experiments/<experiment_id>/experiment.json`: immutable controlled-swap plan written before screening/replay observations.
+- `experiments/<experiment_id>/observations.jsonl`: idempotent arm/case/repetition observations with comparability and bounded usage metadata. A blocked run does not synthesize observation rows.
+- `experiments/<experiment_id>/attribution_report.json`: experiment validity, paired effect and confidence interval, measurement yield, best/pass-at-K search performance, budget curves when per-candidate usage is available, transfer audits, and the typed next action.
+- `measurement` in `report.json`: bounded promotion-facing summary and relative attribution report reference; raw observations remain in the experiment directory.
+
+The measurement contract separates three questions that older aggregate reports
+could conflate: whether target selection was credible, whether the controlled
+experiment was valid, and whether the treatment effect was positive with adequate
+confidence. Invalid controls route to measurement repair and never become evidence
+for another Skill mutation. In Campaign mode, measurement readiness and measured
+effect are tracked separately from raw candidate score; `collect_more_evidence`,
+`repair_measurement`, `stop_no_effect`, and `stop_negative_effect` are typed
+cross-cycle outcomes.
+
+Attribution always names one swap axis. An `artifact` swap measures harness/Skill
+gain while the task model and search machinery are frozen; a `task_model` swap
+measures model gain under one fixed harness; `generator` and `scheduler` swaps
+compare candidate distributions under equal opportunity budgets. Improvements that
+appear only after increasing candidate count remain best-of-N search gain and are
+not credited to the artifact, model, generator, or scheduler.
+
+Measurement policy has four modes. `off` preserves historical behavior;
+`shadow` writes counterfactual evidence without changing release or Campaign
+selection; `advisory` may route future measurement work but cannot independently
+accept or reject a release; `required` adds a fail-closed promotion gate. Historical
+reports without a `measurement` section are interpreted as `off` and are never
+upgraded into controlled evidence.
+
+The detailed contracts use `tokens` as an integer token count, `cost_usd` as USD,
+`wall_seconds` as elapsed seconds, and confidence/effect fields as finite metric
+units. `null` means the producer did not obtain trustworthy telemetry or evidence;
+zero is retained only when it was actually observed. Search and controlled
+measurement usage are separate in `budget_ledger`, and raw observations contain
+only scalar metrics plus safe relative artifact references—never prompts,
+trajectories, credentials, or absolute local paths.
 
 Artifact retention runs both when a self-evolve run starts and when it reaches a
 terminal report. The two newest runs, lineage-referenced runs, interrupted apply

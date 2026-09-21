@@ -25,6 +25,7 @@ TASK_DEADLINE_EPOCH_ENV = "AWORLD_TASK_DEADLINE_EPOCH_SECONDS"
 TASK_COMPLETION_RESERVE_ENV = "AWORLD_TERMINAL_COMPLETION_RESERVE_SECONDS"
 _MAX_SHUTDOWN_TIMEOUT_SECONDS = 30.0
 _EVIDENCE_POLL_INTERVAL_SECONDS = 0.05
+_DEFAULT_ONE_SHOT_SHUTDOWN_TIMEOUT_SECONDS = 5.0
 _T = TypeVar("_T")
 logger = logging.getLogger(__name__)
 
@@ -402,8 +403,16 @@ def run_direct_async(
     coro: Coroutine[Any, Any, _T],
     *,
     deadline_summary: Callable[[], Mapping[str, Any] | None] | None = None,
+    one_shot: bool = False,
 ) -> _T:
-    """Run direct-mode work with optional one-shot shutdown enforcement."""
+    """Run direct-mode work with optional one-shot shutdown enforcement.
+
+    ``aworld-cli run`` is a process-style one-shot command.  Its business
+    coroutine may finish while provider or sandbox cleanup tasks remain
+    blocked indefinitely.  In that mode the caller must be allowed to persist
+    outcome/trajectory sidecars before using the process boundary.  Library
+    callers retain normal ``asyncio.run`` behavior unless they opt in.
+    """
 
     try:
         asyncio.get_running_loop()
@@ -418,6 +427,8 @@ def run_direct_async(
     except BaseException:
         coro.close()
         raise
+    if shutdown_timeout is None and one_shot:
+        shutdown_timeout = _DEFAULT_ONE_SHOT_SHUTDOWN_TIMEOUT_SECONDS
     if direct_timeout is not None and shutdown_timeout is None:
         coro.close()
         raise ValueError(
@@ -437,7 +448,11 @@ def run_direct_async(
     return _run_with_bounded_shutdown(bounded_coro, shutdown_timeout)
 
 
-def hard_exit_direct_run_if_configured(exit_code: int) -> None:
+def hard_exit_direct_run_if_configured(
+    exit_code: int,
+    *,
+    one_shot: bool = False,
+) -> None:
     """Finish an opted-in one-shot process without waiting on stuck threads.
 
     This must be called only after outcome and trajectory finalization.  Python
@@ -446,7 +461,7 @@ def hard_exit_direct_run_if_configured(exit_code: int) -> None:
     user-visible streams.
     """
 
-    if _bounded_shutdown_timeout() is None:
+    if not one_shot and _bounded_shutdown_timeout() is None:
         return
     for stream in (sys.stdout, sys.stderr):
         try:

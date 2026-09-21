@@ -4,6 +4,7 @@
 import abc
 import inspect
 import os
+import threading
 import time
 import traceback
 from typing import Dict, Tuple, Any, TypeVar, Generic, List, Union, Callable
@@ -30,6 +31,10 @@ from aworld.core.event.base import Message, AgentMessage, Constants, MemoryEvent
 from aworld.core.factory import Factory
 from aworld.core.tool.action import ToolAction
 from aworld.core.tool.action_factory import ActionFactory
+from aworld.core.tool.replay_policy import (
+    enforce_replay_evidence_runtime_policy,
+    record_replay_runtime_tool_result,
+)
 from aworld.events import eventbus
 from aworld.events.util import send_message, send_message_with_future
 from aworld.logs.util import logger
@@ -50,6 +55,38 @@ ToolInput = TypeVar("ToolInput")
 
 # Forward declaration of action_executor to fix NameError
 action_executor = None
+
+
+def _tool_result_output_metadata(action_result: ActionResult) -> Dict[str, Any]:
+    """Expose canonical execution status on every streamed tool result.
+
+    Tool-specific metadata is intentionally retained, while the framework's
+    ``ActionResult`` remains authoritative for success/error.  CLI and other
+    stream consumers should not need to reverse-engineer a serialized payload
+    merely to decide whether the call failed.
+    """
+
+    metadata = dict(action_result.metadata or {})
+    fields_set = getattr(action_result, "model_fields_set", set())
+    status_is_explicit = "success" in fields_set or bool(action_result.error)
+    if status_is_explicit:
+        metadata["success"] = bool(action_result.success)
+    if action_result.error:
+        metadata["error"] = str(action_result.error)
+    elif status_is_explicit and action_result.success:
+        metadata.pop("error", None)
+        metadata.pop("result_error", None)
+    if action_result.parameter and "args" not in metadata:
+        metadata["args"] = action_result.parameter
+    return metadata
+
+
+# A task can emit tool messages through copied Context instances.  Keep the
+# opt-in runtime budget outside those transient objects, keyed by the stable
+# session/task identity assigned by TaskRunner.  Access is guarded because sync
+# and async tools may reserve calls concurrently.
+_runtime_tool_call_budget_lock = threading.Lock()
+_runtime_tool_call_counts: Dict[Tuple[str, str], int] = {}
 
 
 def _journal_model_visible_tool_observation(context, actions, observation) -> None:
@@ -121,7 +158,7 @@ def _enforce_runtime_tool_call_budget(
     action: List["ActionModel"],
     message: Message,
 ) -> None:
-    """Apply an opt-in process-local tool-call budget to one task context."""
+    """Atomically reserve opt-in tool calls against one stable task budget."""
     raw_limit = os.environ.get("AWORLD_TOOL_CALL_LIMIT")
     if not raw_limit:
         return
@@ -133,15 +170,96 @@ def _enforce_runtime_tool_call_budget(
     if limit <= 0:
         return
 
-    owner = getattr(message, "context", None) or message
-    current = int(getattr(owner, "_aworld_runtime_tool_call_count", 0) or 0)
     requested = len(action or ())
-    if current + requested > limit:
-        raise ToolExecutionDenied(
-            tool_name,
-            f"runtime tool-call budget exhausted ({current}/{limit})",
-        )
-    setattr(owner, "_aworld_runtime_tool_call_count", current + requested)
+    if requested <= 0:
+        return
+
+    owner = getattr(message, "context", None) or message
+    budget_key = _runtime_tool_call_budget_key(owner, message=message)
+    with _runtime_tool_call_budget_lock:
+        if budget_key is None:
+            # Compatibility fallback for callers outside TaskRunner that do not
+            # have a task/session identity.  The lock still makes reservations
+            # on a shared Context atomic.
+            current = int(
+                getattr(owner, "_aworld_runtime_tool_call_count", 0) or 0
+            )
+        else:
+            current = _runtime_tool_call_counts.get(budget_key, 0)
+        if current + requested > limit:
+            raise ToolExecutionDenied(
+                tool_name,
+                f"runtime tool-call budget exhausted ({current}/{limit})",
+            )
+        if budget_key is None:
+            setattr(
+                owner,
+                "_aworld_runtime_tool_call_count",
+                current + requested,
+            )
+        else:
+            _runtime_tool_call_counts[budget_key] = current + requested
+
+
+def _runtime_tool_call_budget_key(
+    context: Any,
+    *,
+    message: Any = None,
+) -> Tuple[str, str] | None:
+    """Return the stable session/task identity used by runtime budget state."""
+
+    task_id = getattr(context, "task_id", None)
+    if not task_id:
+        get_task = getattr(context, "get_task", None)
+        if callable(get_task):
+            task = get_task()
+            task_id = getattr(task, "id", None) if task is not None else None
+
+    session_id = getattr(context, "session_id", None)
+    if not session_id and message is not None:
+        session_id = getattr(message, "session_id", None)
+
+    normalized_task_id = str(task_id or "").strip()
+    normalized_session_id = str(session_id or "").strip()
+    if normalized_task_id:
+        return normalized_session_id, normalized_task_id
+    if normalized_session_id:
+        return normalized_session_id, "<session>"
+    return None
+
+
+def release_runtime_tool_call_budget(
+    context: Any,
+    *,
+    message: Any = None,
+) -> None:
+    """Release task-scoped runtime budget state after task termination."""
+
+    budget_key = _runtime_tool_call_budget_key(context, message=message)
+    with _runtime_tool_call_budget_lock:
+        if budget_key is None:
+            if hasattr(context, "_aworld_runtime_tool_call_count"):
+                delattr(context, "_aworld_runtime_tool_call_count")
+            return
+        _runtime_tool_call_counts.pop(budget_key, None)
+
+
+def _enforce_replay_evidence_runtime_policy(
+    tool_name: str,
+    action: List["ActionModel"],
+    message: Message,
+) -> None:
+    violation_code = enforce_replay_evidence_runtime_policy(
+        tool_name,
+        action,
+        message,
+    )
+    if violation_code is None:
+        return
+    raise ToolExecutionDenied(
+        tool_name,
+        f"replay evidence runtime policy rejected {violation_code}",
+    )
 
 
 def _iter_hook_headers(hook_events: List[Message]):
@@ -500,7 +618,9 @@ class Tool(BaseTool[Observation, List[ActionModel]]):
             return
         for idx, act in enumerate(action):
             if eventbus is not None:
-                metadata = dict(step_res[0].action_result[idx].metadata or {})
+                metadata = _tool_result_output_metadata(
+                    step_res[0].action_result[idx]
+                )
                 if input_message.headers.get("system_message"):
                     metadata["system_message"] = input_message.headers["system_message"]
                 updated_output = input_message.headers.get("updated_output")
@@ -561,6 +681,7 @@ class Tool(BaseTool[Observation, List[ActionModel]]):
 
             _apply_hook_headers_to_message(message, pre_hook_events)
 
+            _enforce_replay_evidence_runtime_policy(self.name(), action, message)
             _enforce_runtime_tool_call_budget(self.name(), action, message)
 
             self.pre_step(action, **kwargs)
@@ -592,6 +713,7 @@ class Tool(BaseTool[Observation, List[ActionModel]]):
             )
 
             final_res = self.post_step(res, action,message=message, **kwargs)
+            record_replay_runtime_tool_result(action, res, message)
             if isinstance(final_res, Message):
                 self._update_headers(final_res, message)
             self._internal_process(
@@ -769,7 +891,9 @@ class AsyncTool(AsyncBaseTool[Observation, List[ActionModel]]):
         for idx, act in enumerate(action):
             # send tool results output
             if eventbus is not None:
-                metadata = dict(step_res[0].action_result[idx].metadata or {})
+                metadata = _tool_result_output_metadata(
+                    step_res[0].action_result[idx]
+                )
                 if input_message.headers.get("system_message"):
                     metadata["system_message"] = input_message.headers["system_message"]
                 updated_output = input_message.headers.get("updated_output")
@@ -868,6 +992,7 @@ class AsyncTool(AsyncBaseTool[Observation, List[ActionModel]]):
 
             _apply_hook_headers_to_message(message, pre_hook_events)
 
+            _enforce_replay_evidence_runtime_policy(self.name(), action, message)
             _enforce_runtime_tool_call_budget(self.name(), action, message)
 
             await self.pre_step(action, message=message,**kwargs)
@@ -900,6 +1025,7 @@ class AsyncTool(AsyncBaseTool[Observation, List[ActionModel]]):
             )
 
             final_res = await self.post_step(res, action, message=message,**kwargs)
+            record_replay_runtime_tool_result(action, res, message)
             await self._internal_process(res, action, message, tool_id_mapping=tool_id_mapping, **kwargs)
             if isinstance(final_res, Message):
                 self._update_headers(final_res, message)

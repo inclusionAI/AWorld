@@ -5,6 +5,8 @@ from pathlib import Path
 
 import pytest
 
+import aworld.self_evolve.datasets as datasets_module
+
 from aworld.self_evolve.datasets import (
     EvalCase,
     SelfEvolveEvalSourceConfig,
@@ -13,6 +15,7 @@ from aworld.self_evolve.datasets import (
     is_framework_meta_trace_pack,
     load_jsonl_eval_cases,
 )
+from aworld.self_evolve.trace_pack import TrajectoryLogRecord
 
 
 def test_eval_source_config_defaults_to_current_trajectory_and_validates_kind() -> None:
@@ -119,6 +122,23 @@ def test_two_case_recipe_preserves_one_independent_held_out_member() -> None:
     assert recipe.held_out_case_ids == tuple(recipe.splits["held_out"])
 
 
+def test_broad_recipe_reserves_authoritative_replacement_controls() -> None:
+    cases = tuple(
+        EvalCase(case_id=f"case-{index}", input=f"task {index}")
+        for index in range(11)
+    )
+    recipe = build_dataset_recipe(
+        cases,
+        source_config=SelfEvolveEvalSourceConfig(kind="trajectory_log"),
+        split_seed="replacement-controls",
+    )
+
+    assert len(recipe.splits["held_out"]) == 4
+    assert len(recipe.splits["validation"]) == 4
+    assert len(recipe.splits["train"]) == 3
+    assert recipe.held_out_case_ids == tuple(recipe.splits["held_out"])
+
+
 def test_build_dataset_from_jsonl_applies_task_id_filter_and_records_it(tmp_path) -> None:
     path = tmp_path / "cases.jsonl"
     path.write_text(
@@ -214,6 +234,50 @@ def test_build_dataset_from_current_trajectory_and_trajectory_log_sources(tmp_pa
     )
     assert log_dataset.recipe.source["path"] == str(fixture_log)
     assert log_dataset.recipe.source["case_count"] == 2
+
+
+def test_unfiltered_trajectory_ingestion_stops_at_bounded_case_panel(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    trajectory_path = tmp_path / "large-trajectory.log"
+    trajectory_path.write_text("streamed fixture\n", encoding="utf-8")
+    yielded = 0
+
+    def records(_path):
+        nonlocal yielded
+        for index in range(1_000):
+            yielded += 1
+            yield TrajectoryLogRecord(
+                record_index=index,
+                task_id=f"task-{index}",
+                record_metadata={"task_id": f"task-{index}"},
+                trajectory=(
+                    {
+                        "meta": {"step": 1, "agent_id": "agent"},
+                        "state": {"input": {"content": f"task {index}"}},
+                        "action": {"content": "done"},
+                        "reward": {"status": "ok"},
+                    },
+                ),
+            )
+
+    monkeypatch.setattr(
+        datasets_module,
+        "iter_trajectory_log_records",
+        records,
+    )
+
+    dataset = build_dataset_from_source(
+        SelfEvolveEvalSourceConfig(
+            kind="trajectory_log",
+            path=str(trajectory_path),
+            max_cases=5,
+        )
+    )
+
+    assert len(dataset.cases) == 5
+    assert yielded == 5
 
 
 def test_trajectory_log_filters_framework_meta_trajectories_from_baseline_set(tmp_path) -> None:

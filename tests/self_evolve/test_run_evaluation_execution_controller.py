@@ -1,0 +1,594 @@
+from __future__ import annotations
+
+import ast
+import inspect
+from dataclasses import replace
+from decimal import Decimal
+from types import SimpleNamespace
+
+import pytest
+
+from aworld.self_evolve.budget import (
+    BudgetCeilings,
+    BudgetEstimateConfidence,
+    BudgetEstimateSource,
+    BudgetStage,
+    CandidateAttemptKey,
+    CandidateAttemptStage,
+    RunBudgetLedger,
+    StageBudgetEstimate,
+)
+from aworld.self_evolve.concurrency import SelfEvolveExecutionTelemetry
+from aworld.self_evolve.controllers import (
+    run_evaluation_execution as execution_module,
+)
+from aworld.self_evolve.controllers.run_evaluation_admission import (
+    CandidateEvaluationAdmissionResult,
+)
+from aworld.self_evolve.controllers.run_evaluation_execution import (
+    CandidateEvaluationExecutionPolicy,
+    CandidateEvaluationExecutionRequest,
+    CandidateEvaluationExecutionRuntime,
+    execute_candidate_evaluation,
+)
+from aworld.self_evolve.controllers.run_execution import (
+    CandidateEvaluationRequest,
+)
+from aworld.self_evolve.controllers.run_budget_support import (
+    _execution_usage_report,
+    _judge_actual_token_usage,
+)
+from aworld.self_evolve.controllers.run_replay_execution import (
+    CandidateReplayExecutionResult,
+)
+from aworld.self_evolve.datasets import EvalCase, SelfEvolveDataset
+from aworld.self_evolve.optimizers.base import (
+    CandidateSourceDisposition,
+    CandidateSourceKind,
+)
+from aworld.self_evolve.regression import (
+    RegressionEvidence,
+    RegressionSuiteResult,
+    RegressionSuiteSpec,
+)
+from aworld.self_evolve.types import (
+    CandidateVariant,
+    DatasetRecipe,
+    EvaluationSummary,
+    GateResult,
+    SelfEvolveTargetRef,
+)
+
+
+def _dataset() -> SelfEvolveDataset:
+    return SelfEvolveDataset(
+        cases=(EvalCase(case_id="case-1", input={"content": "task"}),),
+        recipe=DatasetRecipe(
+            source={"kind": "evaluation-execution-test"},
+            split_seed="seed",
+            splits={"train": ["case-1"]},
+            trainable_case_ids=("case-1",),
+        ),
+    )
+
+
+def _candidate() -> CandidateVariant:
+    return CandidateVariant(
+        candidate_id="candidate-1",
+        target=SelfEvolveTargetRef("skill", "demo", None),
+        content="# Improved\n",
+        rationale="exercise evaluation execution",
+    )
+
+
+class _AttemptTracker:
+    def __init__(self) -> None:
+        self.events: list[CandidateAttemptStage] = []
+
+    def emit(self, _key, stage, **_kwargs):
+        self.events.append(stage)
+
+
+class _BudgetContext:
+    def __init__(self) -> None:
+        self.debits: list[dict[str, object]] = []
+
+    def debit(self, decision, **kwargs):
+        self.debits.append({"decision": decision, **kwargs})
+
+
+def _decision(stage: BudgetStage, item_id: str):
+    ledger = RunBudgetLedger(BudgetCeilings(None, None, None))
+    return ledger.reserve(
+        StageBudgetEstimate(
+            stage=stage,
+            item_id=item_id,
+            tokens=10,
+            cost_usd=Decimal("1"),
+            wall_seconds=Decimal("1"),
+            source=BudgetEstimateSource.CONFIGURED_COLD_START,
+            confidence=BudgetEstimateConfidence.LOW,
+        )
+    )
+
+
+def _summary(
+    variant_id: str,
+    score: float,
+    *,
+    execution_id: str,
+    score_std: float | None = None,
+) -> EvaluationSummary:
+    metrics: dict[str, object] = {
+        "score": score,
+        "latency_ms": 10.0,
+        "cost_usd": 1.0,
+        "evaluation_execution_id": execution_id,
+        "judge_success_count": 3,
+        "judge_attempt_count": 3,
+        "judge_total_tokens": 5,
+        "command_case_count": 1,
+        "command_pass_count": 1,
+        "deterministic_signal": True,
+    }
+    if score_std is not None:
+        metrics["score_std"] = score_std
+    return EvaluationSummary(
+        variant_id=variant_id,
+        metrics=metrics,
+        dataset_split="validation",
+    )
+
+
+def _request(
+    *,
+    apply_policy: str = "proposal",
+    budget_context=None,
+    attempt_tracker=None,
+    evaluation_budget=None,
+    judge_budget=None,
+    backend=object(),
+) -> tuple[
+    CandidateEvaluationExecutionRequest,
+    CandidateEvaluationExecutionPolicy,
+]:
+    dataset = _dataset()
+    evaluation = CandidateEvaluationRequest(
+        run_id="run-1",
+        target=SimpleNamespace(),
+        dataset=dataset,
+        candidate=_candidate(),
+        apply_policy=apply_policy,
+        target_provenance=None,
+        iteration_number=1,
+        candidate_number=1,
+        candidate_count=1,
+        attempt_key=(
+            CandidateAttemptKey("run-1", 0, 0)
+            if attempt_tracker is not None
+            else None
+        ),
+        attempt_tracker=attempt_tracker,
+        budget_context=budget_context,
+    )
+    replay = CandidateReplayExecutionResult(
+        gate_results=(
+            GateResult("target_behavior_delta", True, "behavior changed"),
+        ),
+        replay_result=None,
+        replay_dataset=None,
+        replay_started=False,
+    )
+    admission = CandidateEvaluationAdmissionResult(
+        gate_results=replay.gate_results,
+        evaluation_dataset=dataset,
+        replay_blocked_verified_apply=False,
+        evaluation_budget=evaluation_budget,
+        judge_budget=judge_budget,
+        expected_judge_summary_count=(2 if backend is not None else 0),
+        evaluation_case_count=1,
+        baseline_is_cached=False,
+        evaluation_units=2 if backend is not None else 0,
+    )
+    return (
+        CandidateEvaluationExecutionRequest(
+            evaluation=evaluation,
+            replay=replay,
+            admission=admission,
+        ),
+        CandidateEvaluationExecutionPolicy(
+            evaluation_backend=backend,
+            max_iterations=2,
+            min_score_delta=0.0,
+            replay_stability_margin=0.0,
+            min_eval_cases=0,
+            require_resource_evidence=False,
+        ),
+    )
+
+
+def _runtime(
+    *,
+    telemetry: SelfEvolveExecutionTelemetry,
+    evaluate_pair,
+    evaluate_variant=None,
+    accumulate_score_evidence=lambda _first, second: second,
+) -> CandidateEvaluationExecutionRuntime:
+    async def unused_regression(**_kwargs):
+        raise AssertionError("regression should not run in controller unit test")
+
+    async def default_variant(_backend, *, request, **_kwargs):
+        return replace_split(
+            _summary(
+                request.variant_id,
+                82.0,
+                execution_id="held-out",
+            ),
+            request.dataset_split,
+        )
+
+    return CandidateEvaluationExecutionRuntime(
+        task_batch_executor=object(),
+        max_concurrency=2,
+        execution_telemetry=telemetry,
+        progress_callback=None,
+        evaluate_pair=evaluate_pair,
+        evaluate_variant=evaluate_variant or default_variant,
+        merge_replay_evidence=lambda summary, _replay: summary,
+        evidence_quality_gate=lambda *_args, **_kwargs: None,
+        accumulate_score_evidence=accumulate_score_evidence,
+        replay_stability_gate=lambda **_kwargs: None,
+        same_evaluation_execution=lambda *_args: False,
+        judge_actual_token_usage=(
+            lambda *_args, **_kwargs: (11, "test_judge_tokens")
+        ),
+        evaluate_independent_regression=unused_regression,
+        gate_is_replay_infrastructure_failure=lambda _gate: False,
+    )
+
+
+def replace_split(
+    summary: EvaluationSummary,
+    dataset_split: str,
+) -> EvaluationSummary:
+    return EvaluationSummary(
+        variant_id=summary.variant_id,
+        metrics=summary.metrics,
+        dataset_split=dataset_split,
+    )
+
+
+@pytest.mark.asyncio
+async def test_evaluation_execution_settles_telemetry_and_judge_budget() -> None:
+    telemetry = SelfEvolveExecutionTelemetry()
+    budget = _BudgetContext()
+    tracker = _AttemptTracker()
+    evaluation_budget = _decision(
+        BudgetStage.EVALUATION,
+        "candidate-1-evaluation",
+    )
+    judge_budget = _decision(BudgetStage.JUDGE, "candidate-1-judge")
+
+    async def evaluate_pair(_backend, **_kwargs):
+        telemetry.record(
+            "evaluation",
+            {
+                "item_count": 2,
+                "elapsed_seconds": 3,
+                "token_usage": {"total_tokens": 17},
+            },
+        )
+        return (
+            _summary("baseline", 0.2, execution_id="baseline-1"),
+            _summary("candidate-1", 0.8, execution_id="candidate-1"),
+        )
+
+    request, policy = _request(
+        budget_context=budget,
+        attempt_tracker=tracker,
+        evaluation_budget=evaluation_budget,
+        judge_budget=judge_budget,
+    )
+    result = await execute_candidate_evaluation(
+        request,
+        policy,
+        _runtime(telemetry=telemetry, evaluate_pair=evaluate_pair),
+    )
+
+    assert result.fresh_evaluation_completed is True
+    assert result.baseline_summary is not None
+    assert tracker.events == [CandidateAttemptStage.EVALUATION]
+    assert len(budget.debits) == 2
+    evaluation_observation = budget.debits[0]["usage_observation"]
+    assert evaluation_observation.known_lower_bound.tokens == 17
+    assert budget.debits[1]["tokens"] == 11
+    assert budget.debits[1]["actual_source"] == "test_judge_tokens"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("usage_case", ["complete", "partial_tiebreak", "initial_failure"])
+async def test_regression_tiebreak_accounts_for_all_raw_rounds_once(
+    usage_case: str,
+) -> None:
+    budget = _BudgetContext()
+    raw = tuple(
+        EvaluationSummary(
+            variant_id=role,
+            dataset_split="regression",
+            metrics={
+                "evaluation_execution_id": f"regression-{index}",
+                "evaluation_fresh_execution": True,
+                "judge_attempt_count": 1,
+                "judge_estimated_input_tokens_total": tokens // 2,
+                **({} if usage_case == "initial_failure" or (
+                    usage_case == "partial_tiebreak" and index >= 2)
+                   else {"judge_total_tokens": tokens}),
+            },
+        )
+        for index, (role, tokens) in enumerate([
+            ("baseline", 10), ("candidate-1", 20),
+            ("baseline", 30), ("candidate-1", 40),
+        ][:2 if usage_case == "initial_failure" else 4])
+    )
+    # Pooled score summaries are not raw judge calls and must not be charged.
+    pooled = tuple(
+        replace(summary, metrics={
+            **summary.metrics, "judge_total_tokens": 999_999,
+            "judge_attempt_count": 6,
+        })
+        for summary in raw[-2:]
+    )
+    suite = RegressionSuiteResult(
+        spec=RegressionSuiteSpec(
+            suite_id="independent", source_kind="jsonl", source_ref="test.jsonl",
+            source_version="source", dataset_fingerprint="independent-dataset",
+            split_fingerprint="independent-split", case_fingerprints=("independent-case",),
+        ),
+        baseline_summary=pooled[0], candidate_summary=pooled[1],
+        gate_results=(GateResult("score_improvement", True, "pooled score accepted"),),
+        execution_id="regression-suite", duration_ms=1,
+        evaluation_summaries=raw,
+        fresh_execution=usage_case != "initial_failure",
+    )
+    evidence = RegressionEvidence(
+        candidate_id="candidate-1", selection_dataset_fingerprint="selection",
+        selection_case_fingerprints=("selection-case",), selection_backend_id="selection",
+        regression_backend_id="regression", suite_results=(suite,),
+    )
+
+    async def evaluate_pair(_backend, **kwargs):
+        split = kwargs["dataset_split"]
+        return tuple(
+            replace_split(_summary(role, score, execution_id=f"{role}-{split}"), split)
+            for role, score in [("baseline", 70.0), ("candidate-1", 82.0)]
+        )
+
+    async def regression(**_kwargs):
+        return evidence, None, GateResult("challenger_admission", True, "admitted")
+
+    request, policy = _request(
+        apply_policy="verified_only", budget_context=budget,
+        judge_budget=_decision(BudgetStage.JUDGE, "candidate-1-judge"),
+    )
+    dataset = request.admission.evaluation_dataset
+    dataset = replace(dataset, recipe=replace(
+        dataset.recipe, held_out_case_ids=("case-1",),
+        splits={"held_out": ["case-1"]}, trainable_case_ids=(),
+    ))
+    request = replace(
+        request, evaluation=replace(request.evaluation, dataset=dataset),
+        admission=replace(request.admission, evaluation_dataset=dataset),
+    )
+    runtime = replace(
+        _runtime(telemetry=SelfEvolveExecutionTelemetry(), evaluate_pair=evaluate_pair),
+        evaluate_independent_regression=regression,
+        judge_actual_token_usage=_judge_actual_token_usage,
+    )
+    result = await execute_candidate_evaluation(request, policy, runtime)
+    assert result.regression_evidence is evidence
+    assert len(budget.debits) == 1
+    debit = budget.debits[0]
+    if usage_case != "complete":
+        expected_lower_bound = 35 if usage_case == "initial_failure" else 85
+        assert debit["usage_observation"].known_lower_bound.tokens == expected_lower_bound
+        assert debit["actual_source"].startswith("known_lower_bound_")
+    else:
+        # 4 selection/held-out summaries x 5, then 10 + 20 + 30 + 40.
+        assert debit["tokens"] == 120
+        assert debit["actual_source"] == "judge_total_tokens"
+    usage = _execution_usage_report(
+        optimizer_diagnostics=[], iteration_states=[{"regression_evidence": evidence}], stages={},
+    )
+    assert usage["evaluation_usage"]["judge_attempt_count"] == len(raw)
+    assert usage["token_usage"]["judge_estimated_input_tokens"] == (
+        15 if usage_case == "initial_failure" else 50
+    )
+
+
+@pytest.mark.asyncio
+async def test_evaluation_execution_runs_bounded_score_tiebreak() -> None:
+    telemetry = SelfEvolveExecutionTelemetry()
+    pair_calls: list[str | None] = []
+
+    async def evaluate_pair(_backend, **kwargs):
+        pair_calls.append(kwargs.get("artifact_namespace"))
+        suffix = len(pair_calls)
+        return (
+            _summary(
+                "baseline",
+                80.0,
+                execution_id=f"baseline-{suffix}",
+                score_std=4.0,
+            ),
+            _summary(
+                "candidate-1",
+                82.0,
+                execution_id=f"candidate-{suffix}",
+                score_std=4.0,
+            ),
+        )
+
+    request, policy = _request(apply_policy="verified_only")
+    result = await execute_candidate_evaluation(
+        request,
+        policy,
+        _runtime(telemetry=telemetry, evaluate_pair=evaluate_pair),
+    )
+
+    assert pair_calls == [
+        "run-1",
+        "run-1-score-tiebreak-1-candidate-1",
+        "run-1-held-out-candidate-1",
+    ]
+    score_gate = next(
+        gate
+        for gate in result.gate_results
+        if gate.gate_name == "score_improvement"
+    )
+    assert score_gate.details["tiebreak_round"] == 1
+
+
+@pytest.mark.asyncio
+async def test_held_out_evidence_is_compared_to_fresh_held_out_baseline() -> None:
+    telemetry = SelfEvolveExecutionTelemetry()
+    evidence_pairs: list[tuple[str, str | None]] = []
+
+    async def evaluate_pair(_backend, **kwargs):
+        split = kwargs["dataset_split"]
+        return (
+            replace_split(
+                _summary("baseline", 70.0, execution_id=f"baseline-{split}"),
+                split,
+            ),
+            replace_split(
+                _summary("candidate-1", 82.0, execution_id=f"candidate-{split}"),
+                split,
+            ),
+        )
+
+    def evidence_gate(summary, *, baseline=None):
+        evidence_pairs.append(
+            (summary.dataset_split, baseline.dataset_split if baseline else None)
+        )
+        return None
+
+    request, policy = _request(apply_policy="verified_only")
+    runtime = replace(
+        _runtime(telemetry=telemetry, evaluate_pair=evaluate_pair),
+        evidence_quality_gate=evidence_gate,
+    )
+    result = await execute_candidate_evaluation(request, policy, runtime)
+
+    assert result.fresh_evaluation_completed is True
+    assert evidence_pairs == [
+        ("validation", "validation"),
+        ("validation", "validation"),
+        ("held_out", "held_out"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_evaluation_execution_normalizes_backend_exception() -> None:
+    telemetry = SelfEvolveExecutionTelemetry()
+
+    async def failed_pair(_backend, **_kwargs):
+        raise RuntimeError("judge unavailable")
+
+    request, policy = _request()
+    result = await execute_candidate_evaluation(
+        request,
+        policy,
+        _runtime(telemetry=telemetry, evaluate_pair=failed_pair),
+    )
+
+    gate = next(
+        gate for gate in result.gate_results if gate.gate_name == "evaluation"
+    )
+    assert gate.passed is False
+    assert gate.details["code"] == "evaluation_infrastructure_error"
+    assert gate.details["reason"] == "judge unavailable"
+
+
+@pytest.mark.asyncio
+async def test_evaluation_execution_requires_backend_for_verified_apply() -> None:
+    telemetry = SelfEvolveExecutionTelemetry()
+
+    async def must_not_evaluate(_backend, **_kwargs):
+        raise AssertionError("missing backend must not evaluate")
+
+    request, policy = _request(
+        apply_policy="verified_only",
+        backend=None,
+    )
+    result = await execute_candidate_evaluation(
+        request,
+        policy,
+        _runtime(telemetry=telemetry, evaluate_pair=must_not_evaluate),
+    )
+
+    gate = next(gate for gate in result.gate_results if not gate.passed)
+    assert gate.gate_name == "auto_verified_evaluation"
+    assert gate.details["code"] == "evaluation_backend_missing"
+
+
+@pytest.mark.asyncio
+async def test_incomplete_replay_does_not_emit_derived_fresh_rerun_failure() -> None:
+    telemetry = SelfEvolveExecutionTelemetry()
+
+    async def must_not_evaluate(_backend, **_kwargs):
+        raise AssertionError("incomplete replay must not start judge evaluation")
+
+    request, policy = _request(apply_policy="verified_only")
+    replay_gate = GateResult(
+        "candidate_replay",
+        False,
+        "paired replay has a resumable checkpoint",
+        details={
+            "code": "replay_total_timeout",
+            "failure_class": "measurement",
+            "next_action": "continue_measurement",
+        },
+    )
+    source = CandidateSourceDisposition(
+        kind=CandidateSourceKind.STORED_EVIDENCE_RERUN,
+        source_run_id="source-run",
+    )
+    evaluation = replace(request.evaluation, source_disposition=source)
+    replay = replace(request.replay, gate_results=(replay_gate,))
+    admission = replace(
+        request.admission,
+        gate_results=(replay_gate,),
+        replay_blocked_verified_apply=True,
+    )
+
+    result = await execute_candidate_evaluation(
+        CandidateEvaluationExecutionRequest(
+            evaluation=evaluation,
+            replay=replay,
+            admission=admission,
+        ),
+        policy,
+        _runtime(telemetry=telemetry, evaluate_pair=must_not_evaluate),
+    )
+
+    assert [gate.gate_name for gate in result.gate_results] == [
+        "candidate_replay"
+    ]
+    assert result.fresh_evaluation_completed is False
+
+
+def test_run_evaluation_execution_controller_does_not_import_runner() -> None:
+    tree = ast.parse(inspect.getsource(execution_module))
+    imported_modules = {
+        node.module
+        for node in ast.walk(tree)
+        if isinstance(node, ast.ImportFrom) and node.module is not None
+    }
+    imported_modules.update(
+        alias.name
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Import)
+        for alias in node.names
+    )
+
+    assert "aworld.self_evolve.runner" not in imported_modules

@@ -7,6 +7,7 @@ import pytest
 from aworld.self_evolve.schema_diagnostics import (
     SchemaFieldRepairConstraint,
     SchemaFieldViolation,
+    aggregate_schema_field_violations,
     schema_field_diagnostic_details,
 )
 
@@ -56,6 +57,26 @@ from aworld.self_evolve.schema_diagnostics import (
             "skill_runtime",
             "http_fixture",
         ),
+        (
+            SchemaFieldRepairConstraint(
+                schema_layer="protocol_trace",
+                field_path="records[*].direction",
+                rule="contains_all",
+                expected=("in", "out"),
+            ),
+            ["in", "out"],
+            ["out"],
+        ),
+        (
+            SchemaFieldRepairConstraint(
+                schema_layer="compile_result",
+                field_path="services[*].protocol_probes[*].path",
+                rule="starts_with",
+                expected=("/",),
+            ),
+            "/task-plane",
+            "task-plane",
+        ),
     ],
 )
 def test_schema_field_constraint_is_executable_and_round_trips(
@@ -93,6 +114,33 @@ def test_schema_field_violation_projection_is_payload_free_and_exact() -> None:
     assert details["schema_field_violation_count"] == 4
     assert details["schema_field_constraints"] == [constraint.to_dict()]
     assert len(details["schema_field_violations"]) == 2
+
+
+def test_schema_field_violation_projection_aggregates_identical_instances() -> None:
+    constraint = SchemaFieldRepairConstraint(
+        schema_layer="compile_result",
+        field_path="services[*].readiness.kind",
+        rule="required",
+    )
+    violations = aggregate_schema_field_violations(
+        tuple(SchemaFieldViolation.create(constraint, None) for _ in range(5))
+    )
+
+    assert len(violations) == 1
+    assert violations[0].occurrence_count == 5
+    details = schema_field_diagnostic_details(violations)
+    assert details["schema_field_violation_count"] == 5
+    assert details["schema_field_violations"] == [
+        {
+            "constraint_identity_digest": constraint.identity_digest,
+            "schema_layer": "compile_result",
+            "field_path": "services[*].readiness.kind",
+            "rule": "required",
+            "actual_type": "null",
+            "actual_fingerprint": violations[0].actual_fingerprint,
+            "occurrence_count": 5,
+        }
+    ]
 
 
 def test_source_behavior_constraint_is_explicit_and_round_trips() -> None:

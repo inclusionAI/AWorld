@@ -1,0 +1,10 @@
+{
+  "schema_version": "aworld.builtin-skills/v1",
+  "skills": {
+    "filex": {
+      "source": "aworld-skills/filex",
+      "skill_file": "filex/SKILL.md",
+      "execution_assets": ["filex/scripts/filex.py"]
+    }
+  }
+}

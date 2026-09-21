@@ -1,4 +1,5 @@
 import asyncio
+import json
 from pathlib import Path
 
 import pytest
@@ -196,6 +197,54 @@ def test_lower_mcp_call_result_preserves_every_content_block_in_order():
     assert result.content == ["first", "second"]
 
 
+def test_lower_mcp_call_result_honors_explicit_failed_result_envelope():
+    payload = {
+        "success": False,
+        "message": "command failed",
+        "metadata": {
+            "command": "false",
+            "execution_time": 1.25,
+            "return_code": 1,
+        },
+    }
+
+    result = utils.lower_mcp_call_result(
+        CallToolResult(
+            content=[TextContent(type="text", text=json.dumps(payload))],
+            # Transport succeeded; the tool result did not.
+            isError=False,
+        ),
+        server_name="terminal",
+        tool_name="run_code",
+        parameter={"code": "false"},
+    )
+
+    assert result.success is False
+    assert result.error == "command failed"
+    assert result.content == json.dumps(payload)
+    assert result.metadata == {
+        "command": "false",
+        "execution_time": 1.25,
+        "return_code": 1,
+        "result_success": False,
+        "result_error": "command failed",
+    }
+
+
+def test_lower_mcp_call_result_does_not_infer_failure_from_nested_domain_data():
+    payload = {"rows": [{"success": False, "name": "domain record"}]}
+
+    result = utils.lower_mcp_call_result(
+        CallToolResult(content=[TextContent(type="text", text=json.dumps(payload))]),
+        server_name="db",
+        tool_name="query",
+    )
+
+    assert result.success is True
+    assert result.error is None
+    assert result.metadata == {}
+
+
 def test_mcp_tool_retry_safe_requires_explicit_tool_configuration():
     config = {
         "mcpServers": {
@@ -366,3 +415,32 @@ async def test_reuse_call_reconnects_before_retrying_explicitly_safe_tool(
     assert failed.cleanup_calls == 1
     assert recovered.calls == 1
     assert server_instances["catalog"] is recovered
+
+
+def test_stdio_server_environment_inherits_replay_evidence_bindings(monkeypatch):
+    monkeypatch.setenv(
+        "AWORLD_MCP_STDIO_INHERIT_ENV_PREFIXES",
+        "AWORLD_REPLAY_",
+    )
+    monkeypatch.setenv("AWORLD_REPLAY_ENDPOINT_BROWSER", "http://127.0.0.1:54321")
+    monkeypatch.setenv("AWORLD_REPLAY_ARTIFACT_DIR", "/evidence")
+    monkeypatch.setenv(
+        "AWORLD_REPLAY_EVIDENCE_MANIFEST",
+        "/evidence/evidence_manifest.jsonl",
+    )
+    monkeypatch.setenv("AWORLD_SELF_EVOLVE_REPLAY_ARTIFACT_DIR", "/private/evidence")
+    monkeypatch.setenv(
+        "AWORLD_SELF_EVOLVE_EVIDENCE_MANIFEST",
+        "/private/evidence/evidence_manifest.jsonl",
+    )
+    monkeypatch.setenv("AWORLD_SELF_EVOLVE_ISOLATED_SKILL_ROOTS", "/private/skill")
+
+    environment = utils._stdio_server_environment({"env": {}})
+
+    assert environment == {
+        "AWORLD_REPLAY_ARTIFACT_DIR": "/evidence",
+        "AWORLD_REPLAY_ENDPOINT_BROWSER": "http://127.0.0.1:54321",
+        "AWORLD_REPLAY_EVIDENCE_MANIFEST": (
+            "/evidence/evidence_manifest.jsonl"
+        ),
+    }

@@ -37,6 +37,9 @@ aworld-cli = "aworld_cli.main:main"
 [tool.hatch.build.targets.wheel]
 packages = ["src/aworld_cli"]
 
+[tool.hatch.build.hooks.custom]
+path = "hatch_build.py"
+
 [tool.uv]
 dev-dependencies = []
 

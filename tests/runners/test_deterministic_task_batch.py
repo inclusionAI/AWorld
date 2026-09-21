@@ -89,6 +89,34 @@ async def test_collect_all_returns_failed_responses_in_index_order() -> None:
 
 
 @pytest.mark.asyncio
+async def test_external_cancellation_propagates_out_of_batch() -> None:
+    started = asyncio.Event()
+    cancelled = asyncio.Event()
+
+    async def run_task(task: Task):
+        started.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            cancelled.set()
+
+    executor = DeterministicTaskBatchExecutor(run_task=run_task)
+    running = asyncio.create_task(
+        executor.run(
+            [_item(0)],
+            max_concurrency=1,
+            failure_policy="collect_all",
+        )
+    )
+    await asyncio.wait_for(started.wait(), timeout=1)
+    running.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await running
+    await asyncio.wait_for(cancelled.wait(), timeout=1)
+
+
+@pytest.mark.asyncio
 async def test_indexed_fail_fast_discards_higher_indexes() -> None:
     index_zero_release = asyncio.Event()
     index_zero_started = asyncio.Event()

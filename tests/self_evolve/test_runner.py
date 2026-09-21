@@ -3,10 +3,12 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import subprocess
 from dataclasses import replace
 from decimal import Decimal
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Mapping
 
 import pytest
 
@@ -25,6 +27,8 @@ from aworld.self_evolve.budget import (
     BudgetStage,
     BudgetUsage,
     RunBudgetLedger,
+    RepairFrontier,
+    SchedulerState,
 )
 from aworld.self_evolve.concurrency import SelfEvolveExecutionTelemetry
 from aworld.self_evolve.datasets import (
@@ -33,12 +37,17 @@ from aworld.self_evolve.datasets import (
     SelfEvolveEvalSourceConfig,
     build_dataset_from_source,
 )
+from aworld.self_evolve.evolution_context import compile_evolution_context
+from aworld.self_evolve.feedback import normalize_feedback_summary
 from aworld.self_evolve.optimizers.llm_mutator import TraceReflectiveLLMMutator
 from aworld.self_evolve.optimizers.base import (
+    CandidateGenerationOutcome,
+    CandidateGenerationOutcomeKind,
     CandidateSemanticValidationError,
     OptimizerRequest,
     OptimizerResult,
 )
+from aworld.self_evolve.patch_intent import apply_skill_patch_intent
 from aworld.self_evolve.failure_events import (
     FailureEventSource,
     FailureOwner,
@@ -51,73 +60,248 @@ from aworld.self_evolve.failure_events import (
 )
 from aworld.self_evolve.gates import SkillReleaseFidelityGate
 from aworld.self_evolve.replay import (
+    AWorldCliCandidateReplayBackend,
     CandidateReplayMemberResult,
     CandidateReplayRequest,
     CandidateReplayResult as _CandidateReplayResult,
+    ReplayServiceProtocolError,
     ReplayVariantResult,
     _distributed_member_repetitions,
     _member_artifact_name,
     _member_baseline_replay_dir,
+    replay_dataset_fingerprint,
+)
+from aworld.self_evolve.regression import (
+    RegressionSuiteSpec,
+    ResolvedRegressionSuite,
+    dataset_case_fingerprints,
 )
 from aworld.self_evolve.replay_adaptation import (
     ReplayAdapterBinding,
+    ReplayAdaptationBundle,
     ReplayAdaptationCompiler,
     ReplayCapabilityRequirement,
+    ReplayCaseAdaptation,
 )
-from aworld.self_evolve.runner import (
-    SelfEvolveRunner,
-    _FixedCandidateOptimizer,
-    _RunBudgetContext,
-    _StoredCandidateReplayBackend,
-    _TelemetryUsageSnapshot,
-    _aggregate_target_selection_decisions,
-    _auto_group_trajectory_log_dataset,
-    _baseline_replay_artifact_dir,
-    _backend_proves_zero_budget_usage,
-    _candidate_screening_timeout,
-    _candidate_validation_report_for_persistence,
-    _candidate_gate_results,
-    _candidate_screening_repair_feedback,
-    _default_cli_skill_candidate,
-    _default_iteration_budget,
-    _default_post_apply_evaluator,
-    _candidate_generation_limit,
-    _candidate_generation_actual_usage,
-    _candidate_materialization_failure_events,
-    _candidate_mutation_repair_prompt,
-    _configured_budget_usage,
+from aworld.self_evolve.controllers.measurement_execution_datasets import (
+    _partial_replay_evaluator_dataset,
+)
+from aworld.self_evolve.controllers.screening import (
+    StoredCandidateScreeningBypass,
+)
+from aworld.self_evolve.feedback_history import (
     _feedback_from_report,
-    _trajectory_group_rank_key,
-    _with_typed_gate_failure_event,
-    _failed_probe_typed_feedback,
-    _include_prior_run_cases,
-    _iteration_validation_feedback,
+    _report_has_shared_measurement_failure,
+)
+from aworld.self_evolve.iteration_selection import (
+    _candidate_generation_limit,
+    _select_iteration_state,
+)
+from aworld.self_evolve.population_projection import (
+    _candidate_validation_report_for_persistence,
+    _population_report,
+)
+from aworld.self_evolve.replay_cache import _reusable_baseline_case_count
+from aworld.self_evolve.run_history import (
+    _SEMANTIC_DEDUP_IDENTITY_VERSION,
+    _SemanticLessonFingerprint,
+    _load_prior_scheduler_state,
+    _rejected_candidate_ids_from_report,
+)
+from aworld.self_evolve.run_reporting import (
+    _repair_frontier_state_report,
+    _replay_report,
+)
+from aworld.self_evolve.screening_observation_history import (
+    _control_qualification_identity,
+    _restore_campaign_screening_case_observations,
+    _restore_historical_screening_lifecycle_observations,
+    _screening_control_harness_fingerprint,
+)
+from aworld.self_evolve.cli_orchestration import _empty_run_budget_report
+from aworld.self_evolve.controllers.run_budget_support import (
+    _execution_usage_report,
     _judge_actual_token_usage,
+)
+from aworld.self_evolve.evaluation_reporting import (
+    _accumulate_score_evidence,
+    _summary_with_replay_evidence_metrics,
+)
+from aworld.self_evolve.replay_gates import _replay_confidence_gate
+from aworld.self_evolve.run_failure_attribution import (
+    _campaign_failure_attribution,
+    _rejection_attribution,
+)
+from aworld.self_evolve.cli_orchestration import (
+    _FixedCandidateOptimizer,
+    _StoredCandidateReplayBackend,
+    _aggregate_target_selection_decisions,
+    _candidate_mutation_repair_prompt,
+    _dataset_recipe_matches_candidate_source,
+    _default_iteration_budget,
+    _framework_shared_failure_candidate_id,
+    _has_later_conclusive_negative_measurement,
+    _report_has_fresh_evaluator_rerun_disposition,
+    _include_prior_run_cases,
+    _parse_candidate_mutation_model_output,
+    _trajectory_group_rank_key,
+)
+from aworld.self_evolve.optimizers import llm_mutator as llm_mutator_module
+from aworld.self_evolve.cli_rerun import (
     _load_target_provenance,
     _load_target_selection_report,
-    _merge_artifact_retention_reports,
-    _merge_validation_feedback,
-    _parse_candidate_mutation_model_output,
-    _population_report,
-    _next_progress_repair_extension_family,
-    _rank_candidate_population,
-    _rejected_candidate_ids_from_report,
-    _replay_confidence_gate,
+    _rerun_cli_run_id,
+    _source_config_from_stored_dataset_recipe,
+)
+from aworld.self_evolve.controllers.generation import (
+    candidate_generation_request_derived_tokens as _candidate_generation_request_derived_tokens,
+)
+from aworld.self_evolve.controllers.measurement_authority import (
+    _authoritative_evidence_finalization_timeout_seconds,
+)
+from aworld.self_evolve.controllers.measurement_execution_admission import (
     _replay_gate_details,
-    _replay_adaptation_exception_details,
-    _replay_report,
+)
+from aworld.self_evolve.controllers.measurement_execution_datasets import (
+    _prioritize_candidate_intervention_cases,
+)
+from aworld.self_evolve.controllers.retention import (
+    merge_artifact_retention_reports as _merge_artifact_retention_reports,
+)
+from aworld.self_evolve.controllers.run_budget_support import (
+    backend_proves_zero_budget_usage as _backend_proves_zero_budget_usage,
+    configured_budget_usage as _configured_budget_usage,
+)
+from aworld.self_evolve.controllers.run_generation_helpers import (
+    _candidate_generation_actual_usage,
+    _candidate_materialization_stall_signature,
+    _canonicalize_verified_prerequisite_files,
+    _rank_candidate_population,
+)
+from aworld.self_evolve.controllers.run_iteration_helpers import (
+    _candidate_conformance_failure_signatures,
+    _candidate_conformance_repair_topologies,
+    _candidate_conformance_result_observations,
+    _candidate_conformance_stall_signature,
+    _candidate_screening_repair_feedback,
+)
+from aworld.self_evolve.controllers.run_telemetry import (
+    _TelemetryUsageSnapshot,
+    _stage_telemetry_usage_delta,
+    _stage_telemetry_usage_snapshot,
+    _telemetry_usage_with_observed_wall,
+)
+from aworld.self_evolve.controllers.screening import (
+    support_specific_control_circuit_breaker_gate as _support_specific_control_circuit_breaker_gate,
+)
+from aworld.self_evolve.controllers.screening_execution import (
+    _baseline_replay_artifact_dir,
+    _candidate_screening_max_steps,
+    _candidate_screening_timeout,
+    _shared_replay_failure_blocks_population,
+)
+from aworld.self_evolve.controllers.screening_helpers import (
+    _candidate_screening_dataset,
+    _candidate_screening_qualification_case_limit,
+)
+from aworld.self_evolve.feedback_diagnostics import (
+    _merge_validation_feedback,
+    _next_progress_repair_extension_family,
+    _typed_gate_feedback_metrics,
+)
+from aworld.self_evolve.repair_conformance_diagnostics import (
+    _failed_probe_typed_feedback,
     _repair_conformance_failure_diagnostics,
     _repair_conformance_gate,
     _repair_conformance_required_nonempty_operations,
+)
+from aworld.self_evolve.replay_adaptation_diagnostics import (
+    _replay_adaptation_exception_details,
+)
+from aworld.self_evolve.run_failure_attribution import (
+    _candidate_materialization_failure_events,
+    _candidate_materialization_failures,
     _retryable_candidate_generation_failure,
-    _select_iteration_state,
-    _candidate_screening_dataset,
+)
+from aworld.self_evolve.campaign_policy import (
+    campaign_measurement_outcome_for_replay as _campaign_measurement_outcome_for_replay,
+    effective_replay_repetitions as _effective_replay_repetitions,
+)
+from aworld.self_evolve.candidate_package import (
+    candidate_package_fingerprint,
+    candidate_semantic_package_fingerprint,
+)
+from aworld.self_evolve.cli_orchestration import (
+    _MeasurementResumeThenRepairOptimizer,
+    _materialize_run_owned_draft_decision,
+    _measurement_pending_candidate_checkpoint,
+)
+from aworld.self_evolve.controllers.measurement_execution_admission import (
+    _variant_has_progressing_task_timeout,
+    _variant_is_screening_timeout,
+)
+from aworld.self_evolve.controllers.measurement_execution_datasets import (
+    _authoritative_replay_dataset,
+)
+from aworld.self_evolve.controllers.measurement_execution_progress import (
+    _replay_member_hard_deadline_seconds,
+)
+from aworld.self_evolve.controllers.retention import (
+    recover_artifact_retention_transactions as _recover_artifact_retention_transactions,
+)
+from aworld.self_evolve.controllers.run_execution import iteration_state as _iteration_state
+from aworld.self_evolve.controllers.run_generation_helpers import (
+    _is_semantic_lesson_duplicate,
+    _semantic_lesson_duplicate_feedback,
+    _typed_repair_frontiers,
+)
+from aworld.self_evolve.controllers.run_iteration_helpers import (
+    _authoritative_attempt_consumed,
+    _candidate_validation_shared_failure_gate,
+    _infrastructure_prevented_comparable_evaluation,
+    _record_authoritative_replay_observations,
+)
+from aworld.self_evolve.controllers.screening_execution import (
+    _candidate_screening_escalated_timeout,
+)
+from aworld.self_evolve.controllers.screening_helpers import (
+    _candidate_support_baseline_incompatibility_gate,
+    _deduplicate_conformance_phenotypes,
+    _record_candidate_screening_observation,
+    _screening_gate_has_invalid_control,
+)
+from aworld.self_evolve.feedback_diagnostics import _validation_feedback_failure_family
+from aworld.self_evolve.gates import (
+    ScoreImprovementGate,
+    SkillMarkdownGate,
+)
+from aworld.self_evolve.repair_conformance_diagnostics import (
+    _gate_has_typed_shared_infrastructure_failure,
+    _repair_probe_root_cause_code,
+)
+from aworld.self_evolve.replay import (
+    ReplayServiceProcessExitedError,
+    ReplayServiceReadinessTimeout,
+)
+from aworld.self_evolve.replay_gates import (
+    _environment_fingerprint_drift_gate,
+    _gate_has_typed_shared_measurement_failure,
+)
+from aworld.self_evolve.schema_diagnostics import (
+    _repair_contract_fingerprint,
+    _schema_field_contract_fingerprint,
+)
+from aworld.self_evolve.runner import (
+    SelfEvolveRunner,
+    _RunBudgetContext,
+    _auto_group_trajectory_log_dataset,
+    _candidate_gate_results,
+    _default_cli_skill_candidate,
+    _default_post_apply_evaluator,
+    _with_typed_gate_failure_event,
+    _iteration_validation_feedback,
+    _replay_evaluator_admission_gate,
     _explicit_target_selection_report,
-    _source_config_from_stored_dataset_recipe,
-    _summary_with_replay_evidence_metrics,
-    _stage_telemetry_usage_delta,
-    _stage_telemetry_usage_snapshot,
-    _shared_replay_failure_blocks_population,
     _infer_target_from_trace_packs,
     optimize_explicit_target,
     optimize_from_cli_request,
@@ -136,6 +320,7 @@ from aworld.self_evolve.provenance import (
     TargetSelectionOrigin,
 )
 from aworld.self_evolve.repair_conformance import (
+    ArtifactLifecycleConstraint,
     ExactRepairProbe,
     RepairConformanceContract,
     RepairConformanceResult,
@@ -145,6 +330,10 @@ from aworld.self_evolve.schema_diagnostics import SchemaFieldRepairConstraint
 from aworld.self_evolve.store import FilesystemSelfEvolveStore
 from aworld.self_evolve.targets import SkillTextTarget
 from aworld.self_evolve.trace_pack import build_trace_pack
+from aworld.self_evolve.trajectory_context import (
+    TrajectoryContextSnapshot,
+    TrajectoryContextTurn,
+)
 from aworld.self_evolve.credit_assignment import (
     TargetInventory,
     TargetSelectionDecision,
@@ -164,6 +353,521 @@ from aworld.self_evolve.types import (
     SelfEvolveTargetRef,
     to_json_dict,
 )
+from aworld.skills.structure import build_skill_structural_edit_intent
+
+
+def test_replay_heartbeat_uses_frozen_measurement_member_deadline() -> None:
+    request = SimpleNamespace(
+        measurement_plan=SimpleNamespace(
+            deadlines=SimpleNamespace(member_hard_deadline_seconds=900)
+        ),
+        timeout_seconds=300,
+    )
+
+    assert _replay_member_hard_deadline_seconds(
+        request,
+        {"attempt_timeout_seconds": 600},
+    ) == 900.0
+
+    legacy = SimpleNamespace(measurement_plan=None, timeout_seconds=300)
+    assert _replay_member_hard_deadline_seconds(
+        legacy,
+        {"phase_timeout_seconds": 240},
+    ) == 240.0
+    assert _replay_member_hard_deadline_seconds(
+        SimpleNamespace(measurement_plan=None, timeout_seconds=None),
+        {},
+    ) is None
+
+
+def test_authoritative_evidence_finalization_uses_member_deadline() -> None:
+    assert _authoritative_evidence_finalization_timeout_seconds(60) == 60.0
+    assert _authoritative_evidence_finalization_timeout_seconds(900) == 900.0
+    assert _authoritative_evidence_finalization_timeout_seconds(3600) == 3600.0
+
+
+def _independent_regression_suites_for_test(
+    dataset: SelfEvolveDataset,
+) -> tuple[ResolvedRegressionSuite, ...]:
+    """Build an in-memory disjoint suite for verified runner unit tests."""
+
+    regression_dataset = replace(
+        dataset,
+        cases=tuple(
+            replace(
+                case,
+                input={
+                    "independent_regression_test_case": True,
+                    "selection_input": case.input,
+                },
+            )
+            for case in dataset.cases
+        ),
+        recipe=replace(
+            dataset.recipe,
+            source={"kind": "jsonl", "test_fixture": True},
+            split_seed="independent-regression-test",
+        ),
+    )
+    spec = RegressionSuiteSpec(
+        suite_id="independent-regression-test",
+        source_kind="jsonl",
+        source_ref="test-fixture.jsonl",
+        source_version="sha256:test-fixture",
+        dataset_fingerprint=replay_dataset_fingerprint(regression_dataset),
+        split_fingerprint="sha256:test-split",
+        case_fingerprints=dataset_case_fingerprints(regression_dataset),
+    )
+    return (ResolvedRegressionSuite(spec=spec, dataset=regression_dataset),)
+
+
+def test_evaluator_rerun_ids_are_unique_but_lineage_stable() -> None:
+    first = _rerun_cli_run_id("source-run", "candidate-one")
+    second = _rerun_cli_run_id("source-run", "candidate-one")
+
+    assert first != second
+    assert first.rsplit("-", 1)[0] == second.rsplit("-", 1)[0]
+
+
+def test_materialization_stall_signature_preserves_typed_repair_shape() -> None:
+    first = _candidate_materialization_failures(
+        {
+            "candidate_materialization_failures": [
+                {
+                    "candidate_index": 0,
+                    "code": "repair_branch_unchanged",
+                    "stage": "candidate_semantic_validation",
+                    "field_path": "files",
+                    "representation": "candidate_package",
+                    "repairable": True,
+                    "contract_fingerprint": "sha256:" + "a" * 64,
+                    "details": {
+                        "repair_conformance": {
+                            "code": "repair_branch_unchanged",
+                            "failure_fingerprint": "sha256:" + "b" * 64,
+                            "reason": "first wording",
+                        }
+                    },
+                }
+            ]
+        }
+    )
+    renamed = tuple(
+        {
+            **item,
+            "candidate_index": 7,
+            "reason": "different candidate wording",
+        }
+        for item in first
+    )
+    changed = tuple(
+        {
+            **item,
+            "details": {
+                "repair_conformance": {
+                    "code": "repair_branch_unchanged",
+                    "failure_fingerprint": "sha256:" + "c" * 64,
+                }
+            },
+        }
+        for item in first
+    )
+
+    assert first[0]["details"]["repair_conformance"][
+        "failure_fingerprint"
+    ] == "sha256:" + "b" * 64
+    assert _candidate_materialization_stall_signature(first) == (
+        _candidate_materialization_stall_signature(renamed)
+    )
+    assert _candidate_materialization_stall_signature(first) != (
+        _candidate_materialization_stall_signature(changed)
+    )
+
+
+def test_conformance_stall_signature_ignores_candidate_ids_and_batch_size() -> None:
+    target = SelfEvolveTargetRef("skill", "demo", "/skills/demo/SKILL.md")
+    candidates = tuple(
+        CandidateVariant(
+            candidate_id=f"candidate-{index}",
+            target=target,
+            content="# Demo\n",
+            rationale="repair",
+        )
+        for index in (1, 2)
+    )
+
+    def failed_gate(fingerprint: str) -> GateResult:
+        return GateResult(
+            gate_name="candidate_repair_conformance",
+            passed=False,
+            reason="typed runtime response constraint failed",
+            details={
+                "code": "repair_probe_execution_failed",
+                "stage": "repair_conformance",
+                "failure_fingerprint": fingerprint,
+            },
+        )
+
+    first = _candidate_conformance_stall_signature(
+        ((candidates[0], failed_gate("sha256:" + "a" * 64)),)
+    )
+    repeated_population = _candidate_conformance_stall_signature(
+        (
+            (candidates[0], failed_gate("sha256:" + "a" * 64)),
+            (candidates[1], failed_gate("sha256:" + "a" * 64)),
+        )
+    )
+    changed = _candidate_conformance_stall_signature(
+        ((candidates[1], failed_gate("sha256:" + "b" * 64)),)
+    )
+
+    assert first == repeated_population
+    assert first != changed
+
+
+def test_conformance_switch_topology_ignores_names_but_detects_control_flow() -> None:
+    target = SelfEvolveTargetRef("skill", "demo", "/skills/demo/SKILL.md")
+
+    def failure(candidate_id: str, source: str) -> tuple[CandidateVariant, GateResult]:
+        candidate = CandidateVariant(
+            candidate_id=candidate_id,
+            target=target,
+            content="# Demo\n",
+            rationale="repair",
+            files=(
+                CandidateFileDelta(
+                    path="replay/compiler.py",
+                    content=source,
+                ),
+            ),
+        )
+        return (
+            candidate,
+            GateResult(
+                gate_name="candidate_repair_conformance",
+                passed=False,
+                reason="typed failure",
+                details={
+                    "code": "repair_capability_compile_failed",
+                    "stage": "repair_conformance_compile",
+                    "failure_fingerprint": "sha256:" + "a" * 64,
+                    "repair_conformance": {
+                        "required_branch_paths": ["replay/compiler.py"]
+                    },
+                },
+            ),
+        )
+
+    renamed = _candidate_conformance_repair_topologies(
+        (
+            failure("first", "def build(value):\n    return value\n"),
+            failure("second", "def compile_result(item):\n    return item\n"),
+        )
+    )
+    switched = _candidate_conformance_repair_topologies(
+        (
+            failure(
+                "third",
+                "def build(value):\n    if value:\n        return value\n    return None\n",
+            ),
+        )
+    )
+
+    assert len(next(iter(renamed.values()))) == 1
+    assert next(iter(renamed.values())) != next(iter(switched.values()))
+
+
+def test_conformance_switch_topology_ignores_unowned_file_changes() -> None:
+    target = SelfEvolveTargetRef("skill", "demo", "/skills/demo/SKILL.md")
+
+    def failure(candidate_id: str, compiler_source: str):
+        candidate = CandidateVariant(
+            candidate_id=candidate_id,
+            target=target,
+            content="# Demo\n",
+            rationale="repair runtime proof",
+            files=(
+                CandidateFileDelta(
+                    path="replay/runtime.py",
+                    content="def runtime():\n    return None\n",
+                ),
+                CandidateFileDelta(
+                    path="replay/compiler.py",
+                    content=compiler_source,
+                ),
+            ),
+        )
+        gate = GateResult(
+            gate_name="candidate_repair_conformance",
+            passed=False,
+            reason="runtime proof still fails",
+            details={
+                "code": "source_behavior_proof_failed",
+                "failure_fingerprint": "sha256:" + "a" * 64,
+                "repair_conformance": {
+                    "required_branch_paths": ["replay/runtime.py"],
+                },
+            },
+        )
+        return candidate, gate
+
+    topologies = _candidate_conformance_repair_topologies(
+        (
+            failure("candidate-a", "def compile_a():\n    return {}\n"),
+            failure(
+                "candidate-b",
+                "def compile_b(value):\n    if value:\n        return value\n    return {}\n",
+            ),
+        )
+    )
+
+    assert len(next(iter(topologies.values()))) == 1
+
+
+def test_candidate_screening_depth_observes_bounded_source_trace_horizon() -> None:
+    trace_pack = build_trace_pack(
+        (
+            {
+                "meta": {"step": index + 1},
+                "state": {"input": "task"},
+                "action": {"content": f"step-{index + 1}"},
+                "reward": {"status": "ok"},
+            }
+            for index in range(5)
+        ),
+        source_kind="trajectory_log",
+        task_id="screening-depth",
+    )
+    dataset = SelfEvolveDataset(
+        cases=(
+            EvalCase(
+                case_id="screening-depth",
+                input="task",
+                trace_pack=trace_pack,
+            ),
+        ),
+        recipe=DatasetRecipe(
+            source={"kind": "trajectory_log"},
+            split_seed="screening-depth",
+            splits={"train": ["screening-depth"]},
+        ),
+    )
+
+    assert _candidate_screening_max_steps(
+        dataset, configured_max_steps=1
+    ) == 4
+    assert _candidate_screening_max_steps(
+        dataset, configured_max_steps=5
+    ) == 5
+
+
+def test_campaign_restores_typed_scheduler_frontier_checkpoint(tmp_path) -> None:
+    store = FilesystemSelfEvolveStore(tmp_path)
+    target = SelfEvolveTargetRef(
+        target_type="skill",
+        target_id="demo",
+        path=str(tmp_path / "aworld-skills/demo/SKILL.md"),
+    )
+    prior_run = "campaign-demo-cycle-001"
+    report_path = store.run_path(prior_run) / "report.json"
+    report_path.parent.mkdir(parents=True, exist_ok=True)
+    report_path.write_text(
+        json.dumps(
+            {
+                "run_id": prior_run,
+                "target": to_json_dict(target),
+                "status": "rejected",
+                "repair_frontier_state": {
+                    "schema_version": (
+                        "aworld.self_evolve.repair_frontier_state.v1"
+                    ),
+                    "scheduler_state": {
+                        "initial_exploration_scheduled": True,
+                        "untyped_frontier_exploration_scheduled": False,
+                        "frontier_progress": {"semantic-a": 3},
+                        "frontier_stalls": {"semantic-a": 1},
+                        "frontier_mutation_families": {
+                            "semantic-a": ["focused-repair"]
+                        },
+                        "last_focused_frontier": "semantic-a",
+                    },
+                    "records": [],
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    state = _load_prior_scheduler_state(
+        store,
+        target,
+        current_run_id="campaign-demo-cycle-002",
+        allowed_run_ids=(prior_run,),
+    )
+
+    assert state.frontier_progress == {"semantic-a": 3}
+    assert state.frontier_stalls == {"semantic-a": 1}
+    assert state.frontier_mutation_families == {
+        "semantic-a": ("focused-repair",)
+    }
+
+
+def test_campaign_scheduler_checkpoint_uses_chronological_lineage(tmp_path) -> None:
+    store = FilesystemSelfEvolveStore(tmp_path)
+    target = SelfEvolveTargetRef(target_type="skill", target_id="demo")
+    run_ids = ("campaign-demo-cycle-001", "campaign-demo-cycle-002")
+    for run_id, stall in zip(run_ids, (2, 0), strict=True):
+        report_path = store.run_path(run_id) / "report.json"
+        report_path.parent.mkdir(parents=True, exist_ok=True)
+        report_path.write_text(
+            json.dumps(
+                {
+                    "run_id": run_id,
+                    "target": to_json_dict(target),
+                    "status": "rejected",
+                    "repair_frontier_state": {
+                        "scheduler_state": {
+                            "initial_exploration_scheduled": True,
+                            "untyped_frontier_exploration_scheduled": False,
+                            "frontier_progress": {"semantic-a": 3},
+                            "frontier_stalls": {"semantic-a": stall},
+                            "frontier_mutation_families": {
+                                "semantic-a": (
+                                    ["focused-repair"] if stall else []
+                                )
+                            },
+                            "last_focused_frontier": (
+                                "semantic-a" if stall else None
+                            ),
+                        }
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+
+    state = _load_prior_scheduler_state(
+        store,
+        target,
+        current_run_id="campaign-demo-cycle-003",
+        allowed_run_ids=run_ids,
+    )
+
+    assert state.frontier_stalls == {"semantic-a": 0}
+    assert state.frontier_mutation_families == {"semantic-a": ()}
+    assert state.last_focused_frontier is None
+
+
+def test_repair_frontier_state_marks_reappearing_resolved_frontier_regressed(
+    tmp_path,
+) -> None:
+    store = FilesystemSelfEvolveStore(tmp_path)
+    target = SelfEvolveTargetRef(target_type="skill", target_id="demo")
+    prior_run = "campaign-demo-cycle-001"
+    report_path = store.run_path(prior_run) / "report.json"
+    report_path.parent.mkdir(parents=True, exist_ok=True)
+    report_path.write_text(
+        json.dumps(
+            {
+                "run_id": prior_run,
+                "target": to_json_dict(target),
+                "status": "succeeded",
+                "repair_frontier_state": {
+                    "records": [
+                        {
+                            "semantic_key": "semantic-a",
+                            "status": "resolved",
+                            "owner": "candidate",
+                            "scope": "candidate",
+                            "repairable": True,
+                            "current_progress": 2,
+                            "best_progress": 2,
+                            "first_seen_run_id": prior_run,
+                            "last_seen_run_id": prior_run,
+                            "regression_count": 0,
+                        }
+                    ],
+                    "scheduler_state": {},
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    payload = _repair_frontier_state_report(
+        store=store,
+        target=target,
+        current_run_id="campaign-demo-cycle-002",
+        allowed_run_ids=(prior_run,),
+        observed_frontiers=(
+            RepairFrontier(
+                semantic_key="semantic-a",
+                progress=1,
+                owner=FailureOwner.CANDIDATE,
+                scope=FailureScope.CANDIDATE,
+                repairable=True,
+            ),
+        ),
+        scheduler_state=SchedulerState(),
+        selected_candidate_id="candidate-2",
+        run_succeeded=False,
+        campaign_id="campaign-demo",
+        campaign_cycle=2,
+    )
+
+    assert payload["regressed_count"] == 1
+    assert payload["records"][0]["status"] == "regressed"
+    assert payload["records"][0]["regression_count"] == 1
+
+
+def test_repair_frontier_state_marks_unobserved_history_dormant(tmp_path) -> None:
+    store = FilesystemSelfEvolveStore(tmp_path)
+    target = SelfEvolveTargetRef(target_type="skill", target_id="demo")
+    prior_run = "campaign-demo-cycle-001"
+    report_path = store.run_path(prior_run) / "report.json"
+    report_path.parent.mkdir(parents=True, exist_ok=True)
+    report_path.write_text(
+        json.dumps(
+            {
+                "run_id": prior_run,
+                "target": to_json_dict(target),
+                "status": "rejected",
+                "repair_frontier_state": {
+                    "records": [
+                        {
+                            "semantic_key": "historical-frontier",
+                            "status": "active",
+                            "owner": "candidate",
+                            "scope": "candidate",
+                            "repairable": True,
+                            "current_progress": 1,
+                            "best_progress": 1,
+                            "first_seen_run_id": prior_run,
+                            "last_seen_run_id": prior_run,
+                        }
+                    ]
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    payload = _repair_frontier_state_report(
+        store=store,
+        target=target,
+        current_run_id="campaign-demo-cycle-002",
+        allowed_run_ids=(prior_run,),
+        observed_frontiers=(),
+        scheduler_state=SchedulerState(),
+        selected_candidate_id=None,
+        run_succeeded=False,
+        campaign_id="campaign-demo",
+        campaign_cycle=2,
+    )
+
+    assert payload["active_count"] == 0
+    assert payload["dormant_count"] == 1
+    assert payload["records"][0]["status"] == "dormant"
 
 
 _REPLAY_PROVENANCE_KEYS = (
@@ -176,7 +880,12 @@ _REPLAY_PROVENANCE_KEYS = (
 
 
 def test_progress_repair_extension_requires_a_novel_repairable_failure_family() -> None:
-    def feedback(candidate_id: str, diagnostic_code: str) -> EvaluationSummary:
+    def feedback(
+        candidate_id: str,
+        diagnostic_code: str,
+        *,
+        reason: str | None = None,
+    ) -> EvaluationSummary:
         return EvaluationSummary(
             variant_id=candidate_id,
             dataset_split="validation",
@@ -188,7 +897,7 @@ def test_progress_repair_extension_requires_a_novel_repairable_failure_family() 
                     {
                         "code": diagnostic_code,
                         "stage": "replay_capability",
-                        "reason": diagnostic_code,
+                        "reason": reason or diagnostic_code,
                     }
                 ],
                 "repair_candidate_package": {
@@ -224,6 +933,15 @@ def test_progress_repair_extension_requires_a_novel_repairable_failure_family() 
         (target_id_feedback, session_id_feedback),
         consumed_families=consumed,
     ) not in {None, first_family}
+    prose_variant = feedback(
+        "candidate-target-prose",
+        "missing_target_id",
+        reason="the same typed failure with different explanatory prose",
+    )
+    assert (
+        _validation_feedback_failure_family(prose_variant)
+        == first_family
+    )
 
 
 def test_feedback_from_report_restores_latest_repairable_screening_package(
@@ -340,10 +1058,147 @@ def test_feedback_from_report_restores_latest_repairable_screening_package(
                 "path": "replay/runtime.py",
                 "operation": "upsert",
                 "executable": False,
-                "content": "def respond():\n    return {'id': 1, 'result': {}}",
+                "content": "def respond():\n    return {'id': 1, 'result': {}}\n",
             }
         ],
     }
+
+
+def test_feedback_from_shared_measurement_failure_does_not_train_candidate(
+    tmp_path: Path,
+) -> None:
+    report_path = tmp_path / "invalid-control" / "report.json"
+    report = {
+        "run_id": "invalid-control",
+        "selected_candidate_id": "candidate-never-observed",
+        "campaign_failure_attribution": {
+            "failure_class": "measurement",
+            "failure_owner": "framework",
+            "failure_scope": "shared_run",
+            "repairable": True,
+        },
+        "iterations": [
+            {
+                "candidate_id": "candidate-never-observed",
+                "status": "rejected",
+                "failed_gates": ["candidate_replay"],
+            }
+        ],
+    }
+
+    assert _feedback_from_report(report, report_path=report_path) == ()
+
+
+def test_shared_measurement_failure_preserves_prior_candidate_owned_feedback(
+    tmp_path: Path,
+) -> None:
+    run_root = tmp_path / "mixed-control-failure"
+    report_path = run_root / "report.json"
+    for candidate_id in ("candidate-repairable", "candidate-unobserved"):
+        candidate_path = run_root / "candidates" / f"{candidate_id}.json"
+        candidate_path.parent.mkdir(parents=True, exist_ok=True)
+        candidate_path.write_text(
+            json.dumps(
+                {
+                    "candidate_id": candidate_id,
+                    "rationale": "candidate package",
+                    "files": [
+                        {
+                            "path": "replay/runtime.py",
+                            "operation": "upsert",
+                            "executable": False,
+                            "content": "def respond():\n    return {}\n",
+                        }
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
+    report = {
+        "run_id": "mixed-control-failure",
+        "campaign_failure_attribution": {
+            "failure_class": "measurement",
+            "failure_owner": "framework",
+            "failure_scope": "shared_run",
+            "repairable": True,
+        },
+        "population": {
+            "conformance": {
+                "attempts": [
+                    {
+                        "candidate_id": "candidate-repairable",
+                        "stage": "conformance",
+                        "passed": False,
+                        "reason": "candidate violated the compiled contract",
+                        "details": {
+                            "failure_class": "candidate",
+                            "failure_stage": "replay_capability",
+                            "repairable": True,
+                            "code": "schema_field_validation_failed",
+                        },
+                    }
+                ]
+            },
+            "screening": {
+                "attempts": [
+                    {
+                        "candidate_id": "candidate-unobserved",
+                        "passed": False,
+                        "reason": "shared control was invalid",
+                        "details": {
+                            "failure_class": "measurement",
+                            "failure_owner": "framework",
+                            "failure_scope": "shared_run",
+                            "repairable": True,
+                        },
+                    }
+                ]
+            },
+        },
+        "iterations": [
+            {
+                "candidate_id": "candidate-unobserved",
+                "status": "rejected",
+                "failed_gates": ["candidate_replay"],
+            }
+        ],
+    }
+
+    feedback = _feedback_from_report(report, report_path=report_path)
+
+    assert [item.variant_id for item in feedback] == ["candidate-repairable"]
+    assert feedback[0].metrics["failure_class"] == "candidate"
+
+
+def test_feedback_from_verified_only_does_not_mark_candidate_as_published(
+    tmp_path: Path,
+) -> None:
+    report_path = tmp_path / "verified-only" / "report.json"
+    report = {
+        "run_id": "verified-only",
+        "apply_policy": "verified_only",
+        "post_apply": {
+            "status": "accepted",
+            "release_state": "verified_only",
+            "published": False,
+        },
+        "iterations": [
+            {
+                "candidate_id": "candidate-verified-only",
+                "status": "accepted",
+                "candidate_metrics": {"score": 1.0},
+            }
+        ],
+    }
+
+    feedback = _feedback_from_report(report, report_path=report_path)
+
+    historical = next(
+        item for item in feedback if item.variant_id == "candidate-verified-only"
+    )
+    assert historical.metrics["candidate_status"] == "accepted"
+    assert historical.metrics["publication_completed"] is False
+    assert historical.metrics["historical_release_state"] == "verified_only"
 
 
 def test_feedback_from_report_restores_selected_candidate_authoritative_failure(
@@ -511,6 +1366,74 @@ def test_feedback_from_report_joins_selected_candidate_held_out_judge_metrics(
     )
 
 
+def test_feedback_from_report_preserves_judged_target_only_candidate_package(
+    tmp_path: Path,
+) -> None:
+    run_root = tmp_path / "run-target-only-repair"
+    candidate_id = "candidate-target-only-repair"
+    candidate_content = (
+        "# Demo\n\n"
+        + ("Preserve the verified replay package.\n" * 300)
+        + "\n## Judge-scored repair\n\n"
+        + "Support every final claim or omit it.\n"
+    )
+    assert len(candidate_content) > 8_000
+    candidate_root = run_root / "candidates" / candidate_id
+    candidate_root.mkdir(parents=True)
+    (candidate_root / "candidate.json").write_text(
+        json.dumps(
+            {
+                "candidate_id": candidate_id,
+                "rationale": "repair grounded target guidance only",
+                "content": candidate_content,
+                "files": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+    report_path = run_root / "report.json"
+    report = {
+        "run_id": "run-target-only-repair",
+        "selected_candidate_id": candidate_id,
+        "gate_results": [
+            {
+                "gate_name": "evidence_quality",
+                "passed": False,
+                "reason": "evaluation evidence is incomplete",
+                "details": {"evidence_incomplete": True},
+            }
+        ],
+        "iterations": [
+            {
+                "candidate_id": candidate_id,
+                "status": "rejected",
+                "failed_gates": ["evidence_quality"],
+                "candidate_metrics": {
+                    "score": 89.0,
+                    "A1_groundedness": 4,
+                    "evidence_incomplete": True,
+                },
+            }
+        ],
+        "population": {},
+    }
+    report_path.write_text(json.dumps(report), encoding="utf-8")
+
+    feedback = _feedback_from_report(report, report_path=report_path)
+
+    assert feedback[0].variant_id == candidate_id
+    assert feedback[0].dataset_split == "validation"
+    assert feedback[0].metrics["repair_candidate_package"] == {
+        "candidate_id": candidate_id,
+        "rationale": "repair grounded target guidance only",
+        "content": candidate_content.strip(),
+        "files": [],
+    }
+    assert feedback[0].metrics["repair_candidate_package"]["content"].endswith(
+        "Support every final claim or omit it."
+    )
+
+
 def test_skill_release_fidelity_failure_enters_typed_repair_frontier() -> None:
     current = (
         "---\nname: demo\n---\n# Demo\n\n"
@@ -534,13 +1457,13 @@ def test_skill_release_fidelity_failure_enters_typed_repair_frontier() -> None:
     )
 
     gate = _with_typed_gate_failure_event(raw_gate)
-    metrics = runner_module._typed_gate_feedback_metrics((gate,))
+    metrics = _typed_gate_feedback_metrics((gate,))
     feedback = EvaluationSummary(
         variant_id=candidate.candidate_id,
         dataset_split="validation",
         metrics=metrics,
     )
-    frontiers = runner_module._typed_repair_frontiers((feedback,))
+    frontiers = _typed_repair_frontiers((feedback,))
 
     assert gate.details["code"] == "skill_section_content_truncated"
     assert gate.details["failure_class"] == "candidate"
@@ -556,6 +1479,435 @@ def test_skill_release_fidelity_failure_enters_typed_repair_frontier() -> None:
     assert frontiers[0].semantic_key == metrics["causal_failure_events"][0][
         "semantic_key"
     ]
+
+
+def test_typed_gate_feedback_exposes_first_class_repair_contract() -> None:
+    constraint = SchemaFieldRepairConstraint(
+        schema_layer="compile_result",
+        field_path="services[*].transport",
+        rule="enum",
+        expected=("skill_runtime",),
+    )
+    contract = RepairConformanceContract(
+        focus_candidate_id="candidate-parent",
+        failure_codes=("schema_field_validation_failed",),
+        interaction_progress=0,
+        base_file_fingerprints={"replay/compiler.py": "sha256:base"},
+        required_branch_paths=("replay/compiler.py",),
+        base_branch_fingerprints={},
+        manifest_path="replay/capability.json",
+        compiler_path="replay/compiler.py",
+        runtime_paths=("replay/runtime.py",),
+        schema_field_constraints=(constraint,),
+    )
+    event = ReplayFailureEvent(
+        code="schema_field_validation_failed",
+        owner=FailureOwner.CANDIDATE,
+        stage=FailureStage.CAPABILITY_COMPILE,
+        scope=FailureScope.CANDIDATE,
+        repairable=True,
+        category="repair_conformance",
+        summary="compiled schema failed",
+    ).to_dict()
+    gate = GateResult(
+        gate_name="candidate_repair_conformance",
+        passed=False,
+        reason="compiled schema failed",
+        details={
+            "failure_class": "candidate",
+            "repairable": True,
+            "repair_conformance": contract.to_public_dict(),
+            "schema_field_constraints": [constraint.to_dict()],
+            "schema_field_violations": [
+                {
+                    "constraint_identity_digest": constraint.identity_digest,
+                    "schema_layer": "compile_result",
+                    "field_path": "services[*].transport",
+                    "rule": "enum",
+                    "actual_type": "null",
+                    "actual_fingerprint": "sha256:" + "a" * 64,
+                    "occurrence_count": 2,
+                }
+            ],
+            "failure_event": event,
+            "causal_failure_events": [event],
+        },
+    )
+
+    metrics = _typed_gate_feedback_metrics((gate,))
+    normalized = normalize_feedback_summary(
+        EvaluationSummary(
+            variant_id="candidate-child",
+            dataset_split="validation",
+            metrics=metrics,
+        )
+    )
+
+    assert metrics["repair_conformance"]["schema_field_constraints"] == [
+        constraint.to_dict()
+    ]
+    assert normalized["repair_conformance"] == metrics["repair_conformance"]
+    assert normalized["active_schema_field_constraints"] == [
+        constraint.to_dict()
+    ]
+    assert normalized["active_schema_field_violations"][0]["actual_type"] == (
+        "null"
+    )
+    assert normalized["repair_plan"]["priority"] == "schema_conformance"
+    assert any(
+        action.startswith("emit_every_selector_match:services[*].transport")
+        for action in normalized["repair_plan"]["actions"]
+    )
+
+
+def test_causal_lesson_memory_restores_typed_repair_frontier() -> None:
+    feedback = EvaluationSummary(
+        variant_id="lesson-candidate-preflight",
+        dataset_split="lesson_memory",
+        metrics={
+            "lesson_type": "causal_failure_memory",
+            "causal_semantic_key": "replay-failure-candidate-preflight",
+            "causal_owner": "candidate",
+            "causal_scope": "candidate",
+            "causal_stage": "capability_preflight",
+            "causal_code": "candidate_capability_operational_preflight_failed",
+            "repairable": True,
+            "occurrence_count": 2,
+            "distinct_source_count": 1,
+        },
+    )
+
+    frontiers = _typed_repair_frontiers((feedback,))
+
+    assert len(frontiers) == 1
+    assert frontiers[0].semantic_key == "replay-failure-candidate-preflight"
+    assert frontiers[0].owner is FailureOwner.CANDIDATE
+    assert frontiers[0].scope is FailureScope.CANDIDATE
+    assert frontiers[0].repairable is True
+    assert frontiers[0].progress == 2
+
+
+def test_derived_replay_events_do_not_drive_repair_frontiers() -> None:
+    physical = aggregate_replay_failure_observations(
+        (
+            ReplayFailureObservation(
+                event=ReplayFailureEvent(
+                    code="artifact_file_limit_exhausted",
+                    owner=FailureOwner.CANDIDATE,
+                    stage=FailureStage.TASK_ROLLOUT,
+                    scope=FailureScope.MEMBER,
+                    repairable=True,
+                    category="replay_runtime_policy",
+                ),
+                case_id="case-1",
+            ),
+        )
+    )[0]
+    derived = aggregate_replay_failure_observations(
+        tuple(
+            ReplayFailureObservation(
+                event=ReplayFailureEvent(
+                    code="authoritative_candidate_frontier_unreachable",
+                    owner=FailureOwner.CANDIDATE,
+                    stage=FailureStage.TASK_ROLLOUT,
+                    scope=FailureScope.CANDIDATE,
+                    repairable=True,
+                    category="authoritative_early_stop",
+                ),
+                case_id=f"case-{index}",
+            )
+            for index in range(2, 12)
+        )
+    )[0]
+    feedback = EvaluationSummary(
+        variant_id="candidate",
+        dataset_split="validation",
+        metrics={
+            "causal_failure_events": [
+                physical.to_dict(),
+                derived.to_dict(),
+            ]
+        },
+    )
+    derived_lesson = EvaluationSummary(
+        variant_id="derived-lesson",
+        dataset_split="lesson_memory",
+        metrics={
+            "lesson_type": "causal_failure_memory",
+            "causal_semantic_key": derived.semantic_key,
+            "causal_owner": FailureOwner.CANDIDATE.value,
+            "causal_scope": FailureScope.CANDIDATE.value,
+            "causal_stage": FailureStage.TASK_ROLLOUT.value,
+            "causal_code": derived.code,
+            "causal_category": derived.category,
+            "repairable": True,
+            "occurrence_count": 1,
+            "distinct_source_count": 10,
+        },
+    )
+
+    frontiers = _typed_repair_frontiers(
+        (feedback, derived_lesson)
+    )
+
+    assert [frontier.semantic_key for frontier in frontiers] == [
+        physical.semantic_key
+    ]
+    assert frontiers[0].progress == 1
+
+
+def test_typed_gate_feedback_uses_only_relative_evidence_regressions() -> None:
+    unchanged = {
+        "schema_version": "aworld.self_evolve.evidence_repair_constraint.v1",
+        "subject_kind": "general_claim",
+        "failure_mode": "support_incomplete",
+        "source_layer": "candidate_output",
+        "required_action": "support_or_omit",
+        "owner": "candidate",
+        "occurrence_count": 1,
+    }
+    regressed = {
+        "schema_version": "aworld.self_evolve.evidence_repair_constraint.v1",
+        "subject_kind": "artifact",
+        "failure_mode": "missing_source",
+        "source_layer": "candidate_output",
+        "required_action": "repair_artifact_reference",
+        "owner": "candidate",
+        "occurrence_count": 1,
+    }
+    gate = GateResult(
+        gate_name="evidence_quality",
+        passed=False,
+        reason="candidate evidence quality regressed relative to baseline",
+        details={
+            "failure_class": "candidate",
+            "repairable": True,
+            "evidence_repair_constraints": [unchanged, regressed],
+            "evidence_constraint_regressions": [regressed],
+        },
+    )
+
+    metrics = _typed_gate_feedback_metrics((gate,))
+
+    assert len(metrics["evidence_repair_constraints"]) == 1
+    assert metrics["evidence_repair_constraints"][0]["failure_mode"] == (
+        "missing_source"
+    )
+
+
+def test_typed_gate_feedback_preserves_payload_free_replay_counterexample() -> None:
+    counterexample = {
+        "schema_version": "aworld.replay.counterexample.v1",
+        "sequence": 1,
+        "failure_code": "tool_call_after_evidence_ready",
+        "stage": "task_rollout",
+        "state_before": "evidence_ready",
+        "trigger": "tool_call",
+        "tool_name": "bash",
+        "action_name": "run",
+        "manifest_entry_count": 1,
+        "artifact_file_count": 2,
+        "artifact_bytes": 512,
+        "required_transition": "finalize_task_response",
+    }
+    event = ReplayFailureEvent(
+        code="replay_evidence_runtime_policy_violation",
+        owner=FailureOwner.CANDIDATE,
+        stage=FailureStage.TASK_ROLLOUT,
+        scope=FailureScope.MEMBER,
+        repairable=True,
+        category="replay_evidence_policy",
+        diagnostics={"replay_counterexamples": [counterexample]},
+    )
+    gate = GateResult(
+        gate_name="candidate_replay",
+        passed=False,
+        reason="candidate violated replay evidence policy",
+        details={
+            "failure_class": "candidate",
+            "repairable": True,
+            "candidate_failure": event.compatibility_dict(),
+            "candidate_failure_event": event.to_dict(),
+            "causal_failure_events": [event.to_dict()],
+        },
+    )
+
+    metrics = _typed_gate_feedback_metrics((gate,))
+
+    assert metrics["replay_counterexamples"] == [
+        {
+            **counterexample,
+            "owner": "candidate",
+            "occurrence_count": 1,
+        }
+    ]
+    assert metrics["candidate_validation_diagnostics"][0]["code"] == (
+        "replay_evidence_runtime_policy_violation"
+    )
+
+
+def test_typed_gate_feedback_builds_generic_candidate_counterexample() -> None:
+    event = ReplayFailureEvent(
+        code="candidate_capability_operational_preflight_failed",
+        owner=FailureOwner.CANDIDATE,
+        stage=FailureStage.CAPABILITY_PREFLIGHT,
+        scope=FailureScope.CANDIDATE,
+        repairable=True,
+        category="capability_contract",
+        requirement_id="requirement-browser-runtime",
+    )
+    gate = GateResult(
+        gate_name="candidate_capability_replay",
+        passed=False,
+        reason="candidate capability preflight failed",
+        details={
+            "failure_class": "candidate",
+            "repairable": True,
+            "causal_failure_events": [event.to_dict()],
+        },
+    )
+
+    metrics = _typed_gate_feedback_metrics((gate,))
+
+    counterexample = metrics["replay_counterexamples"][0]
+    assert counterexample["failure_code"] == (
+        "candidate_capability_operational_preflight_failed"
+    )
+    assert counterexample["trigger"] == "typed_candidate_failure"
+    assert counterexample["required_transition"] == (
+        "satisfy_candidate_capability_preflight"
+    )
+    assert counterexample["owner"] == "candidate"
+
+
+def test_candidate_failure_counterexample_reaches_next_generation_contract() -> None:
+    candidate = CandidateVariant(
+        candidate_id="candidate-loop",
+        target=SelfEvolveTargetRef(target_type="skill", target_id="demo"),
+        content="# Demo\n\nRetry the browser action.\n",
+        rationale="candidate under repair",
+        files=(
+            CandidateFileDelta(
+                path="SKILL.md",
+                content="# Demo\n\nRetry the browser action.\n",
+            ),
+        ),
+    )
+    event = ReplayFailureEvent(
+        code="repeated_failed_action_limit",
+        owner=FailureOwner.CANDIDATE,
+        stage=FailureStage.TASK_ROLLOUT,
+        scope=FailureScope.CANDIDATE,
+        repairable=True,
+        category="replay_runtime_policy",
+        diagnostics={
+            "replay_counterexamples": [
+                {
+                    "schema_version": "aworld.replay.counterexample.v1",
+                    "sequence": 1,
+                    "failure_code": "repeated_failed_action_limit",
+                    "owner": "candidate",
+                    "stage": "task_rollout",
+                    "state_before": "collecting",
+                    "trigger": "tool_call",
+                    "action_fingerprint": "sha256:" + "a" * 64,
+                    "consecutive_failure_count": 2,
+                    "required_transition": (
+                        "switch_strategy_or_fail_with_observed_reason"
+                    ),
+                }
+            ]
+        },
+    )
+    aggregate = aggregate_replay_failure_observations(
+        (
+            ReplayFailureObservation(
+                event=event,
+                case_id="case-loop",
+                candidate_id=candidate.candidate_id,
+            ),
+        )
+    )[0]
+    gate = GateResult(
+        gate_name="candidate_replay",
+        passed=False,
+        reason="candidate repeated a failed replay action",
+        details={
+            "failure_class": "candidate",
+            "repairable": True,
+            "candidate_failure_event": event.to_dict(),
+            "causal_failure_events": [aggregate.to_dict()],
+        },
+    )
+
+    feedback = _iteration_validation_feedback(
+        candidate=candidate,
+        baseline_summary=None,
+        candidate_summary=None,
+        held_out_summary=None,
+        failed_gates=[gate],
+    )
+    context = compile_evolution_context(
+        OptimizerRequest(
+            target=candidate.target,
+            current_content="# Demo\n",
+            target_fingerprint="sha256:demo",
+            trace_packs=(),
+            validation_feedback=feedback,
+            target_package_inventory=("SKILL.md",),
+        )
+    )
+    payload = context.to_prompt_payload(candidate_index=0)
+
+    assert payload["repair_context_mode"] == "focused_candidate_delta"
+    assert len(payload["repair_focus"]["replay_counterexamples"]) == 1
+    counterexample = payload["repair_focus"]["replay_counterexamples"][0]
+    assert counterexample["failure_code"] == "repeated_failed_action_limit"
+    assert counterexample["required_transition"] == (
+        "switch_strategy_or_fail_with_observed_reason"
+    )
+    assert payload["repair_conformance"]["required_runtime_transitions"] == [
+        "switch_strategy_or_fail_with_observed_reason"
+    ]
+
+
+def test_task_owned_counterexample_does_not_enter_candidate_repair() -> None:
+    event = ReplayFailureEvent(
+        code="replay_task_completion_not_established",
+        owner=FailureOwner.TASK,
+        stage=FailureStage.TASK_ROLLOUT,
+        scope=FailureScope.MEMBER,
+        repairable=False,
+        category="task_completion",
+        diagnostics={
+            "replay_counterexamples": [
+                {
+                    "schema_version": "aworld.replay.counterexample.v1",
+                    "sequence": 1,
+                    "failure_code": "replay_task_completion_not_established",
+                    "owner": "task",
+                    "stage": "task_rollout",
+                    "state_before": "running",
+                    "trigger": "trajectory_unavailable",
+                    "required_transition": "emit_task_response_trajectory",
+                }
+            ]
+        },
+    )
+    gate = GateResult(
+        gate_name="baseline_replay",
+        passed=False,
+        reason="baseline task did not establish completion",
+        details={
+            "failure_class": "task",
+            "repairable": False,
+            "causal_failure_events": [event.to_dict()],
+        },
+    )
+
+    metrics = _typed_gate_feedback_metrics((gate,))
+
+    assert "replay_counterexamples" not in metrics
 
 
 @pytest.mark.asyncio
@@ -703,14 +2055,14 @@ def test_framework_evidence_projection_failure_does_not_create_candidate_repair_
 
 def test_environment_fingerprint_drift_is_shared_infrastructure_failure() -> None:
     assert (
-        runner_module._environment_fingerprint_drift_gate(
+        _environment_fingerprint_drift_gate(
             "sha256:stable",
             "sha256:stable",
         )
         is None
     )
 
-    gate = runner_module._environment_fingerprint_drift_gate(
+    gate = _environment_fingerprint_drift_gate(
         "sha256:before",
         "sha256:after",
     )
@@ -723,6 +2075,167 @@ def test_environment_fingerprint_drift_is_shared_infrastructure_failure() -> Non
     events = gate.details["causal_failure_events"]
     assert isinstance(events, list)
     assert events[0]["code"] == "environment_fingerprint_drift"
+
+
+@pytest.mark.asyncio
+async def test_repair_conformance_preserves_shared_adaptation_gate_identity(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    skill_path = tmp_path / "skills" / "demo" / "SKILL.md"
+    skill_path.parent.mkdir(parents=True)
+    skill_path.write_text("# Demo\n", encoding="utf-8")
+    target = SkillTextTarget(skill_path, allow_auto_apply=True)
+    candidate = CandidateVariant(
+        candidate_id="candidate-repair",
+        target=target.identity,
+        content="# Demo\n\nRepair.\n",
+        rationale="repair",
+    )
+    dataset = SelfEvolveDataset(
+        cases=(EvalCase(case_id="case-1", input="task"),),
+        recipe=DatasetRecipe(
+            source={"kind": "test"},
+            split_seed="test",
+            splits={"train": ["case-1"]},
+        ),
+    )
+    contract = RepairConformanceContract(
+        focus_candidate_id="candidate-parent",
+        failure_codes=("candidate_recovery_incomplete",),
+        interaction_progress=0,
+        base_file_fingerprints={"replay/runtime.py": "sha256:base"},
+        required_branch_paths=("replay/runtime.py",),
+        base_branch_fingerprints={},
+    )
+    drift_gate = _environment_fingerprint_drift_gate(
+        "sha256:before",
+        "sha256:after",
+    )
+    assert drift_gate is not None
+
+    class NoopOptimizer:
+        async def propose(self, request: OptimizerRequest) -> OptimizerResult:
+            return OptimizerResult(candidates=())
+
+    runner = SelfEvolveRunner(
+        store=FilesystemSelfEvolveStore(tmp_path),
+        optimizer=NoopOptimizer(),
+    )
+    monkeypatch.setattr(
+        runner,
+        "_prepare_replay_adaptation",
+        lambda **kwargs: (None, drift_gate),
+    )
+
+    gate = await runner._preflight_candidate_repair_conformance(
+        run_id="run-shared-gate-identity",
+        target=target,
+        dataset=dataset,
+        candidate=candidate,
+        contract=contract,
+    )
+
+    assert gate.gate_name == "replay_environment_health"
+    assert gate.details is not None
+    assert gate.details["code"] == "environment_fingerprint_drift"
+    assert gate.details["failure_event"] == drift_gate.details["failure_event"]
+    report = {
+        "conformance": {
+            "stopped_by_shared_infrastructure": True,
+            "attempts": [
+                {
+                    "gate_name": gate.gate_name,
+                    "passed": False,
+                    "reason": gate.reason,
+                    "details": gate.details,
+                }
+            ],
+        }
+    }
+    selected = _candidate_validation_shared_failure_gate(report)
+    assert selected.gate_name == "replay_environment_health"
+    assert selected.details["code"] == "environment_fingerprint_drift"
+
+
+def test_synthetic_summaries_do_not_hide_incomparable_evaluation_runtime() -> None:
+    synthetic_failure = EvaluationSummary(
+        variant_id="candidate",
+        dataset_split="validation",
+        metrics={
+            "evaluation_agent_signal": False,
+            "judge_attempt_count": 3,
+            "judge_success_count": 0,
+            "judge_failure_count": 3,
+            "judge_timeout_count": 3,
+        },
+    )
+    baseline = EvaluationSummary(
+        variant_id="baseline",
+        dataset_split="validation",
+        metrics={"evaluation_agent_signal": True},
+    )
+    gate = GateResult(
+        gate_name="evaluation_runtime_health",
+        passed=False,
+        reason="evaluation runtime did not produce a usable judge signal",
+        details={
+            "failure_class": "infrastructure",
+            "failure_owner": "infrastructure",
+            "failure_scope": "shared_run",
+            "repairable": True,
+        },
+    )
+
+    assert _infrastructure_prevented_comparable_evaluation(
+        (gate,),
+        baseline_summary=baseline,
+        candidate_summary=synthetic_failure,
+    ) is True
+
+
+def test_declared_shared_measurement_gate_publishes_typed_causal_event() -> None:
+    gate = _with_typed_gate_failure_event(
+        GateResult(
+            gate_name="candidate_replay",
+            passed=False,
+            reason="candidate replay exceeded the total hard deadline",
+            details={
+                "code": "replay_total_timeout",
+                "failure_class": "measurement",
+                "failure_owner": "framework",
+                "failure_scope": "shared_run",
+                "failure_stage": "evaluation",
+                "repairable": True,
+            },
+        )
+    )
+
+    event = gate.details["failure_event"]
+    assert event["code"] == "replay_total_timeout"
+    assert event["owner"] == "framework"
+    assert event["scope"] == "shared_run"
+    assert event["stage"] == "evaluation"
+    assert _gate_has_typed_shared_infrastructure_failure(gate)
+    assert _gate_has_typed_shared_measurement_failure(gate)
+
+
+def test_missing_resource_evidence_is_shared_measurement_failure() -> None:
+    gate = GateResult(
+        gate_name="cost_latency_regression",
+        passed=False,
+        reason="verified evaluation has no comparable resource evidence",
+        details={
+            "code": "resource_regression_evidence_missing",
+            "failure_class": "measurement",
+            "failure_owner": "framework",
+            "failure_scope": "shared_run",
+            "repairable": True,
+            "next_action": "repair_measurement",
+        },
+    )
+
+    assert _gate_has_typed_shared_measurement_failure(gate) is True
 
 
 def test_iteration_selection_prefers_fewer_failed_gates_without_scores() -> None:
@@ -765,6 +2278,74 @@ def test_iteration_selection_prefers_fewer_failed_gates_without_scores() -> None
     assert selected["candidate"] is second
 
 
+def test_iteration_selection_prefers_positive_paired_delta_over_absolute_score() -> None:
+    target = SelfEvolveTargetRef(target_type="skill", target_id="demo")
+
+    def state(
+        candidate_id: str,
+        *,
+        baseline_score: float,
+        candidate_score: float,
+    ) -> dict[str, object]:
+        candidate = CandidateVariant(
+            candidate_id=candidate_id,
+            target=target,
+            content=f"# {candidate_id}\n",
+            rationale="authoritative candidate",
+        )
+        delta = candidate_score - baseline_score
+        return {
+            "candidate": candidate,
+            "baseline_summary": EvaluationSummary(
+                variant_id="baseline",
+                metrics={"score": baseline_score},
+                dataset_split="validation",
+            ),
+            "candidate_summary": EvaluationSummary(
+                variant_id=candidate_id,
+                metrics={"score": candidate_score},
+                dataset_split="validation",
+            ),
+            "status": "rejected",
+            "gate_results": (
+                GateResult(
+                    "score_improvement",
+                    False,
+                    "score improvement is not yet promotion eligible",
+                    details={"delta": delta},
+                ),
+                GateResult(
+                    "evidence_quality",
+                    False,
+                    "candidate evidence requires repair",
+                ),
+            ),
+        }
+
+    selected = _select_iteration_state(
+        [
+            state(
+                "candidate-regressed-first",
+                baseline_score=86.35,
+                candidate_score=82.95,
+            ),
+            state(
+                "candidate-regressed-highest-absolute",
+                baseline_score=86.0,
+                candidate_score=84.2,
+            ),
+            state(
+                "candidate-positive",
+                baseline_score=79.425,
+                candidate_score=82.825,
+            ),
+        ]
+    )
+
+    assert selected is not None
+    assert selected["candidate"].candidate_id == "candidate-positive"
+
+
 def test_iteration_selection_prefers_candidate_that_reached_runtime_replay() -> None:
     target = SelfEvolveTargetRef(target_type="skill", target_id="demo")
     compile_failed = CandidateVariant(
@@ -804,6 +2385,49 @@ def test_iteration_selection_prefers_candidate_that_reached_runtime_replay() -> 
 
     assert selected is not None
     assert selected["candidate"] is runtime_failed
+
+
+def test_iteration_selection_prefers_authoritative_replay_over_screening() -> None:
+    target = SelfEvolveTargetRef(target_type="skill", target_id="demo")
+    screening = CandidateVariant(
+        candidate_id="screening",
+        target=target,
+        content="# Screening\n",
+        rationale="screening failure",
+    )
+    authoritative = CandidateVariant(
+        candidate_id="authoritative",
+        target=target,
+        content="# Authoritative\n",
+        rationale="full replay failure",
+    )
+
+    selected = _select_iteration_state(
+        [
+            {
+                "candidate": authoritative,
+                "candidate_summary": None,
+                "status": "rejected",
+                "lifecycle_stage": "authoritative_replay",
+                "gate_results": (
+                    GateResult("candidate_replay", False, "one member failed"),
+                    GateResult("replay_confidence", False, "pair incomparable"),
+                ),
+            },
+            {
+                "candidate": screening,
+                "candidate_summary": None,
+                "status": "screening_rejected",
+                "lifecycle_stage": "screening",
+                "gate_results": (
+                    GateResult("candidate_replay", False, "screening failed"),
+                ),
+            },
+        ]
+    )
+
+    assert selected is not None
+    assert selected["candidate"] is authoritative
 
 
 def test_iteration_selection_does_not_treat_failed_replay_gate_as_deeper() -> None:
@@ -881,6 +2505,13 @@ def test_iteration_selection_does_not_treat_failed_replay_gate_as_deeper() -> No
     ("gate_name", "details", "owner", "scope", "stage"),
     [
         (
+            "candidate_package",
+            {"code": "candidate_package_reference_missing"},
+            "candidate",
+            "candidate",
+            "candidate_generation",
+        ),
+        (
             "evidence_quality",
             {"evidence_incomplete": True},
             "candidate",
@@ -913,6 +2544,23 @@ def test_iteration_selection_does_not_treat_failed_replay_gate_as_deeper() -> No
             {"held_out_case_count": 0},
             "framework",
             "shared_run",
+            "evaluation",
+        ),
+        (
+            "held_out_verification",
+            {
+                "held_out_case_count": 4,
+                "deterministic_signal_present": False,
+            },
+            "candidate",
+            "candidate",
+            "evaluation",
+        ),
+        (
+            "judge_only_signal",
+            {"deterministic_signal_present": False},
+            "candidate",
+            "candidate",
             "evaluation",
         ),
         (
@@ -1045,6 +2693,625 @@ def test_candidate_screening_prefers_case_exercising_replay_requirements() -> No
     assert screening.cases[0].case_id == "capability-case"
 
 
+def test_candidate_screening_prefers_lower_cost_executable_case() -> None:
+    dataset = SelfEvolveDataset(
+        cases=(
+            EvalCase(case_id="context-heavy", input={"content": "task" * 500}),
+            EvalCase(case_id="executable-only", input={"content": "task"}),
+        ),
+        recipe=DatasetRecipe(
+            source={"kind": "trajectory_set"},
+            split_seed="screening-cost",
+            splits={"train": ["context-heavy", "executable-only"]},
+            trainable_case_ids=("context-heavy", "executable-only"),
+        ),
+    )
+    requirements = (
+        ReplayCapabilityRequirement(
+            requirement_id="shared-endpoint",
+            kind="local_endpoint",
+            identifier="http://127.0.0.1:9222",
+            case_ids=("context-heavy", "executable-only"),
+            evidence_refs=("context:1",),
+            status="unbound",
+        ),
+        ReplayCapabilityRequirement(
+            requirement_id="conversation-fixture",
+            kind="conversation_context",
+            identifier="recorded conversation",
+            case_ids=("context-heavy",),
+            evidence_refs=("context:2",),
+            status="unbound",
+        ),
+    )
+
+    screening = _candidate_screening_dataset(
+        dataset,
+        capability_requirements=requirements,
+    )
+
+    assert screening is not None
+    assert screening.cases[0].case_id == "executable-only"
+    assert screening.recipe.source["screening_case_costs"] == {
+        "executable-only": 11
+    }
+
+
+def test_candidate_screening_learns_from_censored_case_cost() -> None:
+    dataset = SelfEvolveDataset(
+        cases=(
+            EvalCase(case_id="slow-case", input={"content": "slow"}),
+            EvalCase(case_id="fresh-case", input={"content": "fresh"}),
+        ),
+        recipe=DatasetRecipe(
+            source={"kind": "trajectory_set"},
+            split_seed="empirical-screening-cost",
+            splits={"train": ["slow-case", "fresh-case"]},
+            trainable_case_ids=("slow-case", "fresh-case"),
+        ),
+    )
+    observations = {
+        "slow-case": {
+            "attempt_count": 1,
+            "total_wall_seconds": 180.0,
+            "right_censored_count": 1,
+        }
+    }
+
+    screening = _candidate_screening_dataset(
+        dataset,
+        empirical_observations=observations,
+    )
+
+    assert screening is not None
+    assert screening.cases[0].case_id == "fresh-case"
+    assert screening.recipe.source["screening_case_observations"] == {
+        "fresh-case": {}
+    }
+
+
+def test_candidate_screening_quarantines_campaign_invalid_controls() -> None:
+    dataset = SelfEvolveDataset(
+        cases=(
+            EvalCase(case_id="invalid-a", input={"content": "A"}),
+            EvalCase(case_id="invalid-b", input={"content": "B"}),
+            EvalCase(case_id="fresh-case", input={"content": "fresh"}),
+        ),
+        recipe=DatasetRecipe(
+            source={"kind": "trajectory_set"},
+            split_seed="invalid-control-memory",
+            splits={
+                "train": ["invalid-a", "invalid-b", "fresh-case"]
+            },
+            trainable_case_ids=("invalid-a", "invalid-b", "fresh-case"),
+        ),
+    )
+
+    screening = _candidate_screening_dataset(
+        dataset,
+        max_cases=2,
+        empirical_observations={
+            "invalid-a": {"invalid_control_count": 1},
+            "invalid-b": {"invalid_control_count": 1},
+        },
+    )
+
+    assert screening is not None
+    assert [case.case_id for case in screening.cases] == [
+        "fresh-case",
+        "invalid-b",
+    ]
+    assert screening.recipe.source["quarantined_control_case_ids"] == [
+        "invalid-a",
+        "invalid-b",
+    ]
+    assert screening.recipe.source["control_case_retry_suppressed_count"] == 2
+
+
+def test_candidate_screening_anchors_known_feasible_control_before_timeout_cases() -> None:
+    case_ids = (
+        "task_20260521171856",
+        "task_20260522081541",
+        "task_20260522081711",
+        "task_20260522105248",
+    )
+    dataset = SelfEvolveDataset(
+        cases=tuple(
+            EvalCase(case_id=case_id, input={"content": case_id})
+            for case_id in case_ids
+        ),
+        recipe=DatasetRecipe(
+            source={"kind": "trajectory_set"},
+            split_seed="feasible-control-anchor",
+            splits={
+                "train": [
+                    "task_20260521171856",
+                    "task_20260522081711",
+                    "task_20260522105248",
+                ],
+                "validation": [],
+                "held_out": ["task_20260522081541"],
+            },
+            trainable_case_ids=(
+                "task_20260521171856",
+                "task_20260522081711",
+                "task_20260522105248",
+            ),
+            held_out_case_ids=("task_20260522081541",),
+        ),
+    )
+    requirements = tuple(
+        ReplayCapabilityRequirement(
+            requirement_id=f"requirement-{index}",
+            kind="local_endpoint",
+            identifier=f"http://127.0.0.1:{9000 + index}",
+            case_ids=(case_id,),
+            evidence_refs=(f"context:{index}",),
+            status="unbound",
+        )
+        for index, case_id in enumerate(
+            (
+                "task_20260521171856",
+                "task_20260522081711",
+                "task_20260522105248",
+            )
+        )
+    )
+    observations = {
+        "task_20260521171856": {
+            "baseline_attempt_count": 9,
+            "baseline_success_count": 0,
+            "baseline_timeout_count": 9,
+            "baseline_timeout_max_seconds": 120.0,
+        },
+        "task_20260522081541": {
+            "baseline_attempt_count": 32,
+            "baseline_success_count": 21,
+            "baseline_timeout_count": 11,
+            "passed_count": 1,
+        },
+        "task_20260522081711": {
+            "baseline_attempt_count": 12,
+            "baseline_success_count": 0,
+            "baseline_timeout_count": 10,
+            "baseline_timeout_max_seconds": 90.0,
+            "invalid_control_count": 1,
+        },
+        "task_20260522105248": {
+            "baseline_attempt_count": 2,
+            "baseline_success_count": 0,
+            "baseline_timeout_count": 2,
+            "baseline_timeout_max_seconds": 90.0,
+        },
+    }
+
+    screening = _candidate_screening_dataset(
+        dataset,
+        capability_requirements=requirements,
+        max_cases=3,
+        allow_held_out_control_rescue=True,
+        empirical_observations=observations,
+    )
+    qualification = _candidate_screening_dataset(
+        dataset,
+        capability_requirements=requirements,
+        max_cases=1,
+        allow_held_out_control_rescue=True,
+        empirical_observations=observations,
+    )
+    population_ranking = _candidate_screening_dataset(
+        dataset,
+        capability_requirements=requirements,
+        max_cases=3,
+        empirical_observations=observations,
+    )
+
+    assert screening is not None
+    assert qualification is not None
+    assert population_ranking is not None
+    assert "task_20260522081541" not in {
+        case.case_id for case in population_ranking.cases
+    }
+    assert screening.cases[0].case_id == "task_20260522081541"
+    assert qualification.cases[0].case_id == "task_20260522081541"
+    assert screening.recipe.source["screening_anchor_case_id"] == (
+        "task_20260522081541"
+    )
+    assert screening.recipe.source["known_feasible_control_case_ids"] == [
+        "task_20260522081541"
+    ]
+    assert screening.recipe.source["held_out_control_rescue_case_ids"] == [
+        "task_20260522081541"
+    ]
+    assert set(screening.recipe.source["quarantined_control_case_ids"]) == {
+        "task_20260521171856",
+        "task_20260522081711",
+        "task_20260522105248",
+    }
+
+
+def test_candidate_screening_requires_replay_intervention_exposure() -> None:
+    dataset = SelfEvolveDataset(
+        cases=(
+            EvalCase(case_id="healthy-unrelated", input="summarize prior text"),
+            EvalCase(case_id="timeout-required", input="fetch required resource"),
+            EvalCase(case_id="held-out-required", input="fetch held-out resource"),
+        ),
+        recipe=DatasetRecipe(
+            source={"kind": "trajectory_set"},
+            split_seed="intervention-exposure",
+            splits={
+                "train": ["healthy-unrelated", "timeout-required"],
+                "validation": [],
+                "held_out": ["held-out-required"],
+            },
+            trainable_case_ids=("healthy-unrelated", "timeout-required"),
+            held_out_case_ids=("held-out-required",),
+        ),
+    )
+    requirements = (
+        ReplayCapabilityRequirement(
+            requirement_id="runtime-train",
+            kind="http_resource",
+            identifier="https://example.test/train",
+            case_ids=("timeout-required",),
+            evidence_refs=("context:train",),
+            status="runtime_required",
+        ),
+        ReplayCapabilityRequirement(
+            requirement_id="runtime-held-out",
+            kind="http_resource",
+            identifier="https://example.test/held-out",
+            case_ids=("held-out-required",),
+            evidence_refs=("context:held-out",),
+            status="runtime_required",
+        ),
+    )
+    observations = {
+        "healthy-unrelated": {
+            "baseline_attempt_count": 5,
+            "baseline_success_count": 5,
+            "passed_count": 2,
+        },
+        "timeout-required": {
+            "baseline_attempt_count": 3,
+            "baseline_success_count": 0,
+            "baseline_timeout_count": 3,
+            "baseline_timeout_max_seconds": 135.0,
+        },
+    }
+
+    screening = _candidate_screening_dataset(
+        dataset,
+        capability_requirements=requirements,
+        required_case_ids=("timeout-required", "held-out-required"),
+        max_cases=3,
+        allow_held_out_control_rescue=True,
+        empirical_observations=observations,
+    )
+
+    assert screening is not None
+    assert [case.case_id for case in screening.cases] == [
+        "held-out-required",
+        "timeout-required",
+    ]
+    assert screening.recipe.source["held_out_control_rescue_case_ids"] == [
+        "held-out-required"
+    ]
+    assert screening.recipe.source["required_intervention_case_ids"] == [
+        "timeout-required",
+        "held-out-required",
+    ]
+    assert screening.recipe.source["intervention_exposure_case_ids"] == [
+        "held-out-required",
+        "timeout-required",
+    ]
+
+
+def test_candidate_screening_observation_tracks_physical_termination_axis() -> None:
+    observations: dict[str, dict[str, float | int]] = {}
+
+    _record_candidate_screening_observation(
+        observations,
+        case_ids=("case-a",),
+        attempt={
+            "passed": False,
+            "wall_seconds": 180.0,
+            "details": {
+                "code": "screening_budget_censored",
+                "screening_budget_censored": True,
+                "screening_outcome": "right_censored",
+                "causal_failure_events": [
+                    {
+                        "diagnostics": {
+                            "termination_budget_axis": "wall_time"
+                        }
+                    }
+                ],
+            },
+        },
+    )
+
+    assert observations == {
+        "case-a": {
+            "attempt_count": 1,
+            "total_wall_seconds": 180.0,
+            "right_censored_count": 1,
+            "passed_count": 0,
+            "termination_wall_time_count": 1,
+        }
+    }
+
+
+def test_candidate_screening_uses_single_case_as_low_cost_promotion_stage() -> None:
+    dataset = SelfEvolveDataset(
+        cases=(EvalCase(case_id="only-case", input="single user task"),),
+        recipe=DatasetRecipe(
+            source={"kind": "trajectory", "case_count": 1},
+            split_seed="seed",
+            splits={"train": ["only-case"], "validation": [], "held_out": []},
+            trainable_case_ids=("only-case",),
+        ),
+    )
+
+    screening = _candidate_screening_dataset(dataset)
+
+    assert screening is not None
+    assert tuple(case.case_id for case in screening.cases) == ("only-case",)
+    assert screening.recipe.source["candidate_screening"] is True
+
+
+def test_conformance_phenotype_dedupes_equivalent_support_source_variants() -> None:
+    target = SelfEvolveTargetRef(target_type="skill", target_id="demo")
+    current = "# Demo\n\nCurrent behavior.\n"
+    first = CandidateVariant(
+        candidate_id="support-a",
+        target=target,
+        content=current,
+        rationale="runtime variant a",
+        files=(
+            CandidateFileDelta(
+                path="replay/runtime.py",
+                content="def handle():\n    return {'ok': True}\n",
+            ),
+        ),
+    )
+    second = replace(
+        first,
+        candidate_id="support-b",
+        rationale="runtime variant b",
+        files=(
+            CandidateFileDelta(
+                path="replay/runtime.py",
+                content="def handle():\n    value = True\n    return {'ok': value}\n",
+            ),
+        ),
+    )
+    common_details = {
+        "code": "repair_conformance_passed",
+        "probe_group_results": [
+            {
+                "passed": True,
+                "code": "repair_probe_group_passed",
+                "requirement_id": "browser-runtime",
+                "case_ids": ["case-a"],
+            }
+        ],
+    }
+    report = {
+        "attempts": [
+            {
+                "candidate_id": candidate_id,
+                "gate_name": "candidate_repair_conformance",
+                "passed": True,
+                "details": common_details,
+            }
+            for candidate_id in (first.candidate_id, second.candidate_id)
+        ]
+    }
+
+    representatives, duplicate_of, fingerprints = (
+        _deduplicate_conformance_phenotypes(
+            (first, second),
+            conformance_report=report,
+            current_content=current,
+        )
+    )
+
+    assert representatives == (first,)
+    assert duplicate_of == {second.candidate_id: first.candidate_id}
+    assert fingerprints[first.candidate_id] == fingerprints[second.candidate_id]
+
+
+def test_replay_adaptation_cache_reuses_behavior_only_sibling_capability(
+    tmp_path: Path,
+) -> None:
+    def write_skill(name: str, guidance: str) -> Path:
+        root = tmp_path / name
+        replay_root = root / "replay"
+        replay_root.mkdir(parents=True)
+        (root / "SKILL.md").write_text(guidance, encoding="utf-8")
+        (replay_root / "capability.json").write_text(
+            json.dumps(
+                {
+                    "schema_version": "aworld.skill.replay_capability.v1",
+                    "capability_id": "shared-fixture",
+                    "protocol": "aworld.replay.subprocess.v1",
+                    "entrypoint": "replay/compiler.py",
+                    "handles": ["local_endpoint"],
+                }
+            ),
+            encoding="utf-8",
+        )
+        (replay_root / "compiler.py").write_text("# identical compiler\n", encoding="utf-8")
+        return root
+
+    first_root = write_skill("first", "# First behavior\n")
+    second_root = write_skill("second", "# Second behavior\n")
+    third_root = write_skill("third", "# Third behavior\n")
+    (third_root / "replay" / "compiler.py").write_text(
+        "# distinct compiler surface\n",
+        encoding="utf-8",
+    )
+    dataset = SelfEvolveDataset(
+        cases=(EvalCase(case_id="case-1", input="plain task"),),
+        recipe=DatasetRecipe(
+            source={"kind": "test"},
+            split_seed="seed",
+            splits={"train": ["case-1"], "validation": [], "held_out": []},
+            trainable_case_ids=("case-1",),
+        ),
+    )
+
+    class NoopOptimizer:
+        async def propose(self, request: OptimizerRequest) -> OptimizerResult:
+            return OptimizerResult(candidates=())
+
+    runner = SelfEvolveRunner(
+        store=FilesystemSelfEvolveStore(tmp_path),
+        optimizer=NoopOptimizer(),
+    )
+    preflight_call_count = 0
+    original_preflight = runner.replay_adaptation_compiler.preflight
+
+    def counting_preflight(**kwargs):
+        nonlocal preflight_call_count
+        preflight_call_count += 1
+        return original_preflight(**kwargs)
+
+    runner.replay_adaptation_compiler.preflight = counting_preflight
+
+    first_bundle, first_gate = runner._prepare_replay_adaptation(
+        run_id="run-shared-adaptation",
+        dataset=dataset,
+        capability_skill_root=first_root,
+        candidate_package_fingerprint="sha256:first-full-package",
+        emit_progress=False,
+    )
+    second_bundle, second_gate = runner._prepare_replay_adaptation(
+        run_id="run-shared-adaptation",
+        dataset=dataset,
+        capability_skill_root=second_root,
+        candidate_package_fingerprint="sha256:second-full-package",
+        emit_progress=False,
+    )
+    third_bundle, third_gate = runner._prepare_replay_adaptation(
+        run_id="run-shared-adaptation",
+        dataset=dataset,
+        capability_skill_root=third_root,
+        candidate_package_fingerprint="sha256:third-full-package",
+        emit_progress=False,
+    )
+
+    assert first_gate.passed is True
+    assert second_gate.passed is True
+    assert third_gate.passed is True
+    assert first_bundle is second_bundle
+    assert third_bundle is not first_bundle
+    assert len(runner._replay_adaptation_cache) == 2
+    assert len(runner._replay_dataset_preflight_cache) == 1
+    assert preflight_call_count == 1
+    assert first_gate.details["preflight_cache_hit"] is False
+    assert third_gate.details["preflight_cache_hit"] is True
+
+
+def test_candidate_screening_builds_stratified_multi_case_panel() -> None:
+    dataset = SelfEvolveDataset(
+        cases=tuple(
+            EvalCase(
+                case_id=f"case-{index}",
+                input=f"task {index}",
+                metadata={"category": category},
+            )
+            for index, category in enumerate(("browser", "browser", "api", "files"))
+        ),
+        recipe=DatasetRecipe(
+            source={"kind": "trajectory_set"},
+            split_seed="seed",
+            splits={"train": [f"case-{index}" for index in range(4)]},
+            trainable_case_ids=tuple(f"case-{index}" for index in range(4)),
+        ),
+    )
+
+    screening = _candidate_screening_dataset(dataset, max_cases=3)
+
+    assert screening is not None
+    assert len(screening.cases) == 3
+    assert {case.metadata["category"] for case in screening.cases} == {
+        "browser",
+        "api",
+        "files",
+    }
+    assert screening.recipe.source["screening_case_count"] == 3
+
+
+def test_score_tiebreak_accumulates_compatible_paired_samples() -> None:
+    common = {
+        "comparison_plan_fingerprint": "plan",
+        "comparison_cardinality_preserved": True,
+        "comparison_effective_case_count": 3,
+        "comparison_case_ids": ["case-1", "case-2", "case-3"],
+        "judge_attempt_count": 3,
+        "judge_success_count": 3,
+        "evaluation_execution_id": "initial",
+    }
+    initial = EvaluationSummary(
+        variant_id="candidate",
+        dataset_split="validation",
+        metrics={**common, "score": 89.733, "score_samples": [86.8, 88.4, 94.0]},
+    )
+    additional = EvaluationSummary(
+        variant_id="candidate",
+        dataset_split="validation",
+        metrics={
+            **common,
+            "evaluation_execution_id": "tiebreak",
+            "score": 90.333,
+            "score_samples": [84.6, 94.0, 92.4],
+        },
+    )
+
+    pooled = _accumulate_score_evidence(initial, additional)
+    baseline_initial = replace(
+        initial,
+        variant_id="baseline",
+        metrics={**common, "score": 88.2, "score_samples": [85.6, 90.6, 88.4]},
+    )
+    baseline_additional = replace(
+        additional,
+        variant_id="baseline",
+        metrics={
+            **common,
+            "evaluation_execution_id": "baseline-tiebreak",
+            "score": 88.0,
+            "score_samples": [86.2, 88.8, 89.0],
+        },
+    )
+    pooled_baseline = _accumulate_score_evidence(
+        baseline_initial,
+        baseline_additional,
+    )
+    decision = ScoreImprovementGate(min_delta=0.0).evaluate(
+        baseline=pooled_baseline,
+        candidate=pooled,
+    )
+
+    assert pooled.metrics["score_samples"] == [86.8, 88.4, 94.0, 84.6, 94.0, 92.4]
+    assert pooled.metrics["score_sample_count"] == 6
+    assert pooled.metrics["judge_attempt_count"] == 6
+    assert pooled.metrics["score_evidence_round_count"] == 2
+    assert pooled.metrics["score_evidence_accumulation"] == {
+        "status": "pooled",
+        "initial_sample_count": 3,
+        "additional_sample_count": 3,
+        "pooled_sample_count": 6,
+        "execution_ids": ["initial", "tiebreak"],
+    }
+    assert decision.passed is True
+    assert decision.details["code"] == "score_improvement_paired_noninferior"
+    assert decision.details["paired_sample_count"] == 6
+
+
 def CandidateReplayResult(*args, **kwargs):
     """Build a fake backend result that honours the replay provenance contract."""
 
@@ -1158,6 +3425,38 @@ def test_runner_legacy_budget_fallbacks_are_reportable(tmp_path) -> None:
     )
 
 
+def test_runner_has_no_implicit_hard_budget(tmp_path) -> None:
+    runner = SelfEvolveRunner(
+        store=FilesystemSelfEvolveStore(tmp_path),
+        optimizer=EmptyOptimizer(),
+    )
+
+    assert runner.max_run_tokens is None
+    assert runner.total_run_token_budget is None
+    assert runner.per_attempt_replay_token_limit is None
+    assert runner.max_run_cost_usd is None
+    assert runner.max_run_wall_seconds is None
+    assert runner.deprecated_config_mappings == ()
+
+
+def test_empty_budget_report_marks_unbounded_default() -> None:
+    report = _empty_run_budget_report(
+        max_run_tokens=None,
+        total_run_token_budget=None,
+        max_run_cost_usd=None,
+        max_run_wall_seconds=None,
+        run_budget_context_type=_RunBudgetContext,
+    )
+
+    assert report["budget_mode"] == "unbounded"
+    assert report["ledger"]["ceilings"] == {
+        "budget_mode": "unbounded",
+        "total_tokens": None,
+        "total_cost_usd": None,
+        "wall_seconds": None,
+    }
+
+
 class CaptureOptimizer:
     def __init__(self) -> None:
         self.requests: list[OptimizerRequest] = []
@@ -1204,10 +3503,29 @@ def test_auto_verified_default_iteration_budget_allows_multi_stage_capability_re
 
 
 def test_candidate_screening_timeout_is_bounded_without_extending_short_timeouts() -> None:
-    assert _candidate_screening_timeout(600) == 240
-    assert _candidate_screening_timeout(240) == 240
-    assert _candidate_screening_timeout(180) == 180
-    assert _candidate_screening_timeout(120) == 120
+    assert _candidate_screening_timeout(600) == 90
+    assert _candidate_screening_timeout(240) == 90
+    assert _candidate_screening_timeout(180) == 90
+    assert _candidate_screening_timeout(90) == 90
+    assert _candidate_screening_timeout(60) == 60
+    assert _candidate_screening_timeout(600, max_steps=4) == 120
+    assert _candidate_screening_timeout(600, max_steps=8) == 240
+    assert _candidate_screening_timeout(
+        600,
+        max_steps=4,
+        empirical_observation={
+            "baseline_success_count": 1,
+            "baseline_success_wall_seconds": 101.0,
+        },
+    ) == 152
+    assert _candidate_screening_timeout(
+        900,
+        max_steps=12,
+        empirical_observation={
+            "baseline_success_count": 1,
+            "baseline_success_wall_seconds": 500.0,
+        },
+    ) == 300
 
 
 def test_candidate_generation_retries_only_transient_provider_failures() -> None:
@@ -1279,6 +3597,12 @@ def test_candidate_replay_capability_compile_error_is_typed_repair_feedback() ->
     assert diagnostic["required_compile_result_contract"][
         "runtime_service_transport"
     ] == "skill_runtime"
+    assert diagnostic["required_compile_result_contract"][
+        "service_readiness_kind_values"
+    ] == ["http", "tcp"]
+    assert "every services[*] item" in diagnostic[
+        "required_compile_result_contract"
+    ]["service_readiness_contract"]
     assert "runtime_required is a requirement status" in diagnostic[
         "layering_rules"
     ][2]
@@ -1340,7 +3664,7 @@ def test_candidate_replay_capability_preserves_schema_field_constraints() -> Non
     assert details["capability_error_code"] == "schema_field_validation_failed"
     assert details["schema_field_constraints"] == [constraint]
     assert details["diagnostics"][0]["schema_field_constraints"] == [constraint]
-    fingerprint = runner_module._schema_field_contract_fingerprint(details)
+    fingerprint = _schema_field_contract_fingerprint(details)
     assert fingerprint is not None
     failure_event = details["causal_failure_events"][0]
     assert failure_event["code"] == "schema_field_validation_failed"
@@ -1354,7 +3678,100 @@ def test_candidate_replay_capability_preserves_schema_field_constraints() -> Non
             }
         ],
     }
-    assert runner_module._schema_field_contract_fingerprint(distinct) != fingerprint
+    assert _schema_field_contract_fingerprint(distinct) != fingerprint
+
+    distinct_source_operations = {
+        **details,
+        "schema_field_constraints": [
+            {
+                **constraint,
+                "value_domain": "source_behavior",
+                "required_operations": ["declare_websocket_data_plane_probe"],
+            }
+        ],
+    }
+    assert (
+        _schema_field_contract_fingerprint(
+            distinct_source_operations
+        )
+        != fingerprint
+    )
+
+
+def test_conformance_progress_separates_source_strategy_and_output_witness() -> None:
+    target = SelfEvolveTargetRef("skill", "demo")
+
+    def candidate(candidate_id: str, source: str) -> CandidateVariant:
+        return CandidateVariant(
+            candidate_id=candidate_id,
+            target=target,
+            content="# Demo\n",
+            rationale="strategy witness",
+            files=(
+                CandidateFileDelta(
+                    path="replay/compiler.py",
+                    operation="upsert",
+                    content=source,
+                ),
+            ),
+        )
+
+    def gate(actual_fingerprint: str) -> GateResult:
+        return GateResult(
+            gate_name="candidate_repair_conformance",
+            passed=False,
+            reason="compiled subject still violates schema",
+            details={
+                "failure_class": "candidate",
+                "repairable": True,
+                "failure_fingerprint": "same-schema-frontier",
+                "counterexample_contracts": [
+                    {
+                        "counterexample_id": "schema-counterexample-readiness",
+                        "actual_type": "null",
+                        "actual_fingerprint": actual_fingerprint,
+                    }
+                ],
+                "repair_conformance": {
+                    "required_branch_paths": ["replay/compiler.py"],
+                },
+            },
+        )
+
+    failures = (
+        (
+            candidate("candidate-a", "def build():\n    return {}\n"),
+            gate("sha256:" + "a" * 64),
+        ),
+        (
+            candidate(
+                "candidate-b",
+                "def helper():\n    return None\n\ndef build():\n    return {}\n",
+            ),
+            gate("sha256:" + "a" * 64),
+        ),
+    )
+    changed_source = _candidate_conformance_repair_topologies(failures)
+    unchanged_result = _candidate_conformance_result_observations(failures)
+    changed_result = _candidate_conformance_result_observations(
+        (
+            (
+                candidate("candidate-a", "def build():\n    return {}\n"),
+                gate("sha256:" + "a" * 64),
+            ),
+            (
+                candidate(
+                    "candidate-c",
+                    "def build():\n    return {'readiness': {}}\n",
+                ),
+                gate("sha256:" + "b" * 64),
+            ),
+        )
+    )
+
+    assert len(next(iter(changed_source.values()))) == 2
+    assert len(next(iter(unchanged_result.values()))) == 1
+    assert len(next(iter(changed_result.values()))) == 2
 
 
 def test_substantive_screening_failure_outranks_later_duplicate_attempt() -> None:
@@ -1380,7 +3797,7 @@ def test_substantive_screening_failure_outranks_later_duplicate_attempt() -> Non
         reason="candidate repeats a prior terminal candidate",
         details={"failure_class": "candidate", "code": "duplicate_prior_candidate"},
     )
-    substantive = runner_module._iteration_state(
+    substantive = _iteration_state(
         candidate=candidate,
         baseline_summary=None,
         candidate_summary=None,
@@ -1391,7 +3808,7 @@ def test_substantive_screening_failure_outranks_later_duplicate_attempt() -> Non
         feedback=(),
         status="rejected",
     )
-    duplicate = runner_module._iteration_state(
+    duplicate = _iteration_state(
         candidate=candidate,
         baseline_summary=None,
         candidate_summary=None,
@@ -1406,7 +3823,7 @@ def test_substantive_screening_failure_outranks_later_duplicate_attempt() -> Non
     selected = _select_iteration_state([substantive, duplicate])
 
     assert selected is substantive
-    attribution = runner_module._rejection_attribution(
+    attribution = _rejection_attribution(
         final_status=SelfEvolveRunStatus.REJECTED,
         selected_candidate_id=candidate.candidate_id,
         gate_results=selected["gate_results"],
@@ -1425,6 +3842,463 @@ def test_substantive_screening_failure_outranks_later_duplicate_attempt() -> Non
         "scheduler_reason_code": "repair_frontier_stalled",
         "scheduler_stop": True,
     }
+
+
+def test_rejection_attribution_prefers_actionable_candidate_evidence_failure() -> None:
+    attribution = _rejection_attribution(
+        final_status=SelfEvolveRunStatus.REJECTED,
+        selected_candidate_id="candidate-evidence-repair",
+        gate_results=(
+            GateResult(
+                gate_name="score_improvement",
+                passed=False,
+                reason="score improvement is inconclusive",
+                details={
+                    "code": "score_improvement_inconclusive",
+                    "failure_class": "framework",
+                    "failure_owner": "framework",
+                    "failure_scope": "shared_run",
+                    "repairable": False,
+                },
+            ),
+            GateResult(
+                gate_name="evidence_quality",
+                passed=False,
+                reason="candidate evidence quality regressed",
+                details={
+                    "code": "evidence_quality",
+                    "failure_class": "candidate",
+                    "failure_owner": "candidate",
+                    "failure_scope": "candidate",
+                    "failure_stage": "evaluation",
+                    "repairable": True,
+                    "diagnostic_refs": ["/tmp/evidence/report.json"],
+                },
+            ),
+        ),
+        scheduler_decisions=(),
+    )
+
+    assert attribution is not None
+    assert attribution["primary_gate"] == "evidence_quality"
+    assert attribution["failure_class"] == "candidate"
+    assert attribution["failure_owner"] == "candidate"
+    assert attribution["failure_scope"] == "candidate"
+    assert attribution["failure_stage"] == "evaluation"
+    assert attribution["repairable"] is True
+    assert attribution["diagnostic_refs"] == ["/tmp/evidence/report.json"]
+
+
+def test_campaign_attribution_reports_modal_frontier_not_incidental_candidate() -> None:
+    candidates = [
+        CandidateVariant(
+            candidate_id=f"candidate-{index}",
+            target=SelfEvolveTargetRef(target_type="skill", target_id="demo"),
+            content="# Demo\n",
+            rationale="candidate",
+        )
+        for index in range(3)
+    ]
+    conformance_gate = GateResult(
+        gate_name="candidate_repair_conformance",
+        passed=False,
+        reason="compiled output violates its typed contract",
+        details={
+            "code": "repair_capability_compile_failed",
+            "failure_class": "candidate",
+            "schema_field_constraints": [
+                {
+                    "schema_layer": "compile_result",
+                    "field_path": "services[*].protocol_probes[*].path",
+                    "rule": "enum",
+                    "expected": ["data_plane_probe"],
+                }
+            ],
+        },
+    )
+    incidental_gate = GateResult(
+        gate_name="skill_release_fidelity",
+        passed=False,
+        reason="candidate moved an undeclared fenced block",
+        details={
+            "code": "skill_fenced_block_deleted",
+            "failure_class": "candidate",
+        },
+    )
+    states = (
+        {"candidate": candidates[0], "gate_results": [conformance_gate]},
+        {"candidate": candidates[1], "gate_results": [conformance_gate]},
+        {"candidate": candidates[2], "gate_results": [incidental_gate]},
+    )
+
+    attribution = _campaign_failure_attribution(
+        states,
+        generation_stop_reason=(
+            "conformance_frontier_repeated_after_strategy_switch"
+        ),
+    )
+
+    assert attribution is not None
+    assert attribution["primary_gate"] == "candidate_repair_conformance"
+    assert attribution["affected_candidate_count"] == 2
+    assert attribution["occurrence_count"] == 2
+
+
+def test_campaign_attribution_ignores_verified_support_prerequisite() -> None:
+    support = CandidateVariant(
+        candidate_id="support",
+        target=SelfEvolveTargetRef(target_type="skill", target_id="demo"),
+        content="# Demo\n",
+        rationale="support prerequisite",
+    )
+    authoritative = replace(support, candidate_id="authoritative")
+    attribution = _campaign_failure_attribution(
+        (
+            {
+                "candidate": support,
+                "status": "prerequisite",
+                "gate_results": [
+                    GateResult(
+                        gate_name="target_behavior_delta",
+                        passed=False,
+                        reason="support requires behavior composition",
+                        details={
+                            "code": "evaluation_support_bootstrap_only",
+                            "failure_class": "candidate",
+                        },
+                    )
+                ],
+            },
+            {
+                "candidate": authoritative,
+                "status": "rejected",
+                "gate_results": [
+                    GateResult(
+                        gate_name="candidate_replay",
+                        passed=False,
+                        reason="candidate violated runtime lifecycle",
+                        details={
+                            "code": "replay_evidence_runtime_policy_violation",
+                            "failure_class": "candidate",
+                            "failure_owner": "candidate",
+                            "failure_scope": "candidate",
+                            "failure_stage": "task_rollout",
+                            "repairable": True,
+                        },
+                    )
+                ],
+            },
+        ),
+        generation_stop_reason="authoritative_candidate_limit_reached",
+    )
+
+    assert attribution is not None
+    assert attribution["primary_gate"] == "candidate_replay"
+    assert attribution["code"] == "replay_evidence_runtime_policy_violation"
+    assert attribution["affected_candidate_ids"] == ["authoritative"]
+
+
+def test_campaign_failure_attribution_prefers_terminal_shared_measurement() -> None:
+    candidate = CandidateVariant(
+        candidate_id="candidate",
+        target=SelfEvolveTargetRef(target_type="skill", target_id="demo"),
+        content="# Demo\n",
+        rationale="candidate",
+    )
+    contract = {
+        "runtime_response_constraints": [
+            {
+                "constraint_kind": "recorded_response_context",
+                "response_source": "AWORLD_REPLAY_RESPONSE_INDEX",
+            }
+        ]
+    }
+    fingerprint = _repair_contract_fingerprint(contract)
+    assert fingerprint is not None
+    states = (
+        {
+            "candidate": candidate,
+            "gate_results": [
+                GateResult(
+                    gate_name="candidate_repair_conformance",
+                    passed=False,
+                    reason="probe failed",
+                    details={
+                        "code": "repair_probe_execution_failed",
+                        "failure_class": "candidate",
+                        **contract,
+                    },
+                )
+            ],
+        },
+    )
+    terminal_gate = GateResult(
+        gate_name="candidate_replay",
+        passed=False,
+        reason="baseline control timed out",
+        details={
+            "code": "control_not_comparable",
+            "failure_class": "measurement",
+            "failure_owner": "framework",
+            "failure_scope": "shared_run",
+            "failure_stage": "evaluation",
+            "repairable": True,
+            "next_action": "continue_measurement",
+            "resume_safe": True,
+            "resume_candidate_id": "candidate",
+            "resume_candidate_package_fingerprint": "sha256:package",
+            "completed_baseline_case_count": 3,
+            "completed_candidate_case_count": 2,
+            "completed_comparable_pair_count": 2,
+            "pending_case_count": 8,
+            "diagnostic_refs": ["/tmp/replay/request.json"],
+        },
+    )
+
+    attribution = _campaign_failure_attribution(
+        states,
+        generation_stop_reason=None,
+        terminal_gates=(terminal_gate,),
+        resolved_contract_fingerprints=(fingerprint,),
+    )
+
+    assert attribution is not None
+    assert attribution["primary_gate"] == "candidate_replay"
+    assert attribution["code"] == "control_not_comparable"
+    assert attribution["failure_owner"] == "framework"
+    assert attribution["failure_scope"] == "shared_run"
+    assert attribution["failure_stage"] == "evaluation"
+    assert attribution["repairable"] is True
+    assert attribution["next_action"] == "continue_measurement"
+    assert attribution["resume_safe"] is True
+    assert attribution["resume_candidate_id"] == "candidate"
+    assert attribution["resume_candidate_package_fingerprint"] == "sha256:package"
+    assert attribution["completed_baseline_case_count"] == 3
+    assert attribution["completed_candidate_case_count"] == 2
+    assert attribution["completed_comparable_pair_count"] == 2
+    assert attribution["pending_case_count"] == 8
+    assert attribution["diagnostic_refs"] == ["/tmp/replay/request.json"]
+    assert attribution["resolved_failure_count"] == 1
+
+
+def test_campaign_failure_attribution_prefers_actionable_terminal_candidate_over_uncertainty() -> None:
+    candidate = CandidateVariant(
+        candidate_id="candidate",
+        target=SelfEvolveTargetRef(target_type="skill", target_id="demo"),
+        content="# Demo\n",
+        rationale="candidate",
+    )
+    score_gate = GateResult(
+        gate_name="score_improvement",
+        passed=False,
+        reason="score improvement is inconclusive",
+        details={
+            "code": "score_improvement_inconclusive",
+            "failure_class": "framework",
+            "failure_owner": "framework",
+            "failure_scope": "shared_run",
+        },
+    )
+    latency_gate = GateResult(
+        gate_name="cost_latency_regression",
+        passed=False,
+        reason="candidate latency exceeds policy",
+        details={
+            "code": "latency_regression_exceeds_policy",
+            "failure_class": "candidate",
+            "failure_owner": "candidate",
+            "failure_scope": "candidate",
+            "repairable": True,
+        },
+    )
+
+    attribution = _campaign_failure_attribution(
+        (
+            {
+                "candidate": candidate,
+                "status": "rejected",
+                "gate_results": [score_gate, latency_gate],
+            },
+        ),
+        generation_stop_reason="authoritative_candidate_limit_reached",
+        terminal_gates=(score_gate, latency_gate),
+    )
+
+    assert attribution is not None
+    assert attribution["primary_gate"] == "cost_latency_regression"
+    assert attribution["code"] == "latency_regression_exceeds_policy"
+    assert attribution["failure_owner"] == "candidate"
+
+
+def test_campaign_attribution_keeps_failed_held_out_signal_candidate_owned() -> None:
+    candidate = CandidateVariant(
+        candidate_id="candidate",
+        target=SelfEvolveTargetRef(target_type="skill", target_id="demo"),
+        content="# Demo\n",
+        rationale="candidate",
+    )
+    score_gate = _with_typed_gate_failure_event(
+        GateResult(
+            gate_name="score_improvement",
+            passed=False,
+            reason="score improvement is inconclusive",
+            details={"code": "score_improvement_inconclusive"},
+        )
+    )
+    held_out_gate = _with_typed_gate_failure_event(
+        GateResult(
+            gate_name="held_out_verification",
+            passed=False,
+            reason="candidate is not verified on held-out cases",
+            details={
+                "held_out_case_count": 4,
+                "deterministic_signal_present": False,
+            },
+        )
+    )
+
+    attribution = _campaign_failure_attribution(
+        (
+            {
+                "candidate": candidate,
+                "status": "rejected",
+                "gate_results": [score_gate, held_out_gate],
+            },
+        ),
+        generation_stop_reason="authoritative_candidate_limit_reached",
+        terminal_gates=(held_out_gate,),
+    )
+
+    assert attribution is not None
+    assert attribution["failure_owner"] == "candidate"
+    assert attribution["failure_scope"] == "candidate"
+    assert attribution["affected_candidate_ids"] == ["candidate"]
+
+
+def test_resolved_conformance_frontier_is_not_campaign_primary() -> None:
+    candidate = CandidateVariant(
+        candidate_id="candidate",
+        target=SelfEvolveTargetRef(target_type="skill", target_id="demo"),
+        content="# Demo\n",
+        rationale="candidate",
+    )
+    contract = {
+        "runtime_response_constraints": [
+            {
+                "constraint_kind": "recorded_response_context",
+                "response_source": "AWORLD_REPLAY_RESPONSE_INDEX",
+            }
+        ]
+    }
+    fingerprint = _repair_contract_fingerprint(contract)
+    assert fingerprint is not None
+
+    attribution = _campaign_failure_attribution(
+        (
+            {
+                "candidate": candidate,
+                "gate_results": [
+                    GateResult(
+                        gate_name="candidate_repair_conformance",
+                        passed=False,
+                        reason="probe failed",
+                        details={
+                            "code": "repair_probe_execution_failed",
+                            "failure_class": "candidate",
+                            **contract,
+                        },
+                    )
+                ],
+            },
+        ),
+        generation_stop_reason=None,
+        resolved_contract_fingerprints=(fingerprint,),
+    )
+
+    assert attribution is None
+
+
+def test_conformance_retry_identity_is_atomic_across_batch_composition() -> None:
+    candidate = CandidateVariant(
+        candidate_id="candidate",
+        target=SelfEvolveTargetRef(target_type="skill", target_id="demo"),
+        content="# Demo\n",
+        rationale="candidate",
+    )
+
+    def failure(code: str) -> tuple[CandidateVariant, GateResult]:
+        return (
+            candidate,
+            GateResult(
+                gate_name="candidate_repair_conformance",
+                passed=False,
+                reason="typed failure",
+                details={
+                    "code": code,
+                    "stage": "repair_conformance",
+                    "failure_fingerprint": "sha256:" + code[-1] * 64,
+                },
+            ),
+        )
+
+    first = _candidate_conformance_failure_signatures(
+        (failure("failure_a"), failure("failure_b"))
+    )
+    second = _candidate_conformance_failure_signatures((failure("failure_b"),))
+
+    assert len(first) == 2
+    assert len(second) == 1
+    assert second[0] in first
+
+
+def test_rejection_attribution_names_terminal_frontier_exhaustion() -> None:
+    attribution = _rejection_attribution(
+        final_status=SelfEvolveRunStatus.REJECTED,
+        selected_candidate_id=None,
+        gate_results=(
+            GateResult(
+                gate_name="candidate_generation",
+                passed=False,
+                reason="optimizer did not produce a replayable candidate",
+                details={
+                    "failure_class": "candidate",
+                    "generated_candidate_count": 0,
+                    "iterations": 0,
+                },
+            ),
+        ),
+        scheduler_decisions=(
+            {"reason_code": "repair_frontier_stalled", "stop": True},
+        ),
+    )
+
+    assert attribution is not None
+    assert attribution["code"] == "candidate_repair_frontier_stalled"
+    assert attribution["scheduler_reason_code"] == "repair_frontier_stalled"
+    assert attribution["scheduler_stop"] is True
+
+
+def test_rejection_attribution_names_shared_scheduler_blocker() -> None:
+    attribution = _rejection_attribution(
+        final_status=SelfEvolveRunStatus.REJECTED,
+        selected_candidate_id=None,
+        gate_results=(
+            GateResult(
+                gate_name="candidate_generation",
+                passed=False,
+                reason="optimizer did not produce a replayable candidate",
+                details={"generated_candidate_count": 0, "iterations": 0},
+            ),
+        ),
+        scheduler_decisions=(
+            {"reason_code": "shared_run_blocked", "stop": True},
+        ),
+    )
+
+    assert attribution is not None
+    assert attribution["failure_class"] == "framework"
+    assert attribution["code"] == "shared_run_blocked"
+    assert attribution["scheduler_stop"] is True
 
 
 def test_verification_contract_fingerprint_covers_active_trajectory_contract(
@@ -1472,17 +4346,17 @@ def test_semantic_duplicate_feedback_creates_typed_repair_frontier() -> None:
         content="# Generic\n",
         rationale="duplicate",
     )
-    fingerprint = runner_module._SemanticLessonFingerprint(
+    fingerprint = _SemanticLessonFingerprint(
         semantic_package_fingerprint="sha256:package",
         lesson_set_fingerprint="sha256:lessons",
         verification_contract_fingerprint="sha256:verification",
     )
 
-    feedback = runner_module._semantic_lesson_duplicate_feedback(
+    feedback = _semantic_lesson_duplicate_feedback(
         candidate,
         fingerprint=fingerprint,
     )
-    frontiers = runner_module._typed_repair_frontiers((feedback,))
+    frontiers = _typed_repair_frontiers((feedback,))
 
     assert feedback.metrics["code"] == "duplicate_semantic_lesson"
     assert len(frontiers) == 1
@@ -1491,18 +4365,18 @@ def test_semantic_duplicate_feedback_creates_typed_repair_frontier() -> None:
 
 
 def test_semantic_duplicate_identity_requires_same_verification_contract() -> None:
-    current = runner_module._SemanticLessonFingerprint(
+    current = _SemanticLessonFingerprint(
         semantic_package_fingerprint="sha256:package",
         lesson_set_fingerprint="sha256:lessons",
         verification_contract_fingerprint="sha256:verification-current",
     )
-    historical = runner_module._SemanticLessonFingerprint(
+    historical = _SemanticLessonFingerprint(
         semantic_package_fingerprint="sha256:package",
         lesson_set_fingerprint="sha256:lessons",
         verification_contract_fingerprint="sha256:verification-old",
     )
 
-    assert not runner_module._is_semantic_lesson_duplicate(
+    assert not _is_semantic_lesson_duplicate(
         "candidate",
         lineage_fingerprints={"candidate": current},
         rejected_semantic_lesson_fingerprints={historical},
@@ -1671,6 +4545,320 @@ def test_multi_member_replay_advances_from_historical_to_current_member_root(
     )
 
 
+def test_replay_evaluator_admission_rejects_hard_evidence_invariant_regression() -> None:
+    request = CandidateReplayRequest(
+        run_id="run-admission",
+        task_id="task-a",
+        workspace_root="/tmp/workspace",
+        target=SelfEvolveTargetRef(target_type="skill", target_id="demo"),
+        candidate_id="candidate-1",
+        overlay_skill_root="/tmp/overlay",
+        task_input="task A",
+    )
+    replay = _CandidateReplayResult(
+        request=request,
+        baseline=ReplayVariantResult(
+            variant_id="baseline",
+            status="succeeded",
+            trajectory=[],
+            metrics={
+                "evidence_strategy_passed": True,
+                "evidence_bundle_valid": True,
+                "evidence_manifest_invalid_entry_count": 0,
+            },
+        ),
+        candidate=ReplayVariantResult(
+            variant_id="candidate-1",
+            status="succeeded",
+            trajectory=[],
+            metrics={
+                "evidence_strategy_passed": False,
+                "evidence_bundle_valid": False,
+                "evidence_manifest_invalid_entry_count": 2,
+            },
+        ),
+    )
+
+    gate = _replay_evaluator_admission_gate(
+        replay,
+        apply_policy="verified_only",
+    )
+    typed_gate = _with_typed_gate_failure_event(gate)
+
+    assert gate is not None
+    assert gate.passed is False
+    assert gate.details["evaluator_skipped"] is True
+    assert {item["metric"] for item in gate.details["regressions"]} == {
+        "evidence_strategy_passed",
+        "evidence_bundle_valid",
+        "evidence_manifest_invalid_entry_count",
+    }
+    assert typed_gate.details["failure_event"]["owner"] == "candidate"
+
+
+def test_replay_evaluator_admission_rejects_absolute_candidate_incompletion() -> None:
+    request = CandidateReplayRequest(
+        run_id="run-admission-incomplete",
+        task_id="task-a",
+        workspace_root="/tmp/workspace",
+        target=SelfEvolveTargetRef(target_type="skill", target_id="demo"),
+        candidate_id="candidate-1",
+        overlay_skill_root="/tmp/overlay",
+        task_input="task A",
+    )
+    replay = _CandidateReplayResult(
+        request=request,
+        baseline=ReplayVariantResult(
+            variant_id="baseline",
+            status="succeeded",
+            trajectory=[],
+            metrics={
+                "evidence_runtime_policy_passed": False,
+                "task_completion_established": False,
+            },
+        ),
+        candidate=ReplayVariantResult(
+            variant_id="candidate-1",
+            status="succeeded",
+            trajectory=[],
+            metrics={
+                "evidence_runtime_policy_passed": False,
+                "task_completion_established": False,
+            },
+        ),
+    )
+
+    gate = _replay_evaluator_admission_gate(
+        replay,
+        apply_policy="verified_only",
+    )
+
+    assert gate is not None
+    assert gate.passed is False
+    assert gate.details["evaluator_skipped"] is True
+    assert {
+        (item["metric"], item["direction"])
+        for item in gate.details["regressions"]
+    } == {
+        ("evidence_runtime_policy_passed", "candidate_invariant_failed"),
+        ("task_completion_established", "candidate_invariant_failed"),
+    }
+
+
+def test_replay_evaluator_admission_keeps_behavioral_policy_regressions() -> None:
+    request = CandidateReplayRequest(
+        run_id="run-authority-boundary",
+        task_id="task-a",
+        workspace_root="/tmp/workspace",
+        target=SelfEvolveTargetRef(target_type="skill", target_id="demo"),
+        candidate_id="candidate-1",
+        overlay_skill_root="/tmp/overlay",
+        task_input="task A",
+    )
+    baseline_metrics = {
+        "evidence_runtime_policy_passed": False,
+        "evidence_runtime_policy_authoritative_passed": True,
+        "evidence_runtime_policy_authority": "advisory",
+        "evidence_runtime_policy_violation_count": 0,
+        "task_completion_established": True,
+        "evidence_strategy_passed": True,
+    }
+    candidate_metrics = {
+        **baseline_metrics,
+        "evidence_runtime_policy_violation_count": 2,
+        "evidence_runtime_policy_advisory_violation_count": 2,
+    }
+    replay = _CandidateReplayResult(
+        request=request,
+        baseline=ReplayVariantResult(
+            variant_id="baseline",
+            status="succeeded",
+            trajectory=[],
+            metrics=baseline_metrics,
+        ),
+        candidate=ReplayVariantResult(
+            variant_id="candidate-1",
+            status="succeeded",
+            trajectory=[],
+            metrics=candidate_metrics,
+        ),
+    )
+
+    gate = _replay_evaluator_admission_gate(
+        replay,
+        apply_policy="verified_only",
+    )
+
+    assert gate is not None
+    assert gate.passed is False
+    assert gate.details["regressions"] == [
+        {
+            "metric": "evidence_runtime_policy_violation_count",
+            "baseline": 0,
+            "candidate": 2,
+            "direction": "increased",
+        }
+    ]
+
+
+def test_replay_evaluator_admission_allows_missing_or_non_regressed_evidence() -> None:
+    request = CandidateReplayRequest(
+        run_id="run-admission-pass",
+        task_id="task-a",
+        workspace_root="/tmp/workspace",
+        target=SelfEvolveTargetRef(target_type="skill", target_id="demo"),
+        candidate_id="candidate-1",
+        overlay_skill_root="/tmp/overlay",
+        task_input="task A",
+    )
+    replay = _CandidateReplayResult(
+        request=request,
+        baseline=ReplayVariantResult(
+            variant_id="baseline",
+            status="succeeded",
+            trajectory=[],
+            metrics={"evidence_strategy_passed": True},
+        ),
+        candidate=ReplayVariantResult(
+            variant_id="candidate-1",
+            status="succeeded",
+            trajectory=[],
+            metrics={"evidence_strategy_passed": True},
+        ),
+    )
+
+    gate = _replay_evaluator_admission_gate(replay, apply_policy="auto_verified")
+
+    assert gate is not None
+    assert gate.passed is True
+    assert gate.details["evaluator_skipped"] is False
+    assert gate.details["regressions"] == []
+    assert (
+        _replay_evaluator_admission_gate(replay, apply_policy="proposal") is None
+    )
+
+
+def test_partial_replay_panel_can_feed_evaluator_without_aggregate_success(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    case_ids = ("task-a", "task-b", "task-c")
+    dataset = SelfEvolveDataset(
+        cases=tuple(EvalCase(case_id=case_id, input=case_id) for case_id in case_ids),
+        recipe=DatasetRecipe(
+            source={"kind": "partial-evaluator-panel"},
+            split_seed="seed",
+            splits={"train": [], "validation": [], "held_out": list(case_ids)},
+            held_out_case_ids=case_ids,
+        ),
+    )
+    target = SelfEvolveTargetRef(target_type="skill", target_id="demo")
+    request = CandidateReplayRequest(
+        run_id="run-partial-evaluator",
+        task_id="task-a",
+        workspace_root="/tmp/workspace",
+        target=target,
+        candidate_id="candidate-1",
+        overlay_skill_root="/tmp/overlay",
+        task_input="task-a",
+    )
+    baseline = ReplayVariantResult(
+        variant_id="baseline",
+        status="succeeded",
+        trajectory=[{"action": {"content": "baseline"}}],
+    )
+    successful_candidate = ReplayVariantResult(
+        variant_id="candidate-1",
+        status="succeeded",
+        trajectory=[{"action": {"content": "candidate"}}],
+    )
+    failed_candidate = ReplayVariantResult(
+        variant_id="candidate-1",
+        status="failed",
+        trajectory=[],
+        failure=ReplayFailureEvent(
+            code="replay_evidence_finalization_timeout",
+            owner=FailureOwner.TASK,
+            stage=FailureStage.TASK_ROLLOUT,
+            scope=FailureScope.MEMBER,
+            repairable=True,
+        ),
+    )
+    members = tuple(
+        CandidateReplayMemberResult(
+            case_id=case_id,
+            request=replace(request, task_id=case_id, task_input=case_id),
+            baseline=baseline,
+            candidate=(
+                successful_candidate if case_id != "task-c" else failed_candidate
+            ),
+        )
+        for case_id in case_ids
+    )
+    replay = _CandidateReplayResult(
+        request=request,
+        baseline=baseline,
+        candidate=ReplayVariantResult(
+            variant_id="candidate-1",
+            status="failed",
+            trajectory=[],
+            failure=failed_candidate.failure,
+        ),
+        member_results=members,
+    )
+    normalized = replay_module.normalize_replay_members(
+        dataset=dataset,
+        replay_result=replay,
+    )
+    projected, admitted = _partial_replay_evaluator_dataset(
+        dataset=dataset,
+        replay_result=replay,
+        candidate=CandidateVariant(
+            candidate_id="candidate-1",
+            target=target,
+            content="# Demo\n",
+            rationale="diagnostic evaluator panel",
+        ),
+        normalized=normalized,
+        minimum_independent_cases=2,
+        replay_comparable=lambda **_kwargs: True,
+    )
+
+    assert admitted == ("task-a", "task-b")
+    assert projected is not None
+    assert {case.case_id for case in projected.cases} == {"task-a", "task-b"}
+    assert projected.recipe.source["evaluator_partial_panel"] == {
+        "role": "diagnostic_only",
+        "case_count": 2,
+        "verified_replay_gate_relaxed": False,
+    }
+    confidence_gate = _replay_confidence_gate(
+        replay,
+        dataset=dataset,
+        apply_policy="verified_only",
+    )
+    assert confidence_gate is not None
+    assert confidence_gate.passed is False
+    assert confidence_gate.reason == (
+        "replay comparison contains incomparable member outcomes"
+    )
+    assert confidence_gate.details["comparable_pair_count"] == 2
+    assert confidence_gate.details["incomparable_pair_count"] == 1
+    unavailable, unavailable_ids = _partial_replay_evaluator_dataset(
+        dataset=dataset,
+        replay_result=replay,
+        candidate=CandidateVariant(
+            candidate_id="candidate-1",
+            target=target,
+            content="# Demo\n",
+            rationale="insufficient panel",
+        ),
+        normalized=normalized,
+        minimum_independent_cases=3,
+    )
+    assert unavailable is None
+    assert unavailable_ids == ()
+
+
 def test_replay_confidence_counts_comparable_baseline_task_failures() -> None:
     baseline_trajectory = [{"action": {"content": "baseline failed task"}}]
     dataset = SelfEvolveDataset(
@@ -1755,6 +4943,273 @@ def test_replay_confidence_counts_comparable_baseline_task_failures() -> None:
     assert gate.details["incomparable_pair_count"] == 0
 
 
+def test_replay_confidence_preserves_physical_framework_failure_ownership() -> None:
+    dataset = SelfEvolveDataset(
+        cases=(EvalCase(case_id="task-a", input="task A"),),
+        recipe=DatasetRecipe(
+            source={"kind": "test", "case_count": 1},
+            split_seed="seed",
+            splits={"train": ["task-a"], "validation": [], "held_out": []},
+        ),
+    )
+    request = CandidateReplayRequest(
+        run_id="run-framework-capture-failure",
+        task_id="task-a",
+        workspace_root="/tmp/workspace",
+        target=SelfEvolveTargetRef(target_type="skill", target_id="demo"),
+        candidate_id="candidate-1",
+        overlay_skill_root="/tmp/overlay",
+        task_input="task A",
+        baseline_repetitions=2,
+        candidate_repetitions=3,
+    )
+    succeeded = ReplayVariantResult(
+        variant_id="successful-repetition",
+        status=ReplayExecutionStatus.SUCCEEDED,
+        trajectory=[{"action": {"content": "completed"}}],
+    )
+    capture_failure = ReplayVariantResult(
+        variant_id="capture-failure",
+        status=ReplayExecutionStatus.FAILED,
+        trajectory=[],
+        failure=ReplayFailureEvent(
+            code="trajectory_capture_unavailable",
+            owner=FailureOwner.FRAMEWORK,
+            stage=FailureStage.EVALUATION,
+            scope=FailureScope.MEMBER,
+            repairable=True,
+            summary="trajectory capture was unavailable",
+        ),
+    )
+    baseline = replace(
+        succeeded,
+        variant_id="baseline",
+        metrics={
+            "repetition_count": 2,
+            "successful_repetition_count": 2,
+            "failed_repetition_count": 0,
+        },
+        repetition_results=(succeeded, succeeded),
+    )
+    candidate = replace(
+        succeeded,
+        variant_id="candidate-1",
+        metrics={
+            "repetition_count": 3,
+            "successful_repetition_count": 2,
+            "failed_repetition_count": 1,
+        },
+        repetition_results=(succeeded, succeeded, capture_failure),
+    )
+    replay = _CandidateReplayResult(
+        request=request,
+        baseline=baseline,
+        candidate=replace(candidate, repetition_results=()),
+        member_results=(
+            CandidateReplayMemberResult(
+                case_id="task-a",
+                request=request,
+                baseline=baseline,
+                candidate=candidate,
+            ),
+        ),
+    )
+
+    gate = _replay_confidence_gate(
+        replay,
+        dataset=dataset,
+        apply_policy="auto_verified",
+    )
+    typed_gate = _with_typed_gate_failure_event(gate)
+    feedback = _typed_gate_feedback_metrics((typed_gate,))
+
+    assert gate is not None
+    assert gate.passed is False
+    assert gate.reason == (
+        "replay confidence is unavailable because system-owned repetitions failed"
+    )
+    assert gate.details["failure_owner"] == "framework"
+    assert gate.details["failure_scope"] == "member"
+    assert gate.details["framework_owned_failure_count"] == 1
+    assert gate.details["candidate_owned_failure_count"] == 0
+    assert typed_gate.details["failure_event"]["code"] == (
+        "trajectory_capture_unavailable"
+    )
+    assert typed_gate.details["failure_event"]["owner"] == "framework"
+    assert feedback["failure_class"] == "framework"
+    assert "candidate_validation_diagnostics" not in feedback
+
+
+def test_replay_confidence_preserves_shared_evidence_finalization_failure() -> None:
+    dataset = SelfEvolveDataset(
+        cases=(EvalCase(case_id="task-a", input="task A"),),
+        recipe=DatasetRecipe(
+            source={"kind": "test", "case_count": 1},
+            split_seed="seed",
+            splits={"train": ["task-a"], "validation": [], "held_out": []},
+        ),
+    )
+    request = CandidateReplayRequest(
+        run_id="run-evidence-finalization-failure",
+        task_id="task-a",
+        workspace_root="/tmp/workspace",
+        target=SelfEvolveTargetRef(target_type="skill", target_id="demo"),
+        candidate_id="candidate-1",
+        overlay_skill_root="/tmp/overlay",
+        task_input="task A",
+    )
+    baseline = ReplayVariantResult(
+        variant_id="baseline",
+        status=ReplayExecutionStatus.SUCCEEDED,
+        trajectory=[{"action": {"content": "completed"}}],
+    )
+    evidence_failure = ReplayVariantResult(
+        variant_id="candidate-1",
+        status=ReplayExecutionStatus.FAILED,
+        trajectory=[],
+        metrics={
+            "repetition_count": 1,
+            "successful_repetition_count": 0,
+            "failed_repetition_count": 1,
+        },
+        failure=ReplayFailureEvent(
+            code="evidence_policy_v2_attestation_failed",
+            owner=FailureOwner.FRAMEWORK,
+            stage=FailureStage.EVIDENCE_FINALIZATION,
+            scope=FailureScope.SHARED_RUN,
+            repairable=True,
+            summary="replay evidence could not be finalized",
+        ),
+    )
+    replay = _CandidateReplayResult(
+        request=request,
+        baseline=baseline,
+        candidate=evidence_failure,
+        member_results=(
+            CandidateReplayMemberResult(
+                case_id="task-a",
+                request=request,
+                baseline=baseline,
+                candidate=evidence_failure,
+            ),
+        ),
+    )
+
+    gate = _replay_confidence_gate(
+        replay,
+        dataset=dataset,
+        apply_policy="auto_verified",
+    )
+
+    assert gate is not None
+    assert gate.passed is False
+    assert gate.details["code"] == "evidence_policy_v2_attestation_failed"
+    assert gate.details["failure_owner"] == "framework"
+    assert gate.details["failure_scope"] == "shared_run"
+    assert gate.details["failure_stage"] == "evidence_finalization"
+    assert gate.details["repairable"] is True
+    assert _gate_has_typed_shared_measurement_failure(gate) is True
+
+
+def test_replay_confidence_attributes_partial_startup_failures_to_infrastructure() -> None:
+    dataset = SelfEvolveDataset(
+        cases=(EvalCase(case_id="task-a", input="task A"),),
+        recipe=DatasetRecipe(
+            source={"kind": "test", "case_count": 1},
+            split_seed="seed",
+            splits={"train": ["task-a"], "validation": [], "held_out": []},
+        ),
+    )
+    request = CandidateReplayRequest(
+        run_id="run-service-readiness-failure",
+        task_id="task-a",
+        workspace_root="/tmp/workspace",
+        target=SelfEvolveTargetRef(target_type="skill", target_id="demo"),
+        candidate_id="candidate-1",
+        overlay_skill_root="/tmp/overlay",
+        task_input="task A",
+        baseline_repetitions=2,
+        candidate_repetitions=3,
+    )
+    succeeded = ReplayVariantResult(
+        variant_id="successful-repetition",
+        status=ReplayExecutionStatus.SUCCEEDED,
+        trajectory=[{"action": {"content": "completed"}}],
+    )
+    startup_failure = ReplayVariantResult(
+        variant_id="startup-failure",
+        status=ReplayExecutionStatus.FAILED,
+        trajectory=[],
+        failure=ReplayFailureEvent(
+            code="replay_service_startup_timeout",
+            owner=FailureOwner.INFRASTRUCTURE,
+            stage=FailureStage.CAPABILITY_PREFLIGHT,
+            scope=FailureScope.SHARED_RUN,
+            repairable=True,
+            summary="replay service readiness timed out",
+        ),
+    )
+    baseline = replace(
+        succeeded,
+        variant_id="baseline",
+        metrics={
+            "repetition_count": 2,
+            "successful_repetition_count": 1,
+            "failed_repetition_count": 1,
+        },
+        repetition_results=(startup_failure, succeeded),
+    )
+    candidate = replace(
+        succeeded,
+        variant_id="candidate-1",
+        metrics={
+            "repetition_count": 3,
+            "successful_repetition_count": 1,
+            "failed_repetition_count": 2,
+        },
+        repetition_results=(startup_failure, startup_failure, succeeded),
+    )
+    replay = _CandidateReplayResult(
+        request=request,
+        baseline=baseline,
+        candidate=replace(candidate, repetition_results=()),
+        member_results=(
+            CandidateReplayMemberResult(
+                case_id="task-a",
+                request=request,
+                baseline=baseline,
+                candidate=candidate,
+            ),
+        ),
+    )
+
+    gate = _replay_confidence_gate(
+        replay,
+        dataset=dataset,
+        apply_policy="verified_only",
+    )
+    replay_details = _replay_gate_details(
+        replay,
+        dataset=dataset,
+    )
+
+    assert gate is not None
+    assert gate.passed is False
+    assert gate.reason == (
+        "replay confidence is unavailable because system-owned repetitions failed"
+    )
+    assert gate.details["failure_owner"] == "infrastructure"
+    assert gate.details["failure_scope"] == "shared_run"
+    assert gate.details["infrastructure_failure_count"] == 3
+    assert gate.details["infrastructure_owned_failure_count"] == 3
+    assert gate.details["candidate_owned_failure_count"] == 0
+    assert replay_details.get("failure_class") != "candidate"
+    assert all(
+        event["owner"] != "candidate"
+        for event in replay_details["causal_failure_events"]
+    )
+
+
 def test_replay_confidence_rejects_infrastructure_failure_pair() -> None:
     dataset = SelfEvolveDataset(
         cases=(
@@ -1822,6 +5277,123 @@ def test_replay_confidence_rejects_infrastructure_failure_pair() -> None:
     assert gate.reason == "replay comparison contains incomparable member outcomes"
     assert gate.details["infrastructure_failure_count"] == 1
     assert gate.details["incomparable_pair_count"] == 1
+    assert gate.details["code"] == "control_not_comparable"
+    assert gate.details["failure_class"] == "measurement"
+    assert gate.details["failure_owner"] == "framework"
+    assert gate.details["failure_scope"] == "shared_run"
+    assert gate.details["next_action"] == "repair_measurement"
+    assert gate.details["effect"] is None
+    assert gate.details["failure_event"]["code"] == "control_not_comparable"
+    assert gate.details["derived_failure_event"]["code"] == (
+        "control_not_comparable"
+    )
+    assert gate.details["causal_failure_events"][-1] == (
+        gate.details["derived_failure_event"]
+    )
+    assert _gate_has_typed_shared_measurement_failure(gate) is True
+
+
+def test_evidence_finalization_timeout_is_a_progressing_task_timeout() -> None:
+    failure = ReplayFailureEvent(
+        code="replay_evidence_finalization_timeout",
+        owner=FailureOwner.TASK,
+        stage=FailureStage.TASK_ROLLOUT,
+        scope=FailureScope.MEMBER,
+        repairable=True,
+        category="task_completion",
+        summary="evidence exists but terminal response missed the frozen deadline",
+        diagnostics={
+            "completed_data_plane_operations": ["browser.navigate"],
+            "termination_budget_axis": "finalization_grace",
+        },
+    )
+    variant = ReplayVariantResult(
+        variant_id="candidate",
+        status=ReplayExecutionStatus.FAILED,
+        trajectory=[],
+        failure=failure,
+    )
+
+    assert _variant_is_screening_timeout(variant) is True
+    assert _variant_has_progressing_task_timeout(variant) is True
+
+
+def test_framework_finalization_root_keeps_one_atomic_attribution_tuple(
+    tmp_path: Path,
+) -> None:
+    request = CandidateReplayRequest(
+        run_id="run-finalization-root",
+        task_id="case-finalization-root",
+        workspace_root=str(tmp_path),
+        target=SelfEvolveTargetRef(target_type="skill", target_id="demo"),
+        candidate_id="candidate-finalization-root",
+        overlay_skill_root=str(tmp_path / "overlay"),
+        task_input="task",
+    )
+    framework_failure = ReplayFailureEvent(
+        code="evidence_policy_v2_attestation_failed",
+        owner=FailureOwner.FRAMEWORK,
+        stage=FailureStage.EVIDENCE_FINALIZATION,
+        scope=FailureScope.SHARED_RUN,
+        repairable=True,
+        category="measurement_runtime_trust",
+        summary="framework canonicalization failed",
+    )
+    task_timeout = ReplayFailureEvent(
+        code="replay_evidence_finalization_timeout",
+        owner=FailureOwner.TASK,
+        stage=FailureStage.TASK_ROLLOUT,
+        scope=FailureScope.MEMBER,
+        repairable=True,
+        category="task_completion",
+        summary="task response missed the finalization deadline",
+        diagnostics={"completed_data_plane_operations": ["browser.navigate"]},
+    )
+    baseline = ReplayVariantResult(
+        variant_id="baseline",
+        status=ReplayExecutionStatus.FAILED,
+        trajectory=[],
+        failure=framework_failure,
+    )
+    candidate = ReplayVariantResult(
+        variant_id="candidate",
+        status=ReplayExecutionStatus.FAILED,
+        trajectory=[],
+        failure=task_timeout,
+    )
+    replay = _CandidateReplayResult(
+        request=request,
+        baseline=baseline,
+        candidate=candidate,
+        member_results=(
+            CandidateReplayMemberResult(
+                case_id=request.task_id,
+                request=request,
+                baseline=baseline,
+                candidate=candidate,
+            ),
+        ),
+    )
+    dataset = SelfEvolveDataset(
+        cases=(EvalCase(case_id=request.task_id, input="task"),),
+        recipe=DatasetRecipe(
+            source={"kind": "test"},
+            split_seed="finalization-root",
+            splits={"train": [request.task_id]},
+        ),
+    )
+
+    details = _replay_gate_details(replay, dataset=dataset)
+
+    assert details["code"] == "evidence_policy_v2_attestation_failed"
+    assert details["failure_class"] == "framework"
+    assert details["failure_owner"] == "framework"
+    assert details["failure_scope"] == "shared_run"
+    assert details["failure_stage"] == "evidence_finalization"
+    assert not any(
+        event["code"] == "candidate_recovery_incomplete"
+        for event in details["causal_failure_events"]
+    )
 
 
 def test_stored_dataset_recipe_restores_auto_grouped_member_ids(
@@ -2344,12 +5916,12 @@ def test_candidate_gate_results_short_circuit_structure_after_token_limit(
         pytest.fail("structural gates must not run after token-limit failure")
 
     monkeypatch.setattr(
-        runner_module.SkillMarkdownGate,
+        SkillMarkdownGate,
         "evaluate",
         fail_expensive_gate,
     )
     monkeypatch.setattr(
-        runner_module.SkillReleaseFidelityGate,
+        SkillReleaseFidelityGate,
         "evaluate",
         fail_expensive_gate,
     )
@@ -2833,12 +6405,15 @@ def test_explicit_jsonl_target_preserves_origin_through_evaluator_rerun(
     )
     dataset_path = tmp_path / "evaluation.jsonl"
     dataset_path.write_text(
-        json.dumps(
-            {
-                "case_id": "member-1",
-                "input": {"task": "exercise the capability"},
-                "expected_output": "completed",
-            }
+        "\n".join(
+            json.dumps(
+                {
+                    "case_id": f"member-{index}",
+                    "input": {"task": f"exercise the capability {index}"},
+                    "expected_output": "completed",
+                }
+            )
+            for index in range(1, 3)
         )
         + "\n",
         encoding="utf-8",
@@ -3058,8 +6633,8 @@ def test_explicit_jsonl_target_preserves_origin_through_evaluator_rerun(
     reuse = rerun_report["replay_evidence_reuse"]
     assert reuse["disposition"]["kind"] == "stored_source_reuse"
     assert reuse["disposition"]["source_run_id"] == initial["run_id"]
-    assert reuse["replay_case_count"] == 1
-    assert reuse["normalized_member_count"] == 1
+    assert reuse["replay_case_count"] == 2
+    assert reuse["normalized_member_count"] == 2
     assert Path(reuse["provenance_path"]).exists()
     stored_generation_debits = [
         item
@@ -3092,6 +6667,7 @@ def test_explicit_jsonl_target_preserves_origin_through_evaluator_rerun(
 async def test_stored_evidence_rerun_is_cardinality_safe_and_fails_closed(
     tmp_path: Path,
 ) -> None:
+    snapshot_fingerprint = "sha256:" + "a" * 64
     skill_path = tmp_path / "aworld-skills" / "capability" / "SKILL.md"
     skill_path.parent.mkdir(parents=True)
     skill_path.write_text(
@@ -3108,7 +6684,12 @@ async def test_stored_evidence_rerun_is_cardinality_safe_and_fails_closed(
             for index in range(1, 3)
         ),
         recipe=DatasetRecipe(
-            source={"kind": "test"},
+            source={
+                "kind": "test",
+                "campaign_dataset_snapshot": {
+                    "snapshot_fingerprint": snapshot_fingerprint,
+                },
+            },
             split_seed="seed",
             splits={"train": ["member-1", "member-2"]},
         ),
@@ -3130,7 +6711,7 @@ async def test_stored_evidence_rerun_is_cardinality_safe_and_fails_closed(
         candidate_id=candidate.candidate_id,
         overlay_skill_root=str(tmp_path / "source-overlay"),
         task_input=dataset.cases[0].input,
-        dataset_fingerprint=runner_module.replay_dataset_fingerprint(dataset),
+        dataset_fingerprint=replay_dataset_fingerprint(dataset),
         baseline_skill_fingerprint=candidate.target_fingerprint,
         adaptation_fingerprint="source-adaptation",
         workspace_seed_fingerprint="source-workspace",
@@ -3138,9 +6719,22 @@ async def test_stored_evidence_rerun_is_cardinality_safe_and_fails_closed(
     )
     baseline = ReplayVariantResult(
         variant_id="baseline",
-        status="succeeded",
-        trajectory=[{"action": {"content": "old"}}],
-        metrics={"repetition_count": 1, "successful_repetition_count": 1},
+        status="failed",
+        trajectory=[
+            {"action": {"content": "baseline omitted bounded evidence"}}
+        ],
+        metrics={
+            "repetition_count": 1,
+            "successful_repetition_count": 0,
+            "failed_repetition_count": 1,
+        },
+        failure=ReplayFailureEvent(
+            code="replay_evidence_production_failed",
+            owner=FailureOwner.TASK,
+            stage=FailureStage.EVIDENCE_FINALIZATION,
+            scope=FailureScope.MEMBER,
+            repairable=False,
+        ),
     )
     improved = ReplayVariantResult(
         variant_id=candidate.candidate_id,
@@ -3164,6 +6758,16 @@ async def test_stored_evidence_rerun_is_cardinality_safe_and_fails_closed(
                 candidate=improved,
             )
             for case in dataset.cases
+        ),
+    )
+    reconstructed_dataset = replace(
+        dataset,
+        recipe=replace(
+            dataset.recipe,
+            source={
+                **dict(dataset.recipe.source),
+                "authoritative_compacted_context_case_ids": [],
+            },
         ),
     )
 
@@ -3198,6 +6802,7 @@ async def test_stored_evidence_rerun_is_cardinality_safe_and_fails_closed(
                 replay_result=source_replay,
                 source_run_id="source-run",
                 source_replay_path=str(tmp_path / "source-replay"),
+                source_dataset_snapshot_fingerprint=snapshot_fingerprint,
             ),
             max_iterations=1,
             replay_candidate_limit=1,
@@ -3208,7 +6813,7 @@ async def test_stored_evidence_rerun_is_cardinality_safe_and_fails_closed(
     successful = await make_runner(successful_backend).run_explicit_target(
         run_id="stored-multi-success",
         target=target,
-        dataset=dataset,
+        dataset=reconstructed_dataset,
         trace_packs=(),
         apply_policy="proposal",
     )
@@ -3226,7 +6831,20 @@ async def test_stored_evidence_rerun_is_cardinality_safe_and_fails_closed(
     assert len(successful_backend.calls) == 2
     assert successful_report["replay_evidence_reuse"]["replay_case_count"] == 2
     assert successful_report["replay_evidence_reuse"]["normalized_member_count"] == 2
+    assert successful_report["replay_evidence_reuse"][
+        "dataset_fingerprint_matches"
+    ] is False
+    assert successful_report["replay_evidence_reuse"][
+        "dataset_snapshot_fingerprint_matches"
+    ] is True
+    assert successful_report["replay_evidence_reuse"][
+        "dataset_authority_matches"
+    ] is True
     assert successful_report["population"]["lifecycle"]["max_case_count"] == 2
+    successful_gates = {
+        gate["gate_name"]: gate for gate in successful_report["gate_results"]
+    }
+    assert successful_gates["fresh_evaluator_rerun"]["passed"] is True
     assert (
         successful_report["population"]["lifecycle"]["paired_replay_started_count"]
         == 0
@@ -3241,7 +6859,7 @@ async def test_stored_evidence_rerun_is_cardinality_safe_and_fails_closed(
     failed = await make_runner(failing_backend).run_explicit_target(
         run_id="stored-multi-failure",
         target=target,
-        dataset=dataset,
+        dataset=reconstructed_dataset,
         trace_packs=(),
         apply_policy="proposal",
     )
@@ -3267,7 +6885,7 @@ async def test_stored_evidence_rerun_is_cardinality_safe_and_fails_closed(
     missing_evaluator = await make_runner(None).run_explicit_target(
         run_id="stored-multi-missing-evaluator",
         target=target,
-        dataset=dataset,
+        dataset=reconstructed_dataset,
         trace_packs=(),
         apply_policy="proposal",
     )
@@ -3283,14 +6901,474 @@ async def test_stored_evidence_rerun_is_cardinality_safe_and_fails_closed(
     assert missing_evaluator.run.status is SelfEvolveRunStatus.FAILED
     assert missing_evaluator.selected_candidate is None
     assert missing_report["selected_candidate_id"] is None
-    assert "evaluation" not in missing_report["population"]["lifecycle"][
-        "stage_counts"
-    ]
+    missing_lifecycle = missing_report["population"]["lifecycle"]
+    assert "evaluation" not in missing_lifecycle["stage_counts"]
+    assert missing_lifecycle["attempt_count"] == 1
+    assert missing_lifecycle["stage_counts"]["generated"] == 1
+    assert "duplicate_filtered" not in missing_lifecycle["stage_counts"]
     assert any(
         gate["gate_name"] == "fresh_evaluator_rerun"
         and gate["passed"] is False
         for gate in missing_report["gate_results"]
     )
+
+
+@pytest.mark.asyncio
+async def test_stored_candidate_resume_bypasses_empty_repair_frontier(
+    tmp_path: Path,
+) -> None:
+    skill_path = tmp_path / "aworld-skills" / "demo" / "SKILL.md"
+    skill_path.parent.mkdir(parents=True)
+    skill_path.write_text(
+        "---\nname: demo\n---\n# Demo\n\nOld guidance.\n",
+        encoding="utf-8",
+    )
+    target = SkillTextTarget(skill_path)
+    dataset = SelfEvolveDataset(
+        cases=(EvalCase(case_id="case-1", input={"task": "demo"}),),
+        recipe=DatasetRecipe(
+            source={"kind": "test"},
+            split_seed="seed",
+            splits={"train": ["case-1"]},
+        ),
+    )
+    candidate = CandidateVariant(
+        candidate_id="measurement-pending-candidate",
+        target=target.identity,
+        content="---\nname: demo\n---\n# Demo\n\nImproved guidance.\n",
+        rationale="retry the same immutable candidate after invalid control",
+        target_fingerprint=target.fingerprint_current_content(),
+    )
+
+    class EvaluationBackend:
+        async def evaluate_variant(self, request):
+            return EvaluationSummary(
+                variant_id=request.variant_id,
+                metrics={
+                    "score": 0.2 if request.candidate is None else 0.8,
+                    "latency_ms": 1.0,
+                    "cost_usd": 0.0,
+                },
+                dataset_split=request.dataset_split,
+            )
+
+    store = FilesystemSelfEvolveStore(tmp_path)
+    progress_events: list[tuple[str, str]] = []
+    prior_run_id = "prior-invalid-control"
+    store.write_report(
+        prior_run_id,
+        {
+            "run_id": prior_run_id,
+            "status": "rejected",
+            "target": {
+                "target_type": target.identity.target_type,
+                "target_id": target.identity.target_id,
+                "path": target.identity.path,
+            },
+            "repair_frontier_state": {
+                "scheduler_state": SchedulerState(
+                    initial_exploration_scheduled=True
+                ).to_dict()
+            },
+            "campaign_failure_attribution": {
+                "failure_class": "measurement",
+                "failure_owner": "framework",
+                "failure_scope": "shared_run",
+                "repairable": True,
+            },
+        },
+    )
+    runner = SelfEvolveRunner(
+        store=store,
+        optimizer=_FixedCandidateOptimizer(
+            candidate,
+            prior_run_id,
+            admission_reason_code="stored_candidate_measurement_resume",
+        ),
+        evaluation_backend=EvaluationBackend(),
+        replay_enabled=False,
+        max_iterations=1,
+        min_eval_cases=0,
+        progress_callback=lambda stage, message: progress_events.append(
+            (stage, message)
+        ),
+    )
+
+    result = await runner.run_explicit_target(
+        run_id="measurement-resume",
+        target=target,
+        dataset=dataset,
+        trace_packs=(),
+        apply_policy="proposal",
+        campaign_prior_run_ids=(prior_run_id,),
+    )
+    report = json.loads(
+        (store.run_path("measurement-resume") / "report.json").read_text(
+            encoding="utf-8"
+        )
+    )
+
+    assert result.selected_candidate == candidate
+    assert report["candidate_ids"] == [candidate.candidate_id]
+    decision = report["population"]["scheduler_decisions"][0]
+    assert decision["reason_code"] == "stored_candidate_measurement_resume"
+    assert decision["admitted_slot_count"] == 1
+    assert report["verification_funnel"][
+        "candidate_generation_attempt_slot_count"
+    ] == 0
+    assert report["verification_funnel"]["generated_candidate_slot_count"] == 0
+    assert any(stage == "measurement_resume" for stage, _ in progress_events)
+    assert not any(stage == "candidate_generation" for stage, _ in progress_events)
+
+
+@pytest.mark.asyncio
+async def test_measurement_resume_optimizer_opens_real_repair_frontier() -> None:
+    stored = CandidateVariant(
+        candidate_id="stored-candidate",
+        target=SelfEvolveTargetRef("skill", "demo"),
+        content="# Demo\n",
+        rationale="resume frozen measurement",
+    )
+    repaired = replace(
+        stored,
+        candidate_id="repaired-candidate",
+        content="# Demo\n\nBounded terminal synthesis.\n",
+    )
+
+    class Delegate:
+        async def propose(self, request):
+            return OptimizerResult(candidates=(repaired,))
+
+    optimizer = _MeasurementResumeThenRepairOptimizer(
+        candidate=stored,
+        source_run_id="prior-run",
+        delegate=Delegate(),
+    )
+
+    assert optimizer.stored_candidate_admission_reason() == (
+        "stored_candidate_measurement_resume"
+    )
+    first = await optimizer.propose(SimpleNamespace())
+    assert first.candidates == (stored,)
+    assert first.source_disposition.kind.value == "stored_evidence_rerun"
+    assert optimizer.stored_candidate_admission_reason() == (
+        "stored_candidate_measurement_resume"
+    )
+    second = await optimizer.propose(SimpleNamespace())
+    assert second.candidates == (repaired,)
+    assert optimizer.stored_candidate_admission_reason() is None
+
+
+def test_framework_retry_requires_pure_shared_evaluator_failure() -> None:
+    report = {
+        "status": "rejected",
+        "selected_candidate_id": "candidate-1",
+        "rejection_attribution": {
+            "candidate_id": "candidate-1",
+            "failure_class": "framework",
+            "failure_owner": "framework",
+            "failure_scope": "shared_run",
+        },
+        "gate_results": [
+            {"gate_name": "score_improvement", "passed": True},
+            {
+                "gate_name": "global_regression_benchmark",
+                "passed": False,
+                "details": {
+                    "failure_class": "framework",
+                    "failure_owner": "evaluation_harness",
+                    "failure_scope": "shared_run",
+                },
+            },
+        ],
+    }
+
+    assert _framework_shared_failure_candidate_id(report) == "candidate-1"
+    candidate_failure = json.loads(json.dumps(report))
+    candidate_failure["gate_results"][1]["details"]["failure_class"] = (
+        "candidate"
+    )
+    assert _framework_shared_failure_candidate_id(candidate_failure) is None
+    stale_mixed_regression = json.loads(json.dumps(report))
+    stale_mixed_regression["gate_results"][1]["details"]["suite_failures"] = [
+        {
+            "suite_id": "challenger-suite",
+            "details": {
+                "failure_class": "candidate",
+                "failure_owner": "candidate",
+                "code": "score_regression",
+            },
+        }
+    ]
+    assert _framework_shared_failure_candidate_id(stale_mixed_regression) is None
+    mixed_failure = json.loads(json.dumps(report))
+    mixed_failure["gate_results"].append(
+        {"gate_name": "cost", "passed": False, "details": {}}
+    )
+    assert _framework_shared_failure_candidate_id(mixed_failure) is None
+
+
+def test_framework_retry_recognizes_unpublished_verified_release() -> None:
+    report = {
+        "status": "rejected",
+        "selected_candidate_id": "verified-candidate",
+        "acceptance_confidence": {"passed": True, "confidence": "verified"},
+        "gate_results": [
+            {"gate_name": name, "passed": True}
+            for name in ("score_improvement", "evidence_quality", "global_regression_benchmark")
+        ],
+        "post_apply": {
+            "published": False,
+            "source_target_unchanged": True,
+            "metrics": {
+                "failure_class": "framework",
+                "failure_owner": "framework",
+                "failure_scope": "shared_run",
+                "structural_failure_code": "skill_structural_edit_intent_rebind_failed",
+                "normalization_content_preservation_passed": True,
+            },
+        },
+    }
+    assert _framework_shared_failure_candidate_id(report) == "verified-candidate"
+    report["gate_results"][0]["passed"] = False
+    assert _framework_shared_failure_candidate_id(report) is None
+    report["gate_results"][0]["passed"] = True
+    report["post_apply"]["source_target_unchanged"] = False
+    assert _framework_shared_failure_candidate_id(report) is None
+
+
+def test_framework_retry_is_superseded_by_completed_fresh_rerun() -> None:
+    report = {
+        "candidate_source_dispositions": {
+            "candidate-1": {
+                "kind": "stored_evidence_rerun",
+                "requires_fresh_evaluation": True,
+                "source_run_id": "old-run",
+            }
+        }
+    }
+
+    assert _report_has_fresh_evaluator_rerun_disposition(
+        report,
+        candidate_id="candidate-1",
+        source_run_id="old-run",
+    )
+    assert not _report_has_fresh_evaluator_rerun_disposition(
+        report,
+        candidate_id="candidate-2",
+        source_run_id="old-run",
+    )
+    assert not _report_has_fresh_evaluator_rerun_disposition(
+        report,
+        candidate_id="candidate-1",
+        source_run_id="different-run",
+    )
+
+
+def test_framework_retry_is_superseded_by_later_negative_measurement(
+    tmp_path: Path,
+) -> None:
+    old_run = tmp_path / "old-run"
+    old_run.mkdir()
+    old_report = old_run / "report.json"
+    old_report.write_text("{}", encoding="utf-8")
+    cutoff = old_report.stat().st_mtime
+    experiment = tmp_path / "new-run" / "experiments" / "experiment-1"
+    experiment.mkdir(parents=True)
+    recipe = DatasetRecipe(
+        source={
+            "kind": "trajectory_log",
+            "content_fingerprint": "sha256:content",
+            "fingerprint": "sha256:request",
+            "case_count": 1,
+        },
+        split_seed="seed",
+        splits={"train": ["case-1"], "validation": [], "held_out": []},
+        trainable_case_ids=("case-1",),
+    )
+    (experiment.parents[1] / "dataset_recipe.json").write_text(
+        json.dumps(to_json_dict(recipe)),
+        encoding="utf-8",
+    )
+    (experiment / "experiment.json").write_text(
+        json.dumps(
+            {
+                "treatment": {"fingerprint": "sha256:candidate"},
+                "frozen_identities": {"dataset": "sha256:dataset"},
+            }
+        ),
+        encoding="utf-8",
+    )
+    (experiment / "attribution_report.json").write_text(
+        json.dumps(
+            {
+                "decision": {"reason": "conclusive_negative_effect"},
+                "effect": {"direction": "negative"},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    assert _has_later_conclusive_negative_measurement(
+        artifact_root=tmp_path,
+        candidate_fingerprint="sha256:candidate",
+        dataset_recipe=recipe,
+        after_mtime=cutoff,
+    )
+    assert not _has_later_conclusive_negative_measurement(
+        artifact_root=tmp_path,
+        candidate_fingerprint="sha256:other",
+        dataset_recipe=recipe,
+        after_mtime=cutoff,
+    )
+
+
+def test_framework_retry_recipe_ignores_only_campaign_local_snapshot() -> None:
+    base = DatasetRecipe(
+        source={
+            "kind": "trajectory_log",
+            "content_fingerprint": "sha256:source",
+            "fingerprint": "sha256:request",
+            "case_count": 2,
+            "campaign_dataset_snapshot": {
+                "campaign_id": "old",
+                "snapshot_fingerprint": "sha256:old",
+            },
+        },
+        split_seed="seed",
+        splits={"train": ["case-1"], "held_out": ["case-2"]},
+        trainable_case_ids=("case-1",),
+        held_out_case_ids=("case-2",),
+    )
+    current = replace(
+        base,
+        source={
+            **base.source,
+            "campaign_dataset_snapshot": {
+                "campaign_id": "new",
+                "snapshot_fingerprint": "sha256:new",
+            },
+        },
+    )
+
+    assert _dataset_recipe_matches_candidate_source(current, base)
+    changed = replace(
+        current,
+        source={**current.source, "content_fingerprint": "sha256:changed"},
+    )
+    assert not _dataset_recipe_matches_candidate_source(changed, base)
+
+
+@pytest.mark.asyncio
+async def test_authoritative_replay_uses_screening_control_health_and_patience(
+    tmp_path: Path,
+) -> None:
+    skill_path = tmp_path / "aworld-skills" / "demo" / "SKILL.md"
+    skill_path.parent.mkdir(parents=True)
+    skill_path.write_text(
+        "---\nname: demo\n---\n# Demo\n\nOld guidance.\n",
+        encoding="utf-8",
+    )
+    target = SkillTextTarget(skill_path)
+    cases = tuple(
+        EvalCase(case_id=case_id, input={"task": case_id})
+        for case_id in ("invalid-control", "unobserved", "healthy-control")
+    )
+    dataset = SelfEvolveDataset(
+        cases=cases,
+        recipe=DatasetRecipe(
+            source={"kind": "test"},
+            split_seed="seed",
+            splits={"train": [case.case_id for case in cases]},
+        ),
+    )
+    candidate = CandidateVariant(
+        candidate_id="candidate-control-order",
+        target=target.identity,
+        content="---\nname: demo\n---\n# Demo\n\nImproved guidance.\n",
+        rationale="use qualified controls first",
+        target_fingerprint=target.fingerprint_current_content(),
+    )
+
+    class ReplayBackend:
+        def __init__(self) -> None:
+            self.case_ids: tuple[str, ...] = ()
+            self.request = None
+
+        async def replay_candidate(self, request, *, candidate, dataset):
+            self.case_ids = tuple(case.case_id for case in dataset.cases)
+            self.request = request
+            baseline = ReplayVariantResult(
+                variant_id="baseline",
+                status="succeeded",
+                trajectory=[{"action": {"content": "baseline"}}],
+            )
+            improved = ReplayVariantResult(
+                variant_id=candidate.candidate_id,
+                status="succeeded",
+                trajectory=[{"action": {"content": "candidate"}}],
+            )
+            return CandidateReplayResult(
+                request=request,
+                baseline=baseline,
+                candidate=improved,
+                member_results=tuple(
+                    CandidateReplayMemberResult(
+                        case_id=case.case_id,
+                        request=replace(
+                            request,
+                            task_id=case.case_id,
+                            task_input=case.input,
+                        ),
+                        baseline=baseline,
+                        candidate=improved,
+                    )
+                    for case in dataset.cases
+                ),
+            )
+
+    backend = ReplayBackend()
+    runner = SelfEvolveRunner(
+        store=FilesystemSelfEvolveStore(tmp_path),
+        optimizer=_FixedCandidateOptimizer(candidate, "source-run"),
+        replay_enabled=True,
+        candidate_replay_backend=backend,
+    )
+    runner._candidate_screening_case_observations.update(
+        {
+            "invalid-control": {
+                "attempt_count": 1,
+                "invalid_control_count": 1,
+            },
+            "healthy-control": {
+                "attempt_count": 1,
+                "passed_count": 1,
+            },
+        }
+    )
+
+    replay_result, replay_dataset, replay_gate = (
+        await runner._replay_selected_candidate(
+            run_id="authoritative-control-order",
+            target=target,
+            dataset=dataset,
+            selected_candidate=candidate,
+            apply_policy="verified_only",
+        )
+    )
+
+    assert replay_result is not None
+    assert replay_dataset is not None
+    assert replay_gate is not None and replay_gate.passed
+    assert backend.case_ids == (
+        "healthy-control",
+        "unobserved",
+        "invalid-control",
+    )
+    assert backend.request is not None
+    assert backend.request.measurement_early_stop_enabled is True
+    assert backend.request.stop_on_incomparable_member is False
+    assert backend.request.evidence_policy_mode == "required"
 
 
 def test_explicit_target_keeps_multi_task_trajectory_log_without_auto_grouping(
@@ -3370,6 +7448,124 @@ async def test_auto_verified_no_candidate_is_rejected(tmp_path) -> None:
             "reward": {"status": "failed"},
         }
     ]
+    del target, store, trajectory
+
+
+@pytest.mark.asyncio
+async def test_generation_policy_filter_retries_once_then_exhausts_typed_frontier(
+    tmp_path,
+) -> None:
+    skill_path = tmp_path / "aworld-skills" / "demo" / "SKILL.md"
+    skill_path.parent.mkdir(parents=True)
+    skill_path.write_text(
+        "---\nname: demo\n---\n# Demo\n\nKeep the verified path.\n",
+        encoding="utf-8",
+    )
+    target = SkillTextTarget(skill_path, allow_auto_apply=True)
+    store = FilesystemSelfEvolveStore(tmp_path)
+    trajectory = [
+        {
+            "meta": {"step": 1, "agent_id": "agent", "pre_agent": "runner"},
+            "state": {"input": {"content": "repair behavior"}},
+            "action": {"content": "broad rewrite failed"},
+            "reward": {"status": "failed"},
+        }
+    ]
+    dataset = build_dataset_from_source(
+        SelfEvolveEvalSourceConfig(kind="current_trajectory"),
+        current_trajectory=trajectory,
+        task_id="policy-filter",
+    )
+    trace_pack = build_trace_pack(
+        trajectory,
+        source_kind="current_trajectory",
+        task_id="policy-filter",
+    )
+
+    class PolicyFilterOptimizer:
+        def __init__(self) -> None:
+            self.requests: list[OptimizerRequest] = []
+
+        async def propose(self, request: OptimizerRequest) -> OptimizerResult:
+            self.requests.append(request)
+            outcomes = tuple(
+                CandidateGenerationOutcome(
+                    candidate_index=index,
+                    kind=CandidateGenerationOutcomeKind.POLICY_FILTERED,
+                    candidate_id=f"filtered-candidate-{len(self.requests)}-{index}",
+                    candidate_fingerprint=f"sha256:package-{len(self.requests)}-{index}",
+                    semantic_fingerprint=f"sha256:semantic-{len(self.requests)}-{index}",
+                    policy_id="preserve_high_baseline",
+                    enforcement="hard",
+                    repairable=True,
+                    reason_codes=(
+                        "authoritative_base_replaced_by_rejected_parent",
+                    ),
+                    constraint_ids=("preserve_authoritative_current_base",),
+                    active_frontier_key=(
+                        request.active_repair_frontier_keys[index]
+                        if index < len(request.active_repair_frontier_keys)
+                        else None
+                    ),
+                    strategy_id=f"focused:{index}",
+                )
+                for index in range(request.max_candidates)
+            )
+            return OptimizerResult(
+                candidates=(),
+                generation_outcomes=outcomes,
+                diagnostics={
+                    "filtered_high_baseline_regression_candidates": len(outcomes),
+                    "candidate_generation_outcomes": [
+                        outcome.to_dict() for outcome in outcomes
+                    ],
+                },
+            )
+
+    optimizer = PolicyFilterOptimizer()
+    result = await SelfEvolveRunner(
+        store=store,
+        optimizer=optimizer,
+        max_iterations=10,
+    ).run_explicit_target(
+        run_id="run-policy-filter-stall",
+        target=target,
+        dataset=dataset,
+        trace_packs=(trace_pack,),
+        apply_policy="auto_verified",
+    )
+
+    assert result.run.status is SelfEvolveRunStatus.REJECTED
+    assert len(optimizer.requests) == 2
+    assert optimizer.requests[1].validation_feedback[0].metrics[
+        "candidate_policy_filter_count"
+    ] >= 1
+    report = json.loads(
+        (
+            tmp_path
+            / ".aworld"
+            / "self_evolve"
+            / "run-policy-filter-stall"
+            / "report.json"
+        ).read_text(encoding="utf-8")
+    )
+    assert [item["status"] for item in report["iterations"]] == [
+        "policy_filtered",
+        "policy_filtered",
+    ]
+    assert report["verification_funnel"][
+        "generation_policy_frontier_exhausted"
+    ] is True
+    gate = next(
+        item for item in report["gate_results"] if item["gate_name"] == "candidate_generation"
+    )
+    assert gate["details"]["code"] == (
+        "candidate_generation_policy_frontier_stalled"
+    )
+    assert gate["details"]["failure_event"]["repairable"] is False
+    assert report["population"]["lifecycle"]["stage_counts"][
+        "policy_filtered"
+    ] >= 2
     dataset = build_dataset_from_source(
         SelfEvolveEvalSourceConfig(kind="current_trajectory"),
         current_trajectory=trajectory,
@@ -3460,12 +7656,20 @@ async def test_candidate_materialization_failure_retries_as_typed_feedback(
                         "candidate_materialization_failures": [
                             {
                                 "code": "candidate_materialization_invalid",
-                                "stage": "candidate_generation",
+                                "stage": "candidate_semantic_validation",
                                 "failure_class": "candidate",
                                 "repairable": True,
                                 "candidate_index": 0,
                                 "representation": "patch_intent",
                                 "reason": "section not found",
+                                "details": {
+                                    "repair_conformance": {
+                                        "code": "repair_branch_unchanged",
+                                        "failure_fingerprint": (
+                                            "sha256:" + "d" * 64
+                                        ),
+                                    }
+                                },
                             }
                         ],
                     },
@@ -3503,6 +7707,14 @@ async def test_candidate_materialization_failure_retries_as_typed_feedback(
     assert optimizer.requests[1].validation_feedback[0].metrics[
         "candidate_materialization_invalid_count"
     ] == 1
+    assert optimizer.requests[1].validation_feedback[0].metrics[
+        "candidate_conformance_strategy_switch_required"
+    ] is True
+    assert optimizer.requests[1].validation_feedback[0].metrics[
+        "candidate_validation_diagnostics"
+    ][0]["details"]["repair_conformance"]["failure_fingerprint"] == (
+        "sha256:" + "d" * 64
+    )
     causal_events = optimizer.requests[1].validation_feedback[0].metrics[
         "causal_failure_events"
     ]
@@ -3537,7 +7749,11 @@ def test_candidate_repair_prompt_preserves_typed_semantic_diagnostic() -> None:
         allowed_improvement_signal_ids=("signal-visible",),
     )
 
-    prompt = _candidate_mutation_repair_prompt('{"content":"valid"}', error)
+    prompt = _candidate_mutation_repair_prompt(
+        '{"content":"valid"}',
+        error,
+        original_prompt="source-complete original generation context",
+    )
     payload = json.loads(prompt.split("\n", 1)[1])
     diagnostic = payload["diagnostics"][0]
 
@@ -3546,6 +7762,93 @@ def test_candidate_repair_prompt_preserves_typed_semantic_diagnostic() -> None:
     assert diagnostic["field_path"] == "addressed_improvement_signal_ids"
     assert diagnostic["contract_fingerprint"] == error.contract_fingerprint
     assert diagnostic["representation"] == "candidate_package"
+    assert payload["original_generation_context"] == (
+        "source-complete original generation context"
+    )
+
+
+def test_candidate_repair_prompt_explains_fixture_conformance_violation() -> None:
+    conformance = RepairConformanceResult(
+        passed=False,
+        code="forbidden_fixture_probe_derivation",
+        reason="candidate combines fixture metadata",
+        details={
+            "violations": [
+                {
+                    "construct": "boolean_metadata_not_excluded",
+                    "function": "select_fixture_value",
+                    "line": 20,
+                    "path": "replay/compiler.py",
+                }
+            ],
+            "required_change": "reject bool before int or float",
+        },
+    )
+    error = CandidateSemanticValidationError(
+        conformance.code,
+        conformance.reason,
+        field_path="files",
+        representation="candidate_package",
+        details={
+            "repair_conformance": conformance.to_dict(),
+            **llm_mutator_module._executable_conformance_repair_hints(
+                conformance
+            ),
+        },
+    )
+
+    prompt = _candidate_mutation_repair_prompt('{"files":[]}', error)
+    instruction, serialized = prompt.split("\n", 1)
+    diagnostic = json.loads(serialized)["diagnostics"][0]
+
+    assert "repair every reported violation" in instruction
+    assert "reject bool before int or float" in instruction
+    assert "boolean_metadata_not_excluded" in instruction
+    assert "Remove that selector" in instruction
+    assert diagnostic["details"]["required_change"] == (
+        "reject bool before int or float"
+    )
+    assert diagnostic["details"]["violation_constructs"] == [
+        "boolean_metadata_not_excluded"
+    ]
+    assert diagnostic["details"]["repair_conformance"][
+        "failure_fingerprint"
+    ] == conformance.failure_fingerprint
+
+
+def test_candidate_repair_hints_preserve_source_behavior_operations() -> None:
+    conformance = RepairConformanceResult(
+        passed=False,
+        code="source_behavior_proof_failed",
+        reason="source proof is incomplete",
+        details={
+            "missing_operations": ["project_record_value_field_directly"],
+            "unsupported_boundary_kinds": ["instance_attribute"],
+            "source_behavior_proofs": [
+                {
+                    "operation_status": {
+                        "read_environment_binding_as_path": True,
+                        "project_record_value_field_directly": False,
+                    }
+                }
+            ],
+        },
+    )
+
+    hints = llm_mutator_module._executable_conformance_repair_hints(
+        conformance
+    )
+
+    assert hints["missing_operations"] == [
+        "project_record_value_field_directly"
+    ]
+    assert hints["unsupported_boundary_kinds"] == ["instance_attribute"]
+    assert hints["operation_status"] == [
+        {
+            "read_environment_binding_as_path": True,
+            "project_record_value_field_directly": False,
+        }
+    ]
 
 
 def test_candidate_materialization_frontier_identity_is_typed_and_stable() -> None:
@@ -3619,29 +7922,35 @@ async def test_exhausted_candidate_materialization_has_typed_failure_event(
     )
 
     class InvalidMaterializationOptimizer:
+        def __init__(self) -> None:
+            self.call_count = 0
+
         async def propose(self, request: OptimizerRequest) -> OptimizerResult:
+            self.call_count += 1
             return OptimizerResult(
                 candidates=(),
                 diagnostics={
-                    "filtered_invalid_patch_candidates": 1,
+                    "filtered_invalid_patch_candidates": request.max_candidates,
                     "candidate_materialization_failures": [
                         {
                             "code": "candidate_materialization_invalid",
                             "stage": "candidate_generation",
                             "failure_class": "candidate",
                             "repairable": True,
-                            "candidate_index": 0,
+                            "candidate_index": index,
                             "representation": "patch_intent",
                             "reason": "section not found",
                         }
+                        for index in range(request.max_candidates)
                     ],
                 },
             )
 
+    optimizer = InvalidMaterializationOptimizer()
     result = await SelfEvolveRunner(
         store=FilesystemSelfEvolveStore(tmp_path),
-        optimizer=InvalidMaterializationOptimizer(),
-        max_iterations=1,
+        optimizer=optimizer,
+        max_iterations=4,
     ).run_explicit_target(
         run_id="run-materialization-terminal",
         target=SkillTextTarget(skill_path, allow_auto_apply=True),
@@ -3667,11 +7976,107 @@ async def test_exhausted_candidate_materialization_has_typed_failure_event(
         ).read_text(encoding="utf-8")
     )
     details = report["gate_results"][-1]["details"]
+    assert optimizer.call_count == 2
+    assert details["generation_materialization_frontier_exhausted"] is True
     assert details["code"] == "candidate_materialization_invalid"
     assert details["causal_failure_events"][0] == details["failure_event"]
     assert details["failure_event"]["owner"] == "candidate"
     assert details["failure_event"]["stage"] == "candidate_generation"
     assert details["failure_event"]["repairable"] is True
+
+
+@pytest.mark.asyncio
+async def test_non_repairable_protocol_failure_stops_generation_immediately(
+    tmp_path,
+) -> None:
+    skill_path = tmp_path / "aworld-skills" / "demo" / "SKILL.md"
+    skill_path.parent.mkdir(parents=True)
+    skill_path.write_text(
+        "---\nname: demo\n---\n# Demo\n",
+        encoding="utf-8",
+    )
+    trajectory = [
+        {
+            "meta": {"step": 1, "agent_id": "agent", "pre_agent": "runner"},
+            "state": {"input": {"content": "Improve reusable behavior."}},
+            "action": {"content": "Candidate protocol failed."},
+            "reward": {"status": "failed"},
+        }
+    ]
+    dataset = build_dataset_from_source(
+        SelfEvolveEvalSourceConfig(kind="current_trajectory"),
+        current_trajectory=trajectory,
+        task_id="non-repairable-protocol",
+    )
+
+    class NonRepairableProtocolOptimizer:
+        def __init__(self) -> None:
+            self.call_count = 0
+
+        async def propose(self, request: OptimizerRequest) -> OptimizerResult:
+            self.call_count += 1
+            outcomes = tuple(
+                CandidateGenerationOutcome(
+                    candidate_index=index,
+                    kind=CandidateGenerationOutcomeKind.PROTOCOL_INVALID,
+                    repairable=False,
+                    reason_codes=("multiple_json_objects",),
+                    active_frontier_key=(
+                        request.active_repair_frontier_keys[index]
+                        if index < len(request.active_repair_frontier_keys)
+                        else None
+                    ),
+                )
+                for index in range(request.max_candidates)
+            )
+            return OptimizerResult(
+                candidates=(),
+                generation_outcomes=outcomes,
+                diagnostics={
+                    "candidate_protocol_invalid_count": len(outcomes),
+                    "candidate_generation_outcomes": [
+                        outcome.to_dict() for outcome in outcomes
+                    ],
+                },
+            )
+
+    optimizer = NonRepairableProtocolOptimizer()
+    result = await SelfEvolveRunner(
+        store=FilesystemSelfEvolveStore(tmp_path),
+        optimizer=optimizer,
+        max_iterations=8,
+    ).run_explicit_target(
+        run_id="run-non-repairable-protocol",
+        target=SkillTextTarget(skill_path, allow_auto_apply=True),
+        dataset=dataset,
+        trace_packs=(
+            build_trace_pack(
+                trajectory,
+                source_kind="current_trajectory",
+                task_id="non-repairable-protocol",
+            ),
+        ),
+        apply_policy="auto_verified",
+    )
+
+    assert result.run.status is SelfEvolveRunStatus.REJECTED
+    assert optimizer.call_count == 1
+    report = json.loads(
+        (
+            tmp_path
+            / ".aworld"
+            / "self_evolve"
+            / "run-non-repairable-protocol"
+            / "report.json"
+        ).read_text(encoding="utf-8")
+    )
+    details = report["gate_results"][-1]["details"]
+    assert details["generation_protocol_frontier_exhausted"] is True
+    assert details["code"] == "multiple_json_objects"
+    assert details["failure_event"]["repairable"] is False
+    assert report["verification_funnel"][
+        "generation_protocol_frontier_exhausted"
+    ] is True
 
 
 @pytest.mark.asyncio
@@ -3830,7 +8235,8 @@ async def test_runner_records_terminal_artifact_retention_cleanup(
         (artifact_root / "run-current" / "report.json").read_text(encoding="utf-8")
     )
     cleanup = report["artifact_retention"]
-    assert cleanup["removed_run_count"] >= 1
+    assert cleanup["removed_run_count"] == 0
+    assert cleanup["compacted_run_count"] >= 1
     assert any(
         "run-old-0/replay/cand-1/workspace" in path
         for path in cleanup["removed_paths"]
@@ -3880,6 +8286,32 @@ def test_artifact_retention_merge_preserves_ingestion_cleanup_telemetry() -> Non
         "ingestion-old",
     ]
     assert merged["protected_ingestion_ids"] == ["ingestion-current"]
+
+
+def test_artifact_retention_merge_migrates_legacy_removed_runs_to_compacted() -> None:
+    merged = _merge_artifact_retention_reports(
+        {
+            "status": "completed",
+            "removed_run_ids": ["legacy-compacted-run"],
+        },
+        {
+            "schema_version": "aworld.self_evolve.artifact_retention.v2",
+            "status": "completed",
+            "removed_run_ids": [],
+            "compacted_run_ids": ["current-compacted-run"],
+        },
+    )
+
+    assert merged["schema_version"] == (
+        "aworld.self_evolve.artifact_retention.v2"
+    )
+    assert merged["removed_run_count"] == 0
+    assert merged["removed_run_ids"] == []
+    assert merged["compacted_run_count"] == 2
+    assert merged["compacted_run_ids"] == [
+        "current-compacted-run",
+        "legacy-compacted-run",
+    ]
 
 
 def test_artifact_retention_transaction_recovers_after_final_report_crash(
@@ -3932,7 +8364,7 @@ def test_artifact_retention_transaction_recovers_after_final_report_crash(
     assert any(transaction_dir.glob("*.json"))
 
     monkeypatch.setattr(store, "write_report", original_write_report)
-    runner_module._recover_artifact_retention_transactions(store)
+    _recover_artifact_retention_transactions(store)
 
     recovered = json.loads((run_dir / "report.json").read_text(encoding="utf-8"))
     retention = recovered["artifact_retention"]
@@ -4194,6 +8626,52 @@ def test_iteration_validation_feedback_includes_baseline_comparison_metrics() ->
     ]
 
 
+def test_iteration_validation_feedback_preserves_structural_edit_authorization() -> None:
+    current_content = "---\nname: demo\n---\n# Demo\n\n## Guidance\n\nOld.\n"
+    patch_intent = {
+        "operations": [
+            {
+                "op": "replace_section",
+                "heading": "Guidance",
+                "content": "New.\n",
+            }
+        ]
+    }
+    candidate_content = apply_skill_patch_intent(current_content, patch_intent)
+    structural_edit_intent = build_skill_structural_edit_intent(
+        original_content=current_content,
+        candidate_content=candidate_content,
+        patch_intent=patch_intent,
+    )
+    candidate = CandidateVariant(
+        candidate_id="cand-structural-repair",
+        target=SelfEvolveTargetRef(target_type="skill", target_id="demo"),
+        content=candidate_content,
+        rationale="bounded section replacement",
+        structural_edit_intent=structural_edit_intent,
+    )
+
+    feedback = _iteration_validation_feedback(
+        candidate=candidate,
+        baseline_summary=None,
+        candidate_summary=None,
+        held_out_summary=None,
+        failed_gates=[
+            GateResult(
+                gate_name="candidate_replay",
+                passed=False,
+                reason="runtime source needs repair",
+                details={"failure_class": "candidate", "repairable": True},
+            )
+        ],
+    )
+
+    package = feedback[0].metrics["repair_candidate_package"]
+    assert package["structural_edit_intent"] == to_json_dict(
+        structural_edit_intent
+    )
+
+
 def test_iteration_validation_feedback_preserves_nested_root_cause_and_repair_package() -> None:
     candidate = CandidateVariant(
         candidate_id="cand-runtime",
@@ -4249,7 +8727,7 @@ def test_iteration_validation_feedback_preserves_nested_root_cause_and_repair_pa
                 "path": "replay/runtime.py",
                 "operation": "upsert",
                 "executable": False,
-                "content": "def websocket_control_frame():\n    return 'incomplete'",
+                "content": "def websocket_control_frame():\n    return 'incomplete'\n",
             }
         ],
     }
@@ -4293,8 +8771,8 @@ def test_iteration_validation_feedback_preserves_complete_large_runtime_source()
     preserved = feedback[0].metrics["repair_candidate_package"]["files"][0][
         "content"
     ]
-    assert preserved == runtime_source.strip()
-    assert preserved.endswith("return 'runtime-tail-preserved'")
+    assert preserved == runtime_source
+    assert preserved.endswith("return 'runtime-tail-preserved'\n")
 
 
 def test_replay_gate_marks_candidate_owned_protocol_failure_as_repairable() -> None:
@@ -4339,7 +8817,76 @@ def test_replay_gate_marks_candidate_owned_protocol_failure_as_repairable() -> N
 
     assert details["failure_class"] == "candidate"
     assert details["repairable"] is True
-    assert details["failure_stage"] == "replay_capability"
+    assert details["failure_stage"] == "legacy_import"
+
+
+def test_candidate_runtime_policy_failure_precedes_invalid_control_routing() -> None:
+    target = SelfEvolveTargetRef(target_type="skill", target_id="demo")
+    dataset = SelfEvolveDataset(
+        cases=(EvalCase(case_id="task-1", input="Replay task"),),
+        recipe=DatasetRecipe(
+            source={"kind": "test"},
+            split_seed="seed",
+            splits={"train": ["task-1"], "validation": [], "held_out": []},
+        ),
+    )
+    request = CandidateReplayRequest(
+        run_id="run-candidate-policy-invalid-control",
+        task_id="task-1",
+        workspace_root="/tmp/workspace",
+        target=target,
+        candidate_id="cand-runtime",
+        overlay_skill_root="/tmp/overlay",
+        task_input="Replay task",
+    )
+    invalid_control = ReplayFailureEvent(
+        code="authoritative_replay_invalid_control",
+        owner=FailureOwner.FRAMEWORK,
+        stage=FailureStage.EVALUATION,
+        scope=FailureScope.SHARED_RUN,
+        repairable=True,
+        category="trusted_measurement",
+    )
+    candidate_failure = {
+        "code": "replay_evidence_runtime_policy_violation",
+        "outcome": "candidate_failure",
+        "failure_class": "candidate_task_behavior",
+        "failure_stage": "task_rollout",
+        "repairable": True,
+    }
+    baseline = ReplayVariantResult(
+        variant_id="baseline",
+        status=ReplayExecutionStatus.FAILED,
+        trajectory=[],
+        failure=invalid_control,
+    )
+    candidate = ReplayVariantResult(
+        variant_id="cand-runtime",
+        status=ReplayExecutionStatus.FAILED,
+        trajectory=[],
+        failure=candidate_failure,
+    )
+    replay_result = _CandidateReplayResult(
+        request=request,
+        baseline=baseline,
+        candidate=candidate,
+        member_results=(
+            CandidateReplayMemberResult(
+                case_id="task-1",
+                request=request,
+                baseline=baseline,
+                candidate=candidate,
+            ),
+        ),
+    )
+
+    details = _replay_gate_details(replay_result, dataset=dataset)
+
+    assert details["failure_class"] == "candidate"
+    assert details["repairable"] is True
+    assert details["failure_stage"] == "task_rollout"
+    assert details["invalid_control_secondary"] is True
+    assert details.get("next_action") != "repair_measurement"
 
 
 def test_typed_gate_feedback_keeps_candidate_cause_from_baseline_slot_once() -> None:
@@ -4441,7 +8988,7 @@ def test_typed_gate_feedback_preserves_exact_aggregate_scalars_without_raw_paylo
         {"causal_failure_events": [aggregate.to_dict()]},
     )
 
-    metrics = runner_module._typed_gate_feedback_metrics((gate, gate))
+    metrics = _typed_gate_feedback_metrics((gate, gate))
     events = metrics["causal_failure_events"]
 
     assert len(events) == 1
@@ -4500,7 +9047,7 @@ def test_typed_causal_feedback_preserves_public_recovery_trace_before_return() -
         },
     )
 
-    metrics = runner_module._typed_gate_feedback_metrics((gate,))
+    metrics = _typed_gate_feedback_metrics((gate,))
 
     assert metrics["causal_failure_events"]
     assert metrics["recovery_trace"]["recovered_member_count"] == 1
@@ -4566,6 +9113,553 @@ def test_replay_gate_adds_candidate_recovery_cause_without_rewriting_task_timeou
     assert details["recovery_trace"]["candidate_success_rate"] == 0.0
 
 
+def test_bounded_screening_treats_paired_timeouts_as_right_censored(
+    tmp_path: Path,
+) -> None:
+    target = SelfEvolveTargetRef(target_type="skill", target_id="screening")
+    request = CandidateReplayRequest(
+        run_id="run-bounded-screening",
+        task_id="case-screening",
+        workspace_root=str(tmp_path),
+        target=target,
+        candidate_id="candidate-screening",
+        overlay_skill_root=str(tmp_path / "overlay"),
+        task_input="complete this task",
+        timeout_seconds=120,
+        max_steps=4,
+        max_tool_calls=8,
+    )
+    timeout = ReplayVariantResult(
+        variant_id="baseline",
+        status=ReplayExecutionStatus.FAILED,
+        trajectory=[],
+        failure={"type": "TimeoutExpired", "reason": "replay timed out"},
+    )
+    replay_result = _CandidateReplayResult(
+        request=request,
+        baseline=timeout,
+        candidate=replace(timeout, variant_id="candidate-screening"),
+    )
+    dataset = SelfEvolveDataset(
+        cases=(EvalCase(case_id="case-screening", input="complete this task"),),
+        recipe=DatasetRecipe(
+            source={"kind": "trajectory_log"},
+            split_seed="screening",
+            splits={"train": ["case-screening"]},
+            trainable_case_ids=("case-screening",),
+        ),
+    )
+
+    details = _replay_gate_details(
+        replay_result,
+        dataset=dataset,
+        bounded_screening=True,
+    )
+
+    assert details["code"] == "screening_budget_censored"
+    assert details["screening_outcome"] == "right_censored"
+    assert details["screening_censor_basis"] == "paired_horizon"
+    assert details["failure_class"] == "framework"
+    assert details["repairable"] is False
+    assert any(
+        event["code"] == "screening_budget_censored"
+        for event in details["causal_failure_events"]
+    )
+    assert not any(
+        event["code"] == "candidate_recovery_incomplete"
+        for event in details["causal_failure_events"]
+    )
+
+
+def test_bounded_screening_marks_baseline_deadline_as_invalid_control_without_candidate_blame(
+    tmp_path: Path,
+) -> None:
+    target = SelfEvolveTargetRef(target_type="skill", target_id="screening")
+    request = CandidateReplayRequest(
+        run_id="run-baseline-censor",
+        task_id="case-baseline-censor",
+        workspace_root=str(tmp_path),
+        target=target,
+        candidate_id="candidate-baseline-censor",
+        overlay_skill_root=str(tmp_path / "overlay"),
+        task_input="complete this task",
+        timeout_seconds=120,
+    )
+    deadline = ReplayFailureEvent(
+        code="replay_member_phase_timeout",
+        owner=FailureOwner.FRAMEWORK,
+        stage=FailureStage.EVALUATION,
+        scope=FailureScope.MEMBER,
+        repairable=True,
+        category="execution_control",
+        summary="bounded screening baseline reached its hard deadline",
+        diagnostics={"phase": "baseline", "timeout_seconds": 120},
+    )
+    deadline_aggregate = aggregate_replay_failure_observations(
+        (ReplayFailureObservation(event=deadline),)
+    )[0]
+    invalid_control = ReplayFailureEvent(
+        code="authoritative_replay_invalid_control",
+        owner=FailureOwner.FRAMEWORK,
+        stage=FailureStage.EVALUATION,
+        scope=FailureScope.SHARED_RUN,
+        repairable=True,
+        category="measurement_control",
+        summary="candidate did not run after the baseline deadline",
+        causes=(deadline.event_id,),
+    )
+    replay_result = _CandidateReplayResult(
+        request=request,
+        baseline=ReplayVariantResult(
+            variant_id="baseline",
+            status=ReplayExecutionStatus.FAILED,
+            trajectory=[],
+            metrics={"member_phase_timeout": True, "member_phase": "baseline"},
+            failure=deadline_aggregate,
+        ),
+        candidate=ReplayVariantResult(
+            variant_id="candidate-baseline-censor",
+            status=ReplayExecutionStatus.BLOCKED,
+            trajectory=[],
+            blocked_by=(invalid_control,),
+        ),
+    )
+    dataset = SelfEvolveDataset(
+        cases=(
+            EvalCase(
+                case_id="case-baseline-censor",
+                input="complete this task",
+            ),
+        ),
+        recipe=DatasetRecipe(
+            source={"kind": "trajectory_log"},
+            split_seed="baseline-censor",
+            splits={"train": ["case-baseline-censor"]},
+            trainable_case_ids=("case-baseline-censor",),
+        ),
+    )
+
+    details = _replay_gate_details(
+        replay_result,
+        dataset=dataset,
+        candidate_requires_intervention_exposure=True,
+        bounded_screening=True,
+    )
+    gate = GateResult(
+        gate_name="candidate_replay",
+        passed=False,
+        reason="bounded screening was right-censored",
+        details=details,
+    )
+
+    assert details["code"] == "screening_budget_censored"
+    assert details["screening_censor_basis"] == "baseline_horizon"
+    assert details["screening_outcome"] == "right_censored"
+    assert details["recovery_trace"]["candidate_execution_observed"] is False
+    assert details["recovery_trace"]["candidate_intervention_observed"] is None
+    assert not any(
+        event["code"] == "candidate_intervention_unobserved"
+        for event in details["causal_failure_events"]
+    )
+    assert _screening_gate_has_invalid_control(gate) is True
+
+
+def test_bounded_screening_promotes_candidate_only_deadline_to_candidate_repair(
+    tmp_path: Path,
+) -> None:
+    request = CandidateReplayRequest(
+        run_id="run-candidate-deadline",
+        task_id="case-candidate-deadline",
+        workspace_root=str(tmp_path),
+        target=SelfEvolveTargetRef(target_type="skill", target_id="screening"),
+        candidate_id="candidate-deadline",
+        overlay_skill_root=str(tmp_path / "overlay"),
+        task_input="complete this task",
+        timeout_seconds=120,
+    )
+    candidate_deadline = ReplayFailureEvent(
+        code="replay_member_phase_timeout",
+        owner=FailureOwner.FRAMEWORK,
+        stage=FailureStage.EVALUATION,
+        scope=FailureScope.MEMBER,
+        repairable=True,
+        category="execution_control",
+        summary="candidate phase reached its hard deadline",
+        diagnostics={"phase": "candidate", "timeout_seconds": 120},
+    )
+    replay_result = _CandidateReplayResult(
+        request=request,
+        baseline=ReplayVariantResult(
+            variant_id="baseline",
+            status=ReplayExecutionStatus.SUCCEEDED,
+            trajectory=[{"step": 1}],
+            metrics={"task_success": 1.0},
+        ),
+        candidate=ReplayVariantResult(
+            variant_id="candidate-deadline",
+            status=ReplayExecutionStatus.FAILED,
+            trajectory=[{"step": 1}],
+            failure=candidate_deadline,
+        ),
+    )
+    dataset = SelfEvolveDataset(
+        cases=(
+            EvalCase(
+                case_id="case-candidate-deadline",
+                input="complete this task",
+            ),
+        ),
+        recipe=DatasetRecipe(
+            source={"kind": "trajectory_log"},
+            split_seed="candidate-deadline",
+            splits={"train": ["case-candidate-deadline"]},
+            trainable_case_ids=("case-candidate-deadline",),
+        ),
+    )
+
+    details = _replay_gate_details(
+        replay_result,
+        dataset=dataset,
+        bounded_screening=True,
+    )
+    gate = GateResult(
+        gate_name="candidate_replay",
+        passed=False,
+        reason="candidate phase timed out",
+        details=details,
+    )
+
+    assert details["code"] == "candidate_screening_deadline_exceeded"
+    assert details["failure_class"] == "candidate"
+    assert details["failure_owner"] == "candidate"
+    assert details["failure_scope"] == "candidate"
+    assert details["evaluator_skipped"] is True
+    assert _screening_gate_has_invalid_control(gate) is False
+
+
+def test_bounded_screening_promotes_legacy_candidate_timeout_without_framework_handoff(
+    tmp_path: Path,
+) -> None:
+    request = CandidateReplayRequest(
+        run_id="run-legacy-candidate-timeout",
+        task_id="case-legacy-candidate-timeout",
+        workspace_root=str(tmp_path),
+        target=SelfEvolveTargetRef(target_type="skill", target_id="screening"),
+        candidate_id="candidate-legacy-timeout",
+        overlay_skill_root=str(tmp_path / "overlay"),
+        task_input="complete this task",
+        timeout_seconds=187,
+        max_steps=3,
+        max_tool_calls=8,
+    )
+    candidate_timeout = ReplayFailureEvent(
+        code="timeoutexpired",
+        owner=FailureOwner.TASK,
+        stage=FailureStage.TASK_ROLLOUT,
+        scope=FailureScope.MEMBER,
+        repairable=False,
+        category="legacy",
+        summary="candidate replay timed out",
+        diagnostics={"timeout_seconds": 187},
+    )
+    replay_result = _CandidateReplayResult(
+        request=request,
+        baseline=ReplayVariantResult(
+            variant_id="baseline",
+            status=ReplayExecutionStatus.SUCCEEDED,
+            trajectory=[{"step": 1}],
+            metrics={"task_success": 1.0},
+        ),
+        candidate=ReplayVariantResult(
+            variant_id="candidate-legacy-timeout",
+            status=ReplayExecutionStatus.FAILED,
+            trajectory=[{"step": 1}],
+            failure=candidate_timeout,
+        ),
+    )
+    dataset = SelfEvolveDataset(
+        cases=(
+            EvalCase(
+                case_id="case-legacy-candidate-timeout",
+                input="complete this task",
+            ),
+        ),
+        recipe=DatasetRecipe(
+            source={"kind": "trajectory_log"},
+            split_seed="legacy-candidate-timeout",
+            splits={"train": ["case-legacy-candidate-timeout"]},
+            trainable_case_ids=("case-legacy-candidate-timeout",),
+        ),
+    )
+
+    details = _replay_gate_details(
+        replay_result,
+        dataset=dataset,
+        candidate_requires_intervention_exposure=True,
+        bounded_screening=True,
+    )
+
+    assert details["code"] == "candidate_screening_deadline_exceeded"
+    assert details["failure_class"] == "candidate"
+    assert details["failure_owner"] == "candidate"
+    assert details["failure_scope"] == "candidate"
+    assert details["evaluator_skipped"] is True
+    assert not any(
+        event["code"] == "candidate_intervention_unobserved"
+        for event in details["causal_failure_events"]
+    )
+
+
+def test_campaign_measurement_retries_framework_owned_member_timeout() -> None:
+    request = CandidateReplayRequest(
+        run_id="campaign-timeout-cycle-002",
+        task_id="case-timeout",
+        workspace_root="/tmp/campaign-timeout",
+        target=SelfEvolveTargetRef(target_type="skill", target_id="demo"),
+        candidate_id="candidate-timeout",
+        overlay_skill_root="/tmp/campaign-timeout/overlay",
+        task_input="complete the task",
+        timeout_seconds=900,
+    )
+    baseline = ReplayVariantResult(
+        variant_id="baseline",
+        status=ReplayExecutionStatus.SUCCEEDED,
+        trajectory=[{"step": 1}],
+    )
+    timeout = ReplayFailureEvent(
+        code="replay_member_phase_timeout",
+        owner=FailureOwner.FRAMEWORK,
+        stage=FailureStage.EVALUATION,
+        scope=FailureScope.MEMBER,
+        repairable=True,
+        category="replay_timeout",
+    )
+    candidate = ReplayVariantResult(
+        variant_id="candidate-timeout",
+        status=ReplayExecutionStatus.FAILED,
+        trajectory=[],
+        failure=timeout,
+    )
+    replay_result = _CandidateReplayResult(
+        request=request,
+        baseline=baseline,
+        candidate=candidate,
+        member_results=(
+            CandidateReplayMemberResult(
+                case_id="case-timeout",
+                request=request,
+                baseline=baseline,
+                candidate=candidate,
+            ),
+        ),
+        measurement_decision={
+            "kind": "stop_inconclusive",
+            "reason_code": "eligible_measurement_stages_exhausted",
+        },
+    )
+
+    outcome = _campaign_measurement_outcome_for_replay(
+        replay_result,
+        final_status=SelfEvolveRunStatus.REJECTED,
+    )
+
+    assert outcome is not None
+    assert outcome["execution_status"] == "invalid"
+    assert outcome["improvement_outcome"] == "unknown"
+    assert outcome["projection"] == "measurement_invalid"
+    assert outcome["continuation_available"] is True
+    assert outcome["reason_code"] == "measurement_infrastructure_retry"
+
+
+def test_bounded_screening_censors_candidate_timeout_with_data_plane_progress(
+    tmp_path: Path,
+) -> None:
+    target = SelfEvolveTargetRef(target_type="skill", target_id="screening")
+    request = CandidateReplayRequest(
+        run_id="run-progress-censor",
+        task_id="case-progress-censor",
+        workspace_root=str(tmp_path),
+        target=target,
+        candidate_id="candidate-progress-censor",
+        overlay_skill_root=str(tmp_path / "overlay"),
+        task_input="complete this task",
+        timeout_seconds=90,
+        max_steps=3,
+        max_tool_calls=8,
+    )
+    baseline = ReplayVariantResult(
+        variant_id="baseline",
+        status=ReplayExecutionStatus.FAILED,
+        trajectory=[],
+        failure={
+            "type": "TimeoutExpired",
+            "failure_stage": "task_rollout",
+            "reason": "replay timed out",
+        },
+    )
+    candidate = ReplayVariantResult(
+        variant_id="candidate-progress-censor",
+        status=ReplayExecutionStatus.FAILED,
+        trajectory=[],
+        failure={
+            "type": "TimeoutExpired",
+            "outcome": "candidate_failure",
+            "failure_class": "candidate_task_behavior",
+            "failure_stage": "task_rollout",
+            "repairable": True,
+            "reason": "replay timed out",
+            "completed_data_plane_operations": ["/"],
+        },
+    )
+    replay_result = _CandidateReplayResult(
+        request=request,
+        baseline=baseline,
+        candidate=candidate,
+    )
+    dataset = SelfEvolveDataset(
+        cases=(
+            EvalCase(
+                case_id="case-progress-censor",
+                input="complete this task",
+            ),
+        ),
+        recipe=DatasetRecipe(
+            source={"kind": "trajectory_log"},
+            split_seed="progress-censor",
+            splits={"train": ["case-progress-censor"]},
+            trainable_case_ids=("case-progress-censor",),
+        ),
+    )
+
+    details = _replay_gate_details(
+        replay_result,
+        dataset=dataset,
+        bounded_screening=True,
+    )
+
+    assert details["screening_outcome"] == "right_censored"
+    assert details["failure_class"] == "framework"
+    assert "paired_candidate_completion_evidence" not in details
+    assert not any(
+        event["code"] == "target_behavior_completion_missing"
+        for event in details["causal_failure_events"]
+    )
+
+
+def test_replay_gate_does_not_blame_candidate_for_framework_capture_repetition(
+    tmp_path: Path,
+) -> None:
+    target = SelfEvolveTargetRef(target_type="skill", target_id="recovery")
+    request = CandidateReplayRequest(
+        run_id="run-framework-recovery",
+        task_id="case-framework-recovery",
+        workspace_root=str(tmp_path),
+        target=target,
+        candidate_id="candidate-recovery",
+        overlay_skill_root=str(tmp_path / "overlay"),
+        task_input="recover this task",
+        baseline_repetitions=3,
+        candidate_repetitions=3,
+    )
+    task_failure = ReplayVariantResult(
+        variant_id="baseline-failure",
+        status=ReplayExecutionStatus.FAILED,
+        trajectory=[],
+        failure=ReplayFailureEvent(
+            code="task_rollout_timeout",
+            owner=FailureOwner.TASK,
+            stage=FailureStage.TASK_ROLLOUT,
+            scope=FailureScope.MEMBER,
+            repairable=False,
+            summary="baseline task timed out",
+        ),
+    )
+    capture_failure = ReplayVariantResult(
+        variant_id="candidate-capture-failure",
+        status=ReplayExecutionStatus.FAILED,
+        trajectory=[],
+        failure=ReplayFailureEvent(
+            code="trajectory_capture_unavailable",
+            owner=FailureOwner.FRAMEWORK,
+            stage=FailureStage.EVALUATION,
+            scope=FailureScope.MEMBER,
+            repairable=True,
+            summary="trajectory capture was unavailable",
+        ),
+    )
+    candidate_success = ReplayVariantResult(
+        variant_id="candidate-success",
+        status=ReplayExecutionStatus.SUCCEEDED,
+        trajectory=[{"action": {"content": "completed"}}],
+    )
+    baseline = replace(
+        task_failure,
+        variant_id="baseline",
+        metrics={
+            "repetition_count": 3,
+            "successful_repetition_count": 0,
+            "failed_repetition_count": 3,
+        },
+        repetition_results=(task_failure, task_failure, task_failure),
+    )
+    candidate = replace(
+        candidate_success,
+        variant_id="candidate-recovery",
+        metrics={
+            "repetition_count": 3,
+            "successful_repetition_count": 2,
+            "failed_repetition_count": 1,
+        },
+        repetition_results=(
+            candidate_success,
+            candidate_success,
+            capture_failure,
+        ),
+    )
+    replay_result = _CandidateReplayResult(
+        request=request,
+        baseline=baseline,
+        candidate=candidate,
+        member_results=(
+            CandidateReplayMemberResult(
+                case_id="case-framework-recovery",
+                request=request,
+                baseline=baseline,
+                candidate=candidate,
+            ),
+        ),
+    )
+    dataset = SelfEvolveDataset(
+        cases=(
+            EvalCase(
+                case_id="case-framework-recovery",
+                input="recover this task",
+            ),
+        ),
+        recipe=DatasetRecipe(
+            source={"kind": "trajectory_log"},
+            split_seed="recovery",
+            splits={"train": ["case-framework-recovery"]},
+            trainable_case_ids=("case-framework-recovery",),
+        ),
+    )
+
+    details = _replay_gate_details(replay_result, dataset=dataset)
+
+    events = details["causal_failure_events"]
+    assert any(
+        event["code"] == "trajectory_capture_unavailable"
+        and event["owner"] == "framework"
+        for event in events
+    )
+    assert not any(
+        event["code"] == "candidate_recovery_incomplete" for event in events
+    )
+    assert details["recovery_trace"]["candidate_success_rate"] == pytest.approx(
+        2 / 3
+    )
+
+
 def test_replay_gate_attributes_unobserved_candidate_intervention_to_framework(
     tmp_path: Path,
 ) -> None:
@@ -4580,6 +9674,13 @@ def test_replay_gate_attributes_unobserved_candidate_intervention_to_framework(
         task_input="recover task",
     )
     timeout = {"type": "TimeoutExpired", "reason": "replay timed out"}
+    candidate_timeout = {
+        **timeout,
+        "outcome": "candidate_failure",
+        "failure_class": "candidate_task_behavior",
+        "failure_stage": "task_rollout",
+        "repairable": True,
+    }
     replay_result = _CandidateReplayResult(
         request=request,
         baseline=ReplayVariantResult(
@@ -4592,7 +9693,7 @@ def test_replay_gate_attributes_unobserved_candidate_intervention_to_framework(
             variant_id="candidate-unobserved",
             status="failed",
             trajectory=[],
-            failure=timeout,
+            failure=candidate_timeout,
         ),
     )
     dataset = SelfEvolveDataset(
@@ -4612,11 +9713,169 @@ def test_replay_gate_attributes_unobserved_candidate_intervention_to_framework(
 
     events = details["causal_failure_events"]
     assert any(event["code"] == "candidate_intervention_unobserved" for event in events)
+    assert any(
+        event["code"] == "candidate_intervention_unobserved"
+        and event["scope"] == "shared_run"
+        for event in events
+    )
     assert not any(event["code"] == "candidate_recovery_incomplete" for event in events)
     assert details["failure_class"] == "framework"
-    assert details["repairable"] is False
+    assert details["repairable"] is True
+    assert details["next_action"] == "repair_framework_control_selection"
     assert details["recovery_trace"]["candidate_intervention_required"] is True
     assert details["recovery_trace"]["candidate_intervention_observed"] is False
+
+    terminal_gate = _candidate_validation_shared_failure_gate(
+        {
+            "screening": {
+                "stopped_by_shared_infrastructure": True,
+                "attempts": [
+                    {
+                        "reason": "candidate intervention was not observed",
+                        "details": details,
+                    }
+                ],
+            }
+        }
+    )
+    assert terminal_gate.gate_name == "candidate_replay"
+    assert terminal_gate.details["failure_class"] == "framework"
+    assert terminal_gate.details["repairable"] is True
+
+
+def test_replay_gate_requires_intervention_trace_even_when_both_variants_succeed(
+    tmp_path: Path,
+) -> None:
+    request = CandidateReplayRequest(
+        run_id="run-unobserved-success",
+        task_id="case-unobserved-success",
+        workspace_root=str(tmp_path),
+        target=SelfEvolveTargetRef(target_type="skill", target_id="recovery"),
+        candidate_id="candidate-unobserved-success",
+        overlay_skill_root=str(tmp_path / "overlay"),
+        task_input="complete task",
+    )
+    replay_result = _CandidateReplayResult(
+        request=request,
+        baseline=ReplayVariantResult(
+            variant_id="baseline",
+            status="succeeded",
+            trajectory=[{"action": {"content": "baseline"}}],
+        ),
+        candidate=ReplayVariantResult(
+            variant_id="candidate-unobserved-success",
+            status="succeeded",
+            trajectory=[{"action": {"content": "candidate"}}],
+        ),
+    )
+    dataset = SelfEvolveDataset(
+        cases=(
+            EvalCase(
+                case_id="case-unobserved-success",
+                input="complete task",
+            ),
+        ),
+        recipe=DatasetRecipe(
+            source={"kind": "trajectory_log"},
+            split_seed="unobserved-success",
+            splits={"train": ["case-unobserved-success"]},
+            trainable_case_ids=("case-unobserved-success",),
+        ),
+    )
+
+    details = _replay_gate_details(
+        replay_result,
+        dataset=dataset,
+        candidate_requires_intervention_exposure=True,
+    )
+
+    assert details["candidate_execution_observed"] is True
+    assert details["candidate_intervention_observed"] is False
+    assert details["code"] == "candidate_intervention_unobserved"
+    assert details["failure_class"] == "framework"
+    assert details["repairable"] is True
+    assert any(
+        event["code"] == "candidate_intervention_unobserved"
+        for event in details["causal_failure_events"]
+    )
+
+
+def test_skill_candidate_requires_matching_runtime_activation_attestation(
+    tmp_path: Path,
+) -> None:
+    candidate_fingerprint = "sha256:" + "a" * 64
+    request = CandidateReplayRequest(
+        run_id="run-skill-activation",
+        task_id="case-skill-activation",
+        workspace_root=str(tmp_path),
+        target=SelfEvolveTargetRef(target_type="skill", target_id="demo"),
+        candidate_id="candidate-skill-activation",
+        overlay_skill_root=str(tmp_path / "overlay"),
+        task_input="complete task",
+        verified_candidate_package_fingerprint=candidate_fingerprint,
+    )
+    baseline = ReplayVariantResult(
+        variant_id="baseline",
+        status="succeeded",
+        trajectory=[{"action": {"content": "baseline"}}],
+    )
+    unattested_candidate = ReplayVariantResult(
+        variant_id="candidate-skill-activation",
+        status="succeeded",
+        trajectory=[{"action": {"content": "candidate"}}],
+        metrics={"replay_service_protocol_trace_count": 1},
+    )
+    dataset = SelfEvolveDataset(
+        cases=(EvalCase(case_id="case-skill-activation", input="complete task"),),
+        recipe=DatasetRecipe(
+            source={"kind": "trajectory_log"},
+            split_seed="skill-activation",
+            splits={"train": ["case-skill-activation"]},
+            trainable_case_ids=("case-skill-activation",),
+        ),
+    )
+
+    unattested = _replay_gate_details(
+        _CandidateReplayResult(
+            request=request,
+            baseline=baseline,
+            candidate=unattested_candidate,
+        ),
+        dataset=dataset,
+        candidate_requires_intervention_exposure=True,
+        candidate_requires_service_intervention=True,
+        candidate_requires_skill_activation=True,
+    )
+    attested = _replay_gate_details(
+        _CandidateReplayResult(
+            request=request,
+            baseline=baseline,
+            candidate=replace(
+                unattested_candidate,
+                metrics={
+                    "replay_service_protocol_trace_count": 1,
+                    "skill_activation_attested": True,
+                    "activated_skill_package_fingerprint": candidate_fingerprint,
+                },
+            ),
+        ),
+        dataset=dataset,
+        candidate_requires_intervention_exposure=True,
+        candidate_requires_service_intervention=True,
+        candidate_requires_skill_activation=True,
+    )
+
+    assert unattested["candidate_intervention_observed"] is False
+    assert unattested["candidate_service_intervention_observed"] is True
+    assert unattested["candidate_skill_activation_observed"] is False
+    assert unattested["code"] == "candidate_intervention_unobserved"
+    assert attested["candidate_intervention_observed"] is True
+    assert attested["candidate_service_intervention_observed"] is True
+    assert attested["candidate_skill_activation_observed"] is True
+    assert not any(
+        event["code"] == "candidate_intervention_unobserved"
+        for event in attested.get("causal_failure_events", [])
+    )
 
 
 def test_replay_gate_repairs_candidate_only_after_intervention_is_observed(
@@ -5259,6 +10518,24 @@ def test_failed_probe_feedback_merges_typed_constraints_across_groups() -> None:
         "rule": "required",
         "expected": [],
     }
+    runtime_artifact_constraint = {
+        "schema_version": "aworld.self_evolve.runtime_artifact_constraint.v1",
+        "artifact_kind": "protocol_trace",
+        "relative_path": "protocol_trace.jsonl",
+        "producer_layer": "runtime",
+        "availability_milestone": "post_probe_pre_shutdown",
+        "write_mode": "incremental",
+        "maximum_bytes": 65_536,
+        "require_nonempty": True,
+        "required_record_fields": [
+            "direction",
+            "sequence",
+            "kind",
+            "fields",
+            "correlation",
+        ],
+        "required_directions": ["in", "out"],
+    }
     feedback = _failed_probe_typed_feedback(
         (
             {
@@ -5266,6 +10543,9 @@ def test_failed_probe_feedback_merges_typed_constraints_across_groups() -> None:
                 "error_type": "ReplayServiceProtocolError",
                 "reason": "first member is missing kind",
                 "schema_field_constraints": [constraint],
+                "runtime_artifact_constraints": [
+                    runtime_artifact_constraint
+                ],
                 "schema_field_violations": [{"occurrence_count": 1}],
                 "schema_field_violation_count": 1,
             },
@@ -5274,6 +10554,9 @@ def test_failed_probe_feedback_merges_typed_constraints_across_groups() -> None:
                 "error_type": "ReplayServiceProtocolError",
                 "reason": "second member is missing kind",
                 "schema_field_constraints": [constraint],
+                "runtime_artifact_constraints": [
+                    runtime_artifact_constraint
+                ],
                 "schema_field_violations": [{"occurrence_count": 2}],
                 "schema_field_violation_count": 2,
             },
@@ -5281,6 +10564,9 @@ def test_failed_probe_feedback_merges_typed_constraints_across_groups() -> None:
     )
 
     assert feedback["schema_field_constraints"] == [constraint]
+    assert feedback["runtime_artifact_constraints"] == [
+        runtime_artifact_constraint
+    ]
     assert feedback["schema_field_violation_count"] == 3
     assert len(feedback["diagnostics"]) == 2
 
@@ -5506,6 +10792,67 @@ def test_completed_candidate_interaction_requires_bounded_finalization() -> None
     assert "delivery signal rather than task completion" in diagnostics[0]["reason"]
     assert metrics["repair_candidate_package"]["content"] == candidate.content.rstrip()
     assert metrics["authoritative_replay_failure"] is True
+
+
+def test_typed_completion_event_preserves_progress_and_switches_repair_plane() -> None:
+    candidate = CandidateVariant(
+        candidate_id="cand-typed-completion",
+        target=SelfEvolveTargetRef(target_type="skill", target_id="demo"),
+        content="# Demo\n\nPreserve grounded evidence.\n",
+        rationale="complete after verified support interaction",
+        files=(
+            CandidateFileDelta(
+                path="replay/runtime.py",
+                content="def handle(request):\n    return {'content': 'recorded'}\n",
+            ),
+        ),
+    )
+    event = ReplayFailureEvent(
+        code="target_behavior_completion_missing",
+        owner=FailureOwner.CANDIDATE,
+        stage=FailureStage.TASK_ROLLOUT,
+        scope=FailureScope.CANDIDATE,
+        repairable=True,
+        category="target_behavior",
+        diagnostics={"completed_data_plane_operations": ["content"]},
+    )
+
+    feedback = _iteration_validation_feedback(
+        candidate=candidate,
+        baseline_summary=None,
+        candidate_summary=None,
+        held_out_summary=None,
+        failed_gates=[
+            GateResult(
+                gate_name="candidate_replay",
+                passed=False,
+                reason="candidate did not complete after paired interaction",
+                details={
+                    "failure_class": "candidate",
+                    "repairable": True,
+                    "causal_failure_events": [event.to_dict()],
+                    "paired_candidate_completion_evidence": {
+                        "completed_data_plane_operations": ["content"],
+                        "termination_budget_axes": ["tool_calls"],
+                        "terminal_synthesis_attempted": False,
+                    },
+                    "candidate_failure": {
+                        "type": "TimeoutExpired",
+                        "reason": "replay timed out",
+                        "completed_data_plane_operations": ["content"],
+                    },
+                },
+            )
+        ],
+    )
+
+    metrics = feedback[0].metrics
+    assert metrics["interaction_progress"] >= 4
+    diagnostic = metrics["candidate_validation_diagnostics"][0]
+    assert diagnostic["code"] == "finalize_after_successful_endpoint_interaction"
+    assert diagnostic["completed_data_plane_operations"] == ["content"]
+    contract = compile_repair_conformance_contract(metrics)
+    assert contract is None
 
 
 def test_progressing_timeout_extracts_operations_nested_in_trace_fields() -> None:
@@ -6044,9 +11391,15 @@ def test_iteration_validation_feedback_does_not_mix_validation_delta_into_held_o
         ],
     )
 
-    assert len(feedback) == 2
-    validation_metrics = feedback[0].metrics
-    held_out_metrics = feedback[1].metrics
+    by_split = {item.dataset_split: item for item in feedback}
+    assert set(by_split) == {"validation", "held_out", "regression"}
+    validation_metrics = by_split["validation"].metrics
+    held_out_metrics = by_split["held_out"].metrics
+    assert by_split["regression"].metrics["failed_gates"] == [
+        "global_regression_benchmark"
+    ]
+    assert validation_metrics["failed_gates"] == []
+    assert held_out_metrics["failed_gates"] == []
     assert validation_metrics["score_delta"] == 2.0
     assert held_out_metrics["score"] == 63.0
     assert held_out_metrics["A1_groundedness"] == 2.0
@@ -6181,6 +11534,332 @@ async def test_runner_persists_proposal_artifacts_without_mutating_skill_target(
     assert report["apply_policy"] == "proposal"
     assert report["optimizer_lineage"]["count"] == 1
     assert report["optimizer_lineage"]["paths"] == [str(lineage_path)]
+
+
+@pytest.mark.asyncio
+async def test_runner_persists_trusted_measurement_artifacts_in_shadow_mode(
+    tmp_path,
+) -> None:
+    skill_path, dataset = _cycle1_runner_fixture(tmp_path)
+
+    class Optimizer:
+        async def propose(self, request: OptimizerRequest) -> OptimizerResult:
+            return OptimizerResult(
+                candidates=(
+                    CandidateVariant(
+                        candidate_id="candidate-measured-shadow",
+                        target=request.target,
+                        content=(
+                            "---\nname: demo\n---\n# Demo\n\n"
+                            "Use the repaired workflow.\n"
+                        ),
+                        rationale="measurable candidate",
+                        target_fingerprint=request.target_fingerprint,
+                    ),
+                )
+            )
+
+    class EvaluationBackend:
+        async def evaluate_variant(self, request):
+            candidate = request.candidate is not None
+            return EvaluationSummary(
+                variant_id=request.variant_id,
+                dataset_split=request.dataset_split,
+                metrics={
+                    "score": 1.0 if candidate else 0.0,
+                    "score_samples": [1.0 if candidate else 0.0],
+                    "total_tokens": 120 if candidate else 100,
+                    "wall_seconds": 1.2 if candidate else 1.0,
+                    "deterministic_signal": True,
+                    "global_regression_passed": True,
+                },
+            )
+
+    store = FilesystemSelfEvolveStore(tmp_path)
+    runner = SelfEvolveRunner(
+        store=store,
+        optimizer=Optimizer(),
+        evaluation_backend=EvaluationBackend(),
+        judge_repetitions=1,
+        measurement_mode="shadow",
+        measurement_primary_metric="score",
+        measurement_minimum_effect=0.1,
+        measurement_min_independent_cases=1,
+    )
+
+    result = await runner.run_explicit_target(
+        run_id="run-measured-shadow",
+        target=SkillTextTarget(skill_path),
+        dataset=dataset,
+        trace_packs=(),
+        apply_policy="proposal",
+    )
+
+    report = json.loads(
+        (store.run_path("run-measured-shadow") / "report.json").read_text()
+    )
+    summary = report["measurement"]
+    experiment_root = (
+        store.run_path("run-measured-shadow")
+        / "experiments"
+        / summary["experiment_id"]
+    )
+    assert result.run.status is SelfEvolveRunStatus.SUCCEEDED
+    assert summary["mode"] == "shadow"
+    assert summary["effect_direction"] == "positive"
+    assert summary["promotion_eligible"] is True
+    assert summary["dominant_budget_use"] == "measurement"
+    assert summary["comparable_pairs_per_100k_tokens"] == pytest.approx(
+        100_000 / 220
+    )
+    assert (experiment_root / "experiment.json").exists()
+    assert (experiment_root / "observations.jsonl").exists()
+    assert (experiment_root / "attribution_report.json").exists()
+    attribution = json.loads(
+        (experiment_root / "attribution_report.json").read_text()
+    )
+    assert attribution["search_performance"]["k_points"][0] == {
+        "actual_k": 1,
+        "authoritative_candidate_count": 1,
+        "best_score": 1.0,
+        "pass_probability": 1.0,
+        "requested_k": 1,
+        "valid_candidate_count": 1,
+    }
+    assert attribution["search_performance"]["token_curve"]
+    assert attribution["search_performance"]["wall_time_curve"]
+    assert attribution["search_performance"]["quality_threshold"] == 0.0
+    assert attribution["search_performance"]["tokens_to_threshold"] == 120
+    assert attribution["search_performance"]["token_curve"][-1][
+        "regression_pass_rate"
+    ] == 1.0
+    assert len(store.read_measurement_observations(
+        "run-measured-shadow", summary["experiment_id"]
+    )) == 2
+
+
+@pytest.mark.asyncio
+async def test_required_measurement_fails_closed_without_usage_telemetry(
+    tmp_path,
+) -> None:
+    skill_path, dataset = _cycle1_runner_fixture(tmp_path)
+
+    class Optimizer:
+        async def propose(self, request: OptimizerRequest) -> OptimizerResult:
+            return OptimizerResult(
+                candidates=(
+                    CandidateVariant(
+                        candidate_id="candidate-measured-required",
+                        target=request.target,
+                        content=(
+                            "---\nname: demo\n---\n# Demo\n\n"
+                            "Use the repaired workflow.\n"
+                        ),
+                        rationale="candidate without resource telemetry",
+                        target_fingerprint=request.target_fingerprint,
+                    ),
+                )
+            )
+
+    class EvaluationBackend:
+        async def evaluate_variant(self, request):
+            candidate = request.candidate is not None
+            return EvaluationSummary(
+                variant_id=request.variant_id,
+                dataset_split=request.dataset_split,
+                metrics={
+                    "score": 1.0 if candidate else 0.0,
+                    "score_samples": [1.0 if candidate else 0.0],
+                    "deterministic_signal": True,
+                },
+            )
+
+    store = FilesystemSelfEvolveStore(tmp_path)
+    runner = SelfEvolveRunner(
+        store=store,
+        optimizer=Optimizer(),
+        evaluation_backend=EvaluationBackend(),
+        judge_repetitions=1,
+        measurement_mode="required",
+        measurement_primary_metric="score",
+        measurement_minimum_effect=0.1,
+        measurement_min_independent_cases=1,
+    )
+
+    result = await runner.run_explicit_target(
+        run_id="run-measured-required",
+        target=SkillTextTarget(skill_path),
+        dataset=dataset,
+        trace_packs=(),
+        apply_policy="proposal",
+    )
+
+    report = json.loads(
+        (store.run_path("run-measured-required") / "report.json").read_text()
+    )
+    assert result.run.status is SelfEvolveRunStatus.REJECTED
+    assert report["measurement"]["effect_direction"] == "positive"
+    assert report["measurement"]["budget_normalized"] is False
+    assert report["measurement"]["promotion_eligible"] is False
+    assert report["measurement"]["next_action"] == "repair_measurement"
+    gate = next(
+        item
+        for item in report["gate_results"]
+        if item["gate_name"] == "trusted_improvement_measurement"
+    )
+    assert gate["passed"] is False
+
+
+@pytest.mark.asyncio
+async def test_advisory_measurement_stops_zero_yield_candidate_scheduling(
+    tmp_path,
+) -> None:
+    skill_path, dataset = _cycle1_runner_fixture(tmp_path)
+    optimizer_calls = 0
+
+    class Optimizer:
+        async def propose(self, request: OptimizerRequest) -> OptimizerResult:
+            nonlocal optimizer_calls
+            optimizer_calls += 1
+            return OptimizerResult(
+                candidates=(
+                    CandidateVariant(
+                        candidate_id=f"candidate-zero-yield-{optimizer_calls}",
+                        target=request.target,
+                        content=(
+                            "---\nname: demo\n---\n# Demo\n\n"
+                            f"Attempt {optimizer_calls}.\n"
+                        ),
+                        rationale="exercise measurement stopping",
+                        target_fingerprint=request.target_fingerprint,
+                    ),
+                )
+            )
+
+    class EvaluationBackend:
+        async def evaluate_variant(self, request):
+            return EvaluationSummary(
+                variant_id=request.variant_id,
+                dataset_split=request.dataset_split,
+                metrics={
+                    "total_tokens": 100,
+                    "wall_seconds": 1.0,
+                    "deterministic_signal": True,
+                },
+            )
+
+    store = FilesystemSelfEvolveStore(tmp_path)
+    runner = SelfEvolveRunner(
+        store=store,
+        optimizer=Optimizer(),
+        evaluation_backend=EvaluationBackend(),
+        max_iterations=5,
+        judge_repetitions=1,
+        measurement_mode="advisory",
+        measurement_primary_metric="score",
+        measurement_min_independent_cases=1,
+        measurement_zero_yield_patience=2,
+        measurement_invalid_control_patience=2,
+    )
+
+    await runner.run_explicit_target(
+        run_id="run-measurement-zero-yield-stop",
+        target=SkillTextTarget(skill_path),
+        dataset=dataset,
+        trace_packs=(),
+        apply_policy="verified_only",
+    )
+
+    report = json.loads(
+        (
+            store.run_path("run-measurement-zero-yield-stop")
+            / "report.json"
+        ).read_text()
+    )
+    assert optimizer_calls == 2
+    assert report["measurement"]["stopping_trigger"] in {
+        "repeated_control_invalidity",
+        "zero_comparable_pairs",
+    }
+
+
+@pytest.mark.asyncio
+async def test_shadow_measurement_reports_invalid_control_after_shared_screening_block(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    skill_path, dataset = _cycle1_runner_fixture(tmp_path)
+
+    class Optimizer:
+        async def propose(self, request: OptimizerRequest) -> OptimizerResult:
+            return OptimizerResult(
+                candidates=(
+                    CandidateVariant(
+                        candidate_id="candidate-screening-blocked",
+                        target=request.target,
+                        content=(
+                            "---\nname: demo\n---\n# Demo\n\n"
+                            "Attempt the recovered workflow.\n"
+                        ),
+                        rationale="screening characterization",
+                        target_fingerprint=request.target_fingerprint,
+                    ),
+                )
+            )
+
+    runner = SelfEvolveRunner(
+        store=FilesystemSelfEvolveStore(tmp_path),
+        optimizer=Optimizer(),
+        replay_enabled=True,
+        candidate_replay_backend=object(),
+        measurement_mode="shadow",
+        measurement_min_independent_cases=1,
+    )
+
+    async def shared_screening_block(**kwargs):
+        return (), {
+            "generated_candidate_count": len(kwargs["candidates"]),
+            "selected_candidate_ids": [],
+            "attempts": [],
+            "screening": {
+                "generated_candidate_count": len(kwargs["candidates"]),
+                "attempted_candidate_count": 1,
+                "passed_candidate_ids": [],
+                "stopped_by_shared_infrastructure": True,
+                "attempts": [],
+            },
+        }
+
+    monkeypatch.setattr(
+        runner,
+        "_screen_candidate_population",
+        shared_screening_block,
+    )
+
+    await runner.run_explicit_target(
+        run_id="run-measured-screening-block",
+        target=SkillTextTarget(skill_path),
+        dataset=dataset,
+        trace_packs=(),
+        apply_policy="proposal",
+    )
+
+    report = runner.store.read_report("run-measured-screening-block")
+    summary = report["measurement"]
+    experiment_root = runner.store.measurement_experiment_path(
+        "run-measured-screening-block",
+        summary["experiment_id"],
+    )
+    attribution = json.loads(
+        (experiment_root / "attribution_report.json").read_text()
+    )
+    assert summary["validity_status"] == "invalid"
+    assert summary["effect_direction"] == "unmeasured"
+    assert summary["next_action"] == "repair_measurement"
+    assert attribution["validity"]["comparable_pair_count"] == 0
+    assert attribution["measurement_yield"]["authoritative_candidate_count"] == 0
+    assert attribution["effect"] is None
+    assert not (experiment_root / "observations.jsonl").exists()
 
 
 @pytest.mark.asyncio
@@ -6447,6 +12126,7 @@ async def test_runner_auto_verified_applies_allowlisted_candidate_after_post_app
         optimizer=TraceReflectiveLLMMutator(mutate_text=mutate),
         post_apply_evaluator=post_apply,
         evaluation_backend=VerifiedBackend(),
+        regression_suites=_independent_regression_suites_for_test(dataset),
         min_eval_cases=0,
         runtime_registry_refresher=refresh_runtime,
         runtime_skill_activator=activate_runtime_skill,
@@ -6482,6 +12162,15 @@ async def test_runner_auto_verified_applies_allowlisted_candidate_after_post_app
     assert report["apply_policy"] == "auto_verified"
     assert report["post_apply"]["status"] == "accepted"
     assert report["post_apply"]["metrics"]["post_apply_passed"] is True
+    assert report["regression_evidence"]["passed"] is True
+    assert report["regression_evidence"]["data_independent"] is True
+    assert report["regression_evidence"]["execution_independent"] is True
+    assert (
+        store.run_path("run-auto-verified")
+        / "regression"
+        / "evidence"
+        / f"{report['selected_candidate_id']}.json"
+    ).is_file()
     assert report["release_normalization"]["normalization_verification_passed"] is True
     assert report["release_normalization"]["pre_normalization_fingerprint"].startswith(
         "sha256:"
@@ -6507,9 +12196,15 @@ async def test_runner_auto_verified_applies_allowlisted_candidate_after_post_app
     }["verification"] == "passed"
     assert report["content_quality_diagnostics"]["blocking"] is False
     assert activated == ["demo"]
-    assert report["post_apply"]["activation"] == {"enabled": True, "skill_name": "demo"}
+    assert report["post_apply"]["activation"] == {
+        "enabled": True,
+        "skill_name": "demo",
+    }
     assert refreshed == [result.selected_candidate.candidate_id]
-    assert report["post_apply"]["refresh"] == {"refreshed": True, "strategy": "test-hook"}
+    assert report["post_apply"]["refresh"] == {
+        "refreshed": True,
+        "strategy": "test-hook",
+    }
     assert {gate["gate_name"] for gate in report["gate_results"]} >= {
         "score_improvement",
         "required_verification",
@@ -6517,12 +12212,297 @@ async def test_runner_auto_verified_applies_allowlisted_candidate_after_post_app
         "global_regression_benchmark",
     }
     apply_dir = store.run_path("run-auto-verified") / "apply"
-    assert (apply_dir / f"{result.selected_candidate.candidate_id}.backup.md").read_text(encoding="utf-8") == original_content
-    journal = json.loads((apply_dir / f"{result.selected_candidate.candidate_id}.journal.json").read_text(encoding="utf-8"))
+    assert (
+        apply_dir / f"{result.selected_candidate.candidate_id}.backup.md"
+    ).read_text(encoding="utf-8") == original_content
+    journal = json.loads(
+        (
+            apply_dir / f"{result.selected_candidate.candidate_id}.journal.json"
+        ).read_text(encoding="utf-8")
+    )
     assert journal["candidate_id"] == result.selected_candidate.candidate_id
     assert journal["status"] == "accepted"
     assert journal["target"]["target_id"] == "demo"
     assert journal["backup_path"].endswith(".backup.md")
+
+
+@pytest.mark.asyncio
+async def test_certified_skill_evolution_uses_loaded_behavior_and_applies(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Hermetic causal benchmark across real resolver and apply boundaries."""
+
+    skill_path, dataset = _cycle1_runner_fixture(tmp_path, case_count=2)
+    corrected_marker = "CERTIFIED_BEHAVIOR: corrected"
+    loaded_behaviors: list[tuple[str, bool]] = []
+
+    def fake_run(command, **kwargs):
+        from aworld_cli.core.skill_activation_resolver import (
+            SkillActivationResolver,
+            SkillResolverRequest,
+        )
+
+        skill_root = Path(command[command.index("--skill-path") + 1])
+        skill_name = command[command.index("--skill") + 1]
+        resolved = SkillActivationResolver().resolve(
+            SkillResolverRequest(
+                plugin_roots=(),
+                runtime_scope="session",
+                requested_skill_names=(skill_name,),
+                compatibility_sources=(str(skill_root),),
+                compatibility_skill_patterns=(skill_name,),
+            )
+        )
+        assert resolved.active_skill_names == (skill_name,)
+        assert len(resolved.activation_evidence) == 1
+        active_path = Path(
+            resolved.activation_evidence[0]["canonical_skill_file"]
+        )
+        active_content = active_path.read_text(encoding="utf-8")
+        corrected = corrected_marker in active_content
+        loaded_behaviors.append((str(active_path), corrected))
+        trajectory = [
+            {
+                "state": {"input": "certified local task"},
+                "action": {
+                    "content": (
+                        "objective-result:pass"
+                        if corrected
+                        else "objective-result:fail"
+                    ),
+                    "is_agent_finished": "True",
+                    "tool_calls": [],
+                },
+            }
+        ]
+        response = {
+            "schema_version": "aworld.self_evolve.task_response.v1",
+            "trajectory": trajectory,
+            "trajectory_capture_mode": "task_response",
+            "skill_activation_evidence": list(
+                resolved.activation_evidence
+            ),
+        }
+        attestation_key = kwargs.get("task_response_attestation_key")
+        if isinstance(attestation_key, bytes):
+            response["framework_attestation"] = {
+                "schema_version": (
+                    "aworld.self_evolve.task_response_attestation.v2"
+                ),
+                "signature": replay_module._task_response_signature(
+                    response,
+                    attestation_key,
+                ),
+            }
+            Path(kwargs["task_response_path"]).write_text(
+                json.dumps(response),
+                encoding="utf-8",
+            )
+        return subprocess.CompletedProcess(
+            command,
+            0,
+            stdout=json.dumps(
+                {
+                    "trajectory": trajectory,
+                    "trajectory_capture_mode": "task_response",
+                }
+            )
+            + "\n",
+            stderr="",
+        )
+
+    monkeypatch.setattr(replay_module, "_run_replay_cli", fake_run)
+
+    async def mutate(prompt: str) -> dict:
+        assert "No external replay capability is required" in prompt
+        return {
+            "content": (
+                "---\nname: demo\n---\n# Demo\n\n"
+                f"{corrected_marker}\n"
+                "For the certified task, return objective-result:pass.\n"
+            ),
+            "rationale": "Correct the observed objective behavior.",
+        }
+
+    class CausalEvaluationBackend:
+        async def evaluate_variant(self, request):
+            scores: list[float] = []
+            for case in request.dataset.cases:
+                variants = case.metadata.get("variant_trajectories")
+                if isinstance(variants, dict):
+                    key = (
+                        request.candidate.candidate_id
+                        if request.candidate is not None
+                        else "baseline"
+                    )
+                    trajectory = variants.get(key, [])
+                    serialized = json.dumps(trajectory, sort_keys=True)
+                    scores.append(
+                        1.0 if "objective-result:pass" in serialized else 0.0
+                    )
+                else:
+                    # The disjoint regression suite checks preservation, not
+                    # the train-task improvement signal.
+                    scores.append(1.0)
+            score = sum(scores) / len(scores) if scores else 0.0
+            return EvaluationSummary(
+                variant_id=request.variant_id,
+                dataset_split=request.dataset_split,
+                metrics={
+                    "score": score,
+                    "score_samples": scores or [score],
+                    "total_tokens": 1,
+                    "wall_seconds": 0.01,
+                    "deterministic_signal": True,
+                    "command_case_count": len(scores),
+                    "command_pass_count": sum(
+                        1 for value in scores if value == 1.0
+                    ),
+                    "global_regression_passed": True,
+                },
+            )
+
+    async def post_apply(candidate):
+        from aworld_cli.core.skill_activation_resolver import (
+            SkillActivationResolver,
+            SkillResolverRequest,
+        )
+
+        published_root = skill_path.parent.parent
+        resolved = SkillActivationResolver().resolve(
+            SkillResolverRequest(
+                plugin_roots=(),
+                runtime_scope="session",
+                requested_skill_names=("demo",),
+                compatibility_sources=(str(published_root),),
+                compatibility_skill_patterns=("demo",),
+            )
+        )
+        published = Path(
+            resolved.activation_evidence[0]["canonical_skill_file"]
+        ).read_text(encoding="utf-8")
+        return EvaluationSummary(
+            variant_id=candidate.candidate_id,
+            dataset_split="post_apply",
+            metrics={
+                "post_apply_passed": corrected_marker in published,
+                "production_resolver_activation_passed": bool(
+                    resolved.activation_evidence
+                ),
+                "score": 1.0 if corrected_marker in published else 0.0,
+            },
+        )
+
+    store = FilesystemSelfEvolveStore(tmp_path)
+    runner = SelfEvolveRunner(
+        store=store,
+        optimizer=TraceReflectiveLLMMutator(mutate_text=mutate),
+        post_apply_evaluator=post_apply,
+        evaluation_backend=CausalEvaluationBackend(),
+        regression_suites=_independent_regression_suites_for_test(dataset),
+        min_eval_cases=0,
+        judge_repetitions=1,
+        replay_enabled=True,
+        candidate_replay_backend=AWorldCliCandidateReplayBackend(),
+        baseline_replay_repetitions=1,
+        candidate_replay_repetitions=1,
+        replay_repetitions_explicit=True,
+        measurement_mode="off",
+    )
+
+    result = await runner.run_explicit_target(
+        run_id="run-certified-skill-evolution",
+        target=SkillTextTarget(skill_path, allow_auto_apply=True),
+        dataset=dataset,
+        trace_packs=(),
+        apply_policy="auto_verified",
+    )
+
+    report = store.read_report(result.run.run_id)
+    assert result.run.status is SelfEvolveRunStatus.SUCCEEDED
+    assert corrected_marker in skill_path.read_text(encoding="utf-8")
+    assert any(not corrected for _, corrected in loaded_behaviors)
+    assert any(corrected for _, corrected in loaded_behaviors)
+    replay_gate = next(
+        gate
+        for gate in report["gate_results"]
+        if gate["gate_name"] == "candidate_replay"
+    )
+    assert replay_gate["details"]["candidate_intervention_observed"] is True
+    assert replay_gate["details"]["candidate_skill_activation_required"] is True
+    assert report["post_apply"]["status"] == "accepted"
+    assert report["post_apply"]["metrics"]["post_apply_passed"] is True
+
+
+@pytest.mark.asyncio
+async def test_verified_only_applies_complete_package_to_isolated_registry(
+    tmp_path: Path,
+) -> None:
+    skill_path = tmp_path / "skills" / "demo" / "SKILL.md"
+    helper_path = skill_path.parent / "replay" / "helper.py"
+    helper_path.parent.mkdir(parents=True)
+    original_content = (
+        "---\nname: demo\n---\n# Demo\n\n"
+        "Use [the helper](replay/helper.py).\n"
+    )
+    skill_path.write_text(original_content, encoding="utf-8")
+    helper_path.write_text("VALUE = 'old'\n", encoding="utf-8")
+    target = SkillTextTarget(skill_path, allow_auto_apply=False)
+    candidate = CandidateVariant(
+        candidate_id="candidate-verified-only",
+        target=target.identity,
+        content=(
+            "---\nname: demo\n---\n# Demo\n\n"
+            "Use [the helper](replay/helper.py) with verified guidance.\n"
+        ),
+        rationale="verify the complete package without publishing it",
+        target_fingerprint=target.fingerprint_current_content(),
+        files=(
+            CandidateFileDelta(
+                path="replay/helper.py",
+                content="VALUE = 'verified'\n",
+            ),
+        ),
+    )
+    runtime_activations: list[str] = []
+    runtime_refreshes: list[str] = []
+    runner = SelfEvolveRunner(
+        store=FilesystemSelfEvolveStore(tmp_path),
+        optimizer=_FixedCandidateOptimizer(
+            candidate=candidate,
+            source_run_id="source-run",
+        ),
+        runtime_skill_activator=lambda item: runtime_activations.append(
+            item.candidate_id
+        ),
+        runtime_registry_refresher=lambda item: runtime_refreshes.append(
+            item.candidate_id
+        ),
+    )
+
+    result = await runner._apply_verified_only(
+        "run-verified-only",
+        target,
+        candidate,
+    )
+
+    assert result["status"] == "accepted"
+    assert result["release_state"] == "verified_only"
+    assert result["published"] is False
+    assert result["source_target_unchanged"] is True
+    assert runtime_activations == []
+    assert runtime_refreshes == []
+    assert skill_path.read_text(encoding="utf-8") == original_content
+    assert helper_path.read_text(encoding="utf-8") == "VALUE = 'old'\n"
+    verified_skill_path = Path(result["verified_target_path"])
+    assert verified_skill_path.is_file()
+    assert "release_state: verified" in verified_skill_path.read_text(
+        encoding="utf-8"
+    )
+    assert (
+        verified_skill_path.parent / "replay" / "helper.py"
+    ).read_text(encoding="utf-8") == "VALUE = 'verified'\n"
 
 
 @pytest.mark.asyncio
@@ -6595,6 +12575,7 @@ async def test_runner_rejects_apply_when_release_normalization_removes_runtime_c
         optimizer=TraceReflectiveLLMMutator(mutate_text=mutate),
         post_apply_evaluator=post_apply,
         evaluation_backend=VerifiedBackend(),
+        regression_suites=_independent_regression_suites_for_test(dataset),
         min_eval_cases=0,
     )
 
@@ -6805,6 +12786,7 @@ async def test_runner_refines_candidates_across_iterations_with_validation_feedb
         optimizer=optimizer,
         post_apply_evaluator=post_apply,
         evaluation_backend=IteratingBackend(),
+        regression_suites=_independent_regression_suites_for_test(dataset),
         min_eval_cases=0,
         max_iterations=2,
     )
@@ -6861,6 +12843,56 @@ def _cycle1_runner_fixture(
             trainable_case_ids=tuple(case.case_id for case in cases),
         ),
     )
+
+
+@pytest.mark.asyncio
+async def test_bootstrap_fault_publishes_and_cleans_current_ledger_on_runner_reuse(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    skill_path, dataset = _cycle1_runner_fixture(tmp_path)
+    runner = SelfEvolveRunner(
+        store=FilesystemSelfEvolveStore(tmp_path),
+        optimizer=SimpleNamespace(),
+    )
+    original_error = RuntimeError("scheduler restore failed")
+    observed_ledgers: list[RunBudgetLedger] = []
+
+    def fail_scheduler_restore(*args, **kwargs):
+        ledger = runner.run_budget_ledger
+        decision = ledger.reserve(
+            ledger.estimate_next(
+                stage=BudgetStage.CANDIDATE_GENERATION,
+                item_id=f"pending-bootstrap-{len(observed_ledgers)}",
+                cold_start_per_unit=BudgetUsage(tokens=1),
+            )
+        )
+        assert decision.allowed is True
+        observed_ledgers.append(ledger)
+        raise original_error
+
+    monkeypatch.setattr(
+        runner_module,
+        "_load_prior_scheduler_state",
+        fail_scheduler_restore,
+    )
+
+    for run_id in ("run-bootstrap-fault-1", "run-bootstrap-fault-2"):
+        with pytest.raises(RuntimeError) as raised:
+            await runner.run_explicit_target(
+                run_id=run_id,
+                target=SkillTextTarget(skill_path),
+                dataset=dataset,
+                trace_packs=(),
+                apply_policy="proposal",
+            )
+
+        assert raised.value is original_error
+        assert runner.run_budget_ledger is observed_ledgers[-1]
+        assert runner.run_budget_ledger.outstanding_reservations == ()
+
+    assert len(observed_ledgers) == 2
+    assert observed_ledgers[1] is not observed_ledgers[0]
 
 
 def test_stage_telemetry_delta_uses_only_new_batch_when_token_alias_changes() -> None:
@@ -6997,6 +13029,156 @@ def test_explicit_zero_proof_is_overridden_by_nonzero_actual_usage() -> None:
     ) is None
 
 
+def test_candidate_generation_default_reservation_covers_large_prompt_envelope(
+    tmp_path: Path,
+) -> None:
+    runner = SelfEvolveRunner(
+        store=FilesystemSelfEvolveStore(tmp_path),
+        optimizer=SimpleNamespace(),
+    )
+
+    usage = runner._budget_cold_start_by_stage[
+        BudgetStage.CANDIDATE_GENERATION
+    ]
+    assert usage is not None
+    assert usage.tokens == 65_536
+
+
+def test_request_derived_generation_tokens_replace_static_cold_start() -> None:
+    context = _RunBudgetContext(
+        ledger=RunBudgetLedger(BudgetCeilings(100_000, None)),
+        cold_start_by_stage={
+            BudgetStage.CANDIDATE_GENERATION: BudgetUsage(tokens=65_536)
+        },
+    )
+
+    decision = context.reserve(
+        BudgetStage.CANDIDATE_GENERATION,
+        "compiled-prompt",
+        request_derived_tokens=24_000,
+    )
+
+    assert decision.allowed is True
+    assert decision.estimate.tokens == 24_000
+    assert decision.estimate.source is BudgetEstimateSource.REQUEST_DERIVED
+
+
+def test_request_derived_generation_tokens_include_prompt_and_completion() -> None:
+    async def population(*_args, **_kwargs):
+        raise AssertionError("token estimation must not execute generation")
+
+    optimizer = TraceReflectiveLLMMutator(
+        mutate_text=lambda _prompt: {},
+        population_callable=population,
+    )
+    request = OptimizerRequest(
+        target=SelfEvolveTargetRef("skill", "demo"),
+        current_content="# Demo\n\n" + ("bounded behavior evidence\n" * 600),
+        target_fingerprint="sha256:demo",
+        trace_packs=(),
+        max_candidates=1,
+    )
+    request = replace(
+        request,
+        evolution_context=compile_evolution_context(request),
+    )
+
+    tokens = _candidate_generation_request_derived_tokens(
+        optimizer,
+        request,
+        output_tokens_per_candidate=16_000,
+    )
+
+    assert tokens is not None
+    assert tokens > 16_000
+
+
+def test_stored_resume_zero_budget_override_does_not_exempt_later_repair() -> None:
+    context = _RunBudgetContext(
+        ledger=RunBudgetLedger(
+            BudgetCeilings(
+                total_tokens=0,
+                total_cost_usd=None,
+                wall_seconds=None,
+            )
+        ),
+        cold_start_by_stage={
+            BudgetStage.CANDIDATE_GENERATION: BudgetUsage(tokens=5)
+        },
+        backend_proven_zero_by_stage={
+            BudgetStage.CANDIDATE_GENERATION: False
+        },
+    )
+
+    stored = context.reserve(
+        BudgetStage.CANDIDATE_GENERATION,
+        "stored-measurement-resume",
+        backend_proven_zero=True,
+    )
+    repair = context.reserve(
+        BudgetStage.CANDIDATE_GENERATION,
+        "generated-repair",
+    )
+
+    assert stored.allowed is True
+    assert stored.estimate.backend_proven_zero is True
+    assert repair.allowed is False
+    assert repair.estimate.backend_proven_zero is False
+
+
+def test_repair_probe_failure_identity_separates_normalized_root_causes() -> None:
+    readiness = ReplayServiceReadinessTimeout(
+        "readiness failed",
+        phase="preflight",
+        timeout_seconds=10,
+        service_id="service",
+        transport="skill_runtime",
+        last_error_type="TypeError",
+        last_error_errno=None,
+        process_returncode=None,
+    )
+    exited = ReplayServiceProcessExitedError(
+        "service exited",
+        phase="preflight",
+        service_id="service",
+        transport="skill_runtime",
+        process_returncode=1,
+    )
+
+    readiness_code = _repair_probe_root_cause_code(readiness)
+    exited_code = _repair_probe_root_cause_code(exited)
+    assert readiness_code == "replay_service_readiness_failed"
+    assert exited_code == "replay_service_process_exited_before_readiness"
+
+    protocol_timeout = ReplayServiceReadinessTimeout(
+        "protocol probe failed",
+        phase="protocol_probe",
+        timeout_seconds=10,
+        service_id="service",
+        transport="skill_runtime",
+        last_error_type="TypeError",
+        last_error_errno=None,
+        process_returncode=None,
+    )
+    assert _repair_probe_root_cause_code(protocol_timeout) == (
+        "replay_service_protocol_probe_timeout"
+    )
+
+    readiness_result = RepairConformanceResult(
+        passed=False,
+        code="repair_probe_execution_failed",
+        reason="probe failed",
+        details={"diagnostics": [{"root_cause_code": readiness_code}]},
+    )
+    exited_result = RepairConformanceResult(
+        passed=False,
+        code="repair_probe_execution_failed",
+        reason="probe failed",
+        details={"diagnostics": [{"root_cause_code": exited_code}]},
+    )
+    assert readiness_result.failure_fingerprint != exited_result.failure_fingerprint
+
+
 def test_local_stage_can_configure_zero_tokens_with_bounded_wall_time() -> None:
     usage = _configured_budget_usage(
         tokens=0,
@@ -7022,6 +13204,47 @@ def test_local_stage_can_configure_zero_tokens_with_bounded_wall_time() -> None:
     assert decision.allowed is True
     assert decision.estimate.tokens == 0
     assert decision.estimate.wall_seconds == Decimal("30")
+
+
+def test_stage_elapsed_time_completes_missing_screening_wall_telemetry() -> None:
+    missing = _stage_telemetry_usage_delta(
+        _TelemetryUsageSnapshot(),
+        _TelemetryUsageSnapshot(),
+    )
+
+    observed = _telemetry_usage_with_observed_wall(
+        missing,
+        elapsed_seconds=12.5,
+    )
+
+    assert observed.observation.known_lower_bound.wall_seconds == Decimal("12.5")
+    assert observed.observation.completeness.wall_seconds is True
+    assert observed.observation.completeness.tokens is False
+    assert observed.source == "observed_stage_elapsed_seconds"
+
+
+def test_workflow_budget_fit_requires_complete_verification_loop() -> None:
+    context = _RunBudgetContext(
+        ledger=RunBudgetLedger(
+            BudgetCeilings(total_tokens=99, total_cost_usd=None)
+        ),
+        cold_start_by_stage={
+            BudgetStage.CANDIDATE_GENERATION: BudgetUsage(tokens=10),
+            BudgetStage.PAIRED_REPLAY: BudgetUsage(tokens=10),
+            BudgetStage.EVALUATION: BudgetUsage(tokens=10),
+            BudgetStage.JUDGE: BudgetUsage(tokens=10),
+        },
+    )
+
+    assert context.can_fit(BudgetStage.CANDIDATE_GENERATION, "generation")
+    assert not context.can_fit_workflow(
+        (
+            (BudgetStage.CANDIDATE_GENERATION, "workflow-generation", 1),
+            (BudgetStage.PAIRED_REPLAY, "workflow-replay", 3),
+            (BudgetStage.EVALUATION, "workflow-evaluation", 3),
+            (BudgetStage.JUDGE, "workflow-judge", 3),
+        )
+    )
 
 
 def test_stored_replay_backend_explicitly_proves_zero_for_multi_trajectory_reuse() -> None:
@@ -7149,7 +13372,7 @@ def test_partial_multi_batch_telemetry_never_debits_below_known_lower_bound() ->
     }
 
 
-def test_judge_actual_tokens_require_complete_executed_summary_set() -> None:
+def test_judge_actual_tokens_preserve_incomplete_known_lower_bound() -> None:
     baseline = EvaluationSummary(
         variant_id="baseline",
         dataset_split="validation",
@@ -7167,8 +13390,8 @@ def test_judge_actual_tokens_require_complete_executed_summary_set() -> None:
         expected_summary_count=2,
     )
 
-    assert tokens is None
-    assert source == "reserved_fallback_incomplete_judge_telemetry"
+    assert tokens == 18
+    assert source.startswith("known_lower_bound_incomplete_judge_telemetry:")
 
 
 def test_judge_actual_tokens_fall_back_when_expected_heldout_never_completes() -> None:
@@ -7190,8 +13413,65 @@ def test_judge_actual_tokens_fall_back_when_expected_heldout_never_completes() -
         expected_summary_count=3,
     )
 
-    assert tokens is None
-    assert source == "reserved_fallback_incomplete_judge_telemetry"
+    assert tokens == 14
+    assert source.startswith("known_lower_bound_incomplete_judge_telemetry:")
+
+
+def test_execution_usage_deduplicates_aliases_and_reused_baselines() -> None:
+    baseline = EvaluationSummary(
+        variant_id="baseline",
+        dataset_split="validation",
+        metrics={
+            "evaluation_execution_id": "baseline-exec",
+            "judge_attempt_count": 3,
+            "judge_estimated_input_tokens_total": 100,
+        },
+    )
+    candidate = EvaluationSummary(
+        variant_id="candidate",
+        dataset_split="validation",
+        metrics={
+            "evaluation_execution_id": "candidate-exec",
+            "judge_attempt_count": 3,
+            "judge_estimated_input_tokens_total": 120,
+        },
+    )
+    alias = replace(
+        candidate,
+        dataset_split="single_case_replay",
+        metrics={
+            **dict(candidate.metrics),
+            "evaluation_alias_of_execution_id": "candidate-exec",
+            "evaluation_fresh_execution": False,
+        },
+    )
+    reused_baseline = replace(
+        baseline,
+        metrics={
+            **dict(baseline.metrics),
+            "evaluation_fresh_execution": False,
+        },
+    )
+
+    usage = _execution_usage_report(
+        optimizer_diagnostics=[],
+        iteration_states=[
+            {
+                "baseline_summary": baseline,
+                "candidate_summary": candidate,
+                "held_out_summary": alias,
+            },
+            {
+                "baseline_summary": reused_baseline,
+                "candidate_summary": None,
+                "held_out_summary": None,
+            },
+        ],
+        stages={},
+    )
+
+    assert usage["evaluation_usage"]["judge_attempt_count"] == 6
+    assert usage["token_usage"]["judge_estimated_input_tokens"] == 220
 
 
 @pytest.mark.asyncio
@@ -7248,7 +13528,7 @@ async def test_shared_candidate_validation_stops_before_next_iteration(
 
     monkeypatch.setattr(runner, "_screen_candidate_population", shared_validation)
 
-    await runner.run_explicit_target(
+    result = await runner.run_explicit_target(
         run_id=f"run-shared-{shared_stage}-stop",
         target=SkillTextTarget(skill_path),
         dataset=dataset,
@@ -7275,6 +13555,244 @@ async def test_shared_candidate_validation_stops_before_next_iteration(
     assert {event.reason_code for event in terminal_events} == {
         "candidate_validation_shared_infrastructure_blocked"
     }
+    assert [
+        gate.gate_name for gate in result.run.gate_results if not gate.passed
+    ] == ["candidate_validation"]
+    assert result.run.gate_results[-1].details["failure_class"] == "framework"
+    assert result.run.gate_results[-1].details["failure_scope"] == "shared_run"
+    persisted_report = json.loads(
+        (
+            runner.store.run_path(f"run-shared-{shared_stage}-stop")
+            / "report.json"
+        ).read_text(encoding="utf-8")
+    )
+    assert persisted_report["verification_funnel"][
+        "generated_candidate_slot_count"
+    ] == 0
+    assert persisted_report["population"][shared_stage][
+        "framework_invalidated_candidate_ids"
+    ] == ["candidate-shared-1"]
+
+
+@pytest.mark.asyncio
+async def test_shared_screening_measurement_prerequisite_preserves_causality(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    skill_path, dataset = _cycle1_runner_fixture(tmp_path)
+    candidate = CandidateVariant(
+        candidate_id="candidate-screening-measurement-blocked",
+        target=SelfEvolveTargetRef("skill", "demo", str(skill_path)),
+        content=(
+            "---\nname: demo\n---\n# Demo\n\n"
+            "Candidate blocked before screening rollout.\n"
+        ),
+        rationale="shared measurement prerequisite fixture",
+    )
+    optimizer_calls = 0
+
+    class Optimizer:
+        async def propose(self, request: OptimizerRequest) -> OptimizerResult:
+            nonlocal optimizer_calls
+            optimizer_calls += 1
+            return OptimizerResult(candidates=(candidate,))
+
+    store = FilesystemSelfEvolveStore(tmp_path)
+    runner = SelfEvolveRunner(
+        store=store,
+        optimizer=Optimizer(),
+        replay_enabled=True,
+        candidate_replay_backend=object(),
+        measurement_mode="required",
+        max_iterations=3,
+    )
+    expected_fingerprint = candidate_package_fingerprint(candidate)
+
+    async def blocked_screening(**kwargs):
+        details = {
+            "failure_class": "measurement",
+            "failure_owner": "framework",
+            "failure_scope": "shared_run",
+            "failure_stage": "evaluation",
+            "repairable": True,
+            "next_action": "repair_measurement",
+            "resume_safe": True,
+            "resume_candidate_id": candidate.candidate_id,
+            "resume_candidate_package_fingerprint": expected_fingerprint,
+            "code": "measurement_plan_admission_failed",
+        }
+        screening = {
+            "generated_candidate_count": 1,
+            "attempted_candidate_count": 1,
+            "selected_candidate_ids": [],
+            "stopped_by_shared_infrastructure": False,
+            "stopped_by_shared_measurement": True,
+            "stopped_by_shared_validation": True,
+            "attempts": [
+                {
+                    "candidate_id": candidate.candidate_id,
+                    "gate_name": "candidate_replay",
+                    "passed": False,
+                    "reason": "measurement plan admission failed",
+                    "details": details,
+                    "physical_pair_execution_count": 0,
+                }
+            ],
+        }
+        return (), {
+            "generated_candidate_count": 1,
+            "selected_candidate_ids": [],
+            "attempts": list(screening["attempts"]),
+            "conformance": None,
+            "screening": screening,
+        }
+
+    monkeypatch.setattr(runner, "_screen_candidate_population", blocked_screening)
+
+    result = await runner.run_explicit_target(
+        run_id="run-screening-measurement-blocked",
+        target=SkillTextTarget(skill_path),
+        dataset=dataset,
+        trace_packs=(),
+        apply_policy="verified_only",
+    )
+
+    report = json.loads(
+        (store.run_path(result.run.run_id) / "report.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    failed_gate_names = [
+        gate["gate_name"]
+        for gate in report["gate_results"]
+        if gate["passed"] is False
+    ]
+    assert failed_gate_names == ["candidate_replay"]
+    assert optimizer_calls == 1
+    assert report["selected_candidate_id"] is None
+    assert report["measurement"]["status"] == "not_started"
+    assert report["measurement"]["validity_status"] == (
+        "prerequisite_blocked"
+    )
+    assert report["measurement"]["comparable_pair_count"] == 0
+    assert report["campaign_failure_attribution"]["failure_class"] == (
+        "measurement"
+    )
+    assert report["campaign_failure_attribution"]["resume_candidate_id"] == (
+        candidate.candidate_id
+    )
+    assert _measurement_pending_candidate_checkpoint(
+        store=store,
+        run_id=result.run.run_id,
+        report=report,
+    ) is None
+
+
+@pytest.mark.asyncio
+async def test_screening_candidate_blocker_is_reported_as_repair_focus(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    skill_path, dataset = _cycle1_runner_fixture(tmp_path)
+    candidate = CandidateVariant(
+        candidate_id="candidate-screening-repair-focus",
+        target=SelfEvolveTargetRef("skill", "demo", str(skill_path)),
+        content="---\nname: demo\n---\n# Demo\n\nRepair focus.\n",
+        rationale="candidate admission blocker fixture",
+    )
+
+    class Optimizer:
+        async def propose(self, request: OptimizerRequest) -> OptimizerResult:
+            return OptimizerResult(candidates=(candidate,))
+
+    store = FilesystemSelfEvolveStore(tmp_path)
+    runner = SelfEvolveRunner(
+        store=store,
+        optimizer=Optimizer(),
+        replay_enabled=True,
+        candidate_replay_backend=object(),
+        measurement_mode="required",
+        max_iterations=1,
+    )
+    event = ReplayFailureEvent(
+        code="candidate_runtime_policy_regressed",
+        owner=FailureOwner.CANDIDATE,
+        stage=FailureStage.TASK_ROLLOUT,
+        scope=FailureScope.CANDIDATE,
+        repairable=True,
+        category="verification_gate",
+        summary="candidate regressed a replay invariant",
+    ).to_dict()
+    details = {
+        "code": "candidate_runtime_policy_regressed",
+        "failure_class": "candidate",
+        "failure_owner": "candidate",
+        "failure_scope": "candidate",
+        "repairable": True,
+        "evaluator_skipped": True,
+        "checkpoint_stage": "screening",
+        "failure_event": event,
+        "causal_failure_events": [event],
+    }
+
+    async def blocked_screening(**kwargs):
+        attempt = {
+            "candidate_id": candidate.candidate_id,
+            "gate_name": "replay_evaluator_admission",
+            "passed": False,
+            "reason": "candidate replay invariant regressed",
+            "details": details,
+            "physical_pair_execution_count": 1,
+        }
+        screening = {
+            "generated_candidate_count": 1,
+            "attempted_candidate_count": 1,
+            "selected_candidate_ids": [],
+            "selected_candidate_id": None,
+            "candidate_dispositions": {
+                candidate.candidate_id: "screening_rejected"
+            },
+            "stopped_by_shared_infrastructure": False,
+            "stopped_by_shared_measurement": False,
+            "stopped_by_shared_validation": False,
+            "attempts": [attempt],
+        }
+        return (), {
+            "generated_candidate_count": 1,
+            "selected_candidate_ids": [],
+            "attempts": [attempt],
+            "conformance": None,
+            "screening": screening,
+        }
+
+    monkeypatch.setattr(runner, "_screen_candidate_population", blocked_screening)
+
+    result = await runner.run_explicit_target(
+        run_id="run-screening-repair-focus",
+        target=SkillTextTarget(skill_path),
+        dataset=dataset,
+        trace_packs=(),
+        apply_policy="verified_only",
+    )
+
+    report = json.loads(
+        (store.run_path(result.run.run_id) / "report.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert result.selected_candidate is None
+    assert result.run.selected_candidate_id is None
+    assert report["selected_candidate_id"] is None
+    assert report["repair_focus_candidate_id"] == candidate.candidate_id
+    assert report["measurement"]["status"] == "not_started"
+    assert report["measurement"]["measurement_readiness_stage"] == (
+        "candidate_admission_blocked"
+    )
+    assert report["measurement"]["next_action"] == "continue_candidate_repair"
+    assert not any(
+        gate["gate_name"] == "trusted_improvement_measurement"
+        for gate in report["gate_results"]
+    )
 
 
 @pytest.mark.asyncio
@@ -7615,7 +14133,7 @@ async def test_replay_actual_wall_overrun_blocks_following_stage_and_candidate(
     )
     replay_debit = next(
         item for item in report["budget"]["debits"]
-        if item["stage"] == "paired_replay"
+        if item["stage"] == "screening"
     )
     assert replay_calls == ["candidate-wall-1"]
     assert replay_debit["actual"]["tokens"] == 23
@@ -7627,8 +14145,8 @@ async def test_replay_actual_wall_overrun_blocks_following_stage_and_candidate(
         "terminal_reason_counts"
     ]
     assert terminal_reasons == {
-        "evaluation_budget_denied": 1,
         "replay_budget_denied": 1,
+        "screening_budget_denied": 1,
     }
     assert report["budget"]["ledger"]["outstanding_reservations"] == []
 
@@ -7736,6 +14254,7 @@ async def test_runner_evaluates_candidate_population_until_one_passes(tmp_path) 
         optimizer=optimizer,
         post_apply_evaluator=post_apply,
         evaluation_backend=backend,
+        regression_suites=_independent_regression_suites_for_test(dataset),
         min_eval_cases=0,
         replay_candidate_limit=2,
     )
@@ -7754,7 +14273,7 @@ async def test_runner_evaluates_candidate_population_until_one_passes(tmp_path) 
     assert result.selected_candidate.candidate_id == strong_candidate.candidate_id
     assert result.selected_candidate.target_fingerprint != "fingerprint"
     assert backend.candidate_ids.count("candidate-weak") == 2
-    assert backend.candidate_ids.count("candidate-strong") == 2
+    assert backend.candidate_ids.count("candidate-strong") == 4
     report = json.loads((store.run_path("run-population") / "report.json").read_text(encoding="utf-8"))
     assert report["candidate_ids"] == ["candidate-weak", "candidate-strong"]
     assert report["selected_candidate_id"] == "candidate-strong"
@@ -7769,6 +14288,2941 @@ async def test_runner_evaluates_candidate_population_until_one_passes(tmp_path) 
     assert report["iterations"][1]["candidate_id"] == "candidate-strong"
     assert report["iterations"][1]["status"] == "accepted"
     assert "Small verified delta." in skill_path.read_text(encoding="utf-8")
+
+
+@pytest.mark.asyncio
+async def test_verified_runner_bounds_authoritative_candidates_across_iterations(
+    tmp_path: Path,
+) -> None:
+    skill_path, dataset = _cycle1_runner_fixture(tmp_path)
+    optimizer_calls = 0
+
+    class Optimizer:
+        async def propose(self, request: OptimizerRequest) -> OptimizerResult:
+            nonlocal optimizer_calls
+            optimizer_calls += 1
+            candidate = CandidateVariant(
+                candidate_id=f"candidate-frontier-{optimizer_calls}",
+                target=SelfEvolveTargetRef("skill", "demo", str(skill_path)),
+                content=(
+                    "---\nname: demo\n---\n# Demo\n\n"
+                    f"Candidate frontier {optimizer_calls}.\n"
+                ),
+                rationale="bounded authoritative frontier",
+            )
+            return OptimizerResult(candidates=(candidate,))
+
+    class Backend:
+        def __init__(self) -> None:
+            self.candidate_ids: list[str | None] = []
+
+        async def evaluate_variant(self, request):
+            candidate_id = (
+                request.candidate.candidate_id
+                if request.candidate is not None
+                else None
+            )
+            self.candidate_ids.append(candidate_id)
+            return EvaluationSummary(
+                variant_id=candidate_id or "baseline",
+                dataset_split=request.dataset_split,
+                metrics={
+                    "score": 80.0 if candidate_id else 90.0,
+                    "A1_groundedness": 5.0,
+                    "A2_completeness": 5.0,
+                    "B2_efficiency": 5.0,
+                    "latency_ms": 100.0,
+                    "cost_usd": 1.0,
+                    "deterministic_signal": True,
+                    "command_case_count": 1,
+                    "command_pass_count": 1,
+                    "global_regression_passed": True,
+                    "evidence_block_count": 1,
+                    "evidence_compacted": False,
+                    "evidence_incomplete": False,
+                },
+            )
+
+    backend = Backend()
+    store = FilesystemSelfEvolveStore(tmp_path)
+    runner = SelfEvolveRunner(
+        store=store,
+        optimizer=Optimizer(),
+        evaluation_backend=backend,
+        max_iterations=5,
+        max_full_evaluation_candidates=2,
+        max_score_tiebreak_candidates=0,
+        min_eval_cases=0,
+    )
+
+    await runner.run_explicit_target(
+        run_id="run-bounded-authoritative-frontier",
+        target=SkillTextTarget(skill_path, allow_auto_apply=True),
+        dataset=dataset,
+        trace_packs=(),
+        apply_policy="verified_only",
+    )
+
+    report = json.loads(
+        (store.run_path("run-bounded-authoritative-frontier") / "report.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert optimizer_calls == 2
+    assert {
+        item for item in backend.candidate_ids if item is not None
+    } == {"candidate-frontier-1", "candidate-frontier-2"}
+    assert report["verification_funnel"] == {
+        "screening_max_cases": 3,
+        "repair_iteration_horizon": 11,
+        "candidate_generation_batch_count": 2,
+        "max_generated_candidates": 24,
+        "generated_candidate_slot_count": 2,
+        "candidate_generation_attempt_slot_count": 3,
+        "repair_reserved_slot_count": 1,
+        "generation_repair_capacity_reserved": False,
+        "unique_generated_candidate_count": 2,
+        "generation_frontier_exhausted": False,
+        "generation_policy_frontier_exhausted": False,
+        "conformance_strategy_switch_count": 0,
+        "conformance_strategy_switch_request_count": 0,
+        "conformance_strategy_switch_not_materialized": False,
+        "conformance_targeted_repair_request_count": 0,
+        "conformance_semantic_progress_count": 0,
+        "conformance_stagnant_attempt_count": 0,
+        "conformance_semantic_frontier_stalled": False,
+        "pending_conformance_counterexample_count": 0,
+        "resolved_conformance_counterexample_count": 0,
+        "conformance_counterexamples_by_stage": {},
+        "repeated_contract_replacement_candidate_count": 0,
+        "repeated_contract_replacement_candidate_ids": [],
+        "conformance_same_slot_repair_count": 0,
+        "serialized_new_contract_repair_count": 0,
+        "generation_stop_reason": "authoritative_candidate_limit_reached",
+        "policy_filtered_candidate_count": 0,
+        "max_authoritative_candidates": 2,
+        "authoritative_candidate_attempt_count": 2,
+        "authoritative_candidate_count": 2,
+        "authoritative_candidate_attempt_ids": [
+            "candidate-frontier-1",
+            "candidate-frontier-2",
+        ],
+        "authoritative_candidate_ids": [
+            "candidate-frontier-1",
+            "candidate-frontier-2",
+        ],
+        "max_score_tiebreak_candidates": 0,
+        "score_tiebreak_candidate_count": 0,
+        "frontier_exhausted": True,
+        "authoritative_evaluation_uses_full_dataset": True,
+        "prerequisite_candidate_ids": [],
+    }
+
+
+@pytest.mark.asyncio
+async def test_verified_runner_bounds_generation_slots_before_authoritative_replay(
+    tmp_path: Path,
+) -> None:
+    skill_path, dataset = _cycle1_runner_fixture(tmp_path)
+    requested_candidate_counts: list[int] = []
+    progress_events: list[tuple[str, str]] = []
+
+    class Optimizer:
+        async def propose(self, request: OptimizerRequest) -> OptimizerResult:
+            requested_candidate_counts.append(request.max_candidates)
+            start = sum(requested_candidate_counts[:-1])
+            return OptimizerResult(
+                candidates=tuple(
+                    CandidateVariant(
+                        candidate_id=f"invalid-candidate-{start + offset}",
+                        target=SelfEvolveTargetRef(
+                            "skill", "demo", str(skill_path)
+                        ),
+                        content=f"invalid skill package {start + offset}",
+                        rationale="exercise the bounded generation funnel",
+                    )
+                    for offset in range(request.max_candidates)
+                )
+            )
+
+    store = FilesystemSelfEvolveStore(tmp_path)
+    runner = SelfEvolveRunner(
+        store=store,
+        optimizer=Optimizer(),
+        max_iterations=10,
+        max_generated_candidates=3,
+        max_full_evaluation_candidates=3,
+        progress_callback=lambda stage, message: progress_events.append(
+            (stage, message)
+        ),
+    )
+
+    await runner.run_explicit_target(
+        run_id="run-bounded-generation-frontier",
+        target=SkillTextTarget(skill_path, allow_auto_apply=True),
+        dataset=dataset,
+        trace_packs=(),
+        apply_policy="verified_only",
+    )
+
+    report = json.loads(
+        (store.run_path("run-bounded-generation-frontier") / "report.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert sum(requested_candidate_counts) == 3
+    assert requested_candidate_counts[-1] == 1
+    assert report["verification_funnel"]["generated_candidate_slot_count"] == 3
+    assert report["verification_funnel"]["unique_generated_candidate_count"] == 3
+    assert report["verification_funnel"]["generation_frontier_exhausted"] is True
+    assert report["verification_funnel"]["authoritative_candidate_count"] == 0
+    assert report["verification_funnel"]["repair_iteration_horizon"] == 16
+    assert report["verification_funnel"]["candidate_generation_batch_count"] == 2
+    assert report["verification_funnel"]["generation_stop_reason"] == (
+        "generated_candidate_slot_limit_reached"
+    )
+    generation_messages = [
+        message
+        for stage, message in progress_events
+        if stage == "candidate_generation"
+    ]
+    assert any(
+        "candidate slots" in message and "repair horizon" in message
+        for message in generation_messages
+    )
+    assert any(
+        "slot limit reached (3/3)" in message
+        and "was not a required iteration count" in message
+        for message in generation_messages
+    )
+    assert all(
+        "Generating candidate iteration" not in message
+        for message in generation_messages
+    )
+    scheduler_decisions = report["population"]["scheduler_decisions"]
+    assert scheduler_decisions[-1]["requested_slot_count"] >= 1
+    assert scheduler_decisions[-1]["admitted_slot_count"] == 0
+
+
+@pytest.mark.asyncio
+async def test_materialization_failure_receives_replacement_effective_slot(
+    tmp_path: Path,
+) -> None:
+    skill_path, dataset = _cycle1_runner_fixture(tmp_path)
+    calls = 0
+
+    class Optimizer:
+        async def propose(self, request: OptimizerRequest) -> OptimizerResult:
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                return OptimizerResult(
+                    candidates=(),
+                    diagnostics={
+                        "candidate_materialization_failures": [
+                            {
+                                "candidate_index": 0,
+                                "code": "candidate_materialization_invalid",
+                                "stage": "candidate_generation",
+                                "representation": "candidate_package",
+                                "field_path": "files",
+                                "repairable": True,
+                                "reason": "candidate package was incomplete",
+                            }
+                        ]
+                    },
+                    generation_outcomes=(
+                        CandidateGenerationOutcome(
+                            candidate_index=0,
+                            kind=(
+                                CandidateGenerationOutcomeKind.MATERIALIZATION_FAILED
+                            ),
+                            repairable=True,
+                            reason_codes=("candidate_package_invalid",),
+                        ),
+                    ),
+                )
+            candidate = CandidateVariant(
+                candidate_id="replacement-candidate",
+                target=SelfEvolveTargetRef("skill", "demo", str(skill_path)),
+                content=(
+                    "---\nname: demo\n---\n# Demo\n\n"
+                    "Use bounded evidence before completion.\n"
+                ),
+                rationale="replace an unmaterialized generation attempt",
+            )
+            return OptimizerResult(candidates=(candidate,))
+
+    store = FilesystemSelfEvolveStore(tmp_path)
+    runner = SelfEvolveRunner(
+        store=store,
+        optimizer=Optimizer(),
+        max_iterations=3,
+        max_generated_candidates=1,
+        max_full_evaluation_candidates=1,
+    )
+
+    await runner.run_explicit_target(
+        run_id="run-materialization-replacement-slot",
+        target=SkillTextTarget(skill_path, allow_auto_apply=True),
+        dataset=dataset,
+        trace_packs=(),
+        apply_policy="verified_only",
+    )
+    report = json.loads(
+        (
+            store.run_path("run-materialization-replacement-slot")
+            / "report.json"
+        ).read_text(encoding="utf-8")
+    )
+
+    assert calls == 2
+    assert report["verification_funnel"]["candidate_generation_attempt_slot_count"] == 2
+    assert report["verification_funnel"]["generated_candidate_slot_count"] == 1
+
+
+@pytest.mark.asyncio
+async def test_verified_runner_allows_bounded_targeted_conformance_repairs(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    skill_path, dataset = _cycle1_runner_fixture(tmp_path)
+    requests: list[OptimizerRequest] = []
+    progress_events: list[tuple[str, str]] = []
+    candidate_sequence = 0
+
+    class Optimizer:
+        async def propose(self, request: OptimizerRequest) -> OptimizerResult:
+            nonlocal candidate_sequence
+            requests.append(request)
+            candidates: list[CandidateVariant] = []
+            for _ in range(request.max_candidates):
+                candidate_sequence += 1
+                candidates.append(
+                    CandidateVariant(
+                        candidate_id=f"conformance-candidate-{candidate_sequence}",
+                        target=SelfEvolveTargetRef(
+                            "skill", "demo", str(skill_path)
+                        ),
+                        content=(
+                            "---\nname: demo\n---\n# Demo\n\n"
+                            f"Structural repair {candidate_sequence}.\n"
+                        ),
+                        rationale="exercise typed conformance convergence",
+                    )
+                )
+            return OptimizerResult(candidates=tuple(candidates))
+
+    runner = SelfEvolveRunner(
+        store=FilesystemSelfEvolveStore(tmp_path),
+        optimizer=Optimizer(),
+        replay_enabled=True,
+        candidate_replay_backend=object(),
+        max_iterations=10,
+        max_generated_candidates=6,
+        max_full_evaluation_candidates=3,
+        progress_callback=lambda stage, message: progress_events.append(
+            (stage, message)
+        ),
+    )
+    failure_fingerprint = "sha256:" + "c" * 64
+
+    async def reject_with_same_typed_conformance_failure(**kwargs):
+        candidates = kwargs["candidates"]
+        attempts = []
+        for candidate in candidates:
+            failure_event = ReplayFailureEvent(
+                code="repair_probe_execution_failed",
+                owner=FailureOwner.CANDIDATE,
+                stage=FailureStage.CAPABILITY_PREFLIGHT,
+                scope=FailureScope.CANDIDATE,
+                repairable=True,
+                category="repair_conformance",
+                summary="typed response contract still fails",
+            ).to_dict()
+            attempts.append(
+                {
+                    "candidate_id": candidate.candidate_id,
+                    "screening_candidate_id": None,
+                    "stage": "conformance",
+                    "passed": False,
+                    "reason": "typed response contract still fails",
+                    "details": {
+                        "failure_class": "candidate",
+                        "repairable": True,
+                        "code": "repair_probe_execution_failed",
+                        "stage": "repair_conformance",
+                        "failure_fingerprint": failure_fingerprint,
+                        "counterexample_contracts": [
+                            {
+                                "schema_version": (
+                                    "aworld.self_evolve.schema_counterexample.v1"
+                                ),
+                                "counterexample_id": (
+                                    "schema-counterexample-runtime-entrypoint"
+                                ),
+                            }
+                        ],
+                        "failure_event": failure_event,
+                        "causal_failure_events": [failure_event],
+                    },
+                }
+            )
+        report = {
+            "generated_candidate_count": len(candidates),
+            "attempted_candidate_count": len(candidates),
+            "selected_candidate_id": None,
+            "selected_candidate_ids": [],
+            "selection_reason": "typed conformance rejected population",
+            "attempts": attempts,
+            "conformance": {
+                "attempts": attempts,
+                "passed_candidate_ids": [],
+            },
+            "screening": None,
+        }
+        return (), report
+
+    monkeypatch.setattr(
+        runner,
+        "_screen_candidate_population",
+        reject_with_same_typed_conformance_failure,
+    )
+
+    await runner.run_explicit_target(
+        run_id="run-conformance-strategy-switch-bound",
+        target=SkillTextTarget(skill_path, allow_auto_apply=True),
+        dataset=dataset,
+        trace_packs=(),
+        apply_policy="verified_only",
+    )
+
+    assert len(requests) == 4
+    second_feedback = json.dumps(
+        [dict(item.metrics) for item in requests[1].validation_feedback],
+        sort_keys=True,
+    )
+    assert "candidate_conformance_targeted_repair_required" in second_feedback
+    report = json.loads(
+        (
+            runner.store.run_path("run-conformance-strategy-switch-bound")
+            / "report.json"
+        ).read_text(encoding="utf-8")
+    )
+    funnel = report["verification_funnel"]
+    assert funnel["generated_candidate_slot_count"] < 6
+    assert funnel["candidate_generation_batch_count"] == 4
+    assert funnel["generation_conformance_frontier_exhausted"] is True
+    assert funnel["conformance_strategy_switch_request_count"] == 3
+    assert funnel["conformance_targeted_repair_request_count"] == 3
+    assert funnel["conformance_stagnant_attempt_count"] == 3
+    assert funnel["conformance_semantic_frontier_stalled"] is True
+    assert funnel["conformance_strategy_switch_count"] == 0
+    assert funnel["conformance_strategy_switch_not_materialized"] is True
+    assert funnel["repeated_contract_replacement_candidate_count"] >= 1
+    assert funnel["conformance_same_slot_repair_count"] > 3
+    assert funnel["serialized_new_contract_repair_count"] >= 1
+    assert funnel["generated_candidate_slot_count"] == 0
+    assert funnel["conformance_counterexamples_by_stage"] == {
+        "capability_parse_schema": {
+            "count": 1,
+            "counterexample_ids": [
+                "schema-counterexample-runtime-entrypoint"
+            ],
+        }
+    }
+    assert funnel["generation_stop_reason"] == "conformance_semantic_frontier_stalled"
+    conformance_messages = [
+        message
+        for stage, message in progress_events
+        if stage == "candidate_conformance"
+    ]
+    assert any(
+        "requesting the smallest authorized source repair" in message
+        for message in conformance_messages
+    )
+    assert any(
+        "remained after 3 focused repair attempts" in message
+        for message in conformance_messages
+    )
+
+
+@pytest.mark.asyncio
+async def test_conformance_contract_upgrade_revalidates_stale_sibling(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    skill_path, dataset = _cycle1_runner_fixture(tmp_path)
+    target_ref = SelfEvolveTargetRef("skill", "demo", str(skill_path))
+    candidates = tuple(
+        CandidateVariant(
+            candidate_id=f"candidate-{index}",
+            target=target_ref,
+            content="---\nname: demo\n---\n# Demo\n",
+            rationale="repair the compiler lease",
+            files=(
+                CandidateFileDelta(
+                    path="replay/compiler.py",
+                    content=f"def compile_request():\n    return {index}\n",
+                ),
+                CandidateFileDelta(
+                    path="replay/runtime.py",
+                    content="def respond():\n    return {}\n",
+                ),
+            ),
+        )
+        for index in range(2)
+    )
+    runner = SelfEvolveRunner(
+        store=FilesystemSelfEvolveStore(tmp_path),
+        optimizer=_FixedCandidateOptimizer(candidates[0], "source-run"),
+    )
+    compiler_contract = RepairConformanceContract(
+        focus_candidate_id="candidate-parent",
+        failure_codes=("schema_field_validation_failed",),
+        interaction_progress=0,
+        base_file_fingerprints={
+            "replay/compiler.py": "sha256:old-compiler",
+            "replay/runtime.py": "sha256:old-runtime",
+        },
+        required_branch_paths=("replay/compiler.py",),
+        base_branch_fingerprints={},
+        compiler_path="replay/compiler.py",
+        runtime_paths=("replay/runtime.py",),
+    )
+    runtime_constraint = SchemaFieldRepairConstraint(
+        schema_layer="runtime",
+        field_path="environment.AWORLD_REPLAY_RESPONSE_INDEX.consumer",
+        rule="enum",
+        expected=("json_sidecar_record_value_projector",),
+        value_domain="source_behavior",
+    )
+    runtime_contract = replace(
+        compiler_contract,
+        required_branch_paths=("replay/runtime.py",),
+        schema_field_constraints=(runtime_constraint,),
+    )
+    preflight_candidates: list[str] = []
+
+    async def evolved_preflight(**kwargs):
+        preflight_candidates.append(kwargs["candidate"].candidate_id)
+        return GateResult(
+            gate_name="candidate_repair_conformance",
+            passed=False,
+            reason="runtime source owner discovered",
+            details={
+                "failure_class": "candidate",
+                "repairable": True,
+                "code": "repair_capability_compile_failed",
+                "repair_conformance": runtime_contract.to_public_dict(),
+            },
+        )
+
+    monkeypatch.setattr(
+        runner,
+        "_preflight_candidate_repair_conformance",
+        evolved_preflight,
+    )
+    passed, report = await runner._validate_candidate_repair_conformance_population(
+        run_id="run-contract-upgrade",
+        target=SkillTextTarget(skill_path),
+        dataset=dataset,
+        candidates=candidates,
+        capability_requirements=(),
+        repair_conformance_contracts={
+            candidate.candidate_id: compiler_contract for candidate in candidates
+        },
+    )
+
+    assert passed == ()
+    assert preflight_candidates == ["candidate-0"]
+    assert report is not None
+    assert report["attempted_candidate_count"] == 2
+    assert [item["candidate_id"] for item in report["attempts"]] == [
+        "candidate-0",
+        "candidate-1",
+    ]
+    assert report["superseded_candidate_ids"] == []
+    assert report["rebased_candidate_ids"] == ["candidate-1"]
+    assert report["superseding_contract_identity"] == (
+        runtime_contract.contract_identity
+    )
+
+
+@pytest.mark.asyncio
+async def test_candidate_local_compile_failure_keeps_passing_siblings(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    skill_path, dataset = _cycle1_runner_fixture(tmp_path)
+    target_ref = SelfEvolveTargetRef("skill", "demo", str(skill_path))
+    candidates = tuple(
+        CandidateVariant(
+            candidate_id=f"candidate-{index}",
+            target=target_ref,
+            content="---\nname: demo\n---\n# Demo\n",
+            rationale="repair the shared capability contract",
+            files=(
+                CandidateFileDelta(
+                    path="replay/compiler.py",
+                    content=f"def compile_request():\n    return {index}\n",
+                ),
+                CandidateFileDelta(
+                    path="replay/runtime.py",
+                    content=f"def respond():\n    return {index}\n",
+                ),
+            ),
+        )
+        for index in range(3)
+    )
+    runner = SelfEvolveRunner(
+        store=FilesystemSelfEvolveStore(tmp_path),
+        optimizer=_FixedCandidateOptimizer(candidates[0], "source-run"),
+    )
+    contract = RepairConformanceContract(
+        focus_candidate_id="candidate-parent",
+        failure_codes=("schema_field_validation_failed",),
+        interaction_progress=0,
+        base_file_fingerprints={
+            "replay/compiler.py": "sha256:old-compiler",
+            "replay/runtime.py": "sha256:old-runtime",
+        },
+        required_branch_paths=("replay/compiler.py", "replay/runtime.py"),
+        base_branch_fingerprints={},
+        compiler_path="replay/compiler.py",
+        runtime_paths=("replay/runtime.py",),
+        required_runtime_transitions=("repair_replay_capability_contract",),
+    )
+    local_failure_contract = replace(
+        contract,
+        focus_candidate_id="candidate-1",
+        failure_codes=(
+            "schema_field_validation_failed",
+            "repair_capability_compile_failed",
+        ),
+    )
+    preflight_candidates: list[str] = []
+
+    async def sibling_preflight(**kwargs):
+        candidate_id = kwargs["candidate"].candidate_id
+        preflight_candidates.append(candidate_id)
+        if candidate_id != "candidate-1":
+            return GateResult(
+                gate_name="candidate_repair_conformance",
+                passed=True,
+                reason="candidate passed shared repair probes",
+                details={"code": "repair_conformance_passed"},
+            )
+        return GateResult(
+            gate_name="candidate_repair_conformance",
+            passed=False,
+            reason="duplicate replay service id",
+            details={
+                "failure_class": "candidate",
+                "repairable": True,
+                "code": "repair_capability_compile_failed",
+                "repair_conformance": local_failure_contract.to_public_dict(),
+            },
+        )
+
+    monkeypatch.setattr(
+        runner,
+        "_preflight_candidate_repair_conformance",
+        sibling_preflight,
+    )
+    passed, report = await runner._validate_candidate_repair_conformance_population(
+        run_id="run-local-compile-failure",
+        target=SkillTextTarget(skill_path),
+        dataset=dataset,
+        candidates=candidates,
+        capability_requirements=(),
+        repair_conformance_contracts={
+            candidate.candidate_id: contract for candidate in candidates
+        },
+    )
+
+    assert [candidate.candidate_id for candidate in passed] == [
+        "candidate-0",
+        "candidate-2",
+    ]
+    assert preflight_candidates == ["candidate-0", "candidate-1", "candidate-2"]
+    assert report is not None
+    assert report["passed_candidate_ids"] == ["candidate-0", "candidate-2"]
+    assert report["superseded_candidate_ids"] == []
+    assert report["superseding_contract_identity"] is None
+
+
+@pytest.mark.asyncio
+async def test_runner_carries_verified_support_prerequisite_into_composite_candidate(
+    tmp_path: Path,
+) -> None:
+    skill_path, dataset = _cycle1_runner_fixture(tmp_path)
+    current_content = skill_path.read_text(encoding="utf-8")
+    support_file = CandidateFileDelta(
+        path="replay/runtime.py",
+        content="def replay():\n    return {'verified': True}\n",
+    )
+    requests: list[OptimizerRequest] = []
+
+    class Optimizer:
+        async def propose(self, request: OptimizerRequest) -> OptimizerResult:
+            requests.append(request)
+            if len(requests) == 1:
+                return OptimizerResult(
+                    candidates=(
+                        CandidateVariant(
+                            candidate_id="support-prerequisite",
+                            target=SelfEvolveTargetRef(
+                                "skill", "demo", str(skill_path)
+                            ),
+                            content=current_content,
+                            files=(support_file,),
+                            rationale="establish deterministic evaluation support",
+                        ),
+                    )
+                )
+            prerequisite = next(
+                item
+                for item in request.validation_feedback
+                if item.metrics.get("candidate_status") == "prerequisite"
+            )
+            package = prerequisite.metrics["repair_candidate_package"]
+            assert package["candidate_id"] == "support-prerequisite"
+            return OptimizerResult(
+                candidates=(
+                    CandidateVariant(
+                        candidate_id="support-composite",
+                        target=SelfEvolveTargetRef(
+                            "skill", "demo", str(skill_path)
+                        ),
+                        content=(
+                            current_content
+                            + "\n## Completion contract\n"
+                            + "Verify the requested artifact before finishing.\n"
+                        ),
+                        files=(support_file,),
+                        parent_candidate_ids=("support-prerequisite",),
+                        rationale="compose target behavior over verified support",
+                    ),
+                )
+            )
+
+    store = FilesystemSelfEvolveStore(tmp_path)
+    runner = SelfEvolveRunner(
+        store=store,
+        optimizer=Optimizer(),
+        max_iterations=2,
+        min_eval_cases=0,
+    )
+
+    await runner.run_explicit_target(
+        run_id="run-prerequisite-composition",
+        target=SkillTextTarget(skill_path, allow_auto_apply=True),
+        dataset=dataset,
+        trace_packs=(),
+        apply_policy="proposal",
+    )
+
+    report = json.loads(
+        (store.run_path("run-prerequisite-composition") / "report.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert len(requests) == 2
+    assert report["iterations"][0]["status"] == "prerequisite"
+    assert report["verification_funnel"]["prerequisite_candidate_ids"] == [
+        "support-prerequisite"
+    ]
+    assert report["composition_prerequisites"] == [
+        {
+            "candidate_id": "support-prerequisite",
+            "status": "verified_support",
+            "next_stage": "target_behavior_composition",
+            "inherit_candidate_package": True,
+            "evidence": "all_applicable_prerequisite_gates_passed",
+        }
+    ]
+    lifecycle = report["population"]["lifecycle"]
+    assert lifecycle["stage_counts"]["prerequisite_ready"] == 1
+    assert lifecycle["terminal_reason_counts"][
+        "evaluation_support_bootstrap_ready"
+    ] == 1
+
+
+@pytest.mark.asyncio
+async def test_verified_support_prerequisite_skips_full_task_replay(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    skill_path, dataset = _cycle1_runner_fixture(tmp_path)
+    current_content = skill_path.read_text(encoding="utf-8")
+    candidate = CandidateVariant(
+        candidate_id="support-preflight-only",
+        target=SelfEvolveTargetRef("skill", "demo", str(skill_path)),
+        content=current_content,
+        files=(
+            CandidateFileDelta(
+                path="replay/runtime.py",
+                content="def replay():\n    return {'verified': True}\n",
+            ),
+        ),
+        rationale="freeze deterministic replay support",
+    )
+
+    class Optimizer:
+        async def propose(self, request: OptimizerRequest) -> OptimizerResult:
+            return OptimizerResult(candidates=(candidate,))
+
+    runner = SelfEvolveRunner(
+        store=FilesystemSelfEvolveStore(tmp_path),
+        optimizer=Optimizer(),
+        replay_enabled=True,
+        candidate_replay_backend=object(),
+        min_eval_cases=0,
+    )
+
+    async def validate_capabilities(**kwargs):
+        return [
+            GateResult(
+                gate_name="candidate_capability_replay",
+                passed=True,
+                reason="operational preflight passed",
+                details={
+                    "operational_preflight": True,
+                    "capability_id": "replay-support",
+                },
+            )
+        ]
+
+    async def fail_if_replayed(**kwargs):
+        raise AssertionError("support-only prerequisite must not run full task replay")
+
+    monkeypatch.setattr(
+        runner,
+        "_validate_candidate_capabilities",
+        validate_capabilities,
+    )
+    monkeypatch.setattr(runner, "_replay_selected_candidate", fail_if_replayed)
+
+    state, _, feedback = await runner._evaluate_iteration_candidate(
+        run_id="run-support-preflight-lane",
+        target=SkillTextTarget(skill_path, allow_auto_apply=True),
+        dataset=dataset,
+        candidate=candidate,
+        apply_policy="verified_only",
+        target_provenance=None,
+        iteration_number=1,
+        candidate_number=1,
+        candidate_count=1,
+        rejected_candidate_ids=set(),
+        accepted_candidate_ids=set(),
+        precomputed_gate_results=(
+            GateResult(
+                gate_name="local_candidate_contracts",
+                passed=True,
+                reason="local gates passed",
+            ),
+        ),
+    )
+
+    assert state["status"] == "prerequisite"
+    assert state["replay_result"] is None
+    assert any(
+        gate.gate_name == "evaluation_support_prerequisite" and gate.passed
+        for gate in state["gate_results"]
+    )
+    assert feedback[0].metrics["candidate_status"] == "prerequisite"
+
+
+@pytest.mark.asyncio
+async def test_verified_single_candidate_skips_comparative_screening(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    skill_path, dataset = _cycle1_runner_fixture(tmp_path)
+    candidate = CandidateVariant(
+        candidate_id="sole-behavior-candidate",
+        target=SelfEvolveTargetRef("skill", "demo", str(skill_path)),
+        content=(
+            skill_path.read_text(encoding="utf-8")
+            + "\n## Runtime Behavior\nComplete the requested task.\n"
+        ),
+        rationale="single authoritative candidate",
+    )
+    runner = SelfEvolveRunner(
+        store=FilesystemSelfEvolveStore(tmp_path),
+        optimizer=SimpleNamespace(),
+        replay_enabled=True,
+        candidate_replay_backend=object(),
+    )
+    async def fail_if_replayed(**kwargs):
+        raise AssertionError("a sole candidate must not run ranking replay")
+
+    monkeypatch.setattr(runner, "_replay_selected_candidate", fail_if_replayed)
+
+    selected, report = await runner._screen_candidate_population(
+        run_id="run-single-direct-authoritative",
+        target=SkillTextTarget(skill_path, allow_auto_apply=True),
+        dataset=dataset,
+        candidates=(candidate,),
+        apply_policy="verified_only",
+    )
+
+    assert selected == (candidate,)
+    assert report is not None
+    screening = report["screening"]
+    assert screening["screening_strategy"] == (
+        "single_candidate_direct_authoritative"
+    )
+    assert screening["physical_pair_execution_count"] == 0
+
+
+@pytest.mark.asyncio
+async def test_verified_single_candidate_with_prior_counterexample_requires_screening(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    skill_path, dataset = _cycle1_runner_fixture(tmp_path)
+    candidate = CandidateVariant(
+        candidate_id="counterexample-repair",
+        target=SelfEvolveTargetRef("skill", "demo", str(skill_path)),
+        content=(
+            skill_path.read_text(encoding="utf-8")
+            + "\n## Runtime Behavior\nRepair the observed counterexample.\n"
+        ),
+        rationale="counterexample repair",
+    )
+    runner = SelfEvolveRunner(
+        store=FilesystemSelfEvolveStore(tmp_path),
+        optimizer=SimpleNamespace(),
+        replay_enabled=True,
+        candidate_replay_backend=object(),
+    )
+    calls: list[str] = []
+
+    async def reject_screening(**kwargs):
+        calls.append(kwargs["progress_stage"])
+        return (
+            None,
+            None,
+            GateResult(
+                gate_name="candidate_screening",
+                passed=False,
+                reason="counterexample remains reproducible",
+                details={"failure_class": "candidate"},
+            ),
+        )
+
+    monkeypatch.setattr(
+        runner,
+        "_replay_selected_candidate",
+        reject_screening,
+    )
+
+    selected, report = await runner._screen_candidate_population(
+        run_id="run-single-counterexample-screening",
+        target=SkillTextTarget(skill_path, allow_auto_apply=True),
+        dataset=dataset,
+        candidates=(candidate,),
+        apply_policy="verified_only",
+        require_single_candidate_screening=True,
+    )
+
+    assert selected == ()
+    assert calls == ["candidate_screening"]
+    assert report is not None
+    assert report["screening"]["attempted_candidate_count"] == 1
+
+
+@pytest.mark.asyncio
+async def test_stored_measurement_resume_bypasses_counterexample_screening(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    skill_path, dataset = _cycle1_runner_fixture(tmp_path)
+    candidate = CandidateVariant(
+        candidate_id="measurement-pending",
+        target=SelfEvolveTargetRef("skill", "demo", str(skill_path)),
+        content=(
+            skill_path.read_text(encoding="utf-8")
+            + "\n## Runtime Behavior\nComplete the requested task.\n"
+        ),
+        rationale="resume the frozen candidate measurement",
+    )
+    runner = SelfEvolveRunner(
+        store=FilesystemSelfEvolveStore(tmp_path),
+        optimizer=SimpleNamespace(),
+        replay_enabled=True,
+        candidate_replay_backend=object(),
+    )
+
+    async def fail_if_screened(**kwargs):
+        raise AssertionError("measurement resume must not rerun ranking screening")
+
+    monkeypatch.setattr(runner, "_replay_selected_candidate", fail_if_screened)
+
+    selected, report = await runner._screen_candidate_population(
+        run_id="run-measurement-resume",
+        target=SkillTextTarget(skill_path, allow_auto_apply=True),
+        dataset=dataset,
+        candidates=(candidate,),
+        apply_policy="verified_only",
+        require_single_candidate_screening=True,
+        stored_candidate_bypass=(
+            StoredCandidateScreeningBypass.MEASUREMENT_RESUME
+        ),
+    )
+
+    assert selected == (candidate,)
+    assert report is not None
+    screening = report["screening"]
+    assert screening["screening_strategy"] == (
+        "stored_candidate_measurement_resume"
+    )
+    assert screening["attempted_candidate_count"] == 0
+    assert screening["physical_pair_execution_count"] == 0
+
+
+@pytest.mark.asyncio
+async def test_missing_measurement_plan_is_typed_shared_admission_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    skill_path, dataset = _cycle1_runner_fixture(tmp_path)
+    candidate = CandidateVariant(
+        candidate_id="measurement-plan-missing",
+        target=SelfEvolveTargetRef("skill", "demo", str(skill_path)),
+        content=(
+            skill_path.read_text(encoding="utf-8")
+            + "\n## Runtime Behavior\nComplete the requested task.\n"
+        ),
+        rationale="exercise fail-closed measurement admission",
+    )
+    runner = SelfEvolveRunner(
+        store=FilesystemSelfEvolveStore(tmp_path),
+        optimizer=SimpleNamespace(),
+        replay_enabled=True,
+        candidate_replay_backend=object(),
+        measurement_mode="required",
+    )
+    monkeypatch.setattr(
+        runner,
+        "_prepare_replay_adaptation",
+        lambda **_kwargs: (
+            SimpleNamespace(),
+            GateResult(
+                gate_name="replay_adaptation",
+                passed=True,
+                reason="adaptation ready",
+            ),
+        ),
+    )
+
+    replay_result, replay_dataset, gate = await runner._replay_selected_candidate(
+        run_id="run-measurement-plan-missing",
+        target=SkillTextTarget(skill_path, allow_auto_apply=True),
+        dataset=dataset,
+        selected_candidate=candidate,
+        apply_policy="verified_only",
+        progress_stage="candidate_screening",
+        measurement_stage="screening",
+    )
+
+    assert replay_result is None
+    assert replay_dataset is None
+    assert gate is not None and gate.passed is False
+    assert gate.details is not None
+    assert gate.details["code"] == "measurement_plan_admission_failed"
+    assert gate.details["failure_class"] == "measurement"
+    assert gate.details["failure_owner"] == "framework"
+    assert gate.details["failure_scope"] == "shared_run"
+    assert gate.details["resume_candidate_id"] == candidate.candidate_id
+    assert gate.details["resume_safe"] is True
+
+
+@pytest.mark.asyncio
+async def test_artifact_lifecycle_repair_fails_closed_before_authoritative_replay(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    skill_path, dataset = _cycle1_runner_fixture(tmp_path)
+    candidate = CandidateVariant(
+        candidate_id="artifact-lifecycle-repair",
+        target=SelfEvolveTargetRef("skill", "demo", str(skill_path)),
+        content=(
+            skill_path.read_text(encoding="utf-8")
+            + "\n## Evidence Lifecycle\nPersist once, reuse, then finalize.\n"
+        ),
+        rationale="bounded artifact lifecycle repair",
+    )
+    contract = RepairConformanceContract(
+        focus_candidate_id="prior-candidate",
+        failure_codes=("artifact_file_limit_exhausted",),
+        interaction_progress=1,
+        base_file_fingerprints={},
+        required_branch_paths=(),
+        base_branch_fingerprints={},
+        artifact_lifecycle_constraint=ArtifactLifecycleConstraint(),
+    )
+    runner = SelfEvolveRunner(
+        store=FilesystemSelfEvolveStore(tmp_path),
+        optimizer=SimpleNamespace(),
+        replay_enabled=True,
+        candidate_replay_backend=object(),
+    )
+    artifact_file_count = {"value": 2}
+
+    async def preserve_conformance_population(**kwargs):
+        return kwargs["candidates"], None
+
+    async def replay_with_excess_artifacts(**kwargs):
+        active_dataset = kwargs["dataset"]
+        request = CandidateReplayRequest(
+            run_id=kwargs["run_id"],
+            task_id=active_dataset.cases[0].case_id,
+            workspace_root=str(tmp_path),
+            target=SelfEvolveTargetRef("skill", "demo", str(skill_path)),
+            candidate_id=kwargs["selected_candidate"].candidate_id,
+            overlay_skill_root=str(tmp_path / "overlay"),
+            task_input=active_dataset.cases[0].input,
+        )
+        baseline = ReplayVariantResult(
+            variant_id="baseline",
+            status=ReplayExecutionStatus.SUCCEEDED,
+            trajectory=[{"action": {"content": "baseline"}}],
+        )
+        candidate_result = ReplayVariantResult(
+            variant_id=request.candidate_id,
+            status=ReplayExecutionStatus.SUCCEEDED,
+            trajectory=[{"action": {"content": "candidate"}}],
+            metrics={
+                "evidence_runtime_policy_active": True,
+                "evidence_runtime_policy_passed": True,
+                "evidence_runtime_policy_artifact_file_count": (
+                    artifact_file_count["value"]
+                ),
+                "evidence_runtime_policy_artifact_bytes": 1_024,
+                "evidence_runtime_policy_tool_call_attempt_count": 4,
+                "evidence_manifest_entry_count": 1,
+                "evidence_manifest_valid": True,
+            },
+        )
+        replay = _CandidateReplayResult(
+            request=request,
+            baseline=baseline,
+            candidate=candidate_result,
+            member_results=(
+                CandidateReplayMemberResult(
+                    case_id=active_dataset.cases[0].case_id,
+                    request=request,
+                    baseline=baseline,
+                    candidate=candidate_result,
+                ),
+            ),
+        )
+        return (
+            replay,
+            active_dataset,
+            GateResult(
+                gate_name="candidate_replay",
+                passed=True,
+                reason="paired replay completed",
+                details={},
+            ),
+        )
+
+    monkeypatch.setattr(
+        runner,
+        "_validate_candidate_repair_conformance_population",
+        preserve_conformance_population,
+    )
+    monkeypatch.setattr(
+        runner,
+        "_replay_selected_candidate",
+        replay_with_excess_artifacts,
+    )
+    monkeypatch.setattr(
+        runner_module,
+        "_replay_evaluator_admission_gate",
+        lambda *args, **kwargs: None,
+    )
+
+    selected, report = await runner._screen_candidate_population(
+        run_id="run-artifact-lifecycle-admission",
+        target=SkillTextTarget(skill_path, allow_auto_apply=True),
+        dataset=dataset,
+        candidates=(candidate,),
+        apply_policy="verified_only",
+        repair_conformance_contracts={candidate.candidate_id: contract},
+    )
+
+    assert selected == ()
+    assert report is not None
+    screening = report["screening"]
+    assert screening["selection_reason"] == (
+        "artifact lifecycle repair lacked behavioral screening proof; "
+        "authoritative replay admission failed closed"
+    )
+    attempt = screening["attempts"][0]
+    assert attempt["artifact_lifecycle_proof_required"] is True
+    assert attempt["details"]["code"] == (
+        "artifact_lifecycle_conformance_failed"
+    )
+
+    artifact_file_count["value"] = 1
+    admitted, admitted_report = await runner._screen_candidate_population(
+        run_id="run-artifact-lifecycle-admitted",
+        target=SkillTextTarget(skill_path, allow_auto_apply=True),
+        dataset=dataset,
+        candidates=(candidate,),
+        apply_policy="verified_only",
+        repair_conformance_contracts={candidate.candidate_id: contract},
+    )
+
+    assert admitted == (candidate,)
+    assert admitted_report is not None
+    admitted_attempt = admitted_report["screening"]["attempts"][0]
+    assert admitted_attempt["details"]["artifact_lifecycle_conformance"][
+        "passed"
+    ] is True
+
+
+@pytest.mark.asyncio
+async def test_runner_requires_single_candidate_screening_from_prior_cycle_feedback(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    skill_path, dataset = _cycle1_runner_fixture(tmp_path)
+    store = FilesystemSelfEvolveStore(tmp_path)
+    prior_run_id = "campaign-demo-cycle-001"
+    prior_dir = store.run_path(prior_run_id)
+    prior_dir.mkdir(parents=True)
+    (prior_dir / "report.json").write_text(
+        json.dumps(
+            {
+                "run_id": prior_run_id,
+                "target": {
+                    "target_type": "skill",
+                    "target_id": "demo",
+                    "path": str(skill_path),
+                },
+                "status": "rejected",
+                "candidate_ids": ["prior-candidate"],
+                "iterations": [
+                    {
+                        "iteration": 1,
+                        "candidate_id": "prior-candidate",
+                        "status": "rejected",
+                        "failed_gates": ["candidate_replay"],
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    candidate = CandidateVariant(
+        candidate_id="counterexample-repair",
+        target=SelfEvolveTargetRef(
+            target_type="skill",
+            target_id="demo",
+            path=str(skill_path),
+        ),
+        content=(
+            skill_path.read_text(encoding="utf-8")
+            + "\n## Runtime Behavior\nRepair the replay counterexample.\n"
+        ),
+        rationale="repair prior replay counterexample",
+    )
+
+    class Optimizer:
+        async def propose(self, request: OptimizerRequest) -> OptimizerResult:
+            return OptimizerResult(candidates=(candidate,))
+
+    runner = SelfEvolveRunner(
+        store=store,
+        optimizer=Optimizer(),
+        replay_enabled=False,
+        max_iterations=1,
+    )
+    screening_requirements: list[bool] = []
+
+    async def capture_screening_requirement(**kwargs):
+        screening_requirements.append(
+            kwargs["require_single_candidate_screening"]
+        )
+        return (), {
+            "screening": {
+                "attempts": [],
+                "stopped_by_shared_infrastructure": False,
+            }
+        }
+
+    monkeypatch.setattr(
+        runner,
+        "_screen_candidate_population",
+        capture_screening_requirement,
+    )
+
+    await runner.run_explicit_target(
+        run_id="campaign-demo-cycle-002",
+        target=SkillTextTarget(skill_path, allow_auto_apply=True),
+        dataset=dataset,
+        trace_packs=(),
+        apply_policy="verified_only",
+        campaign_prior_run_ids=(prior_run_id,),
+        campaign_id="campaign-demo",
+        campaign_cycle=2,
+    )
+
+    assert screening_requirements == [True]
+
+
+def test_authoritative_failure_case_is_persisted_and_restored_for_screening(
+    tmp_path: Path,
+) -> None:
+    _, dataset = _cycle1_runner_fixture(tmp_path, case_count=2)
+    request = CandidateReplayRequest(
+        run_id="campaign-demo-cycle-001",
+        task_id="case-1",
+        workspace_root=str(tmp_path),
+        target=SelfEvolveTargetRef(target_type="skill", target_id="demo"),
+        candidate_id="candidate",
+        overlay_skill_root=str(tmp_path / "overlay"),
+        task_input=dataset.cases[0].input,
+    )
+    baseline = ReplayVariantResult(
+        variant_id="baseline",
+        status=ReplayExecutionStatus.SUCCEEDED,
+        trajectory=[{"action": {"content": "baseline"}}],
+    )
+    candidate_failure = ReplayFailureEvent(
+        code="artifact_file_limit_exhausted",
+        owner=FailureOwner.CANDIDATE,
+        stage=FailureStage.TASK_ROLLOUT,
+        scope=FailureScope.MEMBER,
+        repairable=True,
+        category="replay_runtime_policy",
+    )
+    failed = ReplayVariantResult(
+        variant_id="candidate",
+        status=ReplayExecutionStatus.FAILED,
+        trajectory=[],
+        failure=candidate_failure,
+    )
+    blocked = ReplayVariantResult(
+        variant_id="candidate",
+        status=ReplayExecutionStatus.BLOCKED,
+        trajectory=[],
+        blocked_by=(
+            ReplayFailureEvent(
+                code="authoritative_candidate_frontier_unreachable",
+                owner=FailureOwner.CANDIDATE,
+                stage=FailureStage.TASK_ROLLOUT,
+                scope=FailureScope.CANDIDATE,
+                repairable=True,
+                category="authoritative_early_stop",
+            ),
+        ),
+    )
+    replay = _CandidateReplayResult(
+        request=request,
+        baseline=baseline,
+        candidate=failed,
+        member_results=(
+            CandidateReplayMemberResult(
+                case_id="case-1",
+                request=request,
+                baseline=baseline,
+                candidate=failed,
+            ),
+            CandidateReplayMemberResult(
+                case_id="case-2",
+                request=replace(
+                    request,
+                    task_id="case-2",
+                    task_input=dataset.cases[1].input,
+                ),
+                baseline=blocked,
+                candidate=blocked,
+            ),
+        ),
+    )
+    cumulative: dict[str, dict[str, float | int]] = {}
+    current_run: dict[str, dict[str, int]] = {}
+
+    _record_authoritative_replay_observations(
+        cumulative,
+        dataset=dataset,
+        replay_result=replay,
+        run_observations=current_run,
+    )
+
+    assert cumulative == {
+        "case-1": {
+            "attempt_count": 1,
+            "authoritative_failure_count": 1,
+        }
+    }
+    assert current_run == cumulative
+
+    store = FilesystemSelfEvolveStore(tmp_path)
+    prior_run_id = "campaign-demo-cycle-001"
+    prior_dir = store.run_path(prior_run_id)
+    prior_dir.mkdir(parents=True, exist_ok=True)
+    (prior_dir / "report.json").write_text(
+        json.dumps(
+            {
+                "verification_funnel": {
+                    "authoritative_case_observations": current_run
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    restored: dict[str, dict[str, float | int]] = {}
+    _restore_campaign_screening_case_observations(
+        restored,
+        store=store,
+        prior_run_ids=(prior_run_id,),
+        loaded_run_ids=set(),
+    )
+    screening_dataset = _candidate_screening_dataset(
+        replace(dataset, cases=tuple(reversed(dataset.cases))),
+        empirical_observations=restored,
+    )
+
+    assert restored == cumulative
+    assert screening_dataset is not None
+    assert screening_dataset.cases[0].case_id == "case-1"
+
+
+def test_campaign_restore_recovers_authoritative_member_lifecycle_before_report(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "README.md").write_text("fixture\n", encoding="utf-8")
+    dataset = SelfEvolveDataset(
+        cases=(EvalCase(case_id="case-partial", input="task"),),
+        recipe=DatasetRecipe(
+            source={"kind": "test"},
+            split_seed="partial-authoritative",
+            splits={"train": ["case-partial"]},
+        ),
+    )
+    store = FilesystemSelfEvolveStore(workspace)
+    run_id = "campaign-demo-cycle-008"
+    run_dir = store.run_path(run_id)
+    bundle = ReplayAdaptationCompiler().compile(
+        dataset=dataset,
+        workspace_root=workspace,
+        artifact_root=run_dir / "adaptation",
+    )
+    support_fingerprint = replay_module.replay_support_fingerprint(bundle)
+    assert support_fingerprint is not None
+    timeout_fingerprint = replay_module.replay_timeout_envelope_fingerprint(
+        timeout_seconds=900,
+        max_steps=24,
+        max_tool_calls=32,
+    )
+    request = CandidateReplayRequest(
+        run_id=run_id,
+        task_id="case-partial",
+        workspace_root=str(workspace),
+        target=SelfEvolveTargetRef("skill", "demo"),
+        candidate_id="candidate",
+        overlay_skill_root=str(workspace / "overlay"),
+        task_input="task",
+        timeout_seconds=900,
+        max_steps=24,
+        max_tool_calls=32,
+        replay_adaptation=bundle,
+        baseline_skill_fingerprint="sha256:baseline",
+        adaptation_fingerprint=bundle.adaptation_fingerprint,
+        support_fingerprint=support_fingerprint,
+        timeout_envelope_fingerprint=timeout_fingerprint,
+        workspace_seed_fingerprint=bundle.workspace_seed_fingerprint,
+    )
+    member_dir = (
+        run_dir / "replay" / "candidate" / "members" / "case-partial-member"
+    )
+    baseline_dir = member_dir / "baseline"
+    baseline_dir.mkdir(parents=True)
+    (member_dir / "request.json").write_text(
+        json.dumps(to_json_dict(request), sort_keys=True),
+        encoding="utf-8",
+    )
+    (baseline_dir / "lifecycle.json").write_text(
+        json.dumps({"status": "succeeded", "failure": None}),
+        encoding="utf-8",
+    )
+    (baseline_dir / "aggregate_metrics.json").write_text(
+        json.dumps({"latency_ms": 1250}),
+        encoding="utf-8",
+    )
+    store.write_report(run_id, {"run_id": run_id, "status": "rejected"})
+
+    observations: dict[str, dict[str, float | int]] = {}
+    controls: dict[str, dict[str, object]] = {}
+    _restore_campaign_screening_case_observations(
+        observations,
+        store=store,
+        prior_run_ids=(run_id,),
+        loaded_run_ids=set(),
+        control_observations=controls,
+    )
+
+    assert observations["case-partial"]["baseline_success_count"] == 1
+    assert len(controls) == 1
+    restored = next(iter(controls.values()))
+    assert restored["baseline_attempt_count"] == 1
+    assert restored["baseline_success_count"] == 1
+
+
+def test_authoritative_invalid_control_is_persisted_and_deprioritized(
+    tmp_path: Path,
+) -> None:
+    _, dataset = _cycle1_runner_fixture(tmp_path, case_count=2)
+    request = CandidateReplayRequest(
+        run_id="campaign-demo-cycle-001",
+        task_id="case-1",
+        workspace_root=str(tmp_path),
+        target=SelfEvolveTargetRef(target_type="skill", target_id="demo"),
+        candidate_id="candidate",
+        overlay_skill_root=str(tmp_path / "overlay"),
+        task_input=dataset.cases[0].input,
+    )
+    invalid_control_failure = ReplayFailureEvent(
+        code="replay_member_phase_timeout",
+        owner=FailureOwner.FRAMEWORK,
+        stage=FailureStage.EVALUATION,
+        scope=FailureScope.MEMBER,
+        repairable=True,
+        category="replay_timeout",
+    )
+    baseline = ReplayVariantResult(
+        variant_id="baseline",
+        status=ReplayExecutionStatus.FAILED,
+        trajectory=[],
+        failure=invalid_control_failure,
+    )
+    candidate = ReplayVariantResult(
+        variant_id="candidate",
+        status=ReplayExecutionStatus.BLOCKED,
+        trajectory=[],
+        blocked_by=(
+            ReplayFailureEvent(
+                code="authoritative_replay_invalid_control",
+                owner=FailureOwner.FRAMEWORK,
+                stage=FailureStage.EVALUATION,
+                scope=FailureScope.SHARED_RUN,
+                repairable=True,
+                category="trusted_measurement",
+            ),
+        ),
+    )
+    replay = _CandidateReplayResult(
+        request=request,
+        baseline=baseline,
+        candidate=candidate,
+        member_results=(
+            CandidateReplayMemberResult(
+                case_id="case-1",
+                request=request,
+                baseline=baseline,
+                candidate=candidate,
+            ),
+        ),
+    )
+    observations: dict[str, dict[str, float | int]] = {}
+
+    _record_authoritative_replay_observations(
+        observations,
+        dataset=dataset,
+        replay_result=replay,
+    )
+    ordered = _authoritative_replay_dataset(
+        dataset,
+        empirical_observations=observations,
+    )
+
+    assert observations == {
+        "case-1": {"attempt_count": 1, "invalid_control_count": 1}
+    }
+    assert ordered.cases[-1].case_id == "case-1"
+
+
+def test_authoritative_replay_prioritizes_direct_candidate_intervention(
+    tmp_path: Path,
+) -> None:
+    case_ids = ("context-only", "url-mentioned", "direct-binding")
+    dataset = SelfEvolveDataset(
+        cases=tuple(
+            EvalCase(case_id=case_id, input={"content": case_id})
+            for case_id in case_ids
+        ),
+        recipe=DatasetRecipe(
+            source={"kind": "trajectory_log"},
+            split_seed="intervention-first",
+            splits={"train": list(case_ids)},
+            trainable_case_ids=case_ids,
+        ),
+    )
+    service = ReplayServiceSpec(
+        service_id="service-1",
+        requirement_id="requirement-1",
+        transport="http_fixture",
+        response_fixture="fixture.json",
+    )
+    capability = FrozenReplayCapability(
+        capability_id="demo-replay",
+        capability_package_fingerprint="sha256:package",
+        request_fingerprint="sha256:request",
+        frozen_root=str(tmp_path / "frozen"),
+        handled_requirements=("requirement-1",),
+        unhandled_requirements=(),
+        evidence_refs={},
+        fixture_evidence_refs={},
+        fixtures=(),
+        runtime_files=(),
+        endpoint_replacements={"https://example.test/data": "service-1"},
+        services=(service,),
+        deterministic=True,
+        fingerprint="sha256:frozen",
+        ready=True,
+    )
+    adaptations = (
+        ReplayCaseAdaptation(
+            case_id="context-only",
+            adapted_task_input={"content": "answer from context"},
+            task_input_fingerprint="sha256:context",
+            dependencies=(),
+            bindings=(),
+            tool_names=(),
+            readiness="ready",
+        ),
+        ReplayCaseAdaptation(
+            case_id="url-mentioned",
+            adapted_task_input={
+                "content": "review https://example.test/data"
+            },
+            task_input_fingerprint="sha256:mentioned",
+            dependencies=(),
+            bindings=(),
+            tool_names=(),
+            readiness="ready",
+        ),
+        ReplayCaseAdaptation(
+            case_id="direct-binding",
+            adapted_task_input={"content": "review the bound source"},
+            task_input_fingerprint="sha256:direct",
+            dependencies=(),
+            bindings=(
+                ReplayAdapterBinding(
+                    adapter_id="demo",
+                    dependency_id="https://example.test/data",
+                    deterministic=True,
+                ),
+            ),
+            tool_names=(),
+            readiness="ready",
+        ),
+    )
+    bundle = ReplayAdaptationBundle(
+        schema_version="aworld.self_evolve.replay_adaptation.v1",
+        source_workspace_root=str(tmp_path),
+        workspace_seed=str(tmp_path / "seed"),
+        workspace_seed_fingerprint="sha256:seed",
+        manifest_path=str(tmp_path / "manifest.json"),
+        environment_snapshot_path=str(tmp_path / "environment.json"),
+        environment_fingerprint="sha256:environment",
+        cases=adaptations,
+        adaptation_fingerprint="sha256:adaptation",
+        ready=True,
+        replay_capability=capability,
+    )
+
+    ordered = _prioritize_candidate_intervention_cases(dataset, bundle)
+
+    assert [case.case_id for case in ordered.cases] == [
+        "direct-binding",
+        "url-mentioned",
+        "context-only",
+    ]
+    assert ordered.recipe.source[
+        "authoritative_direct_intervention_case_ids"
+    ] == ["direct-binding"]
+
+
+def test_authoritative_replay_compacts_and_defers_short_context_continuation() -> None:
+    current_task = {"content": "rollout阶段的策略"}
+    prior_turns = tuple(
+        TrajectoryContextTurn(
+            role="assistant" if index % 2 else "user",
+            content=(f"turn-{index}: " + "context " * 240),
+            source_task_id=f"prior-{index}",
+            evidence_ref=f"evidence-{index}",
+        )
+        for index in range(5)
+    )
+    transcript = "\n".join(
+        f"{turn.role.title()}: {turn.content}" for turn in prior_turns
+    )
+    reconstructed = {
+        "content": (
+            "Recorded prior task context [same_session_predecessor]:\n"
+            f"{transcript}\n\nCurrent task:\n{current_task['content']}"
+        )
+    }
+    snapshot = TrajectoryContextSnapshot(
+        schema_version="aworld.self_evolve.trajectory_context.v2",
+        case_id="unstable-continuation",
+        source_kind="trajectory_log",
+        source_record_index=1,
+        source_fingerprint="sha256:source",
+        session_id="session-1",
+        task_input=current_task,
+        steps=(),
+        step_count=1,
+        omitted_step_count=0,
+        prior_turns=prior_turns,
+        link_strategy="same_session_predecessor",
+        context_status="complete",
+        context_reason=None,
+        fingerprint="sha256:context",
+    )
+    dataset = SelfEvolveDataset(
+        cases=(
+            EvalCase(
+                case_id="unstable-continuation",
+                input=reconstructed,
+                context_snapshot=snapshot,
+            ),
+            EvalCase(case_id="healthy-a", input={"content": "Analyze A"}),
+            EvalCase(case_id="healthy-b", input={"content": "Analyze B"}),
+        ),
+        recipe=DatasetRecipe(
+            source={"kind": "trajectory_log"},
+            split_seed="authoritative-context-compaction",
+            splits={
+                "train": [
+                    "unstable-continuation",
+                    "healthy-a",
+                    "healthy-b",
+                ]
+            },
+            trainable_case_ids=(
+                "unstable-continuation",
+                "healthy-a",
+                "healthy-b",
+            ),
+        ),
+    )
+
+    authoritative = _authoritative_replay_dataset(dataset)
+
+    assert authoritative.cases[-1].case_id == "unstable-continuation"
+    compacted = authoritative.cases[-1]
+    compacted_content = compacted.input["content"]
+    assert len(compacted_content) < len(reconstructed["content"])
+    assert "structured compact" in compacted_content
+    assert "retained 3 user anchors and 2 recent assistant turns" in compacted_content
+    assert "turn-0" in compacted_content
+    assert "turn-4" in compacted_content
+    assert authoritative.recipe.source[
+        "authoritative_deferred_control_case_ids"
+    ] == ["unstable-continuation"]
+    assert authoritative.recipe.source[
+        "authoritative_compacted_context_case_ids"
+    ] == ["unstable-continuation"]
+
+
+def test_historical_baseline_lifecycles_preflight_control_before_generation(
+    tmp_path: Path,
+) -> None:
+    store = FilesystemSelfEvolveStore(tmp_path)
+    target = SelfEvolveTargetRef(
+        target_type="skill",
+        target_id="demo",
+        path=str(tmp_path / "skills" / "demo" / "SKILL.md"),
+    )
+    dataset = SelfEvolveDataset(
+        cases=(
+            EvalCase(case_id="case-timeout", input="slow"),
+            EvalCase(case_id="case-healthy", input="healthy"),
+        ),
+        recipe=DatasetRecipe(
+            source={"kind": "trajectory_log"},
+            split_seed="control-preflight",
+            splits={"train": ["case-timeout", "case-healthy"]},
+            trainable_case_ids=("case-timeout", "case-healthy"),
+        ),
+    )
+    prior_run = store.run_path("campaign-prior-cycle-001")
+    prior_run.mkdir(parents=True)
+    (prior_run / "report.json").write_text(
+        json.dumps(
+            {
+                "target": {
+                    "target_type": target.target_type,
+                    "target_id": target.target_id,
+                    "path": target.path,
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    for case_id, status, failure, latency_ms in (
+        (
+            "case-timeout",
+            "failed",
+            {
+                "code": "replay_member_phase_timeout",
+                "diagnostics": {"timeout_seconds": 120},
+            },
+            None,
+        ),
+        ("case-healthy", "succeeded", None, 100_000.0),
+    ):
+        baseline_dir = (
+            prior_run
+            / "screening"
+            / case_id
+            / "replay"
+            / "candidate"
+            / "baseline"
+        )
+        baseline_dir.mkdir(parents=True)
+        (baseline_dir / "lifecycle.json").write_text(
+            json.dumps({"status": status, "failure": failure}),
+            encoding="utf-8",
+        )
+        (baseline_dir / "aggregate_metrics.json").write_text(
+            json.dumps(
+                ({"latency_ms": latency_ms} if latency_ms is not None else {})
+            ),
+            encoding="utf-8",
+        )
+
+    observations: dict[str, dict[str, float | int]] = {}
+    _restore_historical_screening_lifecycle_observations(
+        observations,
+        store=store,
+        target=target,
+        dataset=dataset,
+        current_run_id="campaign-current-cycle-001",
+    )
+    preflight = runner_module._screening_control_preflight(
+        dataset,
+        observations=observations,
+    )
+    screening = _candidate_screening_dataset(
+        dataset,
+        max_cases=1,
+        empirical_observations=observations,
+    )
+
+    assert observations["case-timeout"]["baseline_timeout_count"] == 1
+    assert observations["case-healthy"]["baseline_success_count"] == 1
+    assert observations["case-healthy"]["baseline_total_wall_seconds"] == 100.0
+    assert observations["case-healthy"]["baseline_success_wall_seconds"] == 100.0
+    assert preflight["status"] == "feasible"
+    assert preflight["feasible_case_ids"] == ["case-healthy"]
+    assert preflight["infeasible_case_ids"] == []
+    assert preflight["unknown_case_ids"] == ["case-timeout"]
+    assert screening is not None
+    assert screening.cases[0].case_id == "case-healthy"
+
+
+def test_control_preflight_blocks_generation_when_all_baselines_are_known_bad() -> None:
+    dataset = SelfEvolveDataset(
+        cases=(EvalCase(case_id="case-timeout", input="slow"),),
+        recipe=DatasetRecipe(
+            source={"kind": "trajectory_log"},
+            split_seed="all-bad-controls",
+            splits={"train": ["case-timeout"]},
+            trainable_case_ids=("case-timeout",),
+        ),
+    )
+
+    infeasible = runner_module._screening_control_preflight(
+        dataset,
+        observations={
+            "case-timeout": {
+                "baseline_attempt_count": 2,
+                "baseline_success_count": 0,
+                "baseline_timeout_count": 2,
+                "baseline_timeout_max_seconds": 300.0,
+            }
+        },
+    )
+    unknown = runner_module._screening_control_preflight(
+        dataset,
+        observations={},
+    )
+
+    assert infeasible["status"] == "infeasible"
+    assert infeasible["candidate_generation_allowed"] is False
+    assert infeasible["advisory_only"] is False
+    assert infeasible["failure_owner"] == "framework"
+    assert infeasible["code"] == "baseline_controls_infeasible"
+    assert infeasible["next_action"] == "repair_or_build_shared_replay_harness"
+    assert infeasible["support_specific_qualification_required"] is True
+    assert unknown["status"] == "unknown"
+    assert unknown["candidate_generation_allowed"] is True
+
+
+@pytest.mark.asyncio
+async def test_evolvability_preflight_blocks_before_optimizer_call(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    skill_path, dataset = _cycle1_runner_fixture(tmp_path)
+    optimizer_calls = 0
+
+    class Optimizer:
+        async def propose(self, request):
+            nonlocal optimizer_calls
+            optimizer_calls += 1
+            raise AssertionError("optimizer must not run for a blocked harness")
+
+    original_preflight = runner_module._screening_control_preflight
+
+    def blocked_preflight(dataset, **kwargs):
+        result = original_preflight(
+            dataset,
+            observations={
+                case.case_id: {
+                    "baseline_attempt_count": 2,
+                    "baseline_success_count": 0,
+                    "baseline_timeout_count": 2,
+                    "baseline_timeout_max_seconds": 300.0,
+                }
+                for case in dataset.cases
+            },
+            timeout_ceiling_seconds=300.0,
+        )
+        assert result["status"] == "infeasible"
+        return result
+
+    monkeypatch.setattr(
+        runner_module,
+        "_screening_control_preflight",
+        blocked_preflight,
+    )
+    store = FilesystemSelfEvolveStore(tmp_path)
+    runner = SelfEvolveRunner(store=store, optimizer=Optimizer())
+
+    result = await runner.run_explicit_target(
+        run_id="run-evolvability-blocked",
+        target=SkillTextTarget(skill_path),
+        dataset=dataset,
+        trace_packs=(),
+        apply_policy="auto_verified",
+    )
+
+    report = json.loads(
+        (store.run_path("run-evolvability-blocked") / "report.json").read_text()
+    )
+    assert optimizer_calls == 0
+    assert result.run.status is SelfEvolveRunStatus.REJECTED
+    assert report["candidate_ids"] == []
+    assert report["verification_funnel"]["generated_candidate_slot_count"] == 0
+    assert {gate["gate_name"] for gate in report["gate_results"]} == {
+        "evolvability_preflight"
+    }
+    assert report["campaign_failure_attribution"]["failure_owner"] == "framework"
+
+
+def test_screening_timeout_uses_one_bounded_same_case_escalation() -> None:
+    assert _candidate_screening_escalated_timeout(
+        177,
+        authoritative_timeout_seconds=600,
+    ) == 266
+    assert _candidate_screening_escalated_timeout(
+        266,
+        authoritative_timeout_seconds=600,
+    ) == 300
+    assert _candidate_screening_escalated_timeout(
+        300,
+        authoritative_timeout_seconds=600,
+    ) is None
+
+
+def test_support_specific_control_circuit_requires_repeated_exact_timeouts() -> None:
+    identity = {
+        "control_identity_fingerprint": "sha256:exact-control",
+        "case_id": "case-1",
+        "support_fingerprint": "sha256:support",
+        "timeout_envelope_fingerprint": "sha256:timeout",
+    }
+    observations = {
+        "sha256:exact-control": {
+            "identity": identity,
+            "baseline_attempt_count": 3,
+            "baseline_success_count": 0,
+            "baseline_timeout_count": 3,
+        }
+    }
+
+    gate = _support_specific_control_circuit_breaker_gate(
+        control_identity=identity,
+        control_observations=observations,
+    )
+
+    assert gate is not None
+    assert gate.details["code"] == "screening_support_control_circuit_open"
+    assert gate.details["candidate_execution_observed"] is False
+    assert gate.details["baseline_status"] == "failed"
+    assert _support_specific_control_circuit_breaker_gate(
+        control_identity={
+            **identity,
+            "control_identity_fingerprint": "sha256:new-timeout-envelope",
+        },
+        control_observations=observations,
+    ) is None
+    observations["sha256:exact-control"]["baseline_success_count"] = 1
+    assert _support_specific_control_circuit_breaker_gate(
+        control_identity=identity,
+        control_observations=observations,
+    ) is None
+
+
+@pytest.mark.asyncio
+async def test_population_screening_uses_historical_latency_for_initial_timeout(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    skill_path = tmp_path / "skills" / "demo" / "SKILL.md"
+    skill_path.parent.mkdir(parents=True)
+    skill_path.write_text("---\nname: demo\n---\n# Demo\n", encoding="utf-8")
+    dataset = SelfEvolveDataset(
+        cases=(EvalCase(case_id="case-1", input="task"),),
+        recipe=DatasetRecipe(
+            source={"kind": "historical-screening-latency"},
+            split_seed="historical-screening-latency",
+            splits={"train": ["case-1"], "validation": [], "held_out": []},
+            trainable_case_ids=("case-1",),
+        ),
+    )
+    candidate = CandidateVariant(
+        candidate_id="candidate",
+        target=SelfEvolveTargetRef("skill", "demo", str(skill_path)),
+        content="# Demo\n\nCandidate.\n",
+        rationale="exercise empirical screening timeout",
+    )
+    runner = SelfEvolveRunner(
+        store=FilesystemSelfEvolveStore(tmp_path),
+        optimizer=SimpleNamespace(),
+        replay_enabled=True,
+        candidate_replay_backend=object(),
+        replay_max_steps=4,
+    )
+    runner._candidate_screening_case_observations["case-1"] = {
+        "baseline_success_count": 1,
+        "baseline_success_wall_seconds": 101.0,
+    }
+    monkeypatch.setattr(
+        runner,
+        "_prepare_replay_adaptation",
+        lambda **_kwargs: (
+            None,
+            GateResult("replay_adaptation", True, "ready"),
+        ),
+    )
+    observed_timeouts: list[int] = []
+
+    async def successful_screening(**kwargs):
+        observed_timeouts.append(kwargs["timeout_seconds"])
+        kwargs["lifecycle_callback"]("replay_started", {})
+        return (
+            None,
+            kwargs["dataset"],
+            GateResult("candidate_replay", True, "comparable pair"),
+        )
+
+    monkeypatch.setattr(
+        runner,
+        "_replay_selected_candidate",
+        successful_screening,
+    )
+
+    selected, report = await runner._screen_candidate_population(
+        run_id="run-empirical-screening-timeout",
+        target=SkillTextTarget(skill_path, allow_auto_apply=True),
+        dataset=dataset,
+        candidates=(candidate,),
+        apply_policy="verified_only",
+        require_single_candidate_screening=True,
+    )
+
+    assert selected == (candidate,)
+    assert observed_timeouts == [152]
+    assert report is not None
+
+
+@pytest.mark.asyncio
+async def test_population_screening_enforces_reserved_stage_wall_deadline(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    skill_path = tmp_path / "skills" / "demo" / "SKILL.md"
+    skill_path.parent.mkdir(parents=True)
+    skill_path.write_text("---\nname: demo\n---\n# Demo\n", encoding="utf-8")
+    dataset = SelfEvolveDataset(
+        cases=(EvalCase(case_id="case-1", input="task"),),
+        recipe=DatasetRecipe(
+            source={"kind": "screening-stage-deadline"},
+            split_seed="screening-stage-deadline",
+            splits={"train": ["case-1"], "validation": [], "held_out": []},
+            trainable_case_ids=("case-1",),
+        ),
+    )
+    candidate = CandidateVariant(
+        candidate_id="candidate",
+        target=SelfEvolveTargetRef("skill", "demo", str(skill_path)),
+        content="# Demo\n\nCandidate.\n",
+        rationale="exercise the whole-screening deadline",
+    )
+    runner = SelfEvolveRunner(
+        store=FilesystemSelfEvolveStore(tmp_path),
+        optimizer=SimpleNamespace(),
+        replay_enabled=True,
+        candidate_replay_backend=object(),
+    )
+    monkeypatch.setattr(
+        runner,
+        "_prepare_replay_adaptation",
+        lambda **_kwargs: (
+            None,
+            GateResult("replay_adaptation", True, "ready"),
+        ),
+    )
+
+    async def screening_that_exceeds_stage_deadline(**kwargs):
+        kwargs["lifecycle_callback"]("replay_started", {})
+        await asyncio.sleep(1)
+        raise AssertionError("the reserved stage deadline should cancel replay")
+
+    monkeypatch.setattr(
+        runner,
+        "_replay_selected_candidate",
+        screening_that_exceeds_stage_deadline,
+    )
+    budget_context = _RunBudgetContext(
+        ledger=RunBudgetLedger(BudgetCeilings(None, None)),
+        cold_start_by_stage={
+            BudgetStage.SCREENING: BudgetUsage(
+                wall_seconds=Decimal("0.02")
+            )
+        },
+    )
+
+    started_at = asyncio.get_running_loop().time()
+    selected, report = await runner._screen_candidate_population(
+        run_id="run-screening-stage-deadline",
+        target=SkillTextTarget(skill_path, allow_auto_apply=True),
+        dataset=dataset,
+        candidates=(candidate,),
+        apply_policy="verified_only",
+        require_single_candidate_screening=True,
+        budget_context=budget_context,
+    )
+    elapsed = asyncio.get_running_loop().time() - started_at
+
+    assert elapsed < 0.5
+    assert selected == (candidate,)
+    assert report is not None
+    screening = report["screening"]
+    assert screening["stopped_after_budget_censor"] is True
+    assert screening["screening_outcome"] == "right_censored"
+    assert screening["hard_deadline_exceeded_count"] == 1
+    attempt = screening["attempts"][0]
+    assert attempt["hard_deadline_seconds"] == pytest.approx(0.02)
+    assert attempt["hard_deadline_exceeded"] is True
+    assert attempt["details"]["code"] == "screening_budget_censored"
+    assert attempt["details"]["screening_censor_basis"] == "stage_deadline"
+    assert (
+        attempt["details"]["termination_budget_axis"]
+        == "screening_stage_wall_seconds"
+    )
+
+
+@pytest.mark.asyncio
+async def test_single_candidate_screening_rescues_feasible_held_out_control(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    skill_path = tmp_path / "skills" / "demo" / "SKILL.md"
+    skill_path.parent.mkdir(parents=True)
+    skill_path.write_text("---\nname: demo\n---\n# Demo\n", encoding="utf-8")
+    dataset = SelfEvolveDataset(
+        cases=(
+            EvalCase(case_id="case-timeout", input="slow task"),
+            EvalCase(case_id="case-healthy", input="healthy task"),
+        ),
+        recipe=DatasetRecipe(
+            source={"kind": "held-out-control-rescue"},
+            split_seed="held-out-control-rescue",
+            splits={
+                "train": ["case-timeout"],
+                "validation": [],
+                "held_out": ["case-healthy"],
+            },
+            trainable_case_ids=("case-timeout",),
+            held_out_case_ids=("case-healthy",),
+        ),
+    )
+    candidate = CandidateVariant(
+        candidate_id="candidate",
+        target=SelfEvolveTargetRef("skill", "demo", str(skill_path)),
+        content="# Demo\n\nCandidate.\n",
+        rationale="qualify sole candidate on a feasible control",
+    )
+    runner = SelfEvolveRunner(
+        store=FilesystemSelfEvolveStore(tmp_path),
+        optimizer=SimpleNamespace(),
+        replay_enabled=True,
+        candidate_replay_backend=object(),
+    )
+    runner._candidate_screening_case_observations.update(
+        {
+            "case-timeout": {
+                "baseline_attempt_count": 3,
+                "baseline_success_count": 0,
+                "baseline_timeout_count": 3,
+                "baseline_timeout_max_seconds": 90.0,
+            },
+            "case-healthy": {
+                "baseline_attempt_count": 4,
+                "baseline_success_count": 3,
+                "passed_count": 1,
+            },
+        }
+    )
+    monkeypatch.setattr(
+        runner,
+        "_prepare_replay_adaptation",
+        lambda **_kwargs: (
+            None,
+            GateResult("replay_adaptation", True, "ready"),
+        ),
+    )
+    screened_case_ids: list[str] = []
+
+    async def successful_screening(**kwargs):
+        screened_case_ids.append(kwargs["dataset"].cases[0].case_id)
+        kwargs["lifecycle_callback"]("replay_started", {})
+        return (
+            None,
+            kwargs["dataset"],
+            GateResult("candidate_replay", True, "comparable pair"),
+        )
+
+    monkeypatch.setattr(
+        runner,
+        "_replay_selected_candidate",
+        successful_screening,
+    )
+
+    selected, report = await runner._screen_candidate_population(
+        run_id="run-held-out-control-rescue",
+        target=SkillTextTarget(skill_path, allow_auto_apply=True),
+        dataset=dataset,
+        candidates=(candidate,),
+        apply_policy="verified_only",
+        require_single_candidate_screening=True,
+    )
+
+    assert selected == (candidate,)
+    assert screened_case_ids == ["case-healthy"]
+    assert report is not None
+    assert report["screening"]["representative_case_ids"] == [
+        "case-healthy"
+    ]
+    assert report["screening"]["screening_anchor_case_id"] == "case-healthy"
+    assert report["screening"]["held_out_control_rescue_case_ids"] == [
+        "case-healthy"
+    ]
+    assert report["screening"]["quarantined_control_case_ids"] == [
+        "case-timeout"
+    ]
+
+
+@pytest.mark.asyncio
+async def test_candidate_support_attribution_preserves_raw_timeout_escalation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    skill_path = tmp_path / "skills" / "demo" / "SKILL.md"
+    skill_path.parent.mkdir(parents=True)
+    skill_path.write_text("---\nname: demo\n---\n# Demo\n", encoding="utf-8")
+    target = SkillTextTarget(skill_path, allow_auto_apply=True)
+    dataset = SelfEvolveDataset(
+        cases=(EvalCase(case_id="case-1", input="task"),),
+        recipe=DatasetRecipe(
+            source={"kind": "support-timeout-escalation"},
+            split_seed="support-timeout-escalation",
+            splits={"train": ["case-1"], "validation": [], "held_out": []},
+            trainable_case_ids=("case-1",),
+        ),
+    )
+    candidate = CandidateVariant(
+        candidate_id="candidate",
+        target=target.identity,
+        content="# Demo\n\nCandidate.\n",
+        rationale="preserve raw timeout evidence",
+    )
+    runner = SelfEvolveRunner(
+        store=FilesystemSelfEvolveStore(tmp_path),
+        optimizer=SimpleNamespace(),
+        replay_enabled=True,
+        candidate_replay_backend=object(),
+        replay_timeout_seconds=600,
+        replay_max_steps=4,
+    )
+    capability = SimpleNamespace(
+        capability_package_fingerprint="sha256:candidate-package",
+        fingerprint="sha256:candidate-capability",
+    )
+    adaptation = SimpleNamespace(
+        replay_capability=capability,
+        adaptation_fingerprint="sha256:candidate-adaptation",
+        support_fingerprint="sha256:candidate-support",
+    )
+    def qualification_identity(**kwargs):
+        return _control_qualification_identity(
+            **kwargs,
+            capability_fingerprint=lambda bundle: bundle.fingerprint,
+            adaptation_fingerprint=lambda bundle: bundle.adaptation_fingerprint,
+            support_fingerprint=lambda bundle: bundle.support_fingerprint,
+        )
+
+    monkeypatch.setattr(
+        runner_module,
+        "_measurement_control_identity",
+        qualification_identity,
+    )
+    monkeypatch.setattr(
+        runner,
+        "_prepare_replay_adaptation",
+        lambda **_kwargs: (
+            adaptation,
+            GateResult("replay_adaptation", True, "ready"),
+        ),
+    )
+    current_identity = qualification_identity(
+        case_id="case-1",
+        baseline_skill_fingerprint=target.fingerprint_current_content(),
+        replay_adaptation=adaptation,
+        timeout_seconds=120,
+        max_steps=4,
+        max_tool_calls=12,
+    )
+    counterfactual_identity = {
+        **current_identity,
+        "capability_package_fingerprint": "sha256:qualified-package",
+        "replay_capability_fingerprint": "sha256:qualified-capability",
+        "adaptation_fingerprint": "sha256:qualified-adaptation",
+        "support_fingerprint": "sha256:qualified-support",
+        "control_identity_fingerprint": "sha256:qualified-control",
+    }
+    runner._candidate_screening_control_observations[
+        "sha256:qualified-control"
+    ] = {
+        "identity": counterfactual_identity,
+        "baseline_success_count": 1,
+    }
+    runner._candidate_screening_control_observations[
+        str(current_identity["control_identity_fingerprint"])
+    ] = {
+        "identity": current_identity,
+        "baseline_attempt_count": 1,
+        "baseline_success_count": 0,
+    }
+    observed_timeouts: list[int] = []
+
+    async def timeout_then_succeed(**kwargs):
+        observed_timeouts.append(kwargs["timeout_seconds"])
+        kwargs["lifecycle_callback"]("replay_started", {})
+        if len(observed_timeouts) == 1:
+            return (
+                None,
+                None,
+                GateResult(
+                    "candidate_replay",
+                    False,
+                    "baseline member timed out",
+                    details={
+                        "failure_class": "framework",
+                        "failure_owner": "framework",
+                        "baseline_status": "failed",
+                        "candidate_status": "blocked",
+                        "baseline_failure": {
+                            "code": "replay_member_phase_timeout",
+                            "failure_owner": "framework",
+                        },
+                    },
+                ),
+            )
+        return (
+            None,
+            kwargs["dataset"],
+            GateResult("candidate_replay", True, "comparable pair"),
+        )
+
+    monkeypatch.setattr(
+        runner,
+        "_replay_selected_candidate",
+        timeout_then_succeed,
+    )
+
+    selected, report = await runner._screen_candidate_population(
+        run_id="run-support-timeout-escalation",
+        target=target,
+        dataset=dataset,
+        candidates=(candidate,),
+        apply_policy="verified_only",
+        require_single_candidate_screening=True,
+    )
+
+    assert selected == (candidate,)
+    assert observed_timeouts == [120, 180]
+    assert report is not None
+    screening = report["screening"]
+    assert screening["control_escalation_count"] == 1
+    first_attempt = screening["attempts"][0]["control_case_attempts"][0]
+    assert first_attempt["reason"] == (
+        "baseline is incompatible only with candidate-owned replay support; "
+        "repair the candidate support package"
+    )
+
+
+def test_candidate_owned_support_baseline_incompatibility_is_candidate_repair() -> None:
+    timeout_failure = {
+        "code": "replay_member_phase_timeout",
+        "failure_owner": "framework",
+    }
+    gate = GateResult(
+        gate_name="candidate_replay",
+        passed=False,
+        reason="baseline timed out under candidate support",
+        details={
+            "failure_class": "framework",
+            "failure_owner": "framework",
+            "baseline_failure": timeout_failure,
+        },
+    )
+    current_identity = {
+        "case_id": "case-1",
+        "baseline_skill_fingerprint": "sha256:baseline",
+        "capability_package_fingerprint": "sha256:candidate-package",
+        "replay_capability_fingerprint": "sha256:candidate-capability",
+        "adaptation_fingerprint": "sha256:candidate-adaptation",
+        "support_fingerprint": "sha256:candidate-support",
+        "timeout_envelope_fingerprint": "sha256:candidate-timeout",
+    }
+    qualified_framework_identity = {
+        **current_identity,
+        "capability_package_fingerprint": "framework-only",
+        "replay_capability_fingerprint": "framework-only",
+        "support_fingerprint": "sha256:framework-support",
+    }
+
+    attributed = _candidate_support_baseline_incompatibility_gate(
+        gate,
+        control_identity=current_identity,
+        control_observations={
+            "sha256:candidate-control": {
+                "identity": current_identity,
+                "baseline_attempt_count": 1,
+                "baseline_success_count": 0,
+            },
+            "sha256:framework-control": {
+                "identity": qualified_framework_identity,
+                "baseline_success_count": 1,
+            }
+        },
+    )
+
+    assert attributed is not None and not attributed.passed
+    assert attributed.details["code"] == (
+        "candidate_replay_support_baseline_incompatible"
+    )
+    assert attributed.details["failure_class"] == "candidate"
+    assert attributed.details["failure_owner"] == "candidate"
+    assert attributed.details["next_action"] == "continue_candidate_repair"
+    assert _screening_gate_has_invalid_control(attributed) is False
+
+
+def test_candidate_support_attribution_requires_repeated_current_failure() -> None:
+    gate = GateResult(
+        gate_name="candidate_replay",
+        passed=False,
+        reason="one baseline attempt failed under candidate support",
+        details={
+            "failure_class": "framework",
+            "failure_owner": "framework",
+            "baseline_failure": {
+                "code": "replay_member_phase_timeout",
+                "failure_owner": "framework",
+            },
+        },
+    )
+    current_identity = {
+        "case_id": "case-1",
+        "baseline_skill_fingerprint": "sha256:baseline",
+        "capability_package_fingerprint": "sha256:candidate-package",
+        "replay_capability_fingerprint": "sha256:candidate-capability",
+        "support_fingerprint": "sha256:candidate-support",
+        "timeout_envelope_fingerprint": "sha256:timeout",
+        "timeout_seconds": 120.0,
+        "max_steps": 4,
+        "max_tool_calls": 8,
+    }
+    qualified_identity = {
+        **current_identity,
+        "support_fingerprint": "sha256:qualified-support",
+    }
+
+    attributed = _candidate_support_baseline_incompatibility_gate(
+        gate,
+        control_identity=current_identity,
+        control_observations={
+            "sha256:qualified": {
+                "identity": qualified_identity,
+                "baseline_attempt_count": 1,
+                "baseline_success_count": 1,
+            }
+        },
+    )
+
+    assert attributed is gate
+    assert attributed.details.get("code") is None
+    assert attributed.details["failure_owner"] == "framework"
+
+
+def test_unobserved_candidate_intervention_preserves_framework_baseline_timeout() -> None:
+    timeout_failure = {
+        "code": "replay_member_phase_timeout",
+        "failure_owner": "framework",
+    }
+    gate = GateResult(
+        gate_name="candidate_replay",
+        passed=False,
+        reason="baseline timed out before candidate execution",
+        details={
+            "failure_class": "framework",
+            "failure_owner": "framework",
+            "baseline_status": "failed",
+            "candidate_status": "blocked",
+            "baseline_failure": timeout_failure,
+            "candidate_execution_observed": False,
+            "candidate_executed_count": 0,
+            "candidate_intervention_required": True,
+            "candidate_intervention_observed": None,
+        },
+    )
+    current_identity = {
+        "case_id": "case-1",
+        "baseline_skill_fingerprint": "sha256:baseline",
+        "capability_package_fingerprint": "sha256:candidate-package",
+        "replay_capability_fingerprint": "sha256:candidate-capability",
+        "support_fingerprint": "sha256:candidate-support",
+        "timeout_envelope_fingerprint": "sha256:timeout",
+        "timeout_seconds": 300.0,
+        "max_steps": 3,
+        "max_tool_calls": 8,
+    }
+    counterfactual_identity = {
+        **current_identity,
+        "capability_package_fingerprint": "sha256:qualified-package",
+        "replay_capability_fingerprint": "sha256:qualified-capability",
+        "support_fingerprint": "sha256:qualified-support",
+    }
+
+    attributed = _candidate_support_baseline_incompatibility_gate(
+        gate,
+        control_identity=current_identity,
+        control_observations={
+            "sha256:qualified-control": {
+                "identity": counterfactual_identity,
+                "baseline_success_count": 1,
+            }
+        },
+    )
+
+    assert attributed is gate
+    assert attributed.details["failure_owner"] == "framework"
+    assert attributed.details.get("code") != (
+        "candidate_replay_support_baseline_incompatible"
+    )
+    assert _screening_gate_has_invalid_control(attributed) is True
+
+
+def test_candidate_support_counterfactual_requires_identical_execution_envelope() -> None:
+    timeout_failure = {
+        "code": "replay_member_phase_timeout",
+        "failure_owner": "framework",
+    }
+    gate = GateResult(
+        gate_name="candidate_replay",
+        passed=False,
+        reason="baseline timed out under candidate support",
+        details={
+            "failure_class": "framework",
+            "failure_owner": "framework",
+            "baseline_failure": timeout_failure,
+        },
+    )
+    current_identity = {
+        "case_id": "case-1",
+        "baseline_skill_fingerprint": "sha256:baseline",
+        "capability_package_fingerprint": "sha256:candidate-package",
+        "replay_capability_fingerprint": "sha256:candidate-capability",
+        "adaptation_fingerprint": "sha256:candidate-adaptation",
+        "support_fingerprint": "sha256:candidate-support",
+        "timeout_envelope_fingerprint": "sha256:timeout-120",
+        "timeout_seconds": 120.0,
+        "max_steps": 4,
+        "max_tool_calls": 8,
+    }
+    longer_timeout_identity = {
+        **current_identity,
+        "capability_package_fingerprint": "sha256:other-package",
+        "replay_capability_fingerprint": "sha256:other-capability",
+        "adaptation_fingerprint": "sha256:other-adaptation",
+        "support_fingerprint": "sha256:other-support",
+        "timeout_envelope_fingerprint": "sha256:timeout-180",
+        "timeout_seconds": 180.0,
+    }
+
+    attributed = _candidate_support_baseline_incompatibility_gate(
+        gate,
+        control_identity=current_identity,
+        control_observations={
+            "sha256:longer-timeout-control": {
+                "identity": longer_timeout_identity,
+                "baseline_success_count": 1,
+            }
+        },
+    )
+
+    assert attributed is gate
+    assert attributed.details["failure_class"] == "framework"
+    assert _screening_gate_has_invalid_control(attributed) is True
+
+
+@pytest.mark.asyncio
+async def test_runner_blocks_generation_after_control_preflight_is_infeasible(
+    tmp_path: Path,
+) -> None:
+    skill_path, dataset = _cycle1_runner_fixture(tmp_path, case_count=1)
+    store = FilesystemSelfEvolveStore(tmp_path)
+    case_id = dataset.cases[0].case_id
+    prior_run = store.run_path("campaign-prior-cycle-001")
+    prior_run.mkdir(parents=True)
+    (prior_run / "report.json").write_text(
+        json.dumps(
+            {
+                "target": {
+                    "target_type": "skill",
+                    "target_id": "demo",
+                    "path": str(skill_path),
+                },
+                "screening_control_preflight": {
+                    "harness_fingerprint": (
+                        _screening_control_harness_fingerprint()
+                    )
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    baseline_dir = (
+        prior_run
+        / "screening"
+        / case_id
+        / "replay"
+        / "candidate"
+        / "baseline"
+    )
+    baseline_dir.mkdir(parents=True)
+    (baseline_dir / "lifecycle.json").write_text(
+        json.dumps(
+            {
+                "status": "failed",
+                "failure": {
+                    "code": "replay_member_phase_timeout",
+                    "diagnostics": {"timeout_seconds": 300},
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    (baseline_dir / "aggregate_metrics.json").write_text("{}", encoding="utf-8")
+    optimizer_calls = 0
+
+    class Optimizer:
+        async def propose(self, request: OptimizerRequest) -> OptimizerResult:
+            nonlocal optimizer_calls
+            optimizer_calls += 1
+            return OptimizerResult(candidates=())
+
+    runner = SelfEvolveRunner(
+        store=store,
+        optimizer=Optimizer(),
+        replay_enabled=True,
+        candidate_replay_backend=object(),
+        measurement_mode="required",
+    )
+
+    result = await runner.run_explicit_target(
+        run_id="campaign-current-cycle-001",
+        target=SkillTextTarget(skill_path),
+        dataset=dataset,
+        trace_packs=(),
+        apply_policy="verified_only",
+    )
+
+    report = store.read_report(result.run.run_id)
+    assert optimizer_calls == 0
+    assert result.run.status is SelfEvolveRunStatus.REJECTED
+    assert report["screening_control_preflight"]["status"] == "infeasible"
+    assert report["screening_control_preflight"]["advisory_only"] is False
+    assert report["screening_control_preflight"]["next_action"] == (
+        "repair_or_build_shared_replay_harness"
+    )
+    assert {gate["gate_name"] for gate in report["gate_results"]} == {
+        "evolvability_preflight"
+    }
+
+
+@pytest.mark.asyncio
+async def test_repaired_harness_ignores_stale_timeout_and_allows_generation(
+    tmp_path: Path,
+) -> None:
+    skill_path, dataset = _cycle1_runner_fixture(tmp_path, case_count=1)
+    store = FilesystemSelfEvolveStore(tmp_path)
+    case_id = dataset.cases[0].case_id
+    prior_run = store.run_path("stale-harness-cycle")
+    prior_run.mkdir(parents=True)
+    (prior_run / "report.json").write_text(
+        json.dumps(
+            {
+                "target": {
+                    "target_type": "skill",
+                    "target_id": "demo",
+                    "path": str(skill_path),
+                },
+                "screening_control_preflight": {
+                    "harness_fingerprint": "sha256:stale-harness"
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    baseline_dir = (
+        prior_run
+        / "screening"
+        / case_id
+        / "replay"
+        / "candidate"
+        / "baseline"
+    )
+    baseline_dir.mkdir(parents=True)
+    (baseline_dir / "lifecycle.json").write_text(
+        json.dumps(
+            {
+                "status": "failed",
+                "failure": {
+                    "code": "replay_member_phase_timeout",
+                    "diagnostics": {"timeout_seconds": 300},
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    (baseline_dir / "aggregate_metrics.json").write_text("{}", encoding="utf-8")
+    optimizer_calls = 0
+
+    class Optimizer:
+        async def propose(self, request: OptimizerRequest) -> OptimizerResult:
+            nonlocal optimizer_calls
+            optimizer_calls += 1
+            return OptimizerResult(candidates=())
+
+    runner = SelfEvolveRunner(store=store, optimizer=Optimizer())
+    result = await runner.run_explicit_target(
+        run_id="current-repaired-harness-cycle",
+        target=SkillTextTarget(skill_path),
+        dataset=dataset,
+        trace_packs=(),
+    )
+
+    report = store.read_report(result.run.run_id)
+    assert optimizer_calls == 1
+    assert report["screening_control_preflight"]["status"] == "unknown"
+    assert (
+        report["screening_control_preflight"]["candidate_generation_allowed"]
+        is True
+    )
+
+
+def test_verified_prerequisite_files_restore_format_only_differences() -> None:
+    target = SelfEvolveTargetRef(target_type="skill", target_id="demo")
+    feedback = EvaluationSummary(
+        variant_id="support-prerequisite",
+        dataset_split="historical_repair",
+        metrics={
+            "candidate_status": "prerequisite",
+            "repair_candidate_package": {
+                "candidate_id": "support-prerequisite",
+                "files": [
+                    {
+                        "path": "replay/runtime.py",
+                        "operation": "upsert",
+                        "content": "def replay():\n    return True\n",
+                        "executable": False,
+                    }
+                ],
+            },
+        },
+    )
+    candidate = CandidateVariant(
+        candidate_id="composite",
+        target=target,
+        content="# Demo\n\nNew behavior.\n",
+        rationale="compose behavior",
+        parent_candidate_ids=("support-prerequisite",),
+        files=(
+            CandidateFileDelta(
+                path="replay/runtime.py",
+                content="def replay():\n    return True",
+            ),
+        ),
+    )
+
+    canonical, gate, count = _canonicalize_verified_prerequisite_files(
+        candidate,
+        (feedback,),
+    )
+
+    assert gate is None
+    assert count == 1
+    assert canonical.files[0].content == "def replay():\n    return True\n"
+
+
+def test_verified_prerequisite_files_reject_material_support_mutation() -> None:
+    target = SelfEvolveTargetRef(target_type="skill", target_id="demo")
+    feedback = EvaluationSummary(
+        variant_id="support-prerequisite",
+        dataset_split="historical_repair",
+        metrics={
+            "candidate_status": "prerequisite",
+            "repair_candidate_package": {
+                "candidate_id": "support-prerequisite",
+                "files": [
+                    {
+                        "path": "replay/runtime.py",
+                        "operation": "upsert",
+                        "content": "def replay():\n    return True\n",
+                    }
+                ],
+            },
+        },
+    )
+    candidate = CandidateVariant(
+        candidate_id="composite",
+        target=target,
+        content="# Demo\n\nNew behavior.\n",
+        rationale="compose behavior",
+        parent_candidate_ids=("support-prerequisite",),
+        files=(
+            CandidateFileDelta(
+                path="replay/runtime.py",
+                content="def replay():\n    return False\n",
+            ),
+        ),
+    )
+
+    canonical, gate, count = _canonicalize_verified_prerequisite_files(
+        candidate,
+        (feedback,),
+    )
+
+    assert canonical == candidate
+    assert count == 0
+    assert gate is not None
+    assert gate.gate_name == "verified_prerequisite_fidelity"
+    assert gate.details["code"] == "verified_prerequisite_support_mutation"
+
+
+@pytest.mark.asyncio
+async def test_prerequisite_package_rehydrates_for_next_campaign_cycle(
+    tmp_path: Path,
+) -> None:
+    skill_path, dataset = _cycle1_runner_fixture(tmp_path)
+    current_content = skill_path.read_text(encoding="utf-8")
+
+    class Optimizer:
+        async def propose(self, request: OptimizerRequest) -> OptimizerResult:
+            return OptimizerResult(
+                candidates=(
+                    CandidateVariant(
+                        candidate_id="persisted-support-prerequisite",
+                        target=SelfEvolveTargetRef(
+                            "skill", "demo", str(skill_path)
+                        ),
+                        content=current_content,
+                        files=(
+                            CandidateFileDelta(
+                                path="replay/runtime.py",
+                                content="def replay():\n    return True\n",
+                            ),
+                        ),
+                        rationale="persist verified evaluation support",
+                    ),
+                )
+            )
+
+    store = FilesystemSelfEvolveStore(tmp_path)
+    runner = SelfEvolveRunner(
+        store=store,
+        optimizer=Optimizer(),
+        max_iterations=1,
+        min_eval_cases=0,
+    )
+    await runner.run_explicit_target(
+        run_id="run-persisted-prerequisite",
+        target=SkillTextTarget(skill_path, allow_auto_apply=True),
+        dataset=dataset,
+        trace_packs=(),
+        apply_policy="proposal",
+    )
+
+    report_path = store.run_path("run-persisted-prerequisite") / "report.json"
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    target_gate = next(
+        gate
+        for gate in report["gate_results"]
+        if gate["gate_name"] == "target_behavior_delta"
+    )
+    assert target_gate["details"]["causal_failure_events"][0]["code"] == (
+        "evaluation_support_bootstrap_only"
+    )
+    feedback = _feedback_from_report(report, report_path=report_path)
+    prerequisite = next(
+        item
+        for item in feedback
+        if item.variant_id == "persisted-support-prerequisite"
+        and item.metrics.get("candidate_status") == "prerequisite"
+    )
+
+    assert prerequisite.metrics["failed_gates"] == ["target_behavior_delta"]
+    package = prerequisite.metrics["repair_candidate_package"]
+    assert package["candidate_id"] == "persisted-support-prerequisite"
+    assert package["files"][0]["path"] == "replay/runtime.py"
 
 
 @pytest.mark.asyncio
@@ -8057,7 +17511,13 @@ async def test_runner_reuses_successful_baseline_replay_across_candidate_populat
                     variant_id=candidate.candidate_id,
                     status="succeeded",
                     trajectory=[{"action": {"content": candidate.candidate_id}}],
-                    metrics={"repetition_count": 3, "successful_repetition_count": 3},
+                    metrics={
+                        "repetition_count": 3,
+                        "successful_repetition_count": 3,
+                        "evidence_strategy_passed": (
+                            candidate.candidate_id.startswith("candidate-two")
+                        ),
+                    },
                 ),
                 member_results=() if explicit_empty_members else None,
             )
@@ -8100,6 +17560,7 @@ async def test_runner_reuses_successful_baseline_replay_across_candidate_populat
         store=FilesystemSelfEvolveStore(tmp_path),
         optimizer=PopulationOptimizer(),
         evaluation_backend=EvaluationBackend(),
+        regression_suites=_independent_regression_suites_for_test(dataset),
         post_apply_evaluator=post_apply,
         min_eval_cases=0,
         replay_enabled=True,
@@ -8115,22 +17576,15 @@ async def test_runner_reuses_successful_baseline_replay_across_candidate_populat
         apply_policy="auto_verified",
     )
 
-    expected_baseline_dir = (
-        tmp_path
-        / ".aworld"
-        / "self_evolve"
-        / "run-baseline-reuse"
-        / "replay"
-        / "candidate-one"
-        / "baseline"
-    )
     assert result.run.status.value == (
         "rejected" if explicit_empty_members else "succeeded"
     )
-    assert replay_backend.baseline_replay_dirs == (
-        [None, None]
-        if explicit_empty_members
-        else [None, str(expected_baseline_dir)]
+    # This fake backend does not persist a request carrying the exact support
+    # fingerprint, so its in-memory baseline is deliberately not reusable.
+    assert replay_backend.baseline_replay_dirs[:2] == [None, None]
+    assert all(
+        replay_dir is None
+        for replay_dir in replay_backend.baseline_replay_dirs[2:]
     )
 
 
@@ -8258,6 +17712,148 @@ async def test_runner_population_disposition_uses_typed_failure_owner_and_scope(
 
 
 @pytest.mark.asyncio
+async def test_candidate_capability_operational_preflight_blocks_paired_replay(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    skill_path = tmp_path / "skills" / "demo" / "SKILL.md"
+    replay_root = skill_path.parent / "replay"
+    replay_root.mkdir(parents=True)
+    skill_path.write_text("---\nname: demo\n---\n# Demo\n", encoding="utf-8")
+    (replay_root / "capability.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "aworld.skill.replay_capability.v1",
+                "capability_id": "demo-replay",
+                "protocol": "aworld.replay.subprocess.v1",
+                "entrypoint": "replay/compiler.py",
+                "handles": ["http_resource"],
+                "runtime_files": ["replay/runtime.py"],
+            }
+        ),
+        encoding="utf-8",
+    )
+    (replay_root / "compiler.py").write_text("pass\n", encoding="utf-8")
+    (replay_root / "runtime.py").write_text("pass\n", encoding="utf-8")
+    target = SkillTextTarget(skill_path, allow_auto_apply=True)
+    candidate = CandidateVariant(
+        candidate_id="candidate-invalid-runtime",
+        target=target.identity,
+        content=skill_path.read_text(encoding="utf-8") + "\nNew guidance.\n",
+        rationale="exercise runtime preflight",
+        target_fingerprint=target.fingerprint_current_content(),
+    )
+    requirement = ReplayCapabilityRequirement(
+        requirement_id="requirement-http",
+        kind="http_resource",
+        identifier="https://example.test/data",
+        case_ids=("case-1",),
+        evidence_refs=("evidence-1",),
+        status="runtime_required",
+    )
+    dataset = SelfEvolveDataset(
+        cases=(EvalCase(case_id="case-1", input="task"),),
+        recipe=DatasetRecipe(
+            source={"kind": "trajectory_set", "case_count": 1},
+            split_seed="seed",
+            splits={"train": ["case-1"], "validation": [], "held_out": []},
+            trainable_case_ids=("case-1",),
+        ),
+    )
+
+    class NoopOptimizer:
+        async def propose(self, request: OptimizerRequest) -> OptimizerResult:
+            return OptimizerResult(candidates=())
+
+    runner = SelfEvolveRunner(
+        store=FilesystemSelfEvolveStore(tmp_path),
+        optimizer=NoopOptimizer(),
+        replay_enabled=True,
+        candidate_replay_backend=object(),
+    )
+    capability = SimpleNamespace(
+        capability_id="demo-replay",
+        fingerprint="sha256:frozen",
+        services=(SimpleNamespace(transport="skill_runtime"),),
+    )
+    monkeypatch.setattr(
+        runner,
+        "_prepare_replay_adaptation",
+        lambda **kwargs: (
+            (
+                SimpleNamespace(replay_capability=capability),
+                GateResult("replay_adaptation", True, "passed"),
+            )
+            if kwargs.get("capability_skill_root") is not None
+            else (
+                None,
+                GateResult("replay_adaptation", False, "candidate capability required"),
+            )
+        ),
+    )
+
+    async def fail_operational_preflight(*args, **kwargs):
+        raise ReplayServiceProtocolError(
+            "runtime trace is not bidirectional",
+            code="protocol_trace_schema_field_validation_failed",
+        )
+
+    monkeypatch.setattr(
+        runner_module,
+        "preflight_frozen_replay_capability",
+        fail_operational_preflight,
+    )
+
+    gates = await runner._validate_candidate_capabilities(
+        run_id="run-operational-preflight",
+        target=target,
+        dataset=dataset,
+        candidate=candidate,
+        requirements=(requirement,),
+    )
+
+    assert len(gates) == 1
+    gate = gates[0]
+    assert gate.gate_name == "candidate_capability_replay"
+    assert gate.passed is False
+    assert gate.details["failure_class"] == "candidate"
+    assert gate.details["code"] == "protocol_trace_schema_field_validation_failed"
+    assert gate.details["failure_event"]["owner"] == "candidate"
+
+    async def fail_startup_preflight(*args, **kwargs):
+        raise ReplayServiceReadinessTimeout(
+            "connection refused",
+            phase="startup",
+            timeout_seconds=15.0,
+            service_id="service-0",
+            transport="skill_runtime",
+            last_error_type="ConnectionRefusedError",
+            last_error_errno=61,
+            process_returncode=None,
+        )
+
+    monkeypatch.setattr(
+        runner_module,
+        "preflight_frozen_replay_capability",
+        fail_startup_preflight,
+    )
+    startup_gates = await runner._validate_candidate_capabilities(
+        run_id="run-operational-preflight-startup-timeout",
+        target=target,
+        dataset=dataset,
+        candidate=candidate,
+        requirements=(requirement,),
+    )
+
+    startup_gate = startup_gates[0]
+    assert startup_gate.details["failure_class"] == "infrastructure"
+    assert startup_gate.details["repairable"] is True
+    assert startup_gate.details["code"] == "replay_service_startup_timeout"
+    assert startup_gate.details["failure_event"]["owner"] == "infrastructure"
+    assert startup_gate.details["failure_event"]["scope"] == "shared_run"
+
+
+@pytest.mark.asyncio
 async def test_runner_validates_registered_capability_before_replay(
     tmp_path: Path,
 ) -> None:
@@ -8352,9 +17948,7 @@ async def test_runner_validates_registered_capability_before_replay(
         if gate["gate_name"] == "candidate_capability_replay"
     )
     assert capability_gate["passed"] is False
-    assert capability_gate["details"]["diagnostics"][0]["code"] == (
-        "missing_capability_manifest"
-    )
+    assert capability_gate["details"]["code"] == "missing_capability_manifest"
 
 
 @pytest.mark.asyncio
@@ -8414,11 +18008,20 @@ async def test_runner_screens_population_on_representative_member_before_full_re
 
     class ReplayBackend:
         def __init__(self) -> None:
-            self.calls: list[tuple[str, tuple[str, ...]]] = []
+            self.calls: list[
+                tuple[str, tuple[str, ...], float | None, int | None]
+            ] = []
 
         async def replay_candidate(self, request, *, candidate, dataset):
             case_ids = tuple(case.case_id for case in dataset.cases)
-            self.calls.append((candidate.candidate_id, case_ids))
+            self.calls.append(
+                (
+                    candidate.candidate_id,
+                    case_ids,
+                    request.timeout_seconds,
+                    request.max_tool_calls,
+                )
+            )
             baseline = ReplayVariantResult(
                 variant_id="baseline",
                 status="succeeded",
@@ -8485,8 +18088,9 @@ async def test_runner_screens_population_on_representative_member_before_full_re
 
     assert result.run.status.value == "rejected"
     assert replay_backend.calls == [
-        ("candidate-1--screening", ("task-a",)),
-        ("candidate-1", ("task-a", "task-b")),
+        ("candidate-1", ("task-a",), 90, 12),
+        ("candidate-2", ("task-a",), 90, 12),
+        ("candidate-1", ("task-a", "task-b"), 600, 48),
     ]
     report = json.loads(
         (tmp_path / ".aworld" / "self_evolve" / "run-population-screening" / "report.json").read_text(
@@ -8495,13 +18099,648 @@ async def test_runner_screens_population_on_representative_member_before_full_re
     )
     assert report["population"]["screening"]["selected_candidate_id"] == "candidate-1"
     assert report["population"]["screening"]["representative_case_id"] == "task-a"
+    assert report["population"]["screening"]["representative_case_ids"] == [
+        "task-a",
+    ]
+    assert report["population"]["screening"][
+        "configured_representative_case_ids"
+    ] == ["task-a", "task-b"]
+    assert report["population"]["screening"]["screening_strategy"] == (
+        "adaptive_qualification_then_authoritative"
+    )
+    assert report["population"]["screening_execution"][
+        "physical_pair_execution_count"
+    ] == 2
+    assert report["population"]["screening_execution"]["strategy_counts"] == {
+        "adaptive_qualification_then_authoritative": 1
+    }
+    assert report["population"]["screening"]["max_tool_calls"] == 12
     stage_counts = report["population"]["lifecycle"]["stage_counts"]
-    assert stage_counts["representative_screening"] == 1
+    assert stage_counts["representative_screening"] == 2
     assert stage_counts["paired_replay_started"] == 1
     assert sum(
         stage_counts[stage]
         for stage in ("representative_screening", "paired_replay_started")
     ) == len(replay_backend.calls)
+
+
+@pytest.mark.asyncio
+async def test_population_screening_offers_reusable_control_to_next_candidate(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    skill_path = tmp_path / "skills" / "demo" / "SKILL.md"
+    skill_path.parent.mkdir(parents=True)
+    skill_path.write_text("---\nname: demo\n---\n# Demo\n", encoding="utf-8")
+    dataset = SelfEvolveDataset(
+        cases=(EvalCase(case_id="task-a", input="Replay task A"),),
+        recipe=DatasetRecipe(
+            source={"kind": "screening_baseline_reuse"},
+            split_seed="seed",
+            splits={"train": ["task-a"], "validation": [], "held_out": []},
+            trainable_case_ids=("task-a",),
+        ),
+    )
+    target_ref = SelfEvolveTargetRef(
+        target_type="skill",
+        target_id="demo",
+        path=str(skill_path),
+    )
+    candidates = tuple(
+        CandidateVariant(
+            candidate_id=f"candidate-{index}",
+            target=target_ref,
+            content=f"---\nname: demo\n---\n# Demo\n\nCandidate {index}.\n",
+            rationale="screen",
+        )
+        for index in (1, 2)
+    )
+    runner = SelfEvolveRunner(
+        store=FilesystemSelfEvolveStore(tmp_path),
+        optimizer=SimpleNamespace(),
+        replay_enabled=True,
+        candidate_replay_backend=object(),
+        measurement_mode="required",
+    )
+    offered_baseline_dirs: list[str | None] = []
+
+    async def successful_screening(**kwargs):
+        offered_baseline_dirs.append(kwargs["baseline_replay_dir"])
+        candidate = kwargs["selected_candidate"]
+        active_dataset = kwargs["dataset"]
+        request = CandidateReplayRequest(
+            run_id="run-screening-baseline-reuse",
+            task_id=active_dataset.cases[0].case_id,
+            workspace_root=str(tmp_path),
+            target=target_ref,
+            candidate_id=candidate.candidate_id,
+            overlay_skill_root=str(tmp_path / "overlay"),
+            task_input=active_dataset.cases[0].input,
+            baseline_replay_dir=kwargs["baseline_replay_dir"],
+            artifact_namespace=kwargs["artifact_namespace"],
+        )
+        baseline = ReplayVariantResult(
+            variant_id="baseline",
+            status=ReplayExecutionStatus.SUCCEEDED,
+            trajectory=[{"action": {"content": "baseline"}}],
+            metrics={"repetition_count": 1, "successful_repetition_count": 1},
+        )
+        candidate_result = replace(
+            baseline,
+            variant_id=candidate.candidate_id,
+        )
+        replay_result = _CandidateReplayResult(
+            request=request,
+            baseline=baseline,
+            candidate=candidate_result,
+            member_results=(
+                CandidateReplayMemberResult(
+                    case_id=active_dataset.cases[0].case_id,
+                    request=request,
+                    baseline=baseline,
+                    candidate=candidate_result,
+                ),
+            ),
+        )
+        return (
+            replay_result,
+            active_dataset,
+            GateResult(
+                gate_name="candidate_replay",
+                passed=True,
+                reason="screening pair is comparable",
+            ),
+        )
+
+    monkeypatch.setattr(
+        runner,
+        "_replay_selected_candidate",
+        successful_screening,
+    )
+
+    await runner._screen_candidate_population(
+        run_id="run-screening-baseline-reuse",
+        target=SkillTextTarget(skill_path, allow_auto_apply=True),
+        dataset=dataset,
+        candidates=candidates,
+        apply_policy="verified_only",
+    )
+
+    assert offered_baseline_dirs[0] is None
+    assert offered_baseline_dirs[1] is not None
+    assert offered_baseline_dirs[1].endswith(
+        "/screening/task-a/replay/candidate-1/members"
+    )
+
+
+@pytest.mark.parametrize(
+    ("candidate_count", "configured_max_cases", "expected_limit"),
+    (
+        (1, 3, 1),
+        (2, 3, 1),
+        (3, 3, 2),
+        (4, 3, 2),
+        (8, 3, 3),
+        (32, 2, 2),
+    ),
+)
+def test_candidate_screening_qualification_panel_grows_logarithmically(
+    candidate_count: int,
+    configured_max_cases: int,
+    expected_limit: int,
+) -> None:
+    assert _candidate_screening_qualification_case_limit(
+        candidate_count=candidate_count,
+        configured_max_cases=configured_max_cases,
+    ) == expected_limit
+
+
+@pytest.mark.asyncio
+async def test_population_screening_falls_back_after_invalid_control_case(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    skill_path = tmp_path / "skills" / "demo" / "SKILL.md"
+    skill_path.parent.mkdir(parents=True)
+    skill_path.write_text("---\nname: demo\n---\n# Demo\n", encoding="utf-8")
+    case_ids = ("task-a", "task-b", "task-c")
+    dataset = SelfEvolveDataset(
+        cases=tuple(EvalCase(case_id=case_id, input=case_id) for case_id in case_ids),
+        recipe=DatasetRecipe(
+            source={"kind": "screening_control_fallback"},
+            split_seed="seed",
+            splits={"train": list(case_ids), "validation": [], "held_out": []},
+            trainable_case_ids=case_ids,
+        ),
+    )
+    target_ref = SelfEvolveTargetRef(
+        target_type="skill",
+        target_id="demo",
+        path=str(skill_path),
+    )
+    candidates = tuple(
+        CandidateVariant(
+            candidate_id=f"candidate-{index}",
+            target=target_ref,
+            content=f"# Demo\n\nCandidate {index}.\n",
+            rationale="screen",
+        )
+        for index in (1, 2, 3)
+    )
+    runner = SelfEvolveRunner(
+        store=FilesystemSelfEvolveStore(tmp_path),
+        optimizer=SimpleNamespace(),
+        replay_enabled=True,
+        candidate_replay_backend=object(),
+        candidate_screening_max_cases=3,
+        measurement_invalid_control_patience=2,
+        measurement_mode="required",
+    )
+    calls: list[tuple[str, str]] = []
+    measurement_contracts: list[tuple[str, str, str]] = []
+
+    async def replay_with_control_fallback(**kwargs):
+        candidate_id = kwargs["selected_candidate"].candidate_id
+        case_id = kwargs["dataset"].cases[0].case_id
+        calls.append((candidate_id, case_id))
+        experiment = kwargs["measurement_experiment"]
+        assert experiment is not None
+        measurement_contracts.append(
+            (
+                kwargs["measurement_stage"],
+                experiment.selection_protocol,
+                kwargs["artifact_namespace"],
+            )
+        )
+        kwargs["lifecycle_callback"]("replay_started", {})
+        if case_id == "task-a":
+            return (
+                None,
+                None,
+                GateResult(
+                    gate_name="candidate_replay",
+                    passed=False,
+                    reason="baseline timed out before candidate execution",
+                    details={
+                        "failure_class": "framework",
+                        "failure_owner": "framework",
+                        "baseline_status": "failed",
+                        "candidate_status": "blocked",
+                        "baseline_failure": {
+                            "code": "replay_member_phase_timeout",
+                            "failure_owner": "framework",
+                        },
+                        "candidate_execution_observed": False,
+                        "candidate_executed_count": 0,
+                        "candidate_intervention_required": True,
+                        "candidate_intervention_observed": None,
+                    },
+                ),
+            )
+        return (
+            None,
+            kwargs["dataset"],
+            GateResult(
+                gate_name="candidate_replay",
+                passed=True,
+                reason="fallback control produced a comparable pair",
+            ),
+        )
+
+    monkeypatch.setattr(
+        runner,
+        "_replay_selected_candidate",
+        replay_with_control_fallback,
+    )
+
+    selected, report = await runner._screen_candidate_population(
+        run_id="run-screening-control-fallback",
+        target=SkillTextTarget(skill_path, allow_auto_apply=True),
+        dataset=dataset,
+        candidates=candidates,
+        apply_policy="verified_only",
+    )
+
+    assert selected == candidates[:1]
+    fallback_case_id = calls[1][1]
+    assert fallback_case_id != "task-a"
+    assert calls == [
+        ("candidate-1", "task-a"),
+        ("candidate-1", fallback_case_id),
+        ("candidate-2", fallback_case_id),
+        ("candidate-3", fallback_case_id),
+    ]
+    assert measurement_contracts == [
+        ("screening", "staged_qualification_candidate", "screening/task-a"),
+        (
+            "screening",
+            "staged_qualification_candidate",
+            f"screening/{fallback_case_id}",
+        ),
+        (
+            "screening",
+            "staged_qualification_candidate",
+            f"screening/{fallback_case_id}",
+        ),
+        (
+            "screening",
+            "staged_qualification_candidate",
+            f"screening/{fallback_case_id}",
+        ),
+    ]
+    assert report is not None
+    screening = report["screening"]
+    assert screening["control_fallback_count"] == 1
+    assert screening["physical_pair_execution_count"] == 4
+    first_attempted_case_ids = screening["attempts"][0][
+        "attempted_control_case_ids"
+    ]
+    assert first_attempted_case_ids[0] == "task-a"
+    assert first_attempted_case_ids[-1] == fallback_case_id
+    assert len(first_attempted_case_ids) == len(case_ids)
+    assert screening["attempts"][1]["attempted_control_case_ids"] == [
+        fallback_case_id,
+    ]
+    assert screening["attempts"][2]["attempted_control_case_ids"] == [
+        fallback_case_id,
+    ]
+    assert all(
+        (attempt["details"] or {}).get("code")
+        != "candidate_replay_support_baseline_incompatible"
+        for attempt in screening["attempts"]
+    )
+
+
+@pytest.mark.asyncio
+async def test_population_screening_exhausts_distinct_control_panel(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    skill_path = tmp_path / "skills" / "demo" / "SKILL.md"
+    skill_path.parent.mkdir(parents=True)
+    skill_path.write_text("---\nname: demo\n---\n# Demo\n", encoding="utf-8")
+    case_ids = ("task-a", "task-b", "task-c")
+    dataset = SelfEvolveDataset(
+        cases=tuple(EvalCase(case_id=case_id, input=case_id) for case_id in case_ids),
+        recipe=DatasetRecipe(
+            source={"kind": "screening_control_exhaustion"},
+            split_seed="seed",
+            splits={"train": list(case_ids), "validation": [], "held_out": []},
+            trainable_case_ids=case_ids,
+        ),
+    )
+    candidate = CandidateVariant(
+        candidate_id="candidate",
+        target=SelfEvolveTargetRef(
+            target_type="skill",
+            target_id="demo",
+            path=str(skill_path),
+        ),
+        content="# Demo\n\nCandidate.\n",
+        rationale="screen",
+    )
+    runner = SelfEvolveRunner(
+        store=FilesystemSelfEvolveStore(tmp_path),
+        optimizer=SimpleNamespace(),
+        replay_enabled=True,
+        candidate_replay_backend=object(),
+        candidate_screening_max_cases=3,
+        measurement_invalid_control_patience=1,
+    )
+    calls: list[str] = []
+
+    async def always_invalid_control(**kwargs):
+        calls.append(kwargs["dataset"].cases[0].case_id)
+        kwargs["lifecycle_callback"]("replay_started", {})
+        return (
+            None,
+            None,
+            GateResult(
+                gate_name="candidate_replay",
+                passed=False,
+                reason="baseline screening horizon elapsed before candidate execution",
+                details={
+                    "code": "screening_budget_censored",
+                    "screening_outcome": "right_censored",
+                    "screening_censor_basis": "baseline_horizon",
+                    "failure_class": "framework",
+                    "failure_owner": "framework",
+                    "failure_scope": "member",
+                    "repairable": False,
+                },
+            ),
+        )
+
+    monkeypatch.setattr(
+        runner,
+        "_replay_selected_candidate",
+        always_invalid_control,
+    )
+
+    selected, report = await runner._screen_candidate_population(
+        run_id="run-screening-control-exhaustion",
+        target=SkillTextTarget(skill_path, allow_auto_apply=True),
+        dataset=dataset,
+        candidates=(candidate,),
+        apply_policy="verified_only",
+        require_single_candidate_screening=True,
+    )
+
+    assert selected == ()
+    assert len(calls) == 6
+    assert calls[0] == calls[1]
+    assert calls[2] == calls[3]
+    assert calls[4] == calls[5]
+    assert set(calls) == set(case_ids)
+    assert report is not None
+    screening = report["screening"]
+    assert screening["stopped_by_shared_infrastructure"] is False
+    assert screening["stopped_by_shared_measurement"] is True
+    assert screening["stopped_by_shared_validation"] is True
+    assert screening["stopped_by_invalid_control"] is True
+    assert screening["screening_outcome"] == "invalid_control"
+    assert screening["control_fallback_count"] == 2
+    assert screening["control_escalation_count"] == 3
+    assert set(screening["invalid_control_case_ids"]) == set(case_ids)
+    terminal_details = screening["attempts"][0]["details"]
+    assert terminal_details["code"] == "screening_control_infeasible"
+    assert terminal_details["failure_class"] == "framework"
+    assert terminal_details["resume_safe"] is False
+    assert terminal_details.get("resume_candidate_id") is None
+
+
+@pytest.mark.asyncio
+async def test_population_screening_defers_baseline_only_control_frontier(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    skill_path = tmp_path / "skills" / "demo" / "SKILL.md"
+    skill_path.parent.mkdir(parents=True)
+    skill_path.write_text("---\nname: demo\n---\n# Demo\n", encoding="utf-8")
+    case_ids = ("unstable-control", "fallback-control")
+    dataset = SelfEvolveDataset(
+        cases=tuple(
+            EvalCase(case_id=case_id, input=case_id) for case_id in case_ids
+        ),
+        recipe=DatasetRecipe(
+            source={"kind": "baseline-only-control-frontier"},
+            split_seed="baseline-only-control-frontier",
+            splits={"train": list(case_ids), "validation": [], "held_out": []},
+            trainable_case_ids=case_ids,
+        ),
+    )
+    target_ref = SelfEvolveTargetRef(
+        target_type="skill",
+        target_id="demo",
+        path=str(skill_path),
+    )
+    candidates = tuple(
+        CandidateVariant(
+            candidate_id=f"candidate-{index}",
+            target=target_ref,
+            content=f"# Demo\n\nCandidate {index}.\n",
+            rationale="authoritative fallback",
+            files=(
+                CandidateFileDelta(
+                    path="replay/runtime.py",
+                    content=f"# candidate {index}\n",
+                ),
+            ),
+        )
+        for index in (1, 2)
+    )
+    capability_requirements = (
+        ReplayCapabilityRequirement(
+            requirement_id="runtime-control",
+            kind="http_resource",
+            identifier="https://example.test/runtime",
+            case_ids=case_ids,
+            evidence_refs=("context:runtime",),
+            status="runtime_required",
+        ),
+    )
+    runner = SelfEvolveRunner(
+        store=FilesystemSelfEvolveStore(tmp_path),
+        optimizer=SimpleNamespace(),
+        replay_enabled=True,
+        candidate_replay_backend=object(),
+        candidate_screening_max_cases=2,
+        replay_timeout_seconds=90,
+        measurement_mode="required",
+    )
+    calls: list[str] = []
+
+    async def baseline_timeout(**kwargs):
+        case_id = kwargs["dataset"].cases[0].case_id
+        calls.append(case_id)
+        kwargs["lifecycle_callback"]("replay_started", {})
+        return (
+            None,
+            None,
+            GateResult(
+                gate_name="candidate_replay",
+                passed=False,
+                reason="baseline timed out before candidate execution",
+                details={
+                    "failure_class": "framework",
+                    "failure_owner": "framework",
+                    "baseline_status": "failed",
+                    "candidate_status": "blocked",
+                    "baseline_failure": {
+                        "code": "replay_member_phase_timeout",
+                        "outcome": "framework_failure",
+                    },
+                    "candidate_execution_observed": False,
+                    "candidate_intervention_required": True,
+                    "candidate_intervention_observed": None,
+                    "failed_members": [
+                        {
+                            "case_id": case_id,
+                            "baseline_status": "failed",
+                            "candidate_status": "blocked",
+                            "baseline_failure": {
+                                "code": "replay_member_phase_timeout",
+                                "outcome": "framework_failure",
+                            },
+                        }
+                    ],
+                },
+            ),
+        )
+
+    monkeypatch.setattr(runner, "_replay_selected_candidate", baseline_timeout)
+
+    selected, report = await runner._screen_candidate_population(
+        run_id="run-authoritative-control-fallback",
+        target=SkillTextTarget(skill_path, allow_auto_apply=True),
+        dataset=dataset,
+        candidates=candidates,
+        apply_policy="verified_only",
+        capability_requirements=capability_requirements,
+    )
+
+    assert selected == candidates
+    assert calls == list(case_ids)
+    assert report is not None
+    screening = report["screening"]
+    assert screening["physical_pair_execution_count"] == 2
+    assert screening["control_fallback_count"] == 1
+    assert screening["stopped_by_shared_measurement"] is False
+    assert screening["deferred_to_authoritative_after_invalid_control"] is True
+    assert screening["screening_outcome"] == "authoritative_fallback"
+    assert screening["selected_candidate_ids"] == [
+        "candidate-1",
+        "candidate-2",
+    ]
+    assert all(
+        disposition == "promoted_to_authoritative"
+        for disposition in screening["candidate_dispositions"].values()
+    )
+
+    selected_again, second_report = await runner._screen_candidate_population(
+        run_id="run-authoritative-control-fallback-resume",
+        target=SkillTextTarget(skill_path, allow_auto_apply=True),
+        dataset=dataset,
+        candidates=candidates,
+        apply_policy="verified_only",
+        capability_requirements=capability_requirements,
+    )
+
+    assert selected_again == candidates
+    assert calls == list(case_ids)
+    assert second_report is not None
+    second_screening = second_report["screening"]
+    assert second_screening["physical_pair_execution_count"] == 0
+    assert second_screening["deferred_to_authoritative_after_invalid_control"]
+    assert second_screening["screening_outcome"] == "authoritative_fallback"
+
+
+@pytest.mark.asyncio
+async def test_population_screening_does_not_retry_control_after_candidate_deadline(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    skill_path = tmp_path / "skills" / "demo" / "SKILL.md"
+    skill_path.parent.mkdir(parents=True)
+    skill_path.write_text("---\nname: demo\n---\n# Demo\n", encoding="utf-8")
+    case_ids = ("task-a", "task-b", "task-c")
+    dataset = SelfEvolveDataset(
+        cases=tuple(EvalCase(case_id=item, input=item) for item in case_ids),
+        recipe=DatasetRecipe(
+            source={"kind": "candidate-deadline"},
+            split_seed="candidate-deadline",
+            splits={"train": list(case_ids), "validation": [], "held_out": []},
+            trainable_case_ids=case_ids,
+        ),
+    )
+    candidate = CandidateVariant(
+        candidate_id="candidate-deadline",
+        target=SelfEvolveTargetRef("skill", "demo", str(skill_path)),
+        content="# Demo\n\nCandidate.\n",
+        rationale="deadline fixture",
+    )
+    runner = SelfEvolveRunner(
+        store=FilesystemSelfEvolveStore(tmp_path),
+        optimizer=SimpleNamespace(),
+        replay_enabled=True,
+        candidate_replay_backend=object(),
+        candidate_screening_max_cases=3,
+        measurement_mode="required",
+    )
+    calls: list[str] = []
+    event = ReplayFailureEvent(
+        code="candidate_screening_deadline_exceeded",
+        owner=FailureOwner.CANDIDATE,
+        stage=FailureStage.TASK_ROLLOUT,
+        scope=FailureScope.CANDIDATE,
+        repairable=True,
+        category="candidate_screening",
+    ).to_dict()
+
+    async def candidate_deadline(**kwargs):
+        calls.append(kwargs["dataset"].cases[0].case_id)
+        kwargs["lifecycle_callback"]("replay_started", {})
+        return (
+            None,
+            None,
+            GateResult(
+                gate_name="candidate_replay",
+                passed=False,
+                reason="candidate exceeded screening deadline",
+                details={
+                    "code": "candidate_screening_deadline_exceeded",
+                    "failure_class": "candidate",
+                    "failure_owner": "candidate",
+                    "failure_scope": "candidate",
+                    "repairable": True,
+                    "evaluator_skipped": True,
+                    "failure_event": event,
+                    "causal_failure_events": [event],
+                },
+            ),
+        )
+
+    monkeypatch.setattr(runner, "_replay_selected_candidate", candidate_deadline)
+
+    selected, report = await runner._screen_candidate_population(
+        run_id="run-candidate-deadline",
+        target=SkillTextTarget(skill_path, allow_auto_apply=True),
+        dataset=dataset,
+        candidates=(candidate,),
+        apply_policy="verified_only",
+        require_single_candidate_screening=True,
+    )
+
+    assert selected == ()
+    assert len(calls) == 1
+    assert report is not None
+    screening = report["screening"]
+    assert screening["control_fallback_count"] == 0
+    assert screening["stopped_by_shared_measurement"] is False
+    assert screening["candidate_dispositions"] == {
+        candidate.candidate_id: "screening_rejected"
+    }
+    assert "candidate-owned replay failure" in screening["selection_reason"]
 
 
 @pytest.mark.asyncio
@@ -8752,8 +18991,147 @@ async def test_population_screening_preserves_all_candidates_when_baseline_is_in
     assert report is not None
     assert report["selected_candidate_id"] is None
     assert report["selected_candidate_ids"] == ["candidate-1", "candidate-2"]
+    assert report["candidate_dispositions"] == {
+        "candidate-1": "promoted_to_authoritative",
+        "candidate-2": "promoted_to_authoritative",
+    }
     assert report["attempted_candidate_count"] == 2
     assert "preserved the ranked population" in report["selection_reason"]
+
+    screening_calls = 0
+
+    async def right_censored_screening(**kwargs):
+        nonlocal screening_calls
+        screening_calls += 1
+        return (
+            None,
+            None,
+            GateResult(
+                gate_name="candidate_replay",
+                passed=False,
+                reason="bounded screening did not reach terminal outcomes",
+                details={
+                    "code": "screening_budget_censored",
+                    "failure_class": "framework",
+                    "repairable": False,
+                    "screening_outcome": "right_censored",
+                },
+            ),
+        )
+
+    monkeypatch.setattr(
+        runner,
+        "_replay_selected_candidate",
+        right_censored_screening,
+    )
+    screened, report = await runner._screen_candidate_population(
+        run_id="run-screening-right-censored",
+        target=SkillTextTarget(skill_path, allow_auto_apply=True),
+        dataset=dataset,
+        candidates=candidates,
+        apply_policy="auto_verified",
+    )
+
+    assert screening_calls == 1
+    assert screened == candidates[:1]
+    assert report is not None
+    assert report["attempted_candidate_count"] == 1
+    assert report["stopped_after_budget_censor"] is True
+    assert report["screening_outcome"] == "right_censored"
+    assert report["selected_candidate_id"] == "candidate-1"
+    assert report["candidate_dispositions"] == {
+        "candidate-1": "promoted_to_authoritative",
+        "candidate-2": "not_run_after_right_censor",
+    }
+
+    async def passing_screening(**kwargs):
+        return (
+            InconclusiveReplay(),
+            dataset,
+            GateResult(
+                gate_name="candidate_replay",
+                passed=True,
+                reason="candidate produced a comparable representative replay",
+            ),
+        )
+
+    monkeypatch.setattr(runner, "_replay_selected_candidate", passing_screening)
+    screened, report = await runner._screen_candidate_population(
+        run_id="run-screening-ranked-frontier",
+        target=SkillTextTarget(skill_path, allow_auto_apply=True),
+        dataset=dataset,
+        candidates=candidates,
+        apply_policy="auto_verified",
+    )
+
+    assert screened == candidates[:1]
+    assert report is not None
+    assert report["attempted_candidate_count"] == 2
+    assert report["ranked_below_screening_candidate_ids"] == ["candidate-2"]
+    assert report["candidate_dispositions"] == {
+        "candidate-1": "promoted_to_authoritative",
+        "candidate-2": "ranked_below_screening_frontier",
+    }
+    assert report["progressive_repetition"] is True
+
+    async def deterministic_evidence_regression(**kwargs):
+        selected = kwargs["selected_candidate"]
+        request = CandidateReplayRequest(
+            run_id="run-screening-evidence-regression",
+            task_id="task-a",
+            workspace_root=str(tmp_path),
+            target=target_ref,
+            candidate_id=selected.candidate_id,
+            overlay_skill_root=str(tmp_path / "overlay"),
+            task_input="Replay task A",
+        )
+        replay = _CandidateReplayResult(
+            request=request,
+            baseline=ReplayVariantResult(
+                variant_id="baseline",
+                status="succeeded",
+                trajectory=[],
+                metrics={"evidence_strategy_passed": True},
+            ),
+            candidate=ReplayVariantResult(
+                variant_id=selected.candidate_id,
+                status="succeeded",
+                trajectory=[],
+                metrics={"evidence_strategy_passed": False},
+            ),
+        )
+        return (
+            replay,
+            dataset,
+            GateResult(
+                gate_name="candidate_replay",
+                passed=True,
+                reason="candidate produced a comparable representative replay",
+            ),
+        )
+
+    monkeypatch.setattr(
+        runner,
+        "_replay_selected_candidate",
+        deterministic_evidence_regression,
+    )
+    screened, report = await runner._screen_candidate_population(
+        run_id="run-screening-evidence-regression",
+        target=SkillTextTarget(skill_path, allow_auto_apply=True),
+        dataset=dataset,
+        candidates=candidates,
+        apply_policy="verified_only",
+    )
+
+    assert screened == ()
+    assert report is not None
+    assert report["attempted_candidate_count"] == 2
+    assert all(
+        attempt["details"]["code"]
+        == "replay_evidence_invariant_regression"
+        for attempt in report["attempts"]
+    )
+    assert "candidate repair" in report["selection_reason"]
 
     async def repairable_capability_replay(**kwargs):
         return (
@@ -8799,6 +19177,10 @@ async def test_population_screening_preserves_all_candidates_when_baseline_is_in
     assert screened == ()
     assert report is not None
     assert report["attempted_candidate_count"] == 2
+    assert report["candidate_dispositions"] == {
+        "candidate-1": "screening_rejected",
+        "candidate-2": "screening_rejected",
+    }
     assert "candidate repair" in report["selection_reason"]
     repair_feedback = _candidate_screening_repair_feedback(candidates, report)
     assert len(repair_feedback) == 2
@@ -8825,10 +19207,12 @@ async def test_population_screening_preserves_all_candidates_when_baseline_is_in
         ),
     )
 
-    assert screened == ()
+    assert screened == candidates[:1]
     assert report is not None
-    assert report["generated_candidate_count"] == 1
-    assert report["attempted_candidate_count"] == 1
+    assert report["screening"]["screening_strategy"] == (
+        "single_candidate_direct_authoritative"
+    )
+    assert report["screening"]["attempted_candidate_count"] == 0
 
 
 @pytest.mark.asyncio
@@ -9157,6 +19541,120 @@ async def test_missing_candidate_capability_rejects_candidate_but_continues_popu
 
 
 @pytest.mark.asyncio
+async def test_candidate_compile_failure_accumulates_latest_schema_constraint(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    skill_path = tmp_path / "skills" / "generic" / "SKILL.md"
+    skill_path.parent.mkdir(parents=True)
+    skill_path.write_text("# Generic\n", encoding="utf-8")
+    dataset = SelfEvolveDataset(
+        cases=(EvalCase(case_id="member-a", input="task"),),
+        recipe=DatasetRecipe(
+            source={"kind": "contract_matrix"},
+            split_seed="generic",
+            splits={"train": ["member-a"], "validation": [], "held_out": []},
+            trainable_case_ids=("member-a",),
+        ),
+    )
+    inherited = SchemaFieldRepairConstraint(
+        schema_layer="compile_result",
+        field_path="services[*].protocol_probes[*].path",
+        rule="enum",
+        expected=("fixture_derived_data_plane_probe",),
+        value_domain="source_behavior",
+        required_operations=("declare_distinct_fixture_derived_data_plane_probe",),
+    )
+    latest = SchemaFieldRepairConstraint(
+        schema_layer="compile_result",
+        field_path="services[*].protocol_probes",
+        rule="enum",
+        expected=("advertised_websocket_with_data_plane_probe",),
+        value_domain="source_behavior",
+        required_operations=("declare_websocket_data_plane_probe",),
+    )
+    contract = RepairConformanceContract(
+        focus_candidate_id="candidate-parent",
+        failure_codes=("schema_field_validation_failed",),
+        interaction_progress=0,
+        base_file_fingerprints={"replay/compiler.py": "sha256:base"},
+        required_branch_paths=("replay/compiler.py",),
+        base_branch_fingerprints={"replay/compiler.py": "sha256:branch"},
+        schema_field_constraints=(inherited,),
+    )
+    candidate = CandidateVariant(
+        candidate_id="candidate-repair",
+        target=SelfEvolveTargetRef(
+            target_type="skill", target_id="generic", path=str(skill_path)
+        ),
+        content="# Generic\n",
+        rationale="repair",
+    )
+
+    class NoopOptimizer:
+        async def propose(self, request: OptimizerRequest) -> OptimizerResult:
+            del request
+            return OptimizerResult(candidates=())
+
+    runner = SelfEvolveRunner(
+        store=FilesystemSelfEvolveStore(tmp_path),
+        optimizer=NoopOptimizer(),
+        replay_enabled=True,
+        candidate_replay_backend=object(),
+    )
+    monkeypatch.setattr(
+        runner_module,
+        "create_candidate_skill_overlay",
+        lambda **kwargs: SimpleNamespace(candidate_skill_path=skill_path),
+    )
+    adaptation_details = {
+        "failure_class": "candidate",
+        "repairable": True,
+        "code": "advertised_websocket_probe_missing",
+        "capability_error_code": "schema_field_validation_failed",
+        "schema_field_constraints": [latest.to_dict()],
+    }
+    monkeypatch.setattr(
+        runner,
+        "_prepare_replay_adaptation",
+        lambda **kwargs: (
+            None,
+            GateResult(
+                "replay_adaptation",
+                False,
+                "candidate capability compilation failed",
+                details=adaptation_details,
+            ),
+        ),
+    )
+
+    gate = await runner._preflight_candidate_repair_conformance(
+        run_id="run-typed-compile-repair",
+        target=SkillTextTarget(skill_path, allow_auto_apply=True),
+        dataset=dataset,
+        candidate=candidate,
+        contract=contract,
+    )
+
+    merged = {
+        SchemaFieldRepairConstraint.from_dict(item)
+        for item in gate.details["repair_conformance"][
+            "schema_field_constraints"
+        ]
+    }
+    assert merged == {inherited, latest}
+    assert gate.details["schema_field_constraints"] == [latest.to_dict()]
+    assert gate.details["capability_error_code"] == (
+        "schema_field_validation_failed"
+    )
+    assert gate.details["causal_failure_events"][0][
+        "contract_fingerprint"
+    ] == _schema_field_contract_fingerprint(
+        gate.details["repair_conformance"]
+    )
+
+
+@pytest.mark.asyncio
 async def test_conformance_executes_each_projected_group_once_and_attributes_failure(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -9303,7 +19801,39 @@ async def test_conformance_executes_each_projected_group_once_and_attributes_fai
         service_id = frozen.services[0].service_id
         calls.append(service_id)
         if service_id == "service-b":
-            raise RuntimeError("generic group failure")
+            raise ReplayServiceProtocolError(
+                "recorded response context is incomplete",
+                code="recorded_response_context_incomplete",
+                details={
+                    "runtime_response_constraints": [
+                        {
+                            "schema_version": (
+                                "aworld.self_evolve."
+                                "runtime_response_constraint.v1"
+                            ),
+                            "constraint_kind": "recorded_response_context",
+                            "response_source": "AWORLD_REPLAY_RESPONSE_INDEX",
+                            "minimum_recorded_value_matches": 2,
+                            "maximum_response_bytes": 48 * 1024,
+                            "preserve_decoded_container": True,
+                            "allow_bounded_projection": True,
+                            "projection_minimum_scalar_descendants": 2,
+                            "probe_kind": "http",
+                            "probe_path": "/query-b",
+                        }
+                    ],
+                    "runtime_response_observation": {
+                        "schema_version": (
+                            "aworld.self_evolve."
+                            "runtime_response_observation.v1"
+                        ),
+                        "constraint_kind": "recorded_response_context",
+                        "observed_recorded_value_matches": 1,
+                        "response_payload_bytes": 2048,
+                        "response_shape": "json_object",
+                    },
+                },
+            )
 
     monkeypatch.setattr(
         runner_module,
@@ -9323,6 +19853,18 @@ async def test_conformance_executes_each_projected_group_once_and_attributes_fai
     assert sorted(calls) == ["service-a", "service-b"]
     assert len(calls) == 2
     assert gate.passed is False
+    assert gate.details["diagnostics"][0]["code"] == (
+        "recorded_response_context_incomplete"
+    )
+    assert gate.details["runtime_response_constraints"][0][
+        "constraint_kind"
+    ] == "recorded_response_context"
+    assert gate.details["runtime_response_observations"][0][
+        "observed_recorded_value_matches"
+    ] == 1
+    assert gate.details["repair_conformance"][
+        "runtime_response_constraints"
+    ][0]["maximum_response_bytes"] == 48 * 1024
     events = gate.details["causal_failure_events"]
     assert len(events) == 1
     assert events[0]["affected_member_count"] == 3
@@ -9404,7 +19946,7 @@ def test_repair_conformance_gate_never_exposes_private_assertion_values() -> Non
     )
     encoded = json.dumps(gate.details, sort_keys=True)
     feedback_encoded = json.dumps(
-        runner_module._typed_gate_feedback_metrics((gate,)),
+        _typed_gate_feedback_metrics((gate,)),
         sort_keys=True,
     )
 
@@ -9413,6 +19955,43 @@ def test_repair_conformance_gate_never_exposes_private_assertion_values() -> Non
     assert "expected_preview_fingerprint" in encoded
     assert "previous_expected_preview_fingerprint" in encoded
     assert gate.details["repair_conformance"] == contract.to_public_dict()
+
+
+def test_repair_conformance_gate_keys_source_failures_by_typed_contract() -> None:
+    constraint = SchemaFieldRepairConstraint(
+        schema_layer="runtime",
+        field_path="environment.AWORLD_REPLAY_RESPONSE_INDEX.consumer",
+        rule="enum",
+        expected=("json_sidecar_record_value_projector",),
+        value_domain="source_behavior",
+    )
+    contract = RepairConformanceContract(
+        focus_candidate_id="candidate-parent",
+        failure_codes=("source_behavior_proof_failed",),
+        interaction_progress=1,
+        base_file_fingerprints={"replay/runtime.py": "sha256:base"},
+        required_branch_paths=("replay/runtime.py",),
+        base_branch_fingerprints={},
+        runtime_paths=("replay/runtime.py",),
+        schema_field_constraints=(constraint,),
+    )
+
+    gate = _repair_conformance_gate(
+        RepairConformanceResult(
+            passed=False,
+            code="source_behavior_proof_failed",
+            reason="source proof failed",
+            details={"schema_field_constraints": [constraint.to_dict()]},
+        ),
+        contract=contract,
+    )
+
+    event = gate.details["causal_failure_events"][0]
+    assert event["contract_fingerprint"] == (
+        _schema_field_contract_fingerprint(
+            {"schema_field_constraints": [constraint.to_dict()]}
+        )
+    )
 
 
 def test_public_projection_recursively_seals_misplaced_private_contracts() -> None:
@@ -9717,9 +20296,22 @@ async def test_population_screening_rejects_unchanged_repair_branch_before_rollo
     assert report["attempts"][0]["details"]["code"] == (
         "repair_branch_unchanged"
     )
-    assert report["attempts"][0]["details"]["repair_conformance"] == (
-        contract.to_public_dict()
-    )
+    repair_feedback_contract = report["attempts"][0]["details"][
+        "repair_conformance"
+    ]
+    assert set(repair_feedback_contract["failure_codes"]) == {
+        *contract.failure_codes,
+        "repair_branch_unchanged",
+    }
+    assert {
+        key: value
+        for key, value in repair_feedback_contract.items()
+        if key != "failure_codes"
+    } == {
+        key: value
+        for key, value in contract.to_public_dict().items()
+        if key != "failure_codes"
+    }
     feedback = _candidate_screening_repair_feedback((candidate,), report)
     assert len(feedback) == 1
     assert feedback[0].metrics["failure_class"] == "candidate"
@@ -9731,7 +20323,7 @@ async def test_population_screening_rejects_unchanged_repair_branch_before_rollo
 
 
 @pytest.mark.asyncio
-async def test_population_screening_rollout_failure_preserves_passed_conformance_contract(
+async def test_single_support_conformance_defers_rollout_to_prerequisite_plane(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -9869,19 +20461,17 @@ async def test_population_screening_rollout_failure_preserves_passed_conformance
         repair_conformance_contracts={candidate.candidate_id: contract},
     )
 
-    assert screened == ()
+    assert screened == (candidate,)
     assert report is not None
     assert preflight_case_ids == ("task-a", "task-b")
-    assert rollout_case_ids == ("task-a",)
-    details = report["attempts"][0]["details"]
-    assert details["repair_conformance"] == contract.to_public_dict()
-    feedback = _candidate_screening_repair_feedback((candidate,), report)
-    inherited = compile_repair_conformance_contract(feedback[0].metrics)
-    assert inherited is not None
-    # Persisted/public feedback is useful repair context but is deliberately
-    # not an executable contract. Exact execution state travels only through
-    # OptimizerResult.private_context.
-    assert inherited.required_fixture_probe_operations == ()
+    assert rollout_case_ids == ()
+    assert report["screening"]["screening_strategy"] == (
+        "evaluation_support_prerequisite_lane"
+    )
+    assert report["screening"]["screening_role"] == (
+        "deferred_to_deterministic_support_preflight"
+    )
+    assert report["conformance"]["passed_candidate_ids"] == [candidate.candidate_id]
 
 
 def test_repair_conformance_failure_preserves_fixture_shape_and_trace_tail(
@@ -9914,6 +20504,7 @@ def test_repair_conformance_failure_preserves_fixture_shape_and_trace_tail(
     diagnostics = _repair_conformance_failure_diagnostics(
         capability,
         artifact_dir=artifact_root,
+        trusted_artifact_root=tmp_path,
     )
 
     assert diagnostics["replay_fixture_summaries"][0]["json_root_type"] == "array"
@@ -10115,6 +20706,7 @@ async def test_runner_does_not_reuse_legacy_member_baseline_without_provenance(t
         store=FilesystemSelfEvolveStore(tmp_path),
         optimizer=OneCandidateOptimizer(),
         evaluation_backend=EvaluationBackend(),
+        regression_suites=_independent_regression_suites_for_test(dataset),
         post_apply_evaluator=lambda candidate: EvaluationSummary(
             variant_id=candidate.candidate_id,
             metrics={"post_apply_passed": True},
@@ -10134,7 +20726,7 @@ async def test_runner_does_not_reuse_legacy_member_baseline_without_provenance(t
     )
 
     assert result.run.status.value == "succeeded"
-    assert replay_backend.baseline_replay_dirs == [None]
+    assert replay_backend.baseline_replay_dirs == [None, None, None]
 
 
 @pytest.mark.asyncio
@@ -10206,14 +20798,6 @@ async def test_runner_filters_quality_rejection_but_retries_replay_only_candidat
         rationale="duplicate",
         target_fingerprint="fingerprint",
     )
-    fresh_candidate = CandidateVariant(
-        candidate_id="candidate-fresh",
-        target=SelfEvolveTargetRef(target_type="skill", target_id="demo", path=str(skill_path)),
-        content="---\nname: demo\n---\n# Demo\n\nFresh candidate.\n",
-        rationale="fresh",
-        target_fingerprint="fingerprint",
-    )
-
     class PopulationOptimizer:
         def __init__(self) -> None:
             self.requests: list[OptimizerRequest] = []
@@ -10297,6 +20881,7 @@ async def test_runner_filters_quality_rejection_but_retries_replay_only_candidat
         store=FilesystemSelfEvolveStore(tmp_path),
         optimizer=optimizer,
         evaluation_backend=EvaluationBackend(),
+        regression_suites=_independent_regression_suites_for_test(dataset),
         post_apply_evaluator=post_apply,
         min_eval_cases=0,
         replay_enabled=True,
@@ -10316,7 +20901,11 @@ async def test_runner_filters_quality_rejection_but_retries_replay_only_candidat
 
     assert result.run.status.value == "succeeded"
     assert optimizer.requests[0].max_candidates == 2
-    assert replay_backend.candidate_ids == ["candidate-dup-2"]
+    assert replay_backend.candidate_ids == [
+        "candidate-dup-2",
+        "candidate-dup-2",
+        "candidate-dup-2",
+    ]
     report = json.loads(
         (tmp_path / ".aworld" / "self_evolve" / "run-filter-duplicates" / "report.json").read_text(
             encoding="utf-8"
@@ -10330,9 +20919,8 @@ async def test_runner_filters_quality_rejection_but_retries_replay_only_candidat
     ]
     assert report["iterations"][1]["candidate_id"] == "candidate-dup-2"
     lifecycle = report["population"]["lifecycle"]
-    assert lifecycle["paired_replay_started_count"] == len(
-        replay_backend.candidate_ids
-    )
+    # Candidate-attempt lifecycle excludes the separately recorded regression plane.
+    assert lifecycle["paired_replay_started_count"] == 1
     assert lifecycle["paired_replay_completed_count"] == 1
     assert lifecycle["paired_replay_comparable_count"] == 1
 
@@ -10430,10 +21018,10 @@ async def test_runner_filters_prior_semantic_lesson_duplicate_candidates_before_
     historical_lineage.update(
         {
             "semantic_identity_version": (
-                runner_module._SEMANTIC_DEDUP_IDENTITY_VERSION
+                _SEMANTIC_DEDUP_IDENTITY_VERSION
             ),
             "semantic_package_fingerprint": (
-                runner_module.candidate_semantic_package_fingerprint(
+                candidate_semantic_package_fingerprint(
                     semantic_duplicate,
                     content_semantic_fingerprint="semantic-same",
                 )
@@ -10615,10 +21203,10 @@ async def test_semantic_dedup_exhaustion_retries_typed_frontier_and_reports_root
                     "semantic_fingerprint": semantic,
                     "lesson_set_fingerprint": "lesson-set-same",
                     "semantic_identity_version": (
-                        runner_module._SEMANTIC_DEDUP_IDENTITY_VERSION
+                        _SEMANTIC_DEDUP_IDENTITY_VERSION
                     ),
                     "semantic_package_fingerprint": (
-                        runner_module.candidate_semantic_package_fingerprint(
+                        candidate_semantic_package_fingerprint(
                             candidate,
                             content_semantic_fingerprint=semantic,
                         )
@@ -10980,7 +21568,15 @@ async def test_runner_persists_lineage_lifecycle_for_rejected_and_accepted_candi
                     variant_id=candidate.candidate_id,
                     status="succeeded",
                     trajectory=[{"action": {"content": "candidate"}}],
-                    metrics={"repetition_count": 3, "successful_repetition_count": 3},
+                    metrics={
+                        "repetition_count": 3,
+                        "successful_repetition_count": 3,
+                        "evidence_strategy_passed": (
+                            candidate.candidate_id.startswith(
+                                strong_candidate.candidate_id
+                            )
+                        ),
+                    },
                 ),
             )
 
@@ -11018,6 +21614,7 @@ async def test_runner_persists_lineage_lifecycle_for_rejected_and_accepted_candi
         store=FilesystemSelfEvolveStore(tmp_path),
         optimizer=LifecycleOptimizer(),
         evaluation_backend=EvaluationBackend(),
+        regression_suites=_independent_regression_suites_for_test(dataset),
         replay_enabled=True,
         candidate_replay_backend=ReplayBackend(),
         replay_candidate_limit=2,
@@ -11043,13 +21640,16 @@ async def test_runner_persists_lineage_lifecycle_for_rejected_and_accepted_candi
         (lineage_dir / "candidate-strong-lineage.json").read_text(encoding="utf-8")
     )
     assert weak_lineage["lifecycle_status"] == "rejected"
-    assert weak_lineage["replayed"] is True
-    assert "score_improvement" in weak_lineage["failed_gates"]
+    assert weak_lineage["screened"] is True
+    assert weak_lineage["replayed"] is False
+    assert weak_lineage["lifecycle_reason_code"] == (
+        "ranked_below_screening_frontier"
+    )
     assert strong_lineage["lifecycle_status"] == "accepted"
     assert strong_lineage["replayed"] is True
     assert strong_lineage["post_apply_status"] == "accepted"
     assert strong_lineage["semantic_identity_version"] == (
-        runner_module._SEMANTIC_DEDUP_IDENTITY_VERSION
+        _SEMANTIC_DEDUP_IDENTITY_VERSION
     )
     assert strong_lineage["semantic_package_fingerprint"].startswith("sha256:")
     assert strong_lineage["verification_contract_fingerprint"].startswith(
@@ -11232,6 +21832,7 @@ async def test_runner_emits_progress_events_for_long_optimize_phases(tmp_path) -
         store=FilesystemSelfEvolveStore(tmp_path),
         optimizer=Optimizer(),
         evaluation_backend=Backend(),
+        regression_suites=_independent_regression_suites_for_test(dataset),
         min_eval_cases=0,
         replay_enabled=True,
         candidate_replay_backend=ReplayBackend(),
@@ -11250,16 +21851,19 @@ async def test_runner_emits_progress_events_for_long_optimize_phases(tmp_path) -
     )
 
     stages = [stage for stage, _ in events]
-    assert stages[:7] == [
+    assert stages[:6] == [
         "start",
         "trajectory_set_loading",
+        "candidate_screening_preflight",
         "candidate_generation",
         "population_generation",
         "replay_adaptation",
-        "candidate_replay",
-        "evaluation",
     ]
+    assert "candidate_screening" not in stages
+    assert stages.index("candidate_replay") < stages.index("evaluation")
     assert "lesson_extraction" in stages
+    assert "regression" in stages
+    assert "regression_replay" in stages
     assert "release_normalization" in stages
     assert stages[-1] == "completed"
 
@@ -11387,6 +21991,7 @@ async def test_runner_uses_prior_rejected_candidate_feedback_across_runs(tmp_pat
         optimizer=optimizer,
         post_apply_evaluator=post_apply,
         evaluation_backend=VerifiedBackend(),
+        regression_suites=_independent_regression_suites_for_test(dataset),
         min_eval_cases=0,
         max_iterations=2,
     )
@@ -11446,20 +22051,30 @@ def test_include_prior_run_cases_normalizes_accepted_rejected_and_replay_refs(tm
     for run_id, status, candidate_id in (
         ("accepted-run", "succeeded", "candidate-good"),
         ("rejected-run", "rejected", "candidate-bad"),
+        ("invalid-control-run", "rejected", "candidate-unobserved"),
     ):
         run_dir = store.run_path(run_id)
         run_dir.mkdir(parents=True)
-        (run_dir / "report.json").write_text(
-            json.dumps(
+        report_payload = {
+            "run_id": run_id,
+            "target": {
+                "target_type": "skill",
+                "target_id": "demo",
+                "path": str(skill_path),
+            },
+            "status": status,
+            "selected_candidate_id": candidate_id,
+        }
+        if run_id == "invalid-control-run":
+            report_payload["campaign_failure_attribution"] = {
+                "failure_class": "measurement",
+                "failure_owner": "framework",
+                "failure_scope": "shared_run",
+                "repairable": True,
+            }
+        else:
+            report_payload.update(
                 {
-                    "run_id": run_id,
-                    "target": {
-                        "target_type": "skill",
-                        "target_id": "demo",
-                        "path": str(skill_path),
-                    },
-                    "status": status,
-                    "selected_candidate_id": candidate_id,
                     "replay_path": str(run_dir / "replay" / candidate_id),
                     "evaluator_report_paths": [
                         str(run_dir / "evaluator" / candidate_id / "report.json")
@@ -11475,9 +22090,13 @@ def test_include_prior_run_cases_normalizes_accepted_rejected_and_replay_refs(tm
                             "passed": status == "succeeded",
                         }
                     ],
-                    "candidate_metrics": {"score": 90.0 if status == "succeeded" else 40.0},
+                    "candidate_metrics": {
+                        "score": 90.0 if status == "succeeded" else 40.0
+                    },
                 }
-            ),
+            )
+        (run_dir / "report.json").write_text(
+            json.dumps(report_payload),
             encoding="utf-8",
         )
     dataset = build_dataset_from_source(
@@ -11521,6 +22140,106 @@ def test_include_prior_run_cases_normalizes_accepted_rejected_and_replay_refs(tm
         "/candidate-good/report.json"
     )
     assert rejected_case.input["failed_gates"] == ["score_improvement"]
+    assert all(
+        case.source.get("candidate_id") != "candidate-unobserved"
+        for case in prior_cases
+    )
+
+
+def test_prior_run_cases_are_advisory_generation_context_not_executable_panels(
+    tmp_path: Path,
+) -> None:
+    skill_path = tmp_path / "skills" / "demo" / "SKILL.md"
+    skill_path.parent.mkdir(parents=True)
+    skill_path.write_text(
+        "---\nname: demo\n---\n# Demo\n\nOriginal guidance.\n",
+        encoding="utf-8",
+    )
+    store = FilesystemSelfEvolveStore(tmp_path)
+    target_ref = SelfEvolveTargetRef(
+        target_type="skill",
+        target_id="demo",
+        path=str(skill_path),
+    )
+    prior_run_id = "campaign-prior-cycle-001"
+    prior_dir = store.run_path(prior_run_id)
+    prior_dir.mkdir(parents=True)
+    (prior_dir / "report.json").write_text(
+        json.dumps(
+            {
+                "run_id": prior_run_id,
+                "target": {
+                    "target_type": target_ref.target_type,
+                    "target_id": target_ref.target_id,
+                    "path": target_ref.path,
+                },
+                "status": "rejected",
+                "selected_candidate_id": "candidate-prior",
+                "gate_results": [
+                    {"gate_name": "score_improvement", "passed": False}
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    dataset = build_dataset_from_source(
+        SelfEvolveEvalSourceConfig(kind="current_trajectory"),
+        current_trajectory=[
+            {
+                "meta": {"step": 1, "agent_id": "agent"},
+                "state": {"input": {"content": "Execute the user task."}},
+                "action": {"content": "Baseline response."},
+            }
+        ],
+        task_id="user-task",
+    )
+
+    updated = _include_prior_run_cases(
+        dataset,
+        store=store,
+        target=target_ref,
+        current_run_id="current-run",
+    )
+
+    prior_case = next(
+        case
+        for case in updated.cases
+        if case.source.get("kind") == "prior_self_evolve_run"
+    )
+    # The optimizer may learn from this bounded summary.
+    assert prior_case.case_id in updated.recipe.trainable_case_ids
+    assert prior_case.source["framework_generated"] is True
+
+    screening = _candidate_screening_dataset(updated, max_cases=3)
+    assert screening is not None
+    assert [case.case_id for case in screening.cases] == ["user-task"]
+
+    target = SkillTextTarget(skill_path)
+    candidate = CandidateVariant(
+        candidate_id="candidate-current",
+        target=target.identity,
+        content="---\nname: demo\n---\n# Demo\n\nImproved guidance.\n",
+        rationale="measurement panel fixture",
+        target_fingerprint=target.fingerprint_current_content(),
+    )
+    runner = SelfEvolveRunner(
+        store=store,
+        optimizer=object(),
+        replay_enabled=True,
+        candidate_replay_backend=AWorldCliCandidateReplayBackend(),
+        measurement_mode="required",
+        measurement_min_independent_cases=1,
+    )
+    experiment = runner._plan_candidate_measurement(
+        run_id="current-run",
+        target=target,
+        dataset=updated,
+        candidate=candidate,
+        candidate_count=1,
+    )
+
+    assert experiment is not None
+    assert experiment.sampling.independent_case_ids == ("user-task",)
 
 
 @pytest.mark.asyncio
@@ -11857,6 +22576,7 @@ async def test_runner_skips_duplicate_rejected_candidate_before_replay(
         store=FilesystemSelfEvolveStore(tmp_path),
         optimizer=DuplicateOptimizer(),
         evaluation_backend=evaluation_backend,
+        regression_suites=_independent_regression_suites_for_test(dataset),
         post_apply_evaluator=post_apply,
         min_eval_cases=0,
         replay_enabled=True,
@@ -11997,6 +22717,7 @@ async def test_runner_reports_screening_root_cause_before_later_duplicate(
         "primary_reason": "replay adaptation compilation failed",
         "failure_class": "candidate",
         "code": "repair_capability_compile_failed",
+        "repairable": True,
         "duplicate_only": False,
         "capability_error_code": "schema_field_validation_failed",
         "scheduler_reason_code": "focused_repair",
@@ -12212,6 +22933,7 @@ async def test_runner_allows_duplicate_rejected_candidate_after_judge_infrastruc
         store=FilesystemSelfEvolveStore(tmp_path),
         optimizer=DuplicateOptimizer(),
         evaluation_backend=evaluation_backend,
+        regression_suites=_independent_regression_suites_for_test(dataset),
         post_apply_evaluator=post_apply,
         min_eval_cases=0,
         replay_enabled=True,
@@ -12519,6 +23241,7 @@ async def test_runner_auto_verified_rolls_back_when_post_apply_gate_fails(tmp_pa
         optimizer=TraceReflectiveLLMMutator(mutate_text=mutate),
         post_apply_evaluator=post_apply,
         evaluation_backend=VerifiedBackend(),
+        regression_suites=_independent_regression_suites_for_test(dataset),
         min_eval_cases=0,
     )
 
@@ -12605,6 +23328,7 @@ async def test_runner_auto_verified_rolls_back_when_runtime_skill_activation_fai
         optimizer=TraceReflectiveLLMMutator(mutate_text=mutate),
         post_apply_evaluator=post_apply,
         evaluation_backend=VerifiedBackend(),
+        regression_suites=_independent_regression_suites_for_test(dataset),
         min_eval_cases=0,
         runtime_skill_activator=activate_runtime_skill,
     )
@@ -13033,6 +23757,7 @@ async def test_runner_auto_verified_uses_candidate_replay_dataset_for_evaluation
         store=FilesystemSelfEvolveStore(tmp_path),
         optimizer=TraceReflectiveLLMMutator(mutate_text=mutate),
         evaluation_backend=evaluation_backend,
+        regression_suites=_independent_regression_suites_for_test(dataset),
         post_apply_evaluator=post_apply,
         min_eval_cases=0,
         replay_enabled=True,
@@ -13058,6 +23783,12 @@ async def test_runner_auto_verified_uses_candidate_replay_dataset_for_evaluation
     assert replay_backend.requests
     assert replay_backend.requests[0].baseline_repetitions == 2
     assert replay_backend.requests[0].candidate_repetitions == 3
+    authoritative_request = next(
+        request
+        for request in replay_backend.requests
+        if request.baseline_repetitions == 2
+    )
+    assert authoritative_request.candidate_repetitions == 3
     candidate_record = json.loads(
         (
             tmp_path
@@ -13065,11 +23796,11 @@ async def test_runner_auto_verified_uses_candidate_replay_dataset_for_evaluation
             / "self_evolve"
             / "run-replay-eval"
             / "candidates"
-            / f"{replay_backend.requests[0].candidate_id}.json"
+            / f"{authoritative_request.candidate_id}.json"
         ).read_text(encoding="utf-8")
     )
     assert candidate_record["content"] == candidate_content
-    assert not Path(replay_backend.requests[0].overlay_skill_root).exists()
+    assert not Path(authoritative_request.overlay_skill_root).exists()
     assert all(
         request.dataset.cases[0].metadata["variant_trajectories"]
         for request in evaluation_backend.requests
@@ -13077,7 +23808,7 @@ async def test_runner_auto_verified_uses_candidate_replay_dataset_for_evaluation
     assert len(evaluation_backend.requests[0].dataset.cases) == 3
     report = json.loads((tmp_path / ".aworld" / "self_evolve" / "run-replay-eval" / "report.json").read_text())
     assert report["replay"]["candidate"]["status"] == "succeeded"
-    assert report["replay"]["overlay_skill_root"] == replay_backend.requests[0].overlay_skill_root
+    assert report["replay"]["overlay_skill_root"] == authoritative_request.overlay_skill_root
     assert "/run-replay-eval/replay/llm-mutator-" in report["replay_path"]
     assert str(tmp_path / "candidate-eval-report.json") in report["evaluator_report_paths"]
     assert any(
@@ -13197,6 +23928,7 @@ async def test_runner_auto_verified_accepts_stable_single_case_replay(
         store=FilesystemSelfEvolveStore(tmp_path),
         optimizer=TraceReflectiveLLMMutator(mutate_text=mutate),
         evaluation_backend=PositiveReplayEvaluationBackend(),
+        regression_suites=_independent_regression_suites_for_test(dataset),
         post_apply_evaluator=post_apply,
         min_eval_cases=30,
         replay_enabled=True,
@@ -13234,6 +23966,8 @@ async def test_runner_auto_verified_accepts_stable_single_case_replay(
     assert evaluation_calls == [
         ("baseline", "validation"),
         (report["selected_candidate_id"], "validation"),
+        ("baseline", "regression"),
+        (report["selected_candidate_id"], "regression"),
     ]
 
 
@@ -13381,7 +24115,7 @@ async def test_runner_auto_verified_rejects_compacted_evaluator_evidence(
     assert any(
         gate["gate_name"] == "evidence_quality"
         and gate["passed"] is False
-        and gate["reason"] == "evaluation evidence is compacted or incomplete"
+        and gate["reason"] == "candidate evidence quality regressed relative to baseline"
         for gate in report["gate_results"]
     )
 
@@ -13763,6 +24497,44 @@ def test_default_post_apply_evaluator_requires_runtime_loader_match(tmp_path) ->
     assert summary.metrics["content_matches_target_file"] is True
     assert summary.metrics["runtime_skill_found"] is False
     assert summary.metrics["evaluator_mode"] == "post_apply_runtime_loader"
+    assert summary.metrics["candidate_package_references"]["closed"] is True
+
+
+def test_default_post_apply_evaluator_rejects_missing_package_dependency(
+    tmp_path,
+) -> None:
+    skill_path = tmp_path / "skills" / "demo" / "SKILL.md"
+    skill_path.parent.mkdir(parents=True)
+    candidate_content = (
+        "---\nname: demo\n---\n# Demo\n\n"
+        "Run `python3 replay/missing_probe.py`.\n"
+    )
+    skill_path.write_text(candidate_content, encoding="utf-8")
+    target = SkillTextTarget(
+        skill_path,
+        target_id="demo",
+        allow_auto_apply=True,
+    )
+    candidate = CandidateVariant(
+        candidate_id="cand-missing-dependency",
+        target=target.identity,
+        content=candidate_content,
+        rationale="post-apply package closure",
+        files=(
+            CandidateFileDelta(
+                path="replay/missing_probe.py",
+                content="print('declared but not materialized')\n",
+            ),
+        ),
+    )
+
+    summary = _default_post_apply_evaluator(target)(candidate)
+
+    assert summary.metrics["post_apply_passed"] is False
+    assert summary.metrics["candidate_package_references"]["closed"] is False
+    assert summary.metrics["candidate_package_references"][
+        "missing_referenced_paths"
+    ] == ["replay/missing_probe.py"]
 
 
 @pytest.mark.asyncio
@@ -14079,7 +24851,6 @@ def test_optimize_cli_request_uses_model_generated_candidate_files(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    import aworld.self_evolve.runner as runner_module
 
     skill_path = tmp_path / "aworld-skills" / "demo" / "SKILL.md"
     skill_path.parent.mkdir(parents=True)
@@ -14194,7 +24965,6 @@ def test_optimize_cli_request_stops_population_after_model_runtime_failure(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    import aworld.self_evolve.runner as runner_module
 
     skill_path = tmp_path / "aworld-skills" / "demo" / "SKILL.md"
     skill_path.parent.mkdir(parents=True)
@@ -14982,6 +25752,27 @@ def test_inferred_new_skill_policy_controls_draft_retention_and_publication(
             "reward": {"status": "failed"},
         }
     ]
+    regression_log = tmp_path / "independent-regression.log"
+    _write_trajectory_log(
+        regression_log,
+        [
+            {
+                "task_id": "independent-regression-task",
+                "trajectory": [
+                    {
+                        "meta": {"step": 1, "agent_id": "agent"},
+                        "state": {
+                            "input": {
+                                "content": "Verify an unrelated browser workflow."
+                            }
+                        },
+                        "action": {"content": "Workflow completed."},
+                        "reward": {"status": "ok"},
+                    }
+                ],
+            }
+        ],
+    )
     new_skill_path = tmp_path / "aworld-skills" / "generated-capability" / "SKILL.md"
     inferred_target = SelfEvolveTargetRef(
         target_type="skill",
@@ -15119,11 +25910,13 @@ def test_inferred_new_skill_policy_controls_draft_retention_and_publication(
         ),
         min_eval_cases=0,
         replay_enabled=True,
+        measurement_mode="off",
         baseline_replay_repetitions=2,
         candidate_replay_repetitions=3,
         replay_adaptation_compiler=ReplayAdaptationCompiler(
             adapters=(RecordedHttpAdapter(),)
         ),
+        regression_benchmarks=(str(regression_log),),
     )
 
     assert report_summary["status"] == expected_run_status
@@ -15141,25 +25934,41 @@ def test_inferred_new_skill_policy_controls_draft_retention_and_publication(
     else:
         assert report_summary["best_candidate_id"] is not None
     assert replay_backend.requests
-    assert replay_backend.requests[0].baseline_repetitions == 2
-    assert replay_backend.requests[0].candidate_repetitions == 3
-    assert replay_backend.requests[0].baseline_skill_root is None
+    authoritative_request = next(
+        request
+        for request in replay_backend.requests
+        if request.baseline_repetitions == 2
+    )
+    if apply_policy == "proposal":
+        assert replay_backend.requests[0] is authoritative_request
+    else:
+        assert replay_backend.requests[0] is authoritative_request
+    assert authoritative_request.candidate_repetitions == 3
+    assert authoritative_request.baseline_skill_root is None
     candidate_record_path = (
         tmp_path
         / ".aworld"
         / "self_evolve"
         / report_summary["run_id"]
         / "candidates"
-        / f"{replay_backend.requests[0].candidate_id}.json"
+        / f"{authoritative_request.candidate_id}.json"
     )
     candidate_record = json.loads(candidate_record_path.read_text(encoding="utf-8"))
     assert candidate_record["target"]["target_id"] == "generated-capability"
-    assert not Path(replay_backend.requests[0].overlay_skill_root).exists()
+    assert not Path(authoritative_request.overlay_skill_root).exists()
     assert skill_path.read_text(encoding="utf-8") == original_content
-    assert [request.dataset_split for request in evaluation_backend.requests] == [
-        "validation",
-        "validation",
-    ]
+    assert [request.dataset_split for request in evaluation_backend.requests] == (
+        ["validation", "validation"]
+        if apply_policy == "proposal"
+        else [
+            "validation",
+            "validation",
+            "regression",
+            "regression",
+            "regression",
+            "regression",
+        ]
+    )
     assert new_skill_path.exists() is (expected_promotion == "published")
     assert Path(report_summary["target_provenance_path"]).exists()
     provenance = json.loads(
@@ -15172,6 +25981,12 @@ def test_inferred_new_skill_policy_controls_draft_retention_and_publication(
     assert report["target"]["target_id"] == "generated-capability"
     assert report["target"]["path"] == str(draft_skill_path)
     assert report["candidate_ids"]
+    if apply_policy == "proposal":
+        assert report["challenge_report"] is None
+    else:
+        assert report["challenge_report"]["approval_authority"] is False
+        assert report["challenge_report"]["admitted_count"] == 1
+        assert len(report["regression_suites"]) == 2
     assert report["selected_candidate_id"] == report["candidate_ids"][0]
     assert report["target_selection"]["selected_target"]["target_id"] == "generated-capability"
     assert report["target_selection"]["selected_target"]["path"] == str(draft_skill_path)
@@ -15425,7 +26240,7 @@ def test_run_owned_draft_materialization_fails_closed_on_unsafe_paths(
         linked_root.mkdir()
         (tmp_path / ".aworld").symlink_to(linked_root, target_is_directory=True)
 
-    materialized = runner_module._materialize_run_owned_draft_decision(
+    materialized = _materialize_run_owned_draft_decision(
         decision,
         store=FilesystemSelfEvolveStore(tmp_path),
         run_id=run_id,
@@ -15468,7 +26283,6 @@ def test_optimize_cli_request_filters_unsupported_inferred_target_before_adapter
             }
         ],
     )
-
     from aworld.self_evolve import optimize_from_cli_request
 
     report_summary = optimize_from_cli_request(
@@ -15705,12 +26519,13 @@ def test_optimize_cli_request_uses_framework_default_replay_backend_when_enabled
         task="default-replay",
         apply_policy="auto_verified",
         replay_enabled=True,
+        measurement_mode="off",
         min_eval_cases=0,
     )
 
     assert created["count"] == 1
     assert replay_agents == ["Aworld"]
-    assert replay_max_steps == [1]
+    assert replay_max_steps == [12]
     assert report_summary["best_candidate_id"] is None
     assert report_summary["selected_candidate_id"] is not None
     assert any(
@@ -15720,24 +26535,29 @@ def test_optimize_cli_request_uses_framework_default_replay_backend_when_enabled
     report = json.loads(Path(report_summary["report_path"]).read_text(encoding="utf-8"))
     assert report["status"] == "rejected"
     optimizer_diagnostics = report["optimizer_diagnostics"]
-    iteration_diagnostics = optimizer_diagnostics["iterations"]
-    assert any(
-        item["diagnostics"]["filtered_duplicate_candidates"] == 1
-        for item in iteration_diagnostics
-    )
+    assert optimizer_diagnostics["filtered_duplicate_candidates"] == 1
     assert report["population"]["generated_candidate_count"] == 1
-    assert report["population"]["generation_attempt_count"] >= 2
-    assert len(report["population"]["scheduler_decisions"]) >= 2
-    assert report["population"]["scheduler_decisions"][-1]["reason_code"] == (
-        "repair_frontier_stalled"
+    assert report["population"]["generation_attempt_count"] == 2
+    scheduler_decisions = report["population"]["scheduler_decisions"]
+    assert 1 <= len(scheduler_decisions) <= 2
+    if len(scheduler_decisions) == 2:
+        assert scheduler_decisions[-1]["reason_code"] == "shared_run_blocked"
+    confidence_gate = next(
+        gate
+        for gate in report["gate_results"]
+        if gate["gate_name"] == "replay_confidence"
     )
+    assert confidence_gate["details"]["failure_class"] == "measurement"
+    assert confidence_gate["details"]["next_action"] == "repair_measurement"
     assert report["replay"]["candidate"]["failure"] == {"reason": "fake replay rejection"}
 
 
 def test_optimize_cli_request_auto_verified_smoke_applies_and_loads_real_skill(tmp_path: Path) -> None:
     skill_path = tmp_path / "aworld-skills" / "demo" / "SKILL.md"
     skill_path.parent.mkdir(parents=True)
-    original_content = "---\nname: demo\n---\n# Demo\n\nOld guidance.\n"
+    original_content = (
+        "---\nname: demo\n---\n# Demo\n\n## Core workflow\n\nOld guidance.\n"
+    )
     skill_path.write_text(original_content, encoding="utf-8")
     trajectory_log = tmp_path / "trajectory.log"
     _write_trajectory_log(
@@ -15759,7 +26579,11 @@ def test_optimize_cli_request_auto_verified_smoke_applies_and_loads_real_skill(t
     )
 
     class SuccessfulReplayBackend:
+        def __init__(self) -> None:
+            self.requests = []
+
         async def replay_candidate(self, request, *, candidate, dataset):
+            self.requests.append(request)
             baseline = ReplayVariantResult(
                 variant_id="baseline",
                 status="succeeded",
@@ -15823,13 +26647,17 @@ def test_optimize_cli_request_auto_verified_smoke_applies_and_loads_real_skill(t
         refresh_calls.append(candidate.candidate_id)
         return {"status": "refreshed", "runtime_skill_count": 1}
 
+    selection_replay_backend = SuccessfulReplayBackend()
+    regression_replay_backend = SuccessfulReplayBackend()
     report_summary = optimize_from_cli_request(
         workspace_root=tmp_path,
         target="skill:demo",
         from_trajectory=str(trajectory_log),
         apply_policy="auto_verified",
         replay_enabled=True,
-        candidate_replay_backend=SuccessfulReplayBackend(),
+        measurement_mode="off",
+        candidate_replay_backend=selection_replay_backend,
+        regression_replay_backend=regression_replay_backend,
         evaluation_backend=VerifiedEvaluationBackend(),
         min_eval_cases=1,
         runtime_registry_refresher=refresh_runtime,
@@ -15840,6 +26668,18 @@ def test_optimize_cli_request_auto_verified_smoke_applies_and_loads_real_skill(t
     candidate_id = report_summary["best_candidate_id"]
 
     assert report_summary["status"] == "succeeded"
+    assert len(selection_replay_backend.requests) == 1
+    assert not selection_replay_backend.requests[0].candidate_id.endswith("--screening")
+    assert all(
+        request.artifact_namespace is None
+        for request in selection_replay_backend.requests
+    )
+    assert len(regression_replay_backend.requests) == 2
+    assert all(
+        request.artifact_namespace.startswith("regression/")
+        for request in regression_replay_backend.requests
+    )
+    assert report["regression_suites"][0]["source_kind"] == "target_contract"
     assert candidate_id == report["selected_candidate_id"]
     assert updated_content != original_content
     assert "release_state: verified" in updated_content
@@ -16040,6 +26880,526 @@ async def test_adaptation_only_failure_never_counts_as_replay(
 
 
 @pytest.mark.asyncio
+async def test_paired_replay_total_deadline_returns_typed_gate(
+    tmp_path: Path,
+) -> None:
+    skill_path = tmp_path / "skills" / "demo" / "SKILL.md"
+    skill_path.parent.mkdir(parents=True)
+    skill_path.write_text("---\nname: demo\n---\n# Demo\n", encoding="utf-8")
+    dataset = SelfEvolveDataset(
+        cases=(EvalCase(case_id="case-1", input={"content": "task"}),),
+        recipe=DatasetRecipe(
+            source={"kind": "replay-total-timeout"},
+            split_seed="seed",
+            splits={"train": ["case-1"]},
+            trainable_case_ids=("case-1",),
+        ),
+    )
+    candidate = CandidateVariant(
+        candidate_id="candidate-timeout",
+        target=SelfEvolveTargetRef("skill", "demo", str(skill_path)),
+        content="---\nname: demo\n---\n# Demo\n\nCandidate.\n",
+        rationale="deadline test",
+    )
+
+    class Backend:
+        async def replay_candidate(self, request, *, candidate, dataset):
+            await asyncio.sleep(1)
+            raise AssertionError("total replay deadline did not cancel backend")
+
+    runner = SelfEvolveRunner(
+        store=FilesystemSelfEvolveStore(tmp_path),
+        optimizer=SimpleNamespace(),
+        replay_enabled=True,
+        candidate_replay_backend=Backend(),
+        replay_total_timeout_seconds=0.01,
+    )
+    lifecycle: list[tuple[str, Mapping[str, object]]] = []
+
+    replay_result, replay_dataset, gate = await runner._replay_selected_candidate(
+        run_id="run-total-deadline",
+        target=SkillTextTarget(skill_path),
+        dataset=dataset,
+        selected_candidate=candidate,
+        apply_policy="auto_verified",
+        lifecycle_callback=lambda stage, payload: lifecycle.append(
+            (stage, payload)
+        ),
+    )
+
+    assert replay_result is None
+    assert replay_dataset is None
+    assert gate is not None and gate.gate_name == "candidate_replay"
+    assert gate.details["code"] == "replay_total_timeout"
+    assert gate.details["partial_baseline_cache_preserved"] is True
+    assert gate.details["next_action"] == "continue_measurement"
+    assert gate.details["resume_safe"] is True
+    assert [stage for stage, _payload in lifecycle] == [
+        "adaptation_completed",
+        "replay_started",
+        "replay_timed_out",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_paired_replay_timeout_persists_progressive_resume_checkpoint(
+    tmp_path: Path,
+) -> None:
+    skill_path = tmp_path / "skills" / "demo" / "SKILL.md"
+    skill_path.parent.mkdir(parents=True)
+    skill_path.write_text("---\nname: demo\n---\n# Demo\n", encoding="utf-8")
+    dataset = SelfEvolveDataset(
+        cases=(
+            EvalCase(case_id="case-a", input={"content": "A"}),
+            EvalCase(case_id="case-b", input={"content": "B"}),
+        ),
+        recipe=DatasetRecipe(
+            source={"kind": "progressive-timeout"},
+            split_seed="seed",
+            splits={"train": ["case-a", "case-b"]},
+            trainable_case_ids=("case-a", "case-b"),
+        ),
+    )
+    candidate = CandidateVariant(
+        candidate_id="candidate-progressive-timeout",
+        target=SelfEvolveTargetRef("skill", "demo", str(skill_path)),
+        content="---\nname: demo\n---\n# Demo\n\nCandidate.\n",
+        rationale="deadline checkpoint test",
+    )
+
+    async def executor(request):
+        if request.task_id == "case-b":
+            await asyncio.sleep(1)
+        activation_metrics = (
+            {
+                "skill_activation_attested": True,
+                "activated_skill_package_fingerprint": (
+                    request.expected_skill_package_fingerprint
+                ),
+            }
+            if request.variant_role == "candidate"
+            else {}
+        )
+        return replay_module.ReplayExecutionResult(
+            status="succeeded",
+            trajectory=[{"action": {"content": request.variant_id}}],
+            metrics=activation_metrics,
+        )
+
+    runner = SelfEvolveRunner(
+        store=FilesystemSelfEvolveStore(tmp_path),
+        optimizer=SimpleNamespace(),
+        replay_enabled=True,
+        candidate_replay_backend=AWorldCliCandidateReplayBackend(
+            executor=executor
+        ),
+        replay_timeout_seconds=2,
+        # Leave enough headroom for framework startup under full-suite load;
+        # case-b still deterministically exceeds the aggregate deadline.
+        replay_total_timeout_seconds=0.75,
+    )
+
+    replay_result, replay_dataset, gate = await runner._replay_selected_candidate(
+        run_id="run-progressive-total-deadline",
+        target=SkillTextTarget(skill_path),
+        dataset=dataset,
+        selected_candidate=candidate,
+        apply_policy="auto_verified",
+    )
+
+    assert replay_result is None
+    assert replay_dataset is None
+    assert gate is not None
+    assert gate.details["code"] == "replay_total_timeout"
+    assert gate.details["completed_baseline_case_count"] == 1
+    assert gate.details["completed_candidate_case_count"] == 1
+    assert gate.details["completed_comparable_pair_count"] == 1
+    assert gate.details["pending_case_count"] == 1
+    checkpoint = gate.details["replay_checkpoint"]
+    assert checkpoint["schedule"] == "progressive_paired"
+    assert checkpoint["active_case_id"] == "case-b"
+    assert checkpoint["active_phase"] == "baseline"
+    assert len(gate.details["diagnostic_refs"]) >= 2
+    assert all(Path(path).is_file() for path in gate.details["diagnostic_refs"])
+    replay_dir = (
+        tmp_path
+        / ".aworld"
+        / "self_evolve"
+        / "run-progressive-total-deadline"
+        / "replay"
+        / candidate.candidate_id
+        / "members"
+    )
+    assert _reusable_baseline_case_count(
+        dataset=dataset,
+        baseline_replay_dir=str(replay_dir),
+        baseline_repetitions=1,
+    ) == 1
+
+    resumed_calls: list[tuple[str, str]] = []
+
+    async def resumed_executor(request):
+        resumed_calls.append((request.task_id, request.variant_id))
+        return replay_module.ReplayExecutionResult(
+            status="succeeded",
+            trajectory=[{"action": {"content": request.variant_id}}],
+        )
+
+    resumed_runner = SelfEvolveRunner(
+        store=FilesystemSelfEvolveStore(tmp_path),
+        optimizer=SimpleNamespace(),
+        replay_enabled=True,
+        candidate_replay_backend=AWorldCliCandidateReplayBackend(
+            executor=resumed_executor
+        ),
+        replay_timeout_seconds=2,
+        replay_total_timeout_seconds=5,
+        replay_resume_dir=str(replay_dir.parent),
+    )
+    resumed_result, _resumed_dataset, resumed_gate = (
+        await resumed_runner._replay_selected_candidate(
+            run_id="run-progressive-resumed",
+            target=SkillTextTarget(skill_path),
+            dataset=dataset,
+            selected_candidate=candidate,
+            apply_policy="auto_verified",
+        )
+    )
+
+    assert resumed_result is not None
+    assert resumed_gate is not None
+    assert resumed_gate.gate_name == "candidate_replay"
+    assert resumed_calls
+    assert {task_id for task_id, _variant_id in resumed_calls} == {"case-b"}
+
+
+def test_shared_measurement_without_candidate_observation_releases_authoritative_slot() -> None:
+    timeout_gate = GateResult(
+        gate_name="candidate_replay",
+        passed=False,
+        reason="candidate replay exceeded the total hard deadline",
+        details={
+            "code": "replay_total_timeout",
+            "failure_class": "measurement",
+            "failure_owner": "framework",
+            "failure_scope": "shared_run",
+            "failure_stage": "evaluation",
+            "repairable": True,
+        },
+    )
+    assert _authoritative_attempt_consumed(
+        {
+            "status": "rejected",
+            "replay_result": None,
+            "baseline_summary": None,
+            "candidate_summary": None,
+            "held_out_summary": None,
+            "gate_results": [timeout_gate],
+        }
+    ) is False
+    # Candidate execution inside an invalid shared experiment is still not an
+    # authoritative conclusion and must not consume the Campaign frontier.
+    executed_replay = SimpleNamespace(
+        member_results=None,
+        candidate=ReplayVariantResult(
+            variant_id="candidate",
+            status="succeeded",
+            trajectory=[{"role": "assistant", "content": "done"}],
+        ),
+    )
+    assert _authoritative_attempt_consumed(
+        {
+            "status": "rejected",
+            "replay_result": executed_replay,
+            "baseline_summary": None,
+            "candidate_summary": EvaluationSummary(
+                variant_id="candidate",
+                metrics={"score": 1.0},
+                dataset_split="validation",
+            ),
+            "held_out_summary": None,
+            "gate_results": [timeout_gate],
+        }
+    ) is False
+
+    # A completed control alone is reusable framework evidence, not a result
+    # about the candidate package.
+    assert _authoritative_attempt_consumed(
+        {
+            "status": "rejected",
+            "replay_result": None,
+            "baseline_summary": EvaluationSummary(
+                variant_id="baseline",
+                metrics={"score": 1.0},
+                dataset_split="validation",
+            ),
+            "candidate_summary": None,
+            "held_out_summary": None,
+            "gate_results": [timeout_gate],
+        }
+    ) is False
+
+    candidate_gate = GateResult(
+        gate_name="candidate_repair_conformance",
+        passed=False,
+        reason="candidate package did not conform",
+        details={
+            "failure_class": "candidate",
+            "failure_owner": "candidate",
+            "repairable": False,
+        },
+    )
+    assert _authoritative_attempt_consumed(
+        {
+            "status": "rejected",
+            "replay_result": None,
+            "baseline_summary": None,
+            "candidate_summary": None,
+            "held_out_summary": None,
+            "gate_results": [candidate_gate],
+        }
+    ) is True
+
+
+def test_shared_measurement_failure_does_not_create_iteration_learning_data() -> None:
+    candidate = CandidateVariant(
+        candidate_id="candidate-unobserved",
+        target=SelfEvolveTargetRef("skill", "demo"),
+        content="# Demo\n",
+        rationale="unobserved because the shared control failed",
+    )
+    gate = GateResult(
+        gate_name="candidate_replay",
+        passed=False,
+        reason="shared control was invalid",
+        details={
+            "code": "control_not_comparable",
+            "failure_class": "measurement",
+            "failure_owner": "framework",
+            "failure_scope": "shared_run",
+            "repairable": True,
+        },
+    )
+
+    assert runner_module._iteration_validation_feedback(
+        candidate=candidate,
+        baseline_summary=None,
+        candidate_summary=None,
+        held_out_summary=None,
+        failed_gates=[gate],
+    ) == ()
+
+
+def test_measurement_checkpoint_rejects_candidate_only_marker(
+    tmp_path: Path,
+) -> None:
+    store = FilesystemSelfEvolveStore(tmp_path)
+    run_id = "run-measurement-checkpoint"
+    candidates = tuple(
+        CandidateVariant(
+            candidate_id=f"candidate-{index}",
+            target=SelfEvolveTargetRef("skill", "demo", "/skills/demo/SKILL.md"),
+            content=f"# Demo\n\nCandidate {index}.\n",
+            rationale="measurement checkpoint selection",
+        )
+        for index in range(2)
+    )
+    for candidate in candidates:
+        store.write_candidate(run_id, candidate)
+    expected_fingerprint = candidate_package_fingerprint(
+        candidates[1]
+    )
+    report = {
+        "candidate_ids": [item.candidate_id for item in candidates],
+        "selected_candidate_id": candidates[0].candidate_id,
+        "campaign_failure_attribution": {
+            "failure_class": "measurement",
+            "failure_owner": "framework",
+            "failure_scope": "shared_run",
+            "resume_candidate_id": candidates[1].candidate_id,
+            "resume_candidate_package_fingerprint": expected_fingerprint,
+        },
+    }
+
+    checkpoint = _measurement_pending_candidate_checkpoint(
+        store=store,
+        run_id=run_id,
+        report=report,
+    )
+
+    assert checkpoint is None
+
+
+def test_measurement_checkpoint_rejects_screening_attempt(
+    tmp_path: Path,
+) -> None:
+    store = FilesystemSelfEvolveStore(tmp_path)
+    run_id = "run-screening-measurement-checkpoint"
+    candidates = tuple(
+        CandidateVariant(
+            candidate_id=f"candidate-{index}",
+            target=SelfEvolveTargetRef("skill", "demo", "/skills/demo/SKILL.md"),
+            content=f"# Demo\n\nCandidate {index}.\n",
+            rationale="screening measurement checkpoint",
+        )
+        for index in range(2)
+    )
+    for candidate in candidates:
+        store.write_candidate(run_id, candidate)
+    expected_fingerprint = candidate_package_fingerprint(
+        candidates[1]
+    )
+    report = {
+        "candidate_ids": [item.candidate_id for item in candidates],
+        "campaign_failure_attribution": {
+            "failure_class": "measurement",
+            "failure_owner": "framework",
+            "failure_scope": "shared_run",
+        },
+        "population": {
+            "screening": {
+                "attempts": [
+                    {
+                        "candidate_id": candidates[1].candidate_id,
+                        "passed": False,
+                        "details": {
+                            "failure_class": "measurement",
+                            "failure_owner": "framework",
+                            "failure_scope": "shared_run",
+                            "resume_candidate_id": candidates[1].candidate_id,
+                            "resume_candidate_package_fingerprint": (
+                                expected_fingerprint
+                            ),
+                        },
+                    }
+                ]
+            }
+        },
+    }
+
+    checkpoint = _measurement_pending_candidate_checkpoint(
+        store=store,
+        run_id=run_id,
+        report=report,
+    )
+
+    assert checkpoint is None
+
+
+def test_candidate_prerequisite_failure_does_not_create_measurement_checkpoint(
+    tmp_path: Path,
+) -> None:
+    store = FilesystemSelfEvolveStore(tmp_path)
+    run_id = "run-candidate-prerequisite"
+    candidate = CandidateVariant(
+        candidate_id="candidate-invalid-capability",
+        target=SelfEvolveTargetRef("skill", "demo", "/skills/demo/SKILL.md"),
+        content="# Demo\n",
+        rationale="missing capability readiness contract",
+    )
+    store.write_candidate(run_id, candidate)
+    event = ReplayFailureEvent(
+        code="schema_field_validation_failed",
+        owner=FailureOwner.CANDIDATE,
+        stage=FailureStage.CAPABILITY_COMPILE,
+        scope=FailureScope.CANDIDATE,
+        repairable=True,
+        category="candidate_capability_preflight",
+        summary="services readiness kind is required",
+    ).to_dict()
+    report = {
+        "candidate_ids": [candidate.candidate_id],
+        "selected_candidate_id": candidate.candidate_id,
+        "self_improvement_disposition": {
+            "kind": "repair_measurement",
+            "scope": "shared_run",
+        },
+        "gate_results": [
+            {
+                "gate_name": "candidate_capability_replay",
+                "passed": False,
+                "reason": "candidate capability compilation failed",
+                "details": {
+                    "failure_class": "candidate",
+                    "failure_owner": "candidate",
+                    "failure_scope": "candidate",
+                    "repairable": True,
+                    "stage": "capability_compile",
+                    "failure_event": event,
+                    "causal_failure_events": [event],
+                },
+            },
+            {
+                "gate_name": "trusted_improvement_measurement",
+                "passed": False,
+                "reason": "measurement was not established",
+                "details": {"failure_class": "measurement"},
+            },
+        ],
+    }
+
+    checkpoint = _measurement_pending_candidate_checkpoint(
+        store=store,
+        run_id=run_id,
+        report=report,
+    )
+
+    assert checkpoint is None
+    assert _report_has_shared_measurement_failure(report) is False
+
+
+def test_failed_probe_feedback_preserves_schema_counterexample_contracts() -> None:
+    counterexample = {
+        "schema_version": "aworld.self_evolve.schema_counterexample.v1",
+        "counterexample_id": "schema-counterexample-probe-runtime",
+        "constraint": {
+            "field_path": "services[*@transport:http_fixture].runtime_entrypoint",
+            "rule": "type",
+        },
+    }
+
+    feedback = _failed_probe_typed_feedback(
+        (
+            {
+                "code": "schema_field_validation_failed",
+                "error_type": "ReplayCapabilityError",
+                "reason": "conditional field violation",
+                "counterexample_contracts": [counterexample],
+            },
+        )
+    )
+
+    assert feedback["counterexample_contracts"] == [counterexample]
+
+
+def test_effective_replay_repetitions_share_planning_and_execution_policy() -> None:
+    assert _effective_replay_repetitions(
+        apply_policy="verified_only",
+        repetitions_explicit=False,
+        replay_case_count=11,
+        measurement_min_independent_cases=4,
+        baseline_repetitions=2,
+        candidate_repetitions=3,
+    ) == (1, 1, "independent_case_adaptive")
+    assert _effective_replay_repetitions(
+        apply_policy="verified_only",
+        repetitions_explicit=False,
+        replay_case_count=2,
+        measurement_min_independent_cases=2,
+        baseline_repetitions=2,
+        candidate_repetitions=3,
+    ) == (1, 1, "independent_case_adaptive")
+    assert _effective_replay_repetitions(
+        apply_policy="verified_only",
+        repetitions_explicit=True,
+        replay_case_count=11,
+        measurement_min_independent_cases=4,
+        baseline_repetitions=2,
+        candidate_repetitions=3,
+    ) == (2, 3, "configured")
+
+
+@pytest.mark.asyncio
 async def test_per_attempt_replay_budget_denial_skips_backend(tmp_path: Path) -> None:
     skill_path = tmp_path / "skills" / "demo" / "SKILL.md"
     skill_path.parent.mkdir(parents=True)
@@ -16165,6 +27525,10 @@ async def test_replay_backend_exception_blocks_population_and_clears_budget(
     assert any(
         gate["gate_name"] == "candidate_replay"
         and gate["details"]["code"] == "candidate_replay_infrastructure_error"
+        and gate["details"]["failure_owner"] == "infrastructure"
+        and gate["details"]["failure_scope"] == "shared_run"
+        and gate["details"]["error"] == "shared backend unavailable"
+        and gate["details"]["next_action"] == "retry_infrastructure"
         for gate in report["gate_results"]
     )
     lifecycle = report["population"]["lifecycle"]

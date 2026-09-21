@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import subprocess
 from dataclasses import replace
 from pathlib import Path
 
 import pytest
 
+import aworld.self_evolve.replay_adaptation as replay_adaptation
 from aworld.self_evolve.datasets import (
     EvalCase,
     SelfEvolveDataset,
@@ -14,12 +16,25 @@ from aworld.self_evolve.datasets import (
     build_dataset_from_source,
 )
 from aworld.self_evolve.replay_adaptation import (
+    IsolationBindingCoverage,
+    IsolationDecision,
+    IsolationExclusiveFallback,
+    IsolationGrant,
+    IsolationGrantSet,
+    IsolationResourceIdentity,
+    IsolationServiceIdentity,
     ReplayAdapterBinding,
     ReplayAdaptationCompiler,
     ReplayAdaptationError,
     ReplayDependency,
     ReplayCapabilityRequirement,
+    ReplayIsolationTopology,
+    compile_isolation_decision_artifact,
+    compile_isolation_grant,
+    compile_replay_adaptation_isolation_decision,
+    isolation_grants_compatible,
     materialize_replay_workspace,
+    validate_replay_binding_concurrency,
 )
 from aworld.self_evolve.replay import (
     AWorldCliCandidateReplayBackend,
@@ -30,10 +45,10 @@ from aworld.self_evolve.replay import (
     build_replay_request,
     candidate_replay_is_comparable,
 )
-from aworld.self_evolve.runner import (
-    SelfEvolveRunner,
-    _find_reusable_baseline_replay_dir,
+from aworld.self_evolve.controllers.screening_execution import (
+    find_reusable_baseline_replay_dir as _find_reusable_baseline_replay_dir,
 )
+from aworld.self_evolve.runner import SelfEvolveRunner
 from aworld.self_evolve.store import FilesystemSelfEvolveStore
 from aworld.self_evolve.targets import SkillTextTarget
 from aworld.self_evolve.types import (
@@ -93,6 +108,54 @@ def test_compiler_normalizes_workspace_paths_and_persists_bundle(tmp_path: Path)
     environment = json.loads(Path(bundle.environment_snapshot_path).read_text())
     assert environment["runtime"]["python_version"]
     assert not any("token" in key.lower() for key in environment["environment"])
+
+
+def test_environment_identity_excludes_staged_workload_tool_names(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+
+    def dataset(tool_name: str, task_id: str) -> SelfEvolveDataset:
+        return build_dataset_from_source(
+            SelfEvolveEvalSourceConfig(kind="current_trajectory"),
+            current_trajectory=(
+                {
+                    "meta": {"task_id": task_id, "step": 1},
+                    "state": {"input": {"content": "Inspect the fixture."}},
+                    "action": {
+                        "content": "historical result",
+                        "tool_calls": [
+                            {"function": {"name": tool_name}}
+                        ],
+                    },
+                    "reward": {"status": "success"},
+                },
+            ),
+            task_id=task_id,
+        )
+
+    screening = ReplayAdaptationCompiler().compile(
+        dataset=dataset("mcp", "screening-case"),
+        workspace_root=workspace,
+        artifact_root=tmp_path / "screening-adaptation",
+    )
+    expanded = ReplayAdaptationCompiler().compile(
+        dataset=dataset("CAST_SEARCH", "expanded-case"),
+        workspace_root=workspace,
+        artifact_root=tmp_path / "expanded-adaptation",
+    )
+
+    screening_snapshot = json.loads(
+        Path(screening.environment_snapshot_path).read_text(encoding="utf-8")
+    )
+    expanded_snapshot = json.loads(
+        Path(expanded.environment_snapshot_path).read_text(encoding="utf-8")
+    )
+    assert screening_snapshot["tool_names"] == ["mcp"]
+    assert expanded_snapshot["tool_names"] == ["CAST_SEARCH"]
+    assert screening.environment_fingerprint == expanded.environment_fingerprint
+    assert screening.adaptation_fingerprint != expanded.adaptation_fingerprint
 
 
 def test_compiler_seeds_git_workspace_from_tracked_files_only(tmp_path: Path) -> None:
@@ -777,6 +840,582 @@ def test_registered_adapter_can_make_local_endpoint_deterministic(tmp_path: Path
     assert bundle.ready is True
 
 
+def _test_fingerprint(value: str) -> str:
+    return "sha256:" + hashlib.sha256(value.encode("utf-8")).hexdigest()
+
+
+def _isolated_binding(
+    adapter_id: str = "adapter-a",
+    dependency_id: str = "dependency-a",
+    **changes: object,
+) -> ReplayAdapterBinding:
+    values: dict[str, object] = {
+        "adapter_id": adapter_id,
+        "dependency_id": dependency_id,
+        "deterministic": True,
+        "concurrency_mode": "isolated",
+    }
+    values.update(changes)
+    return validate_replay_binding_concurrency(
+        ReplayAdapterBinding(**values)  # type: ignore[arg-type]
+    )
+
+
+def _isolation_topology(
+    lane: str,
+    *,
+    bindings: tuple[ReplayAdapterBinding, ...] = (),
+    workspace_identity: str | None = None,
+    runtime_identity: str | None = None,
+    resources: tuple[IsolationResourceIdentity, ...] | None = None,
+) -> ReplayIsolationTopology:
+    canonical_bindings = tuple(
+        validate_replay_binding_concurrency(item) for item in bindings
+    )
+    browser_identity = f"browser:{lane}"
+    default_resources = (
+        IsolationResourceIdentity(
+            resource_kind="browser",
+            identity=browser_identity,
+            access_mode="isolated",
+            cleanup_owner=f"cleanup:{lane}",
+        ),
+        IsolationResourceIdentity(
+            resource_kind="fixture-index",
+            identity="fixture-index:stable",
+            access_mode="shared_read_only",
+        ),
+    )
+    coverage = tuple(
+        IsolationBindingCoverage(
+            binding_fingerprint=item.binding_fingerprint or "",
+            adapter_id=item.adapter_id,
+            dependency_id=item.dependency_id,
+            resource_identities=(
+                item.resource_key
+                if item.concurrency_mode == "shared_read_only"
+                else browser_identity,
+            ),
+        )
+        for item in canonical_bindings
+    )
+    return ReplayIsolationTopology.create(
+        materializer_id="test-materializer",
+        materializer_fingerprint=_test_fingerprint("test-materializer:v1"),
+        workspace_identity=workspace_identity or f"workspace:{lane}",
+        runtime_identity=runtime_identity or f"runtime:{lane}",
+        browser_profile_identity=f"browser-profile:{lane}",
+        endpoint_namespace_identity=f"endpoint-namespace:{lane}",
+        evidence_directory_identity=f"evidence:{lane}",
+        services=(
+            IsolationServiceIdentity(
+                service_id="recorded-http",
+                instance_identity=f"service:{lane}:recorded-http",
+                cleanup_owner=f"cleanup:{lane}",
+            ),
+        ),
+        resources=resources or default_resources,
+        binding_coverage=coverage,
+        cleanup_owner=f"cleanup:{lane}",
+    )
+
+
+def test_compile_isolation_grant_is_versioned_immutable_and_canonical() -> None:
+    bindings = (
+        _isolated_binding(
+            adapter_id="adapter-b",
+            dependency_id="dependency-b",
+            concurrency_mode="shared_read_only",
+            resource_key="fixture-index:stable",
+        ),
+        _isolated_binding(
+            adapter_id="adapter-a",
+            dependency_id="dependency-a",
+        ),
+    )
+
+    compiled = compile_isolation_grant(
+        topology=_isolation_topology("lane-a", bindings=bindings),
+        bindings=bindings,
+    )
+    reordered = compile_isolation_grant(
+        topology=_isolation_topology(
+            "lane-a",
+            bindings=tuple(reversed(bindings)),
+            resources=tuple(
+                reversed(_isolation_topology("lane-a").resources)
+            ),
+        ),
+        bindings=tuple(reversed(bindings)),
+    )
+
+    assert compiled.grant is not None
+    assert compiled.fallback is None
+    assert compiled.grant.schema_version == "aworld.self_evolve.isolation_grant.v1"
+    assert compiled.grant.fingerprint.startswith("sha256:")
+    assert compiled.grant.fingerprint == reordered.grant.fingerprint
+    assert compiled.grant.binding_fingerprints == tuple(
+        sorted(item.binding_fingerprint for item in bindings if item.binding_fingerprint)
+    )
+    assert IsolationGrant.from_dict(compiled.grant.to_dict()) == compiled.grant
+    with pytest.raises(Exception):
+        compiled.grant.cleanup_owner = "changed"  # type: ignore[misc]
+
+
+def test_compile_isolation_grant_falls_back_for_exclusive_binding() -> None:
+    compiled = compile_isolation_grant(
+        topology=_isolation_topology("lane-a"),
+        bindings=(
+            ReplayAdapterBinding(
+                adapter_id="exclusive-adapter",
+                dependency_id="endpoint",
+                deterministic=True,
+                concurrency_mode="exclusive",
+                resource_key="browser:shared",
+            ),
+        ),
+    )
+
+    assert compiled.grant is None
+    assert compiled.fallback is not None
+    assert compiled.fallback.code == "binding_requires_exclusive"
+    assert compiled.fallback.limiting_resource == "browser:shared"
+
+
+def test_compile_isolation_grant_falls_back_when_binding_coverage_is_missing() -> None:
+    binding = _isolated_binding()
+    compiled = compile_isolation_grant(
+        topology=_isolation_topology("lane-a"),
+        bindings=(binding,),
+    )
+
+    assert compiled.grant is None
+    assert compiled.fallback is not None
+    assert compiled.fallback.code == "binding_coverage_missing"
+    assert compiled.fallback.limiting_resource == binding.binding_fingerprint
+
+
+def test_isolation_grants_compatible_accepts_distinct_lanes_and_shared_read_only() -> None:
+    left = compile_isolation_grant(
+        topology=_isolation_topology("lane-a"),
+        bindings=(),
+    ).grant
+    right = compile_isolation_grant(
+        topology=_isolation_topology("lane-b"),
+        bindings=(),
+    ).grant
+
+    assert left is not None and right is not None
+    decision = isolation_grants_compatible(left, right)
+
+    assert decision.compatible is True
+    assert decision.code == "compatible"
+
+
+def test_isolation_grants_compatible_rejects_shared_mutable_resource() -> None:
+    left = compile_isolation_grant(
+        topology=_isolation_topology("lane-a"),
+        bindings=(),
+    ).grant
+    right_topology = _isolation_topology(
+        "lane-b",
+        resources=(
+            IsolationResourceIdentity(
+                resource_kind="browser",
+                identity="browser:lane-a",
+                access_mode="isolated",
+                cleanup_owner="cleanup:lane-b",
+            ),
+        ),
+    )
+    right = compile_isolation_grant(
+        topology=right_topology,
+        bindings=(),
+    ).grant
+
+    assert left is not None and right is not None
+    decision = isolation_grants_compatible(left, right)
+
+    assert decision.compatible is False
+    assert decision.code == "resource_identity_conflict"
+    assert decision.limiting_resource == "resource:browser:browser:lane-a"
+
+
+def test_isolation_grant_deserialization_rejects_tampered_contract() -> None:
+    grant = compile_isolation_grant(
+        topology=_isolation_topology("lane-a"), bindings=()
+    ).grant
+    assert grant is not None
+
+    tampered_resource = json.loads(json.dumps(grant.to_dict()))
+    tampered_resource["resources"][0]["identity"] = "browser:forged"
+    with pytest.raises(ValueError, match="fingerprint mismatch"):
+        IsolationGrant.from_dict(tampered_resource)
+
+    tampered_schema = json.loads(json.dumps(grant.to_dict()))
+    tampered_schema["schema_version"] = "aworld.self_evolve.isolation_grant.v0"
+    with pytest.raises(ValueError, match="unsupported isolation grant schema"):
+        IsolationGrant.from_dict(tampered_schema)
+
+    invalid_resource = json.loads(json.dumps(grant.to_dict()))
+    invalid_resource["resources"][0]["identity"] = ""
+    with pytest.raises(ValueError, match="resource identity"):
+        IsolationGrant.from_dict(invalid_resource)
+
+
+def test_isolation_topology_requires_provenance_and_rejects_tampering() -> None:
+    topology = _isolation_topology("lane-a")
+    assert ReplayIsolationTopology.from_dict(topology.to_dict()) == topology
+
+    missing_materializer = topology.to_dict()
+    missing_materializer.pop("materializer_id")
+    with pytest.raises(ValueError, match="materializer_id"):
+        ReplayIsolationTopology.from_dict(missing_materializer)
+
+    tampered = topology.to_dict()
+    tampered["cleanup_owner"] = "cleanup:forged"
+    with pytest.raises(ValueError, match="topology fingerprint mismatch"):
+        ReplayIsolationTopology.from_dict(tampered)
+
+
+def test_isolation_grants_reject_cross_dimension_and_nested_claims() -> None:
+    left = compile_isolation_grant(
+        topology=_isolation_topology(
+            "lane-a", workspace_identity="/tmp/isolation/lane-a"
+        ),
+        bindings=(),
+    ).grant
+    equal_cross_dimension = compile_isolation_grant(
+        topology=_isolation_topology(
+            "lane-b", runtime_identity="/tmp/isolation/lane-a"
+        ),
+        bindings=(),
+    ).grant
+    nested_cross_dimension = compile_isolation_grant(
+        topology=_isolation_topology(
+            "lane-c", runtime_identity="/tmp/isolation/lane-a/runtime"
+        ),
+        bindings=(),
+    ).grant
+
+    assert left is not None
+    assert equal_cross_dimension is not None
+    assert nested_cross_dimension is not None
+    assert not isolation_grants_compatible(left, equal_cross_dimension).compatible
+    assert not isolation_grants_compatible(left, nested_cross_dimension).compatible
+
+
+def test_only_same_typed_shared_read_only_claim_is_compatible() -> None:
+    left = compile_isolation_grant(
+        topology=_isolation_topology("lane-a"), bindings=()
+    ).grant
+    shared_as_service = ReplayIsolationTopology.create(
+        materializer_id="test-materializer",
+        materializer_fingerprint=_test_fingerprint("test-materializer:v1"),
+        workspace_identity="workspace:lane-b",
+        runtime_identity="runtime:lane-b",
+        browser_profile_identity="browser-profile:lane-b",
+        endpoint_namespace_identity="endpoint-namespace:lane-b",
+        evidence_directory_identity="evidence:lane-b",
+        services=(
+            IsolationServiceIdentity(
+                service_id="fixture-service",
+                instance_identity="fixture-index:stable",
+                access_mode="shared_read_only",
+            ),
+        ),
+        cleanup_owner="cleanup:lane-b",
+    )
+    right = compile_isolation_grant(topology=shared_as_service, bindings=()).grant
+
+    assert left is not None and right is not None
+    assert not isolation_grants_compatible(left, right).compatible
+
+
+def test_binding_fingerprint_uses_normalized_safety_projection() -> None:
+    base = _isolated_binding(environment={"MODE": "safe", "ACCESS_TOKEN": "one"})
+    secret_changed = _isolated_binding(
+        environment={"MODE": "safe", "ACCESS_TOKEN": "two"}
+    )
+    environment_changed = _isolated_binding(environment={"MODE": "other"})
+    shared_a = _isolated_binding(
+        concurrency_mode="shared_read_only", resource_key="fixture:a"
+    )
+    shared_b = _isolated_binding(
+        concurrency_mode="shared_read_only", resource_key="fixture:b"
+    )
+
+    assert base.binding_fingerprint == secret_changed.binding_fingerprint
+    assert base.binding_fingerprint != environment_changed.binding_fingerprint
+    assert shared_a.binding_fingerprint != shared_b.binding_fingerprint
+    assert (
+        validate_replay_binding_concurrency(base).binding_fingerprint
+        == base.binding_fingerprint
+    )
+    caller_named = _isolated_binding(binding_fingerprint="legacy-caller-identity")
+    assert caller_named.binding_fingerprint == _isolated_binding().binding_fingerprint
+    assert caller_named.binding_fingerprint != "legacy-caller-identity"
+
+
+def test_grant_set_and_decision_are_canonical_and_fail_closed() -> None:
+    left = compile_isolation_grant(
+        topology=_isolation_topology("lane-a"), bindings=()
+    ).grant
+    right = compile_isolation_grant(
+        topology=_isolation_topology("lane-b"), bindings=()
+    ).grant
+    conflict = compile_isolation_grant(
+        topology=_isolation_topology(
+            "lane-c", workspace_identity="workspace:lane-a"
+        ),
+        bindings=(),
+    ).grant
+    assert left is not None and right is not None and conflict is not None
+
+    grant_set = IsolationGrantSet.create((right, left))
+    assert grant_set.fingerprint == IsolationGrantSet.create((left, right)).fingerprint
+    assert IsolationGrantSet.from_dict(grant_set.to_dict()) == grant_set
+    decision = IsolationDecision.create(
+        requested_lane_count=2, grants=(right, left)
+    )
+    assert decision.safe_lane_count == 2
+    assert decision.fallback is None
+    assert IsolationDecision.from_dict(decision.to_dict()) == decision
+
+    incomplete = IsolationDecision.create(requested_lane_count=2, grants=(left,))
+    assert incomplete.safe_lane_count == 1
+    assert incomplete.fallback is not None
+    assert incomplete.fallback.code == "grant_set_incomplete"
+    incompatible = IsolationDecision.create(
+        requested_lane_count=2, grants=(left, conflict)
+    )
+    assert incompatible.safe_lane_count == 1
+    assert incompatible.fallback is not None
+    assert incompatible.fallback.code == "grant_set_incompatible"
+
+    single = IsolationDecision.create(requested_lane_count=1, grants=(left,))
+    assert single.safe_lane_count == 1
+    assert single.fallback is None
+
+
+def test_zero_grant_exclusive_decision_is_canonical_and_round_trips() -> None:
+    fallback = IsolationExclusiveFallback(
+        code="binding_requires_exclusive",
+        limiting_resource="browser:shared",
+        detail="browser profile cannot be isolated",
+    )
+
+    decision = IsolationDecision.exclusive_fallback(
+        requested_lane_count=2,
+        fallback=fallback,
+    )
+
+    assert decision.safe_lane_count == 1
+    assert decision.grant_set.grants == ()
+    assert decision.grant_set.pairwise_decisions == ()
+    assert decision.grant_set.all_compatible is False
+    assert decision.fallback == fallback
+    assert IsolationDecision.from_dict(decision.to_dict()) == decision
+    assert (
+        IsolationGrantSet.from_dict(decision.grant_set.to_dict())
+        == decision.grant_set
+    )
+
+
+def test_zero_grant_decision_rejects_missing_or_tampered_fallback() -> None:
+    decision = IsolationDecision.exclusive_fallback(
+        requested_lane_count=1,
+        fallback=IsolationExclusiveFallback(
+            code="binding_invalid",
+            limiting_resource="binding",
+            detail="binding identity is incomplete",
+        ),
+    )
+    missing = json.loads(json.dumps(decision.to_dict()))
+    missing["fallback"] = None
+    with pytest.raises(ValueError, match="requires one fallback"):
+        IsolationDecision.from_dict(missing)
+
+    tampered = json.loads(json.dumps(decision.to_dict()))
+    tampered["fallback"]["detail"] = "forged fallback"
+    with pytest.raises(ValueError, match="decision fingerprint mismatch"):
+        IsolationDecision.from_dict(tampered)
+
+
+def test_decision_adapter_consumes_typed_compilations_not_raw_boolean() -> None:
+    fallback_compilation = compile_isolation_grant(
+        topology=_isolation_topology("lane-a"),
+        bindings=(
+            ReplayAdapterBinding(
+                adapter_id="exclusive-adapter",
+                dependency_id="endpoint",
+                deterministic=True,
+                concurrency_mode="exclusive",
+                resource_key="browser:shared",
+            ),
+        ),
+    )
+
+    decision = compile_isolation_decision_artifact(
+        requested_lane_count=2,
+        lane_compilations=(fallback_compilation,),
+    )
+
+    assert decision.safe_lane_count == 1
+    assert decision.grant_set.grants == ()
+    assert decision.fallback == fallback_compilation.fallback
+    assert decision.fingerprint.startswith("sha256:")
+
+
+def test_replay_bundle_compiles_two_framework_owned_lanes(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    bundle = ReplayAdaptationCompiler().compile(
+        dataset=_dataset("Summarize the local instructions."),
+        workspace_root=workspace,
+        artifact_root=tmp_path / "adaptation",
+    )
+
+    decision = compile_replay_adaptation_isolation_decision(
+        bundle,
+        materialization_root=tmp_path / "run" / "measurement-lanes",
+        requested_lane_count=2,
+    )
+
+    assert decision.safe_lane_count == 2
+    assert decision.fallback is None
+    assert len(decision.grant_set.grants) == 2
+    workspaces = {
+        grant.workspace_identity for grant in decision.grant_set.grants
+    }
+    assert len(workspaces) == 2
+    assert all(
+        Path(identity).is_relative_to(tmp_path / "run" / "measurement-lanes")
+        for identity in workspaces
+    )
+
+
+def test_replay_bundle_preserves_explicit_exclusive_binding(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    bundle = ReplayAdaptationCompiler().compile(
+        dataset=_dataset("Summarize the local instructions."),
+        workspace_root=workspace,
+        artifact_root=tmp_path / "adaptation",
+    )
+    exclusive = validate_replay_binding_concurrency(
+        ReplayAdapterBinding(
+            adapter_id="browser-replay",
+            dependency_id="browser-service",
+            deterministic=True,
+            concurrency_mode="exclusive",
+            resource_key="browser:shared",
+        )
+    )
+    bundle = replace(
+        bundle,
+        cases=(replace(bundle.cases[0], bindings=(exclusive,)),),
+    )
+
+    decision = compile_replay_adaptation_isolation_decision(
+        bundle,
+        materialization_root=tmp_path / "run" / "measurement-lanes",
+        requested_lane_count=2,
+    )
+
+    assert decision.safe_lane_count == 1
+    assert decision.fallback is not None
+    assert decision.fallback.code == "binding_requires_exclusive"
+    assert decision.fallback.limiting_resource == "browser:shared"
+    with pytest.raises(TypeError, match="typed grant compilations"):
+        compile_isolation_decision_artifact(
+            requested_lane_count=2,
+            lane_compilations=(True,),  # type: ignore[arg-type]
+        )
+    with pytest.raises(ValueError, match="supported bound"):
+        compile_isolation_decision_artifact(
+            requested_lane_count=65,
+            lane_compilations=(),
+        )
+
+
+def test_stateful_tool_without_isolated_binding_remains_exclusive(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    bundle = ReplayAdaptationCompiler().compile(
+        dataset=_dataset("Open the browser and inspect the page."),
+        workspace_root=workspace,
+        artifact_root=tmp_path / "adaptation",
+    )
+    bundle = replace(
+        bundle,
+        cases=(replace(bundle.cases[0], tool_names=("agent-browser",)),),
+    )
+
+    decision = compile_replay_adaptation_isolation_decision(
+        bundle,
+        materialization_root=tmp_path / "run" / "measurement-lanes",
+    )
+
+    assert decision.safe_lane_count == 1
+    assert decision.fallback is not None
+    assert decision.fallback.limiting_resource == "stateful_tool:agent-browser"
+
+
+def test_decision_adapter_requires_complete_pairwise_proof_for_multiple_lanes() -> None:
+    left = compile_isolation_grant(
+        topology=_isolation_topology("lane-a"), bindings=()
+    )
+    right = compile_isolation_grant(
+        topology=_isolation_topology("lane-b"), bindings=()
+    )
+
+    complete = compile_isolation_decision_artifact(
+        requested_lane_count=2,
+        lane_compilations=(right, left),
+    )
+    incomplete = compile_isolation_decision_artifact(
+        requested_lane_count=2,
+        lane_compilations=(left,),
+    )
+
+    assert complete.safe_lane_count == 2
+    assert complete.fallback is None
+    assert len(complete.grant_set.pairwise_decisions) == 1
+    assert complete.grant_set.pairwise_decisions[0].compatible is True
+    assert incomplete.safe_lane_count == 1
+    assert incomplete.fallback is not None
+    assert incomplete.fallback.code == "grant_set_incomplete"
+
+
+def test_compile_isolation_grant_reconciles_binding_provenance() -> None:
+    binding = _isolated_binding()
+    topology = _isolation_topology("lane-a", bindings=(binding,))
+    bad_coverage = replace(topology.binding_coverage[0], adapter_id="adapter:wrong")
+    forged_topology = ReplayIsolationTopology.create(
+        materializer_id=topology.materializer_id,
+        materializer_fingerprint=topology.materializer_fingerprint,
+        workspace_identity=topology.workspace_identity,
+        runtime_identity=topology.runtime_identity,
+        browser_profile_identity=topology.browser_profile_identity,
+        endpoint_namespace_identity=topology.endpoint_namespace_identity,
+        evidence_directory_identity=topology.evidence_directory_identity,
+        services=topology.services,
+        resources=topology.resources,
+        binding_coverage=(bad_coverage,),
+        cleanup_owner=topology.cleanup_owner,
+    )
+
+    compiled = compile_isolation_grant(
+        topology=forged_topology, bindings=(binding,)
+    )
+    assert compiled.grant is None
+    assert compiled.fallback is not None
+    assert compiled.fallback.code == "binding_coverage_invalid"
+
+
 def test_materialize_replay_workspace_replaces_dirty_destination(tmp_path: Path) -> None:
     workspace = tmp_path / "source" / "demo"
     workspace.mkdir(parents=True)
@@ -794,6 +1433,87 @@ def test_materialize_replay_workspace_replaces_dirty_destination(tmp_path: Path)
 
     assert (destination / "input.txt").read_text(encoding="utf-8") == "seed"
     assert not (destination / "dirty.txt").exists()
+
+
+def test_materialize_replay_workspace_verifies_immutable_seed_once(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    workspace = tmp_path / "source" / "demo"
+    workspace.mkdir(parents=True)
+    (workspace / "input.txt").write_text("seed", encoding="utf-8")
+    bundle = ReplayAdaptationCompiler().compile(
+        dataset=_dataset(f"Read {workspace}/input.txt"),
+        workspace_root=workspace,
+        artifact_root=tmp_path / "run" / "adaptation",
+    )
+    original_manifest = replay_adaptation._workspace_manifest
+    manifest_calls = 0
+
+    def counted_manifest(root: Path) -> dict[str, object]:
+        nonlocal manifest_calls
+        manifest_calls += 1
+        return original_manifest(root)
+
+    def fake_clone(seed: Path, target: Path) -> None:
+        del seed
+        target.mkdir()
+
+    replay_adaptation._verified_workspace_seed_fingerprint.cache_clear()
+    monkeypatch.setattr(replay_adaptation, "_workspace_manifest", counted_manifest)
+    monkeypatch.setattr(replay_adaptation, "_clone_or_copy_workspace", fake_clone)
+
+    materialize_replay_workspace(bundle, tmp_path / "baseline")
+    materialize_replay_workspace(bundle, tmp_path / "candidate")
+
+    assert manifest_calls == 1
+
+
+def test_darwin_workspace_materialization_uses_bounded_directory_clone(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seed = tmp_path / "seed"
+    seed.mkdir()
+    target = tmp_path / "rollout"
+    calls: list[tuple[list[str], int]] = []
+
+    def fake_run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        calls.append((command, int(kwargs["timeout"])))
+        target.mkdir()
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    monkeypatch.setattr(replay_adaptation.sys, "platform", "darwin")
+    monkeypatch.setattr(replay_adaptation.subprocess, "run", fake_run)
+
+    replay_adaptation._clone_or_copy_workspace(seed, target)
+
+    assert len(calls) == 1
+    command, timeout = calls[0]
+    assert command[:3] == [replay_adaptation.sys.executable, "-I", "-c"]
+    assert command[-2:] == [str(seed), str(target)]
+    assert timeout == replay_adaptation._WORKSPACE_CLONE_TIMEOUT_SECONDS
+
+
+def test_workspace_copy_fallback_is_bounded(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seed = tmp_path / "seed"
+    seed.mkdir()
+    target = tmp_path / "rollout"
+
+    def fake_run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        del command, kwargs
+        raise subprocess.TimeoutExpired(cmd="copy", timeout=300)
+
+    monkeypatch.setattr(replay_adaptation.sys, "platform", "other")
+    monkeypatch.setattr(replay_adaptation.subprocess, "run", fake_run)
+
+    with pytest.raises(ReplayAdaptationError, match="bounded materialization window"):
+        replay_adaptation._clone_or_copy_workspace(seed, target)
+
+    assert not target.exists()
 
 
 def test_absolute_workspace_symlink_is_rebased_into_each_rollout(
@@ -1073,6 +1793,10 @@ async def test_each_variant_and_repetition_starts_from_same_clean_seed(
         "dataset_fingerprint": request.dataset_fingerprint,
         "adaptation_fingerprint": request.adaptation_fingerprint,
         "workspace_seed_fingerprint": request.workspace_seed_fingerprint,
+        "support_fingerprint": request.support_fingerprint,
+        "timeout_envelope_fingerprint": (
+            request.timeout_envelope_fingerprint
+        ),
     }
     assert _find_reusable_baseline_replay_dir(**lookup) is not None
     assert _find_reusable_baseline_replay_dir(
@@ -1084,8 +1808,19 @@ async def test_each_variant_and_repetition_starts_from_same_clean_seed(
     assert _find_reusable_baseline_replay_dir(
         **{**lookup, "dataset_fingerprint": "sha256:changed-dataset"}
     ) is None
+    # A run-local compilation/artifact identity may change between candidate
+    # packages while the executable control surface remains identical.
     assert _find_reusable_baseline_replay_dir(
         **{**lookup, "adaptation_fingerprint": "sha256:changed-adaptation"}
+    ) is not None
+    assert _find_reusable_baseline_replay_dir(
+        **{**lookup, "support_fingerprint": "sha256:changed-support"}
+    ) is None
+    assert _find_reusable_baseline_replay_dir(
+        **{
+            **lookup,
+            "timeout_envelope_fingerprint": "sha256:changed-timeout-envelope",
+        }
     ) is None
 
 
@@ -1148,6 +1883,10 @@ async def test_multi_case_baseline_reuse_requires_exact_root_repetition_count(
         "dataset_fingerprint": request.dataset_fingerprint,
         "adaptation_fingerprint": request.adaptation_fingerprint,
         "workspace_seed_fingerprint": request.workspace_seed_fingerprint,
+        "support_fingerprint": request.support_fingerprint,
+        "timeout_envelope_fingerprint": (
+            request.timeout_envelope_fingerprint
+        ),
     }
 
     assert _find_reusable_baseline_replay_dir(
@@ -1158,6 +1897,100 @@ async def test_multi_case_baseline_reuse_requires_exact_root_repetition_count(
         **lookup,
         baseline_repetitions=4,
     ) is None
+
+
+@pytest.mark.asyncio
+async def test_behavior_only_siblings_share_baseline_with_same_support_fingerprint(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "source" / "demo"
+    workspace.mkdir(parents=True)
+    dataset = _dataset("Replay task", task_id="task-a")
+    bundle = ReplayAdaptationCompiler().compile(
+        dataset=dataset,
+        workspace_root=workspace,
+        artifact_root=tmp_path / "adaptation",
+    )
+    target = SelfEvolveTargetRef(target_type="skill", target_id="demo")
+    first = CandidateVariant(
+        candidate_id="behavior-a",
+        target=target,
+        content="# Demo\n\nBehavior A.\n",
+        rationale="first behavior",
+        target_fingerprint="sha256:baseline",
+    )
+    second = replace(
+        first,
+        candidate_id="behavior-b",
+        content="# Demo\n\nBehavior B.\n",
+        rationale="second behavior",
+    )
+    calls: list[str] = []
+
+    async def fake_executor(request: ReplayExecutionRequest) -> ReplayExecutionResult:
+        calls.append(request.variant_id)
+        return ReplayExecutionResult(
+            status="succeeded",
+            trajectory=[{"action": {"content": request.variant_id}}],
+        )
+
+    backend = AWorldCliCandidateReplayBackend(executor=fake_executor)
+    first_request = build_replay_request(
+        run_id="support-sibling-a",
+        workspace_root=workspace,
+        target=target,
+        candidate=first,
+        overlay_skill_root=tmp_path / "overlay-a",
+        dataset=dataset,
+        replay_adaptation=bundle,
+        timeout_seconds=120,
+        max_steps=4,
+        max_tool_calls=8,
+    )
+    await backend.replay_candidate(
+        first_request,
+        candidate=first,
+        dataset=dataset,
+    )
+    baseline_dir = _find_reusable_baseline_replay_dir(
+        store=FilesystemSelfEvolveStore(workspace),
+        run_id="support-sibling-b",
+        target=target,
+        dataset=dataset,
+        baseline_repetitions=1,
+        baseline_skill_fingerprint=first_request.baseline_skill_fingerprint,
+        dataset_fingerprint=first_request.dataset_fingerprint,
+        adaptation_fingerprint=first_request.adaptation_fingerprint,
+        workspace_seed_fingerprint=first_request.workspace_seed_fingerprint,
+        support_fingerprint=first_request.support_fingerprint,
+        timeout_envelope_fingerprint=(
+            first_request.timeout_envelope_fingerprint
+        ),
+    )
+    assert baseline_dir is not None
+
+    calls.clear()
+    second_request = build_replay_request(
+        run_id="support-sibling-b",
+        workspace_root=workspace,
+        target=target,
+        candidate=second,
+        overlay_skill_root=tmp_path / "overlay-b",
+        dataset=dataset,
+        replay_adaptation=bundle,
+        timeout_seconds=120,
+        max_steps=4,
+        max_tool_calls=8,
+        baseline_replay_dir=baseline_dir,
+    )
+    assert second_request.support_fingerprint == first_request.support_fingerprint
+    await backend.replay_candidate(
+        second_request,
+        candidate=second,
+        dataset=dataset,
+    )
+
+    assert calls == [second.candidate_id]
 
 
 def _result_with_request_provenance(request, candidate_id: str) -> CandidateReplayResult:
@@ -1225,7 +2058,12 @@ def _result_with_request_provenance(request, candidate_id: str) -> CandidateRepl
                         "service_endpoint": json.dumps(
                             {"recorded-http": "http://127.0.0.1:41002"},
                             separators=(",", ":"),
-                        )
+                        ),
+                        # The fake backend represents a rollout that reached
+                        # the candidate-owned replay service.  Keep that
+                        # causal observation explicit now that the replay gate
+                        # rejects merely configured-but-unexercised support.
+                        "replay_service_protocol_trace_count": 1,
                     }
                     if capability is not None
                     else {}
@@ -1502,7 +2340,17 @@ async def test_unresolved_adaptation_preserves_proposal_but_rejects_verified_app
         )
 
         assert result.run.status.value == expected_status
-        assert result.selected_candidate is not None
+        assert result.selected_candidate is None
+        report = json.loads(
+            (
+                workspace
+                / ".aworld"
+                / "self_evolve"
+                / f"run-policy-{policy}"
+                / "report.json"
+            ).read_text(encoding="utf-8")
+        )
+        assert report["repair_focus_candidate_id"] == "cand-policy"
         assert (
             workspace
             / ".aworld"

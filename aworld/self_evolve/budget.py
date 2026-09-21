@@ -39,11 +39,13 @@ _MAX_OBSERVED_SAMPLES_PER_STAGE = 64
 
 class BudgetStage(str, Enum):
     CANDIDATE_GENERATION = "candidate_generation"
+    CHALLENGER = "challenger"
     LOCAL_GATES = "local_gates"
     ADAPTATION = "adaptation"
     CONFORMANCE = "conformance"
     SCREENING = "screening"
     PAIRED_REPLAY = "paired_replay"
+    REGRESSION_REPLAY = "regression_replay"
     EVALUATION = "evaluation"
     JUDGE = "judge"
 
@@ -60,7 +62,9 @@ class ZeroBudgetUsageProofProvider(Protocol):
 class BudgetEstimateSource(str, Enum):
     UNKNOWN = "unknown"
     CONFIGURED_COLD_START = "configured_cold_start"
+    REQUEST_DERIVED = "request_derived"
     OBSERVED_ROBUST = "observed_robust"
+    OBSERVED_LOWER_BOUND = "observed_lower_bound"
     BACKEND_PROVEN_ZERO = "backend_proven_zero"
 
 
@@ -416,8 +420,21 @@ class BudgetCeilings:
             _optional_decimal(self.wall_seconds, field_name="wall_seconds"),
         )
 
+    @property
+    def is_unbounded(self) -> bool:
+        return (
+            self.total_tokens is None
+            and self.total_cost_usd is None
+            and self.wall_seconds is None
+        )
+
+    @property
+    def budget_mode(self) -> str:
+        return "unbounded" if self.is_unbounded else "explicit_hard_limit"
+
     def to_dict(self) -> dict[str, object]:
         return {
+            "budget_mode": self.budget_mode,
             "total_tokens": self.total_tokens,
             "total_cost_usd": (
                 _decimal_text(self.total_cost_usd)
@@ -1322,6 +1339,31 @@ class RunBudgetLedger:
             ),
         )
 
+    def _planning_lower_bound(
+        self,
+        stage: BudgetStage,
+    ) -> ObservedBudgetUsage:
+        token_samples: list[int] = []
+        cost_samples: list[Decimal] = []
+        wall_samples: list[Decimal] = []
+        for observation in self._debit_observations:
+            if observation.estimate.stage is not stage:
+                continue
+            count = observation.estimate.units
+            lower = observation.known_lower_bound
+            completeness = observation.actual_completeness
+            if not completeness.tokens and lower.tokens > 0:
+                token_samples.append((lower.tokens + count - 1) // count)
+            if not completeness.cost_usd and lower.cost_usd > 0:
+                cost_samples.append(lower.cost_usd / Decimal(count))
+            if not completeness.wall_seconds and lower.wall_seconds > 0:
+                wall_samples.append(lower.wall_seconds / Decimal(count))
+        return ObservedBudgetUsage(
+            tokens=max(token_samples) if token_samples else None,
+            cost_usd=max(cost_samples) if cost_samples else None,
+            wall_seconds=max(wall_samples) if wall_samples else None,
+        )
+
     def estimate_next(
         self,
         *,
@@ -1338,6 +1380,7 @@ class RunBudgetLedger:
         ):
             raise TypeError("cold-start budget estimate must be BudgetUsage")
         statistics_value = self.estimate_statistics(stage)
+        lower_bound = self._planning_lower_bound(stage).scale(count)
         if statistics_value is None and backend_proven_zero:
             return StageBudgetEstimate(
                 stage=stage,
@@ -1367,34 +1410,44 @@ class RunBudgetLedger:
             else ObservedBudgetUsage()
         )
 
-        tokens = (
+        base_tokens = (
             observed.tokens
             if observed.tokens is not None
-            else (
-                0
-                if backend_proven_zero
-                else (configured.tokens if configured is not None else None)
-            )
+            else (configured.tokens if configured is not None else None)
         )
-        cost_usd = (
+        base_cost_usd = (
             observed.cost_usd
             if observed.cost_usd is not None
-            else (
-                Decimal("0")
-                if backend_proven_zero
-                else (configured.cost_usd if configured is not None else None)
-            )
+            else (configured.cost_usd if configured is not None else None)
         )
-        wall_seconds = (
+        base_wall_seconds = (
             observed.wall_seconds
             if observed.wall_seconds is not None
-            else (
-                Decimal("0")
-                if backend_proven_zero
-                else (
-                    configured.wall_seconds if configured is not None else None
-                )
-            )
+            else (configured.wall_seconds if configured is not None else None)
+        )
+        tokens = max(
+            tuple(
+                value
+                for value in (base_tokens, lower_bound.tokens)
+                if value is not None
+            ),
+            default=(0 if backend_proven_zero else None),
+        )
+        cost_usd = max(
+            tuple(
+                value
+                for value in (base_cost_usd, lower_bound.cost_usd)
+                if value is not None
+            ),
+            default=(Decimal("0") if backend_proven_zero else None),
+        )
+        wall_seconds = max(
+            tuple(
+                value
+                for value in (base_wall_seconds, lower_bound.wall_seconds)
+                if value is not None
+            ),
+            default=(Decimal("0") if backend_proven_zero else None),
         )
         if statistics_value is not None:
             counts = statistics_value.sample_count_by_dimension
@@ -1426,6 +1479,9 @@ class RunBudgetLedger:
                 )
             )
             source = BudgetEstimateSource.OBSERVED_ROBUST
+        elif lower_bound.has_observation:
+            confidence = BudgetEstimateConfidence.LOW
+            source = BudgetEstimateSource.OBSERVED_LOWER_BOUND
         elif configured is not None:
             confidence = BudgetEstimateConfidence.LOW
             source = BudgetEstimateSource.CONFIGURED_COLD_START
@@ -1587,11 +1643,21 @@ class RunBudgetLedger:
             tokens = 0 if tokens is None else tokens
             cost = Decimal("0") if cost is None else cost
             wall = Decimal("0") if wall is None else wall
-        # Unknown is distinct from zero even for an unbounded dimension.  This
-        # prevents later configuration changes or report consumers from
-        # silently interpreting missing estimates as free work.
-        if tokens is None or cost is None or wall is None:
-            return None
+        # Unknown estimates fail closed only for dimensions with an active
+        # ceiling.  An unbounded dimension does not participate in admission;
+        # reserve zero provisionally and debit observed usage afterwards.
+        if tokens is None:
+            if self.ceilings.total_tokens is not None:
+                return None
+            tokens = 0
+        if cost is None:
+            if self.ceilings.total_cost_usd is not None:
+                return None
+            cost = Decimal("0")
+        if wall is None:
+            if self.ceilings.wall_seconds is not None:
+                return None
+            wall = Decimal("0")
         usage = BudgetUsage(
             tokens=tokens or 0,
             cost_usd=cost or Decimal("0"),
@@ -1601,6 +1667,7 @@ class RunBudgetLedger:
             usage == BudgetUsage()
             and estimate.source is BudgetEstimateSource.CONFIGURED_COLD_START
             and not estimate.backend_proven_zero
+            and not self.ceilings.is_unbounded
         ):
             return None
         return usage
@@ -1727,6 +1794,7 @@ class StageWorkload:
             return min(1, self.case_count)
         if normalized in {
             BudgetStage.PAIRED_REPLAY,
+            BudgetStage.REGRESSION_REPLAY,
             BudgetStage.EVALUATION,
             BudgetStage.JUDGE,
         }:
@@ -1738,6 +1806,7 @@ class CandidateAttemptStage(str, Enum):
     GENERATED = "generated"
     UNIQUE = "unique"
     DUPLICATE_FILTERED = "duplicate_filtered"
+    POLICY_FILTERED = "policy_filtered"
     LOCAL_GATES = "local_gates"
     ADAPTATION = "adaptation_compile"
     CONFORMANCE = "repair_conformance"
@@ -1747,6 +1816,7 @@ class CandidateAttemptStage(str, Enum):
     PAIRED_REPLAY_COMPLETED = "paired_replay_completed"
     PAIRED_REPLAY_COMPARABLE = "paired_replay_comparable"
     EVALUATION = "evaluation"
+    PREREQUISITE_READY = "prerequisite_ready"
     SELECTED = "selected"
     REJECTED = "rejected"
     BLOCKED = "blocked"
@@ -1755,6 +1825,7 @@ class CandidateAttemptStage(str, Enum):
 
 TERMINAL_ATTEMPT_STAGES = frozenset(
     {
+        CandidateAttemptStage.PREREQUISITE_READY,
         CandidateAttemptStage.SELECTED,
         CandidateAttemptStage.REJECTED,
         CandidateAttemptStage.BLOCKED,
@@ -1767,6 +1838,7 @@ _ATTEMPT_TRANSITIONS: Mapping[CandidateAttemptStage, frozenset[CandidateAttemptS
         {
             CandidateAttemptStage.UNIQUE,
             CandidateAttemptStage.DUPLICATE_FILTERED,
+            CandidateAttemptStage.POLICY_FILTERED,
             CandidateAttemptStage.BLOCKED,
             CandidateAttemptStage.NOT_RUN,
         }
@@ -1782,6 +1854,9 @@ _ATTEMPT_TRANSITIONS: Mapping[CandidateAttemptStage, frozenset[CandidateAttemptS
     CandidateAttemptStage.DUPLICATE_FILTERED: frozenset(
         {CandidateAttemptStage.NOT_RUN}
     ),
+    CandidateAttemptStage.POLICY_FILTERED: frozenset(
+        {CandidateAttemptStage.NOT_RUN}
+    ),
     CandidateAttemptStage.LOCAL_GATES: frozenset(
         {
             CandidateAttemptStage.ADAPTATION,
@@ -1790,6 +1865,7 @@ _ATTEMPT_TRANSITIONS: Mapping[CandidateAttemptStage, frozenset[CandidateAttemptS
             CandidateAttemptStage.REPLAY_EVIDENCE_REUSED,
             CandidateAttemptStage.PAIRED_REPLAY_STARTED,
             CandidateAttemptStage.EVALUATION,
+            CandidateAttemptStage.PREREQUISITE_READY,
             CandidateAttemptStage.SELECTED,
             CandidateAttemptStage.REJECTED,
             CandidateAttemptStage.BLOCKED,
@@ -1803,6 +1879,7 @@ _ATTEMPT_TRANSITIONS: Mapping[CandidateAttemptStage, frozenset[CandidateAttemptS
             CandidateAttemptStage.REPLAY_EVIDENCE_REUSED,
             CandidateAttemptStage.PAIRED_REPLAY_STARTED,
             CandidateAttemptStage.EVALUATION,
+            CandidateAttemptStage.PREREQUISITE_READY,
             CandidateAttemptStage.SELECTED,
             CandidateAttemptStage.REJECTED,
             CandidateAttemptStage.BLOCKED,
@@ -1815,6 +1892,7 @@ _ATTEMPT_TRANSITIONS: Mapping[CandidateAttemptStage, frozenset[CandidateAttemptS
             CandidateAttemptStage.REPLAY_EVIDENCE_REUSED,
             CandidateAttemptStage.PAIRED_REPLAY_STARTED,
             CandidateAttemptStage.EVALUATION,
+            CandidateAttemptStage.PREREQUISITE_READY,
             CandidateAttemptStage.SELECTED,
             CandidateAttemptStage.REJECTED,
             CandidateAttemptStage.BLOCKED,
@@ -1826,6 +1904,7 @@ _ATTEMPT_TRANSITIONS: Mapping[CandidateAttemptStage, frozenset[CandidateAttemptS
             CandidateAttemptStage.REPLAY_EVIDENCE_REUSED,
             CandidateAttemptStage.PAIRED_REPLAY_STARTED,
             CandidateAttemptStage.EVALUATION,
+            CandidateAttemptStage.PREREQUISITE_READY,
             CandidateAttemptStage.SELECTED,
             CandidateAttemptStage.REJECTED,
             CandidateAttemptStage.BLOCKED,
@@ -1835,6 +1914,7 @@ _ATTEMPT_TRANSITIONS: Mapping[CandidateAttemptStage, frozenset[CandidateAttemptS
     CandidateAttemptStage.REPLAY_EVIDENCE_REUSED: frozenset(
         {
             CandidateAttemptStage.EVALUATION,
+            CandidateAttemptStage.PREREQUISITE_READY,
             CandidateAttemptStage.SELECTED,
             CandidateAttemptStage.REJECTED,
             CandidateAttemptStage.BLOCKED,
@@ -1852,6 +1932,7 @@ _ATTEMPT_TRANSITIONS: Mapping[CandidateAttemptStage, frozenset[CandidateAttemptS
         {
             CandidateAttemptStage.PAIRED_REPLAY_COMPARABLE,
             CandidateAttemptStage.EVALUATION,
+            CandidateAttemptStage.PREREQUISITE_READY,
             CandidateAttemptStage.SELECTED,
             CandidateAttemptStage.REJECTED,
             CandidateAttemptStage.BLOCKED,
@@ -1860,6 +1941,7 @@ _ATTEMPT_TRANSITIONS: Mapping[CandidateAttemptStage, frozenset[CandidateAttemptS
     CandidateAttemptStage.PAIRED_REPLAY_COMPARABLE: frozenset(
         {
             CandidateAttemptStage.EVALUATION,
+            CandidateAttemptStage.PREREQUISITE_READY,
             CandidateAttemptStage.SELECTED,
             CandidateAttemptStage.REJECTED,
             CandidateAttemptStage.BLOCKED,
@@ -1867,6 +1949,7 @@ _ATTEMPT_TRANSITIONS: Mapping[CandidateAttemptStage, frozenset[CandidateAttemptS
     ),
     CandidateAttemptStage.EVALUATION: frozenset(
         {
+            CandidateAttemptStage.PREREQUISITE_READY,
             CandidateAttemptStage.SELECTED,
             CandidateAttemptStage.REJECTED,
             CandidateAttemptStage.BLOCKED,
@@ -1874,6 +1957,33 @@ _ATTEMPT_TRANSITIONS: Mapping[CandidateAttemptStage, frozenset[CandidateAttemptS
     ),
     **{stage: frozenset() for stage in TERMINAL_ATTEMPT_STAGES},
 }
+
+
+def candidate_attempt_terminal_stage(
+    current: CandidateAttemptStage,
+    *,
+    preferred: CandidateAttemptStage | None = None,
+) -> CandidateAttemptStage:
+    """Resolve a legal terminal stage without regressing executed work."""
+
+    if current in TERMINAL_ATTEMPT_STAGES:
+        return current
+    allowed = _ATTEMPT_TRANSITIONS[current]
+    if preferred is not None and preferred in allowed:
+        return preferred
+    if preferred is None and CandidateAttemptStage.NOT_RUN in allowed:
+        return CandidateAttemptStage.NOT_RUN
+    # Once replay or evaluation has started, NOT_RUN is intentionally absent
+    # from the transition table. A missing downstream decision means the
+    # attempt was blocked, not that its completed evidence never ran.
+    if CandidateAttemptStage.BLOCKED in allowed:
+        return CandidateAttemptStage.BLOCKED
+    if CandidateAttemptStage.NOT_RUN in allowed:
+        return CandidateAttemptStage.NOT_RUN
+    raise ValueError(
+        "candidate attempt has no legal terminal transition from "
+        f"{current.value}"
+    )
 
 
 @dataclass(frozen=True, order=True)
@@ -2359,6 +2469,9 @@ class SchedulerState:
     untyped_frontier_exploration_scheduled: bool = False
     frontier_progress: Mapping[str, int] = field(default_factory=dict)
     frontier_stalls: Mapping[str, int] = field(default_factory=dict)
+    frontier_mutation_families: Mapping[str, tuple[str, ...]] = field(
+        default_factory=dict
+    )
     last_focused_frontier: str | None = None
 
     def __post_init__(self) -> None:
@@ -2378,6 +2491,24 @@ class SchedulerState:
                 _identity(semantic_key, field_name="semantic_key")
             ] = _non_negative_int(stalls, field_name="frontier stalls")
         object.__setattr__(self, "frontier_stalls", normalized_stalls)
+        normalized_families: dict[str, tuple[str, ...]] = {}
+        for semantic_key, families in self.frontier_mutation_families.items():
+            key = _identity(semantic_key, field_name="semantic_key")
+            if not isinstance(families, (list, tuple)):
+                raise TypeError("frontier mutation families must be sequences")
+            normalized_families[key] = tuple(
+                sorted(
+                    {
+                        _identity(family, field_name="mutation family")
+                        for family in families
+                    }
+                )
+            )
+        object.__setattr__(
+            self,
+            "frontier_mutation_families",
+            normalized_families,
+        )
         if self.last_focused_frontier is not None:
             object.__setattr__(
                 self,
@@ -2396,6 +2527,12 @@ class SchedulerState:
             ),
             "frontier_progress": dict(sorted(self.frontier_progress.items())),
             "frontier_stalls": dict(sorted(self.frontier_stalls.items())),
+            "frontier_mutation_families": {
+                key: list(families)
+                for key, families in sorted(
+                    self.frontier_mutation_families.items()
+                )
+            },
             "last_focused_frontier": self.last_focused_frontier,
         }
 
@@ -2403,10 +2540,15 @@ class SchedulerState:
     def from_dict(cls, value: Mapping[str, object]) -> "SchedulerState":
         raw_progress = value.get("frontier_progress", {})
         raw_stalls = value.get("frontier_stalls", {})
+        raw_families = value.get("frontier_mutation_families", {})
         if not isinstance(raw_progress, Mapping):
             raise ValueError("scheduler frontier_progress must be a mapping")
         if not isinstance(raw_stalls, Mapping):
             raise ValueError("scheduler frontier_stalls must be a mapping")
+        if not isinstance(raw_families, Mapping):
+            raise ValueError(
+                "scheduler frontier_mutation_families must be a mapping"
+            )
         return cls(
             initial_exploration_scheduled=(
                 value.get("initial_exploration_scheduled") is True
@@ -2427,6 +2569,14 @@ class SchedulerState:
                     field_name="frontier stalls",
                 )
                 for key, stalls in raw_stalls.items()
+            },
+            frontier_mutation_families={
+                _identity(key, field_name="semantic_key"): tuple(
+                    _identity(family, field_name="mutation family")
+                    for family in families
+                )
+                for key, families in raw_families.items()
+                if isinstance(families, (list, tuple))
             },
             last_focused_frontier=(
                 _identity(
@@ -2546,6 +2696,7 @@ class SchedulerDecision:
 class StageAwareCandidateScheduler:
     exploration_population: int
     max_stalled_frontier_schedules: int = 1
+    min_distinct_mutation_families: int = 2
 
     def __post_init__(self) -> None:
         object.__setattr__(
@@ -2554,6 +2705,14 @@ class StageAwareCandidateScheduler:
             _positive_int(
                 self.exploration_population,
                 field_name="exploration_population",
+            ),
+        )
+        object.__setattr__(
+            self,
+            "min_distinct_mutation_families",
+            _positive_int(
+                self.min_distinct_mutation_families,
+                field_name="minimum distinct mutation families",
             ),
         )
         object.__setattr__(
@@ -2603,6 +2762,7 @@ class StageAwareCandidateScheduler:
                 ),
                 frontier_progress=state.frontier_progress,
                 frontier_stalls=state.frontier_stalls,
+                frontier_mutation_families=state.frontier_mutation_families,
                 last_focused_frontier=state.last_focused_frontier,
             )
             return SchedulerDecision(
@@ -2637,6 +2797,9 @@ class StageAwareCandidateScheduler:
                     untyped_frontier_exploration_scheduled=True,
                     frontier_progress=state.frontier_progress,
                     frontier_stalls=state.frontier_stalls,
+                    frontier_mutation_families=(
+                        state.frontier_mutation_families
+                    ),
                     last_focused_frontier=state.last_focused_frontier,
                 ),
             )
@@ -2667,6 +2830,7 @@ class StageAwareCandidateScheduler:
             ),
             frontier_progress=updated_progress,
             frontier_stalls=updated_stalls,
+            frontier_mutation_families=state.frontier_mutation_families,
             last_focused_frontier=state.last_focused_frontier,
         )
         eligible_frontiers = tuple(
@@ -2674,6 +2838,17 @@ class StageAwareCandidateScheduler:
             for frontier in repairable
             if updated_stalls.get(frontier.semantic_key, 0)
             <= self.max_stalled_frontier_schedules
+            or (
+                frontier.semantic_key in state.frontier_mutation_families
+                and len(
+                    state.frontier_mutation_families.get(
+                        frontier.semantic_key,
+                        (),
+                    )
+                ) < self.min_distinct_mutation_families
+                and updated_stalls.get(frontier.semantic_key, 0)
+                <= self.max_stalled_frontier_schedules + 1
+            )
         )
         if not eligible_frontiers:
             return SchedulerDecision(
@@ -2689,10 +2864,17 @@ class StageAwareCandidateScheduler:
                 stop=False,
                 state=next_state,
             )
-        focused = sorted(
-            eligible_frontiers,
-            key=lambda item: (item.progress, item.semantic_key),
-        )[-1]
+        # A newly discovered typed contract must take ownership immediately.
+        # Otherwise an older equal-progress frontier can win forever by hash
+        # ordering and spend the remaining repair slots on stale work.
+        _, focused = max(
+            enumerate(eligible_frontiers),
+            key=lambda indexed: (
+                indexed[1].semantic_key not in state.frontier_progress,
+                indexed[1].progress,
+                indexed[0],
+            ),
+        )
         next_state = SchedulerState(
             initial_exploration_scheduled=next_state.initial_exploration_scheduled,
             untyped_frontier_exploration_scheduled=(
@@ -2700,6 +2882,9 @@ class StageAwareCandidateScheduler:
             ),
             frontier_progress=next_state.frontier_progress,
             frontier_stalls=next_state.frontier_stalls,
+            frontier_mutation_families=(
+                next_state.frontier_mutation_families
+            ),
             last_focused_frontier=focused.semantic_key,
         )
         slots = [
@@ -2710,7 +2895,19 @@ class StageAwareCandidateScheduler:
             )
         ]
         if (
-            new_frontier
+            (
+                new_frontier
+                or (
+                    focused.semantic_key
+                    in next_state.frontier_mutation_families
+                    and len(
+                        next_state.frontier_mutation_families.get(
+                            focused.semantic_key,
+                            (),
+                        )
+                    ) < self.min_distinct_mutation_families
+                )
+            )
             and diverse_budget_available
             and self.exploration_population > 1
         ):

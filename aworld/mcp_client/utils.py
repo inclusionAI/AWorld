@@ -219,6 +219,52 @@ def _mcp_content_value(content: Any) -> Any:
     return str(content)
 
 
+def _explicit_result_envelope(content: Any) -> Dict[str, Any] | None:
+    """Return a JSON-like result envelope with an explicit boolean success.
+
+    MCP's protocol-level ``isError`` bit is not the only error signal used by
+    tool servers.  A number of servers return a successful protocol response
+    whose text body is a JSON envelope such as ``{"success": false, ...}``.
+    Treating that as a successful action loses the tool's authoritative result
+    before it reaches output logging, trajectory capture, and the next model
+    turn.
+
+    Only a top-level, explicit boolean is recognized.  We deliberately avoid
+    guessing from prose or recursively inspecting domain payloads where a
+    nested ``success`` field may describe something other than the tool call.
+    """
+
+    candidate = content
+    # Some MCP adapters preserve a single text block as a one-item list and
+    # some older adapters JSON-encode that text one extra time.
+    for _ in range(3):
+        if isinstance(candidate, list) and len(candidate) == 1:
+            candidate = candidate[0]
+            continue
+        if isinstance(candidate, str):
+            try:
+                candidate = json.loads(candidate)
+            except (json.JSONDecodeError, TypeError):
+                return None
+            continue
+        break
+    if isinstance(candidate, dict) and isinstance(candidate.get("success"), bool):
+        return candidate
+    return None
+
+
+def _result_envelope_error(envelope: Dict[str, Any]) -> str:
+    """Build a stable error string from an explicit failed result envelope."""
+
+    for key in ("error", "message"):
+        value = envelope.get(key)
+        if isinstance(value, str) and value:
+            return value
+        if value not in (None, ""):
+            return json.dumps(value, ensure_ascii=False, default=str)
+    return "Tool returned success=false without error details"
+
+
 def lower_mcp_call_result(
     call_result: CallToolResult,
     *,
@@ -261,11 +307,29 @@ def lower_mcp_call_result(
     if not content_items and structured_content is not None:
         lowered_content = structured_content
 
-    is_error = bool(
+    protocol_error = bool(
         getattr(call_result, "isError", getattr(call_result, "is_error", False))
     )
+    result_envelope = _explicit_result_envelope(lowered_content)
+    explicit_success = (
+        result_envelope.get("success") if result_envelope is not None else None
+    )
+    is_error = protocol_error or explicit_success is False
+
+    if result_envelope is not None:
+        # Preserve tool-owned execution evidence (for example command,
+        # duration, and return code) without replacing transport metadata.
+        result_metadata = result_envelope.get("metadata")
+        if isinstance(result_metadata, dict):
+            for key, value in result_metadata.items():
+                metadata.setdefault(key, value)
+        metadata["result_success"] = explicit_success
+
     error = None
-    if is_error:
+    if explicit_success is False and result_envelope is not None:
+        error = _result_envelope_error(result_envelope)
+        metadata["result_error"] = error
+    elif is_error:
         if isinstance(lowered_content, str) and lowered_content:
             error = lowered_content
         elif lowered_content not in (None, ""):
@@ -529,6 +593,8 @@ async def run(mcp_servers: list[MCPServer], black_tool_actions: Dict[str, List[s
                                 "description": param_desc,
                                 "type": param_type,
                             }
+                        if "default" in param_info:
+                            properties[param_name]["default"] = param_info["default"]
 
                 openai_function_schema = {
                     "name": f"{server.name}__{tool.name}",

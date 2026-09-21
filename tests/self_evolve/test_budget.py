@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from copy import deepcopy
+from dataclasses import replace
 from decimal import Decimal
 
 import pytest
@@ -64,6 +65,42 @@ def _ledger() -> RunBudgetLedger:
     )
 
 
+def test_unbounded_ledger_reports_mode_and_never_denies_estimated_usage() -> None:
+    ceilings = BudgetCeilings(
+        total_tokens=None,
+        total_cost_usd=None,
+        wall_seconds=None,
+    )
+    ledger = RunBudgetLedger(ceilings)
+
+    decision = ledger.reserve(
+        _estimate(tokens=10_000_000, cost="1000", wall="86400")
+    )
+
+    assert ceilings.to_dict() == {
+        "budget_mode": "unbounded",
+        "total_tokens": None,
+        "total_cost_usd": None,
+        "wall_seconds": None,
+    }
+    assert decision.allowed is True
+    assert ledger.remaining().to_dict() == {
+        "tokens": None,
+        "cost_usd": None,
+        "wall_seconds": None,
+    }
+
+
+def test_configured_ceiling_reports_explicit_hard_limit_mode() -> None:
+    ceilings = BudgetCeilings(
+        total_tokens=1_000,
+        total_cost_usd=None,
+        wall_seconds=None,
+    )
+
+    assert ceilings.to_dict()["budget_mode"] == "explicit_hard_limit"
+
+
 def test_ledger_reserves_debits_actual_releases_and_roundtrips() -> None:
     ledger = _ledger()
     first = ledger.reserve(_estimate())
@@ -99,7 +136,7 @@ def test_ledger_reserves_debits_actual_releases_and_roundtrips() -> None:
     assert RunBudgetLedger.from_dict(ledger.to_dict()).to_dict() == ledger.to_dict()
 
 
-def test_ledger_unknown_estimate_fails_closed_unless_backend_proves_zero() -> None:
+def test_ledger_unknown_estimate_only_fails_closed_for_bounded_dimensions() -> None:
     ledger = _ledger()
     unknown = StageBudgetEstimate(
         stage=BudgetStage.JUDGE,
@@ -114,7 +151,9 @@ def test_ledger_unknown_estimate_fails_closed_unless_backend_proves_zero() -> No
     assert denied.reason_code is BudgetDecisionReason.UNKNOWN_ESTIMATE
     assert ledger.outstanding_reservations == ()
     unbounded = RunBudgetLedger(BudgetCeilings(None, None, None))
-    assert unbounded.reserve(unknown).reason_code is BudgetDecisionReason.UNKNOWN_ESTIMATE
+    unbounded_decision = unbounded.reserve(unknown)
+    assert unbounded_decision.allowed is True
+    assert unbounded_decision.reason_code is BudgetDecisionReason.RESERVED
 
     configured_zero = ledger.estimate_next(
         stage=BudgetStage.JUDGE,
@@ -317,8 +356,10 @@ def test_observed_estimate_uses_robust_upper_value_not_single_outlier() -> None:
     "stage",
     (
         BudgetStage.CANDIDATE_GENERATION,
+        BudgetStage.CHALLENGER,
         BudgetStage.CONFORMANCE,
         BudgetStage.PAIRED_REPLAY,
+        BudgetStage.REGRESSION_REPLAY,
         BudgetStage.EVALUATION,
         BudgetStage.JUDGE,
     ),
@@ -402,7 +443,6 @@ def test_batch_token_observation_rounds_up_without_rounding_aggregate_spend() ->
             wall_seconds=Decimal("6"),
         ),
     )
-
     assert debit.observed_per_unit == ObservedBudgetUsage(
         tokens=11,
         cost_usd=Decimal("1"),
@@ -467,13 +507,43 @@ def test_incomplete_dimensions_use_conservative_spend_but_not_estimator_samples(
         ),
     )
     assert next_estimate.resolved_usage() == BudgetUsage(
-        tokens=150,
-        cost_usd=Decimal("3"),
+        tokens=225,
+        cost_usd=Decimal("4.5"),
         wall_seconds=Decimal("1.5"),
     )
     assert next_estimate.source is BudgetEstimateSource.OBSERVED_ROBUST
     assert next_estimate.confidence is BudgetEstimateConfidence.LOW
     assert RunBudgetLedger.from_dict(ledger.to_dict()).to_dict() == ledger.to_dict()
+
+
+def test_positive_incomplete_lower_bound_raises_next_planning_estimate() -> None:
+    ledger = RunBudgetLedger(
+        BudgetCeilings(total_tokens=1_000_000, total_cost_usd=None)
+    )
+    first = ledger.reserve(
+        ledger.estimate_next(
+            stage=BudgetStage.JUDGE,
+            item_id="first-judge",
+            units=20,
+            cold_start_per_unit=BudgetUsage(tokens=2_048),
+        )
+    )
+    ledger.debit_actual(
+        first.reservation_id or "",
+        BudgetUsage(tokens=100_000),
+        actual_completeness=BudgetUsageCompleteness.incomplete(),
+    )
+
+    estimate = ledger.estimate_next(
+        stage=BudgetStage.JUDGE,
+        item_id="second-judge",
+        units=20,
+        cold_start_per_unit=BudgetUsage(tokens=2_048),
+    )
+
+    assert estimate.tokens == 100_000
+    assert estimate.source is BudgetEstimateSource.OBSERVED_LOWER_BOUND
+    assert estimate.confidence is BudgetEstimateConfidence.LOW
 
 
 def test_repeated_reserved_fallbacks_do_not_train_or_raise_estimator_confidence() -> None:
@@ -552,6 +622,8 @@ def test_stage_workload_is_cardinality_monotonic_and_shape_aware() -> None:
 
     assert one.units_for(BudgetStage.PAIRED_REPLAY) == 2
     assert three_same_shape.units_for(BudgetStage.PAIRED_REPLAY) == 6
+    assert one.units_for(BudgetStage.REGRESSION_REPLAY) == 2
+    assert three_same_shape.units_for(BudgetStage.REGRESSION_REPLAY) == 6
     assert one.units_for(BudgetStage.CONFORMANCE) == 1
     assert three_same_shape.units_for(BudgetStage.CONFORMANCE) == 1
     assert three_two_shapes.units_for(BudgetStage.CONFORMANCE) == 2
@@ -676,6 +748,29 @@ def test_attempt_aggregation_rejects_incomplete_lifecycle() -> None:
         aggregate_candidate_attempts(incomplete)
 
 
+def test_attempt_lifecycle_records_verified_prerequisite_terminal_stage() -> None:
+    key = CandidateAttemptKey("run-prerequisite", 0, 0)
+    events = (
+        _event(key, 0, CandidateAttemptStage.GENERATED),
+        _event(key, 1, CandidateAttemptStage.UNIQUE),
+        _event(key, 2, CandidateAttemptStage.LOCAL_GATES),
+        _event(
+            key,
+            3,
+            CandidateAttemptStage.PREREQUISITE_READY,
+            reason_code="evaluation_support_bootstrap_ready",
+        ),
+    )
+
+    validate_candidate_attempt_lifecycle(events, require_terminal=True)
+    aggregate = aggregate_candidate_attempts(events)
+
+    assert aggregate.stage_counts["prerequisite_ready"] == 1
+    assert aggregate.terminal_reason_counts == {
+        "evaluation_support_bootstrap_ready": 1
+    }
+
+
 def test_attempt_aggregation_counts_are_monotonic_when_attempt_is_added() -> None:
     first = _selected_attempt(CandidateAttemptKey("run-1", 0, 0))
     baseline = aggregate_candidate_attempts(first)
@@ -776,6 +871,28 @@ def test_scheduler_progress_resets_stall_and_keeps_other_frontiers_independent(
     }
 
 
+def test_scheduler_new_contract_preempts_equal_progress_stale_frontier() -> None:
+    scheduler = StageAwareCandidateScheduler(exploration_population=2)
+    state = SchedulerState(
+        initial_exploration_scheduled=True,
+        frontier_progress={"semantic-old": 1},
+        frontier_stalls={"semantic-old": 0},
+        last_focused_frontier="semantic-old",
+    )
+
+    decision = scheduler.schedule(
+        state=state,
+        frontiers=(
+            _frontier("semantic-old", progress=1),
+            _frontier("semantic-new", progress=1),
+        ),
+    )
+
+    assert decision.stop is False
+    assert decision.slots[0].semantic_key == "semantic-new"
+    assert decision.state.last_focused_frontier == "semantic-new"
+
+
 def test_scheduler_exhausts_each_stable_frontier_only_after_it_was_focused() -> None:
     scheduler = StageAwareCandidateScheduler(exploration_population=2)
     state = SchedulerState(
@@ -826,7 +943,46 @@ def test_scheduler_state_reads_pre_stall_tracking_payload() -> None:
     )
 
     assert state.frontier_stalls == {}
+    assert state.frontier_mutation_families == {}
     assert state.last_focused_frontier is None
+
+
+def test_scheduler_exhausts_distinct_mutation_families_before_stall() -> None:
+    scheduler = StageAwareCandidateScheduler(exploration_population=2)
+    one_family = SchedulerState(
+        initial_exploration_scheduled=True,
+        frontier_progress={"semantic-a": 1},
+        frontier_stalls={"semantic-a": 1},
+        frontier_mutation_families={"semantic-a": ("focused-repair",)},
+        last_focused_frontier="semantic-a",
+    )
+
+    diverse = scheduler.schedule(
+        state=one_family,
+        frontiers=(_frontier("semantic-a"),),
+        diverse_budget_available=True,
+    )
+
+    assert diverse.stop is False
+    assert [slot.role for slot in diverse.slots] == [
+        ScheduledSlotRole.FOCUSED_REPAIR,
+        ScheduledSlotRole.DIVERSE_EXPLORATION,
+    ]
+
+    two_families = replace(
+        diverse.state,
+        frontier_mutation_families={
+            "semantic-a": ("focused-repair", "counterexample-repair")
+        },
+    )
+    exhausted = scheduler.schedule(
+        state=two_families,
+        frontiers=(_frontier("semantic-a"),),
+        diverse_budget_available=True,
+    )
+
+    assert exhausted.stop is True
+    assert exhausted.reason_code == "repair_frontier_stalled"
 
 
 @pytest.mark.parametrize(

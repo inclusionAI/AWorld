@@ -287,6 +287,7 @@ from .turn_economics import (
 from .provider_registry import (
     ReviewedProviderAdapter,
     ReviewedProviderLoweringRegistry,
+    ReviewedProviderProxyAdapter,
     reviewed_provider_lowerings,
 )
 
@@ -417,6 +418,7 @@ __all__ = [
     "RequestTraceMatch",
     "ReviewedProviderAdapter",
     "ReviewedProviderLoweringRegistry",
+    "ReviewedProviderProxyAdapter",
     "ReducerReceiptMismatch",
     "ReducerKind",
     "ReducerReplacement",

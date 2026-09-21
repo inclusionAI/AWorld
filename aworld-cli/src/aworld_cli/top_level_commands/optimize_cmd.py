@@ -1,12 +1,14 @@
 from __future__ import annotations
 
+import math
 from collections.abc import Mapping
 from typing import Any, Callable
 
 
-SUPPORTED_APPLY_POLICIES = {"proposal", "auto_verified"}
+SUPPORTED_APPLY_POLICIES = {"proposal", "auto_verified", "verified_only"}
+VERIFIED_APPLY_POLICIES = {"auto_verified", "verified_only"}
 SUPPORTED_NEW_SKILL_POLICIES = {"disabled", "draft_only", "auto_verified"}
-AUTO_VERIFIED_JUDGE_REPETITIONS = 1
+AUTO_VERIFIED_JUDGE_REPETITIONS = 3
 AUTO_VERIFIED_JUDGE_TIMEOUT_SECONDS = 120
 AUTO_VERIFIED_BASELINE_REPLAY_REPETITIONS = 2
 AUTO_VERIFIED_CANDIDATE_REPLAY_REPETITIONS = 3
@@ -35,6 +37,16 @@ class OptimizeTopLevelCommand:
         parser.add_argument("--agent", type=str)
         parser.add_argument("--task", type=str)
         parser.add_argument("--target", type=str)
+        parser.add_argument(
+            "--skill-evolution-contract",
+            type=str,
+            dest="skill_evolution_contract",
+            help=(
+                "Versioned JSON contract defining the target Skill, required "
+                "capabilities, dataset case bindings, invariants, and stable "
+                "verification cycles."
+            ),
+        )
         parser.add_argument("--dataset", type=str)
         parser.add_argument("--from-session", type=str, dest="from_session")
         parser.add_argument(
@@ -126,14 +138,75 @@ class OptimizeTopLevelCommand:
             help="Reuse replay artifacts from --from-run and rerun evaluator/gates only.",
         )
         parser.add_argument("--batch-config", type=str, dest="batch_config")
+        parser.add_argument(
+            "--regression-benchmark",
+            action="append",
+            default=[],
+            dest="regression_benchmarks",
+            help=(
+                "Independent regression suite file. Repeat for multiple suites; "
+                "optionally prefix with trajectory_log:, trajectory_set:, jsonl:, "
+                "or batch_config:. Verified existing skills derive a bounded "
+                "baseline-contract suite when this option is omitted."
+            ),
+        )
+        parser.add_argument(
+            "--no-challenger",
+            action="store_false",
+            dest="challenger_enabled",
+            default=True,
+            help="Disable framework-generated regression counterexamples.",
+        )
+        parser.add_argument(
+            "--challenger-max-cases",
+            type=int,
+            default=2,
+            dest="challenger_max_cases",
+            help="Maximum admitted Challenger probes per candidate (1-8).",
+        )
         parser.add_argument("--iterations", type=int)
-        parser.add_argument("--apply", type=str)
+        parser.add_argument(
+            "--apply",
+            type=str,
+            help=(
+                "proposal, verified_only (verify in an isolated target), or "
+                "auto_verified (verify and publish)"
+            ),
+        )
         parser.add_argument(
             "--max-improvement-cycles",
             type=int,
-            default=3,
+            default=6,
             dest="max_improvement_cycles",
-            help="Maximum bounded cross-run self-improvement cycles for auto_verified.",
+            help="Maximum bounded cross-run self-improvement cycles for verified policies.",
+        )
+        parser.add_argument(
+            "--max-run-tokens",
+            "--total-run-token-budget",
+            type=int,
+            dest="total_run_token_budget",
+            help=(
+                "Optional hard token ceiling for the optimize run or verified "
+                "campaign. Omitted by default."
+            ),
+        )
+        parser.add_argument(
+            "--max-run-cost-usd",
+            type=float,
+            dest="max_run_cost_usd",
+            help="Optional hard USD cost ceiling. Omitted by default.",
+        )
+        parser.add_argument(
+            "--max-run-wall-seconds",
+            type=float,
+            dest="max_run_wall_seconds",
+            help="Optional hard cumulative wall-time ceiling. Omitted by default.",
+        )
+        parser.add_argument(
+            "--per-attempt-replay-token-limit",
+            type=int,
+            dest="per_attempt_replay_token_limit",
+            help="Optional hard token ceiling for each replay attempt.",
         )
         parser.add_argument(
             "--resume-campaign",
@@ -158,6 +231,12 @@ class OptimizeTopLevelCommand:
             type=int,
             dest="replay_timeout_seconds",
             help="Timeout in seconds for each self-evolve replay rollout.",
+        )
+        parser.add_argument(
+            "--replay-total-timeout",
+            type=int,
+            dest="replay_total_timeout_seconds",
+            help="Hard wall-time deadline for one complete paired replay.",
         )
         parser.add_argument(
             "--replay-max-runs",
@@ -190,6 +269,94 @@ class OptimizeTopLevelCommand:
             help="Number of candidate replay rollouts to aggregate.",
         )
         parser.add_argument(
+            "--candidate-screening-max-cases",
+            type=int,
+            default=3,
+            dest="candidate_screening_max_cases",
+            help="Maximum representative cases used by low-cost candidate screening.",
+        )
+        parser.add_argument(
+            "--max-generated-candidates",
+            type=int,
+            default=24,
+            dest="max_generated_candidates",
+            help="Maximum candidate-generation slots admitted by the verified funnel.",
+        )
+        parser.add_argument(
+            "--max-full-evaluation-candidates",
+            type=int,
+            default=12,
+            dest="max_full_evaluation_candidates",
+            help="Maximum candidates admitted to authoritative full-dataset evaluation.",
+        )
+        parser.add_argument(
+            "--max-score-tiebreak-candidates",
+            type=int,
+            default=1,
+            dest="max_score_tiebreak_candidates",
+            help="Maximum candidates allowed to receive incremental score tie-break evidence.",
+        )
+        parser.add_argument(
+            "--measurement-mode",
+            choices=("off", "shadow", "advisory", "required"),
+            default=None,
+            dest="measurement_mode",
+            help=(
+                "Controlled improvement measurement policy (default: shadow "
+                "for verified replay until calibration is accepted, otherwise off)."
+            ),
+        )
+        parser.add_argument(
+            "--measurement-primary-metric",
+            default=None,
+            dest="measurement_primary_metric",
+            help=(
+                "Primary controlled-effect metric. Defaults to score when a "
+                "judge is configured, otherwise task_success."
+            ),
+        )
+        parser.add_argument(
+            "--measurement-minimum-effect",
+            type=float,
+            default=0.0,
+            dest="measurement_minimum_effect",
+        )
+        parser.add_argument(
+            "--measurement-confidence-level",
+            type=float,
+            default=0.95,
+            dest="measurement_confidence_level",
+        )
+        parser.add_argument(
+            "--measurement-min-independent-cases",
+            type=int,
+            default=2,
+            dest="measurement_min_independent_cases",
+        )
+        parser.add_argument(
+            "--measurement-bootstrap-samples",
+            type=int,
+            default=2_000,
+            dest="measurement_bootstrap_samples",
+        )
+        parser.add_argument(
+            "--measurement-zero-yield-patience",
+            type=int,
+            default=2,
+            dest="measurement_zero_yield_patience",
+        )
+        parser.add_argument(
+            "--measurement-invalid-control-patience",
+            type=int,
+            default=2,
+            dest="measurement_invalid_control_patience",
+        )
+        parser.add_argument(
+            "--measurement-maximum-interval-width",
+            type=float,
+            dest="measurement_maximum_interval_width",
+        )
+        parser.add_argument(
             "--drain-pending",
             action="store_true",
             dest="drain_pending",
@@ -205,15 +372,21 @@ class OptimizeTopLevelCommand:
         resume_campaign = getattr(args, "resume_campaign", None)
         if (
             resume_campaign
-            and getattr(args, "apply", None) not in {None, "auto_verified"}
+            and getattr(args, "apply", None)
+            not in {None, "auto_verified", "verified_only"}
         ):
-            print("Optimize error: --resume-campaign requires --apply auto_verified")
+            print(
+                "Optimize error: --resume-campaign requires a verified apply policy"
+            )
             return 1
         apply_policy = getattr(args, "apply", None) or (
             "auto_verified" if resume_campaign else "proposal"
         )
         if apply_policy not in SUPPORTED_APPLY_POLICIES:
-            print("Optimize error: --apply must be one of proposal, auto_verified")
+            print(
+                "Optimize error: --apply must be one of proposal, "
+                "auto_verified, verified_only"
+            )
             return 0
         judge_selectors = [
             getattr(args, "judge_agent", None),
@@ -230,6 +403,9 @@ class OptimizeTopLevelCommand:
                 agent=getattr(args, "agent", None),
                 task=getattr(args, "task", None),
                 target=target,
+                skill_evolution_contract=getattr(
+                    args, "skill_evolution_contract", None
+                ),
                 dataset=getattr(args, "dataset", None),
                 from_session=getattr(args, "from_session", None),
                 from_trajectory=getattr(args, "from_trajectory", None),
@@ -254,9 +430,28 @@ class OptimizeTopLevelCommand:
                 from_run=getattr(args, "from_run", None),
                 rerun_evaluator=getattr(args, "rerun_evaluator", False),
                 batch_config=getattr(args, "batch_config", None),
+                regression_benchmarks=tuple(
+                    getattr(args, "regression_benchmarks", ()) or ()
+                ),
+                challenger_enabled=bool(
+                    getattr(args, "challenger_enabled", True)
+                ),
+                challenger_max_cases=int(
+                    getattr(args, "challenger_max_cases", 2)
+                ),
                 iterations=getattr(args, "iterations", None),
                 max_improvement_cycles=getattr(
-                    args, "max_improvement_cycles", 3
+                    args, "max_improvement_cycles", 6
+                ),
+                total_run_token_budget=getattr(
+                    args, "total_run_token_budget", None
+                ),
+                max_run_cost_usd=getattr(args, "max_run_cost_usd", None),
+                max_run_wall_seconds=getattr(
+                    args, "max_run_wall_seconds", None
+                ),
+                per_attempt_replay_token_limit=getattr(
+                    args, "per_attempt_replay_token_limit", None
                 ),
                 resume_campaign=resume_campaign,
                 apply=apply_policy,
@@ -270,9 +465,62 @@ class OptimizeTopLevelCommand:
                 judge_repetitions=getattr(args, "judge_repetitions", None),
                 judge_timeout_seconds=getattr(args, "judge_timeout_seconds", None),
                 replay_timeout_seconds=getattr(args, "replay_timeout_seconds", None),
+                replay_total_timeout_seconds=getattr(
+                    args, "replay_total_timeout_seconds", None
+                ),
                 replay_max_steps=getattr(args, "replay_max_steps", None),
                 baseline_replay_repetitions=getattr(args, "baseline_replay_repetitions", None),
                 candidate_replay_repetitions=getattr(args, "candidate_replay_repetitions", None),
+                candidate_screening_max_cases=getattr(
+                    args, "candidate_screening_max_cases", 3
+                ),
+                max_generated_candidates=getattr(
+                    args, "max_generated_candidates", 24
+                ),
+                max_full_evaluation_candidates=getattr(
+                    args, "max_full_evaluation_candidates", 12
+                ),
+                max_score_tiebreak_candidates=getattr(
+                    args, "max_score_tiebreak_candidates", 1
+                ),
+                measurement_mode=getattr(args, "measurement_mode", None),
+                measurement_primary_metric=(
+                    getattr(args, "measurement_primary_metric", None)
+                    or (
+                        "score"
+                        if any(
+                            getattr(args, name, None)
+                            for name in (
+                                "judge_agent",
+                                "judge_agent_name",
+                                "judge_backend_ref",
+                                "judge_model_profile",
+                            )
+                        )
+                        else "task_success"
+                    )
+                ),
+                measurement_minimum_effect=getattr(
+                    args, "measurement_minimum_effect", 0.0
+                ),
+                measurement_confidence_level=getattr(
+                    args, "measurement_confidence_level", 0.95
+                ),
+                measurement_min_independent_cases=getattr(
+                    args, "measurement_min_independent_cases", 2
+                ),
+                measurement_bootstrap_samples=getattr(
+                    args, "measurement_bootstrap_samples", 2_000
+                ),
+                measurement_zero_yield_patience=getattr(
+                    args, "measurement_zero_yield_patience", 2
+                ),
+                measurement_invalid_control_patience=getattr(
+                    args, "measurement_invalid_control_patience", 2
+                ),
+                measurement_maximum_interval_width=getattr(
+                    args, "measurement_maximum_interval_width", None
+                ),
                 progress_callback=_print_optimize_progress,
             )
         except (FileNotFoundError, ValueError, KeyError, NotImplementedError) as exc:
@@ -291,6 +539,9 @@ def render_optimize_summary(report: Any) -> str:
     evaluator_report_paths = _read_report_value(report, "evaluator_report_paths") or []
     best_candidate_id = _read_report_value(report, "best_candidate_id")
     selected_candidate_id = _read_report_value(report, "selected_candidate_id")
+    repair_focus_candidate_id = _read_report_value(
+        report, "repair_focus_candidate_id"
+    )
     failed_gate_names = _failed_gate_names(_read_report_value(report, "gate_results"))
     run_id = _read_report_value(report, "run_id")
     grouping_summary = _target_grouping_summary(report)
@@ -300,6 +551,12 @@ def render_optimize_summary(report: Any) -> str:
     campaign_status = _read_report_value(report, "campaign_status")
     campaign_cycle = _read_report_value(report, "campaign_cycle")
     campaign_max_cycles = _read_report_value(report, "campaign_max_cycles")
+    campaign_authoritative_candidate_count = _read_report_value(
+        report, "campaign_authoritative_candidate_count"
+    )
+    campaign_max_authoritative_candidates = _read_report_value(
+        report, "campaign_max_authoritative_candidates"
+    )
     disposition = _read_report_value(report, "self_improvement_disposition")
     goal_handoff_path = _read_report_value(report, "goal_handoff_path")
     ingestion_id = _read_report_value(report, "ingestion_id")
@@ -317,6 +574,18 @@ def render_optimize_summary(report: Any) -> str:
     ingestion_model_call_count = _read_report_value(
         report, "ingestion_model_call_count"
     )
+    release_state = _read_report_value(report, "release_state")
+    published = _read_report_value(report, "published")
+    verified_target_path = _read_report_value(report, "verified_target_path")
+    regression_evidence_path = _read_report_value(
+        report, "regression_evidence_path"
+    )
+    campaign_failure_attribution = _read_report_value(
+        report,
+        "campaign_failure_attribution",
+    )
+    measurement = _read_report_value(report, "measurement")
+    skill_evolution = _read_report_value(report, "skill_evolution")
 
     lines = [
         (
@@ -356,21 +625,93 @@ def render_optimize_summary(report: Any) -> str:
         lines.append(f"Campaign status: {campaign_status}")
     if campaign_cycle is not None and campaign_max_cycles is not None:
         lines.append(f"Campaign cycle: {campaign_cycle}/{campaign_max_cycles}")
+    if (
+        campaign_authoritative_candidate_count is not None
+        and campaign_max_authoritative_candidates is not None
+    ):
+        lines.append(
+            "Campaign authoritative candidates: "
+            f"{campaign_authoritative_candidate_count}/"
+            f"{campaign_max_authoritative_candidates}"
+        )
     if isinstance(disposition, Mapping) and disposition.get("reason_code"):
         lines.append(
             "Self-improvement: "
             f"{disposition.get('kind')} ({disposition['reason_code']})"
         )
+    if isinstance(skill_evolution, Mapping):
+        covered = skill_evolution.get("covered_required_capability_count")
+        required = skill_evolution.get("required_capability_count")
+        if covered is not None and required is not None:
+            lines.append(f"Skill capability coverage: {covered}/{required}")
+        stable = skill_evolution.get("stable_cycle_count")
+        required_stable = skill_evolution.get("required_stable_cycles")
+        if stable is not None and required_stable is not None:
+            lines.append(
+                f"Skill stability cycles: {stable}/{required_stable}"
+            )
+        missing = skill_evolution.get("missing_required_capability_ids")
+        if isinstance(missing, list) and missing:
+            lines.append("Missing Skill capabilities: " + ", ".join(missing))
     if goal_handoff_path:
         lines.append(f"Goal handoff: {goal_handoff_path}")
         if campaign_id:
             lines.append(f"Continue goal: /goal --from-campaign {campaign_id}")
     if report_path:
         lines.append(f"Report: {report_path}")
+    if release_state:
+        lines.append(f"Release state: {release_state}")
+    if published is not None:
+        lines.append(f"Published: {'yes' if published else 'no'}")
+    if verified_target_path:
+        lines.append(f"Verified target: {verified_target_path}")
+    if regression_evidence_path:
+        lines.append(f"Regression evidence: {regression_evidence_path}")
     if target_selection_path:
         lines.append(f"Target selection: {target_selection_path}")
     if replay_path:
         lines.append(f"Replay: {replay_path}")
+    if isinstance(measurement, Mapping):
+        validity = measurement.get("validity_status")
+        effect = measurement.get("effect_direction")
+        comparable = measurement.get("comparable_pair_count")
+        next_action = measurement.get("next_action")
+        if validity or effect:
+            lines.append(
+                "Measurement: "
+                f"{validity or 'unknown'} / {effect or 'unmeasured'}"
+            )
+        lower = measurement.get("confidence_lower_bound")
+        upper = measurement.get("confidence_upper_bound")
+        if isinstance(lower, (int, float)) and isinstance(upper, (int, float)):
+            lines.append(
+                "Measurement confidence interval: "
+                f"[{float(lower):.6g}, {float(upper):.6g}]"
+            )
+        if isinstance(comparable, int):
+            lines.append(f"Measurement comparable pairs: {comparable}")
+        yield_per_100k = measurement.get("comparable_pairs_per_100k_tokens")
+        if isinstance(yield_per_100k, (int, float)):
+            lines.append(
+                "Measurement yield: "
+                f"{float(yield_per_100k):.3f} comparable pairs/100k tokens"
+            )
+        dominant_budget = measurement.get("dominant_budget_use")
+        if dominant_budget:
+            lines.append(f"Measurement dominant budget use: {dominant_budget}")
+        transfer_failures = measurement.get(
+            "required_transfer_failure_count"
+        )
+        if isinstance(transfer_failures, int) and transfer_failures > 0:
+            lines.append(
+                "Measurement required transfer failures: "
+                f"{transfer_failures}"
+            )
+        if next_action:
+            lines.append(f"Measurement next action: {next_action}")
+        attribution_path = measurement.get("attribution_report_path")
+        if attribution_path:
+            lines.append(f"Measurement attribution: {attribution_path}")
     if isinstance(evaluator_report_paths, (list, tuple)):
         for report_path_item in evaluator_report_paths:
             if report_path_item:
@@ -379,15 +720,48 @@ def render_optimize_summary(report: Any) -> str:
         lines.append(f"Best candidate: {best_candidate_id}")
     elif selected_candidate_id:
         lines.append(f"Selected candidate: {selected_candidate_id}")
+    elif repair_focus_candidate_id:
+        lines.append(f"Repair focus candidate: {repair_focus_candidate_id}")
     if grouping_summary:
         lines.append(f"Target grouping: {grouping_summary}")
     if isinstance(promotion, Mapping) and promotion.get("status"):
         lines.append(f"New skill: {promotion['status']}")
     if status == "rejected" and failed_gate_names:
         lines.append(f"Rejected gates: {', '.join(failed_gate_names)}")
+    if status == "rejected" and isinstance(
+        campaign_failure_attribution,
+        Mapping,
+    ):
+        primary_gate = campaign_failure_attribution.get("primary_gate")
+        failure_code = campaign_failure_attribution.get("code")
+        affected_count = campaign_failure_attribution.get(
+            "affected_candidate_count"
+        )
+        if primary_gate:
+            summary = f"Campaign primary failure: {primary_gate}"
+            if failure_code:
+                summary += f" ({failure_code})"
+            if isinstance(affected_count, int):
+                summary += f" across {affected_count} candidate(s)"
+            lines.append(summary)
+    judge_skip_summary = _judge_skip_summary(report)
+    if status == "rejected" and judge_skip_summary:
+        lines.append(judge_skip_summary)
+    if status == "rejected" and _has_missing_independent_regression(report):
+        lines.append(
+            "Regression required: the target has no usable baseline contract; "
+            "add one or more independent suites with --regression-benchmark <path>."
+        )
     if status == "rejected" and replay_failure_summary:
         lines.append(f"Replay failures: {replay_failure_summary}")
-    if status == "rejected" and _has_no_candidate(report):
+    policy_filter_summary = _candidate_policy_filter_summary(report)
+    if status == "rejected" and policy_filter_summary:
+        lines.append(policy_filter_summary)
+    if (
+        status == "rejected"
+        and not policy_filter_summary
+        and _has_no_candidate(report)
+    ):
         lines.append(
             "No candidate generated: optimizer produced no non-noop candidate, "
             "so replay/evaluation/apply were skipped."
@@ -411,11 +785,53 @@ def render_optimize_summary(report: Any) -> str:
     return "\n".join(lines)
 
 
+def _judge_skip_summary(report: Any) -> str | None:
+    """Explain a pre-evaluation rejection without implicating the judge."""
+
+    execution = _read_report_value(report, "execution")
+    if not isinstance(execution, Mapping):
+        return None
+    total_usage = execution.get("total_usage")
+    if not isinstance(total_usage, Mapping):
+        return None
+    evaluation_usage = total_usage.get("evaluation_usage")
+    if not isinstance(evaluation_usage, Mapping):
+        return None
+    if evaluation_usage.get("judge_attempt_count") != 0:
+        return None
+    measurement = _read_report_value(report, "measurement")
+    readiness_stage = (
+        measurement.get("measurement_readiness_stage")
+        if isinstance(measurement, Mapping)
+        else None
+    )
+    if readiness_stage == "candidate_admission_blocked":
+        return "Judge: skipped (no candidate passed conformance/admission)"
+    if evaluation_usage.get("scheduled_tasks") == 0:
+        return "Judge: skipped (no evaluation task was scheduled)"
+    return None
+
+
+def _has_missing_independent_regression(report: Any) -> bool:
+    gates = _read_report_value(report, "gate_results")
+    if not isinstance(gates, (list, tuple)):
+        return False
+    return any(
+        isinstance(gate, Mapping)
+        and gate.get("gate_name") == "global_regression_benchmark"
+        and isinstance(gate.get("details"), Mapping)
+        and gate["details"].get("code")
+        == "independent_regression_evidence_missing"
+        for gate in gates
+    )
+
+
 def run_optimize_cli(
     *,
     agent: str | None,
     task: str | None,
     target: str | None,
+    skill_evolution_contract: str | None = None,
     dataset: str | None,
     from_session: str | None,
     from_trajectory: str | None,
@@ -435,11 +851,18 @@ def run_optimize_cli(
     judge_repetitions: int | None = None,
     judge_timeout_seconds: int | None = None,
     replay_timeout_seconds: int | None = None,
+    replay_total_timeout_seconds: int | None = None,
     replay_max_steps: int | None = None,
     baseline_replay_repetitions: int | None = None,
     candidate_replay_repetitions: int | None = None,
+    candidate_screening_max_cases: int = 3,
+    max_generated_candidates: int = 24,
+    max_full_evaluation_candidates: int = 12,
+    max_score_tiebreak_candidates: int = 1,
     runtime_registry_refresher: Callable[[Any], Any] | None = None,
     runtime_skill_activator: Callable[[Any], Any] | None = None,
+    runtime_registry_compensator: Callable[[Any, object | None], Any] | None = None,
+    runtime_skill_compensator: Callable[[Any, object | None], Any] | None = None,
     progress_callback: Callable[[str, str], Any] | None = None,
     from_run: str | None = None,
     rerun_evaluator: bool = False,
@@ -452,7 +875,52 @@ def run_optimize_cli(
     semantic_evidence_approval: str | None = None,
     semantic_qualification_report: str | None = None,
     ingestion_only: bool = False,
+    regression_benchmarks: tuple[str, ...] = (),
+    challenger_enabled: bool = True,
+    challenger_max_cases: int = 2,
+    total_run_token_budget: int | None = None,
+    max_run_cost_usd: float | None = None,
+    max_run_wall_seconds: float | None = None,
+    per_attempt_replay_token_limit: int | None = None,
+    measurement_mode: str | None = None,
+    measurement_primary_metric: str = "task_success",
+    measurement_minimum_effect: float = 0.0,
+    measurement_confidence_level: float = 0.95,
+    measurement_min_independent_cases: int = 2,
+    measurement_bootstrap_samples: int = 2_000,
+    measurement_zero_yield_patience: int = 2,
+    measurement_invalid_control_patience: int = 2,
+    measurement_maximum_interval_width: float | None = None,
 ) -> Mapping[str, Any]:
+    for name, value, allow_zero in (
+        ("--candidate-screening-max-cases", candidate_screening_max_cases, False),
+        ("--max-generated-candidates", max_generated_candidates, False),
+        ("--max-full-evaluation-candidates", max_full_evaluation_candidates, False),
+        ("--max-score-tiebreak-candidates", max_score_tiebreak_candidates, True),
+    ):
+        if value < 0 or (value == 0 and not allow_zero):
+            raise ValueError(f"{name} must be {'non-negative' if allow_zero else 'positive'}")
+    _validate_budget_cli_options(
+        total_run_token_budget=total_run_token_budget,
+        max_run_cost_usd=max_run_cost_usd,
+        max_run_wall_seconds=max_run_wall_seconds,
+        per_attempt_replay_token_limit=per_attempt_replay_token_limit,
+    )
+    _validate_measurement_cli_options(
+        measurement_mode=measurement_mode,
+        measurement_primary_metric=measurement_primary_metric,
+        measurement_minimum_effect=measurement_minimum_effect,
+        measurement_confidence_level=measurement_confidence_level,
+        measurement_min_independent_cases=measurement_min_independent_cases,
+        measurement_bootstrap_samples=measurement_bootstrap_samples,
+        measurement_zero_yield_patience=measurement_zero_yield_patience,
+        measurement_invalid_control_patience=(
+            measurement_invalid_control_patience
+        ),
+        measurement_maximum_interval_width=(
+            measurement_maximum_interval_width
+        ),
+    )
     _validate_ingestion_cli_options(
         dataset=dataset,
         from_session=from_session,
@@ -471,7 +939,38 @@ def run_optimize_cli(
     )
     import aworld.self_evolve as self_evolve
 
-    runtime_apply = "auto_verified" if resume_campaign else apply
+    loaded_skill_evolution_contract_object = (
+        self_evolve.load_skill_evolution_contract(
+            skill_evolution_contract,
+            workspace_root=workspace_root,
+        )
+        if skill_evolution_contract is not None
+        else None
+    )
+    loaded_skill_evolution_contract = (
+        loaded_skill_evolution_contract_object.to_dict()
+        if loaded_skill_evolution_contract_object is not None
+        else None
+    )
+
+    runtime_apply = apply
+    if loaded_skill_evolution_contract_object is not None:
+        if runtime_apply not in VERIFIED_APPLY_POLICIES:
+            raise ValueError(
+                "--skill-evolution-contract requires a verified apply policy"
+            )
+        if (
+            loaded_skill_evolution_contract_object.required_stable_cycles
+            > max_improvement_cycles
+        ):
+            raise ValueError(
+                "--max-improvement-cycles must cover the contract's "
+                "required_stable_cycles"
+            )
+    replay_repetitions_explicit = (
+        baseline_replay_repetitions is not None
+        or candidate_replay_repetitions is not None
+    )
     judge_repetitions = _auto_verified_default(
         runtime_apply,
         judge_repetitions,
@@ -512,6 +1011,7 @@ def run_optimize_cli(
     )
     if progress_callback is not None:
         progress_callback("prepare", "Preparing self-evolve optimize request")
+    default_skill_runtime = runtime_skill_activator is None
     request = {
         "agent": agent,
         "task": task,
@@ -532,7 +1032,31 @@ def run_optimize_cli(
         "from_run": from_run,
         "rerun_evaluator": rerun_evaluator,
         "batch_config": batch_config,
+        "regression_benchmarks": tuple(regression_benchmarks),
+        "challenger_enabled": challenger_enabled,
+        "challenger_max_cases": challenger_max_cases,
         "iterations": iterations,
+        "total_run_token_budget": total_run_token_budget,
+        "max_run_cost_usd": max_run_cost_usd,
+        "max_run_wall_seconds": max_run_wall_seconds,
+        "per_attempt_replay_token_limit": per_attempt_replay_token_limit,
+        "candidate_screening_max_cases": candidate_screening_max_cases,
+        "max_generated_candidates": max_generated_candidates,
+        "max_full_evaluation_candidates": max_full_evaluation_candidates,
+        "max_score_tiebreak_candidates": max_score_tiebreak_candidates,
+        "measurement_mode": measurement_mode,
+        "measurement_primary_metric": measurement_primary_metric,
+        "measurement_minimum_effect": measurement_minimum_effect,
+        "measurement_confidence_level": measurement_confidence_level,
+        "measurement_min_independent_cases": measurement_min_independent_cases,
+        "measurement_bootstrap_samples": measurement_bootstrap_samples,
+        "measurement_zero_yield_patience": measurement_zero_yield_patience,
+        "measurement_invalid_control_patience": (
+            measurement_invalid_control_patience
+        ),
+        "measurement_maximum_interval_width": (
+            measurement_maximum_interval_width
+        ),
         "apply_policy": runtime_apply,
         "inferred_new_skill_policy": new_skill_policy,
         "infer_target": infer_target,
@@ -544,21 +1068,36 @@ def run_optimize_cli(
             judge_repetitions=judge_repetitions,
             judge_timeout_seconds=judge_timeout_seconds,
         ),
-        "replay_enabled": runtime_apply == "auto_verified",
+        "replay_enabled": runtime_apply in VERIFIED_APPLY_POLICIES,
+        "replay_repetitions_explicit": replay_repetitions_explicit,
         "runtime_registry_refresher": runtime_registry_refresher,
+        "runtime_registry_compensator": runtime_registry_compensator,
         "runtime_skill_activator": runtime_skill_activator
         or _default_runtime_skill_activator(),
+        "runtime_skill_compensator": (
+            runtime_skill_compensator
+            if runtime_skill_compensator is not None
+            else _default_runtime_skill_compensator()
+            if default_skill_runtime
+            else None
+        ),
         "progress_callback": progress_callback,
         **_replay_options(
             replay_timeout_seconds=replay_timeout_seconds,
+            replay_total_timeout_seconds=replay_total_timeout_seconds,
             replay_max_steps=replay_max_steps,
             baseline_replay_repetitions=baseline_replay_repetitions,
             candidate_replay_repetitions=candidate_replay_repetitions,
         ),
     }
+    if loaded_skill_evolution_contract is not None:
+        request["skill_evolution_contract"] = loaded_skill_evolution_contract
     if not rerun_evaluator and not ingestion_only and (
         resume_campaign
-        or (runtime_apply == "auto_verified" and max_improvement_cycles > 1)
+        or (
+            runtime_apply in VERIFIED_APPLY_POLICIES
+            and max_improvement_cycles > 1
+        )
     ):
         return self_evolve.run_self_improvement_campaign(
             workspace_root=workspace_root,
@@ -567,6 +1106,74 @@ def run_optimize_cli(
             resume_campaign=resume_campaign,
         )
     return self_evolve.optimize_from_cli_request(**request)
+
+
+def _validate_budget_cli_options(
+    *,
+    total_run_token_budget: int | None,
+    max_run_cost_usd: float | None,
+    max_run_wall_seconds: float | None,
+    per_attempt_replay_token_limit: int | None,
+) -> None:
+    for name, value in (
+        ("--max-run-tokens", total_run_token_budget),
+        ("--max-run-cost-usd", max_run_cost_usd),
+        ("--max-run-wall-seconds", max_run_wall_seconds),
+        ("--per-attempt-replay-token-limit", per_attempt_replay_token_limit),
+    ):
+        if value is not None and value <= 0:
+            raise ValueError(f"{name} must be positive")
+
+
+def _validate_measurement_cli_options(
+    *,
+    measurement_mode: str | None,
+    measurement_primary_metric: str,
+    measurement_minimum_effect: float,
+    measurement_confidence_level: float,
+    measurement_min_independent_cases: int,
+    measurement_bootstrap_samples: int,
+    measurement_zero_yield_patience: int,
+    measurement_invalid_control_patience: int,
+    measurement_maximum_interval_width: float | None,
+) -> None:
+    if measurement_mode is not None and measurement_mode not in {
+        "off",
+        "shadow",
+        "advisory",
+        "required",
+    }:
+        raise ValueError("--measurement-mode is unsupported")
+    if not measurement_primary_metric.strip():
+        raise ValueError("--measurement-primary-metric must be non-empty")
+    if not math.isfinite(measurement_minimum_effect):
+        raise ValueError("--measurement-minimum-effect must be finite")
+    if not 0 < measurement_confidence_level < 1:
+        raise ValueError("--measurement-confidence-level must be between 0 and 1")
+    if measurement_min_independent_cases <= 0:
+        raise ValueError("--measurement-min-independent-cases must be positive")
+    if not 200 <= measurement_bootstrap_samples <= 100_000:
+        raise ValueError(
+            "--measurement-bootstrap-samples must be between 200 and 100000"
+        )
+    if measurement_zero_yield_patience <= 0:
+        raise ValueError(
+            "--measurement-zero-yield-patience must be positive"
+        )
+    if measurement_invalid_control_patience <= 0:
+        raise ValueError(
+            "--measurement-invalid-control-patience must be positive"
+        )
+    if (
+        measurement_maximum_interval_width is not None
+        and (
+            not math.isfinite(measurement_maximum_interval_width)
+            or measurement_maximum_interval_width < 0
+        )
+    ):
+        raise ValueError(
+            "--measurement-maximum-interval-width must be non-negative and finite"
+        )
 
 
 def _default_mutation_model_config():
@@ -659,12 +1266,54 @@ def _default_runtime_skill_activator() -> Callable[[Any], Mapping[str, Any]]:
     return activate
 
 
+def _default_runtime_skill_compensator() -> Callable[
+    [Any, object | None], Mapping[str, Any]
+]:
+    def compensate(
+        candidate: Any,
+        effect_result: object | None,
+    ) -> Mapping[str, Any]:
+        from aworld_cli.core.skill_state_manager import SkillStateManager
+
+        if not isinstance(effect_result, Mapping):
+            raise ValueError("skill activation compensation token is unavailable")
+        if effect_result.get("status") == "skipped":
+            return {
+                "status": "skipped",
+                "reason": "forward skill activation was skipped",
+                "compensated": True,
+            }
+        skill_name = effect_result.get("skill_name")
+        was_enabled = effect_result.get("was_enabled")
+        if not isinstance(skill_name, str) or not skill_name:
+            target = getattr(candidate, "target", None)
+            skill_name = getattr(target, "target_id", None)
+        if not isinstance(skill_name, str) or not skill_name:
+            raise ValueError("skill activation compensation token has no skill name")
+        if not isinstance(was_enabled, bool):
+            raise ValueError("skill activation compensation token has no prior state")
+        manager = SkillStateManager()
+        if was_enabled:
+            manager.enable_skill(skill_name)
+        else:
+            manager.disable_skill(skill_name)
+        return {
+            "status": "restored",
+            "skill_name": skill_name,
+            "was_enabled": was_enabled,
+            "enabled": manager.is_enabled(skill_name),
+            "compensated": True,
+        }
+
+    return compensate
+
+
 def _auto_verified_default(
     apply_policy: str,
     value: int | None,
     default: int,
 ) -> int | None:
-    if value is not None or apply_policy != "auto_verified":
+    if value is not None or apply_policy not in VERIFIED_APPLY_POLICIES:
         return value
     return default
 
@@ -689,6 +1338,7 @@ def _judge_options(
 def _replay_options(
     *,
     replay_timeout_seconds: int | None,
+    replay_total_timeout_seconds: int | None,
     replay_max_steps: int | None,
     baseline_replay_repetitions: int | None,
     candidate_replay_repetitions: int | None,
@@ -696,6 +1346,8 @@ def _replay_options(
     options: dict[str, int] = {}
     if replay_timeout_seconds is not None:
         options["replay_timeout_seconds"] = replay_timeout_seconds
+    if replay_total_timeout_seconds is not None:
+        options["replay_total_timeout_seconds"] = replay_total_timeout_seconds
     if replay_max_steps is not None:
         options["replay_max_steps"] = replay_max_steps
     if baseline_replay_repetitions is not None:
@@ -709,12 +1361,16 @@ def drain_pending_self_evolve_jobs(
     *,
     workspace_root: str,
     runtime_registry_refresher: Callable[[Any], Any] | None = None,
+    runtime_registry_compensator: Callable[[Any, object | None], Any] | None = None,
+    runtime_skill_compensator: Callable[[Any, object | None], Any] | None = None,
 ) -> int:
     import aworld.self_evolve as self_evolve
 
     return self_evolve.drain_pending_self_evolve_jobs(
         workspace_root=workspace_root,
         runtime_registry_refresher=runtime_registry_refresher,
+        runtime_registry_compensator=runtime_registry_compensator,
+        runtime_skill_compensator=runtime_skill_compensator,
     )
 
 
@@ -859,6 +1515,30 @@ def _has_no_candidate(report: Any) -> bool:
         isinstance(iteration, Mapping) and iteration.get("status") == "no_candidate"
         for iteration in iterations
     )
+
+
+def _candidate_policy_filter_summary(report: Any) -> str | None:
+    funnel = _read_report_value(report, "verification_funnel")
+    if not isinstance(funnel, Mapping):
+        return None
+    filtered_count = funnel.get("policy_filtered_candidate_count")
+    if (
+        isinstance(filtered_count, bool)
+        or not isinstance(filtered_count, (int, float))
+        or int(filtered_count) <= 0
+    ):
+        return None
+    summary = (
+        "Candidate admission: "
+        f"{int(filtered_count)} generated candidate(s) rejected by hard generation "
+        "policy; replay/evaluation/apply were skipped for those candidates."
+    )
+    if funnel.get("generation_policy_frontier_exhausted") is True:
+        summary += (
+            " Generation policy frontier exhausted after the same blocking "
+            "constraints repeated without structural progress."
+        )
+    return summary
 
 
 def _metrics_have_replay_repetition_failure(metrics: Any) -> bool:

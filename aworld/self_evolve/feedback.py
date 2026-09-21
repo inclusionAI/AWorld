@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from typing import Any, Mapping
 
 from aworld.self_evolve.evidence_diagnostics import (
@@ -7,20 +8,25 @@ from aworld.self_evolve.evidence_diagnostics import (
     public_evidence_constraint_payload,
 )
 from aworld.self_evolve.sanitization import (
+    public_diagnostic_projection,
     sanitize_metric_value,
     sanitize_source_text,
     sanitize_text,
 )
+from aworld.self_evolve.regression_feedback import bounded_independent_regression_feedback
+from aworld.self_evolve.repair_selection import bounded_repair_selection, repair_source_fingerprint
 from aworld.self_evolve.recovery_trace import (
     validate_public_constraint_recovery_trace,
     validate_public_recovery_trace,
 )
-from aworld.self_evolve.types import EvaluationSummary
+from aworld.self_evolve.types import EvaluationSummary, to_json_dict
+from aworld.skills.structure_types import skill_structural_edit_intent_from_dict
 
 _MAX_TEXT_CHARS = 240
 _MAX_LIST_ITEMS = 3
 _MAX_REPAIR_PACKAGE_CHARS = 64_000
 _MAX_REPAIR_FILE_CHARS = 32_000
+_MAX_MIXED_REPAIR_TARGET_CHARS = 32_000
 
 _SCALAR_METRIC_KEYS = {
     "lesson_id",
@@ -84,6 +90,7 @@ _SCALAR_METRIC_KEYS = {
     "replay_evidence_manifest_invalid_entry_count",
     "failure_class",
     "repairable",
+    "candidate_status",
     "candidate_protocol_invalid_count",
     "candidate_materialization_invalid_count",
     "authoritative_replay_failure",
@@ -141,14 +148,22 @@ def normalize_feedback_summary(feedback: EvaluationSummary) -> dict[str, Any]:
         "required_behaviors": required_behaviors,
         "repair_plan": repair_plan,
     }
+    regression = bounded_independent_regression_feedback(metrics.get("independent_regression"))
+    if regression is not None:
+        result["independent_regression"] = regression
     evidence_constraints = public_evidence_constraint_payload(metrics)
     if evidence_constraints:
         result["evidence_repair_constraints"] = evidence_constraints
     diagnostics = metrics.get("candidate_validation_diagnostics")
     if isinstance(diagnostics, list):
-        result["candidate_validation_diagnostics"] = [
+        result["candidate_validation_diagnostics"] = (
+            _bounded_candidate_validation_diagnostics(diagnostics)
+        )
+    replay_counterexamples = metrics.get("replay_counterexamples")
+    if isinstance(replay_counterexamples, list):
+        result["replay_counterexamples"] = [
             sanitize_metric_value(item)
-            for item in diagnostics[:16]
+            for item in replay_counterexamples[:16]
             if isinstance(item, Mapping)
         ]
     recovery_trace = validate_public_recovery_trace(metrics.get("recovery_trace"))
@@ -164,7 +179,175 @@ def normalize_feedback_summary(feedback: EvaluationSummary) -> dict[str, Any]:
     )
     if repair_candidate_package is not None:
         result["repair_candidate_package"] = repair_candidate_package
+    selection = bounded_repair_selection(metrics.get("repair_selection"), candidate_id=feedback.variant_id)
+    if selection is not None and selection["source_fingerprint"] == repair_source_fingerprint(metrics.get("repair_candidate_package")) and repair_candidate_package is not None:
+        # Rebind only after verifying the incoming source, then applying the
+        # existing bounded source projection; never borrow another record's proof.
+        result["repair_selection"] = {**selection, "source_fingerprint": repair_source_fingerprint(repair_candidate_package)}
+    repair_conformance = metrics.get("repair_conformance")
+    if isinstance(repair_conformance, Mapping):
+        projected_contract = public_diagnostic_projection(
+            repair_conformance,
+            max_chars=8_192,
+        )
+        if isinstance(projected_contract, Mapping):
+            result["repair_conformance"] = dict(projected_contract)
+    for key in (
+        "active_schema_field_constraints",
+        "active_schema_field_violations",
+    ):
+        raw_items = metrics.get(key)
+        if not isinstance(raw_items, (list, tuple)):
+            continue
+        projected_items = public_diagnostic_projection(
+            list(raw_items[:100]), max_chars=8_192
+        )
+        if isinstance(projected_items, list):
+            result[key] = projected_items
     return result
+
+
+def _bounded_candidate_validation_diagnostics(
+    diagnostics: list[object],
+) -> list[object]:
+    """Bound diagnostics without discarding typed causes near the tail."""
+
+    indexed = [
+        (index, item)
+        for index, item in enumerate(diagnostics[:128])
+        if isinstance(item, Mapping)
+    ]
+    selected_indices = {
+        index
+        for index, _ in sorted(
+            indexed,
+            key=lambda pair: (
+                -_candidate_validation_diagnostic_priority(pair[1]),
+                pair[0],
+            ),
+        )[:16]
+    }
+    selected: list[object] = []
+    seen: set[str] = set()
+    for item in _nested_typed_candidate_validation_causes(
+        tuple(item for _, item in indexed)
+    ):
+        try:
+            projected = public_diagnostic_projection(item, max_chars=240)
+        except (TypeError, ValueError):
+            continue
+        identity = json.dumps(
+            projected,
+            ensure_ascii=True,
+            separators=(",", ":"),
+            sort_keys=True,
+            default=str,
+        )
+        if identity in seen:
+            continue
+        seen.add(identity)
+        selected.append(projected)
+        if len(selected) >= 16:
+            return selected
+    for index, item in indexed:
+        if index not in selected_indices:
+            continue
+        projected = sanitize_metric_value(item)
+        identity = json.dumps(
+            projected,
+            ensure_ascii=True,
+            separators=(",", ":"),
+            sort_keys=True,
+            default=str,
+        )
+        if identity in seen:
+            continue
+        seen.add(identity)
+        selected.append(projected)
+        if len(selected) >= 16:
+            break
+    return selected
+
+
+def _nested_typed_candidate_validation_causes(
+    diagnostics: object,
+) -> list[Mapping[str, object]]:
+    """Surface executable typed causes hidden below report wrappers."""
+
+    causes: list[Mapping[str, object]] = []
+    pending: list[tuple[object, int]] = [(diagnostics, 0)]
+    visited = 0
+    while pending and visited < 512:
+        current, depth = pending.pop()
+        visited += 1
+        if isinstance(current, Mapping):
+            schema_version = str(current.get("schema_version") or "")
+            if (
+                current.get("runtime_artifact_constraints")
+                or current.get("runtime_response_constraints")
+                or current.get("runtime_route_constraints")
+                or current.get("schema_field_constraints")
+                or schema_version.startswith(
+                    "aworld.self_evolve.replay_failure"
+                )
+            ):
+                causes.append(current)
+            if depth < 10:
+                pending.extend(
+                    (value, depth + 1)
+                    for value in reversed(tuple(current.values()))
+                    if isinstance(value, (Mapping, list, tuple))
+                )
+        elif isinstance(current, (list, tuple)) and depth < 10:
+            pending.extend(
+                (value, depth + 1)
+                for value in reversed(current[:128])
+                if isinstance(value, (Mapping, list, tuple))
+            )
+    return causes
+
+
+def _candidate_validation_diagnostic_priority(
+    diagnostic: Mapping[str, object],
+) -> int:
+    """Rank machine-actionable causal evidence above outer gate wrappers."""
+
+    priority = 0
+    pending: list[tuple[object, int]] = [(diagnostic, 0)]
+    visited = 0
+    while pending and visited < 512:
+        current, depth = pending.pop()
+        visited += 1
+        if isinstance(current, Mapping):
+            if current.get("runtime_artifact_constraints"):
+                priority = max(priority, 1_100)
+            if current.get("runtime_response_constraints"):
+                priority = max(priority, 1_000)
+            if current.get("runtime_route_constraints"):
+                priority = max(priority, 1_050)
+            if current.get("schema_field_constraints"):
+                priority = max(priority, 900)
+            schema_version = str(current.get("schema_version") or "")
+            if schema_version.startswith("aworld.self_evolve.replay_failure"):
+                priority = max(priority, 800)
+            code = str(current.get("code") or "")
+            if code and code not in {"failed_gate", "candidate_rejected"}:
+                priority = max(priority, 500)
+            if current.get("failure_fingerprint"):
+                priority = max(priority, 300)
+            if depth < 10:
+                pending.extend(
+                    (value, depth + 1)
+                    for value in current.values()
+                    if isinstance(value, (Mapping, list, tuple))
+                )
+        elif isinstance(current, (list, tuple)) and depth < 10:
+            pending.extend(
+                (value, depth + 1)
+                for value in current[:128]
+                if isinstance(value, (Mapping, list, tuple))
+            )
+    return priority
 
 
 def _repair_candidate_package_summary(value: Any) -> dict[str, Any] | None:
@@ -173,7 +356,20 @@ def _repair_candidate_package_summary(value: Any) -> dict[str, Any] | None:
     raw_files = value.get("files")
     if not isinstance(raw_files, list):
         return None
+    raw_content = value.get("content")
+    bounded_target_content: str | None = None
     remaining_chars = _MAX_REPAIR_PACKAGE_CHARS
+    if isinstance(raw_content, str) and raw_content.strip():
+        target_limit = (
+            _MAX_REPAIR_PACKAGE_CHARS
+            if not raw_files
+            else _MAX_MIXED_REPAIR_TARGET_CHARS
+        )
+        bounded_target_content = sanitize_source_text(
+            raw_content,
+            max_chars=target_limit,
+        )
+        remaining_chars -= len(bounded_target_content)
     files: list[dict[str, Any]] = []
     for raw_file in raw_files[:8]:
         if not isinstance(raw_file, Mapping):
@@ -189,19 +385,20 @@ def _repair_candidate_package_summary(value: Any) -> dict[str, Any] | None:
         content = raw_file.get("content")
         if isinstance(content, str) and remaining_chars > 0:
             content_limit = min(remaining_chars, _MAX_REPAIR_FILE_CHARS)
-            bounded_content = sanitize_source_text(content, max_chars=content_limit)
+            bounded_content = sanitize_source_text(
+                content,
+                max_chars=content_limit,
+                preserve_format=True,
+            )
             item["content"] = bounded_content
             remaining_chars -= len(bounded_content)
         files.append(item)
-    raw_content = value.get("content")
-    bounded_target_content = (
-        sanitize_source_text(raw_content, max_chars=8_000)
-        if isinstance(raw_content, str) and raw_content.strip()
-        else None
-    )
     # Target-only candidates are a complete, valid package. Dropping an empty
     # replay-file set loses the deepest judge-scored repair frontier and allows
     # unrelated lower-level runtime failures to take over subsequent mutation.
+    # Preserve the complete target whenever it fits the package budget: repairs
+    # commonly live near the end of a skill, so a fixed prefix silently removes
+    # the exact judge-scored delta that the next cycle must refine.
     if not files and bounded_target_content is None:
         return None
     package = {
@@ -211,6 +408,13 @@ def _repair_candidate_package_summary(value: Any) -> dict[str, Any] | None:
     }
     if bounded_target_content is not None:
         package["content"] = bounded_target_content
+    structural_edit_intent = skill_structural_edit_intent_from_dict(
+        value.get("structural_edit_intent")
+    )
+    if structural_edit_intent is not None:
+        package["structural_edit_intent"] = to_json_dict(
+            structural_edit_intent
+        )
     return package
 
 
@@ -442,6 +646,51 @@ def _repair_plan(
         evidence=evidence,
         metrics=metrics,
     )
+    active_schema_constraints = metrics.get("active_schema_field_constraints")
+    active_schema_violations = metrics.get("active_schema_field_violations")
+    if isinstance(active_schema_constraints, (list, tuple)) and (
+        active_schema_constraints
+    ):
+        issues.append("active_typed_schema_violation")
+        for constraint in active_schema_constraints[:_MAX_LIST_ITEMS]:
+            if not isinstance(constraint, Mapping):
+                continue
+            field_path = sanitize_text(
+                constraint.get("field_path"), max_chars=240
+            )
+            rule = sanitize_text(constraint.get("rule"), max_chars=80)
+            expected = constraint.get("expected")
+            expected_text = ",".join(
+                str(item)
+                for item in (
+                    expected
+                    if isinstance(expected, (list, tuple))
+                    else ()
+                )[:8]
+            )
+            actions.append(
+                "emit_every_selector_match:"
+                f"{field_path}:rule={rule}:expected={expected_text or 'schema'}"
+            )
+            acceptance_criteria.append(
+                f"no_active_violation:{field_path}:{rule}"
+            )
+    if isinstance(active_schema_violations, (list, tuple)):
+        for violation in active_schema_violations[:_MAX_LIST_ITEMS]:
+            if not isinstance(violation, Mapping):
+                continue
+            field_path = sanitize_text(
+                violation.get("field_path"), max_chars=240
+            )
+            actual_type = sanitize_text(
+                violation.get("actual_type"), max_chars=80
+            )
+            occurrence_count = violation.get("occurrence_count")
+            actions.append(
+                "replace_invalid_schema_value:"
+                f"{field_path}:actual_type={actual_type}:"
+                f"occurrences={occurrence_count or 1}"
+            )
     if has_evidence_problem:
         issues.append("compacted_or_incomplete_evidence")
         actions.extend(
@@ -560,7 +809,9 @@ def _repair_plan(
         }
 
     priority = (
-        "evidence_verifiability"
+        "schema_conformance"
+        if "active_typed_schema_violation" in issues
+        else "evidence_verifiability"
         if has_evidence_problem or has_manifest_problem
         else "score_and_efficiency"
     )

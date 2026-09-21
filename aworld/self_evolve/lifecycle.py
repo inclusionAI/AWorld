@@ -14,6 +14,11 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Iterable, Iterator, Mapping
 
+from aworld.self_evolve.measurement_checkpoint import (
+    MeasurementResumeCheckpointV1,
+    checkpoint_protects_path,
+)
+
 
 @dataclass(frozen=True)
 class SelfEvolveArtifactRetentionPolicy:
@@ -22,6 +27,7 @@ class SelfEvolveArtifactRetentionPolicy:
     stale_run_retention_hours: int = 24
     unreferenced_ingestion_retention_days: int = 7
     prune_unselected_candidate_materializations: bool = True
+    max_cleanup_seconds: float = 5.0
 
 
 _TERMINAL_STATUSES = {"succeeded", "failed", "rejected"}
@@ -53,6 +59,8 @@ _ACTIVE_RUN_LEASE = ".active.json"
 _CLEANUP_QUARANTINE_DIR = ".artifact-retention-trash"
 _RETENTION_TRANSACTION_DIR = "artifact_retention_transactions"
 _RETENTION_TRANSACTION_SCHEMA = "aworld.self_evolve.artifact_retention_transaction.v1"
+_RETENTION_REPORT_SCHEMA = "aworld.self_evolve.artifact_retention.v2"
+_INLINE_QUARANTINE_DELETE_SECONDS = 1.0
 _SAFE_RUN_ID = re.compile(r"[a-zA-Z0-9][a-zA-Z0-9._-]{0,159}")
 _FD_CLEANUP_SUPPORTED = (
     all(hasattr(os, name) for name in ("O_DIRECTORY", "O_NOFOLLOW"))
@@ -83,6 +91,7 @@ _EVALUATOR_RAW_FILE_NAMES = {
 _DURABLE_CANDIDATE_REFERENCE_KEYS = {
     "applied_candidate_id",
     "best_candidate_id",
+    "repair_focus_candidate_id",
     "selected_candidate_id",
     "source_candidate_id",
 }
@@ -181,6 +190,13 @@ def cleanup_self_evolve_artifacts(
         raise ValueError("stale_run_retention_hours must be non-negative")
     if retention.unreferenced_ingestion_retention_days < 0:
         raise ValueError("unreferenced_ingestion_retention_days must be non-negative")
+    if (
+        isinstance(retention.max_cleanup_seconds, bool)
+        or not isinstance(retention.max_cleanup_seconds, (int, float))
+        or not math.isfinite(float(retention.max_cleanup_seconds))
+        or retention.max_cleanup_seconds <= 0
+    ):
+        raise ValueError("max_cleanup_seconds must be positive and finite")
 
     with _bound_artifact_root(
         workspace_root,
@@ -249,6 +265,7 @@ def _perform_bound_artifact_cleanup(
     cleanup_time: float,
     transaction: _RetentionTransaction | None,
 ) -> dict[str, Any]:
+    cleanup_deadline = time.monotonic() + float(retention.max_cleanup_seconds)
     cutoff = cleanup_time - (
         retention.raw_artifact_retention_days * 24 * 60 * 60
     )
@@ -263,6 +280,7 @@ def _perform_bound_artifact_cleanup(
         cleanup_root_fd=root_fd,
         stale_cutoff=stale_run_cutoff,
         transaction=transaction,
+        deadline=cleanup_deadline,
     )
     run_dirs = _run_dirs(root)
     run_ids = {path.name for path in run_dirs}
@@ -279,11 +297,15 @@ def _perform_bound_artifact_cleanup(
     if current_run_id:
         recent_run_ids.add(current_run_id)
 
-    removed_run_ids: set[str] = set()
+    compacted_run_ids: set[str] = set()
     archived_run_ids: set[str] = set()
     skipped_runs: list[dict[str, str]] = []
+    cleanup_budget_exhausted = False
 
     for run_dir in sorted(run_dirs, key=lambda path: path.name):
+        if time.monotonic() >= cleanup_deadline:
+            cleanup_budget_exhausted = True
+            break
         skip_reason = _cleanup_skip_reason(
             run_dir,
             stale_run_cutoff=stale_run_cutoff,
@@ -308,6 +330,18 @@ def _perform_bound_artifact_cleanup(
                 retention.prune_unselected_candidate_materializations
             ),
         ):
+            if time.monotonic() >= cleanup_deadline:
+                cleanup_budget_exhausted = True
+                break
+            # Keep the report-linked repair-conformance evidence for the
+            # bounded latest-run window. Capability-preflight diagnostics are
+            # durable already; ordinary workspaces and candidate materialized
+            # copies remain subject to the normal compaction policy.
+            if (
+                run_dir.name in recent_run_ids
+                and path == run_dir / "repair_conformance"
+            ):
+                continue
             if _is_age_gated_raw_path(path, run_dir=run_dir, root=root) and _path_mtime(path) > cutoff:
                 continue
             if not path.exists() and not path.is_symlink():
@@ -317,17 +351,23 @@ def _perform_bound_artifact_cleanup(
                 cleanup_root=root,
                 cleanup_root_fd=root_fd,
                 transaction=transaction,
+                deadline=cleanup_deadline,
             ):
                 removed_paths.append(str(path))
                 run_removed = True
+        if cleanup_budget_exhausted:
+            break
         if run_removed:
-            removed_run_ids.add(run_dir.name)
+            compacted_run_ids.add(run_dir.name)
 
     protected_ingestion_ids = _referenced_ingestion_ids(root, run_dirs=run_dirs)
     removed_ingestion_ids: list[str] = []
     ingestion_root = root / "ingestions"
     if ingestion_root.is_dir() and not ingestion_root.is_symlink():
         for ingestion_dir in sorted(ingestion_root.iterdir(), key=lambda path: path.name):
+            if time.monotonic() >= cleanup_deadline:
+                cleanup_budget_exhausted = True
+                break
             if (
                 not ingestion_dir.is_dir()
                 or ingestion_dir.is_symlink()
@@ -340,6 +380,7 @@ def _perform_bound_artifact_cleanup(
                 cleanup_root=root,
                 cleanup_root_fd=root_fd,
                 transaction=transaction,
+                deadline=cleanup_deadline,
             ):
                 removed_paths.append(str(ingestion_dir))
                 removed_ingestion_ids.append(ingestion_dir.name)
@@ -350,9 +391,15 @@ def _perform_bound_artifact_cleanup(
         else []
     )
     return {
+        "schema_version": _RETENTION_REPORT_SCHEMA,
         "policy": asdict(retention),
-        "removed_run_count": len(removed_run_ids),
-        "removed_run_ids": sorted(removed_run_ids),
+        # Run directories and their durable lineage records are retained. Only
+        # raw subtrees are compacted, so reporting these runs as removed was
+        # materially misleading to operators and recovery tooling.
+        "removed_run_count": 0,
+        "removed_run_ids": [],
+        "compacted_run_count": len(compacted_run_ids),
+        "compacted_run_ids": sorted(compacted_run_ids),
         "archived_run_ids": sorted(archived_run_ids),
         "removed_path_count": len(removed_paths),
         "removed_paths": removed_paths,
@@ -361,6 +408,7 @@ def _perform_bound_artifact_cleanup(
         "removed_ingestion_ids": removed_ingestion_ids,
         "protected_ingestion_ids": sorted(protected_ingestion_ids),
         "transaction_ids": transaction_ids,
+        "cleanup_budget_exhausted": cleanup_budget_exhausted,
     }
 
 
@@ -546,9 +594,12 @@ def _validated_retention_transaction(
 
 def _empty_cleanup(policy: SelfEvolveArtifactRetentionPolicy) -> dict[str, Any]:
     return {
+        "schema_version": _RETENTION_REPORT_SCHEMA,
         "policy": asdict(policy),
         "removed_run_count": 0,
         "removed_run_ids": [],
+        "compacted_run_count": 0,
+        "compacted_run_ids": [],
         "archived_run_ids": [],
         "removed_path_count": 0,
         "removed_paths": [],
@@ -557,6 +608,7 @@ def _empty_cleanup(policy: SelfEvolveArtifactRetentionPolicy) -> dict[str, Any]:
         "removed_ingestion_ids": [],
         "protected_ingestion_ids": [],
         "transaction_ids": [],
+        "cleanup_budget_exhausted": False,
     }
 
 
@@ -725,15 +777,61 @@ def _terminal_cleanup_candidates(
     *,
     prune_unselected_candidate_materializations: bool,
 ) -> Iterable[Path]:
+    resume_checkpoint = _run_measurement_resume_checkpoint(run_dir)
+    resumable_measurement = bool(
+        resume_checkpoint is not None
+        or _run_has_resumable_authoritative_measurement_work(run_dir)
+    )
     for name in sorted(_RAW_RUN_DIRS | _TEMP_RUN_DIRS):
         yield run_dir / name
-    yield from _replay_workspace_paths(run_dir)
-    yield from _replay_adaptation_workspace_seed_paths(run_dir)
-    yield run_dir / "overlays"
+    for path in _replay_workspace_paths(run_dir):
+        if resume_checkpoint is not None:
+            if checkpoint_protects_path(
+                resume_checkpoint,
+                run_path=run_dir,
+                path=path,
+            ):
+                continue
+        elif resumable_measurement and _path_is_within(
+            path, run_dir / "replay"
+        ):
+            continue
+        yield path
+    # A resumable v2 measurement plan owns its runtime seed until every work
+    # unit reaches a terminal state. Removing the seed merely because the
+    # enclosing Campaign cycle ended turns checkpoint continuation into an
+    # unrecoverable replay-adaptation failure.
+    for path in _replay_adaptation_workspace_seed_paths(run_dir):
+        if resume_checkpoint is not None:
+            if checkpoint_protects_path(
+                resume_checkpoint,
+                run_path=run_dir,
+                path=path,
+            ):
+                continue
+        elif resumable_measurement:
+            continue
+        yield path
+    overlays = run_dir / "overlays"
+    if not resumable_measurement:
+        yield overlays
     if prune_unselected_candidate_materializations:
-        yield from _candidate_materialization_paths(run_dir)
+        for path in _candidate_materialization_paths(run_dir):
+            if resume_checkpoint is not None:
+                if checkpoint_protects_path(
+                    resume_checkpoint,
+                    run_path=run_dir,
+                    path=path,
+                ):
+                    continue
+            elif resumable_measurement:
+                continue
+            yield path
     for child in sorted(run_dir.iterdir() if run_dir.exists() else ()):
-        if child.name in _DUPLICATE_OUTPUT_NAMES or child.suffix in {".stdout", ".stderr"}:
+        if child.name in _DUPLICATE_OUTPUT_NAMES or child.suffix in {
+            ".stdout",
+            ".stderr",
+        }:
             yield child
     yield from _evaluator_raw_paths(root, run_dir)
     # Release dead/terminal ownership proof only after every other cleanup
@@ -742,15 +840,23 @@ def _terminal_cleanup_candidates(
 
 
 def _replay_workspace_paths(run_dir: Path) -> Iterable[Path]:
-    replay_dir = run_dir / "replay"
-    if not replay_dir.is_dir() or replay_dir.is_symlink():
-        return
-    for request_path in replay_dir.rglob("execution_request.json"):
-        if request_path.is_symlink() or not request_path.is_file():
+    replay_roots = [run_dir / "replay"]
+    regression_dir = run_dir / "regression"
+    if regression_dir.is_dir() and not regression_dir.is_symlink():
+        replay_roots.extend(
+            path
+            for path in regression_dir.glob("*/replay")
+            if path.is_dir() and not path.is_symlink()
+        )
+    for replay_dir in replay_roots:
+        if not replay_dir.is_dir() or replay_dir.is_symlink():
             continue
-        workspace = request_path.parent / "workspace"
-        if workspace.exists() or workspace.is_symlink():
-            yield workspace
+        for request_path in replay_dir.rglob("execution_request.json"):
+            if request_path.is_symlink() or not request_path.is_file():
+                continue
+            workspace = request_path.parent / "workspace"
+            if workspace.exists() or workspace.is_symlink():
+                yield workspace
 
 
 def _replay_adaptation_workspace_seed_paths(run_dir: Path) -> Iterable[Path]:
@@ -766,6 +872,96 @@ def _replay_adaptation_workspace_seed_paths(run_dir: Path) -> Iterable[Path]:
             seed = capability_dir / "workspace_seed"
             if seed.exists() or seed.is_symlink():
                 yield seed
+
+
+def _run_has_resumable_authoritative_measurement_work(run_dir: Path) -> bool:
+    replay_root = run_dir / "replay"
+    if not replay_root.is_dir() or replay_root.is_symlink():
+        return False
+    for request_path in replay_root.glob("*/request.json"):
+        if request_path.is_symlink() or not request_path.is_file():
+            continue
+        candidate_id = request_path.parent.name
+        if candidate_id.endswith("--screening"):
+            continue
+        request = _read_json_object(request_path)
+        raw_plan = request.get("measurement_plan") if request else None
+        if (
+            not isinstance(raw_plan, Mapping)
+            or request.get("run_id") != run_dir.name
+            or request.get("candidate_id") != candidate_id
+        ):
+            continue
+        fingerprint = raw_plan.get("measurement_plan_fingerprint")
+        if not isinstance(fingerprint, str) or not re.fullmatch(
+            r"sha256:[0-9a-f]{64}", fingerprint
+        ):
+            continue
+        index_path = (
+            run_dir
+            / "measurement_control"
+            / f"plan-{fingerprint.removeprefix('sha256:')}"
+            / "index.json"
+        )
+        payload = _read_json_object(index_path)
+        work_units = payload.get("work_units") if payload else None
+        if not isinstance(work_units, list):
+            continue
+        for item in work_units:
+            if not isinstance(item, Mapping):
+                continue
+            state = item.get("state")
+            attempt_count = item.get("attempt_count")
+            if state not in {
+                "succeeded",
+                "task_failed",
+                "member_timed_out",
+                "evidence_invalid",
+                "cancelled_decisive",
+            }:
+                return True
+            if (
+                state in {"member_timed_out", "evidence_invalid"}
+                and isinstance(attempt_count, int)
+                and not isinstance(attempt_count, bool)
+                and attempt_count < 2
+            ):
+                return True
+    return False
+
+
+def _run_has_pending_measurement_work(run_dir: Path) -> bool:
+    """Backward-compatible internal alias for the stronger admission check."""
+
+    return _run_has_resumable_authoritative_measurement_work(run_dir)
+
+
+def _run_measurement_resume_checkpoint(
+    run_dir: Path,
+) -> MeasurementResumeCheckpointV1 | None:
+    report = _read_json_object(run_dir / "report.json")
+    raw = report.get("measurement_resume_checkpoint") if report else None
+    if not isinstance(raw, Mapping):
+        return None
+    try:
+        checkpoint = MeasurementResumeCheckpointV1.from_dict(raw)
+    except (TypeError, ValueError):
+        return None
+    if checkpoint.source_run_id != run_dir.name:
+        return None
+    for relative in checkpoint.protected_paths:
+        path = run_dir / relative
+        if path.is_symlink() or not path.exists():
+            return None
+    return checkpoint
+
+
+def _path_is_within(path: Path, parent: Path) -> bool:
+    try:
+        path.relative_to(parent)
+    except ValueError:
+        return False
+    return True
 
 
 def _evaluator_raw_paths(root: Path, run_dir: Path) -> Iterable[Path]:
@@ -967,6 +1163,7 @@ def _is_age_gated_raw_path(path: Path, *, run_dir: Path, root: Path) -> bool:
             root / "evaluator" / run_dir.name,
         )
         or _is_controlled_descendant(path, run_dir / "replay")
+        or _is_controlled_descendant(path, run_dir / "regression")
         or _is_controlled_descendant(path, run_dir / "replay_adaptation")
     )
 
@@ -1054,6 +1251,7 @@ def _remove_path(
     cleanup_root: Path,
     cleanup_root_fd: int,
     transaction: _RetentionTransaction | None,
+    deadline: float | None = None,
 ) -> bool:
     try:
         parent_fd, leaf = _open_bound_parent(
@@ -1109,11 +1307,19 @@ def _remove_path(
             return False
         os.close(operation_fd)
         operation_fd = -1
-        _remove_tree_entry(trash_fd, operation_name)
-        _remove_empty_directory_at(
-            cleanup_root_fd,
-            _CLEANUP_QUARANTINE_DIR,
+        inline_deadline = time.monotonic() + _INLINE_QUARANTINE_DELETE_SECONDS
+        if deadline is not None:
+            inline_deadline = min(inline_deadline, deadline)
+        quarantine_removed = _remove_tree_entry(
+            trash_fd,
+            operation_name,
+            deadline=inline_deadline,
         )
+        if quarantine_removed:
+            _remove_empty_directory_at(
+                cleanup_root_fd,
+                _CLEANUP_QUARANTINE_DIR,
+            )
         if transaction is not None:
             transaction.record_removed(str(path))
         return True
@@ -1131,6 +1337,7 @@ def _recover_cleanup_quarantine(
     cleanup_root_fd: int,
     stale_cutoff: float,
     transaction: _RetentionTransaction | None,
+    deadline: float | None = None,
 ) -> list[str]:
     try:
         quarantine_fd = _open_directory_at(
@@ -1142,6 +1349,8 @@ def _recover_cleanup_quarantine(
     removed: list[str] = []
     try:
         for operation_name in sorted(os.listdir(quarantine_fd)):
+            if deadline is not None and time.monotonic() >= deadline:
+                break
             operation_fd = _open_directory_at(quarantine_fd, operation_name)
             try:
                 owner = _read_json_at(operation_fd, "owner.json")
@@ -1157,10 +1366,19 @@ def _recover_cleanup_quarantine(
                             transaction.record_intent(operation_path)
                         os.close(operation_fd)
                         operation_fd = -1
-                        _remove_tree_entry(quarantine_fd, operation_name)
-                        removed.append(operation_path)
-                        if transaction is not None:
-                            transaction.record_removed(operation_path)
+                        inline_deadline = (
+                            time.monotonic() + _INLINE_QUARANTINE_DELETE_SECONDS
+                        )
+                        if deadline is not None:
+                            inline_deadline = min(inline_deadline, deadline)
+                        if _remove_tree_entry(
+                            quarantine_fd,
+                            operation_name,
+                            deadline=inline_deadline,
+                        ):
+                            removed.append(operation_path)
+                            if transaction is not None:
+                                transaction.record_removed(operation_path)
                     continue
                 if not _is_recoverable_quarantine_owner(
                     owner,
@@ -1176,10 +1394,19 @@ def _recover_cleanup_quarantine(
                 )
                 if transaction is not None:
                     transaction.record_intent(operation_path)
-                _remove_tree_entry(quarantine_fd, operation_name)
-                removed.append(operation_path)
-                if transaction is not None:
-                    transaction.record_removed(operation_path)
+                inline_deadline = (
+                    time.monotonic() + _INLINE_QUARANTINE_DELETE_SECONDS
+                )
+                if deadline is not None:
+                    inline_deadline = min(inline_deadline, deadline)
+                if _remove_tree_entry(
+                    quarantine_fd,
+                    operation_name,
+                    deadline=inline_deadline,
+                ):
+                    removed.append(operation_path)
+                    if transaction is not None:
+                        transaction.record_removed(operation_path)
             finally:
                 if operation_fd >= 0:
                     os.close(operation_fd)
@@ -1507,18 +1734,33 @@ def _open_bound_parent(
     return parent_fd, relative.parts[-1]
 
 
-def _remove_tree_entry(parent_fd: int, name: str) -> None:
+def _remove_tree_entry(
+    parent_fd: int,
+    name: str,
+    *,
+    deadline: float | None = None,
+) -> bool:
+    if deadline is not None and time.monotonic() >= deadline:
+        return False
     entry = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
     if not stat.S_ISDIR(entry.st_mode):
         os.unlink(name, dir_fd=parent_fd)
         os.fsync(parent_fd)
-        return
+        return True
     child_fd = _open_directory_at(parent_fd, name)
     try:
         for child_name in sorted(os.listdir(child_fd)):
-            _remove_tree_entry(child_fd, child_name)
+            if not _remove_tree_entry(
+                child_fd,
+                child_name,
+                deadline=deadline,
+            ):
+                return False
+        if deadline is not None and time.monotonic() >= deadline:
+            return False
         os.rmdir(name, dir_fd=parent_fd)
         os.fsync(parent_fd)
+        return True
     finally:
         os.close(child_fd)
 

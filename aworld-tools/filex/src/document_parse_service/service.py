@@ -285,13 +285,14 @@ class DocumentParseService:
         metrics = result.get("metrics")
         if not isinstance(metrics, dict):
             return
-        metrics["provider"] = str(
-            env_content.get("filex_parse_provider") or metrics.get("provider") or ""
+        # Preserve provider-produced identity as execution evidence.  Requested
+        # identity is recorded separately so callers can reject fallback rather
+        # than comparing a request value with its own echo.
+        metrics["requested_provider"] = str(
+            env_content.get("filex_parse_provider") or ""
         )
-        metrics["provider_version"] = str(
-            env_content.get("filex_provider_version")
-            or metrics.get("provider_version")
-            or ""
+        metrics["requested_provider_version"] = str(
+            env_content.get("filex_provider_version") or ""
         )
         metrics_relative_path = str(result.get("metrics_file_path") or "").strip()
         if not metrics_relative_path:

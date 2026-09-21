@@ -241,9 +241,15 @@ class TaskEventRunner(TaskRunner):
             and runtime_context_bound
         ):
             status = await runtime_context.get_task_status()
-        remaining = self.task.remaining_seconds()
         cancelled = status in {TaskStatusValue.INTERRUPTED, TaskStatusValue.CANCELLED}
-        if not cancelled and (remaining is None or remaining > 0):
+        timeout = self.task.timeout
+        timed_out = (
+            isinstance(timeout, (int, float))
+            and not isinstance(timeout, bool)
+            and timeout > 0
+            and self.timeout_elapsed_seconds() >= timeout
+        )
+        if not cancelled and not timed_out:
             return False
         status = status if cancelled else TaskStatusValue.TIMEOUT
         code = ("cancelled" if status == TaskStatusValue.CANCELLED else "interrupted") if cancelled else "task_timeout"

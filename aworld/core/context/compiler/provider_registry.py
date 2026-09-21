@@ -14,6 +14,12 @@ class ReviewedProviderAdapter:
     capability: ProviderLoweringCapability
 
 
+@dataclass(frozen=True, slots=True)
+class ReviewedProviderProxyAdapter:
+    proxy_type: type
+    delegate_attribute: str
+
+
 class ReviewedProviderLoweringRegistry:
     """Registry whose membership is limited to framework-owned provider types.
 
@@ -35,10 +41,19 @@ class ReviewedProviderLoweringRegistry:
             ),
         }
     )
+    _FRAMEWORK_PROXY_TYPE_IDENTITIES = frozenset(
+        {
+            (
+                "aworld.self_evolve.candidate_generation",
+                "_SanitizingProvider",
+            ),
+        }
+    )
 
     def __init__(self) -> None:
         self._lock = RLock()
         self._by_type: dict[type, ReviewedProviderAdapter] = {}
+        self._proxy_by_type: dict[type, ReviewedProviderProxyAdapter] = {}
 
     def register(
         self, provider_type: type, capability: ProviderLoweringCapability
@@ -59,12 +74,50 @@ class ReviewedProviderLoweringRegistry:
                 )
             self._by_type[provider_type] = adapter
 
+    def register_proxy(
+        self, proxy_type: type, *, delegate_attribute: str
+    ) -> None:
+        """Register one framework-reviewed, exact-type transparent proxy.
+
+        Proxies do not receive a lowering capability of their own. Resolution
+        succeeds only when their delegate is itself an exact registered
+        provider whose declaration matches its reviewed adapter.
+        """
+        if not isinstance(proxy_type, type):
+            raise TypeError("proxy_type must be a class")
+        if not isinstance(delegate_attribute, str) or not delegate_attribute:
+            raise ValueError("delegate_attribute must be a non-empty string")
+        identity = (proxy_type.__module__, proxy_type.__qualname__)
+        if identity not in self._FRAMEWORK_PROXY_TYPE_IDENTITIES:
+            raise ValueError("provider proxy type is not framework-reviewed")
+        adapter = ReviewedProviderProxyAdapter(proxy_type, delegate_attribute)
+        with self._lock:
+            existing = self._proxy_by_type.get(proxy_type)
+            if existing is not None and existing != adapter:
+                raise ValueError(
+                    "provider proxy type already has a different reviewed adapter"
+                )
+            self._proxy_by_type[proxy_type] = adapter
+
     def resolve(
         self, provider: object, provider_name: str
     ) -> ProviderLoweringCapability | None:
         with self._lock:
             adapter = self._by_type.get(type(provider))
-        if adapter is None or adapter.capability.provider_name != provider_name:
+            proxy_adapter = self._proxy_by_type.get(type(provider))
+        if adapter is None:
+            if proxy_adapter is None:
+                return None
+            try:
+                delegate = object.__getattribute__(
+                    provider, proxy_adapter.delegate_attribute
+                )
+            except Exception:
+                return None
+            if delegate is provider:
+                return None
+            return self.resolve(delegate, provider_name)
+        if adapter.capability.provider_name != provider_name:
             return None
         try:
             declared = provider.context_candidate_lowering_capability()
@@ -83,5 +136,6 @@ reviewed_provider_lowerings = ReviewedProviderLoweringRegistry()
 __all__ = [
     "ReviewedProviderAdapter",
     "ReviewedProviderLoweringRegistry",
+    "ReviewedProviderProxyAdapter",
     "reviewed_provider_lowerings",
 ]

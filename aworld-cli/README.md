@@ -7,6 +7,7 @@ AWorld CLI is a command-line tool for interacting with AWorld agents.
 - **Interactive CLI**: Rich terminal interface for agent interaction
 - **Agent Discovery**: Automatic discovery of agents using `@agent` decorator
 - **Built-in Agents**: Automatically loads built-in agents from `builtin_agents/*/agents` directories (no configuration required)
+- **Built-in FileX skill**: The AWorld Agent enables FileX instructions and execution assets by default, alongside skills selected from the task. No `--skill` flag or Gateway profile is required. The agent uses FileX when the task needs document or media parsing; execution requires a FileX-enabled sandbox. Explicit skill selection and user disable settings still apply.
 - **Multiple Sources**: Support for local and remote agents
 - **Streaming Output**: Real-time streaming of agent responses
 - **Agent Priority**: Built-in agents → Local agents → Remote agents

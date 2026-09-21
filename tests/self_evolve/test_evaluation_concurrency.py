@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -119,6 +120,69 @@ async def test_unsafe_in_process_backend_is_serialized_by_resource_claim() -> No
 
 
 @pytest.mark.asyncio
+async def test_exact_baseline_identity_is_reused_without_overwriting_artifacts() -> None:
+    calls: list[tuple[str, str | None]] = []
+
+    class Backend:
+        task_local_runtime = True
+
+        async def evaluate_variant(self, request):
+            calls.append(
+                (
+                    "candidate" if request.candidate is not None else "baseline",
+                    request.artifact_namespace,
+                )
+            )
+            return EvaluationSummary(
+                variant_id=request.variant_id,
+                dataset_split=request.dataset_split,
+                metrics={"score": 0.5 if request.candidate is None else 0.9},
+            )
+
+    backend = Backend()
+    cache: dict[str, EvaluationSummary] = {}
+    first_baseline, first_candidate = await evaluate_baseline_and_candidate(
+        backend,
+        dataset=_dataset(),
+        candidate=_candidate(),
+        artifact_namespace="run-1",
+        baseline_cache=cache,
+    )
+    second_baseline, second_candidate = await evaluate_baseline_and_candidate(
+        backend,
+        dataset=_dataset(),
+        candidate=replace(
+            _candidate(),
+            candidate_id="candidate-2",
+            content="# Candidate\n\nVerify completion.\n",
+        ),
+        artifact_namespace="run-1",
+        baseline_cache=cache,
+    )
+
+    assert [role for role, _ in calls] == [
+        "baseline",
+        "candidate",
+        "candidate",
+    ]
+    assert first_baseline.metrics["evaluation_fresh_execution"] is True
+    assert second_baseline.metrics["evaluation_fresh_execution"] is False
+    assert second_baseline.metrics["evaluation_reused"] is True
+    assert (
+        first_baseline.metrics["evaluation_execution_id"]
+        == second_baseline.metrics["evaluation_execution_id"]
+    )
+    assert (
+        first_baseline.metrics["evaluation_artifact_namespace"]
+        == second_baseline.metrics["evaluation_artifact_namespace"]
+    )
+    assert (
+        first_candidate.metrics["evaluation_artifact_namespace"]
+        != second_candidate.metrics["evaluation_artifact_namespace"]
+    )
+
+
+@pytest.mark.asyncio
 async def test_cli_judge_subprocesses_receive_distinct_env_without_parent_mutation(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -126,8 +190,9 @@ async def test_cli_judge_subprocesses_receive_distinct_env_without_parent_mutati
     monkeypatch.setenv("AWORLD_LOG_PATH", "parent-log-path")
     captured_environments: list[dict[str, str]] = []
 
-    def fake_run(command, **kwargs):
-        captured_environments.append(dict(kwargs["env"]))
+    def fake_run(command, *, cwd, environment, timeout_seconds):
+        del cwd, timeout_seconds
+        captured_environments.append(dict(environment))
         output_index = command.index("--output") + 1
         Path(command[output_index]).write_text(
             json.dumps({"summary": {}, "gate": {"status": "fail"}}),
@@ -135,7 +200,10 @@ async def test_cli_judge_subprocesses_receive_distinct_env_without_parent_mutati
         )
         return SimpleNamespace(returncode=1, stdout="", stderr="")
 
-    monkeypatch.setattr("aworld.self_evolve.evaluation.subprocess.run", fake_run)
+    monkeypatch.setattr(
+        "aworld.self_evolve.evaluation._run_isolated_evaluator_process",
+        fake_run,
+    )
     kwargs_a = {
         "input": str(tmp_path / "a.log"),
         "kind": "trajectory",
@@ -182,14 +250,18 @@ def test_cli_judge_subprocess_failure_includes_bounded_process_diagnostics(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    def fake_run(command, **kwargs):
+    def fake_run(command, *, cwd, environment, timeout_seconds):
+        del command, cwd, environment, timeout_seconds
         return SimpleNamespace(
             returncode=1,
             stdout="unused output",
             stderr="model profile not found or incomplete: missing-profile",
         )
 
-    monkeypatch.setattr("aworld.self_evolve.evaluation.subprocess.run", fake_run)
+    monkeypatch.setattr(
+        "aworld.self_evolve.evaluation._run_isolated_evaluator_process",
+        fake_run,
+    )
 
     with pytest.raises(RuntimeError) as exc_info:
         _run_evaluator_cli_subprocess(
@@ -208,3 +280,41 @@ def test_cli_judge_subprocess_failure_includes_bounded_process_diagnostics(
     reason = str(exc_info.value)
     assert "model profile not found or incomplete: missing-profile" in reason
     assert "unused output" in reason
+
+
+def test_cli_judge_subprocess_uses_evaluation_attempt_deadline_for_process(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured_timeout: list[float | None] = []
+
+    def fake_run(command, *, cwd, environment, timeout_seconds):
+        del cwd, environment
+        captured_timeout.append(timeout_seconds)
+        output_index = command.index("--output") + 1
+        Path(command[output_index]).write_text(
+            json.dumps({"summary": {}, "gate": {"status": "fail"}}),
+            encoding="utf-8",
+        )
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(
+        "aworld.self_evolve.evaluation._run_isolated_evaluator_process",
+        fake_run,
+    )
+
+    _run_evaluator_cli_subprocess(
+        runner_kwargs={
+            "input": str(tmp_path / "input.log"),
+            "kind": "trajectory",
+            "judge_agent_name": "judge",
+            "out_dir": str(tmp_path / "out"),
+            "output": str(tmp_path / "report.json"),
+            "judge_timeout_seconds": 10,
+            "_process_timeout_seconds": 120,
+        },
+        log_path=tmp_path / "logs",
+        workspace_root=tmp_path,
+    )
+
+    assert captured_timeout == [120.0]

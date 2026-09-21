@@ -8,6 +8,7 @@ from aworld.self_evolve.datasets import EvalCase
 from aworld.self_evolve.evolution_context import (
     EVOLUTION_CONTEXT_SCHEMA_VERSION,
     MAX_CONTEXT_TRACE_CHARS,
+    _bounded_repair_focus_for_prompt,
     compile_evolution_context,
 )
 from aworld.self_evolve.failure_events import (
@@ -77,6 +78,70 @@ def _request() -> OptimizerRequest:
         ),
         target_package_inventory=("SKILL.md",),
     )
+
+
+def test_skill_evolution_contract_enters_generation_context() -> None:
+    request = replace(
+        _request(),
+        skill_evolution_contract={
+            "schema_version": "aworld.self_evolve.skill_evolution_contract.v1",
+            "contract_fingerprint": "sha256:contract",
+            "target_skill_id": "demo",
+            "objective": "Handle large output",
+            "capabilities": [
+                {
+                    "capability_id": "large_output",
+                    "description": "Read large output safely",
+                    "case_ids": ["train-1"],
+                    "required": True,
+                }
+            ],
+            "preserved_invariants": ["Preserve existing navigation"],
+        },
+    )
+
+    payload = compile_evolution_context(request).to_prompt_payload(
+        candidate_index=0
+    )
+
+    assert payload["skill_evolution_contract"]["target_skill_id"] == "demo"
+    assert "Read large output safely" in payload["required_behaviors"]
+    assert "Preserve existing navigation" in payload["preserved_behaviors"]
+
+
+def test_existing_replay_manifest_fields_are_bound_in_authoring_contract() -> None:
+    request = replace(
+        _request(),
+        target_package_inventory=("SKILL.md", "replay/capability.json"),
+        target_package_sources={
+            "replay/capability.json": {
+                "content": json.dumps(
+                    {
+                        "schema_version": "aworld.skill.replay_capability.v1",
+                        "capability_id": "demo-replay",
+                        "protocol": "aworld.replay.subprocess.v1",
+                        "entrypoint": "replay/compiler.py",
+                        "handles": ["stateful_tool"],
+                        "concurrency_mode": "isolated",
+                    }
+                ),
+                "executable": False,
+            }
+        },
+    )
+
+    context = compile_evolution_context(request)
+
+    manifest = context.capability_contracts[0]["manifest"]
+    assert manifest["preserved_existing_fields"] == {
+        "capability_id": "demo-replay",
+        "protocol": "aworld.replay.subprocess.v1",
+        "concurrency_mode": "isolated",
+    }
+    assert manifest["field_constraints"]["capability_id"] == {
+        "enum": ["demo-replay"],
+        "preserve_existing": True,
+    }
 
 
 def test_lesson_context_ranks_unique_repairable_cause_without_occurrence_bias() -> None:
@@ -275,6 +340,27 @@ def test_compiler_does_not_treat_prior_feedback_as_current_iteration_repair() ->
     )
 
 
+def test_compiler_rotates_consumed_mutation_families_to_the_back() -> None:
+    request = replace(
+        _request(),
+        consumed_mutation_families=(
+            "quality_regression_repair",
+            "missing_capability_completion",
+        ),
+    )
+
+    context = compile_evolution_context(request)
+
+    assert context.population_strategies[:2] == (
+        "minimal_behavior_delta",
+        "efficiency_and_robustness",
+    )
+    assert context.population_strategies[-2:] == (
+        "quality_regression_repair",
+        "missing_capability_completion",
+    )
+
+
 def test_compiler_preserves_bounded_repair_candidate_package_source() -> None:
     runtime_source = (
         "def handle_websocket_frame(frame):\n"
@@ -325,7 +411,7 @@ def test_compiler_preserves_bounded_repair_candidate_package_source() -> None:
     package = compiled_feedback["repair_candidate_package"]
     assert package["candidate_id"] == "candidate-runtime"
     assert package["files"][0]["path"] == "replay/runtime.py"
-    assert package["files"][0]["content"] == runtime_source.strip()
+    assert package["files"][0]["content"] == runtime_source
     assert len(package["files"][0]["content"]) > 240
 
 
@@ -367,8 +453,49 @@ def test_compiler_preserves_complete_large_repair_runtime_source() -> None:
     preserved = context.validation_feedback[0]["repair_candidate_package"][
         "files"
     ][0]["content"]
-    assert preserved == runtime_source.strip()
-    assert preserved.endswith("return 'runtime-tail-preserved'")
+    assert preserved == runtime_source
+    assert preserved.endswith("return 'runtime-tail-preserved'\n")
+
+
+def test_compiler_keeps_replay_counterexample_in_focused_repair_context() -> None:
+    counterexample = {
+        "schema_version": "aworld.replay.counterexample.v1",
+        "sequence": 1,
+        "failure_code": "tool_call_after_evidence_ready",
+        "stage": "task_rollout",
+        "state_before": "evidence_ready",
+        "trigger": "tool_call",
+        "tool_name": "bash",
+        "action_name": "run",
+        "manifest_entry_count": 1,
+        "artifact_file_count": 2,
+        "artifact_bytes": 512,
+        "required_transition": "finalize_task_response",
+    }
+    feedback = EvaluationSummary(
+        variant_id="candidate-evidence-loop",
+        dataset_split="validation",
+        metrics={
+            "failed_gates": ["candidate_replay"],
+            "replay_counterexamples": [counterexample],
+            "repair_candidate_package": {
+                "candidate_id": "candidate-evidence-loop",
+                "content": "# Demo\n\nCollect bounded evidence.\n",
+                "files": [],
+            },
+        },
+    )
+
+    context = compile_evolution_context(
+        replace(
+            _request(),
+            validation_feedback=(feedback,),
+            prior_feedback=(),
+        )
+    )
+    payload = context.to_prompt_payload(candidate_index=0)
+
+    assert payload["repair_focus"]["replay_counterexamples"] == [counterexample]
 
 
 def test_source_sanitizer_preserves_expressions_and_redacts_literals() -> None:
@@ -577,6 +704,95 @@ def test_focused_repair_prompt_budgets_source_without_affecting_overlay_base() -
     assert overlay_files["SKILL.md"]["content"].startswith("# Skill")
 
 
+def test_repair_prompt_inherits_required_effective_target_sources() -> None:
+    prompt_focus = _bounded_repair_focus_for_prompt(
+        {
+            "repair_candidate_package": {
+                "candidate_id": "candidate-missing-runtime-delta",
+                "files": [
+                    {
+                        "path": "replay/proposal.py",
+                        "operation": "upsert",
+                        "content": "def propose():\n    return 'candidate delta'\n",
+                    }
+                ],
+            }
+        },
+        required_branch_paths=("replay/runtime.py",),
+        target_package_sources={
+            "replay/runtime.py": {
+                "content": "def run():\n    return 'effective target source'\n",
+                "executable": True,
+            }
+        },
+    )
+
+    package = prompt_focus["repair_candidate_package"]
+    files = {item["path"]: item for item in package["files"]}
+    assert files["replay/runtime.py"] == {
+        "path": "replay/runtime.py",
+        "operation": "upsert",
+        "content": "def run():\n    return 'effective target source'\n",
+        "executable": True,
+        "source_origin": "target_package_overlay",
+        "required_repair_source": True,
+    }
+    assert prompt_focus["required_source_closure"] == {
+        "complete": True,
+        "required_paths": ["replay/runtime.py"],
+        "inherited_target_paths": ["replay/runtime.py"],
+        "missing_paths": [],
+        "omitted_paths": [],
+    }
+
+
+def test_repair_prompt_reports_incomplete_required_source_closure() -> None:
+    prompt_focus = _bounded_repair_focus_for_prompt(
+        {
+            "repair_candidate_package": {
+                "candidate_id": "candidate-missing-runtime-source",
+                "files": [],
+            }
+        },
+        required_branch_paths=("replay/runtime.py",),
+        target_package_sources={},
+    )
+
+    assert prompt_focus["required_source_closure"] == {
+        "complete": False,
+        "required_paths": ["replay/runtime.py"],
+        "inherited_target_paths": [],
+        "missing_paths": ["replay/runtime.py"],
+        "omitted_paths": [],
+    }
+
+
+def test_repair_prompt_does_not_claim_omitted_large_source_is_complete() -> None:
+    prompt_focus = _bounded_repair_focus_for_prompt(
+        {
+            "repair_candidate_package": {
+                "candidate_id": "candidate-large-runtime-source",
+                "files": [],
+            }
+        },
+        required_branch_paths=("replay/runtime.py",),
+        target_package_sources={
+            "replay/runtime.py": {
+                "content": "x" * 40_001,
+                "executable": False,
+            }
+        },
+    )
+
+    closure = prompt_focus["required_source_closure"]
+    assert closure["complete"] is False
+    assert closure["missing_paths"] == []
+    assert closure["omitted_paths"] == ["replay/runtime.py"]
+    runtime_file = prompt_focus["repair_candidate_package"]["files"][0]
+    assert runtime_file["content_omitted"] is True
+    assert "content" not in runtime_file
+
+
 def test_prompt_payload_budgets_accumulated_historical_feedback() -> None:
     feedback = tuple(
         EvaluationSummary(
@@ -688,7 +904,7 @@ def test_prompt_payload_compiles_machine_checked_repair_as_focused_context() -> 
     assert payload["lesson_records"] == []
     assert payload["repair_focus"]["repair_candidate_package"]["files"][0][
         "content"
-    ] == runtime_source.strip()
+    ] == runtime_source
     assert serialized.count("def handle(value)") == 1
 
 
@@ -698,6 +914,207 @@ def test_prompt_payload_omits_repair_focus_without_candidate_source() -> None:
     payload = context.to_prompt_payload(candidate_index=0)
 
     assert "repair_focus" not in payload
+
+
+def test_generation_policy_feedback_compacts_history_but_keeps_current_base() -> None:
+    feedback = EvaluationSummary(
+        variant_id="candidate-policy-filter-1",
+        dataset_split="validation",
+        metrics={
+            "failed_gates": ["candidate_generation_policy"],
+            "failure_class": "candidate",
+            "repairable": True,
+            "candidate_validation_diagnostics": [
+                {
+                    "code": "candidate_generation_policy_filtered",
+                    "stage": "candidate_generation",
+                    "policy_id": "preserve_high_baseline",
+                    "enforcement": "hard",
+                    "reason_codes": [
+                        "authoritative_base_replaced_by_rejected_parent"
+                    ],
+                    "constraint_ids": [
+                        "preserve_authoritative_current_base"
+                    ],
+                }
+            ],
+        },
+    )
+    request = replace(
+        _request(),
+        validation_feedback=(feedback,),
+        prior_feedback=_request().validation_feedback,
+    )
+
+    payload = compile_evolution_context(request).to_prompt_payload(
+        candidate_index=0
+    )
+
+    assert payload["repair_context_mode"] == "generation_policy_delta"
+    assert payload["current_content"] == request.current_content.rstrip()
+    assert payload["trainable_cases"] == []
+    assert payload["trace_evidence"] == []
+    assert payload["lesson_records"] == []
+    diagnostics = payload["validation_feedback"][0][
+        "candidate_validation_diagnostics"
+    ]
+    assert diagnostics[0]["constraint_ids"] == [
+        "preserve_authoritative_current_base"
+    ]
+
+
+def test_focused_feedback_compaction_retains_deep_typed_runtime_cause() -> None:
+    runtime_constraint = {
+        "schema_version": "aworld.self_evolve.runtime_response_constraint.v1",
+        "constraint_kind": "recorded_response_context",
+        "response_source": "AWORLD_REPLAY_RESPONSE_INDEX",
+        "minimum_recorded_value_matches": 2,
+        "maximum_response_bytes": 48 * 1024,
+        "preserve_decoded_container": True,
+        "allow_bounded_projection": True,
+        "projection_minimum_scalar_descendants": 2,
+        "probe_kind": "http",
+        "probe_path": "/",
+    }
+    outer_diagnostics = [
+        {
+            "code": "failed_gate",
+            "stage": "candidate_repair_conformance",
+            "reason": f"outer diagnostic {index} " + "x" * 900,
+        }
+        for index in range(20)
+    ]
+    outer_diagnostics.append(
+        {
+            "code": "failed_gate",
+            "details": {
+                "code": "repair_probe_execution_failed",
+                "diagnostics": [
+                    {
+                        "code": "recorded_response_context_incomplete",
+                        "stage": "capability_preflight",
+                        "reason": (
+                            "HTTP data-plane probe must return surrounding "
+                            "recorded response context"
+                        ),
+                        "runtime_response_constraints": [runtime_constraint],
+                        "runtime_response_observation": {
+                            "observed_recorded_value_matches": 1,
+                            "response_payload_bytes": 2048,
+                            "response_shape": "json_object",
+                        },
+                    }
+                ],
+            },
+        }
+    )
+    feedback = EvaluationSummary(
+        variant_id="candidate-deep-runtime-cause",
+        dataset_split="validation",
+        metrics={
+            "failed_gates": ["candidate_repair_conformance"],
+            "candidate_validation_diagnostics": outer_diagnostics,
+            "repair_candidate_package": {
+                "candidate_id": "candidate-deep-runtime-cause",
+                "files": [
+                    {
+                        "path": "replay/runtime.py",
+                        "operation": "upsert",
+                        "content": "def respond():\n    return {}\n",
+                    }
+                ],
+            },
+        },
+    )
+    context = compile_evolution_context(
+        replace(
+            _request(),
+            validation_feedback=(feedback,),
+            prior_feedback=(),
+        )
+    )
+
+    payload = context.to_prompt_payload(candidate_index=0)
+    diagnostics = payload["validation_feedback"][0][
+        "candidate_validation_diagnostics"
+    ]
+
+    assert diagnostics[0]["code"] == (
+        "recorded_response_context_incomplete"
+    )
+    assert diagnostics[0]["runtime_response_constraints"] == [
+        runtime_constraint
+    ]
+    assert diagnostics[0]["runtime_response_observation"][
+        "observed_recorded_value_matches"
+    ] == 1
+
+
+def test_typed_runtime_constraint_is_inherited_by_focused_repair_package() -> None:
+    runtime_constraint = {
+        "schema_version": "aworld.self_evolve.runtime_response_constraint.v1",
+        "constraint_kind": "recorded_response_context",
+        "response_source": "AWORLD_REPLAY_RESPONSE_INDEX",
+        "minimum_recorded_value_matches": 2,
+        "maximum_response_bytes": 48 * 1024,
+        "preserve_decoded_container": True,
+        "allow_bounded_projection": True,
+        "projection_minimum_scalar_descendants": 2,
+        "probe_kind": "http",
+        "probe_path": "/",
+    }
+    typed_cause = EvaluationSummary(
+        variant_id="candidate-runtime-cause",
+        dataset_split="validation",
+        metrics={
+            "failed_gates": ["candidate_repair_conformance"],
+            "candidate_validation_diagnostics": [
+                {
+                    "code": "recorded_response_context_incomplete",
+                    "stage": "capability_preflight",
+                    "runtime_response_constraints": [runtime_constraint],
+                }
+            ],
+        },
+    )
+    focused_package = EvaluationSummary(
+        variant_id="candidate-focused-package",
+        dataset_split="validation",
+        metrics={
+            "failed_gates": ["candidate_repair_conformance"],
+            "failure_class": "candidate",
+            "repairable": True,
+            "candidate_validation_diagnostics": [
+                {
+                    "code": "repair_probe_execution_failed",
+                    "stage": "repair_conformance",
+                }
+            ],
+            "repair_candidate_package": {
+                "candidate_id": "candidate-focused-package",
+                "files": [
+                    {
+                        "path": "replay/runtime.py",
+                        "operation": "upsert",
+                        "content": "def respond():\n    return {}\n",
+                    }
+                ],
+            },
+        },
+    )
+
+    payload = compile_evolution_context(
+        replace(
+            _request(),
+            validation_feedback=(focused_package, typed_cause),
+            prior_feedback=(),
+        )
+    ).to_prompt_payload(candidate_index=0)
+
+    assert payload["repair_context_mode"] == "focused_candidate_delta"
+    assert payload["repair_conformance"]["runtime_response_constraints"] == [
+        runtime_constraint
+    ]
 
 
 def test_prompt_payload_omits_support_that_failed_same_specific_repair_gate() -> None:
@@ -907,6 +1324,139 @@ def test_prompt_payload_prioritizes_judged_held_out_repair_over_replay_history()
     assert "repair_support" not in second_payload
     assert "repair_conformance" not in first_payload
     assert "repair_conformance" not in second_payload
+
+
+def test_prompt_payload_exposes_source_omitted_judged_sibling_as_support() -> None:
+    def judged_feedback(
+        candidate_id: str,
+        *,
+        score: float,
+        evidence_incomplete: bool,
+        failed_gates: list[str],
+    ) -> EvaluationSummary:
+        return EvaluationSummary(
+            variant_id=candidate_id,
+            dataset_split="validation",
+            metrics={
+                "score": score,
+                "evidence_incomplete": evidence_incomplete,
+                "failed_gates": failed_gates,
+                "repair_candidate_package": {
+                    "candidate_id": candidate_id,
+                    "content": f"# {candidate_id}\n",
+                    "files": [],
+                },
+            },
+        )
+
+    context = compile_evolution_context(
+        replace(
+            _request(),
+            validation_feedback=(
+                judged_feedback(
+                    "candidate-evidence-checkpoint",
+                    score=89.2,
+                    evidence_incomplete=False,
+                    failed_gates=["score_improvement"],
+                ),
+                judged_feedback(
+                    "candidate-score-checkpoint",
+                    score=90.3,
+                    evidence_incomplete=True,
+                    failed_gates=["evidence_quality"],
+                ),
+            ),
+            prior_feedback=(),
+        )
+    )
+
+    payload = context.to_prompt_payload(candidate_index=0)
+
+    assert payload["repair_focus"]["repair_candidate_package"][
+        "candidate_id"
+    ] == "candidate-score-checkpoint"
+    assert payload["repair_support"]["repair_candidate_id"] == (
+        "candidate-evidence-checkpoint"
+    )
+    assert payload["repair_support"]["repair_candidate_source_omitted"] is True
+    assert "repair_candidate_package" not in payload["repair_support"]
+
+
+def test_candidate_owned_evidence_frontier_uses_dedicated_strategy() -> None:
+    context = compile_evolution_context(
+        replace(
+            _request(),
+            validation_feedback=(
+                EvaluationSummary(
+                    variant_id="candidate-evidence",
+                    dataset_split="validation",
+                    metrics={
+                        "score": 88.0,
+                        "failed_gates": ["score_improvement", "evidence_quality"],
+                        "failure_class": "candidate",
+                        "failure_owner": "candidate",
+                        "repairable": True,
+                        "evidence_repair_constraints": [
+                            {
+                                "schema_version": (
+                                    "aworld.self_evolve.evidence_repair_constraint.v1"
+                                ),
+                                "constraint_identity_digest": "a" * 64,
+                                "owner": "candidate",
+                                "source_layer": "candidate_output",
+                                "subject_kind": "general_claim",
+                                "failure_mode": "unsupported_claim",
+                                "required_action": "support_or_omit",
+                                "occurrence_count": 1,
+                            }
+                        ],
+                    },
+                ),
+            ),
+            prior_feedback=(),
+        )
+    )
+
+    assert context.population_strategies[0] == "evidence_quality_repair"
+
+
+def test_candidate_recovery_frontier_requires_target_behavior_composition() -> None:
+    recovery_event = ReplayFailureEvent(
+        code="candidate_recovery_incomplete",
+        owner=FailureOwner.CANDIDATE,
+        stage=FailureStage.TASK_ROLLOUT,
+        scope=FailureScope.CANDIDATE,
+        repairable=True,
+        category="recovery_trace",
+        summary="candidate failed to complete after repeated evidence calls",
+    ).to_dict()
+    context = compile_evolution_context(
+        replace(
+            _request(),
+            validation_feedback=(
+                EvaluationSummary(
+                    variant_id="candidate-recovery",
+                    dataset_split="validation",
+                    metrics={
+                        "failed_gates": ["candidate_replay"],
+                        "failure_class": "candidate",
+                        "repairable": True,
+                        "candidate_validation_diagnostics": [
+                            {"causal_failure_events": [recovery_event]}
+                        ],
+                        "repair_candidate_package": {
+                            "candidate_id": "candidate-recovery",
+                            "content": "# Demo\n\nUnbounded evidence loop.\n",
+                            "files": [],
+                        },
+                    },
+                ),
+            ),
+            prior_feedback=(),
+        )
+    )
+
+    assert context.population_strategies[0] == "target_behavior_composition"
 
 
 def test_judged_repair_does_not_inherit_sibling_schema_mutation_surface() -> None:
@@ -1442,10 +1992,9 @@ def test_prompt_payload_merges_typed_constraints_across_repair_lineages() -> Non
     assert {
         item["schema_layer"] for item in contract["schema_field_constraints"]
     } == {"compiler_output", "runtime"}
-    assert set(contract["required_branch_paths"]) == {
-        "replay/compiler.py",
-        "replay/runtime.py",
-    }
+    # Compiler constraints from the sibling lineage remain validation
+    # invariants, but the selected runtime failure alone owns this mutation.
+    assert contract["required_branch_paths"] == ["replay/runtime.py"]
 
 
 def test_prompt_payload_prioritizes_conformance_that_inherits_task_plane_frontier() -> None:

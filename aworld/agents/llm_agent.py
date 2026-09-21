@@ -808,6 +808,7 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             {
                 "capture_stage": "compiled",
                 "call_id": call_id,
+                "record_kind": "agent_observability",
                 "step_id": message.context.current_step_id()
                 if message.context
                 else None,
@@ -4395,6 +4396,15 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                     chunk.usage,
                     ignore_zero=False,
                 )
+                if getattr(chunk, "usage_reported", False) is True:
+                    llm_response.usage_reported = True
+                chunk_raw_usage = getattr(chunk, "raw_usage", None)
+                if isinstance(chunk_raw_usage, dict) and chunk_raw_usage:
+                    llm_response.raw_usage = nest_dict_counter(
+                        llm_response.raw_usage or {},
+                        chunk_raw_usage,
+                        ignore_zero=False,
+                    )
                 if isinstance(chunk.message, dict):
                     llm_response.message.update(chunk.message)
                 if llm_response.tool_calls:
@@ -5343,6 +5353,9 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         if not isinstance(skill_config, dict):
             return False
         if skill_config.get("type") == "agent":
+            return False
+        execution_assets = skill_config.get("execution_assets")
+        if isinstance(execution_assets, dict) and execution_assets.get("enabled"):
             return False
         return not bool(skill_config.get("tool_list"))
 
