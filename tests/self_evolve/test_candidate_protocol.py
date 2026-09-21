@@ -195,6 +195,7 @@ def test_rejects_multiple_json_objects_in_text() -> None:
         )
 
     assert error.value.code == "multiple_json_objects"
+    assert error.value.repairable is True
 
 
 def test_repairs_one_truncated_candidate_json_before_semantic_validation() -> None:
@@ -241,26 +242,26 @@ def test_rejects_candidate_without_body_or_package_files() -> None:
     assert error.value.code == "missing_candidate_body"
 
 
-def test_rejects_candidate_with_both_content_and_patch_intent() -> None:
-    with pytest.raises(CandidateProtocolError) as error:
-        normalize_candidate_output(
-            {
-                "content": "# Demo\n\nReplacement.\n",
-                "patch_intent": {
-                    "operations": [
-                        {
-                            "op": "append_section",
-                            "heading": "Workflow",
-                            "content": "Use the workflow.",
-                        }
-                    ]
-                },
-                "files": [],
+def test_prefers_bounded_patch_when_provider_echoes_complete_content() -> None:
+    normalized = normalize_candidate_output(
+        {
+            "content": "# Demo\n\nConflicting complete replacement.\n",
+            "patch_intent": {
+                "operations": [
+                    {
+                        "op": "append_section",
+                        "heading": "Workflow",
+                        "content": "Use the workflow.",
+                    }
+                ]
             },
-            current_content=CURRENT_CONTENT,
-        )
+            "files": [],
+        },
+        current_content=CURRENT_CONTENT,
+    )
 
-    assert error.value.code == "ambiguous_candidate_body"
+    assert "content" not in normalized
+    assert normalized["patch_intent"]["operations"][0]["heading"] == "Workflow"
 
 
 def test_accepts_structural_replace_patch_before_focused_base_is_available() -> None:

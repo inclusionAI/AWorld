@@ -1,7 +1,6 @@
 # coding: utf-8
 # Copyright (c) 2025 inclusionAI.
 import abc
-import time
 
 from typing import TypeVar, Generic, AsyncGenerator
 
@@ -66,7 +65,7 @@ class DefaultHandler(Handler[Message, AsyncGenerator[Message, None]]):
             await self.runner.stop()
             return
         timeout = message.context.get_task().timeout
-        time_cost = time.time() - self.runner.start_time
+        time_cost = self.runner.timeout_elapsed_seconds() if timeout > 0 else 0
         if message.topic != TopicType.CANCEL and timeout > 0 and time_cost > timeout:
             logger.warn(
                 f"[{self.name()}] {message.context.get_task().id} task timeout after {time_cost} seconds.")

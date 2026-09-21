@@ -169,6 +169,69 @@ class ContinuousExecutor:
         if max_cost is None:
             return False
         return self.total_cost >= max_cost
+
+    @staticmethod
+    def _trajectory_establishes_completion(trajectory: Any) -> bool:
+        """Return whether the authoritative action ledger ends terminally.
+
+        A ``TaskResponse`` trajectory can contain transport placeholders such
+        as ``content=None`` after a real action.  Those entries are not agent
+        turns.  Conversely, a terminal text action followed by another tool
+        action is no longer terminal.  Use the last meaningful action so the
+        continuous runner stops exactly when the agent declares completion,
+        instead of relying on response-text heuristics.
+        """
+
+        if not isinstance(trajectory, list) or not trajectory:
+            return False
+        last_meaningful_action: Dict[str, Any] | None = None
+        for step in trajectory:
+            if not isinstance(step, dict):
+                continue
+            action = step.get("action")
+            if not isinstance(action, dict):
+                continue
+            content = action.get("content")
+            meaningful_content = bool(
+                isinstance(content, str)
+                and content.strip()
+                and content.strip().casefold() not in {"none", "null"}
+            )
+            tool_calls = action.get("tool_calls")
+            has_tool_calls = bool(
+                isinstance(tool_calls, (list, tuple)) and tool_calls
+            )
+            if meaningful_content or has_tool_calls:
+                last_meaningful_action = action
+        if last_meaningful_action is None:
+            return False
+        finished = last_meaningful_action.get("is_agent_finished")
+        terminal = finished is True or (
+            isinstance(finished, str)
+            and finished.strip().casefold() == "true"
+        )
+        tool_calls = last_meaningful_action.get("tool_calls")
+        return bool(
+            terminal
+            and not (isinstance(tool_calls, (list, tuple)) and tool_calls)
+        )
+
+    @staticmethod
+    def _response_can_signal_completion(response: Any) -> bool:
+        """Exclude empty placeholders and runtime failures from heuristics."""
+
+        if not isinstance(response, str):
+            return False
+        normalized = " ".join(response.casefold().split())
+        if normalized in {"", "none", "null"}:
+            return False
+        failure_markers = (
+            "task fail, cause:",
+            "failed to call llm model",
+            "llm error",
+            "rate limit exceeded",
+        )
+        return not any(marker in normalized for marker in failure_markers)
     
     async def run_iteration(
         self,
@@ -233,14 +296,41 @@ class ContinuousExecutor:
             else:
                 response = await self.agent_executor.chat(prompt, **chat_kwargs)
 
+            task_response = getattr(self.agent_executor, "last_task_response", None)
+            trajectory = getattr(task_response, "trajectory", None)
+            has_task_response_trajectory = bool(
+                isinstance(trajectory, list) and trajectory
+            )
+            trajectory_completed = self._trajectory_establishes_completion(
+                trajectory
+            )
+
             # Check for completion signal (only check if response is string)
             is_complete = False
             if completion_signal and isinstance(response, str) and completion_signal.lower() in response.lower():
                 is_complete = True
                 self.console.print(f"[green]✅ ({iteration}) Completion signal detected![/green]")
 
-            # Smart task completion detection (only after first iteration)
-            if not is_complete and isinstance(response, str) and iteration == 1:
+            if trajectory_completed:
+                is_complete = True
+                self.console.print(
+                    f"[green]✅ ({iteration}) Task completed - terminal "
+                    "TaskResponse action observed![/green]"
+                )
+
+            # Text heuristics are a legacy fallback only.  When TaskResponse
+            # supplies an action ledger, an unfinished tool turn or runtime
+            # placeholder must never be promoted to completion by prose or
+            # repetition similarity.
+            response_can_signal_completion = self._response_can_signal_completion(
+                response
+            )
+            if (
+                not is_complete
+                and not has_task_response_trajectory
+                and response_can_signal_completion
+                and iteration == 1
+            ):
                 # Check if agent gave a definitive answer (not asking questions or saying it will try)
                 normalized_response = response.lower()
 
@@ -309,7 +399,11 @@ class ContinuousExecutor:
                     self.console.print(f"[green]✅ ({iteration}) Task completed - agent gave definitive {completion_reason}![/green]")
 
             # Intelligent repetition detection: Check if agent is repeating the same answer
-            if not is_complete and isinstance(response, str):
+            if (
+                not is_complete
+                and not has_task_response_trajectory
+                and response_can_signal_completion
+            ):
                 # Normalize response for comparison (remove extra whitespace, lowercase)
                 normalized_response = " ".join(response.lower().split())
 
@@ -367,11 +461,31 @@ class ContinuousExecutor:
                 "response": response,
                 "cost": cost,
                 "completed": is_complete and bool(task_succeeded),
-                "immediate_stop": is_complete and bool(task_succeeded) and iteration == 1,
+                # A terminal TaskResponse is authoritative at every iteration,
+                # but a failed or interrupted task must never become success.
+                "immediate_stop": bool(task_succeeded) and (
+                    trajectory_completed or (is_complete and iteration == 1)
+                ),
                 "success": bool(task_succeeded),
             }
             if task_interrupted:
                 result["termination_status"] = "cancelled"
+            activation_evidence = getattr(
+                self.agent_executor,
+                "last_skill_activation_evidence",
+                (),
+            )
+            if activation_evidence:
+                result["skill_activation_evidence"] = to_serializable(
+                    activation_evidence
+                )
+            llm_usage = getattr(self.agent_executor, "last_llm_usage", None)
+            if (
+                isinstance(llm_usage, dict)
+                and llm_usage.get("coverage_complete") is True
+                and llm_usage.get("ledger_consistent") is True
+            ):
+                result["llm_usage"] = to_serializable(llm_usage)
             return self._attach_task_response_evidence(result, task_response)
             
         except Exception as e:

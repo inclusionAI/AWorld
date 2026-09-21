@@ -18,7 +18,12 @@ from aworld.core.context.amni import AmniConfigFactory
 from aworld.core.context.base import Context
 from aworld.core.context.session import Session
 from aworld.core.task import Task, TaskResponse, Runner
-from aworld.core.tool.base import Tool, AsyncTool, maybe_await
+from aworld.core.tool.base import (
+    Tool,
+    AsyncTool,
+    maybe_await,
+    release_runtime_tool_call_budget,
+)
 from aworld.logs.util import logger
 from aworld.runners.hook.hooks import HookPoint
 from aworld.runners.hook.utils import run_hooks
@@ -68,6 +73,7 @@ class TaskRunner(Runner):
             'use_demon', False)
         self._exception = None
         self.start_time = time.time()
+        self._timeout_started_at = time.monotonic()
         self.step_agent_counter = {}
         if task.conf.get("run_mode") == TaskRunMode.INTERACTIVE and self.task.agent:
             self.task.agent.wait_tool_result = True
@@ -79,11 +85,23 @@ class TaskRunner(Runner):
             for agent_id, agent in agents.items():
                 agent.conf.llm_config.llm_stream_call = True
 
+    def timeout_elapsed_seconds(self) -> float:
+        """Measure the runner's duration budget independently of wall time.
+
+        The execution clock is reset by pre_run on the worker that runs the
+        task. Keep start_time as the wall-clock timestamp used by reports.
+        """
+        return time.monotonic() - self._timeout_started_at
+
     async def pre_run(self):
         # Sandbox tool discovery and event-driven execution must share the same
         # deterministic built-in registration boundary.  Recursive import scanning
         # is intentionally best-effort and may skip MCP during package bootstrap.
         aworld.tools.ensure_builtin_tools_registered()
+        # Runners may be constructed on a different host before dispatch.
+        # Start the duration budget here so it covers bootstrap and execution,
+        # without comparing monotonic clock epochs across worker hosts.
+        self._timeout_started_at = time.monotonic()
         task = self.task
         self.swarm = task.swarm
         self.input = task.input
@@ -230,6 +248,9 @@ class TaskRunner(Runner):
                 pass
         except Exception as e:
             logger.warning(f"POST_TASK_CALL hook execution failed: {e}")
+        finally:
+            if self.context is not None:
+                release_runtime_tool_call_budget(self.context)
 
     @abc.abstractmethod
     async def do_run(self, context: Context = None) -> TaskResponse:

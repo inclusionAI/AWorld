@@ -73,7 +73,12 @@ def sanitize_text(value: Any, *, max_chars: int | None = None) -> str:
     return text
 
 
-def sanitize_source_text(value: Any, *, max_chars: int | None = None) -> str:
+def sanitize_source_text(
+    value: Any,
+    *,
+    max_chars: int | None = None,
+    preserve_format: bool = False,
+) -> str:
     """Sanitize bounded source code without destroying executable expressions.
 
     Candidate repair packages are already generated artifacts, but can still
@@ -91,9 +96,15 @@ def sanitize_source_text(value: Any, *, max_chars: int | None = None) -> str:
         text = pattern.sub("<LOCAL_PATH>", text)
     for pattern in _UNTRUSTED_INSTRUCTION_PATTERNS:
         text = pattern.sub("<UNTRUSTED_INSTRUCTION>", text)
-    text = _normalize_control_chars(text).strip()
+    text = _normalize_control_chars(
+        text,
+        preserve_carriage_return=preserve_format,
+    )
+    if not preserve_format:
+        text = text.strip()
     if max_chars is not None and len(text) > max_chars:
-        return text[: max_chars - 1].rstrip() + "…"
+        prefix = text[: max_chars - 1]
+        return (prefix if preserve_format else prefix.rstrip()) + "…"
     return text
 
 
@@ -160,6 +171,13 @@ def _project_public_diagnostic(
     max_chars: int,
     max_depth: int,
 ) -> Any:
+    source_behavior_proof = _source_behavior_proof_public_projection(value)
+    if source_behavior_proof is not None:
+        # Source-behavior proofs are executable repair feedback.  Their useful
+        # fields are boolean operation results and symbolic operation names,
+        # so retain that allowlisted view even when the proof is nested below
+        # the generic diagnostic depth budget.
+        return source_behavior_proof
     typed_recovery = _typed_recovery_public_projection(value)
     if typed_recovery is not None:
         return typed_recovery
@@ -250,6 +268,65 @@ def _project_public_diagnostic(
         "type": f"{type(value).__module__}.{type(value).__qualname__}",
         "fingerprint": _stable_public_fingerprint(value),
     }
+
+
+def _source_behavior_proof_public_projection(
+    value: Any,
+) -> Mapping[str, Any] | None:
+    """Return a bounded, payload-free view of a static source proof."""
+
+    if not isinstance(value, Mapping) or value.get("schema_version") != (
+        "aworld.self_evolve.source_behavior_proof.v1"
+    ):
+        return None
+
+    projected: dict[str, Any] = {
+        "schema_version": "aworld.self_evolve.source_behavior_proof.v1",
+        "proven": value.get("proven") is True,
+    }
+    for key in (
+        "analyzer",
+        "expected_behavior",
+        "predicate",
+        "proof_fingerprint",
+        "path",
+    ):
+        item = value.get(key)
+        if isinstance(item, str) and item.strip():
+            projected[key] = sanitize_text(item, max_chars=240)
+
+    operation_status = value.get("operation_status")
+    if isinstance(operation_status, Mapping):
+        projected["operation_status"] = {
+            sanitize_text(str(operation), max_chars=120): status
+            for operation, status in list(operation_status.items())[:32]
+            if isinstance(status, bool)
+        }
+    for key in (
+        "missing_operations",
+        "repair_guidance",
+        "unsupported_boundary_kinds",
+    ):
+        items = value.get(key)
+        if isinstance(items, (list, tuple)):
+            projected[key] = [
+                sanitize_text(item, max_chars=240)
+                for item in items[:32]
+                if isinstance(item, str) and item.strip()
+            ]
+
+    boundaries = value.get("unsupported_boundaries")
+    if isinstance(boundaries, (list, tuple)):
+        kinds = [
+            boundary.get("kind")
+            for boundary in boundaries[:32]
+            if isinstance(boundary, Mapping)
+            and isinstance(boundary.get("kind"), str)
+            and boundary.get("kind", "").strip()
+        ]
+        if kinds:
+            projected["unsupported_boundary_kinds"] = list(dict.fromkeys(kinds))
+    return projected
 
 
 def _typed_recovery_public_projection(
@@ -384,7 +461,11 @@ def _typed_repair_conformance_public_projection(
     # its private construction path.  Projection is invoked only after module
     # initialization, so this keeps the dependency boundary acyclic.
     from aworld.self_evolve.repair_conformance import (
+        ArtifactLifecycleConstraint,
         FixtureDerivedProbeConstraint,
+        RuntimeArtifactConstraint,
+        RuntimeResponseConstraint,
+        RuntimeRouteConstraint,
     )
     from aworld.self_evolve.schema_diagnostics import (
         SchemaFieldRepairConstraint,
@@ -434,7 +515,13 @@ def _typed_repair_conformance_public_projection(
         }
 
     add_text("focus_candidate_id", max_chars=160)
+    add_text("contract_identity", max_chars=160)
     add_text_sequence("failure_codes", max_items=100, max_chars=160)
+    add_text_sequence(
+        "required_runtime_transitions",
+        max_items=100,
+        max_chars=240,
+    )
     if "interaction_progress" in raw:
         interaction_progress = raw.get("interaction_progress")
         if (
@@ -451,6 +538,8 @@ def _typed_repair_conformance_public_projection(
     add_text_mapping("base_branch_fingerprints", max_items=64)
     add_text_mapping("base_fixture_selector_fingerprints", max_items=64)
     add_text("manifest_path", max_chars=240)
+    add_text("compiler_path", max_chars=240)
+    add_text_sequence("runtime_paths", max_items=64, max_chars=240)
 
     if "exact_probe" in raw:
         exact_probe = raw.get("exact_probe")
@@ -511,6 +600,14 @@ def _typed_repair_conformance_public_projection(
             raise ValueError("public repair contract exact_probe must be a mapping")
 
     add_text_sequence("late_observed_operations", max_items=64, max_chars=240)
+    if "requires_compiler_fixture_reconstruction" in raw:
+        required = raw.get("requires_compiler_fixture_reconstruction")
+        if not isinstance(required, bool):
+            raise ValueError(
+                "public repair contract "
+                "requires_compiler_fixture_reconstruction must be boolean"
+            )
+        projected["requires_compiler_fixture_reconstruction"] = required
     if "requires_fixture_derived_probe" in raw:
         required = raw.get("requires_fixture_derived_probe")
         if not isinstance(required, bool):
@@ -554,6 +651,62 @@ def _typed_repair_conformance_public_projection(
             constraint = SchemaFieldRepairConstraint.from_dict(item)
             public_schema_constraints.append(constraint.to_dict())
         projected["schema_field_constraints"] = public_schema_constraints
+
+    if "runtime_response_constraints" in raw:
+        constraints = raw.get("runtime_response_constraints")
+        if not isinstance(constraints, (list, tuple)) or len(constraints) > 64:
+            raise ValueError("public runtime response constraints must be bounded")
+        public_runtime_constraints: list[dict[str, object]] = []
+        for item in constraints:
+            if not isinstance(item, Mapping):
+                raise ValueError(
+                    "public runtime response constraint must be a mapping"
+                )
+            constraint = RuntimeResponseConstraint.from_dict(item)
+            public_runtime_constraints.append(constraint.to_dict())
+        projected["runtime_response_constraints"] = (
+            public_runtime_constraints
+        )
+    if "runtime_route_constraints" in raw:
+        constraints = raw.get("runtime_route_constraints")
+        if not isinstance(constraints, (list, tuple)) or len(constraints) > 64:
+            raise ValueError("public runtime route constraints must be bounded")
+        public_route_constraints: list[dict[str, object]] = []
+        for item in constraints:
+            if not isinstance(item, Mapping):
+                raise ValueError(
+                    "public runtime route constraint must be a mapping"
+                )
+            constraint = RuntimeRouteConstraint.from_dict(item)
+            public_route_constraints.append(constraint.to_dict())
+        projected["runtime_route_constraints"] = public_route_constraints
+    if "runtime_artifact_constraints" in raw:
+        constraints = raw.get("runtime_artifact_constraints")
+        if not isinstance(constraints, (list, tuple)) or len(constraints) > 64:
+            raise ValueError("public runtime artifact constraints must be bounded")
+        public_artifact_constraints: list[dict[str, object]] = []
+        for item in constraints:
+            if not isinstance(item, Mapping):
+                raise ValueError(
+                    "public runtime artifact constraint must be a mapping"
+                )
+            constraint = RuntimeArtifactConstraint.from_dict(item)
+            public_artifact_constraints.append(constraint.to_dict())
+        projected["runtime_artifact_constraints"] = (
+            public_artifact_constraints
+        )
+    if "artifact_lifecycle_constraint" in raw:
+        raw_constraint = raw.get("artifact_lifecycle_constraint")
+        if raw_constraint is None:
+            projected["artifact_lifecycle_constraint"] = None
+        elif isinstance(raw_constraint, Mapping):
+            projected["artifact_lifecycle_constraint"] = (
+                ArtifactLifecycleConstraint.from_dict(raw_constraint).to_dict()
+            )
+        else:
+            raise ValueError(
+                "public artifact lifecycle constraint must be a mapping"
+            )
     return projected
 
 
@@ -792,8 +945,19 @@ def _looks_private_path(value: str) -> bool:
     )
 
 
-def _normalize_control_chars(value: str) -> str:
+def _normalize_control_chars(
+    value: str,
+    *,
+    preserve_carriage_return: bool = False,
+) -> str:
     return "".join(
-        character if character == "\n" or character == "\t" or ord(character) >= 32 else " "
+        character
+        if (
+            character == "\n"
+            or character == "\t"
+            or (preserve_carriage_return and character == "\r")
+            or ord(character) >= 32
+        )
+        else " "
         for character in value
     )

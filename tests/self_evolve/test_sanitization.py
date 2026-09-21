@@ -61,6 +61,14 @@ def test_source_sanitizer_redacts_short_explicit_auth_credentials() -> None:
     assert "Bearer token authentication" in sanitized
 
 
+def test_source_sanitizer_can_preserve_verified_file_format() -> None:
+    source = "def replay():\r\n    return True\r\n"
+
+    sanitized = sanitize_source_text(source, preserve_format=True)
+
+    assert sanitized == source
+
+
 def test_secret_sanitizer_distinguishes_auth_syntax_from_documentation() -> None:
     documentation = (
         "Bearer syntax uses one scheme token.\n"
@@ -142,3 +150,30 @@ def test_public_projection_preserves_deep_typed_constraint_and_recovery_trace() 
     assert leaf["schema_field_constraints"] == [constraint.to_dict()]
     assert leaf["constraint_recovery_trace"]["attempt_count"] == 3
     assert "SECRET" not in json.dumps(projected)
+
+
+def test_public_projection_preserves_deep_source_behavior_operation_feedback() -> None:
+    proof = {
+        "schema_version": "aworld.self_evolve.source_behavior_proof.v1",
+        "analyzer": "python_ast_bounded_dataflow",
+        "expected_behavior": "json_sidecar_record_value_projector",
+        "predicate": "environment.AWORLD_REPLAY_RESPONSE_INDEX.consumer",
+        "proven": False,
+        "operation_status": {
+            "read_environment_binding_as_path": True,
+            "project_record_value_field_directly": False,
+        },
+        "missing_operations": ["project_record_value_field_directly"],
+        "repair_guidance": ["project each record value field explicitly"],
+        "environment_sources": [{"source": "PRIVATE_PAYLOAD"}],
+    }
+    nested = {"next": {"next": {"source_behavior_proofs": [proof]}}}
+
+    projected = public_diagnostic_projection(nested, max_depth=4)
+    leaf = projected["next"]["next"]["source_behavior_proofs"][0]
+
+    assert leaf["operation_status"] == proof["operation_status"]
+    assert leaf["missing_operations"] == [
+        "project_record_value_field_directly"
+    ]
+    assert "PRIVATE_PAYLOAD" not in json.dumps(projected)

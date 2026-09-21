@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import hashlib
 import json
 import os
 import sys
@@ -57,6 +58,269 @@ def _write_outcome_sidecar(path: str, payload: dict) -> None:
             pass
     finally:
         temporary_path.unlink(missing_ok=True)
+
+
+_SELF_EVOLVE_TASK_RESPONSE_SCHEMA = "aworld.self_evolve.task_response.v1"
+_TASK_RESPONSE_CAPABILITY_FD_ENV = (
+    "AWORLD_SELF_EVOLVE_TASK_RESPONSE_CAPABILITY_FD"
+)
+_TASK_RESPONSE_CAPABILITY_MAX_BYTES_ENV = (
+    "AWORLD_SELF_EVOLVE_TASK_RESPONSE_CAPABILITY_MAX_BYTES"
+)
+_DEFAULT_TASK_RESPONSE_CAPABILITY_MAX_BYTES = 8_000_000
+
+
+def _bounded_text(value: object, *, max_chars: int) -> str:
+    text = value if isinstance(value, str) else str(value)
+    if len(text) <= max_chars:
+        return text
+    head = max(max_chars * 3 // 4, 1)
+    tail = max(max_chars - head, 0)
+    return text[:head] + ("\n…<bounded>…\n" if tail else "") + text[-tail:]
+
+
+def _complete_llm_usage_projection(value: object) -> dict | None:
+    if not isinstance(value, dict):
+        return None
+    call_count = value.get("call_count")
+    usage_call_count = value.get("usage_call_count")
+    total_tokens = value.get("total_tokens")
+    if (
+        value.get("schema_version") != "aworld.llm_usage_summary.v1"
+        or value.get("coverage_complete") is not True
+        or value.get("ledger_consistent") is not True
+        or isinstance(call_count, bool)
+        or not isinstance(call_count, int)
+        or call_count <= 0
+        or usage_call_count != call_count
+        or isinstance(total_tokens, bool)
+        or not isinstance(total_tokens, int)
+        or total_tokens < 0
+    ):
+        return None
+    projected = {
+        "schema_version": "aworld.llm_usage_summary.v1",
+        "call_count": call_count,
+        "usage_call_count": usage_call_count,
+        "total_tokens": total_tokens,
+        "coverage_complete": True,
+        "ledger_consistent": True,
+    }
+    iteration_count = value.get("iteration_count")
+    if (
+        not isinstance(iteration_count, bool)
+        and isinstance(iteration_count, int)
+        and iteration_count > 0
+    ):
+        projected["iteration_count"] = iteration_count
+    input_tokens = value.get("input_tokens")
+    output_tokens = value.get("output_tokens")
+    if (
+        not isinstance(input_tokens, bool)
+        and isinstance(input_tokens, int)
+        and input_tokens >= 0
+        and not isinstance(output_tokens, bool)
+        and isinstance(output_tokens, int)
+        and output_tokens >= 0
+    ):
+        projected["input_tokens"] = input_tokens
+        projected["output_tokens"] = output_tokens
+    return projected
+
+
+def _terminal_trajectory_projection(
+    item: dict,
+    *,
+    text_budget: int,
+) -> dict:
+    projected: dict[str, object] = {}
+    meta = item.get("meta")
+    if isinstance(meta, dict):
+        projected["meta"] = {
+            str(key): value
+            for key, value in meta.items()
+            if isinstance(value, (str, int, float, bool)) or value is None
+        }
+    state = item.get("state")
+    if isinstance(state, dict) and "input" in state:
+        projected["state"] = {
+            "input": _bounded_text(
+                state.get("input"), max_chars=max(text_budget // 4, 256)
+            )
+        }
+    action = item.get("action")
+    if isinstance(action, dict):
+        projected_action: dict[str, object] = {
+            "content": _bounded_text(
+                action.get("content", ""), max_chars=max(text_budget, 1_024)
+            )
+        }
+        if "is_agent_finished" in action:
+            projected_action["is_agent_finished"] = action["is_agent_finished"]
+        tool_calls = action.get("tool_calls")
+        if isinstance(tool_calls, (list, tuple)):
+            projected_action["tool_call_count"] = len(tool_calls)
+            # Preserve pending intent without retaining tool identity or arguments.
+            # Completion checks distinguish a nonempty call list from a final answer.
+            projected_action["tool_calls"] = [{}] if tool_calls else []
+        projected["action"] = projected_action
+    reward = item.get("reward")
+    if isinstance(reward, dict):
+        projected["reward"] = {
+            str(key): value
+            for key, value in reward.items()
+            if isinstance(value, (str, int, float, bool)) or value is None
+        }
+    return projected or {"action": {"content": "task response completed"}}
+
+
+def _bounded_task_response_capability_payload(
+    sidecar: dict,
+    *,
+    max_bytes: int,
+) -> dict:
+    encoded = json.dumps(
+        sidecar,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    if len(encoded) <= max_bytes:
+        return sidecar
+    trajectory = sidecar.get("trajectory")
+    terminal = next(
+        (
+            item
+            for item in reversed(trajectory)
+            if isinstance(item, dict)
+        ),
+        {"action": {"content": "task response completed"}},
+    ) if isinstance(trajectory, list) else {
+        "action": {"content": "task response completed"}
+    }
+    # The capability transports a completion projection, not the full replay
+    # transcript. The supervisor already captures stdout and persists evidence;
+    # keeping the pipe payload bounded prevents a large trajectory from closing
+    # the parent reader and turning a successful baseline into BrokenPipeError.
+    text_budget = min(max(max_bytes // 4, 1_024), 256_000)
+    compact = {
+        "schema_version": sidecar.get("schema_version"),
+        "trajectory_capture_mode": "task_response",
+        "trajectory": [
+            _terminal_trajectory_projection(terminal, text_budget=text_budget)
+        ],
+        "trajectory_compacted": True,
+        "trajectory_original_count": (
+            len(trajectory) if isinstance(trajectory, list) else 0
+        ),
+        "trajectory_digest": "sha256:" + hashlib.sha256(encoded).hexdigest(),
+    }
+    activation_evidence = sidecar.get("skill_activation_evidence")
+    if isinstance(activation_evidence, list):
+        compact["skill_activation_evidence"] = [
+            item for item in activation_evidence if isinstance(item, dict)
+        ][:32]
+    llm_usage = _complete_llm_usage_projection(sidecar.get("llm_usage"))
+    if llm_usage is not None:
+        compact["llm_usage"] = llm_usage
+    compact_encoded = json.dumps(
+        compact,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    if len(compact_encoded) > max_bytes:
+        projected_action = compact["trajectory"][0].get("action", {})
+        compact["trajectory"][0] = {
+            "action": {
+                **projected_action,
+                "content": _bounded_text(
+                    terminal.get("action", {}).get("content", "")
+                    if isinstance(terminal.get("action"), dict)
+                    else "",
+                    max_chars=max(min(max_bytes // 8, 16_000), 256),
+                ),
+            }
+        }
+    final_encoded = json.dumps(
+        compact,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    if len(final_encoded) > max_bytes:
+        raise RuntimeError("task-response capability projection exceeds its byte limit")
+    return compact
+
+
+def _consume_task_response_capability() -> int | None:
+    raw_fd = os.environ.pop(_TASK_RESPONSE_CAPABILITY_FD_ENV, None)
+    if raw_fd is None:
+        return None
+    try:
+        descriptor = int(raw_fd)
+        if descriptor < 0:
+            raise ValueError
+    except ValueError as exc:
+        raise RuntimeError("invalid task-response capability fd") from exc
+    os.set_inheritable(descriptor, False)
+    return descriptor
+
+
+def _write_self_evolve_task_response(
+    payload: dict,
+    *,
+    capability_fd: int | None = None,
+) -> None:
+    """Publish final task output atomically for the replay supervisor."""
+
+    raw_path = os.environ.get("AWORLD_SELF_EVOLVE_TASK_RESPONSE_PATH")
+    if not raw_path:
+        return
+    destination = Path(raw_path)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    temporary = destination.with_name(
+        f".{destination.name}.{os.getpid()}.tmp"
+    )
+    sidecar = {
+        "schema_version": _SELF_EVOLVE_TASK_RESPONSE_SCHEMA,
+        **payload,
+    }
+    if capability_fd is not None:
+        raw_limit = os.environ.get(_TASK_RESPONSE_CAPABILITY_MAX_BYTES_ENV)
+        try:
+            max_bytes = int(raw_limit) if raw_limit else (
+                _DEFAULT_TASK_RESPONSE_CAPABILITY_MAX_BYTES
+            )
+        except ValueError as exc:
+            raise RuntimeError("invalid task-response capability byte limit") from exc
+        if max_bytes < 1_024:
+            raise RuntimeError("task-response capability byte limit is too small")
+        sidecar = _bounded_task_response_capability_payload(
+            sidecar,
+            max_bytes=max_bytes,
+        )
+        encoded = json.dumps(
+            sidecar,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        try:
+            offset = 0
+            while offset < len(encoded):
+                written = os.write(capability_fd, encoded[offset:])
+                if written <= 0:
+                    raise OSError("task-response capability write stalled")
+                offset += written
+        finally:
+            os.close(capability_fd)
+        return
+    temporary.write_text(
+        json.dumps(sidecar, ensure_ascii=False) + "\n",
+        encoding="utf-8",
+    )
+    os.replace(temporary, destination)
 
 
 def _register_run_options(parser: argparse.ArgumentParser) -> None:
@@ -184,6 +448,7 @@ class RunTopLevelCommand:
             coerce_direct_run_outcome,
         )
 
+        task_response_capability = _consume_task_response_capability()
         try:
             bootstrap_runtime(
                 env_file=args.env_file,
@@ -203,6 +468,7 @@ class RunTopLevelCommand:
                 args=args,
                 agent_name=getattr(args, "agent", None) or "Aworld",
                 outcome=outcome,
+                task_response_capability=task_response_capability,
             )
 
         local_dirs = _resolve_agent_dirs(args.agent_dir)
@@ -225,6 +491,7 @@ class RunTopLevelCommand:
                 args=args,
                 agent_name=getattr(args, "agent", None) or "unknown",
                 outcome=outcome,
+                task_response_capability=task_response_capability,
             )
 
         checkpoint_receipt = self._write_initial_atif_checkpoint(
@@ -241,6 +508,7 @@ class RunTopLevelCommand:
                 args=args,
                 agent_name=agent_name,
                 outcome=outcome,
+                task_response_capability=task_response_capability,
             )
 
         try:
@@ -299,6 +567,7 @@ class RunTopLevelCommand:
             args=args,
             agent_name=agent_name,
             outcome=outcome,
+            task_response_capability=task_response_capability,
         )
 
     @staticmethod
@@ -360,7 +629,13 @@ class RunTopLevelCommand:
         )
 
     @staticmethod
-    def _finalize_outcome(*, args, agent_name: str, outcome) -> int:
+    def _finalize_outcome(
+        *,
+        args,
+        agent_name: str,
+        outcome,
+        task_response_capability: int | None = None,
+    ) -> int:
         from aworld_cli.atif import (
             AtifExportReceipt,
             AtifExportStatus,
@@ -388,6 +663,19 @@ class RunTopLevelCommand:
                 "action_count": outcome.action_count,
             }
         )
+
+        task_response_path = os.environ.get(
+            "AWORLD_SELF_EVOLVE_TASK_RESPONSE_PATH"
+        )
+        if task_response_path:
+            _write_self_evolve_task_response(
+                trajectory_payload,
+                capability_fd=task_response_capability,
+            )
+            task_response_capability = None
+        elif task_response_capability is not None:
+            os.close(task_response_capability)
+            task_response_capability = None
 
         if getattr(args, "emit_trajectory", False):
             print(

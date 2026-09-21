@@ -72,12 +72,10 @@ class TrajectoryEvalJudgeOutput(BaseModel):
 
 
 def normalize_trajectory_judge_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
-    if "dimensions" not in payload:
-        flattened = dict(payload)
-    else:
-        flattened = dict(payload)
-        if "score" not in flattened and "weighted_score" in flattened:
-            flattened["score"] = flattened["weighted_score"]
+    flattened = dict(payload)
+    if "score" not in flattened and "weighted_score" in flattened:
+        flattened["score"] = flattened["weighted_score"]
+    if "dimensions" in payload:
         dimensions = payload.get("dimensions") or {}
         for metric_name in (
             "A1_groundedness",
@@ -92,6 +90,22 @@ def normalize_trajectory_judge_payload(payload: Mapping[str, Any]) -> dict[str, 
             metric_payload = dimensions.get(metric_name) if isinstance(dimensions, Mapping) else None
             if isinstance(metric_payload, Mapping) and "score" in metric_payload:
                 flattened[metric_name] = metric_payload["score"]
+            elif isinstance(metric_payload, (int, float)) and not isinstance(
+                metric_payload, bool
+            ):
+                flattened[metric_name] = metric_payload
+
+    verdict = flattened.get("verdict")
+    if isinstance(verdict, str):
+        canonical_verdicts = {
+            "excellent": "Excellent",
+            "pass": "Pass",
+            "marginal": "Marginal",
+            "fail": "Fail",
+        }
+        normalized_verdict = canonical_verdicts.get(verdict.strip().casefold())
+        if normalized_verdict is not None:
+            flattened["verdict"] = normalized_verdict
 
     evidence_quality = flattened.get("evidence_quality")
     if isinstance(evidence_quality, Mapping):
@@ -104,6 +118,21 @@ def normalize_trajectory_judge_payload(payload: Mapping[str, Any]) -> dict[str, 
         ):
             if metric_name not in flattened and metric_name in evidence_quality:
                 flattened[metric_name] = evidence_quality[metric_name]
+
+    constraints = flattened.get("evidence_repair_constraints")
+    if isinstance(constraints, list):
+        normalized_constraints: list[dict[str, Any]] = []
+        for constraint in constraints:
+            if not isinstance(constraint, Mapping):
+                continue
+            try:
+                normalized = EvidenceRepairConstraintOutput.model_validate(
+                    dict(constraint)
+                )
+            except ValueError:
+                continue
+            normalized_constraints.append(normalized.model_dump(mode="json"))
+        flattened["evidence_repair_constraints"] = normalized_constraints
     return flattened
 
 

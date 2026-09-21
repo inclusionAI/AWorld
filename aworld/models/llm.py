@@ -842,6 +842,8 @@ class LLMModel:
             merged.usage = self._safe_copy(next_response.usage)
         if self._usage_has_meaningful_value(getattr(next_response, "raw_usage", None)):
             merged.raw_usage = self._safe_copy(next_response.raw_usage)
+        if getattr(next_response, "usage_reported", False) is True:
+            merged.usage_reported = True
         if message is not None:
             merged.message = message
         return merged
@@ -1769,6 +1771,7 @@ class LLMModel:
             "request_projection": "aworld.standard.model_boundary.v1",
             "provider_prepared_request_match": None,
             "request_id": request_id,
+            "record_kind": "model_attempt",
             "provider_request_id": None,
             "task_id": context.task_id,
             "agent_id": agent_id,
@@ -1776,7 +1779,15 @@ class LLMModel:
             "provider_name": self.provider_name,
             "status": "in_progress",
             "started_at": started_at,
+            "finished_at": None,
             "request": request,
+            "response": None,
+            "usage_normalized": {},
+            "usage_raw": {},
+            "usage_reported": False,
+            "single_attempt_proven": bool(
+                getattr(self.provider, "authoritative_usage_single_attempt", False)
+            ),
             "context_observe": observe_payload,
             "attempt": 1,
         }
@@ -1941,9 +1952,13 @@ class LLMModel:
                     "finish_reason": getattr(response, "finish_reason", None),
                 }
                 updated["usage_normalized"] = usage_normalized
-                updated["usage_available"] = bool(getattr(response, "raw_usage", None))
+                provider_usage = getattr(response, "raw_usage", None)
+                updated["usage_available"] = bool(provider_usage)
                 updated["usage_raw"] = self._safe_copy(
-                    getattr(response, "raw_usage", None) or usage_normalized
+                    provider_usage if isinstance(provider_usage, dict) else {}
+                )
+                updated["usage_reported"] = (
+                    getattr(response, "usage_reported", False) is True
                 )
                 updated["cache_usage_receipt"] = build_cache_usage_receipt(
                     raw_usage=updated["usage_raw"],

@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import asyncio
 import os
+import subprocess
+import sys
+import time
 from dataclasses import dataclass
 
 import pytest
@@ -22,6 +25,10 @@ from aworld.self_evolve.evaluation import (
     estimate_replay_cost,
     evaluate_baseline_and_candidate,
 )
+from aworld.self_evolve.evaluation_reporting import (
+    _summary_with_replay_evidence_metrics,
+)
+from aworld.self_evolve.replay import ReplayVariantResult
 from aworld.self_evolve.trace_pack import build_trace_pack
 from aworld.self_evolve.types import (
     CandidateVariant,
@@ -49,6 +56,74 @@ def _candidate(candidate_id: str = "candidate") -> CandidateVariant:
         content="# Demo\n",
         rationale="test candidate",
     )
+
+
+def test_replay_merge_projects_independent_deterministic_verification() -> None:
+    summary = EvaluationSummary(
+        variant_id="candidate",
+        dataset_split="held_out",
+        metrics={
+            "evaluator_mode": "aworld_trajectory_evaluator",
+            "judge_gate_passed": True,
+            "judge_estimated_input_tokens_total": 500,
+        },
+    )
+    replay = ReplayVariantResult(
+        variant_id="candidate",
+        status="succeeded",
+        trajectory=[],
+        metrics={
+            "repetition_count": 3,
+            "successful_repetition_count": 3,
+            "failed_repetition_count": 0,
+            "blocked_repetition_count": 0,
+            "evidence_bundle_valid": True,
+            "evidence_manifest_valid": True,
+            "evidence_runtime_policy_authoritative_passed": True,
+            "total_tokens": 120,
+            "latency_ms": 40,
+        },
+    )
+
+    merged = _summary_with_replay_evidence_metrics(summary, replay)
+
+    assert merged.metrics["deterministic_verification_source"] == (
+        "paired_replay_invariants"
+    )
+    assert merged.metrics["deterministic_verification_case_count"] == 3
+    assert merged.metrics["deterministic_verification_pass_count"] == 3
+    assert merged.metrics["replay_total_tokens"] == 120
+    assert merged.metrics["replay_latency_ms"] == 40
+
+
+def test_isolated_evaluator_timeout_terminates_descendant_processes(tmp_path) -> None:
+    child_pid_path = tmp_path / "child.pid"
+    script = (
+        "import pathlib,subprocess,sys,time; "
+        "child=subprocess.Popen([sys.executable,'-c','import time; time.sleep(60)']); "
+        f"pathlib.Path({str(child_pid_path)!r}).write_text(str(child.pid)); "
+        "time.sleep(60)"
+    )
+
+    started = time.monotonic()
+    with pytest.raises(subprocess.TimeoutExpired):
+        evaluation_module._run_isolated_evaluator_process(
+            [sys.executable, "-c", script],
+            cwd=tmp_path,
+            environment=os.environ,
+            timeout_seconds=0.2,
+        )
+
+    assert time.monotonic() - started < 3.0
+    child_pid = int(child_pid_path.read_text())
+    for _ in range(20):
+        try:
+            os.kill(child_pid, 0)
+        except ProcessLookupError:
+            break
+        time.sleep(0.05)
+    else:
+        pytest.fail("evaluator descendant remained alive after process-group timeout")
 
 
 @pytest.mark.asyncio
@@ -161,6 +236,62 @@ async def test_aworld_trajectory_evaluator_backend_retries_transient_judge_parse
     assert summary.metrics["judge_success_count"] == 1
     assert summary.metrics["judge_failure_count"] == 1
     assert summary.metrics["judge_failures"][0]["type"] == "ValueError"
+    assert summary.metrics["judge_retryable_failure_count"] == 1
+
+
+@pytest.mark.asyncio
+async def test_aworld_trajectory_evaluator_backend_counts_outer_process_timeouts(
+    tmp_path,
+) -> None:
+    dataset = _dataset(
+        (
+            EvalCase(
+                case_id="task-eval",
+                input={"content": "Recover the workflow."},
+                metadata={"baseline_trajectory": [{"action": {"content": "Recovered."}}]},
+            ),
+        )
+    )
+    calls: list[dict] = []
+
+    def eventually_available_run_evaluator_source(**kwargs):
+        calls.append(kwargs)
+        if len(calls) < 3:
+            raise subprocess.TimeoutExpired(
+                cmd="trajectory-evaluator",
+                timeout=kwargs["judge_timeout_seconds"],
+            )
+        return {
+            "summary": {"trajectory-source-evaluator": {"score": {"mean": 84.0}}},
+            "gate": {"status": "pass", "metric_name": "score", "value": 84.0},
+        }
+
+    backend = AWorldTrajectoryEvaluatorBackend(
+        workspace_root=tmp_path,
+        judge_agent_name="trajectory-judge",
+        run_evaluator_source=eventually_available_run_evaluator_source,
+        judge_repetitions=1,
+        judge_failure_retries=2,
+        judge_timeout_seconds=600,
+    )
+
+    summary = await backend.evaluate_variant(
+        EvaluationRequest(variant_id="baseline", candidate=None, dataset=dataset)
+    )
+
+    assert summary.metrics["judge_attempt_count"] == 3
+    assert summary.metrics["judge_success_count"] == 1
+    assert summary.metrics["judge_failure_count"] == 2
+    assert summary.metrics["judge_timeout_count"] == 2
+    assert [call["judge_timeout_seconds"] for call in calls[:2]] == [600.0, 900.0]
+    assert calls[2]["judge_timeout_seconds"] == pytest.approx(1200.0, rel=1e-3)
+    assert summary.metrics["judge_timeout_seconds_effective_max"] == pytest.approx(
+        1200.0,
+        rel=1e-3,
+    )
+    assert [
+        failure["type"] for failure in summary.metrics["judge_failures"]
+    ] == ["TimeoutExpired", "TimeoutExpired"]
 
 
 @pytest.mark.asyncio
@@ -257,6 +388,110 @@ async def test_aworld_trajectory_evaluator_backend_aggregates_judge_repetitions(
     assert summary.metrics["judge_repetitions"] == 3
     assert summary.metrics["judge_success_count"] == 3
     assert summary.metrics["evaluator_gate_passed"] is True
+
+
+@pytest.mark.asyncio
+async def test_aworld_trajectory_evaluator_backend_preserves_report_distribution_metrics(
+    tmp_path,
+) -> None:
+    dataset = _dataset(
+        tuple(
+            EvalCase(
+                case_id=f"task-{index}",
+                input={"content": "Recover the workflow."},
+                metadata={
+                    "baseline_trajectory": [
+                        {"action": {"content": f"Recovered {index}."}}
+                    ]
+                },
+            )
+            for index in range(2)
+        )
+    )
+
+    def distribution_report(**kwargs):
+        return {
+            "summary": {
+                "trajectory-source-evaluator": {
+                    "score": {
+                        "mean": 80.0,
+                        "min": 70.0,
+                        "max": 90.0,
+                        "std": 10.0,
+                    }
+                }
+            },
+            "gate": {"status": "pass", "metric_name": "score", "value": 80.0},
+        }
+
+    backend = AWorldTrajectoryEvaluatorBackend(
+        workspace_root=tmp_path,
+        judge_agent_name="trajectory-judge",
+        run_evaluator_source=distribution_report,
+        judge_repetitions=1,
+    )
+
+    summary = await backend.evaluate_variant(
+        EvaluationRequest(variant_id="baseline", candidate=None, dataset=dataset)
+    )
+
+    assert summary.metrics["score_std"] == 10.0
+    assert summary.metrics["score_min"] == 70.0
+    assert summary.metrics["score_max"] == 90.0
+    assert summary.metrics["score_sample_count"] == 2
+
+
+def test_aworld_evaluator_metrics_preserve_ordered_case_score_samples(
+    tmp_path,
+) -> None:
+    report = {
+        "summary": {
+            "trajectory-source-evaluator": {
+                "score": {"mean": 85.0, "std": 2.0},
+            }
+        },
+        "results": [
+            {"case_id": "case-a", "metrics": {"score": {"value": 83.0}}},
+            {"case_id": "case-b", "metrics": {"score": {"value": 87.0}}},
+        ],
+        "gate": {"status": "pass", "metric_name": "score", "value": 85.0},
+    }
+
+    metrics = evaluation_module._aworld_evaluator_metrics(
+        report,
+        case_count=2,
+        input_path=tmp_path / "trajectory.log",
+    )
+
+    assert metrics["score_samples"] == [83.0, 87.0]
+
+
+def test_aworld_evaluator_metrics_flatten_repetition_score_samples(
+    tmp_path,
+) -> None:
+    reports = [
+        {
+            "summary": {
+                "trajectory-source-evaluator": {
+                    "score": {"mean": sum(scores) / len(scores)},
+                }
+            },
+            "results": [
+                {"case_id": f"case-{index}", "metrics": {"score": {"value": score}}}
+                for index, score in enumerate(scores)
+            ],
+            "gate": {"status": "pass", "metric_name": "score", "value": sum(scores) / len(scores)},
+        }
+        for scores in ([81.0, 83.0], [85.0, 87.0])
+    ]
+
+    metrics = evaluation_module._aggregate_aworld_evaluator_metrics(
+        reports,
+        case_count=2,
+        input_path=tmp_path / "trajectory.log",
+    )
+
+    assert metrics["score_samples"] == [81.0, 83.0, 85.0, 87.0]
 
 
 @pytest.mark.asyncio
@@ -402,7 +637,8 @@ async def test_aworld_trajectory_evaluator_backend_degrades_when_all_judge_attem
 
     assert summary.metrics["score"] == 0.0
     assert summary.metrics["evaluator_gate_passed"] is False
-    assert summary.metrics["deterministic_signal"] is False
+    assert "deterministic_signal" not in summary.metrics
+    assert summary.metrics["judge_gate_passed"] is False
     assert summary.metrics["judge_attempt_count"] == 3
     assert summary.metrics["judge_success_count"] == 0
     assert summary.metrics["judge_failure_count"] == 3
@@ -444,6 +680,7 @@ async def test_aworld_trajectory_evaluator_backend_times_out_hung_judge_call(tmp
     assert summary.metrics["judge_attempt_count"] == 1
     assert summary.metrics["judge_success_count"] == 0
     assert summary.metrics["judge_failure_count"] == 1
+    assert summary.metrics["judge_timeout_count"] == 1
     assert summary.metrics["judge_failures"][0]["type"] == "TimeoutError"
     assert "timed out after 0.01s" in summary.metrics["judge_failures"][0]["reason"]
 
@@ -541,6 +778,49 @@ async def test_aworld_trajectory_evaluator_backend_preserves_provider_timeout_wi
     failure = summary.metrics["judge_failures"][0]
     assert failure["reason"] == "judge call timed out during initial_judge"
     assert failure["timeout_phase"] == "initial_judge"
+
+
+@pytest.mark.asyncio
+async def test_aworld_trajectory_evaluator_backend_bounds_complete_retry_lifecycle(
+    tmp_path,
+) -> None:
+    dataset = _dataset(
+        (
+            EvalCase(
+                case_id="task-eval",
+                input={"content": "Recover the workflow."},
+                metadata={"baseline_trajectory": [{"action": {"content": "Recovered."}}]},
+            ),
+        )
+    )
+    calls = 0
+
+    async def hanging_run_evaluator_source(**kwargs):
+        nonlocal calls
+        calls += 1
+        await asyncio.sleep(1)
+
+    backend = AWorldTrajectoryEvaluatorBackend(
+        workspace_root=tmp_path,
+        judge_agent_name="trajectory-judge",
+        run_evaluator_source=hanging_run_evaluator_source,
+        judge_repetitions=1,
+        judge_failure_retries=5,
+        judge_timeout_seconds=0.05,
+        evaluation_timeout_seconds=0.08,
+    )
+
+    started = time.monotonic()
+    summary = await backend.evaluate_variant(
+        EvaluationRequest(variant_id="baseline", candidate=None, dataset=dataset)
+    )
+
+    assert time.monotonic() - started < 0.25
+    assert calls == 2
+    assert summary.metrics["evaluation_timeout_seconds"] == 0.08
+    assert summary.metrics["judge_failures"][-1]["timeout_phase"] == (
+        "evaluation_deadline"
+    )
 
 
 @pytest.mark.asyncio
@@ -835,7 +1115,7 @@ async def test_aworld_trajectory_evaluator_backend_compares_variant_trajectories
 
 
 @pytest.mark.asyncio
-async def test_aworld_trajectory_evaluator_backend_deduplicates_replay_variant_trajectories(
+async def test_aworld_trajectory_evaluator_backend_preserves_paired_case_cardinality(
     tmp_path,
 ) -> None:
     shared_baseline = [{"action": {"content": "Baseline replay."}}]
@@ -886,15 +1166,25 @@ async def test_aworld_trajectory_evaluator_backend_deduplicates_replay_variant_t
         candidate=_candidate("cand-1"),
     )
 
-    assert line_counts == [1, 2]
+    assert line_counts == [4, 4]
     assert baseline.metrics["original_case_count"] == 4
-    assert baseline.metrics["effective_case_count"] == 1
-    assert baseline.metrics["deduplicated_case_count"] == 3
-    assert baseline.metrics["command_case_count"] == 1
+    assert baseline.metrics["effective_case_count"] == 4
+    assert baseline.metrics["deduplicated_case_count"] == 0
+    assert "command_case_count" not in baseline.metrics
+    assert baseline.metrics["judge_gate_passed"] is True
     assert candidate.metrics["original_case_count"] == 4
-    assert candidate.metrics["effective_case_count"] == 2
-    assert candidate.metrics["deduplicated_case_count"] == 2
-    assert candidate.metrics["command_case_count"] == 2
+    assert candidate.metrics["effective_case_count"] == 4
+    assert candidate.metrics["deduplicated_case_count"] == 0
+    assert "command_case_count" not in candidate.metrics
+    assert candidate.metrics["judge_gate_passed"] is True
+    assert baseline.metrics["comparison_plan_fingerprint"] == candidate.metrics[
+        "comparison_plan_fingerprint"
+    ]
+    assert baseline.metrics["comparison_case_ids"] == candidate.metrics[
+        "comparison_case_ids"
+    ]
+    assert baseline.metrics["comparison_cardinality_preserved"] is True
+    assert candidate.metrics["comparison_cardinality_preserved"] is True
 
 
 @pytest.mark.asyncio
@@ -1497,6 +1787,197 @@ def test_candidate_confidence_counts_independent_held_out_members_not_repetition
     assert decision.held_out_case_count == 1
 
 
+def test_candidate_confidence_accepts_independent_multi_member_paired_replay() -> None:
+    replay_dataset = SelfEvolveDataset(
+        cases=tuple(
+            EvalCase(
+                case_id=f"held-task-{index}",
+                input="held",
+                metadata={
+                    "replay": {
+                        "source_case_id": f"held-task-{index}",
+                        "independence_unit_id": f"held-task-{index}",
+                    }
+                },
+            )
+            for index in range(1, 5)
+        ),
+        recipe=DatasetRecipe(
+            source={
+                "kind": "trajectory_log",
+                "paired_replay": True,
+                "paired_replay_dataset_schema": (
+                    "aworld.self_evolve.paired_replay_dataset.v1"
+                ),
+                "original_case_count": 4,
+                "member_replay_count": 4,
+                "held_out_member_count": 4,
+                "replay_case_count": 4,
+            },
+            split_seed="seed",
+            splits={
+                "train": [],
+                "validation": [],
+                "held_out": [f"held-task-{index}" for index in range(1, 5)],
+            },
+            held_out_case_ids=tuple(
+                f"held-task-{index}" for index in range(1, 5)
+            ),
+        ),
+    )
+
+    decision = determine_candidate_confidence(
+        dataset=replay_dataset,
+        validation_summary=EvaluationSummary(
+            variant_id="cand-1",
+            metrics={"deterministic_signal": True},
+            dataset_split="validation",
+        ),
+        held_out_summary=EvaluationSummary(
+            variant_id="cand-1",
+            metrics={"deterministic_signal": True},
+            dataset_split="held_out",
+        ),
+        min_eval_cases=30,
+    )
+
+    assert decision.confidence == "verified"
+    assert decision.verification_mode == "trajectory_set_validation"
+    assert decision.held_out_case_count == 4
+
+
+def test_candidate_confidence_rejects_inconsistent_paired_member_counts() -> None:
+    replay_dataset = SelfEvolveDataset(
+        cases=tuple(
+            EvalCase(
+                case_id=f"held-task-{index}",
+                input="held",
+                metadata={
+                    "replay": {
+                        "source_case_id": f"held-task-{index}",
+                        "independence_unit_id": f"held-task-{index}",
+                    }
+                },
+            )
+            for index in range(1, 5)
+        ),
+        recipe=DatasetRecipe(
+            source={
+                "kind": "trajectory_log",
+                "paired_replay": True,
+                "paired_replay_dataset_schema": (
+                    "aworld.self_evolve.paired_replay_dataset.v1"
+                ),
+                "original_case_count": 2,
+                "member_replay_count": 4,
+                "held_out_member_count": 4,
+                "replay_case_count": 4,
+            },
+            split_seed="seed",
+            splits={
+                "train": [],
+                "validation": [],
+                "held_out": [f"held-task-{index}" for index in range(1, 5)],
+            },
+            held_out_case_ids=tuple(
+                f"held-task-{index}" for index in range(1, 5)
+            ),
+        ),
+    )
+
+    decision = determine_candidate_confidence(
+        dataset=replay_dataset,
+        validation_summary=EvaluationSummary(
+            variant_id="cand-1",
+            metrics={"deterministic_signal": True},
+            dataset_split="validation",
+        ),
+        held_out_summary=EvaluationSummary(
+            variant_id="cand-1",
+            metrics={"deterministic_signal": True},
+            dataset_split="held_out",
+        ),
+        min_eval_cases=30,
+    )
+
+    assert decision.confidence == "limited"
+
+
+def test_candidate_confidence_rejects_source_member_crossing_splits() -> None:
+    cases = (
+        EvalCase(
+            case_id="source-a__replay_1",
+            input="train",
+            metadata={
+                "replay": {
+                    "source_case_id": "source-a",
+                    "independence_unit_id": "source-a",
+                }
+            },
+        ),
+        EvalCase(
+            case_id="source-a__replay_2",
+            input="held",
+            metadata={
+                "replay": {
+                    "source_case_id": "source-a",
+                    "independence_unit_id": "source-a",
+                }
+            },
+        ),
+        EvalCase(
+            case_id="source-b",
+            input="held",
+            metadata={
+                "replay": {
+                    "source_case_id": "source-b",
+                    "independence_unit_id": "source-b",
+                }
+            },
+        ),
+    )
+    replay_dataset = SelfEvolveDataset(
+        cases=cases,
+        recipe=DatasetRecipe(
+            source={
+                "kind": "trajectory_log",
+                "paired_replay": True,
+                "paired_replay_dataset_schema": (
+                    "aworld.self_evolve.paired_replay_dataset.v1"
+                ),
+                "original_case_count": 2,
+                "member_replay_count": 2,
+                "held_out_member_count": 2,
+                "replay_case_count": 3,
+            },
+            split_seed="seed",
+            splits={
+                "train": ["source-a__replay_1"],
+                "validation": [],
+                "held_out": ["source-a__replay_2", "source-b"],
+            },
+            held_out_case_ids=("source-a__replay_2", "source-b"),
+        ),
+    )
+
+    decision = determine_candidate_confidence(
+        dataset=replay_dataset,
+        validation_summary=EvaluationSummary(
+            variant_id="cand-1",
+            metrics={"deterministic_signal": True},
+            dataset_split="validation",
+        ),
+        held_out_summary=EvaluationSummary(
+            variant_id="cand-1",
+            metrics={"deterministic_signal": True},
+            dataset_split="held_out",
+        ),
+        min_eval_cases=30,
+    )
+
+    assert decision.confidence == "limited"
+
+
 def test_candidate_confidence_accepts_stable_single_case_replay() -> None:
     single_case_replay_dataset = SelfEvolveDataset(
         cases=(
@@ -1875,6 +2356,43 @@ def test_candidate_confidence_accepts_trajectory_set_validation_with_small_held_
     assert decision.verification_split == "trajectory_set_validation"
     assert decision.verification_mode == "trajectory_set_validation"
     assert decision.held_out_case_count == 1
+
+
+def test_candidate_confidence_accepts_native_multi_case_trajectory_log() -> None:
+    dataset = SelfEvolveDataset(
+        cases=(
+            EvalCase(case_id="case-validation", input="validation"),
+            EvalCase(case_id="case-held-out", input="held-out"),
+        ),
+        recipe=DatasetRecipe(
+            source={"kind": "trajectory_log", "case_count": 2},
+            split_seed="seed",
+            splits={
+                "train": [],
+                "validation": ["case-validation"],
+                "held_out": ["case-held-out"],
+            },
+            held_out_case_ids=("case-held-out",),
+        ),
+    )
+
+    decision = determine_candidate_confidence(
+        dataset=dataset,
+        validation_summary=EvaluationSummary(
+            variant_id="candidate",
+            metrics={"deterministic_signal": True},
+            dataset_split="validation",
+        ),
+        held_out_summary=EvaluationSummary(
+            variant_id="candidate",
+            metrics={"deterministic_signal": True},
+            dataset_split="held_out",
+        ),
+        min_eval_cases=30,
+    )
+
+    assert decision.confidence == "verified"
+    assert decision.verification_mode == "trajectory_set_validation"
 
 
 def test_candidate_confidence_keeps_single_case_replay_limited_when_repetitions_are_low() -> None:

@@ -1,6 +1,7 @@
 # coding: utf-8
 from __future__ import annotations
 
+import ast
 import json
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -296,21 +297,63 @@ def _dedupe_evidence(evidence: Iterable[Mapping[str, Any]]) -> list[dict[str, An
     return deduped
 
 
+def _question_from_state_input(value: Any) -> str | None:
+    """Extract a user question without promoting tool transport snapshots.
+
+    AWorld providers have emitted ``state.input`` both as a mapping and as a
+    serialized mapping string.  A non-empty ``action_result`` identifies the
+    latter as a tool-result transport snapshot, not the original user prompt.
+    Plain strings remain valid direct task inputs.
+    """
+
+    parsed = value
+    if isinstance(value, str):
+        stripped = value.strip()
+        if not stripped:
+            return None
+        if stripped.startswith("{") and stripped.endswith("}"):
+            for loader in (ast.literal_eval, json.loads):
+                try:
+                    candidate = loader(stripped)
+                except (SyntaxError, ValueError, TypeError, json.JSONDecodeError):
+                    continue
+                if isinstance(candidate, Mapping):
+                    parsed = candidate
+                    break
+        if isinstance(parsed, str):
+            return parsed
+    if not isinstance(parsed, Mapping):
+        return None
+    action_results = parsed.get("action_result")
+    if isinstance(action_results, (list, tuple)) and action_results:
+        return None
+    content = parsed.get("content")
+    return content if isinstance(content, str) and content.strip() else None
+
+
 def extract_aworld_trajectory_payload(
     trajectory: Iterable[Mapping[str, Any]],
     *,
     task_id: str,
     is_sub_task: Any | None = None,
+    task_context: str | None = None,
 ) -> dict[str, Any]:
     trajectory = list(trajectory)
     if not isinstance(trajectory, list):
         raise ValueError(f"task_id {task_id} trajectory must be a list")
 
-    question = None
+    # A terminal-only projection need not contain the original user state.
+    # This separate task input is not an observation and adds no evidence.
+    question = _question_from_state_input(task_context)
     system_prompt = ""
     if trajectory:
         first_state = trajectory[0].get("state", {}) if isinstance(trajectory[0], Mapping) else {}
-        question = (first_state.get("input", {}) or {}).get("content") if isinstance(first_state, Mapping) else None
+        if question is None:
+            question = (
+                _question_from_state_input(first_state.get("input"))
+                if isinstance(first_state, Mapping)
+                else None
+            )
         first_messages = first_state.get("messages", []) if isinstance(first_state, Mapping) else []
         if first_messages and isinstance(first_messages[0], Mapping) and first_messages[0].get("role") == "system":
             system_prompt = str(first_messages[0].get("content") or "")
@@ -363,6 +406,7 @@ def _extract_aworld_trajectory_record_payload(record: TrajectorySnapshot) -> dic
         record.trajectory or [],
         task_id=record.task_id,
         is_sub_task=record.is_sub_task,
+        task_context=record.task_context,
     )
     extracted["trajectory_record"] = {
         "schema_version": record.schema_version,

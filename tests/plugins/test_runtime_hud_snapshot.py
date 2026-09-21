@@ -9,7 +9,11 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "aworld-cli" / "src"))
 
 from aworld_cli.executors.local import LocalAgentExecutor
-from aworld_cli.executors.stats import StreamTokenStats, build_llm_usage_observability
+from aworld_cli.executors.stats import (
+    StreamTokenStats,
+    build_complete_llm_usage_summary,
+    build_llm_usage_observability,
+)
 from aworld_cli.executors.base_executor import BaseAgentExecutor
 from aworld_cli.runtime.base import BaseCliRuntime
 from aworld.plugins.discovery import discover_plugins
@@ -212,6 +216,218 @@ def test_build_llm_usage_observability_preserves_request_linked_cache_usage():
         "cache_write_tokens": 20,
         "prompt_tokens_details": {"cached_tokens": 80},
     }
+
+
+def test_complete_llm_usage_summary_requires_every_captured_call() -> None:
+    calls = [
+        {
+            "request_id": "root-1",
+            "record_kind": "model_attempt",
+            "task_id": "task_001",
+            "status": "success",
+            "usage_reported": True,
+            "single_attempt_proven": True,
+            "usage_normalized": {
+                "prompt_tokens": 10,
+                "completion_tokens": 2,
+                "total_tokens": 12,
+            },
+        },
+        {
+            "request_id": "root-2",
+            "record_kind": "model_attempt",
+            "task_id": "task_001",
+            "status": "success",
+            "usage_reported": True,
+            "single_attempt_proven": True,
+            "usage_normalized": {
+                "prompt_tokens": 20,
+                "completion_tokens": 3,
+            },
+        },
+        {
+            "request_id": "child-1",
+            "record_kind": "model_attempt",
+            "task_id": "child-task",
+            "status": "success",
+            "usage_reported": True,
+            "single_attempt_proven": True,
+            "usage_normalized": {"total_tokens": 999},
+        },
+    ]
+
+    usage = build_complete_llm_usage_summary(calls)
+
+    assert usage == {
+        "schema_version": "aworld.llm_usage_summary.v1",
+        "call_count": 3,
+        "usage_call_count": 3,
+        "total_tokens": 1_034,
+        "coverage_complete": True,
+        "ledger_consistent": True,
+    }
+
+
+def test_complete_llm_usage_summary_marks_partial_provider_usage_incomplete() -> None:
+    usage = build_complete_llm_usage_summary(
+        [
+            {
+                "request_id": "root-1",
+                "record_kind": "model_attempt",
+                "task_id": "task_001",
+                "status": "success",
+                "usage_reported": True,
+                "single_attempt_proven": True,
+                "usage_normalized": {"total_tokens": 12},
+            },
+            {
+                "request_id": "root-2",
+                "record_kind": "model_attempt",
+                "task_id": "task_001",
+                "status": "success",
+                "usage_reported": False,
+                "single_attempt_proven": True,
+                "usage_normalized": {
+                    "prompt_tokens": 0,
+                    "completion_tokens": 0,
+                    "total_tokens": 0,
+                },
+            },
+        ],
+    )
+
+    assert usage["call_count"] == 2
+    assert usage["usage_call_count"] == 1
+    assert usage["total_tokens"] == 12
+    assert usage["coverage_complete"] is False
+
+
+def test_complete_llm_usage_summary_deduplicates_identical_request_records() -> None:
+    record = {
+        "request_id": "request-1",
+        "record_kind": "model_attempt",
+        "task_id": "task_001",
+        "status": "success",
+        "usage_reported": True,
+        "single_attempt_proven": True,
+        "usage_normalized": {"total_tokens": 12},
+    }
+
+    usage = build_complete_llm_usage_summary([record, dict(record)])
+
+    assert usage["call_count"] == 1
+    assert usage["total_tokens"] == 12
+    assert usage["ledger_consistent"] is True
+    assert usage["coverage_complete"] is True
+
+
+def test_complete_llm_usage_summary_rejects_conflicting_request_records() -> None:
+    first = {
+        "request_id": "request-1",
+        "record_kind": "model_attempt",
+        "task_id": "task_001",
+        "status": "success",
+        "usage_reported": True,
+        "single_attempt_proven": True,
+        "usage_normalized": {"total_tokens": 12},
+    }
+    conflicting = {
+        **first,
+        "usage_normalized": {"total_tokens": 13},
+    }
+
+    usage = build_complete_llm_usage_summary([first, conflicting])
+
+    assert usage["ledger_consistent"] is False
+    assert usage["coverage_complete"] is False
+
+
+def test_complete_llm_usage_summary_rejects_unproven_internal_retry_policy() -> None:
+    usage = build_complete_llm_usage_summary(
+        [
+            {
+                "request_id": "request-1",
+                "record_kind": "model_attempt",
+                "task_id": "task_001",
+                "status": "success",
+                "usage_reported": True,
+                "single_attempt_proven": False,
+                "usage_normalized": {"total_tokens": 12},
+            }
+        ]
+    )
+
+    assert usage["usage_call_count"] == 0
+    assert usage["coverage_complete"] is False
+
+
+def test_complete_llm_usage_summary_rejects_failed_then_successful_requests() -> None:
+    usage = build_complete_llm_usage_summary(
+        [
+            {
+                "request_id": "request-failed",
+                "record_kind": "model_attempt",
+                "status": "started",
+                "usage_reported": False,
+                "single_attempt_proven": True,
+                "usage_normalized": {},
+            },
+            {
+                "request_id": "request-success",
+                "record_kind": "model_attempt",
+                "status": "success",
+                "usage_reported": True,
+                "single_attempt_proven": True,
+                "usage_normalized": {"total_tokens": 12},
+            },
+        ]
+    )
+
+    assert usage["call_count"] == 2
+    assert usage["usage_call_count"] == 1
+    assert usage["coverage_complete"] is False
+
+
+def test_complete_llm_usage_summary_ignores_agent_observability_duplicate() -> None:
+    legacy = {
+        "call_id": "legacy-1",
+        "record_kind": "agent_observability",
+        "usage": {"total_tokens": 12},
+    }
+    canonical = {
+        "request_id": "request-1",
+        "record_kind": "model_attempt",
+        "status": "success",
+        "usage_reported": True,
+        "single_attempt_proven": True,
+        "usage_normalized": {"total_tokens": 12},
+    }
+
+    usage = build_complete_llm_usage_summary([legacy, canonical])
+
+    assert usage["call_count"] == 1
+    assert usage["total_tokens"] == 12
+    assert usage["coverage_complete"] is True
+
+
+def test_complete_llm_usage_summary_never_authorizes_legacy_only_records() -> None:
+    usage = build_complete_llm_usage_summary(
+        [
+            {
+                "call_id": "legacy-1",
+                "record_kind": "agent_observability",
+                "usage": {"total_tokens": 12},
+            },
+            {
+                "call_id": "legacy-2",
+                "record_kind": "agent_observability",
+                "usage": {"total_tokens": 13},
+            },
+        ]
+    )
+
+    assert usage["call_count"] == 0
+    assert usage["coverage_complete"] is False
 
 
 def test_build_llm_usage_observability_aggregates_matching_task_calls():

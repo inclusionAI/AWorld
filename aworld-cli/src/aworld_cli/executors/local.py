@@ -39,7 +39,12 @@ from aworld_cli.core.skill_activation_resolver import (
 )
 from .base_executor import BaseAgentExecutor
 from .hooks import ExecutorHookPoint, ExecutorHook
-from .stats import StreamTokenStats, build_llm_usage_observability, format_elapsed
+from .stats import (
+    StreamTokenStats,
+    build_complete_llm_usage_summary,
+    build_llm_usage_observability,
+    format_elapsed,
+)
 from .stream import (
     ActiveSteeringCommitBuffer,
     StreamDisplayConfig,
@@ -100,7 +105,9 @@ class LocalAgentExecutor(BaseAgentExecutor):
         context_config=None,
         console: Optional[Console] = None,
         session_id: Optional[str] = None,
-        hooks: Optional[List[str]] = None
+        hooks: Optional[List[str]] = None,
+        runtime_skill_paths: Optional[List[str]] = None,
+        isolated_candidate_skill_paths: Optional[List[str]] = None,
     ):
         """
         Initialize local agent executor.
@@ -124,6 +131,20 @@ class LocalAgentExecutor(BaseAgentExecutor):
         self.context_config = context_config
         self._hooks_config = hooks or []
         self._hooks = self._load_hooks()
+        self.runtime_skill_paths = tuple(
+            dict.fromkeys(
+                str(Path(item).expanduser().resolve())
+                for item in runtime_skill_paths or ()
+                if str(item).strip()
+            )
+        )
+        self.isolated_candidate_skill_paths = tuple(
+            dict.fromkeys(
+                str(Path(item).expanduser().resolve())
+                for item in isolated_candidate_skill_paths or ()
+                if str(item).strip()
+            )
+        )
 
         # Initialize background task manager
         from aworld_cli.core.background_task_manager import BackgroundTaskManager
@@ -689,7 +710,9 @@ class LocalAgentExecutor(BaseAgentExecutor):
             return [communicate_agent]
         return []
 
-    def _resolve_swarm_skills(self, task_input: TaskInput) -> None:
+    def _resolve_swarm_skills(
+        self, task_input: TaskInput
+    ) -> tuple[dict[str, str], ...]:
         resolver = SkillActivationResolver()
         plugin_manager = PluginManager()
         from aworld_cli.core.skill_state_manager import SkillStateManager
@@ -704,6 +727,14 @@ class LocalAgentExecutor(BaseAgentExecutor):
         disabled_skill_names = skill_state.disabled_skill_names()
         enabled_skill_names = skill_state.enabled_skill_names()
         sandbox_skills: dict[int, tuple[Any, dict[str, Any]]] = {}
+        activation_evidence: list[dict[str, str]] = []
+        runtime_skill_paths = tuple(getattr(self, "runtime_skill_paths", ()))
+        isolated_candidate_skill_paths = tuple(
+            getattr(self, "isolated_candidate_skill_paths", ())
+        )
+        isolated_candidate_sources: set[Path] = {
+            Path(item) for item in isolated_candidate_skill_paths
+        }
 
         for agent in self._iter_swarm_agents():
             agent_name = self._agent_name_for_resolution(agent)
@@ -711,6 +742,33 @@ class LocalAgentExecutor(BaseAgentExecutor):
             agent_conf = getattr(agent, "conf", None)
             if agent_conf is not None and isinstance(getattr(agent_conf, "ext", None), dict):
                 resolver_inputs = dict(agent_conf.ext.get("skill_resolver_inputs", {}))
+
+            compatibility_sources = tuple(
+                dict.fromkeys(
+                    [
+                        *(
+                            str(item)
+                            for item in resolver_inputs.get(
+                                "compatibility_sources", []
+                            )
+                        ),
+                        *runtime_skill_paths,
+                    ]
+                )
+            )
+            runtime_isolated_sources = tuple(
+                dict.fromkeys(
+                    [
+                        *(
+                            str(item)
+                            for item in resolver_inputs.get(
+                                "isolated_candidate_sources", []
+                            )
+                        ),
+                        *isolated_candidate_skill_paths,
+                    ]
+                )
+            )
 
             plugin_roots = tuple(
                 Path(item).resolve()
@@ -729,15 +787,20 @@ class LocalAgentExecutor(BaseAgentExecutor):
                 default_skill_names=tuple(resolver_inputs.get("default_skill_names", [])),
                 enabled_skill_names=enabled_skill_names,
                 disabled_skill_names=disabled_skill_names,
-                compatibility_sources=tuple(
-                    str(item)
-                    for item in resolver_inputs.get("compatibility_sources", [])
-                ),
+                compatibility_sources=compatibility_sources,
                 compatibility_skill_patterns=tuple(
                     str(item)
                     for item in resolver_inputs.get("compatibility_skill_patterns", [])
                 ),
+                isolated_candidate_sources=runtime_isolated_sources,
             )
+            for source in request.isolated_candidate_sources:
+                try:
+                    isolated_candidate_sources.add(
+                        Path(source).expanduser().resolve()
+                    )
+                except (OSError, RuntimeError):
+                    continue
             result = resolver.resolve(request)
             if agent_conf is not None:
                 agent_conf.skill_configs = result.skill_configs
@@ -762,12 +825,52 @@ class LocalAgentExecutor(BaseAgentExecutor):
                     tool_names = getattr(agent, "tool_names", None)
                     if tool_names is not None and CONTEXT_SKILL not in tool_names:
                         tool_names.append(CONTEXT_SKILL)
-
+            activation_evidence.extend(
+                {
+                    **dict(item),
+                    "agent_name": str(agent_name or ""),
+                }
+                for item in result.activation_evidence
+            )
         # Shared sandboxes stage assets for every owner, while each agent keeps
         # its own activation state. Refresh each sandbox only after the union is
         # complete so a later agent cannot erase an earlier agent's skills.
         for sandbox, skill_configs in sandbox_skills.values():
             sandbox.skill_configs = skill_configs
+
+        # This state is produced by the actual task-time resolver after it has
+        # materialized the configs that ApplicationContext will inject.
+        self.last_skill_activation_evidence = tuple(activation_evidence)
+        if requested and isolated_candidate_sources:
+            unattested = []
+            for skill_name in requested:
+                observed = False
+                for item in activation_evidence:
+                    if item.get("skill_name") != skill_name:
+                        continue
+                    raw_root = item.get("canonical_skill_root")
+                    if not isinstance(raw_root, str):
+                        continue
+                    try:
+                        observed_root = Path(raw_root).expanduser().resolve()
+                    except (OSError, RuntimeError):
+                        continue
+                    if any(
+                        observed_root == source
+                        or observed_root.is_relative_to(source)
+                        for source in isolated_candidate_sources
+                    ):
+                        observed = True
+                        break
+                if not observed:
+                    unattested.append(skill_name)
+            if unattested:
+                names = ", ".join(unattested)
+                raise RuntimeError(
+                    "Requested isolated candidate skill did not produce "
+                    f"activation evidence: {names}"
+                )
+        return self.last_skill_activation_evidence
 
     def _consume_restored_messages(self) -> list[dict[str, Any]]:
         restored_messages = getattr(self, "_aworld_cli_restored_messages", None) or []
@@ -859,7 +962,7 @@ class LocalAgentExecutor(BaseAgentExecutor):
         workspace = await self._create_workspace(session_id)
 
         # Resolve runtime-visible skills immediately before context initialization.
-        self._resolve_swarm_skills(task_input)
+        task_skill_activation_evidence = self._resolve_swarm_skills(task_input)
 
         # 4. Build context
         async def build_context(_task_input: TaskInput, _swarm: Swarm, _workspace) -> ApplicationContext:
@@ -886,6 +989,8 @@ class LocalAgentExecutor(BaseAgentExecutor):
 
         # Set workspace_path for hook system (CLI working directory)
         context.execution_scope = "cli_interactive"
+        if not isinstance(getattr(context, "context_info", None), dict):
+            context.context_info = {}
         context.context_info["execution_scope"] = "cli_interactive"
         context.workspace_path = os.getcwd()
         runtime = getattr(self, "_base_runtime", None)
@@ -972,6 +1077,12 @@ class LocalAgentExecutor(BaseAgentExecutor):
             timeout=60 * 60,
             observation=observation
         )
+        # Bind the resolver output to the concrete task.  The signed replay
+        # response must not depend on a mutable executor-wide "last value"
+        # that a hook, retry, or nested task can overwrite after resolution.
+        task._aworld_cli_skill_activation_evidence = (
+            task_skill_activation_evidence
+        )
 
         # 🔥 Hook: POST_BUILD_TASK
         hook_kwargs = {
@@ -1010,6 +1121,8 @@ class LocalAgentExecutor(BaseAgentExecutor):
                 self.console = global_console
             self.last_task_response = None
             self.last_task_interrupted = False
+            self.last_llm_usage = None
+            self.last_skill_activation_evidence = ()
 
             # 2. Parse message - handle both string and tuple format
             if isinstance(message, tuple):
@@ -1026,6 +1139,13 @@ class LocalAgentExecutor(BaseAgentExecutor):
                 session_id=self.session_id,
                 image_urls=image_urls,
                 requested_skill_names=requested_skill_names,
+            )
+            task_skill_activation_evidence = tuple(
+                getattr(
+                    task,
+                    "_aworld_cli_skill_activation_evidence",
+                    self.last_skill_activation_evidence,
+                )
             )
             try:
                 from aworld_cli.core.session_store import CliSessionStore
@@ -1788,6 +1908,7 @@ class LocalAgentExecutor(BaseAgentExecutor):
                                     self.console.print(f"[dim]📋 TaskResponse type: {type(task_response)}[/dim]")
                                 if isinstance(task_response, TaskResponse):
                                     self.last_task_response = task_response
+                                    final_task_response = task_response
                                 
                                 # Try different ways to get the answer
                                 if hasattr(task_response, 'answer'):
@@ -1827,6 +1948,9 @@ class LocalAgentExecutor(BaseAgentExecutor):
                     final_llm_calls = copy.deepcopy(task.context.context_info.get("llm_calls", []))
 
                 final_usage = self._publish_hud_llm_observability(task.id, final_llm_calls)
+                self.last_llm_usage = build_complete_llm_usage_summary(
+                    final_llm_calls,
+                )
                 
                 # Return answer without printing (already displayed in stream)
                 # 💾 Save query to history (only if not already saved per round)
@@ -1951,6 +2075,9 @@ class LocalAgentExecutor(BaseAgentExecutor):
                             follow_up_prompt,
                             requested_skill_names=requested_skill_names,
                         )
+                self.last_skill_activation_evidence = (
+                    task_skill_activation_evidence
+                )
                 return answer
                 
             except Exception as err:

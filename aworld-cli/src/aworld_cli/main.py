@@ -153,6 +153,81 @@ def _trajectory_from_direct_run_summary(
     return trajectory
 
 
+def _validated_complete_llm_usage_summary(value: object) -> dict | None:
+    if not isinstance(value, dict):
+        return None
+    call_count = value.get("call_count")
+    usage_call_count = value.get("usage_call_count")
+    total_tokens = value.get("total_tokens")
+    if (
+        value.get("schema_version") != "aworld.llm_usage_summary.v1"
+        or value.get("coverage_complete") is not True
+        or value.get("ledger_consistent") is not True
+        or isinstance(call_count, bool)
+        or not isinstance(call_count, int)
+        or call_count <= 0
+        or usage_call_count != call_count
+        or isinstance(total_tokens, bool)
+        or not isinstance(total_tokens, int)
+        or total_tokens < 0
+    ):
+        return None
+    normalized = {
+        "schema_version": "aworld.llm_usage_summary.v1",
+        "call_count": call_count,
+        "usage_call_count": usage_call_count,
+        "total_tokens": total_tokens,
+        "coverage_complete": True,
+        "ledger_consistent": True,
+    }
+    input_tokens = value.get("input_tokens")
+    output_tokens = value.get("output_tokens")
+    if (
+        not isinstance(input_tokens, bool)
+        and isinstance(input_tokens, int)
+        and input_tokens >= 0
+        and not isinstance(output_tokens, bool)
+        and isinstance(output_tokens, int)
+        and output_tokens >= 0
+    ):
+        normalized["input_tokens"] = input_tokens
+        normalized["output_tokens"] = output_tokens
+    return normalized
+
+
+def _complete_llm_usage_from_direct_run_summary(summary: dict) -> dict | None:
+    results = summary.get("results")
+    if not isinstance(results, list) or not results:
+        return None
+    summaries: list[dict] = []
+    for result in results:
+        if not isinstance(result, dict):
+            return None
+        usage = _validated_complete_llm_usage_summary(result.get("llm_usage"))
+        if usage is None:
+            return None
+        summaries.append(usage)
+    aggregate = {
+        "schema_version": "aworld.llm_usage_summary.v1",
+        "call_count": sum(item["call_count"] for item in summaries),
+        "usage_call_count": sum(
+            item["usage_call_count"] for item in summaries
+        ),
+        "total_tokens": sum(item["total_tokens"] for item in summaries),
+        "coverage_complete": True,
+        "ledger_consistent": True,
+        "iteration_count": len(summaries),
+    }
+    if all("input_tokens" in item and "output_tokens" in item for item in summaries):
+        aggregate["input_tokens"] = sum(
+            item["input_tokens"] for item in summaries
+        )
+        aggregate["output_tokens"] = sum(
+            item["output_tokens"] for item in summaries
+        )
+    return aggregate
+
+
 def _trajectory_payload_from_direct_run_summary(
     summary: object,
     *,
@@ -166,6 +241,18 @@ def _trajectory_payload_from_direct_run_summary(
         trajectory_build_results: list[dict] = []
         saw_task_response_capture = False
         fidelities: list[str] = []
+        raw_summary_activation_evidence = summary.get(
+            "skill_activation_evidence"
+        )
+        skill_activation_evidence: list[dict] = (
+            [
+                item
+                for item in raw_summary_activation_evidence
+                if isinstance(item, dict)
+            ]
+            if isinstance(raw_summary_activation_evidence, list)
+            else []
+        )
         for result in summary.get("results") or []:
             if not isinstance(result, dict):
                 continue
@@ -194,6 +281,13 @@ def _trajectory_payload_from_direct_run_summary(
                     trajectory_build_results.append(serialized_build_result)
                     if serialized_build_result.get("fidelity"):
                         fidelities.append(str(serialized_build_result["fidelity"]))
+            raw_activation_evidence = result.get("skill_activation_evidence")
+            if isinstance(raw_activation_evidence, list):
+                skill_activation_evidence.extend(
+                    item
+                    for item in raw_activation_evidence
+                    if isinstance(item, dict)
+                )
 
         if saw_task_response_capture:
             payload = {
@@ -207,6 +301,17 @@ def _trajectory_payload_from_direct_run_summary(
                 payload["trajectory_fidelity"] = "partial"
             elif fidelities and all(value == "complete" for value in fidelities):
                 payload["trajectory_fidelity"] = "complete"
+            llm_usage = _complete_llm_usage_from_direct_run_summary(summary)
+            if llm_usage is not None:
+                payload["llm_usage"] = llm_usage
+            if llm_calls:
+                payload["llm_calls"] = llm_calls
+            if skill_activation_evidence:
+                unique_activation_evidence: list[dict] = []
+                for item in skill_activation_evidence:
+                    if item not in unique_activation_evidence:
+                        unique_activation_evidence.append(item)
+                payload["skill_activation_evidence"] = unique_activation_evidence
             return payload
 
     return {
@@ -1696,6 +1801,20 @@ async def _run_direct_mode(
             summary=summary,
             status=DirectRunStatus.TASK_FAILED,
         )
+    activation_evidence = getattr(
+        agent_executor,
+        "last_skill_activation_evidence",
+        (),
+    )
+    if activation_evidence:
+        # Preserve a task-bound copy at the direct-run boundary.  The sidecar
+        # builder also reads per-iteration evidence, but a runtime wrapper must
+        # not be able to drop an otherwise valid resolver attestation.
+        summary["skill_activation_evidence"] = [
+            dict(item)
+            for item in activation_evidence
+            if isinstance(item, dict)
+        ]
     drain_pending_self_evolve_jobs = getattr(
         runtime,
         "_drain_pending_self_evolve_jobs",

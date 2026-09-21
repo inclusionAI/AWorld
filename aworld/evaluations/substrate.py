@@ -651,7 +651,36 @@ class AgentJudgeBackend:
                 round_index=artifact_read_policy.max_rounds + 1,
                 read_results=[exhausted_result],
             )
-        payload = _coerce_judge_payload(response, judge_schema=getattr(suite, "judge_schema", None))
+        judge_schema = getattr(suite, "judge_schema", None)
+        try:
+            payload = _coerce_judge_payload(
+                response,
+                judge_schema=judge_schema,
+            )
+        except ValueError:
+            if judge_schema is None or not judge_schema.json_schema():
+                raise
+            repair_prompt = _judge_schema_repair_prompt(
+                prompt_for_reads,
+                judge_schema=judge_schema,
+            )
+            response = await _run_with_timeout(
+                repair_prompt,
+                phase="schema_repair",
+                round_index=(
+                    int(diagnostics[-1].get("round_index") or 0) + 1
+                    if diagnostics
+                    else 1
+                ),
+            )
+            payload = _coerce_judge_payload(
+                response,
+                judge_schema=judge_schema,
+            )
+        payload = _attest_framework_projection_constraints(
+            payload,
+            diagnostics=diagnostics,
+        )
         return JudgeExecution(
             backend_id=self.backend_id,
             payload=payload,
@@ -1891,6 +1920,30 @@ def _extract_json_objects(text: str) -> list[dict[str, Any]]:
     return objects
 
 
+def _judge_schema_repair_prompt(
+    prompt: JudgePrompt,
+    *,
+    judge_schema: JudgeSchemaDef,
+) -> JudgePrompt:
+    """Request one clean retry without reflecting the invalid judge response."""
+
+    schema_text = json.dumps(
+        judge_schema.json_schema(),
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+    instruction = (
+        "\n\nYour prior response to this evaluation request did not match the "
+        "required JSON schema. Re-evaluate the same supplied evidence. Return only "
+        "one compact JSON object, include every required field, and use enum values "
+        "exactly as declared. Do not include markdown or explanatory text. "
+        f"The required JSON schema is: {schema_text}"
+    )
+    if isinstance(prompt, tuple):
+        return (f"{prompt[0]}{instruction}", list(prompt[1]))
+    return f"{prompt}{instruction}"
+
+
 def _candidate_judge_payload(value: Mapping[str, Any]) -> dict[str, Any]:
     if "results" in value:
         results = value.get("results") or []
@@ -2021,6 +2074,87 @@ def _judge_call_diagnostic(
         ),
         "timeout_seconds": timeout_seconds,
     }
+
+
+def _attest_framework_projection_constraints(
+    payload: Mapping[str, Any],
+    *,
+    diagnostics: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Bind framework projection ownership to runtime-enforced read bounds.
+
+    A judge can diagnose claim support, but it cannot authoritatively declare
+    that the framework prevented inspection. That ownership requires runtime
+    evidence that unread indexed content remained when the bounded artifact
+    read budget was exhausted. Without that attestation, the safe fail-closed
+    outcome is a candidate support-or-omit obligation, not a framework blocker.
+    """
+
+    constraints = payload.get("evidence_repair_constraints")
+    if not isinstance(constraints, list):
+        return dict(payload)
+    framework_projection_count = sum(
+        int(_is_framework_projection_constraint(item))
+        for item in constraints
+    )
+    if framework_projection_count == 0:
+        return dict(payload)
+    runtime_attested = any(
+        diagnostic.get("artifact_read_budget_exhausted") is True
+        and diagnostic.get("artifact_read_projection_incomplete") is True
+        for diagnostic in diagnostics
+    )
+
+    def reconcile(items: object) -> object:
+        if not isinstance(items, list):
+            return items
+        return [
+            (
+                {
+                    **dict(item),
+                    "failure_mode": "support_incomplete",
+                    "source_layer": "candidate_output",
+                    "required_action": "support_or_omit",
+                    "owner": "candidate",
+                }
+                if not runtime_attested
+                and _is_framework_projection_constraint(item)
+                else dict(item)
+                if isinstance(item, Mapping)
+                else item
+            )
+            for item in items
+        ]
+
+    reconciled = dict(payload)
+    reconciled["evidence_repair_constraints"] = reconcile(constraints)
+    evidence_quality = reconciled.get("evidence_quality")
+    if isinstance(evidence_quality, Mapping):
+        quality = dict(evidence_quality)
+        quality["evidence_repair_constraints"] = reconcile(
+            quality.get("evidence_repair_constraints")
+        )
+        reconciled["evidence_quality"] = quality
+    reconciled["evidence_projection_attestation"] = {
+        "framework_constraint_count": framework_projection_count,
+        "runtime_attested_count": (
+            framework_projection_count if runtime_attested else 0
+        ),
+        "reclassified_count": (
+            0 if runtime_attested else framework_projection_count
+        ),
+    }
+    return reconciled
+
+
+def _is_framework_projection_constraint(value: object) -> bool:
+    return bool(
+        isinstance(value, Mapping)
+        and value.get("owner") == "framework"
+        and value.get("failure_mode") == "projection_compacted"
+        and value.get("source_layer") == "artifact_projection"
+        and value.get("required_action") == "expand_bounded_projection"
+    )
 
 
 def _elapsed_monotonic_ms(started_at: float) -> float:
@@ -2676,11 +2810,7 @@ async def _default_agent_judge_executor(
     *,
     model_config: Any | None = None,
 ) -> str:
-    from aworld.agents.llm_agent import Agent
-    from aworld.config.conf import AgentConfig
-    from aworld.core.common import Observation
-    from aworld.core.context.base import Context
-    from aworld.utils.run_util import exec_agent
+    from aworld.models.llm import acall_llm_model, get_llm_model
 
     if model_config is not None:
         provider = getattr(model_config, "llm_provider", None) or "openai"
@@ -2708,22 +2838,32 @@ async def _default_agent_judge_executor(
     else:
         prompt_text, image_urls = prompt, None
 
-    agent = Agent(
-        name="evaluation_judge",
-        conf=AgentConfig(
-            llm_provider=provider,
-            llm_model_name=model_name,
-            llm_temperature=temperature,
-            llm_base_url=base_url,
-            llm_api_key=api_key,
-        ),
-        system_prompt=system_prompt,
+    llm = get_llm_model(
+        llm_provider=provider,
+        model_name=model_name,
+        temperature=temperature,
+        base_url=base_url,
+        api_key=api_key,
     )
-    request: str | Observation = prompt_text
+    user_content: Any = prompt_text
     if image_urls:
-        request = Observation(content=prompt_text, images=image_urls)
-    response = await exec_agent(request, agent=agent, context=Context())
-    return str(response.answer)
+        user_content = [
+            {"type": "text", "text": prompt_text},
+            *(
+                {"type": "image_url", "image_url": {"url": image_url}}
+                for image_url in image_urls
+            ),
+        ]
+    response = await acall_llm_model(
+        llm,
+        messages=[
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_content},
+        ],
+        temperature=temperature,
+        stream=False,
+    )
+    return str(response.content)
 
 
 async def _runtime_adoption_assistant_step(*, user_turn, state, case, target) -> dict[str, Any]:

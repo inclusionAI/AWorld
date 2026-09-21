@@ -127,6 +127,7 @@ def normalize_verified_skill_release(
     )
     normalized_edit_intent = structural_edit_intent
     intent_rebind_passed = structural_edit_intent is None
+    redundant_intent_discarded = False
     if structural_edit_intent is not None:
         if (
             isinstance(original_content, str)
@@ -142,7 +143,27 @@ def normalize_verified_skill_release(
                     )
                 )
             except ValueError:
-                pass
+                # A focused patch may be bound to its parent candidate rather
+                # than the published baseline. It must not authorize baseline
+                # deletions, but additive releases do not need that authority.
+                # Prove both versions preserve the baseline without any edit
+                # permission before dropping the redundant parent-bound token.
+                if all(
+                    not (
+                        Counter(_non_internal_body_lines(original_content))
+                        - Counter(_all_nonempty_body_lines(version))
+                    )
+                    and validate_skill_markdown_structure(
+                        version,
+                        original_content=original_content,
+                        edit_intent=None,
+                        require_exact_deletion_intent=True,
+                    ).passed
+                    for version in (content, normalized)
+                ):
+                    normalized_edit_intent = None
+                    intent_rebind_passed = True
+                    redundant_intent_discarded = True
             else:
                 intent_rebind_passed = True
     normalized_structure = validate_skill_markdown_structure(
@@ -199,6 +220,7 @@ def normalize_verified_skill_release(
         "normalization_structural_intent_rebind_passed": (
             intent_rebind_passed
         ),
+        "normalization_redundant_intent_discarded": redundant_intent_discarded,
         "structural_failure_code": structural_failure_code,
         "structural_failure_field_path": (
             structural_failure_field_path

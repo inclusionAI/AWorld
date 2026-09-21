@@ -3,8 +3,6 @@ import argparse
 import json
 import os
 import sys
-import time
-import traceback
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from urllib.parse import urlparse, parse_qs
 
@@ -78,6 +76,19 @@ class ReplayRuntime:
         self.fixture_path = fixture_path
         self.scratch_dir = scratch_dir
         self.port = port
+        configured_entry_path = os.environ.get("AWORLD_REPLAY_TASK_ENTRY_PATH", "/")
+        parsed_entry_path = urlparse(configured_entry_path)
+        self.task_entry_path = (
+            configured_entry_path
+            if configured_entry_path.startswith("/")
+            and parsed_entry_path.path == configured_entry_path
+            and not parsed_entry_path.query
+            and not parsed_entry_path.fragment
+            else "/"
+        )
+        self.readiness_path = (
+            "/_readiness" if self.task_entry_path == "/healthz" else "/healthz"
+        )
         self.fixture_data = load_fixture(fixture_path)
         self.sequence = 0
         self.trace_path = os.path.join(scratch_dir, "protocol_trace.jsonl")
@@ -112,18 +123,63 @@ class ReplayRuntime:
             with open(env_path, "r", encoding="utf-8") as index_file:
                 index_doc = json.load(index_file)
             if isinstance(index_doc, list):
-                records = index_doc
-            elif isinstance(index_doc, dict):
-                records = index_doc.get("records", [])
-            else:
-                records = []
-            projected_values = []
-            for record in records:
-                if isinstance(record, dict) and "value" in record:
-                    projected_values.append(record["value"])
-            if projected_values:
-                return projected_values
+                legacy_values = [
+                    record["value"]
+                    for record in index_doc
+                    if isinstance(record, dict) and "value" in record
+                ]
+                if legacy_values:
+                    return legacy_values
+            if isinstance(index_doc, dict):
+                projected_values = [
+                    record["value"]
+                    for record in index_doc.get("records", [])
+                    if isinstance(record, dict) and "value" in record
+                ]
+                if projected_values:
+                    return projected_values
         return None
+
+    def read_selected_sidecar_record(self):
+        """Return the framework-selected canonical recorded response.
+
+        Modern replay launches bind both an immutable response-index path and
+        the exact record identity chosen by the framework.  The selector is an
+        identity, not an ordinal: never fall through to a different record when
+        it is missing.  Older sidecars remain supported by ``build_payload``
+        when no record selector is supplied.
+        """
+
+        response_record_id = os.environ.get("AWORLD_REPLAY_RESPONSE_RECORD_ID", "")
+        if not response_record_id:
+            return False, False, None
+
+        index_path = os.environ.get("AWORLD_REPLAY_RESPONSE_INDEX", "")
+        if not index_path or not os.path.isfile(index_path):
+            return True, False, None
+        try:
+            with open(index_path, "r", encoding="utf-8") as index_file:
+                index_doc = json.load(index_file)
+        except (OSError, ValueError, TypeError):
+            return True, False, None
+
+        if isinstance(index_doc, dict):
+            records = index_doc.get("records", [])
+        elif isinstance(index_doc, list):
+            records = index_doc
+        else:
+            records = []
+        if not isinstance(records, list):
+            records = []
+
+        for record in records:
+            if (
+                isinstance(record, dict)
+                and record.get("record_id") == response_record_id
+                and "value" in record
+            ):
+                return True, True, record["value"]
+        return True, False, None
 
     def build_payload(self):
         sidecar = self.read_sidecar_records()
@@ -139,10 +195,22 @@ class ReplayRuntime:
             return {"content": scalar}
         return {"content": str(self.fixture_data)[:4096]}
 
+    def resolve_payload(self):
+        selector_bound, record_found, value = self.read_selected_sidecar_record()
+        if selector_bound:
+            if record_found:
+                return True, value
+            return False, {"error": "not-recorded"}
+        return True, self.build_payload()
+
     def get_response_contains(self):
         sidecar = self.read_sidecar_records()
         if sidecar:
-            return sidecar[0] if isinstance(sidecar[0], str) else json.dumps(sidecar[0], ensure_ascii=False)
+            return (
+                sidecar[0]
+                if isinstance(sidecar[0], str)
+                else json.dumps(sidecar[0], ensure_ascii=False)
+            )
         val = project_fixture_value(self.fixture_data)
         if val is None:
             val = str(self.fixture_data)[:4096]
@@ -164,6 +232,31 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def _send_runtime_payload(self, parsed_path, correlation):
+        if parsed_path != self.runtime.task_entry_path:
+            payload = {"error": "not-recorded"}
+            self.runtime.write_trace(
+                "outbound",
+                "http_response",
+                fields=list(payload.keys()),
+                correlation={**correlation, "status": 404},
+                path=parsed_path,
+            )
+            self._send_json(404, payload)
+            return
+
+        recorded, payload = self.runtime.resolve_payload()
+        status = 200 if recorded else 404
+        fields = list(payload.keys()) if isinstance(payload, dict) else ["value"]
+        self.runtime.write_trace(
+            "outbound",
+            "http_response",
+            fields=fields,
+            correlation={**correlation, "status": status},
+            path=parsed_path,
+        )
+        self._send_json(status, payload)
+
     def do_GET(self):
         parsed = urlparse(self.path)
         correlation = {}
@@ -172,27 +265,24 @@ class Handler(BaseHTTPRequestHandler):
             for k, v in qs.items():
                 correlation[k] = v[0] if len(v) == 1 else v
         self.runtime.write_trace(
-            "inbound", "http_get",
+            "inbound",
+            "http_get",
             fields=["path"],
             correlation=correlation,
             path=parsed.path,
         )
-        if parsed.path == "/healthz":
+        if parsed.path == self.runtime.readiness_path:
             payload = {"status": "ok"}
             self.runtime.write_trace(
-                "outbound", "http_response",
+                "outbound",
+                "http_response",
                 fields=list(payload.keys()),
-                correlation=correlation,
+                correlation={**correlation, "status": 200},
+                path=parsed.path,
             )
             self._send_json(200, payload)
             return
-        payload = self.runtime.build_payload()
-        self.runtime.write_trace(
-            "outbound", "http_response",
-            fields=list(payload.keys()) if isinstance(payload, dict) else ["content"],
-            correlation=correlation,
-        )
-        self._send_json(200, payload)
+        self._send_runtime_payload(parsed.path, correlation)
 
     def do_POST(self):
         parsed = urlparse(self.path)
@@ -206,22 +296,26 @@ class Handler(BaseHTTPRequestHandler):
         except Exception:
             req_body = {}
         if isinstance(req_body, dict):
-            for key in ("request_id", "id", "requestId", "trace_id", "traceId", "session", "channel", "routing"):
+            for key in (
+                "request_id",
+                "id",
+                "requestId",
+                "trace_id",
+                "traceId",
+                "session",
+                "channel",
+                "routing",
+            ):
                 if key in req_body:
                     correlation[key] = req_body[key]
         self.runtime.write_trace(
-            "inbound", "http_post",
+            "inbound",
+            "http_post",
             fields=sorted(req_body.keys()) if isinstance(req_body, dict) else [],
             correlation=correlation,
             path=parsed.path,
         )
-        payload = self.runtime.build_payload()
-        self.runtime.write_trace(
-            "outbound", "http_response",
-            fields=list(payload.keys()) if isinstance(payload, dict) else ["content"],
-            correlation=correlation,
-        )
-        self._send_json(200, payload)
+        self._send_runtime_payload(parsed.path, correlation)
 
     def log_message(self, *_args):
         pass
@@ -247,11 +341,14 @@ def main():
         pass
     except Exception as exc:
         runtime.write_trace(
-            "outbound", "runtime_error",
+            "outbound",
+            "runtime_error",
             fields=["error"],
             correlation={"error": str(exc)[:512]},
         )
-        sys.stderr.write(json.dumps({"event": "runtime_error", "error": str(exc)[:512]}) + "\n")
+        sys.stderr.write(
+            json.dumps({"event": "runtime_error", "error": str(exc)[:512]}) + "\n"
+        )
         sys.stderr.flush()
     finally:
         server.server_close()

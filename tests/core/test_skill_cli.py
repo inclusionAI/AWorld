@@ -1,5 +1,6 @@
 import sys
 import json
+import os
 from io import StringIO
 from pathlib import Path
 from types import SimpleNamespace
@@ -27,7 +28,12 @@ from aworld_cli.plugin_capabilities.commands import register_plugin_commands
 from aworld_cli.plugin_capabilities.state import PluginStateStore
 from aworld_cli.runtime.cli import _apply_runtime_skill_paths_to_swarm
 from aworld_cli.top_level_commands import register_builtin_top_level_commands
-from aworld_cli.top_level_commands.run_cmd import RunTopLevelCommand
+from aworld_cli.top_level_commands.run_cmd import (
+    RunTopLevelCommand,
+    _bounded_task_response_capability_payload,
+    _consume_task_response_capability,
+    _write_self_evolve_task_response,
+)
 from aworld.plugins.discovery import discover_plugins
 
 
@@ -887,6 +893,14 @@ def test_run_top_level_command_prefers_task_response_trajectory(
                     "success": True,
                     "trajectory": full_trajectory,
                     "trajectory_capture_mode": "task_response",
+                    "llm_usage": {
+                        "schema_version": "aworld.llm_usage_summary.v1",
+                        "call_count": 2,
+                        "usage_call_count": 2,
+                        "total_tokens": 123,
+                        "coverage_complete": True,
+                        "ledger_consistent": True,
+                    },
                 }
             ]
         }
@@ -928,6 +942,199 @@ def test_run_top_level_command_prefers_task_response_trajectory(
     assert payload["trajectory_capture_mode"] == "task_response"
     assert payload["trajectory"] == full_trajectory
     assert payload["trajectory"][0]["action"]["tool_calls"][0]["name"] == "browser"
+    assert payload["llm_usage"]["total_tokens"] == 123
+
+
+def test_direct_run_payload_omits_usage_if_any_iteration_is_incomplete() -> None:
+    activation_evidence = {
+        "skill_name": "agent-browser",
+        "canonical_skill_root": "/tmp/candidate/agent-browser",
+        "package_fingerprint": "sha256:candidate",
+        "source": "aworld_cli_skill_activation_resolver",
+    }
+    summary = {
+        # The executor-owned snapshot protects this evidence when a continuous
+        # result wrapper does not preserve its per-iteration copy.
+        "skill_activation_evidence": [activation_evidence],
+        "results": [
+            {
+                "trajectory": [{"action": {"content": "working"}}],
+                # Both copies may be present in the normal path and must not
+                # inflate the attestation count.
+                "skill_activation_evidence": [activation_evidence],
+                "llm_usage": {
+                    "schema_version": "aworld.llm_usage_summary.v1",
+                    "call_count": 1,
+                    "usage_call_count": 1,
+                    "total_tokens": 10,
+                    "coverage_complete": True,
+                    "ledger_consistent": True,
+                },
+            },
+            {
+                "trajectory": [{"action": {"content": "done"}}],
+            },
+        ]
+    }
+
+    payload = main_module._trajectory_payload_from_direct_run_summary(
+        summary,
+        prompt="Replay this task",
+        agent_name="Aworld",
+    )
+
+    assert payload["trajectory_capture_mode"] == "task_response"
+    assert "llm_usage" not in payload
+    assert payload["skill_activation_evidence"] == [activation_evidence]
+
+
+def test_run_top_level_command_publishes_atomic_self_evolve_task_response(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    full_trajectory = [
+        {
+            "action": {
+                "content": "Replay completed.",
+                "is_agent_finished": "True",
+            }
+        }
+    ]
+
+    async def fake_run_direct_mode(**kwargs):
+        return {
+            "results": [
+                {
+                    "iteration": 1,
+                    "response": "Replay completed.",
+                    "completed": True,
+                    "success": True,
+                    "trajectory": full_trajectory,
+                }
+            ]
+        }
+
+    response_path = tmp_path / "framework_task_response.json"
+    monkeypatch.setenv(
+        "AWORLD_SELF_EVOLVE_TASK_RESPONSE_PATH",
+        str(response_path),
+    )
+    monkeypatch.setattr(
+        "aworld_cli.top_level_commands.run_cmd.bootstrap_runtime",
+        lambda **kwargs: None,
+    )
+    monkeypatch.setattr(main_module, "_resolve_agent_dirs", lambda _dirs: [])
+    monkeypatch.setattr(main_module, "_run_direct_mode", fake_run_direct_mode)
+    args = SimpleNamespace(
+        task="Replay this task",
+        agent="Aworld",
+        skill=None,
+        max_runs=1,
+        max_cost=None,
+        max_duration=None,
+        completion_signal=None,
+        completion_threshold=3,
+        non_interactive=True,
+        session_id=None,
+        remote_backend=None,
+        agent_dir=None,
+        agent_file=None,
+        skill_path=None,
+        env_file=".env",
+        emit_trajectory=False,
+    )
+    context = SimpleNamespace(argv=["aworld-cli", "run"])
+
+    assert RunTopLevelCommand().run(args, context) == 0
+
+    payload = json.loads(response_path.read_text(encoding="utf-8"))
+    assert payload["schema_version"] == "aworld.self_evolve.task_response.v1"
+    assert payload["trajectory_capture_mode"] == "task_response"
+    assert payload["trajectory"] == full_trajectory
+    assert not list(tmp_path.glob("*.tmp"))
+
+
+def test_task_response_capability_sends_unsigned_payload_to_parent(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    capability_reader, capability_writer = os.pipe()
+    monkeypatch.setenv(
+        "AWORLD_SELF_EVOLVE_TASK_RESPONSE_CAPABILITY_FD",
+        str(capability_writer),
+    )
+    destination = tmp_path / "candidate-must-not-write.json"
+    monkeypatch.setenv(
+        "AWORLD_SELF_EVOLVE_TASK_RESPONSE_PATH", str(destination)
+    )
+
+    descriptor = _consume_task_response_capability()
+    assert descriptor == capability_writer
+    assert os.get_inheritable(descriptor) is False
+    assert "AWORLD_SELF_EVOLVE_TASK_RESPONSE_CAPABILITY_FD" not in os.environ
+    _write_self_evolve_task_response(
+        {
+            "trajectory": [{"action": {"content": "done"}}],
+            "trajectory_capture_mode": "task_response",
+        },
+        capability_fd=descriptor,
+    )
+    payload = json.loads(os.read(capability_reader, 65_536).decode("utf-8"))
+    os.close(capability_reader)
+
+    assert payload["schema_version"] == "aworld.self_evolve.task_response.v1"
+    assert "framework_attestation" not in payload
+    assert destination.exists() is False
+    assert payload["trajectory"] == [{"action": {"content": "done"}}]
+
+
+def test_task_response_capability_compacts_oversized_trajectory() -> None:
+    sidecar = {
+        "schema_version": "aworld.self_evolve.task_response.v1",
+        "trajectory_capture_mode": "task_response",
+        "trajectory": [
+            {
+                "meta": {"step": 1, "agent_id": "Aworld"},
+                "state": {"input": {"content": "prompt" * 4_000}},
+                "action": {
+                    "content": "terminal answer " * 8_000,
+                    "is_agent_finished": "True",
+                    "tool_calls": [],
+                },
+                "reward": {"status": "ok"},
+            }
+        ],
+        "llm_calls": [{"payload": "secretly huge" * 8_000}],
+        "llm_usage": {
+            "schema_version": "aworld.llm_usage_summary.v1",
+            "call_count": 3,
+            "usage_call_count": 3,
+            "total_tokens": 456,
+            "coverage_complete": True,
+            "ledger_consistent": True,
+            "iteration_count": 1,
+        },
+    }
+
+    compact = _bounded_task_response_capability_payload(
+        sidecar,
+        max_bytes=4_096,
+    )
+    encoded = json.dumps(
+        compact,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+
+    assert len(encoded) <= 4_096
+    assert compact["trajectory_capture_mode"] == "task_response"
+    assert compact["trajectory_compacted"] is True
+    assert compact["trajectory_original_count"] == 1
+    assert compact["trajectory_digest"].startswith("sha256:")
+    assert compact["trajectory"][0]["action"]["is_agent_finished"] == "True"
+    assert "llm_calls" not in compact
+    assert compact["llm_usage"] == sidecar["llm_usage"]
 
 
 @pytest.mark.asyncio

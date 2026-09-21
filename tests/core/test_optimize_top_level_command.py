@@ -7,12 +7,184 @@ from pathlib import Path
 
 import pytest
 
-from aworld.config.conf import ModelConfig
+from aworld.config.conf import ModelConfig, SelfEvolveJudgeConfig
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "aworld-cli" / "src"))
 
 from aworld_cli import main as main_module
 from aworld_cli.top_level_commands.optimize_cmd import render_optimize_summary, run_optimize_cli
+
+
+def test_exact_user_argv_reaches_outer_task_without_external_execution(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Exercise the real parser/startup graph and stop at its external boundary."""
+
+    import aworld.self_evolve.cli_orchestration as cli_orchestration
+    from aworld.self_evolve.runner import SelfEvolveRunner
+    from aworld.self_evolve.runtime import SelfEvolveTaskRequest
+
+    class ExternalBoundaryReached(RuntimeError):
+        pass
+
+    workspace = tmp_path / "workspace"
+    home = tmp_path / "home"
+    documents = home / "Documents"
+    skill_path = workspace / "aworld-skills" / "agent-browser" / "SKILL.md"
+    documents.mkdir(parents=True)
+    skill_path.parent.mkdir(parents=True)
+    skill_path.write_text(
+        "---\nname: agent-browser\ndescription: Browser automation.\n---\n"
+        "# Agent Browser\n\nUse deterministic browser actions.\n",
+        encoding="utf-8",
+    )
+    trajectory_path = documents / "trajectory1.log"
+    trajectory_path.write_text(
+        json.dumps(
+            {
+                "task_id": "browser-task-1",
+                "trajectory": [
+                    {
+                        "id": "step-1",
+                        "state": {"task": "Open the example page"},
+                        "action": {"content": "Opened the page"},
+                        "reward": {"success": 1},
+                    }
+                ],
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    judge_path = documents / "agent.md"
+    judge_path.write_text(
+        "---\nname: trajectory-judge\n---\n# Judge\n\nScore task completion.\n",
+        encoding="utf-8",
+    )
+
+    captured: dict[str, object] = {}
+
+    def stop_before_external_execution(outer_task):
+        request = outer_task.input
+        assert isinstance(request, SelfEvolveTaskRequest)
+        captured["task"] = outer_task
+        captured["request"] = request
+        captured["runner"] = request.runner
+        raise ExternalBoundaryReached("external model/replay execution is disabled")
+
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.chdir(workspace)
+    monkeypatch.setattr(
+        cli_orchestration.Runners,
+        "sync_run_task",
+        stop_before_external_execution,
+    )
+
+    with pytest.raises(ExternalBoundaryReached):
+        main_module._maybe_dispatch_top_level_command(
+            [
+                "aworld-cli",
+                "optimize",
+                "--target",
+                "skill:agent-browser",
+                "--from-trajectory",
+                "~/Documents/trajectory1.log",
+                "--apply",
+                "verified_only",
+                "--judge-agent",
+                "~/Documents/agent.md",
+                "--judge-timeout",
+                "600",
+                "--judge-model-profile",
+                "gpt-5.5",
+                "--replay-timeout",
+                "900",
+                "--replay-total-timeout",
+                "3600",
+            ]
+        )
+
+    runner = captured["runner"]
+    assert isinstance(runner, SelfEvolveRunner)
+    request = captured["request"]
+    run_kwargs = dict(request.run_kwargs)
+    assert run_kwargs["apply_policy"] == "verified_only"
+    assert run_kwargs["target"].identity.target_type == "skill"
+    assert run_kwargs["target"].identity.target_id == "agent-browser"
+    assert Path(run_kwargs["target"].identity.path) == skill_path
+    assert [case.case_id for case in run_kwargs["dataset"].cases] == [
+        "browser-task-1"
+    ]
+    assert run_kwargs["campaign_id"]
+    assert run_kwargs["campaign_cycle"] == 1
+    assert run_kwargs["campaign_prior_run_ids"] == ()
+    assert runner.replay_enabled is True
+    assert runner.judge_repetitions == 3
+    assert runner.baseline_replay_repetitions == 2
+    assert runner.candidate_replay_repetitions == 3
+    assert runner.replay_repetitions_explicit is False
+    assert runner.measurement_mode.value == "shadow"
+    assert runner.replay_timeout_seconds == 900
+    assert runner.replay_total_timeout_seconds == 3600
+    assert runner.total_run_token_budget == 2_000_000
+    assert runner.max_generated_candidates == 24
+    assert runner.max_full_evaluation_candidates == 12
+    assert runner.evaluation_backend.judge_agent == str(judge_path.resolve())
+    assert runner.evaluation_backend.judge_model_profile == "gpt-5.5"
+    assert runner.evaluation_backend.judge_timeout_seconds == 600
+    assert callable(runner.runtime_skill_activator)
+    assert callable(runner.runtime_skill_compensator)
+    assert runner.runtime_skill_activator is not runner.runtime_skill_compensator
+    campaign_paths = list(
+        (workspace / ".aworld" / "self_evolve" / "campaigns").glob(
+            "*/campaign.json"
+        )
+    )
+    assert len(campaign_paths) == 1
+    campaign_payload = json.loads(
+        campaign_paths[0].read_text(encoding="utf-8")
+    )
+    assert campaign_payload["max_cycles"] == 6
+    assert campaign_payload["request"]["_campaign_total_run_token_budget"] == (
+        12_000_000
+    )
+
+
+@pytest.mark.parametrize(
+    ("case", "expected_exception", "message"),
+    (
+        ("missing", FileNotFoundError, "judge agent does not exist"),
+        ("empty", ValueError, "judge agent is empty"),
+        ("non_utf8", ValueError, "judge agent is not valid UTF-8"),
+    ),
+)
+def test_judge_agent_preflight_rejects_unreadable_local_source(
+    tmp_path: Path,
+    case: str,
+    expected_exception: type[Exception],
+    message: str,
+) -> None:
+    from aworld.self_evolve.cli_orchestration import (
+        _evaluation_backend_from_judge_config,
+    )
+
+    judge_path = tmp_path / "agent.md"
+    if case == "empty":
+        judge_path.write_text("\n\t", encoding="utf-8")
+    elif case == "non_utf8":
+        judge_path.write_bytes(b"\xff\xfe\x00")
+
+    with pytest.raises(expected_exception, match=message):
+        _evaluation_backend_from_judge_config(
+            SelfEvolveJudgeConfig(
+                mode="agent_md",
+                agent_path=str(judge_path),
+                model_profile="gpt-5.5",
+            ),
+            workspace_root=tmp_path,
+            judge_timeout_seconds=600,
+        )
 
 
 def test_registry_registers_builtin_optimize_command_from_plugin_manifest() -> None:
@@ -52,6 +224,10 @@ def test_optimize_command_passes_generic_target_dataset_and_apply_to_framework(
             "proposal",
             "--new-skill-policy",
             "draft_only",
+            "--regression-benchmark",
+            "regression-a.jsonl",
+            "--regression-benchmark",
+            "trajectory_log:regression-b.log",
         ]
     )
 
@@ -61,7 +237,18 @@ def test_optimize_command_passes_generic_target_dataset_and_apply_to_framework(
     assert calls["dataset"] == "eval.jsonl"
     assert calls["apply"] == "proposal"
     assert calls["new_skill_policy"] == "draft_only"
-    assert calls["max_improvement_cycles"] == 3
+    assert calls["regression_benchmarks"] == (
+        "regression-a.jsonl",
+        "trajectory_log:regression-b.log",
+    )
+    assert calls["challenger_enabled"] is True
+    assert calls["challenger_max_cases"] == 2
+    assert calls["max_improvement_cycles"] == 6
+    assert calls["total_run_token_budget"] is None
+    assert calls["max_run_cost_usd"] is None
+    assert calls["max_run_wall_seconds"] is None
+    assert calls["per_attempt_replay_token_limit"] is None
+    assert calls["measurement_primary_metric"] == "task_success"
     assert callable(calls["progress_callback"])
     assert calls["from_trajectory"] is None
     assert calls["task"] is None
@@ -410,6 +597,59 @@ def test_optimize_command_forwards_campaign_cycle_override(
     assert calls["max_improvement_cycles"] == 5
 
 
+def test_optimize_command_forwards_trusted_measurement_options(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls = {}
+
+    def fake_run_optimize_cli(**kwargs):
+        calls.update(kwargs)
+        return {"status": "rejected"}
+
+    monkeypatch.setattr(
+        "aworld_cli.top_level_commands.optimize_cmd.run_optimize_cli",
+        fake_run_optimize_cli,
+    )
+
+    handled = main_module._maybe_dispatch_top_level_command(
+        [
+            "aworld-cli",
+            "optimize",
+            "--from-trajectory",
+            "trajectory.log",
+            "--measurement-mode",
+            "shadow",
+            "--measurement-primary-metric",
+            "score",
+            "--measurement-minimum-effect",
+            "0.05",
+            "--measurement-confidence-level",
+            "0.9",
+            "--measurement-min-independent-cases",
+            "4",
+            "--measurement-bootstrap-samples",
+            "800",
+            "--measurement-zero-yield-patience",
+            "3",
+            "--measurement-invalid-control-patience",
+            "4",
+            "--measurement-maximum-interval-width",
+            "0.08",
+        ]
+    )
+
+    assert handled is True
+    assert calls["measurement_mode"] == "shadow"
+    assert calls["measurement_primary_metric"] == "score"
+    assert calls["measurement_minimum_effect"] == pytest.approx(0.05)
+    assert calls["measurement_confidence_level"] == pytest.approx(0.9)
+    assert calls["measurement_min_independent_cases"] == 4
+    assert calls["measurement_bootstrap_samples"] == 800
+    assert calls["measurement_zero_yield_patience"] == 3
+    assert calls["measurement_invalid_control_patience"] == 4
+    assert calls["measurement_maximum_interval_width"] == pytest.approx(0.08)
+
+
 def test_optimize_command_rejects_proposal_campaign_resume(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
@@ -426,7 +666,7 @@ def test_optimize_command_rejects_proposal_campaign_resume(
         )
 
     assert exc_info.value.code == 1
-    assert "--resume-campaign requires --apply auto_verified" in capsys.readouterr().out
+    assert "--resume-campaign requires a verified apply policy" in capsys.readouterr().out
 
 
 @pytest.mark.parametrize("target", ["skill:demo", "prompt:system", "tool:browser"])
@@ -529,6 +769,7 @@ def test_optimize_command_passes_judge_agent_selector(
     assert calls["judge_agent_name"] is None
     assert calls["judge_backend_ref"] is None
     assert calls["judge_model_profile"] == "judge"
+    assert calls["measurement_primary_metric"] == "score"
 
 
 def test_optimize_command_passes_replay_runtime_limits(
@@ -555,6 +796,8 @@ def test_optimize_command_passes_replay_runtime_limits(
             "auto_verified",
             "--replay-timeout",
             "300",
+            "--replay-total-timeout",
+            "1800",
             "--replay-max-runs",
             "1",
             "--judge-repetitions",
@@ -571,11 +814,52 @@ def test_optimize_command_passes_replay_runtime_limits(
     assert handled is True
     assert calls["agent"] is None
     assert calls["replay_timeout_seconds"] == 300
+    assert calls["replay_total_timeout_seconds"] == 1800
     assert calls["replay_max_steps"] == 1
     assert calls["judge_repetitions"] == 5
     assert calls["judge_timeout_seconds"] == 120
     assert calls["baseline_replay_repetitions"] == 2
     assert calls["candidate_replay_repetitions"] == 3
+
+
+def test_optimize_command_passes_only_explicit_budget_limits(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls = {}
+
+    def fake_run_optimize_cli(**kwargs):
+        calls.update(kwargs)
+        return {"report_path": ".aworld/self_evolve/run/report.json"}
+
+    monkeypatch.setattr(
+        "aworld_cli.top_level_commands.optimize_cmd.run_optimize_cli",
+        fake_run_optimize_cli,
+    )
+
+    handled = main_module._maybe_dispatch_top_level_command(
+        [
+            "aworld-cli",
+            "optimize",
+            "--from-trajectory",
+            "trajectory.log",
+            "--apply",
+            "verified_only",
+            "--max-run-tokens",
+            "1000000",
+            "--max-run-cost-usd",
+            "12.5",
+            "--max-run-wall-seconds",
+            "7200",
+            "--per-attempt-replay-token-limit",
+            "250000",
+        ]
+    )
+
+    assert handled is True
+    assert calls["total_run_token_budget"] == 1_000_000
+    assert calls["max_run_cost_usd"] == 12.5
+    assert calls["max_run_wall_seconds"] == 7200.0
+    assert calls["per_attempt_replay_token_limit"] == 250_000
 
 
 def test_optimize_command_passes_rerun_evaluator_from_run(
@@ -758,6 +1042,103 @@ def test_render_optimize_summary_explains_no_candidate_rejection() -> None:
     assert "replay/evaluation/apply were skipped" in summary
 
 
+def test_render_optimize_summary_explains_generation_policy_frontier() -> None:
+    summary = render_optimize_summary(
+        {
+            "status": "rejected",
+            "candidate_ids": [],
+            "selected_candidate_id": None,
+            "iterations": [
+                {"iteration": 1, "status": "policy_filtered"},
+                {"iteration": 2, "status": "policy_filtered"},
+            ],
+            "verification_funnel": {
+                "policy_filtered_candidate_count": 3,
+                "generation_policy_frontier_exhausted": True,
+            },
+            "gate_results": [
+                {
+                    "gate_name": "candidate_generation",
+                    "passed": False,
+                    "details": {
+                        "code": "candidate_generation_policy_frontier_stalled"
+                    },
+                }
+            ],
+        }
+    )
+
+    assert "Rejected gates: candidate_generation" in summary
+    assert "Candidate admission: 3 generated candidate(s) rejected" in summary
+    assert "Generation policy frontier exhausted" in summary
+    assert "No candidate generated:" not in summary
+
+
+def test_render_optimize_summary_reports_campaign_authoritative_frontier() -> None:
+    summary = render_optimize_summary(
+        {
+            "status": "rejected",
+            "campaign_id": "campaign-1",
+            "campaign_status": "exhausted",
+            "campaign_cycle": 2,
+            "campaign_max_cycles": 3,
+            "campaign_authoritative_candidate_count": 3,
+            "campaign_max_authoritative_candidates": 3,
+        }
+    )
+
+    assert "Campaign cycle: 2/3" in summary
+    assert "Campaign authoritative candidates: 3/3" in summary
+
+
+def test_render_optimize_summary_reports_campaign_primary_failure() -> None:
+    summary = render_optimize_summary(
+        {
+            "status": "rejected",
+            "gate_results": [
+                {
+                    "gate_name": "skill_release_fidelity",
+                    "passed": False,
+                }
+            ],
+            "campaign_failure_attribution": {
+                "primary_gate": "candidate_repair_conformance",
+                "code": "repair_capability_compile_failed",
+                "affected_candidate_count": 4,
+            },
+        }
+    )
+
+    assert "Rejected gates: skill_release_fidelity" in summary
+    assert (
+        "Campaign primary failure: candidate_repair_conformance "
+        "(repair_capability_compile_failed) across 4 candidate(s)"
+    ) in summary
+
+
+def test_render_optimize_summary_explains_pre_judge_rejection() -> None:
+    summary = render_optimize_summary(
+        {
+            "status": "rejected",
+            "execution": {
+                "total_usage": {
+                    "evaluation_usage": {
+                        "judge_attempt_count": 0,
+                        "scheduled_tasks": 0,
+                    }
+                }
+            },
+            "measurement": {
+                "measurement_readiness_stage": "candidate_admission_blocked",
+            },
+        }
+    )
+
+    assert (
+        "Judge: skipped (no candidate passed conformance/admission)" in summary
+    )
+
+
 def test_run_optimize_cli_uses_interactive_auto_verified_defaults(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -793,11 +1174,111 @@ def test_run_optimize_cli_uses_interactive_auto_verified_defaults(
         judge_agent="agent.md",
     )
 
-    assert calls["judge_repetitions"] == 1
+    assert calls["judge_repetitions"] == 3
     assert calls["judge_timeout_seconds"] == 120
     assert calls["baseline_replay_repetitions"] == 2
     assert calls["candidate_replay_repetitions"] == 3
+    assert calls["replay_repetitions_explicit"] is False
     assert calls["iterations"] is None
+
+
+def test_run_optimize_cli_uses_verified_defaults_without_publish(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    import aworld.self_evolve as self_evolve
+
+    calls = {}
+
+    def fake_optimize_from_cli_request(**kwargs):
+        calls.update(kwargs)
+        return {"report_path": str(tmp_path / "report.json")}
+
+    monkeypatch.setattr(
+        self_evolve,
+        "optimize_from_cli_request",
+        fake_optimize_from_cli_request,
+        raising=False,
+    )
+
+    run_optimize_cli(
+        agent=None,
+        task=None,
+        target="skill:demo",
+        dataset=None,
+        from_session=None,
+        from_trajectory="trajectory.log",
+        batch_config=None,
+        iterations=None,
+        max_improvement_cycles=1,
+        apply="verified_only",
+        infer_target=False,
+        workspace_root=str(tmp_path),
+        judge_agent="agent.md",
+    )
+
+    assert calls["apply_policy"] == "verified_only"
+    assert calls["replay_enabled"] is True
+    assert calls["judge_repetitions"] == 3
+    assert calls["baseline_replay_repetitions"] == 2
+    assert calls["candidate_replay_repetitions"] == 3
+    assert calls["replay_repetitions_explicit"] is False
+
+
+def test_run_optimize_cli_preserves_explicit_replay_repetitions(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    import aworld.self_evolve as self_evolve
+
+    calls = {}
+
+    def fake_optimize_from_cli_request(**kwargs):
+        calls.update(kwargs)
+        return {"report_path": str(tmp_path / "report.json")}
+
+    monkeypatch.setattr(
+        self_evolve,
+        "optimize_from_cli_request",
+        fake_optimize_from_cli_request,
+        raising=False,
+    )
+
+    run_optimize_cli(
+        agent=None,
+        task=None,
+        target="skill:demo",
+        dataset=None,
+        from_session=None,
+        from_trajectory="trajectory.log",
+        batch_config=None,
+        iterations=None,
+        max_improvement_cycles=1,
+        apply="verified_only",
+        infer_target=False,
+        workspace_root=str(tmp_path),
+        baseline_replay_repetitions=4,
+        candidate_replay_repetitions=5,
+    )
+
+    assert calls["baseline_replay_repetitions"] == 4
+    assert calls["candidate_replay_repetitions"] == 5
+    assert calls["replay_repetitions_explicit"] is True
+
+
+def test_render_optimize_summary_exposes_verified_only_target() -> None:
+    summary = render_optimize_summary(
+        {
+            "status": "succeeded",
+            "release_state": "verified_only",
+            "published": False,
+            "verified_target_path": "/tmp/run/verified_targets/demo/SKILL.md",
+        }
+    )
+
+    assert "Release state: verified_only" in summary
+    assert "Published: no" in summary
+    assert "Verified target: /tmp/run/verified_targets/demo/SKILL.md" in summary
 
 
 def test_run_optimize_cli_can_forward_progress_callback(
@@ -1042,6 +1523,10 @@ def test_run_optimize_cli_delegates_generic_request_to_framework_api(
         judge_agent_name=None,
         judge_backend_ref=None,
         judge_model_profile="judge",
+        total_run_token_budget=1_000_000,
+        max_run_cost_usd=12.5,
+        max_run_wall_seconds=7_200,
+        per_attempt_replay_token_limit=250_000,
     )
 
     assert report["report_path"].endswith("report.json")
@@ -1055,9 +1540,95 @@ def test_run_optimize_cli_delegates_generic_request_to_framework_api(
     assert calls["apply_policy"] == "auto_verified"
     assert calls["inferred_new_skill_policy"] == "disabled"
     assert calls["infer_target"] is False
+    assert calls["total_run_token_budget"] == 1_000_000
+    assert calls["max_run_cost_usd"] == 12.5
+    assert calls["max_run_wall_seconds"] == 7_200
+    assert calls["per_attempt_replay_token_limit"] == 250_000
     assert calls["judge_config"].mode == "agent_md"
     assert calls["judge_config"].agent_path == "agent.md"
     assert calls["judge_config"].model_profile == "judge"
+
+
+def test_run_optimize_cli_loads_skill_evolution_contract(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    import aworld.self_evolve as self_evolve
+
+    calls = {}
+    contract_path = tmp_path / "agent-browser.contract.json"
+    contract_path.write_text(
+        json.dumps(
+            {
+                "schema_version": (
+                    "aworld.self_evolve.skill_evolution_contract.v1"
+                ),
+                "target_skill_id": "agent-browser",
+                "objective": "Handle large output",
+                "capabilities": [
+                    {
+                        "capability_id": "large_output",
+                        "description": "Read large output safely",
+                        "case_ids": ["case-1"],
+                    }
+                ],
+                "required_stable_cycles": 1,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    def fake_optimize_from_cli_request(**kwargs):
+        calls.update(kwargs)
+        return {"report_path": str(tmp_path / "report.json")}
+
+    monkeypatch.setattr(
+        self_evolve,
+        "optimize_from_cli_request",
+        fake_optimize_from_cli_request,
+        raising=False,
+    )
+
+    run_optimize_cli(
+        agent=None,
+        task=None,
+        target="skill:agent-browser",
+        skill_evolution_contract=contract_path.name,
+        dataset="eval.jsonl",
+        from_session=None,
+        from_trajectory=None,
+        batch_config=None,
+        iterations=1,
+        apply="verified_only",
+        infer_target=False,
+        workspace_root=str(tmp_path),
+    )
+
+    assert calls["skill_evolution_contract"]["target_skill_id"] == (
+        "agent-browser"
+    )
+    assert calls["skill_evolution_contract"]["capabilities"][0][
+        "case_ids"
+    ] == ["case-1"]
+
+
+def test_render_optimize_summary_shows_skill_convergence() -> None:
+    summary = render_optimize_summary(
+        {
+            "status": "rejected",
+            "skill_evolution": {
+                "covered_required_capability_count": 1,
+                "required_capability_count": 2,
+                "stable_cycle_count": 0,
+                "required_stable_cycles": 2,
+                "missing_required_capability_ids": ["large_output"],
+            },
+        }
+    )
+
+    assert "Skill capability coverage: 1/2" in summary
+    assert "Skill stability cycles: 0/2" in summary
+    assert "Missing Skill capabilities: large_output" in summary
 
 
 def test_run_optimize_cli_injects_default_mutation_model_independent_of_judge(
@@ -1159,7 +1730,7 @@ def test_run_optimize_cli_does_not_resolve_mutation_model_for_evaluator_rerun(
     assert calls["mutation_model_config"] is None
 
 
-def test_run_optimize_cli_forwards_runtime_registry_refresher(
+def test_run_optimize_cli_forwards_distinct_runtime_registry_compensator(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -1173,6 +1744,9 @@ def test_run_optimize_cli_forwards_runtime_registry_refresher(
 
     def refresh_runtime(candidate):
         return {"status": "refreshed", "candidate_id": candidate.candidate_id}
+
+    def restore_runtime(candidate, token):
+        return {"status": "restored", "candidate_id": candidate.candidate_id}
 
     monkeypatch.setattr(
         self_evolve,
@@ -1194,9 +1768,12 @@ def test_run_optimize_cli_forwards_runtime_registry_refresher(
         infer_target=False,
         workspace_root=str(tmp_path),
         runtime_registry_refresher=refresh_runtime,
+        runtime_registry_compensator=restore_runtime,
     )
 
     assert calls["runtime_registry_refresher"] is refresh_runtime
+    assert calls["runtime_registry_compensator"] is restore_runtime
+    assert calls["runtime_registry_compensator"] is not refresh_runtime
     assert calls["runtime_skill_activator"] is not None
 
 
@@ -1221,6 +1798,9 @@ def test_run_optimize_cli_defaults_runtime_skill_activator(
 
         def enable_skill(self, skill_name: str) -> None:
             self.enabled.append(skill_name)
+
+        def disable_skill(self, skill_name: str) -> None:
+            self.enabled[:] = [item for item in self.enabled if item != skill_name]
 
     monkeypatch.setattr(
         self_evolve,
@@ -1248,19 +1828,18 @@ def test_run_optimize_cli_defaults_runtime_skill_activator(
     )
 
     activator = calls["runtime_skill_activator"]
-    result = activator(
-        type(
-            "Candidate",
-            (),
-            {
-                "target": SelfEvolveTargetRef(
-                    target_type="skill",
-                    target_id="generated-capability",
-                    path=str(tmp_path / "SKILL.md"),
-                )
-            },
-        )()
-    )
+    candidate = type(
+        "Candidate",
+        (),
+        {
+            "target": SelfEvolveTargetRef(
+                target_type="skill",
+                target_id="generated-capability",
+                path=str(tmp_path / "SKILL.md"),
+            )
+        },
+    )()
+    result = activator(candidate)
 
     assert result == {
         "status": "enabled",
@@ -1268,6 +1847,18 @@ def test_run_optimize_cli_defaults_runtime_skill_activator(
         "was_enabled": False,
         "enabled": True,
     }
+    compensator = calls["runtime_skill_compensator"]
+    assert compensator is not activator
+    compensation = compensator(candidate, result)
+    assert compensation == {
+        "status": "restored",
+        "skill_name": "generated-capability",
+        "was_enabled": False,
+        "enabled": False,
+        "compensated": True,
+    }
+    assert FakeStateManager().is_enabled("generated-capability") is False
+    assert calls["runtime_registry_compensator"] is None
 
 
 def test_run_optimize_cli_maps_judge_backend_ref_to_framework_config(
@@ -1310,6 +1901,49 @@ def test_run_optimize_cli_maps_judge_backend_ref_to_framework_config(
     assert calls["judge_config"].mode == "backend_ref"
     assert calls["judge_config"].backend_ref == "pkg.module:build_judge"
     assert calls["judge_config"].model_profile == "judge"
+
+
+def test_exact_verified_only_request_wires_real_skill_compensator(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    import aworld.self_evolve as self_evolve
+
+    calls = {}
+
+    def fake_optimize_from_cli_request(**kwargs):
+        calls.update(kwargs)
+        return {"report_path": str(tmp_path / "report.json")}
+
+    monkeypatch.setattr(
+        self_evolve,
+        "optimize_from_cli_request",
+        fake_optimize_from_cli_request,
+        raising=False,
+    )
+
+    run_optimize_cli(
+        agent="agent-browser",
+        task=None,
+        target="skill:agent-browser",
+        dataset=None,
+        from_session=None,
+        from_trajectory="~/Documents/trajectory1.log",
+        batch_config=None,
+        iterations=None,
+        apply="verified_only",
+        infer_target=False,
+        workspace_root=str(tmp_path),
+        judge_agent="~/Documents/agent.md",
+        judge_model_profile="gpt-5.5",
+        judge_timeout_seconds=600,
+        replay_timeout_seconds=900,
+        replay_total_timeout_seconds=3600,
+    )
+
+    assert callable(calls["runtime_skill_activator"])
+    assert callable(calls["runtime_skill_compensator"])
+    assert calls["runtime_skill_compensator"] is not calls["runtime_skill_activator"]
 
 
 def test_run_optimize_cli_leaves_target_inference_to_framework(
@@ -1425,6 +2059,19 @@ def test_render_optimize_summary_distinguishes_selected_from_best_candidate() ->
     )
 
     assert "Selected candidate: cand-selected" in summary
+
+
+def test_render_optimize_summary_labels_repair_focus_candidate() -> None:
+    summary = render_optimize_summary(
+        {
+            "status": "rejected",
+            "selected_candidate_id": None,
+            "repair_focus_candidate_id": "cand-repair-focus",
+        }
+    )
+
+    assert "Repair focus candidate: cand-repair-focus" in summary
+    assert "Selected candidate:" not in summary
     assert "Best candidate:" not in summary
 
 

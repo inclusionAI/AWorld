@@ -1,3 +1,4 @@
+import builtins
 import json
 import sys
 from pathlib import Path
@@ -10,6 +11,7 @@ from aworld_cli.core.skill_activation_resolver import (  # type: ignore[attr-def
     SkillActivationResolver,
     SkillResolverRequest,
 )
+from aworld.self_evolve.replay_capability import fingerprint_skill_package
 
 
 def _write_skill(
@@ -161,6 +163,55 @@ def test_resolver_explicit_request_beats_auto_match(tmp_path: Path) -> None:
     assert result.active_skill_names == ("code-review",)
     assert result.skill_configs["code-review"]["active"] is True
     assert result.skill_configs["browser-use"]["active"] is False
+    assert result.activation_evidence == (
+        {
+            "skill_name": "code-review",
+            "canonical_skill_file": str(
+                (plugin_root / "skills" / "code-review" / "SKILL.md").resolve()
+            ),
+            "canonical_skill_root": str(
+                (plugin_root / "skills" / "code-review").resolve()
+            ),
+            "package_fingerprint": fingerprint_skill_package(
+                plugin_root / "skills" / "code-review"
+            ),
+            "source": "aworld_cli_skill_activation_resolver",
+        },
+    )
+
+
+def test_resolver_activation_attestation_does_not_import_self_evolve(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    plugin_root = _write_manifest_skill_plugin(
+        tmp_path,
+        plugin_id="task-time-tools",
+        skill_id="browser-use",
+    )
+    original_import = builtins.__import__
+
+    def guarded_import(name: str, *args, **kwargs):
+        if name == "aworld.self_evolve.replay_capability":
+            raise AssertionError("task-time resolver imported self-evolve")
+        return original_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", guarded_import)
+    result = SkillActivationResolver().resolve(
+        SkillResolverRequest(
+            plugin_roots=(plugin_root,),
+            runtime_scope="workspace",
+            agent_name="developer",
+            task_text="use browser-use",
+            requested_skill_names=("browser-use",),
+        )
+    )
+
+    assert result.active_skill_names == ("browser-use",)
+    assert len(result.activation_evidence) == 1
+    assert result.activation_evidence[0]["package_fingerprint"] == (
+        fingerprint_skill_package(plugin_root / "skills" / "browser-use")
+    )
 
 
 def test_resolver_auto_match_is_deterministic(tmp_path: Path) -> None:
@@ -329,6 +380,80 @@ def test_resolver_filters_unreleased_self_evolve_skill_candidates(
     assert "media_comprehension" not in result.skill_configs
     assert "stable_skill" in result.skill_configs
     assert "legacy_skill" in result.skill_configs
+
+
+def test_resolver_isolated_candidate_overrides_ambient_same_name(
+    tmp_path: Path,
+) -> None:
+    ambient_root = _write_manifest_skill_plugin(
+        tmp_path,
+        plugin_id="ambient-tools",
+        skill_id="agent-browser",
+    )
+    candidate_root = tmp_path / "candidate-overlay"
+    _write_skill(
+        candidate_root,
+        "agent-browser",
+        description="candidate browser instructions",
+        release_state="candidate",
+    )
+
+    result = SkillActivationResolver().resolve(
+        SkillResolverRequest(
+            plugin_roots=(ambient_root,),
+            runtime_scope="session",
+            agent_name="developer",
+            requested_skill_names=("agent-browser",),
+            compatibility_sources=(
+                str(candidate_root / "skills" / "agent-browser"),
+            ),
+            isolated_candidate_sources=(
+                str(candidate_root / "skills" / "agent-browser"),
+            ),
+        )
+    )
+
+    candidate_skill_root = candidate_root / "skills" / "agent-browser"
+    assert result.active_skill_names == ("agent-browser",)
+    assert result.skill_configs["agent-browser"]["description"] == (
+        "candidate browser instructions"
+    )
+    assert result.activation_evidence == (
+        {
+            "skill_name": "agent-browser",
+            "canonical_skill_file": str(
+                (candidate_skill_root / "SKILL.md").resolve()
+            ),
+            "canonical_skill_root": str(candidate_skill_root.resolve()),
+            "package_fingerprint": fingerprint_skill_package(
+                candidate_skill_root
+            ),
+            "source": "aworld_cli_skill_activation_resolver",
+        },
+    )
+
+
+def test_resolver_isolated_candidate_still_requires_explicit_request(
+    tmp_path: Path,
+) -> None:
+    candidate_root = tmp_path / "candidate-overlay"
+    _write_skill(
+        candidate_root,
+        "agent-browser",
+        release_state="candidate",
+    )
+
+    result = SkillActivationResolver().resolve(
+        SkillResolverRequest(
+            plugin_roots=tuple(),
+            runtime_scope="session",
+            agent_name="developer",
+            task_text="agent-browser",
+            isolated_candidate_sources=(str(candidate_root / "skills"),),
+        )
+    )
+
+    assert "agent-browser" not in result.skill_configs
 
 
 def test_resolver_preserves_plugin_execution_entrypoint_metadata(tmp_path: Path) -> None:

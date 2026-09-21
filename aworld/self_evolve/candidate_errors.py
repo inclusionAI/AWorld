@@ -29,6 +29,7 @@ class CandidateMaterializationCode(str, Enum):
     FILE_DELETE_EXECUTABLE_INVALID = "candidate_file_delete_executable_invalid"
     FILE_COUNT_EXCEEDED = "candidate_file_count_exceeded"
     PACKAGE_BYTES_EXCEEDED = "candidate_package_bytes_exceeded"
+    PACKAGE_REFERENCE_MISSING = "candidate_package_reference_missing"
     FILES_ONLY_DELTA_REQUIRED = "candidate_files_only_delta_required"
 
 

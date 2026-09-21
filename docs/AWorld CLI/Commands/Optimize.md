@@ -14,6 +14,18 @@ aworld-cli run --task "complete this task" --evolve=shadow
 
 `--evolve` configures the selected local runtime agent for post-run self-evolve scheduling. Pair it with `--judge-agent`, `--judge-agent-name`, or `--judge-backend-ref` to configure the background evaluator. Use `--judge-model-profile` when the evaluator should use a different named model profile from the main task agent. `aworld-cli optimize` remains the manual/debug entrypoint for the same framework runner.
 
+## Framework Context
+
+![AWorld self-evolve architecture](../../imgs/aworld-self-evolve-architecture.png)
+
+One `aworld-cli optimize` execution creates a **Run**: candidate variation,
+selection, replay, verification, and optional release. Verified policies may
+continue through a bounded **Campaign** only when typed causal progress permits
+another cycle. A **Goal session** is not an implicit retry path; framework or
+shared-code work crosses that authority boundary only through an explicit
+handoff. See [Self Evolve](../../Agents/Self%20Evolve.md) for the complete
+framework design and ownership model.
+
 ## Basic Usage
 
 Proposal-only runs:
@@ -39,6 +51,55 @@ aworld-cli optimize \
 ```
 
 `--judge-model-profile` is the name of a configured CLI model profile. It does not directly set a provider model id. Add `--target skill:<name>` when you want to bypass target inference.
+
+### Targeted Skill evolution contract
+
+Use `--skill-evolution-contract <json>` when the Campaign must converge on a
+specific Skill capability contract instead of treating any verified score
+improvement as completion. The contract binds capability IDs to frozen dataset
+case IDs, supplies required behaviors and preserved invariants to candidate
+generation, and can require multiple consecutive verified cycles.
+
+```json
+{
+  "schema_version": "aworld.self_evolve.skill_evolution_contract.v1",
+  "target_skill_id": "agent-browser",
+  "objective": "Handle large browser output without losing evidence",
+  "capabilities": [
+    {
+      "capability_id": "bounded_large_output",
+      "description": "Read large output with byte-bounded evidence extraction",
+      "case_ids": ["task_large_body", "task_large_tail"],
+      "required": true
+    }
+  ],
+  "preserved_invariants": ["Preserve ordinary navigation behavior"],
+  "minimum_required_coverage": 1.0,
+  "required_stable_cycles": 2
+}
+```
+
+```bash
+aworld-cli optimize \
+  --target skill:agent-browser \
+  --dataset eval.jsonl \
+  --skill-evolution-contract agent-browser.contract.json \
+  --apply verified_only \
+  --max-improvement-cycles 4
+```
+
+A case covers its capability only when candidate execution succeeds and the
+runtime attests both the exact candidate Skill package and an observed
+candidate intervention. Unpublished candidate packages are visible only in
+the isolated self-evolve replay child; normal runtime discovery continues to
+hide `candidate`, `draft`, and `rejected` release states.
+
+For each replay Task, the framework copies the selected package into a
+Task-owned immutable mount and verifies its fingerprint before starting the
+child CLI. The task-time resolver binds its activation evidence to that Task.
+If an explicitly isolated candidate cannot produce this evidence, execution
+fails closed before spending the rollout budget; it cannot silently fall back
+to an ambient same-name Skill.
 
 ### Bounded self-improvement campaigns
 
@@ -387,11 +448,12 @@ members; it does not encode task- or artifact-specific repair rules.
 The framework ranks the generated population and validates repair candidates before an expensive task rollout:
 
 1. `candidate_repair_conformance` first proves that the candidate materially changed the failed source branch and that the request operation participates in the response data flow.
+   Unresolved compiler/runtime owners are preserved together, and an internally inconsistent owner contract fails as a framework error rather than consuming candidate attempts. Strategy-switch telemetry distinguishes a requested switch from a verified change in owner, edited-path, or control-flow topology.
 2. The candidate-owned replay capability is compiled and frozen with immutable fixture and package fingerprints. Recorded operation responses are exposed through `AWORLD_REPLAY_RESPONSE_INDEX`.
 3. Compiled probe declarations must cover the observed operation and assert a non-empty value derived from the recorded response payload.
 4. The frozen runtime is started in the replay subprocess sandbox and every declared HTTP/TCP/WebSocket readiness and protocol probe is executed. Required WebSocket probes validate handshake, ping/text exchange, operation correlation, non-empty result, and recorded-response binding.
 5. Conformance always runs when a repair contract applies, including for a dataset with one replayable trajectory. Multiple trajectories are grouped by a stable semantic fingerprint covering the capability, service, operation, transport, recorded-response structure, exact probe, and assertion set. Equivalent shapes may execute once with every affected case ID recorded; every distinct shape is validated.
-6. Only a candidate that passes conformance proceeds to optional representative task screening and then the authoritative paired baseline/candidate rollout. Representative screening is a cost-control signal, not evidence that unselected conformance shapes work; the final paired replay remains the authoritative dataset-wide behavioral check.
+6. Only a candidate that passes conformance proceeds to optional representative task screening and then the authoritative paired baseline/candidate rollout. Representative screening is a cost-control signal, not evidence that unselected conformance shapes work; the final paired replay remains the authoritative dataset-wide behavioral check. A sole candidate normally skips ranking replay, but a candidate repairing a previously observed replay counterexample must pass that counterexample through screening before it can consume another authoritative slot.
 
 This sequence is generic: contracts are compiled from observed operations, protocol traces, fixture provenance, and the candidate package. There is no target-specific repair adapter for one trajectory case. A source-conformant candidate can still fail at runtime preflight; that result is intentionally reported before the longer task rollout and fed into the next focused repair iteration.
 
@@ -420,7 +482,9 @@ Candidate repair gate diagnostics are summarized in a separate population `confo
 - `--task`: task text used by framework target inference and dataset context.
 - `--target`: explicit target reference. Phase 1 CLI runs support `skill:<name>` end to end. Automatic inference uses the same adapter registry and therefore considers skills only. Other target forms remain framework/SDK types until general CLI adapters are implemented.
 - `--iterations`: maximum candidate optimization iterations.
-- `--apply`: `proposal` or `auto_verified`. The default is `proposal`.
+- `--apply`: `proposal`, `verified_only`, or `auto_verified`. The default is
+  `proposal`. `verified_only` performs the same verified decision process as
+  `auto_verified` but preserves the accepted package without publishing it.
 - `--max-improvement-cycles`: hard cross-run Campaign cap for `auto_verified`;
   defaults to `3`.
 - `--resume-campaign`: resume a persisted active or paused Campaign using its
@@ -431,6 +495,19 @@ Candidate repair gate diagnostics are summarized in a separate population `confo
 - `--judge-backend-ref`: evaluator backend reference.
 - `--judge-model-profile`: named model profile for the judge. This is useful when the task agent uses the default `.env` model but the evaluator needs a separate model. It applies to markdown judges and local named judge agents. For `--judge-agent <agent.md>`, the same profile can also be declared in markdown front matter as `model_profile: judge`; the CLI option takes precedence.
 - `--replay-timeout`: timeout in seconds for each replay rollout.
+- `--replay-total-timeout`: optional hard wall-time deadline for the complete
+  paired replay. Cases run progressively as a baseline/candidate pair, so a
+  timeout can preserve completed causal pairs as well as completed baseline
+  members instead of discarding the partial experiment. A bounded restart
+  cursor is written to
+  `.aworld/self_evolve/<run_id>/replay/<candidate_id>/members/paired_replay_checkpoint.json`;
+  the timeout gate exposes it through `diagnostic_refs`. Verified replay uses
+  the v2 measurement-control scheduler by default; an explicit
+  `--measurement-mode off` retains the bounded legacy safety horizon. The v2
+  path uses planned checkpoint and Campaign deadlines. Both deadlines are cancellation-safe: they terminate
+  the replay process group before control returns to candidate search. A shared
+  measurement timeout stops the current candidate population instead of
+  spending another authoritative slot.
 - `--replay-max-runs`: maximum `aworld-cli run` iterations per replay rollout.
 - `--judge-repetitions`: successful judge samples to aggregate per evaluator call.
 - `--judge-timeout`: timeout in seconds for each judge attempt.
@@ -452,6 +529,10 @@ When `--apply auto_verified` is used and the caller does not override values, th
 - `--baseline-replay-repetitions 2`
 - `--candidate-replay-repetitions 3`
 - `--iterations 10`
+
+The 2/3 replay values are sparse-data defaults. On a sufficiently broad
+independent-case panel the runner adaptively uses 1/1 unless the caller explicitly
+provided either repetition option.
 
 Proposal runs default to one iteration. `auto_verified` uses the larger budget because each verified runtime repair can expose a new protocol frontier. The runner stops early when verification succeeds or progress stalls, and it may grant up to six bounded extension iterations only for newly observed repairable failure families. Duplicate candidates and repeated failure families do not consume unbounded retries.
 
@@ -511,6 +592,20 @@ comparable -> evaluation -> `selected`, `rejected`, `blocked`, or `not_run`.
 Terminal reasons and observed usage remain attached to the attempt, including work
 that was denied before replay.
 
+`verification_funnel.authoritative_candidate_attempt_count` counts candidates
+that entered authoritative validation; `authoritative_candidate_count` is the
+quota consumed across Campaign cycles. Shared framework-owned measurement
+failures that occur before candidate observation increment only the attempt
+counter and release the quota reservation. Candidate execution or a
+candidate-owned authoritative conclusion consumes the slot. This distinction
+prevents a replay infrastructure deadline from falsely reporting
+`campaign_authoritative_frontier_exhausted` with zero affected candidates.
+Candidate-owned capability compilation or deterministic preflight failures occur
+before this boundary: they increment neither authoritative counter, cannot create
+a measurement checkpoint, and return their aggregated typed constraints to the
+candidate-repair frontier. A resumed measurement checkpoint is logged as
+`measurement_resume` and is not charged as a newly generated candidate.
+
 The scheduler begins with bounded exploration. After a candidate-owned repairable
 failure establishes a semantic frontier, the next iteration reserves one focused
 repair slot for that frontier. It may add one diverse exploration slot only for a new
@@ -524,6 +619,155 @@ Reports expose those decisions as `max_run_tokens_to_total_run_token_budget` and
 `max_run_tokens_to_per_attempt_replay_token_limit` in
 `deprecated_config_mappings`. New callers should set both fields directly; these
 mappings are deprecated compatibility paths, not additional independent budgets.
+
+## Trusted Improvement Measurement
+
+SDK callers and background `SelfEvolveConfig` jobs can enable controlled
+measurement with `measurement_mode="shadow"`, `"advisory"`, or `"required"`.
+The CLI exposes the same policy through `--measurement-mode`. When the option is
+omitted, verified skill replay (`verified_only` or `auto_verified`) uses `shadow`
+until calibration is accepted; proposal/non-replay runs use `off`. Select
+`required` explicitly only after reviewing calibration and transfer evidence. An
+explicit `off` remains the legacy compatibility switch. For example:
+
+```bash
+aworld-cli optimize \
+  --from-trajectory trajectory.log \
+  --measurement-mode shadow \
+  --measurement-primary-metric task_success \
+  --measurement-minimum-effect 0.02 \
+  --measurement-confidence-level 0.95 \
+  --measurement-min-independent-cases 4
+```
+
+`--measurement-bootstrap-samples` controls deterministic case-level bootstrap
+resampling and must be between 200 and 100000. Repetitions are aggregated within
+their case before resampling; they never increase the independent-case count.
+`--measurement-zero-yield-patience`,
+`--measurement-invalid-control-patience`, and
+`--measurement-maximum-interval-width` freeze the early-stop policy into the
+experiment identity before observations are collected.
+
+Before authoritative rollout, the CLI reports planned/reused/pending work
+units, decision-required units, sampling stages, effective lane count,
+isolation fallback, minimum feasible wall time, P50/P90 decision ETA, estimate
+confidence, and stopping policy. The same bounded projection is retained under
+`measurement_control.preflight` in `report.json`.
+
+The frozen evidence policy is compiled from the controlled observation plan,
+target adapter identity, replay adaptation/capability, evaluator identity, and
+resource limits. Capability-owned loopback services receive deterministic
+plan-bound endpoints; runtime endpoint drift fails closed. Independent pairs
+use at most two lanes only when adaptation produces two complete compatible
+grants. An explicit `exclusive` adapter remains one lane and the limiting
+resource is shown in preflight output.
+
+Within an admitted stage, pair work uses the frozen stratified case order as a
+coverage constraint and then ranks otherwise eligible work by expected
+information value divided by predicted cost and failure risk. Completed pair
+duration and invalid-control outcomes update that bounded ranking; they never
+change evidence weight or expose hidden case content. First repetitions cover
+eligible cases before later repetitions, so slow or invalid cases can be
+demoted without being starved. Expansion remains limited by the frozen stage
+batch size. Each admission records its expected information value, selection
+policy, and remaining case budget in `measurement_schedule.json`.
+
+Historical target-only control preflight is advisory: it may order candidate
+controls, but it cannot block candidate generation or qualify a newly compiled
+replay support package. After candidate capability compilation, control health
+is qualified under an identity that binds the case, baseline skill, capability
+package, frozen replay capability, adaptation, and timeout envelope. A baseline
+cache entry is reusable only with the same support and envelope fingerprints;
+behavior-only siblings can therefore share it when their replay support is
+identical. A smaller-envelope baseline timeout gets one bounded same-case
+escalation (up to 300 seconds) before another control is tried. If the baseline
+fails only with candidate-owned support while another qualified support surface
+succeeds, the failure is reported as
+`candidate_replay_support_baseline_incompatible` and returned to candidate
+repair rather than framework handoff.
+
+The same trusted-measurement policy is enforced while authoritative replay is
+still running. Each baseline or candidate member has a hard phase deadline
+covering all evidence retries, and progress reports expose both the member
+deadline and the current retry. A treatment always follows its own compatible
+control; up to two independently isolated case pairs may overlap. Completed
+baselines are indexed incrementally and a
+phase checkpoint records completed pairs and pending cases, so an interrupted
+multi-case replay can reuse valid controls and continue from an auditable cursor.
+Scheduler messages never embed complete trajectories, stdout, stderr, or large
+metric payloads. Each completed member writes those artifacts normally and
+publishes a bounded `measurement_result_projection.json` containing only typed
+status/failure data and content-addressed artifact references. Projection or
+journal-finalization failure checkpoints the running work unit and preserves a
+bounded error artifact; it cannot leave a normal process alive with an
+unexplained `running` unit.
+
+The first baseline in an admitted stage also qualifies the frozen control
+contract. Reaching an artifact quota does not prohibit provably read-only
+analysis of evidence already collected, but unknown or artifact-producing
+actions remain fail-closed. If the unchanged baseline is nevertheless rejected
+by the frozen evidence policy, the scheduler reports
+`baseline_evidence_policy_infeasible` as a shared framework blocker and stops
+before candidate execution. It does not label the candidate, synthesize a
+trusted-improvement result, or charge a measurement-invalid retry.
+In `advisory` and
+`required` modes, repeated invalid controls stop expansion after
+`measurement-invalid-control-patience`; remaining members are recorded as
+blocked rather than consuming more authoritative work. `off` and `shadow`
+retain their existing decision behavior.
+During representative screening, a framework-owned invalid control advances
+through every distinct case in the already-bounded representative panel.
+Each qualification case is itself frozen as a v2 `repair_screening` measurement
+plan before rollout. The candidate package keeps its canonical candidate ID;
+`screening/<case-id>` is an execution namespace only and cannot become a new
+candidate identity or authoritative observation. This prevents screening and
+control fallbacks from losing the predeclared experiment while keeping their
+artifacts isolated from the later full-panel replay.
+Invalid controls are remembered across Campaign cycles for the same frozen
+dataset and target baseline, so a later cycle suppresses the repeated control
+and selects a fresh case. Reports expose `invalid_control_case_ids` and
+`control_case_retry_suppressed_count`. Candidate-owned failures do not use this
+fallback and return directly to focused repair. The bounded screening horizon is
+not an invalid control: if both variants reach it, or the baseline reaches its
+hard deadline before candidate execution, the comparison is right-censored and
+one ranked candidate advances to authoritative replay without exhausting fallback
+cases. A blocked or not-run candidate emits no candidate behavior attribution.
+For a verified dataset with at least the configured minimum number of independent
+cases, the default replay policy uses one baseline and one candidate observation
+per case; independent cases provide the measurement sample, so duplicating every
+case two or three times is not the default source of confidence. Sparse datasets
+retain the configured repetition defaults, and explicit replay-repetition options
+always override the adaptive default. Baseline members are reused across
+compatible candidates and retries. If a candidate member makes the authoritative
+comparison impossible, remaining candidate members stop immediately; an invalid
+control is classified as framework-owned, while a candidate-owned incomparable
+member is returned to the repair frontier.
+Representative screening remains the bounded admission plane, while paired
+replay remains the authoritative full-panel experiment.
+
+If the framework cannot freeze or admit that screening plan, it stops the
+population before physical replay and reports a shared
+`measurement_plan_admission_failed` prerequisite. The source candidate is kept
+as the immutable measurement checkpoint; sibling candidates, authoritative
+quota, and candidate-repair feedback are not consumed. In this state the
+bounded `measurement` projection is `not_started` / `prerequisite_blocked`, not
+`control_not_comparable`, because no control or treatment observation exists.
+
+For each measured candidate, AWorld freezes the task model/executor, generator,
+scheduler, evaluator, dataset, environment, runtime, prompt context, and budget
+identities while changing only the candidate artifact. The full experiment lives
+under `.aworld/self_evolve/<run_id>/experiments/<experiment_id>/`; `report.json`
+contains only the bounded `measurement` summary. Use the referenced
+`attribution_report.json` for paired confidence intervals, comparable-pair counts,
+best/pass-at-K values, separate actual search/measurement ledgers, and token/wall
+curves. Missing values mean “not measured,” never numeric zero. Missing controls or
+incomplete usage remain explicitly invalid/inconclusive; the runner does not replace
+them with the best candidate score.
+
+The declared swap axis is the attribution boundary: artifact swaps measure harness
+gain, task-model swaps measure model gain, and generator/scheduler swaps require
+equal opportunity and compare distributions plus best/pass-at-K curves. A larger N
+is reported as search opportunity, not as component improvement.
 
 ## Output
 
