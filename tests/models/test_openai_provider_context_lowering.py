@@ -95,7 +95,7 @@ def _provider() -> tuple[OpenAIProvider, list[dict], list[dict]]:
         lambda self, response: _response("completion"), provider
     )
     provider.postprocess_stream_response = MethodType(
-        lambda self, chunk: (_response("stream"), "stop"), provider
+        lambda self, chunk, **kwargs: (_response("stream"), "stop"), provider
     )
     return provider, sync_calls, async_calls
 

@@ -36,6 +36,39 @@ FileX writes under `~/workspace` by default. Use `FILEX_WORKSPACE_ROOT` to selec
 another workspace. Inputs must remain inside that workspace when using
 `--workspace-path`.
 
+The PaddleOCR provider enables chart recognition by default in both CLI and
+service use, so detected charts are sent to the configured VLM for their data
+instead of appearing only as cropped images. Set
+`FILEX_PADDLE_OCR_USE_CHART_RECOGNITION=false` to disable it, or pass
+`{"paddle_ocr_use_chart_recognition": false}` in the request's `env_content`.
+An explicit request setting takes precedence over the environment.
+
+FileX uses PaddleX's native `Chart Recognition:` task token and does not enforce
+a chart output contract by default. This compatibility mode applies to native
+and external gateway VLMs: FileX accepts the first completed document even when
+a chart response is narrative, so a slow chart request is not followed by a
+silent replay of the complete document or a failure after useful output was
+produced.
+
+Models known to handle a detailed chart-to-table instruction can opt in with
+`FILEX_PADDLE_OCR_CHART_PROMPT_MODE=structured`. Deployments that also require
+an enforced chart contract can independently set
+`FILEX_PADDLE_OCR_CHART_OUTPUT_CONTRACT=strict`. Strict mode requires every
+detected chart block to contain a multi-column Markdown or HTML table with an
+independent numeric cell and otherwise raises `PaddleOcrChartContractError`.
+It validates one pass by default. Set
+`FILEX_PADDLE_OCR_CHART_CONTRACT_RETRIES` to a positive number only when replaying
+the complete document is acceptable. Each explicit contract retry asks the VLM
+to read the chart again with a correction prompt; it is not a local reformatting
+pass. Prompt selection and contract enforcement are independent settings, so
+either can be enabled without the other.
+
+Transient VLM transport failures retry the complete document at most once by
+default. Set `FILEX_PADDLE_OCR_VLM_MAX_RETRIES=0` to disable that replay, or set
+an explicit higher value only when the caller's time budget can accommodate
+multiple full parsing attempts. The effective transport and chart retry limits
+are included in the provider's `model_info` diagnostics.
+
 ### AWorld all-in-one container
 
 Build from the AWorld repository root:
@@ -92,6 +125,38 @@ filex parse /root/workspace/report.pdf \
   --page-batch-size 3 \
   --batch-resume-id report-2026-01
 ```
+
+For a synchronous local parse, the FileX CLI can atomically produce a
+self-verifying artifact bundle without an agent-specific exporter:
+
+```bash
+filex parse /root/workspace/report.pdf \
+  --no-cache \
+  --layout-format parse-output \
+  --artifacts-dir /logs/artifacts
+```
+
+The CLI writes `document.md`, public `layout.json`, original
+`document-ir.json`, and a commit-marker `result.json`. The receipt uses
+`filex.artifact-bundle/v1`; its `filex_provenance` uses
+`filex.provenance/v1` with `exporter: filex-cli` and hashes the source,
+Document IR, Markdown, layout, and unmodified FileX response. `result.json` is
+invalidated before provider execution and written last, so a failed retry
+cannot leave an earlier attempt looking successful. Use `document-ir` instead
+of `parse-output` when the native FileX IR should be `layout.json`.
+
+Keep CLI parsing synchronous. When invoking it through AWorld's terminal
+`run_code` tool, supply an explicit `timeout`, such as 900 seconds or 1800 for
+larger documents, within the remaining task budget. Chart recognition can
+legitimately take more than 120 seconds. Wait for the foreground command rather
+than starting duplicate parses or manually restarting a slow parser.
+
+The standalone CLI's `--sync-mode async` schedules a coroutine in the CLI's own
+event loop; it does not create a worker that survives CLI exit. It is unsuitable
+for producing durable task artifacts, and the CLI requires synchronous local
+parsing for `--artifacts-dir`. `filex status` only reads saved PDF
+batch checkpoints; it does not supervise a background job. Use the separately
+deployed HTTP service below when asynchronous job submission is needed.
 
 YouTube sources use a transcript-first policy. Discovery does not download
 media; audio fallback requires explicit permission and a rights basis:

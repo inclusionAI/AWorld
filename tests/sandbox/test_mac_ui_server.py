@@ -364,9 +364,9 @@ def test_run_action_caches_permission_preflight(monkeypatch):
 
 
 def test_mac_ui_server_module_can_be_executed_by_path_without_relative_import_failure():
-    server_main = Path(
-        "/Users/wuman/Documents/workspace/aworld/.worktrees/aworld-host-local-mac-ui-automation/"
-        "aworld/sandbox/tool_servers/platforms/mac/ui_automation/src/main.py"
+    server_main = (
+        Path(__file__).resolve().parents[2]
+        / "aworld/sandbox/tool_servers/platforms/mac/ui_automation/src/main.py"
     )
     command = [
         sys.executable,

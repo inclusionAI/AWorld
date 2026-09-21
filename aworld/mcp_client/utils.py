@@ -10,7 +10,14 @@ from pathlib import Path
 from typing import List, Dict, Any, Optional, Tuple
 
 import requests
-from mcp.types import CallToolResult, TextContent, ImageContent
+from mcp.types import (
+    AudioContent,
+    CallToolResult,
+    EmbeddedResource,
+    ImageContent,
+    ResourceLink,
+    TextContent,
+)
 
 from aworld.core.common import ActionResult
 from aworld.core.context.base import Context
@@ -20,7 +27,11 @@ from aworld.tools import get_function_tools
 
 MCP_SERVERS_CONFIG = {}
 
-_OBSERVATION_HINT_TOOL_NAMES = {"execute_command", "mcp_execute_command"}
+_OBSERVATION_HINT_TOOL_NAMES = {
+    "execute_command",
+    "mcp_execute_command",
+    "run_code",
+}
 _STDIO_INHERIT_ENV_PREFIXES_VARIABLE = (
     "AWORLD_MCP_STDIO_INHERIT_ENV_PREFIXES"
 )
@@ -60,6 +71,32 @@ def _stdio_server_environment(server_config: Dict[str, Any]) -> Dict[str, str]:
     return {**inherited, **environment}
 
 
+def _stdio_server_command(
+    server_name: str,
+    server_config: Dict[str, Any],
+) -> str:
+    """Resolve the executable used to start one stdio MCP server.
+
+    Built-in sandbox tools deliberately keep ``${PYTHON_CMD}`` in their
+    serialized configuration so the interpreter can be selected in the
+    environment where the server is actually spawned. Every stdio startup
+    path must therefore resolve the placeholder, including non-reuse tool
+    discovery.
+    """
+
+    command = server_config["command"]
+    try:
+        from aworld.sandbox.config.python_cmd import resolve_command_placeholder
+
+        return resolve_command_placeholder(command, server_name)
+    except Exception as resolve_err:
+        logger.warning(
+            f"Resolve PYTHON_CMD for {server_name}: {resolve_err}, "
+            "using command as-is"
+        )
+        return command
+
+
 def _stringify_tool_argument(value: Any, *, max_length: int = 120) -> str:
     text = str(value).replace("\n", "\\n")
     if len(text) > max_length:
@@ -91,7 +128,7 @@ def _make_exception_result(
         msg += f". Arguments: {summary}"
     return CallToolResult(
         content=[TextContent(type="text", text=msg)],
-        is_error=True,
+        isError=True,
     )
 
 
@@ -156,7 +193,186 @@ def _make_timeout_result(server_name: str, tool_name: str, timeout: float) -> Ca
     )
     return CallToolResult(
         content=[TextContent(type="text", text=msg)],
-        is_error=True,
+        isError=True,
+    )
+
+
+def _coalesce_mcp_content(content_items: List[Any]) -> Any:
+    if not content_items:
+        return ""
+    if len(content_items) == 1:
+        return content_items[0]
+    return content_items
+
+
+def _mcp_content_value(content: Any) -> Any:
+    if isinstance(content, TextContent):
+        return content.text
+    if isinstance(content, ImageContent):
+        return f"data:{content.mimeType};base64,{content.data}"
+    if isinstance(content, AudioContent):
+        return f"data:{content.mimeType};base64,{content.data}"
+    if isinstance(content, (ResourceLink, EmbeddedResource)):
+        return content.model_dump(mode="json", by_alias=True, exclude_none=True)
+    if hasattr(content, "model_dump"):
+        return content.model_dump(mode="json", by_alias=True, exclude_none=True)
+    return str(content)
+
+
+def _explicit_result_envelope(content: Any) -> Dict[str, Any] | None:
+    """Return a JSON-like result envelope with an explicit boolean success.
+
+    MCP's protocol-level ``isError`` bit is not the only error signal used by
+    tool servers.  A number of servers return a successful protocol response
+    whose text body is a JSON envelope such as ``{"success": false, ...}``.
+    Treating that as a successful action loses the tool's authoritative result
+    before it reaches output logging, trajectory capture, and the next model
+    turn.
+
+    Only a top-level, explicit boolean is recognized.  We deliberately avoid
+    guessing from prose or recursively inspecting domain payloads where a
+    nested ``success`` field may describe something other than the tool call.
+    """
+
+    candidate = content
+    # Some MCP adapters preserve a single text block as a one-item list and
+    # some older adapters JSON-encode that text one extra time.
+    for _ in range(3):
+        if isinstance(candidate, list) and len(candidate) == 1:
+            candidate = candidate[0]
+            continue
+        if isinstance(candidate, str):
+            try:
+                candidate = json.loads(candidate)
+            except (json.JSONDecodeError, TypeError):
+                return None
+            continue
+        break
+    if isinstance(candidate, dict) and isinstance(candidate.get("success"), bool):
+        return candidate
+    return None
+
+
+def _result_envelope_error(envelope: Dict[str, Any]) -> str:
+    """Build a stable error string from an explicit failed result envelope."""
+
+    for key in ("error", "message"):
+        value = envelope.get(key)
+        if isinstance(value, str) and value:
+            return value
+        if value not in (None, ""):
+            return json.dumps(value, ensure_ascii=False, default=str)
+    return "Tool returned success=false without error details"
+
+
+def lower_mcp_call_result(
+    call_result: CallToolResult,
+    *,
+    server_name: str,
+    tool_name: str,
+    parameter: Dict[str, Any] | None = None,
+) -> ActionResult:
+    """Lower one MCP protocol result without losing error or structured data."""
+    content_items: List[Any] = []
+    metadata: Dict[str, Any] = {}
+    artifact_datas: List[Dict[str, Any]] = []
+
+    for content in getattr(call_result, "content", None) or []:
+        content_items.append(_mcp_content_value(content))
+        block_extra = getattr(content, "model_extra", None) or {}
+        block_metadata = block_extra.get("metadata")
+        if isinstance(block_metadata, dict):
+            metadata.update(block_metadata)
+            artifact_data = block_metadata.get("artifact_data")
+            artifact_type = block_metadata.get("artifact_type")
+            if isinstance(artifact_data, dict) and artifact_type:
+                artifact_datas.append(
+                    {
+                        "artifact_type": artifact_type,
+                        "artifact_data": artifact_data,
+                    }
+                )
+
+    structured_content = getattr(
+        call_result,
+        "structuredContent",
+        getattr(call_result, "structured_content", None),
+    )
+    if structured_content is not None:
+        metadata["structured_content"] = structured_content
+    if artifact_datas:
+        metadata["artifacts"] = artifact_datas
+
+    lowered_content = _coalesce_mcp_content(content_items)
+    if not content_items and structured_content is not None:
+        lowered_content = structured_content
+
+    protocol_error = bool(
+        getattr(call_result, "isError", getattr(call_result, "is_error", False))
+    )
+    result_envelope = _explicit_result_envelope(lowered_content)
+    explicit_success = (
+        result_envelope.get("success") if result_envelope is not None else None
+    )
+    is_error = protocol_error or explicit_success is False
+
+    if result_envelope is not None:
+        # Preserve tool-owned execution evidence (for example command,
+        # duration, and return code) without replacing transport metadata.
+        result_metadata = result_envelope.get("metadata")
+        if isinstance(result_metadata, dict):
+            for key, value in result_metadata.items():
+                metadata.setdefault(key, value)
+        metadata["result_success"] = explicit_success
+
+    error = None
+    if explicit_success is False and result_envelope is not None:
+        error = _result_envelope_error(result_envelope)
+        metadata["result_error"] = error
+    elif is_error:
+        if isinstance(lowered_content, str) and lowered_content:
+            error = lowered_content
+        elif lowered_content not in (None, ""):
+            error = json.dumps(lowered_content, ensure_ascii=False, default=str)
+        else:
+            error = "MCP tool returned an error without details"
+
+    return ActionResult(
+        success=not is_error,
+        tool_name=server_name,
+        action_name=tool_name,
+        content=lowered_content,
+        error=error,
+        keep=True,
+        metadata=metadata,
+        parameter=parameter or {},
+    )
+
+
+def mcp_tool_retry_safe(
+    mcp_config: Dict[str, Any] | None,
+    server_name: str,
+    tool_name: str,
+) -> bool:
+    """Return whether configuration explicitly permits replaying this tool call."""
+    if not isinstance(mcp_config, dict):
+        return False
+    server_configs = mcp_config.get("mcpServers", {})
+    if not isinstance(server_configs, dict):
+        return False
+    server_config = server_configs.get(server_name, {})
+    if not isinstance(server_config, dict):
+        return False
+    configured = server_config.get(
+        "retry_safe_tools",
+        server_config.get("retrySafeTools", []),
+    )
+    if configured is True:
+        return True
+    if isinstance(configured, str):
+        configured = [configured]
+    return isinstance(configured, (list, tuple, set)) and (
+        tool_name in configured or "*" in configured
     )
 
 
@@ -377,6 +593,8 @@ async def run(mcp_servers: list[MCPServer], black_tool_actions: Dict[str, List[s
                                 "description": param_desc,
                                 "type": param_type,
                             }
+                        if "default" in param_info:
+                            properties[param_name]["default"] = param_info["default"]
 
                 openai_function_schema = {
                     "name": f"{server.name}__{tool.name}",
@@ -620,7 +838,9 @@ async def mcp_tool_desc_transform_v2(
                         "name": server_name,
                         "type": "stdio",
                         "params": {
-                            "command": server_config["command"],
+                            "command": _stdio_server_command(
+                                server_name, server_config
+                            ),
                             "args": server_config.get("args", []),
                             "env": _stdio_server_environment(server_config),
                             "cwd": server_config.get("cwd"),
@@ -697,7 +917,9 @@ async def mcp_tool_desc_transform_v2(
                 )
             if _mcp_openai_tools:
                 mcp_openai_tools.extend(_mcp_openai_tools)
-        except BaseException as err:
+        except asyncio.CancelledError:
+            raise
+        except Exception as err:
             # single
             logger.warning(
                 f"Failed to get tools for MCP server '{server_config['name']}'.\n"
@@ -820,7 +1042,9 @@ async def mcp_tool_desc_transform_v2_reuse(
                         "name": server_name,
                         "type": "stdio",
                         "params": {
-                            "command": server_config["command"],
+                            "command": _stdio_server_command(
+                                server_name, server_config
+                            ),
                             "args": server_config.get("args", []),
                             "env": _stdio_server_environment(server_config),
                             "cwd": server_config.get("cwd"),
@@ -872,7 +1096,9 @@ async def mcp_tool_desc_transform_v2_reuse(
             )
             if _mcp_openai_tools:
                 mcp_openai_tools.extend(_mcp_openai_tools)
-        except BaseException as err:
+        except asyncio.CancelledError:
+            raise
+        except Exception as err:
             logger.warning(
                 f"❌ server ({server_name}) connect fail: {err}\n"
                 f"Traceback:\n{traceback.format_exc()}"
@@ -1104,7 +1330,9 @@ async def mcp_tool_desc_transform(
                         "name": server_name,
                         "type": "stdio",
                         "params": {
-                            "command": server_config["command"],
+                            "command": _stdio_server_command(
+                                server_name, server_config
+                            ),
                             "args": server_config.get("args", []),
                             "env": _stdio_server_environment(server_config),
                             "cwd": server_config.get("cwd"),
@@ -1149,7 +1377,9 @@ async def mcp_tool_desc_transform(
 
                 server = await stack.enter_async_context(server)
                 servers.append(server)
-            except BaseException as err:
+            except asyncio.CancelledError:
+                raise
+            except Exception as err:
                 # single
                 logger.error(
                     f"Failed to get tools for MCP server '{server_config['name']}'.\n"
@@ -1356,14 +1586,8 @@ async def get_server_instance(
             )
             return server, _SESSION_ID
         else:  # stdio type
-            command = server_config["command"]
-            try:
-                from aworld.sandbox.config.python_cmd import resolve_command_placeholder
-                command = resolve_command_placeholder(command, server_name)
-            except Exception as resolve_err:
-                logger.warning(f"Resolve PYTHON_CMD for {server_name}: {resolve_err}, using command as-is")
             params = {
-                "command": command,
+                "command": _stdio_server_command(server_name, server_config),
                 "args": server_config.get("args", []),
                 "env": _stdio_server_environment(server_config),
                 "cwd": server_config.get("cwd"),
@@ -1425,7 +1649,8 @@ async def call_mcp_tool_with_exit_stack(
     sandbox_id: Optional[str] = None,
     progress_callback=None,
     max_retry: int = 3,
-    timeout: float = 120.0
+    timeout: float = 120.0,
+    retry_safe: bool = False,
 ) -> Any:
     """Call MCP tool using AsyncExitStack to manage connection lifecycle.
 
@@ -1440,8 +1665,10 @@ async def call_mcp_tool_with_exit_stack(
         context: Context object (optional)
         sandbox_id: Sandbox ID (optional)
         progress_callback: Optional progress callback function
-        max_retry: Maximum number of retry attempts (default: 3)
+        max_retry: Maximum number of attempts when ``retry_safe`` is true
         timeout: Timeout in seconds (default: 120.0)
+        retry_safe: Explicit permission to replay the operation after an uncertain
+            outcome. Unsafe operations always receive one attempt.
 
     Returns:
         CallToolResult or None if all attempts fail
@@ -1449,7 +1676,8 @@ async def call_mcp_tool_with_exit_stack(
     call_result_raw = None
     last_exception = None
 
-    for attempt in range(max_retry):
+    attempts = max(1, max_retry if retry_safe else 1)
+    for attempt in range(attempts):
         try:
             # Create a new server instance for each call using AsyncExitStack
             async with AsyncExitStack() as stack:
@@ -1465,7 +1693,7 @@ async def call_mcp_tool_with_exit_stack(
                         f"Failed to create server instance: {server_name}, "
                         f"tool_name: {tool_name}, attempt: {attempt + 1}"
                     )
-                    if attempt == max_retry - 1:
+                    if attempt == attempts - 1:
                         return _make_exception_result(
                             server_name,
                             tool_name,
@@ -1482,7 +1710,7 @@ async def call_mcp_tool_with_exit_stack(
 
                 logger.info(
                     f"Created new server instance for {server_name} "
-                    f"(attempt {attempt + 1}/{max_retry})"
+                    f"(attempt {attempt + 1}/{attempts})"
                 )
 
                 # Call the tool with timeout
@@ -1508,23 +1736,25 @@ async def call_mcp_tool_with_exit_stack(
             last_exception = e
             logger.warning(
                 f"Timeout calling tool {server_name}__{tool_name} "
-                f"(attempt {attempt + 1}/{max_retry}): {e}"
+                f"(attempt {attempt + 1}/{attempts}): {e}"
             )
-            if attempt == max_retry - 1:
+            if attempt == attempts - 1:
                 logger.error(
-                    f"All {max_retry} attempts failed for {server_name}__{tool_name} "
+                    f"All {attempts} attempts failed for {server_name}__{tool_name} "
                     f"due to timeout"
                 )
-        except BaseException as e:
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
             last_exception = e
             logger.warning(
                 f"Error calling tool {server_name}__{tool_name} "
-                f"(attempt {attempt + 1}/{max_retry}): {e}.\n"
+                f"(attempt {attempt + 1}/{attempts}): {e}.\n"
                 f"Traceback:\n{traceback.format_exc()}"
             )
-            if attempt == max_retry - 1:
+            if attempt == attempts - 1:
                 logger.error(
-                    f"All {max_retry} attempts failed for {server_name}__{tool_name}"
+                    f"All {attempts} attempts failed for {server_name}__{tool_name}"
                 )
 
     if call_result_raw is None and last_exception is not None:
@@ -1545,7 +1775,8 @@ async def call_mcp_tool_with_reuse(
     sandbox_id: Optional[str] = None,
     progress_callback=None,
     max_retry: int = 3,
-    timeout: float = 120.0
+    timeout: float = 120.0,
+    retry_safe: bool = False,
 ) -> Any:
     """Call MCP tool using cached server instances (reuse mode).
 
@@ -1561,8 +1792,10 @@ async def call_mcp_tool_with_reuse(
         context: Context object (optional)
         sandbox_id: Sandbox ID (optional)
         progress_callback: Optional progress callback function
-        max_retry: Maximum number of retry attempts (default: 3)
+        max_retry: Maximum number of attempts when ``retry_safe`` is true
         timeout: Timeout in seconds (default: 120.0)
+        retry_safe: Explicit permission to replay the operation after an uncertain
+            outcome. Unsafe operations always receive one attempt.
 
     Returns:
         CallToolResult or None if all attempts fail
@@ -1591,7 +1824,8 @@ async def call_mcp_tool_with_reuse(
     call_result_raw = None
     last_exception: BaseException | None = None
 
-    for attempt in range(max_retry):
+    attempts = max(1, max_retry if retry_safe else 1)
+    for attempt in range(attempts):
         try:
             # Call the tool with timeout
             # Pass read_timeout_seconds to MCP session to avoid premature protocol-level timeout
@@ -1607,13 +1841,31 @@ async def call_mcp_tool_with_reuse(
             # Success, break out of retry loop
             break
 
-        except (asyncio.TimeoutError, BaseException) as e:
+        except asyncio.CancelledError:
+            if server_instances.get(server_name) is server:
+                server_instances.pop(server_name, None)
+            await cleanup_server(server)
+            raise
+        except Exception as e:
             last_exception = e
             logger.warning(
                 f"Error calling tool {server_name}__{tool_name} "
-                f"(attempt {attempt + 1}/{max_retry}): {e}"
+                f"(attempt {attempt + 1}/{attempts}): {e}"
                 f"Traceback:\n{traceback.format_exc()}"
             )
+            if server_instances.get(server_name) is server:
+                server_instances.pop(server_name, None)
+            await cleanup_server(server)
+            if attempt < attempts - 1:
+                server, _ = await get_server_instance(
+                    server_name=server_name,
+                    mcp_config=mcp_config,
+                    context=context,
+                    sandbox_id=sandbox_id,
+                )
+                if not server:
+                    break
+                server_instances[server_name] = server
 
     if call_result_raw is None:
         if isinstance(last_exception, asyncio.TimeoutError):

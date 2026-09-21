@@ -9,6 +9,16 @@ from aworld.utils.common import scan_packages
 
 scan_packages("aworld.tools", [Tool, AsyncTool, ExecutableAction])
 
+
+def ensure_builtin_tools_registered() -> None:
+    """Register built-ins after package initialization has broken import cycles."""
+
+    # MCP is the execution path used by Sandbox-backed agents. Best-effort package
+    # scanning can suppress its circular import while ``aworld.tools`` itself is
+    # still initializing, leaving advertised Sandbox actions without an executor.
+    from aworld.tools.mcp_tool import async_mcp_tool as _async_mcp_tool  # noqa: F401
+
+
 from aworld.tools.function_tools import FunctionTools, get_function_tools, list_function_tools
 from aworld.tools.function_tools_adapter import FunctionToolsMCPAdapter, get_function_tools_mcp_adapter
 from aworld.tools.function_tools_executor import FunctionToolsExecutor

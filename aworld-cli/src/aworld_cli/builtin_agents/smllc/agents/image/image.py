@@ -13,7 +13,7 @@ from aworld.runners.hook.hooks import PreLLMCallHook, PostLLMCallHook
 from aworld.sandbox import Sandbox
 from aworld_cli.core import agent
 from aworld_cli.core.skill_registry import build_skill_resolver_inputs
-from .mcp_config import mcp_config
+from ..sandbox_factory import create_agent_sandbox
 
 
 @HookFactory.register(name="pre_image_hook")
@@ -103,7 +103,7 @@ Current behavior:
 - For the default Qwen-style backend, edits use `url`/`image` as above; Kling accepts URLs or raw base64 for reference images.
 """
 )
-def build_image_swarm():
+def build_image_swarm(sandbox: Sandbox = None):
     """Build and configure the image generation agent swarm."""
     # APP_EVALUATOR_SKILLS_DIR: override skill read directory (plugin root with skills/ subdir)
     plugin_base_dir = Path(__file__).resolve().parents[2]  # smllc plugin root
@@ -128,14 +128,9 @@ def build_image_swarm():
         ext={"skill_resolver_inputs": resolver_inputs},
     )
 
-    # Extract all server keys from mcp_config
-    mcp_servers = list(mcp_config.get("mcpServers", {}).keys())
-
-    # Configure sandbox with MCP servers
-    sandbox = Sandbox(
-        mcp_config=mcp_config
-    )
-    sandbox.reuse = True
+    mcp_servers = ["terminal"]
+    if sandbox is None:
+        sandbox = create_agent_sandbox(mcp_servers)
 
     _prompt_path = Path(__file__).resolve().parent / "prompt.txt"
     _system_prompt = _prompt_path.read_text(encoding="utf-8")
@@ -148,7 +143,6 @@ def build_image_swarm():
         default_response_format=os.environ.get("IMAGE_RESPONSE_FORMAT", "url"),
         system_prompt=_system_prompt,
         mcp_servers=mcp_servers,
-        mcp_config=mcp_config,
         sandbox=sandbox,
     )
 

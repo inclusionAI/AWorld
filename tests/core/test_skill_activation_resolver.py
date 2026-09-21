@@ -258,6 +258,106 @@ def test_resolver_filters_disabled_skill_names(tmp_path: Path) -> None:
     assert "youtube_search" not in result.skill_configs
 
 
+def test_resolver_keeps_default_disabled_skill_out_of_automatic_discovery(
+    tmp_path: Path,
+) -> None:
+    plugin_root = _write_manifest_skill_plugin(
+        tmp_path,
+        plugin_id="specialized-tools",
+        skill_id="video-production",
+        metadata={
+            "default_enabled": False,
+            "match_keywords": ["video"],
+        },
+    )
+
+    result = SkillActivationResolver().resolve(
+        SkillResolverRequest(
+            plugin_roots=(plugin_root,),
+            runtime_scope="workspace",
+            task_text="create a video",
+        )
+    )
+
+    assert "video-production" not in result.available_skill_names
+    assert result.active_skill_names == ()
+
+
+def test_resolver_allows_explicit_or_persistently_enabled_default_disabled_skill(
+    tmp_path: Path,
+) -> None:
+    plugin_root = _write_manifest_skill_plugin(
+        tmp_path,
+        plugin_id="specialized-tools",
+        skill_id="video-production",
+        metadata={"default_enabled": False},
+    )
+
+    explicit = SkillActivationResolver().resolve(
+        SkillResolverRequest(
+            plugin_roots=(plugin_root,),
+            runtime_scope="workspace",
+            requested_skill_names=("video-production",),
+        )
+    )
+    persisted = SkillActivationResolver().resolve(
+        SkillResolverRequest(
+            plugin_roots=(plugin_root,),
+            runtime_scope="workspace",
+            task_text="video-production",
+            enabled_skill_names=("video-production",),
+        )
+    )
+
+    assert explicit.active_skill_names == ("video-production",)
+    assert persisted.active_skill_names == ("video-production",)
+
+
+def test_resolver_user_disable_wins_over_default_and_explicit_request(
+    tmp_path: Path,
+) -> None:
+    plugin_root = _write_manifest_skill_plugin(
+        tmp_path,
+        plugin_id="specialized-tools",
+        skill_id="video-production",
+        metadata={"default_enabled": False},
+    )
+
+    with pytest.raises(ValueError, match="Requested skill is not available"):
+        SkillActivationResolver().resolve(
+            SkillResolverRequest(
+                plugin_roots=(plugin_root,),
+                runtime_scope="workspace",
+                requested_skill_names=("video-production",),
+                enabled_skill_names=("video-production",),
+                disabled_skill_names=("video-production",),
+            )
+        )
+
+
+def test_resolver_management_view_includes_default_disabled_skill(
+    tmp_path: Path,
+) -> None:
+    plugin_root = _write_manifest_skill_plugin(
+        tmp_path,
+        plugin_id="specialized-tools",
+        skill_id="video-production",
+        metadata={"default_enabled": False},
+    )
+
+    result = SkillActivationResolver().resolve(
+        SkillResolverRequest(
+            plugin_roots=(plugin_root,),
+            runtime_scope="workspace",
+            include_default_disabled=True,
+            task_text="video-production",
+        )
+    )
+
+    assert result.available_skill_names == ("filex", "video-production")
+    assert result.active_skill_names == ()
+
+
 @pytest.mark.parametrize("blocked_state", ["draft", "candidate", "rejected", "disabled"])
 def test_resolver_filters_unreleased_self_evolve_skill_candidates(
     tmp_path: Path,

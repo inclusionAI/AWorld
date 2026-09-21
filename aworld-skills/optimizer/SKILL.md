@@ -1,5 +1,6 @@
 ---
 name: optimizer
+default_enabled: false
 description: Analyzes and automatically optimizes existing agents by improving system prompts and tool configuration.
 tool_names: ["AGENT_REGISTRY", "CAST_ANALYSIS", "CAST_CODER", "CAST_SEARCH"]
 ---

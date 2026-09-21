@@ -1,8 +1,10 @@
 # coding: utf-8
 # Copyright (c) 2025 inclusionAI.
 
-"""Tool config manager: build mcp_config for builtin tools (stdio only)."""
+"""Tool config manager: build mcp_config for process-local builtin tools."""
 
+import os
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from aworld.logs.util import logger
@@ -29,12 +31,20 @@ class ToolConfigManager:
 
     def __init__(self, mode: str = "local", workspaces: Optional[List[str]] = None):
         self.mode = str(mode).lower().strip() if mode else "local"
+        if self.mode not in {"local", "remote"}:
+            raise ValueError("mode must be either 'local' or 'remote'")
         self.workspaces = workspaces or []
 
     def get_mcp_config(self, enabled_tools: List[str]) -> Dict[str, Any]:
         """
         Build mcp_config for each enabled builtin tool using stdio (spawn subprocess).
         """
+        if enabled_tools and self.mode != "local":
+            raise ValueError(
+                "builtin_tools are process-local stdio services and cannot be "
+                "enabled with mode='remote'; configure an explicit remote MCP "
+                "service instead"
+            )
         mcp_servers: Dict[str, Any] = {}
         for name in enabled_tools:
             try:
@@ -62,6 +72,16 @@ class ToolConfigManager:
             )
         return {"mcpServers": mcp_servers}
 
+    def _stdio_working_directory(self, env: Dict[str, str]) -> str:
+        """Pin stdio children to an explicit directory at config-build time."""
+
+        candidates = list(self.workspaces)
+        if not candidates:
+            configured = (env or {}).get(ENV_WORKSPACE, "")
+            candidates = [item.strip() for item in configured.split(",") if item.strip()]
+        selected = candidates[0] if candidates else os.getcwd()
+        return str(Path(selected).expanduser().resolve())
+
     def _config_for_filesystem(self) -> Optional[Dict[str, Any]]:
         script_path = get_filesystem_script_path()
         env = get_server_env()
@@ -73,18 +93,29 @@ class ToolConfigManager:
             command=PYTHON_CMD_PLACEHOLDER,
             args=[script_path, "--stdio"],
             env=env or None,
+            cwd=self._stdio_working_directory(env),
         )
 
     def _config_for_terminal(self) -> Optional[Dict[str, Any]]:
         script_path = get_terminal_script_path()
-        env = get_server_env()
+        env = dict(get_server_env())
         if self.workspaces:
-            env = dict(env) if env else {}
             env[ENV_WORKSPACE] = ",".join(self.workspaces)
+        working_directory = self._stdio_working_directory(env)
+        env.setdefault(
+            "AWORLD_TERMINAL_ARTIFACT_DIR",
+            str(
+                Path(working_directory)
+                / ".aworld"
+                / "artifacts"
+                / "terminal-output"
+            ),
+        )
         return build_stdio_server_config(
             command=PYTHON_CMD_PLACEHOLDER,
             args=[script_path, "--stdio"],
             env=env or None,
+            cwd=working_directory,
         )
 
     def _config_for_mac_ui_automation(self) -> Optional[Dict[str, Any]]:
@@ -94,4 +125,5 @@ class ToolConfigManager:
             command=PYTHON_CMD_PLACEHOLDER,
             args=[script_path, "--stdio"],
             env=env or None,
+            cwd=self._stdio_working_directory(env),
         )

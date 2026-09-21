@@ -38,8 +38,13 @@ class PptParser(BaseParser):
         if Presentation is None:
             raise RuntimeError("未安装 python-pptx。请安装: pip install python-pptx")
         out_path = Path(output_path) if output_path else None
-        images_dir = (out_path.parent / "images") if out_path else (
-            Path.home() / "aworld_workspace" / (task_id or "out") / "images"
+        sidecar_dir = kwargs.get("sidecar_dir")
+        images_dir = (
+            Path(sidecar_dir)
+            if sidecar_dir
+            else (out_path.parent / "images")
+            if out_path
+            else Path.home() / "aworld_workspace" / (task_id or "out") / "images"
         )
         screenshot_paths = await self._generate_slide_screenshots(file_path, images_dir)
         embed = kwargs.get("embed_images", False)
@@ -128,7 +133,7 @@ class PptParser(BaseParser):
             parts.append(f"## 幻灯片 {n}\n\n")
             expected_name = f"slide_{n:02d}.png"
             screenshot_path = images_dir / expected_name
-            rel_path = Path("images") / expected_name
+            rel_path = Path(images_dir.name) / expected_name
             if screenshot_path.exists():
                 if embed_images:
                     try:
@@ -183,4 +188,3 @@ class PptParser(BaseParser):
                     parts.append(f"**备注**: {notes}\n\n")
             parts.append("---\n\n")
         return "".join(parts)
-

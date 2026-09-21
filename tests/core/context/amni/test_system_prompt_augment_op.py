@@ -19,6 +19,32 @@ from aworld.core.context.compiler import (
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("knowledge,planning", [(True, False), (False, True)])
+async def test_knowledge_and_planning_prompt_features_follow_their_own_switches(monkeypatch, knowledge, planning):
+    captured = []
+    config = AgentContextConfig(
+        enable_system_prompt_augment=True, enable_aworld_file=False, neuron_names=[],
+        automated_cognitive_ingestion=knowledge, automated_reasoning_orchestrator=planning,
+    )
+    monkeypatch.setattr(
+        "aworld.core.context.amni.processor.op.system_prompt_augment_op.AgentFactory.agent_instance",
+        lambda agent_id: SimpleNamespace(ptc_tools=None, skill_configs=None),
+    )
+    def capture(names):
+        captured.extend(names)
+        return []
+    monkeypatch.setattr(
+        "aworld.core.context.amni.processor.op.system_prompt_augment_op.neuron_factory.get_neurons_by_names", capture,
+    )
+    await SystemPromptAugmentOp()._process_neurons(
+        SimpleNamespace(session_id="session", get_agent_context_config=lambda agent_id: config),
+        SimpleNamespace(agent_id="agent", namespace=None),
+    )
+    assert ("action_info" in captured) is knowledge
+    assert ("todo" in captured) is planning
+
+
+@pytest.mark.asyncio
 async def test_system_prompt_augment_op_enables_relevant_memory_neuron_with_aworld_file(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

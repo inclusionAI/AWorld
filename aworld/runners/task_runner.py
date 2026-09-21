@@ -94,6 +94,10 @@ class TaskRunner(Runner):
         return time.monotonic() - self._timeout_started_at
 
     async def pre_run(self):
+        # Sandbox tool discovery and event-driven execution must share the same
+        # deterministic built-in registration boundary.  Recursive import scanning
+        # is intentionally best-effort and may skip MCP during package bootstrap.
+        aworld.tools.ensure_builtin_tools_registered()
         # Runners may be constructed on a different host before dispatch.
         # Start the duration budget here so it covers bootstrap and execution,
         # without comparing monotonic clock epochs across worker hosts.

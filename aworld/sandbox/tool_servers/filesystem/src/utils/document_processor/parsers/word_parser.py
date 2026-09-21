@@ -36,9 +36,15 @@ class WordParser(BaseParser):
         if Document is None:
             raise RuntimeError("未安装 python-docx。请安装: pip install python-docx")
         use_base64 = kwargs.get("use_base64", False)
+        sidecar_dir = kwargs.get("sidecar_dir")
         out_path = Path(output_path) if output_path else None
         if out_path:
-            markdown_content = await self._extract_docx_content(file_path, out_path, use_base64)
+            markdown_content = await self._extract_docx_content(
+                file_path,
+                out_path,
+                use_base64,
+                images_dir_override=Path(sidecar_dir) if sidecar_dir else None,
+            )
             out_path.parent.mkdir(parents=True, exist_ok=True)
             out_path.write_text(markdown_content, encoding="utf-8")
             return {"file_path": out_path}
@@ -90,11 +96,17 @@ class WordParser(BaseParser):
         return images_map
 
     async def _extract_docx_content(
-        self, file_path: Path, output_path: Optional[Path] = None, use_base64: bool = False
+        self,
+        file_path: Path,
+        output_path: Optional[Path] = None,
+        use_base64: bool = False,
+        images_dir_override: Optional[Path] = None,
     ) -> str:
         doc = Document(str(file_path))
         images_dir = None
-        if not use_base64 and output_path:
+        if not use_base64 and images_dir_override is not None:
+            images_dir = images_dir_override
+        elif not use_base64 and output_path:
             images_dir = output_path.parent / f"{output_path.stem}_images"
         elif not use_base64:
             images_dir = file_path.parent / f"{file_path.stem}_images"
@@ -162,4 +174,3 @@ class WordParser(BaseParser):
                         parts.append("| " + " | ".join(c.text.strip() for c in row.cells) + " |\n")
                     parts.append("\n")
         return "".join(parts)
-

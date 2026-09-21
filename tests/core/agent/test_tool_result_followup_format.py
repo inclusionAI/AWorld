@@ -1,3 +1,4 @@
+import asyncio
 from types import SimpleNamespace
 
 import pytest
@@ -30,6 +31,70 @@ from aworld.core.context.compiler import (
     TurnCauseCode,
 )
 from aworld.core.tool.base import AsyncTool
+
+
+def test_agent_defaults_to_two_llm_attempts():
+    agent = Agent(
+        name="Aworld",
+        conf=AgentConfig(
+            llm_provider="openai",
+            llm_model_name="fake-model",
+            llm_api_key="fake-key",
+        ),
+    )
+
+    assert agent.llm_max_attempts == 2
+
+
+@pytest.mark.asyncio
+async def test_invoke_model_types_framework_total_deadline_separately_from_provider_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    class MinimalAgent(Agent):
+        async def _filter_tools(self, context=None):
+            return None
+
+    agent = MinimalAgent(
+        name="Aworld",
+        conf=AgentConfig(
+            llm_provider="openai",
+            llm_model_name="fake-model",
+            llm_api_key="fake-key",
+        ),
+    )
+    provider_cancelled = False
+
+    async def blocked_acall_llm_model(*args, **kwargs):
+        nonlocal provider_cancelled
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            provider_cancelled = True
+            raise
+
+    monkeypatch.setattr(
+        llm_agent_module, "DEFAULT_LLM_EXECUTION_TIMEOUT_SECONDS", 0.01
+    )
+    monkeypatch.setattr(
+        llm_agent_module, "acall_llm_model", blocked_acall_llm_model
+    )
+    context = Context(task_id="provider-timeout", session=Session(session_id="sess"))
+    context.set_task(Task(id="provider-timeout", name="provider-timeout"))
+    message = Message(
+        category=Constants.AGENT,
+        sender="user",
+        receiver=agent.name(),
+        headers={"context": context},
+    )
+
+    with pytest.raises(AWorldRuntimeException, match="call_deadline_exceeded"):
+        await agent.invoke_model(
+            messages=[{"role": "user", "content": "hello"}],
+            message=message,
+            stream=False,
+        )
+
+    assert provider_cancelled is True
 
 
 @pytest.mark.asyncio

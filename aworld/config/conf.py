@@ -165,7 +165,11 @@ class ContextCompilerRuntimeConfig(BaseConfig):
     reserved_output_tokens: int = 4096
     provider_protocol_reserve: int = 256
     safety_margin_tokens: int = 512
-    max_item_tokens: int = 10000
+    # Offload controls how much Tool output stays inline; the final compiler
+    # controls the total request budget. Do not impose a second implicit cap
+    # on an indivisible assistant/tool exchange that fits that total budget.
+    # Callers can still opt into a hard per-item contract explicitly.
+    max_item_tokens: Optional[int] = Field(default=None, gt=0)
     require_proven_semantics_for_enforce: bool = True
     scoped_instructions: Literal["workspace_only", "nested"] = "nested"
     progressive_skills: bool = True
@@ -187,6 +191,26 @@ class ContextCompilerRuntimeConfig(BaseConfig):
     context_inspector: bool = True
     trace_level: Literal["none", "summary", "decisions", "full_redacted"] = "decisions"
     completion_contract: Literal["off", "observe", "enforce"] = "off"
+    # One model turn shares a hard wall deadline. Streaming additionally has
+    # an idle deadline and an active Tool-free action deadline, leaving a
+    # bounded continuation window instead of spending the whole turn on
+    # provider-visible reasoning. ``None`` disables an individual optional
+    # deadline; for the total config field it inherits the stable public
+    # 360-second default. Direct ``GenerationBudgetPolicy`` construction can
+    # explicitly disable the total deadline as well.
+    generation_total_timeout_seconds: Optional[float] = Field(default=None, gt=0)
+    generation_stream_idle_timeout_seconds: Optional[float] = Field(
+        default=None, gt=0
+    )
+    generation_active_tool_free_timeout_seconds: Optional[float] = Field(
+        default=None, gt=0
+    )
+    generation_action_repair_timeout_seconds: Optional[float] = Field(
+        default=None, gt=0
+    )
+    generation_action_repair_max_output_tokens: int = Field(default=1024, gt=0)
+    generation_partial_response_context_chars: int = Field(default=8192, gt=0)
+    generation_action_repair_enabled: bool = False
 
 
 class ModelConfig(BaseConfig):
@@ -622,6 +646,7 @@ class AgentConfig(BaseConfig):
     max_steps: int = 10
     max_input_tokens: int = 128000
     max_actions_per_step: int = 10
+    infrastructure_error_circuit_breaker_threshold: int = 3
     system_prompt: Optional[str] = None
     system_prompt_template: Optional[str] = None
     working_dir: Optional[str] = None

@@ -82,7 +82,8 @@ def _profile() -> InferenceProfile:
     )
 
 
-def test_runtime_segments_oversized_required_text_without_content_loss():
+@pytest.mark.parametrize("max_item_tokens", [None, 50])
+def test_runtime_segments_required_text_only_for_explicit_limit(max_item_tokens):
     request_id = "oversized-required-system"
     system_content = ("System paragraph with detailed instructions.\n\n" * 30).strip()
     messages = (
@@ -120,7 +121,7 @@ def test_runtime_segments_oversized_required_text_without_content_loss():
     policy = FinalCompilePolicy(
         compiler_version="segmentation-test-v1",
         policy_version="policy-v1",
-        input_budget=ContextInputBudget(10000, 100, 10, 10, 50),
+        input_budget=ContextInputBudget(10000, 100, 10, 10, max_item_tokens),
     )
 
     result = compile_model_boundary_context(
@@ -140,6 +141,11 @@ def test_runtime_segments_oversized_required_text_without_content_loss():
         item for item in emitted if item["role"] == "system"
     )
     assert result.enforce_ready is True
+    if max_item_tokens is None:
+        assert len(system_segments) == 1
+        assert system_segments[0]["content"] == system_content
+        assert emitted[-1]["content"] == "Who are you?"
+        return
     assert len(system_segments) > 1
     assert "".join(item["content"] for item in system_segments) == system_content
     assert all(

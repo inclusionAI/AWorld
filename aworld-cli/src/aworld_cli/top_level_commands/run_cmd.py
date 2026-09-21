@@ -5,9 +5,59 @@ import asyncio
 import hashlib
 import json
 import os
+import sys
+import tempfile
+from dataclasses import replace
 from pathlib import Path
 
+from aworld_cli.async_runtime import run_direct_async
 from aworld_cli.runtime_bootstrap import RuntimeBootstrapError, bootstrap_runtime
+
+
+def _write_final_markers(lines: list[str]) -> None:
+    """Flush prior output, then append grouped diagnostic marker lines."""
+
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.flush()
+        except Exception:
+            pass
+    sys.stderr.write("\n" + "\n".join(lines) + "\n")
+    sys.stderr.flush()
+
+
+def _write_outcome_sidecar(path: str, payload: dict) -> None:
+    """Atomically persist the content-free direct-run control record."""
+
+    # Do not resolve the leaf: os.replace must replace a pre-existing symlink,
+    # never follow it and overwrite its target.
+    destination = Path(path).expanduser().absolute()
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    descriptor, temporary_name = tempfile.mkstemp(
+        dir=destination.parent,
+        prefix=f".{destination.name}.",
+        suffix=".tmp",
+    )
+    temporary_path = Path(temporary_name)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+            json.dump(payload, stream, ensure_ascii=False, sort_keys=True)
+            stream.write("\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary_path, destination)
+        try:
+            directory_descriptor = os.open(destination.parent, os.O_RDONLY)
+            try:
+                os.fsync(directory_descriptor)
+            finally:
+                os.close(directory_descriptor)
+        except OSError:
+            # The file itself is already fsynced and atomically installed.
+            # Some filesystems do not permit opening/fsyncing a directory.
+            pass
+    finally:
+        temporary_path.unlink(missing_ok=True)
 
 
 _SELF_EVOLVE_TASK_RESPONSE_SCHEMA = "aworld.self_evolve.task_response.v1"
@@ -301,6 +351,22 @@ def _register_run_options(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--judge-backend-ref", type=str)
     parser.add_argument("--judge-model-profile", type=str)
     parser.add_argument("--emit-trajectory", action="store_true")
+    parser.add_argument(
+        "--trajectory-output",
+        type=str,
+        help="Write the direct-run trajectory to this file.",
+    )
+    parser.add_argument(
+        "--trajectory-format",
+        choices=("atif",),
+        default="atif",
+        help="Trajectory output format (default: atif).",
+    )
+    parser.add_argument(
+        "--outcome-output",
+        type=str,
+        help="Atomically write the content-free direct-run outcome to this file.",
+    )
 
 
 def _parse_global_evolve_options(argv) -> argparse.Namespace:
@@ -368,11 +434,18 @@ class RunTopLevelCommand:
 
     def run(self, args, context) -> int | None:
         from aworld_cli.main import (
+            _direct_run_failure_outcome,
             _resolve_agent_dirs,
             _run_direct_mode,
             _self_evolve_config_from_cli_mode,
             _show_banner,
             init_middlewares,
+        )
+        from aworld_cli.run_outcome import (
+            DirectRunErrorCode,
+            DirectRunStage,
+            DirectRunStatus,
+            coerce_direct_run_outcome,
         )
 
         task_response_capability = _consume_task_response_capability()
@@ -384,8 +457,19 @@ class RunTopLevelCommand:
                 init_middlewares_fn=init_middlewares,
                 show_banner_fn=_show_banner,
             )
-        except RuntimeBootstrapError:
-            return 1
+        except RuntimeBootstrapError as exc:
+            outcome = _direct_run_failure_outcome(
+                stage=DirectRunStage.ORCHESTRATION,
+                error_code=DirectRunErrorCode.DIRECT_RUN_EXCEPTION,
+                agent_name=getattr(args, "agent", None) or "Aworld",
+                details={"error_type": type(exc).__name__},
+            )
+            return self._finalize_outcome(
+                args=args,
+                agent_name=getattr(args, "agent", None) or "Aworld",
+                outcome=outcome,
+                task_response_capability=task_response_capability,
+            )
 
         local_dirs = _resolve_agent_dirs(args.agent_dir)
         args_evolve = getattr(args, "evolve", None)
@@ -397,60 +481,314 @@ class RunTopLevelCommand:
         judge_model_profile = getattr(args, "judge_model_profile", None) or global_evolve.judge_model_profile
         agent_name = self._resolve_agent_name(args)
         if agent_name is None:
-            return 1
+            outcome = _direct_run_failure_outcome(
+                stage=DirectRunStage.AGENT_LOAD,
+                error_code=DirectRunErrorCode.AGENT_LOAD_FAILED,
+                agent_name=getattr(args, "agent", None) or "unknown",
+                details={"error_type": "AgentResolutionError"},
+            )
+            return self._finalize_outcome(
+                args=args,
+                agent_name=getattr(args, "agent", None) or "unknown",
+                outcome=outcome,
+                task_response_capability=task_response_capability,
+            )
 
-        summary = asyncio.run(
-            _run_direct_mode(
+        checkpoint_receipt = self._write_initial_atif_checkpoint(
+            args=args,
+            agent_name=agent_name,
+        )
+        if checkpoint_receipt is not None and checkpoint_receipt.status.value == "failed":
+            outcome = _direct_run_failure_outcome(
+                stage=DirectRunStage.ORCHESTRATION,
+                error_code=DirectRunErrorCode.ATIF_EXPORT_FAILED,
+                agent_name=agent_name,
+            )
+            return self._finalize_outcome(
+                args=args,
+                agent_name=agent_name,
+                outcome=outcome,
+                task_response_capability=task_response_capability,
+            )
+
+        try:
+            direct_run_result = run_direct_async(
+                _run_direct_mode(
+                    prompt=args.task,
+                    agent_name=agent_name,
+                    requested_skill_names=args.skill,
+                    skill_paths=args.skill_path,
+                    max_runs=args.max_runs,
+                    max_cost=args.max_cost,
+                    max_duration=args.max_duration,
+                    completion_signal=args.completion_signal,
+                    completion_threshold=args.completion_threshold,
+                    non_interactive=args.non_interactive,
+                    session_id=args.session_id,
+                    remote_backends=args.remote_backend,
+                    local_dirs=local_dirs,
+                    agent_files=args.agent_file,
+                    self_evolve_config=_self_evolve_config_from_cli_mode(
+                        evolve_mode,
+                        judge_agent=judge_agent,
+                        judge_agent_name=judge_agent_name,
+                        judge_backend_ref=judge_backend_ref,
+                        judge_model_profile=judge_model_profile,
+                    ),
+                ),
+                one_shot=bool(args.non_interactive),
+            )
+            outcome = coerce_direct_run_outcome(direct_run_result)
+        except KeyboardInterrupt:
+            outcome = _direct_run_failure_outcome(
+                stage=DirectRunStage.AGENT_EXECUTION,
+                error_code=DirectRunErrorCode.DIRECT_RUN_INTERRUPTED,
+                agent_name=agent_name,
+                status=DirectRunStatus.CANCELLED,
+                process_exit_code=130,
+            )
+        except asyncio.CancelledError:
+            outcome = _direct_run_failure_outcome(
+                stage=DirectRunStage.AGENT_EXECUTION,
+                error_code=DirectRunErrorCode.DIRECT_RUN_CANCELLED,
+                agent_name=agent_name,
+                status=DirectRunStatus.CANCELLED,
+                process_exit_code=130,
+            )
+        except Exception as exc:
+            outcome = _direct_run_failure_outcome(
+                stage=DirectRunStage.ORCHESTRATION,
+                error_code=DirectRunErrorCode.DIRECT_RUN_EXCEPTION,
+                agent_name=agent_name,
+                details={"error_type": type(exc).__name__},
+            )
+
+        return self._finalize_outcome(
+            args=args,
+            agent_name=agent_name,
+            outcome=outcome,
+            task_response_capability=task_response_capability,
+        )
+
+    @staticmethod
+    def _write_initial_atif_checkpoint(*, args, agent_name: str):
+        """Atomically seed a valid incomplete ATIF before provider execution.
+
+        A final outcome replaces this checkpoint.  If the enclosing container
+        is killed before Python can run ``finally`` logic, Harbor still has a
+        schema-valid record showing that completion was not established.
+        """
+
+        trajectory_output = getattr(args, "trajectory_output", None)
+        if not trajectory_output:
+            return None
+        from aworld_cli.atif import build_atif_trajectory, try_write_atif_trajectory
+
+        try:
+            import aworld
+
+            agent_version = getattr(aworld, "__version__", "unknown")
+        except Exception:
+            agent_version = "unknown"
+        try:
+            trajectory = build_atif_trajectory(
+                {
+                    "trajectory": [],
+                    "trajectory_capture_mode": "pre_execution_checkpoint",
+                    "trajectory_fidelity": "partial",
+                    "llm_call_count": 0,
+                    "tool_call_count": 0,
+                    "action_count": 0,
+                },
                 prompt=args.task,
                 agent_name=agent_name,
-                requested_skill_names=args.skill,
-                skill_paths=args.skill_path,
-                max_runs=args.max_runs,
-                max_cost=args.max_cost,
-                max_duration=args.max_duration,
-                completion_signal=args.completion_signal,
-                completion_threshold=args.completion_threshold,
-                non_interactive=args.non_interactive,
-                session_id=args.session_id,
-                remote_backends=args.remote_backend,
-                local_dirs=local_dirs,
-                agent_files=args.agent_file,
-                self_evolve_config=_self_evolve_config_from_cli_mode(
-                    evolve_mode,
-                    judge_agent=judge_agent,
-                    judge_agent_name=judge_agent_name,
-                    judge_backend_ref=judge_backend_ref,
-                    judge_model_profile=judge_model_profile,
-                ),
+                agent_version=agent_version,
+                model_name=os.environ.get("LLM_MODEL_NAME"),
+                run_outcome={
+                    "semantic_status": "in_progress",
+                    "process_exit_code": 1,
+                    "trajectory_fidelity": "partial",
+                    "llm_call_count": 0,
+                    "tool_call_count": 0,
+                    "action_count": 0,
+                },
             )
+        except Exception as exc:
+            from aworld_cli.atif import AtifExportReceipt, AtifExportStatus
+
+            return AtifExportReceipt(
+                status=AtifExportStatus.FAILED,
+                trajectory_fidelity="partial",
+                error_code="atif_checkpoint_build_failed",
+                error_type=type(exc).__name__,
+            )
+        return try_write_atif_trajectory(
+            trajectory_output,
+            trajectory,
+            trajectory_fidelity="partial",
         )
-        if summary is False:
-            return 1
-        emit_trajectory = getattr(args, "emit_trajectory", False)
+
+    @staticmethod
+    def _finalize_outcome(
+        *,
+        args,
+        agent_name: str,
+        outcome,
+        task_response_capability: int | None = None,
+    ) -> int:
+        from aworld_cli.atif import (
+            AtifExportReceipt,
+            AtifExportStatus,
+            build_atif_trajectory,
+            try_write_atif_trajectory,
+        )
+        from aworld_cli.main import _trajectory_payload_from_direct_run_summary
+        from aworld_cli.run_outcome import (
+            DirectRunErrorCode,
+            DirectRunStage,
+            DirectRunStatus,
+        )
+
+        summary = outcome.summary
+        trajectory_payload = _trajectory_payload_from_direct_run_summary(
+            summary,
+            prompt=args.task,
+            agent_name=agent_name,
+        )
+        trajectory_payload.update(
+            {
+                "trajectory_fidelity": outcome.trajectory_fidelity,
+                "llm_call_count": outcome.llm_call_count,
+                "tool_call_count": outcome.tool_call_count,
+                "action_count": outcome.action_count,
+            }
+        )
+
         task_response_path = os.environ.get(
             "AWORLD_SELF_EVOLVE_TASK_RESPONSE_PATH"
         )
-        if emit_trajectory or task_response_path:
-            from aworld_cli.main import _trajectory_payload_from_direct_run_summary
-
-            trajectory_payload = _trajectory_payload_from_direct_run_summary(
-                summary,
-                prompt=args.task,
-                agent_name=agent_name,
+        if task_response_path:
+            _write_self_evolve_task_response(
+                trajectory_payload,
+                capability_fd=task_response_capability,
             )
-            if task_response_path:
-                _write_self_evolve_task_response(
-                    trajectory_payload,
-                    capability_fd=task_response_capability,
-                )
-        if emit_trajectory:
+            task_response_capability = None
+        elif task_response_capability is not None:
+            os.close(task_response_capability)
+            task_response_capability = None
+
+        if getattr(args, "emit_trajectory", False):
             print(
                 json.dumps(
                     trajectory_payload,
                     ensure_ascii=False,
                 )
             )
-        return 0
+
+        trajectory_output = getattr(args, "trajectory_output", None)
+        export_receipt = AtifExportReceipt(
+            status=AtifExportStatus.NOT_REQUESTED,
+            trajectory_fidelity=outcome.trajectory_fidelity,
+        )
+        if trajectory_output:
+            try:
+                try:
+                    import aworld
+
+                    agent_version = getattr(aworld, "__version__", "unknown")
+                except Exception:
+                    agent_version = "unknown"
+                run_outcome_payload = outcome.to_dict()
+                trajectory = build_atif_trajectory(
+                    trajectory_payload,
+                    prompt=args.task,
+                    agent_name=agent_name,
+                    agent_version=agent_version,
+                    model_name=os.environ.get("LLM_MODEL_NAME"),
+                    run_outcome=run_outcome_payload,
+                )
+                export_receipt = try_write_atif_trajectory(
+                    trajectory_output,
+                    trajectory,
+                    trajectory_fidelity=outcome.trajectory_fidelity,
+                )
+            except Exception as exc:
+                export_receipt = AtifExportReceipt(
+                    status=AtifExportStatus.FAILED,
+                    trajectory_fidelity=outcome.trajectory_fidelity,
+                    error_code="atif_build_failed",
+                    error_type=type(exc).__name__,
+                )
+            atif_marker = (
+                "AWORLD_ATIF_EXPORT="
+                + json.dumps(
+                    export_receipt.to_dict(),
+                    ensure_ascii=False,
+                    sort_keys=True,
+                )
+            )
+        else:
+            atif_marker = None
+
+        final_outcome = outcome
+        if (
+            trajectory_output
+            and export_receipt.status is AtifExportStatus.FAILED
+        ):
+            final_outcome = replace(
+                outcome,
+                status=DirectRunStatus.INFRASTRUCTURE_FAILED,
+                # A typed task-failure code is reserved for a completely
+                # finalized run. Export failure is infrastructure failure and
+                # must never retain that trusted supervisor signal.
+                process_exit_code=1,
+                failure_record={
+                    "stage": DirectRunStage.ORCHESTRATION.value,
+                    "error_code": DirectRunErrorCode.ATIF_EXPORT_FAILED.value,
+                },
+            )
+
+        outcome_marker = (
+            "AWORLD_RUN_OUTCOME="
+            + json.dumps(
+                final_outcome.to_dict(atif_export=export_receipt.to_dict()),
+                ensure_ascii=False,
+                sort_keys=True,
+            )
+        )
+        outcome_output = getattr(args, "outcome_output", None)
+        if outcome_output:
+            try:
+                _write_outcome_sidecar(
+                    outcome_output,
+                    final_outcome.to_dict(atif_export=export_receipt.to_dict()),
+                )
+            except Exception as exc:
+                final_outcome = replace(
+                    final_outcome,
+                    status=DirectRunStatus.INFRASTRUCTURE_FAILED,
+                    process_exit_code=1,
+                    failure_record={
+                        "stage": DirectRunStage.ORCHESTRATION.value,
+                        "error_code": DirectRunErrorCode.DIRECT_RUN_EXCEPTION.value,
+                    },
+                )
+                outcome_marker = (
+                    "AWORLD_RUN_OUTCOME="
+                    + json.dumps(
+                        final_outcome.to_dict(atif_export=export_receipt.to_dict()),
+                        ensure_ascii=False,
+                        sort_keys=True,
+                    )
+                )
+                print(
+                    "Direct-run outcome sidecar write failed; "
+                    f"error_type={type(exc).__name__}",
+                    file=sys.stderr,
+                )
+        markers = [marker for marker in (atif_marker, outcome_marker) if marker]
+        _write_final_markers(markers)
+        return final_outcome.process_exit_code
 
     def _resolve_agent_name(self, args) -> str | None:
         agent_name = args.agent
@@ -462,13 +800,14 @@ class RunTopLevelCommand:
                     agent_name = init_agent_file(args.agent_file[0])
                     if not agent_name:
                         print(
-                            f"❌ Error: Could not extract agent name from {args.agent_file[0]}"
+                            "❌ Error: Could not extract an agent name from the file"
                         )
                         return None
                     print(f"ℹ️  Auto-detected agent name: {agent_name}")
                 except Exception as exc:
                     print(
-                        f"❌ Error: Failed to load agent file {args.agent_file[0]}: {exc}"
+                        "❌ Error: Failed to load the agent file "
+                        f"({type(exc).__name__}); path and exception text were omitted"
                     )
                     return None
             else:

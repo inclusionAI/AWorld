@@ -1,5 +1,6 @@
 ---
 name: embedded-video-pip-smooth-playback
+default_enabled: false
 description: >-
   Prevent stutter and frozen frames when embedding a child video inside a parent in code-driven
   pipelines (Remotion, After Effects scripting, FFmpeg filter graphs). Explains why sparse
@@ -66,4 +67,3 @@ Export again; embedded playback should track smoothly with the main timeline.
 **Rule:** Any asset that must be seeked frame-accurately from code should be pre-converted to **all-intra** (`-g 1`) before use.
 
 This applies broadly in **programmatic video**: PiP, reverse playback, scrubber-driven playback, etc. If embedded video looks choppy, **check keyframe spacing first** and re-encode if needed.
-

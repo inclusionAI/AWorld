@@ -246,6 +246,43 @@ async def test_default_task_handler_sanitizes_internal_tool_mismatch_errors():
     assert "tool_calls mismatch" not in response.answer
     assert "messages:" not in response.answer
     assert "internal" in response.answer.lower()
+    assert response.failure_origin == "infrastructure"
+    assert response.failure_code == "runtime_exception"
+
+
+@pytest.mark.asyncio
+async def test_default_task_handler_preserves_typed_failure_evidence():
+    runner = MagicMock()
+    runner.task = SimpleNamespace(max_retry_count=0, hooks=None, is_sub_task=False, id="task-1")
+    runner.context = Context()
+    runner.start_time = 0.0
+    runner.stop = AsyncMock()
+    runner.should_stop_task = AsyncMock(return_value=False)
+
+    handler = DefaultTaskHandler(runner)
+    context = Context()
+    context.set_task(SimpleNamespace(timeout=0))
+    message = Message(
+        category=Constants.TASK,
+        payload=TaskItem(msg="provider details", data=None, stop=True),
+        session_id="session-1",
+        topic=TopicType.ERROR,
+        headers={
+            "context": context,
+            "task_failure": {
+                "origin": "infrastructure",
+                "code": "provider_timeout",
+                "error_type": "GenerationBudgetExceeded",
+            },
+        },
+    )
+
+    outputs = [msg async for msg in handler.handle(message)]
+
+    response = outputs[-1].payload
+    assert response.failure_origin == "infrastructure"
+    assert response.failure_code == "provider_timeout"
+    assert response.error_type == "GenerationBudgetExceeded"
 
 
 @pytest.mark.asyncio

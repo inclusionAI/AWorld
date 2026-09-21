@@ -1,5 +1,6 @@
 ---
 name: tikhub-youtube-search
+default_enabled: false
 description: Lightweight TikHub YouTube search and video-detail workflow. Prioritizes single-request usage with curl or minimal Python, saves raw API JSON by default, and includes a small stdlib post-processor for CSV and simplified JSON. Use when the user wants YouTube comprehensive search results, continuation-token pagination, or structured video metadata from TikHub without a heavy wrapper.
 ---
 

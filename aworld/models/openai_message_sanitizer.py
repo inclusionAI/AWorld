@@ -132,7 +132,8 @@ def _normalize_tool_calls(value: Any) -> Any:
         return None
 
     normalized_tool_calls = normalize_tool_calls_for_replay(
-        [tool_call for tool_call in value if isinstance(tool_call, dict)]
+        [tool_call for tool_call in value if isinstance(tool_call, dict)],
+        compact=False,
     )
     if not normalized_tool_calls:
         return None

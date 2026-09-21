@@ -14,6 +14,8 @@ from aworld.skills.plugin_provider import PluginSkillProvider
 from aworld.skills.release import is_self_evolve_release_visible
 from aworld.skills.registry import SkillRegistry as FrameworkSkillRegistry
 
+from aworld_cli.core.builtin_skills import build_builtin_skill_providers
+
 
 _SCOPE_ORDER = {
     "session": 0,
@@ -29,9 +31,12 @@ class SkillResolverRequest:
     agent_name: str | None = None
     task_text: str | None = None
     requested_skill_names: tuple[str, ...] = ()
+    enabled_skill_names: tuple[str, ...] = ()
     disabled_skill_names: tuple[str, ...] = ()
+    include_default_disabled: bool = False
     compatibility_sources: tuple[str, ...] = ()
     compatibility_skill_patterns: tuple[str, ...] = ()
+    default_skill_names: tuple[str, ...] = ()
     # Self-evolve replay evaluates an unpublished candidate in an isolated
     # child process.  These sources are intentionally distinct from ordinary
     # compatibility sources: they take precedence over ambient installations
@@ -104,6 +109,10 @@ class SkillActivationResolver:
             seen_provider_ids.add(provider_id)
             compatibility_provider_ids.add(provider_id)
 
+        # Built-ins remain available without --skill or agent source hints, but
+        # explicit plugin/user definitions with the same name take precedence.
+        providers.extend(build_builtin_skill_providers())
+
         return (
             FrameworkSkillRegistry(providers),
             compatibility_provider_ids,
@@ -174,10 +183,29 @@ class SkillActivationResolver:
             for skill_name in request.disabled_skill_names
             if str(skill_name).strip()
         }
+        enabled_skill_names = {
+            str(skill_name).strip().lower()
+            for skill_name in request.enabled_skill_names
+            if str(skill_name).strip()
+        }
+        requested_skill_names = {
+            str(skill_name).strip().lower()
+            for skill_name in request.requested_skill_names
+            if str(skill_name).strip()
+        }
         for candidate in candidates:
             if candidate.visibility != "public":
                 continue
             if candidate.skill_name.strip().lower() in disabled_skill_names:
+                continue
+            normalized_name = candidate.skill_name.strip().lower()
+            default_enabled = candidate.metadata.get("default_enabled", True) is not False
+            if (
+                not default_enabled
+                and normalized_name not in enabled_skill_names
+                and normalized_name not in requested_skill_names
+                and not request.include_default_disabled
+            ):
                 continue
             if not self._scope_allows(
                 candidate.scope,
@@ -228,19 +256,36 @@ class SkillActivationResolver:
                     requested.append(skill_name)
             return tuple(requested)
 
+        # Agent defaults are active without task keywords, while explicit task
+        # selection above and the availability/disable filters stay authoritative.
+        enabled_skill_names = {
+            str(skill_name).strip().lower()
+            for skill_name in request.enabled_skill_names
+            if str(skill_name).strip()
+        }
+        eligible = [
+            candidate
+            for candidate in candidates
+            if candidate.metadata.get("default_enabled", True) is not False
+            or candidate.skill_name.strip().lower() in enabled_skill_names
+        ]
+        available = {candidate.skill_name for candidate in eligible}
+        defaults = tuple(
+            dict.fromkeys(name for name in request.default_skill_names if name in available)
+        )
         scored = sorted(
             (
                 (
                     self._score_candidate(candidate, request.task_text or ""),
                     candidate.skill_name,
                 )
-                for candidate in candidates
+                for candidate in eligible
             ),
             key=lambda item: (-item[0], item[1]),
         )
         if not scored or scored[0][0] <= 0:
-            return tuple()
-        return (scored[0][1],)
+            return defaults
+        return tuple(dict.fromkeys((*defaults, scored[0][1])))
 
     def _score_candidate(
         self, candidate: ResolvedSkillCandidate, task_text: str

@@ -239,6 +239,30 @@ def test_skill_disable_and_enable_runtime_skill_cli(
     assert SkillStateManager().is_enabled("youtube_search") is True
 
 
+def test_skill_state_can_override_a_default_disabled_skill(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    manager = SkillStateManager()
+
+    assert manager.is_enabled("video-production", default_enabled=False) is False
+
+    manager.enable_skill("video-production")
+    assert manager.enabled_skill_names() == ("video-production",)
+    assert manager.is_enabled("video-production", default_enabled=False) is True
+
+    manager.disable_skill("video-production")
+    assert manager.enabled_skill_names() == ()
+    assert manager.disabled_skill_names() == ("video-production",)
+    assert manager.is_enabled("video-production", default_enabled=True) is False
+
+    manager.reset_skill("video-production")
+    assert manager.enabled_skill_names() == ()
+    assert manager.disabled_skill_names() == ()
+    assert manager.is_enabled("video-production", default_enabled=False) is False
+
+
 def test_skill_list_cli_shows_enabled_state(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -1795,3 +1819,54 @@ async def test_run_chat_session_starts_goal_prompt_in_a_new_session(
         == "Build a REST API"
     )
     assert runtime._plugin_state_store.handle(old_session_state_path).read() == {}
+
+
+def test_run_top_level_command_writes_atif_trajectory(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    async def fake_run_direct_mode(**kwargs):
+        return {
+            "results": [
+                {
+                    "iteration": 1,
+                    "response": "parsed",
+                    "trajectory_capture_mode": "task_response",
+                    "trajectory": [{"meta": {"step": 1}, "action": {"content": "parsed"}}],
+                    "completed": True,
+                    "success": True,
+                }
+            ]
+        }
+
+    monkeypatch.setattr(
+        "aworld_cli.top_level_commands.run_cmd.bootstrap_runtime", lambda **kwargs: None
+    )
+    monkeypatch.setattr(main_module, "_resolve_agent_dirs", lambda agent_dirs: [])
+    monkeypatch.setattr(main_module, "_run_direct_mode", fake_run_direct_mode)
+    output = tmp_path / "agent" / "trajectory.json"
+    args = SimpleNamespace(
+        task="Parse with FileX",
+        agent="Aworld",
+        skill=["filex"],
+        max_runs=1,
+        max_cost=None,
+        max_duration=None,
+        completion_signal=None,
+        completion_threshold=3,
+        non_interactive=True,
+        session_id=None,
+        remote_backend=None,
+        agent_dir=None,
+        agent_file=None,
+        skill_path=["/opt/runtime-agent/skills"],
+        env_file=".env",
+        emit_trajectory=False,
+        trajectory_output=output,
+        trajectory_format="atif",
+    )
+
+    assert RunTopLevelCommand().run(args, SimpleNamespace(argv=["aworld-cli", "run"])) == 0
+    payload = json.loads(output.read_text(encoding="utf-8"))
+    assert payload["schema_version"] == "ATIF-v1.7"
+    assert payload["steps"][1]["source"] == "agent"
+    assert payload["steps"][1]["message"] == "parsed"

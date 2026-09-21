@@ -10,18 +10,24 @@ or coordinated multi-agent collaboration.
 """
 import os
 import sys
-import traceback
 from datetime import datetime, timedelta, timezone
 from importlib import import_module
 from pathlib import Path
-from typing import Callable, Optional, List
+from typing import Callable, Optional, List, Sequence
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from aworld.core.context.amni import AgentContextConfig
 from aworld.core.context.amni.config import get_default_config, ContextEnvConfig
 from aworld.core.context.amni.prompt.assembly.budget import PromptBudgetPolicy
+from aworld.core.context.generation_budget import GenerationBudgetPolicy
+from aworld.core.tool.surface import (
+    ToolCapabilitySpec,
+    ToolLifecycle,
+    ToolSurfaceProfile,
+)
 from aworld.logs.util import logger
 from aworld_cli.core.context_tool import CONTEXT_TOOL
+from aworld_cli.core.builtin_skills import AWORLD_DEFAULT_SKILL_NAMES
 from aworld_cli.core.skill_registry import build_skill_resolver_inputs
 from .audio.audio import build_audio_swarm
 from .avatar.avatar import build_avatar_swarm
@@ -33,9 +39,10 @@ from .mac_ui_automation import (
     augment_aworld_agent_builtin_tools,
     augment_aworld_agent_mcp_servers,
 )
+from .sandbox_factory import create_agent_sandbox
 
 # Import SpawnSubagentTool to ensure it's registered in ToolFactory
-from aworld.core.tool.builtin import SpawnSubagentTool
+from aworld.core.tool.builtin import SpawnSubagentTool  # noqa: F401
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -50,6 +57,32 @@ from aworld.config import AgentConfig, ModelConfig
 CAST_ANALYSIS = "CAST_ANALYSIS"
 CAST_CODER = "CAST_CODER"
 CAST_SEARCH = "CAST_SEARCH"
+AWORLD_MAX_LOOP_STEPS_HARD_LIMIT = 240
+AWORLD_DEFAULT_MAX_COMPLETION_TOKENS = 16384
+AWORLD_MAX_COMPLETION_TOKENS_HARD_LIMIT = 64000
+AWORLD_BUILTIN_SUBAGENT_NAMES = (
+    "developer",
+    "evaluator",
+    "diffusion",
+    "avatar",
+    "audio",
+    "image",
+)
+_BACKGROUND_SUBAGENT_ACTIONS = (
+    "spawn_background",
+    "check_task",
+    "wait_task",
+    "cancel_task",
+)
+_GENERATION_BUDGET_ENV_NAMES = (
+    "AWORLD_GENERATION_TOTAL_TIMEOUT_SECONDS",
+    "AWORLD_GENERATION_STREAM_IDLE_TIMEOUT_SECONDS",
+    "AWORLD_GENERATION_ACTIVE_TOOL_FREE_TIMEOUT_SECONDS",
+    "AWORLD_GENERATION_ACTION_REPAIR_TIMEOUT_SECONDS",
+    "AWORLD_GENERATION_ACTION_REPAIR_MAX_OUTPUT_TOKENS",
+    "AWORLD_GENERATION_PARTIAL_RESPONSE_CONTEXT_CHARS",
+    "AWORLD_GENERATION_ACTION_REPAIR_ENABLED",
+)
 
 
 def _register_optional_cast_tools(
@@ -106,7 +139,216 @@ def resolve_aworld_prompt_budget() -> Optional[PromptBudgetPolicy]:
     return PromptBudgetPolicy(reserved_output_tokens=reserved_output_tokens)
 
 
-def render_aworld_system_prompt(now: Optional[datetime] = None) -> str:
+def resolve_aworld_max_completion_tokens() -> int:
+    """Resolve a bounded per-turn output budget for the built-in agent."""
+
+    raw_value = os.environ.get(
+        "AWORLD_MAX_COMPLETION_TOKENS",
+        str(AWORLD_DEFAULT_MAX_COMPLETION_TOKENS),
+    )
+    try:
+        max_completion_tokens = int(raw_value)
+    except ValueError as exc:
+        raise ValueError(
+            "AWORLD_MAX_COMPLETION_TOKENS must be a positive integer"
+        ) from exc
+    if max_completion_tokens <= 0:
+        raise ValueError(
+            "AWORLD_MAX_COMPLETION_TOKENS must be a positive integer"
+        )
+    if max_completion_tokens > AWORLD_MAX_COMPLETION_TOKENS_HARD_LIMIT:
+        raise ValueError(
+            "AWORLD_MAX_COMPLETION_TOKENS must not exceed the hard limit of "
+            f"{AWORLD_MAX_COMPLETION_TOKENS_HARD_LIMIT}"
+        )
+    return max_completion_tokens
+
+
+def resolve_aworld_tool_surface_profile() -> ToolSurfaceProfile:
+    """Resolve a lifecycle-only Tool policy for the bundled root agent.
+
+    ``general`` preserves the interactive CLI surface. ``one_shot`` is for an
+    enclosing runner that expects the task to finish in this process: durable
+    schedules and background task-management actions are excluded, while
+    ordinary terminal/filesystem work remains process-local.
+    """
+
+    profile_id = os.environ.get("AWORLD_TOOL_SURFACE_PROFILE", "general")
+    profile_id = profile_id.strip().lower()
+    if profile_id == "general":
+        return ToolSurfaceProfile(profile_id="general")
+    if profile_id == "one_shot":
+        return ToolSurfaceProfile(
+            profile_id="one_shot",
+            allowed_lifecycles=(ToolLifecycle.IMMEDIATE,),
+        )
+    raise ValueError(
+        "AWORLD_TOOL_SURFACE_PROFILE must be either 'general' or 'one_shot'"
+    )
+
+
+def resolve_aworld_tool_surface_enforcement() -> bool:
+    """Return whether missing required live schemas fail the run."""
+
+    mode = os.environ.get("AWORLD_TOOL_SURFACE_MODE", "observe").strip().lower()
+    if mode == "observe":
+        return False
+    if mode == "enforce":
+        return True
+    raise ValueError("AWORLD_TOOL_SURFACE_MODE must be either 'observe' or 'enforce'")
+
+
+def resolve_aworld_generation_budget() -> Optional[GenerationBudgetPolicy]:
+    """Resolve optional runner-owned generation limits without task heuristics."""
+
+    if not any(name in os.environ for name in _GENERATION_BUDGET_ENV_NAMES):
+        return None
+    # A single opt-in must not silently enable every optional deadline for a
+    # normal CLI user. Runtime adapters explicitly provide the full benchmark
+    # policy; unspecified general-mode controls stay disabled.
+    defaults = GenerationBudgetPolicy(
+        total_timeout_seconds=360.0,
+        stream_idle_timeout_seconds=None,
+        active_tool_free_timeout_seconds=None,
+        action_repair_timeout_seconds=None,
+        action_repair_enabled=False,
+    )
+
+    def optional_seconds(name: str, default: Optional[float]) -> Optional[float]:
+        raw = os.environ.get(name)
+        if raw is None or not raw.strip():
+            return default
+        normalized = raw.strip().lower()
+        if normalized in {"none", "off", "disabled"}:
+            return None
+        try:
+            value = float(normalized)
+        except ValueError as exc:
+            raise ValueError(f"{name} must be positive or 'none'") from exc
+        if value <= 0:
+            raise ValueError(f"{name} must be positive or 'none'")
+        return value
+
+    def positive_int(name: str, default: int) -> int:
+        raw = os.environ.get(name)
+        if raw is None or not raw.strip():
+            return default
+        try:
+            value = int(raw)
+        except ValueError as exc:
+            raise ValueError(f"{name} must be a positive integer") from exc
+        if value <= 0:
+            raise ValueError(f"{name} must be a positive integer")
+        return value
+
+    repair_raw = os.environ.get("AWORLD_GENERATION_ACTION_REPAIR_ENABLED")
+    if repair_raw is None or not repair_raw.strip():
+        repair_enabled = defaults.action_repair_enabled
+    elif repair_raw.strip().lower() in {"1", "true", "yes"}:
+        repair_enabled = True
+    elif repair_raw.strip().lower() in {"0", "false", "no"}:
+        repair_enabled = False
+    else:
+        raise ValueError(
+            "AWORLD_GENERATION_ACTION_REPAIR_ENABLED must be a boolean"
+        )
+
+    return GenerationBudgetPolicy(
+        total_timeout_seconds=optional_seconds(
+            "AWORLD_GENERATION_TOTAL_TIMEOUT_SECONDS",
+            defaults.total_timeout_seconds,
+        ),
+        stream_idle_timeout_seconds=optional_seconds(
+            "AWORLD_GENERATION_STREAM_IDLE_TIMEOUT_SECONDS",
+            defaults.stream_idle_timeout_seconds,
+        ),
+        active_tool_free_timeout_seconds=optional_seconds(
+            "AWORLD_GENERATION_ACTIVE_TOOL_FREE_TIMEOUT_SECONDS",
+            defaults.active_tool_free_timeout_seconds,
+        ),
+        action_repair_timeout_seconds=optional_seconds(
+            "AWORLD_GENERATION_ACTION_REPAIR_TIMEOUT_SECONDS",
+            defaults.action_repair_timeout_seconds,
+        ),
+        action_repair_max_output_tokens=positive_int(
+            "AWORLD_GENERATION_ACTION_REPAIR_MAX_OUTPUT_TOKENS",
+            defaults.action_repair_max_output_tokens,
+        ),
+        partial_response_context_chars=positive_int(
+            "AWORLD_GENERATION_PARTIAL_RESPONSE_CONTEXT_CHARS",
+            defaults.partial_response_context_chars,
+        ),
+        action_repair_enabled=repair_enabled,
+    )
+
+
+def resolve_aworld_builtin_subagents() -> tuple[str, ...]:
+    """Resolve an explicit, task-text-independent collaborator allowlist."""
+
+    raw_value = os.environ.get("AWORLD_BUILTIN_SUBAGENTS", "all").strip().lower()
+    if raw_value in {"all", "auto"}:
+        return AWORLD_BUILTIN_SUBAGENT_NAMES
+    if raw_value in {"", "none"}:
+        return ()
+
+    requested = tuple(
+        value.strip() for value in raw_value.split(",") if value.strip()
+    )
+    unknown = sorted(set(requested) - set(AWORLD_BUILTIN_SUBAGENT_NAMES))
+    if unknown:
+        raise ValueError(
+            "AWORLD_BUILTIN_SUBAGENTS contains unknown names: "
+            + ", ".join(unknown)
+        )
+    requested_set = set(requested)
+    return tuple(
+        name for name in AWORLD_BUILTIN_SUBAGENT_NAMES if name in requested_set
+    )
+
+
+def _aworld_root_tool_policy(
+    profile: ToolSurfaceProfile,
+    *,
+    has_subagents: bool,
+) -> tuple[list[str], dict[str, list[str]]]:
+    """Build the root Tool allowlist and action denylist from lifecycle policy.
+
+    The CAST search Tool is an optional in-process development convenience.  It
+    does not share the Sandbox filesystem authority, so it must never be part of
+    the one-shot surface used by an enclosing runtime.  One-shot agents keep
+    filesystem access on the explicitly configured Sandbox/MCP transports (and
+    can always use the required ``run_code`` terminal schema).
+    """
+
+    tool_names = [
+        CONTEXT_TOOL,
+        *(
+            [CAST_SEARCH]
+            if _CAST_TOOLS_AVAILABLE and profile.profile_id == "general"
+            else []
+        ),
+        *(["async_spawn_subagent"] if has_subagents else []),
+    ]
+    if ToolLifecycle.DURABLE in profile.allowed_lifecycles:
+        tool_names.append("cron")
+
+    black_tool_actions: dict[str, list[str]] = {}
+    if (
+        has_subagents
+        and ToolLifecycle.BACKGROUND not in profile.allowed_lifecycles
+    ):
+        black_tool_actions["async_spawn_subagent"] = list(
+            _BACKGROUND_SUBAGENT_ACTIONS
+        )
+    return tool_names, black_tool_actions
+
+
+def render_aworld_system_prompt(
+    now: Optional[datetime] = None,
+    *,
+    available_tools: Sequence[str] = (),
+    available_subagents: Sequence[str] = (),
+) -> str:
     prompt_template = (Path(__file__).resolve().parent / "prompt.txt").read_text(encoding="utf-8")
     current = now or datetime.now(_BEIJING_TZ)
     if current.tzinfo is None:
@@ -115,6 +357,19 @@ def render_aworld_system_prompt(now: Optional[datetime] = None) -> str:
     replacements = {
         "{{current_date}}": current.strftime("%Y-%m-%d"),
         "{{current_datetime}}": current.strftime("%Y-%m-%d %H:%M:%S"),
+        "{{available_tools}}": (
+            ", ".join(sorted(set(available_tools))) or "none"
+        ),
+        "{{available_subagents}}": (
+            ", ".join(sorted(set(available_subagents))) or "none"
+        ),
+        "{{delegation_guidance}}": (
+            "Delegate only when a listed subagent is materially better suited "
+            "to an independent subtask. Use its exact listed name."
+            if available_subagents
+            else "No subagents are available in this run. Execute the task "
+            "directly and do not attempt delegation."
+        ),
     }
     rendered = prompt_template
     for placeholder, value in replacements.items():
@@ -122,8 +377,34 @@ def render_aworld_system_prompt(now: Optional[datetime] = None) -> str:
     return rendered
 
 
-def load_aworld_system_prompt() -> str:
-    return render_aworld_system_prompt()
+def load_aworld_system_prompt(
+    *,
+    available_tools: Sequence[str] = (),
+    available_subagents: Sequence[str] = (),
+) -> str:
+    return render_aworld_system_prompt(
+        available_tools=available_tools,
+        available_subagents=available_subagents,
+    )
+
+
+def resolve_aworld_max_loop_steps() -> int:
+    """Resolve the bounded soft limit for one Aworld agent task."""
+
+    raw_value = os.environ.get("AWORLD_MAX_LOOP_STEPS", "120")
+    try:
+        max_loop_steps = int(raw_value)
+    except ValueError as exc:
+        raise ValueError("AWORLD_MAX_LOOP_STEPS must be a positive integer") from exc
+    if max_loop_steps <= 0:
+        raise ValueError("AWORLD_MAX_LOOP_STEPS must be a positive integer")
+    if max_loop_steps > AWORLD_MAX_LOOP_STEPS_HARD_LIMIT:
+        raise ValueError(
+            "AWORLD_MAX_LOOP_STEPS must not exceed the hard limit of "
+            f"{AWORLD_MAX_LOOP_STEPS_HARD_LIMIT}"
+        )
+    return max_loop_steps
+
 
 def extract_agents_from_swarm(swarm: Swarm) -> List[BaseAgent]:
     """
@@ -205,12 +486,62 @@ def extract_agents_from_swarm(swarm: Swarm) -> List[BaseAgent]:
         return []
 
 
+def _subagent_names(sub_agents: Sequence[BaseAgent]) -> List[str]:
+    return sorted({agent.name() for agent in sub_agents})
+
+
+def _build_aworld_sub_agents(
+    sandbox,
+    enabled_names: Optional[Sequence[str]] = None,
+) -> List[BaseAgent]:
+    """Build optional collaborators before publishing root capabilities."""
+
+    enabled = set(
+        AWORLD_BUILTIN_SUBAGENT_NAMES
+        if enabled_names is None
+        else enabled_names
+    )
+    builders = []
+    if _CAST_TOOLS_AVAILABLE:
+        if "developer" in enabled:
+            builders.append(
+                ("developer", lambda: build_developer_swarm(sandbox=sandbox))
+            )
+        if "evaluator" in enabled:
+            builders.append(
+                ("evaluator", lambda: build_evaluator_swarm(sandbox=sandbox))
+            )
+    elif {"developer", "evaluator"} & enabled:
+        logger.warning(
+            "Developer and evaluator sub-agents are disabled because CAST "
+            f"dependencies are unavailable: {_CAST_TOOLS_UNAVAILABLE_REASON}"
+        )
+    optional_builders = (
+        ("diffusion", lambda: build_diffusion_swarm(sandbox=sandbox)),
+        ("avatar", lambda: build_avatar_swarm(sandbox=sandbox)),
+        ("audio", lambda: build_audio_swarm(sandbox=sandbox)),
+        ("image", lambda: build_image_swarm(sandbox=sandbox)),
+    )
+    builders.extend(item for item in optional_builders if item[0] in enabled)
+
+    sub_agents = []
+    for label, builder in builders:
+        try:
+            sub_agents.extend(extract_agents_from_swarm(builder()))
+        except Exception as exc:
+            logger.warning(
+                f"Optional Aworld {label} sub-agent is unavailable: {exc}"
+            )
+    return sub_agents
+
+
 def build_context_config(debug_mode):
     config = get_default_config()
     config.debug_mode = debug_mode
     config.agent_config = AgentContextConfig(
         enable_system_prompt_augment=True,
         neuron_names=["task_grounding", "skills"],
+        automated_cognitive_ingestion=True,
         history_scope='session'
     )
     config.env_config = ContextEnvConfig()
@@ -263,12 +594,15 @@ def build_aworld_agent(include_skills: Optional[str] = None):
         plugin_base_dir,
         user_dir=os.environ.get("AWORLD_SKILLS_PATH"),
     )
+    # AWorld owns its default skills. Public tasks and other harnesses do not
+    # need a Gateway capability/profile to enable the bundled FileX workflow.
+    resolver_inputs["default_skill_names"] = list(AWORLD_DEFAULT_SKILL_NAMES)
 
     prompt_budget_policy = resolve_aworld_prompt_budget()
     max_completion_tokens = (
         prompt_budget_policy.reserved_output_tokens
         if prompt_budget_policy is not None
-        else 64000
+        else resolve_aworld_max_completion_tokens()
     )
 
     # Configure agent: provider/base_url use getenv defaults; model_name/api_key may be None (ModelConfig accepts Optional[str])
@@ -287,33 +621,33 @@ def build_aworld_agent(include_skills: Optional[str] = None):
         ext={"skill_resolver_inputs": resolver_inputs},
     )
 
-    # Create sandbox with builtin filesystem and terminal tools (Phase 1)
-    from aworld.sandbox import Sandbox
-
-    mcp_config = {
-        "mcpServers": {
-            "terminal": {
-                "command": sys.executable,
-                "args": ["-m", "examples.gaia.mcp_collections.tools.terminal"],
-                "env": {},
-                "client_session_timeout_seconds": 9999.0,
-            }
-        }
-    }
-
+    # Use the packaged Sandbox providers rather than coupling the CLI agent to
+    # a benchmark example MCP server.
     builtin_tools = augment_aworld_agent_builtin_tools(["filesystem", "terminal"])
     aworld_mcp_servers = augment_aworld_agent_mcp_servers(["terminal"])
+    sandbox = create_agent_sandbox(builtin_tools)
 
-    sandbox = Sandbox(
-        mcp_config=mcp_config,
-        builtin_tools=builtin_tools,
-        workspaces=[os.getcwd()]  # Allow current working directory
+    tool_surface_profile = resolve_aworld_tool_surface_profile()
+    enforce_tool_surface = resolve_aworld_tool_surface_enforcement()
+    generation_budget_policy = resolve_aworld_generation_budget()
+
+    # Resolve optional collaborators before constructing the root agent so its
+    # prompt and tool catalog describe capabilities that actually exist.
+    sub_agents = _build_aworld_sub_agents(
+        sandbox,
+        enabled_names=resolve_aworld_builtin_subagents(),
     )
-    sandbox.reuse = True
+    subagent_names = _subagent_names(sub_agents)
+    root_tool_names, black_tool_actions = _aworld_root_tool_policy(
+        tool_surface_profile,
+        has_subagents=bool(sub_agents),
+    )
+    # Advertise only capabilities the root agent is allowed to use. The
+    # Sandbox may host additional providers for specialized subagents.
+    prompt_capabilities = [*root_tool_names, *aworld_mcp_servers]
 
-    # Create the Aworld agent with filesystem and terminal tools enabled
-    # Note: Aworld is a coordinator with lightweight tool access for information gathering
-    # Complex development tasks are delegated to sub-agents (e.g., Developer)
+    # Create the root as a direct executor. Delegation is an optional capability,
+    # not its identity, and is exposed only when collaborators were initialized.
     agent_class = PromptBudgetedAgent if prompt_budget_policy is not None else Agent
     budgeted_agent_kwargs = (
         {"prompt_budget_policy": prompt_budget_policy}
@@ -324,53 +658,36 @@ def build_aworld_agent(include_skills: Optional[str] = None):
         name="Aworld",
         desc="Aworld - A versatile AI assistant capable of executing tasks directly or delegating to agent teams",
         conf=agent_config,
-        system_prompt=load_aworld_system_prompt(),
+        system_prompt=load_aworld_system_prompt(
+            available_tools=prompt_capabilities,
+            available_subagents=subagent_names,
+        ),
         mcp_servers=aworld_mcp_servers,  # Keep default terminal access and opt-in macOS UI automation when enabled
         sandbox=sandbox,  # Shared sandbox (tools filtered by agent's mcp_servers config)
-        tool_names=[
-            CONTEXT_TOOL,      # Core: Context management
-            *([CAST_SEARCH] if _CAST_TOOLS_AVAILABLE else []),
-            'async_spawn_subagent',  # Core: Dynamic subagent delegation (AsyncTool, needs async_ prefix)
-            'cron',            # Core: Scheduled task management
-        ],
-        enable_subagent=True,  # Enable subagent capability (Aworld-specific default)
+        tool_names=root_tool_names,
+        black_tool_actions=black_tool_actions,
+        tool_surface_specs=(
+            ToolCapabilitySpec(
+                capability_id="terminal",
+                schema_ids=("run_code",),
+                lifecycle=ToolLifecycle.IMMEDIATE,
+                required=enforce_tool_surface,
+            ),
+        ),
+        tool_surface_profile=tool_surface_profile,
+        enable_subagent=bool(sub_agents),
+        llm_max_attempts=3,
+        llm_retry_delay=2.0,
+        generation_budget_policy=generation_budget_policy,
+        max_loop_steps=resolve_aworld_max_loop_steps(),
         **budgeted_agent_kwargs,
     )
+    aworld_agent.tool_surface_profile = tool_surface_profile
 
-    # Directly instantiate developer, evaluator, and diffusion as sub-agents
-    # Pass shared sandbox to enable resource sharing while maintaining tool access control
-    try:
-        cast_sub_agents = []
-        if _CAST_TOOLS_AVAILABLE:
-            developer_swarm = build_developer_swarm(sandbox=sandbox)  # ✅ Share sandbox
-            evaluator_swarm = build_evaluator_swarm()  # TODO: Add sandbox parameter
-            cast_sub_agents = (
-                extract_agents_from_swarm(developer_swarm)
-                + extract_agents_from_swarm(evaluator_swarm)
-            )
-        else:
-            logger.warning(
-                "Developer and evaluator sub-agents are disabled because CAST "
-                f"dependencies are unavailable: {_CAST_TOOLS_UNAVAILABLE_REASON}"
-            )
-        diffusion_swarm = build_diffusion_swarm()  # TODO: Add sandbox parameter
-        avatar_swarm = build_avatar_swarm()
-        audio_swarm = build_audio_swarm()  # TODO: Add sandbox parameter
-        image_swarm = build_image_swarm()
-        sub_agents = (
-            cast_sub_agents
-            + extract_agents_from_swarm(diffusion_swarm)
-            + extract_agents_from_swarm(avatar_swarm)
-            + extract_agents_from_swarm(audio_swarm)
-            + extract_agents_from_swarm(image_swarm)
+    if sub_agents:
+        logger.info(
+            f"Adding {len(sub_agents)} initialized sub-agent(s) to Aworld TeamSwarm"
         )
-
-        if sub_agents:
-            logger.info(f"🤝 Adding {len(sub_agents)} sub-agent(s) to Aworld TeamSwarm (developer, evaluator, diffusion)")
-            return TeamSwarm(aworld_agent, *sub_agents, max_steps=100)
-        else:
-            logger.info("ℹ️ No sub-agents extracted, creating Aworld TeamSwarm without sub-agents")
-            return TeamSwarm(aworld_agent)
-    except Exception as e:
-        logger.warning(f"⚠️ Failed to instantiate sub-agents: {e}, creating Aworld TeamSwarm without sub-agents {traceback.format_exc()}")
-        return TeamSwarm(aworld_agent)
+        return TeamSwarm(aworld_agent, *sub_agents, max_steps=100)
+    logger.info("No sub-agents initialized; Aworld will execute directly")
+    return TeamSwarm(aworld_agent)

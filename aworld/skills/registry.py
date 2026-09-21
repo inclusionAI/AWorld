@@ -68,6 +68,10 @@ class SkillRegistry:
                 dict(content.execution_assets or {}),
             ),
         }
+        if "default_enabled" in metadata:
+            skill_config["default_enabled"] = (
+                metadata["default_enabled"] is not False
+            )
         if descriptor.requirements:
             skill_config["aworld_metadata"] = dict(descriptor.requirements)
         return skill_config

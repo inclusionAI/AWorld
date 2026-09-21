@@ -38,6 +38,20 @@ def test_gateway_vlm_service_normalizes_gateway_protocol_options() -> None:
     }
 
 
+def test_openai_backend_prefers_protected_http_model_name(monkeypatch) -> None:
+    _add_src_path()
+    from document_parse_service.media_transcription.openai_compatible_backend import (
+        OpenAICompatibleMediaTranscriptionBackend,
+    )
+
+    monkeypatch.setenv("GATEWAY_VLLM_MODEL_NAME", "ai_cloud_Kimi_k26_pgc")
+    monkeypatch.setenv("GATEWAY_VLLM_HTTP_MODEL_NAME", "kimi_k26_pc")
+
+    assert OpenAICompatibleMediaTranscriptionBackend._resolve_model({}) == (
+        "kimi_k26_pc"
+    )
+
+
 def test_gateway_vlm_service_rejects_empty_completion(tmp_path: Path) -> None:
     _add_src_path()
     from document_parse_service.media_transcription.gateway_vlm_service import GatewayVlmService

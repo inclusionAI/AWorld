@@ -1,5 +1,6 @@
 ---
 name: video-storytelling-core-principles
+default_enabled: false
 description: >-
   Core storytelling rules for AI video scripts: concrete metaphors instead of abstract jargon,
   the mute test (story reads without audio), visual contrast and closure, physically visible causes

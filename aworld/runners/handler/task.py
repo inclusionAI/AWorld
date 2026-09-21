@@ -8,7 +8,7 @@ from typing import AsyncGenerator, TYPE_CHECKING
 
 from aworld.core.common import TaskItem
 from aworld.core.event.base import Message, Constants, TopicType
-from aworld.core.task import TaskResponse, TaskStatusValue
+from aworld.core.task import TaskFailureOrigin, TaskResponse, TaskStatusValue
 from aworld.core.tool.base import Tool, AsyncTool
 from aworld.logs.util import logger, trajectory_logger
 from aworld.output import Output
@@ -98,6 +98,14 @@ class DefaultTaskHandler(TaskHandler):
                 yield event
 
             logger.warning(f"{task_flag} task {self.runner.task.id} stop, cause: {task_item.msg}")
+            failure = message.headers.get("task_failure")
+            if not isinstance(failure, dict):
+                failure = {}
+            origin = failure.get("origin")
+            if origin not in {item.value for item in TaskFailureOrigin}:
+                origin = TaskFailureOrigin.INFRASTRUCTURE.value
+            code = failure.get("code")
+            error_type = failure.get("error_type")
             self.runner._task_response = TaskResponse(msg=task_item.msg,
                                                       answer=self._build_user_safe_error_answer(task_item.msg),
                                                       context=message.context,
@@ -105,7 +113,10 @@ class DefaultTaskHandler(TaskHandler):
                                                       id=self.runner.task.id,
                                                       time_cost=(time.time() - self.runner.start_time),
                                                       usage=self.runner.context.token_usage,
-                                                      status=TaskStatusValue.FAILED)
+                                                      status=TaskStatusValue.FAILED,
+                                                      failure_origin=origin,
+                                                      failure_code=code if isinstance(code, str) else "runtime_exception",
+                                                      error_type=error_type if isinstance(error_type, str) else None)
             await self.runner.stop()
             yield Message(payload=self.runner._task_response,
                           session_id=message.session_id,
@@ -139,6 +150,14 @@ class DefaultTaskHandler(TaskHandler):
                                                       msg=(
                                                           "completion_contract_unsatisfied:"
                                                           + ",".join(completion.reason_codes)
+                                                          if completion_blocked else None
+                                                      ),
+                                                      failure_origin=(
+                                                          TaskFailureOrigin.TASK.value
+                                                          if completion_blocked else None
+                                                      ),
+                                                      failure_code=(
+                                                          "completion_contract_unsatisfied"
                                                           if completion_blocked else None
                                                       ))
 
@@ -184,7 +203,9 @@ class DefaultTaskHandler(TaskHandler):
                                                       time_cost=(time.time() - self.runner.start_time),
                                                       usage=self.runner.context.token_usage,
                                                       msg=f'cancellation message received: {task_item.msg}',
-                                                      status=TaskStatusValue.CANCELLED)
+                                                      status=TaskStatusValue.CANCELLED,
+                                                      failure_origin=TaskFailureOrigin.CANCELLED.value,
+                                                      failure_code="cancelled")
             await self.runner.stop()
             yield Message(payload=self.runner._task_response, session_id=message.session_id, headers=message.headers,
                           topic=TopicType.TASK_RESPONSE)
@@ -200,7 +221,9 @@ class DefaultTaskHandler(TaskHandler):
                                                       time_cost=(time.time() - self.runner.start_time),
                                                       usage=self.runner.context.token_usage,
                                                       msg=f'interruption message received: {task_item.msg}',
-                                                      status=TaskStatusValue.INTERRUPTED)
+                                                      status=TaskStatusValue.INTERRUPTED,
+                                                      failure_origin=TaskFailureOrigin.CANCELLED.value,
+                                                      failure_code="interrupted")
             await self.runner.stop()
             yield Message(payload=self.runner._task_response, session_id=message.session_id, headers=message.headers,
                           topic=TopicType.TASK_RESPONSE)

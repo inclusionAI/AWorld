@@ -89,6 +89,12 @@ class CastSearchAction(ToolAction):
                 desc="List of file patterns to include",
                 items={"type": "string"}
             ),
+            "timeout_seconds": ParamInfo(
+                name="timeout_seconds",
+                type="number",
+                required=False,
+                desc="Search timeout in seconds (default: 10, maximum: 30)"
+            ),
             "show_details": ParamInfo(
                 name="show_details",
                 type="boolean",
@@ -97,7 +103,6 @@ class CastSearchAction(ToolAction):
             )
         },
         desc=(
-            "Before calling grep_search, timeout must be explicitly set. "
             "Execute content search using regular expression pattern in the local filesystem. "
             "Note: grep_search cannot perform networked/web search; it only searches within local files."
         )
@@ -141,6 +146,12 @@ class CastSearchAction(ToolAction):
                 type="integer",
                 required=False,
                 desc="Maximum number of results (default: 100)"
+            ),
+            "timeout_seconds": ParamInfo(
+                name="timeout_seconds",
+                type="number",
+                required=False,
+                desc="Search timeout in seconds (default: 10, maximum: 30)"
             ),
             "show_details": ParamInfo(
                 name="show_details",
@@ -203,6 +214,7 @@ class CastSearchTool(AsyncTool):
         from aworld.experimental.cast import ACast
 
         self.acast = ACast()
+        self.set_root_path(Path.cwd())
         self.initialized = True
         logger.info("Cast Search Tool initialized")
 
@@ -230,9 +242,9 @@ class CastSearchTool(AsyncTool):
         Args:
             path: Root path
         """
-        path = Path(path)
-        if not path.exists():
-            raise ValueError(f"Specified path does not exist: {path}")
+        path = Path(path).expanduser().resolve(strict=True)
+        if not path.is_dir():
+            raise ValueError(f"Specified path is not a directory: {path}")
 
         self.acast.set_search_root_path(path)
         self._root_path = path
@@ -269,6 +281,7 @@ class CastSearchTool(AsyncTool):
                     context_lines = action.params.get("context_lines", 0)
                     max_results = action.params.get("max_results", 100)
                     include_patterns = action.params.get("include_patterns")
+                    timeout_seconds = action.params.get("timeout_seconds", 10)
                     show_details = action.params.get("show_details", True)
 
                     if not pattern:
@@ -281,7 +294,8 @@ class CastSearchTool(AsyncTool):
                             case_sensitive=case_sensitive,
                             context_lines=context_lines,
                             max_results=max_results,
-                            include_patterns=include_patterns
+                            include_patterns=include_patterns,
+                            timeout_seconds=timeout_seconds,
                         )
 
                         result_data = {
@@ -290,6 +304,8 @@ class CastSearchTool(AsyncTool):
                             "total_count": result.total_count,
                             "match_count": len(result.matches),
                             "truncated": result.truncated,
+                            "truncation_reason": result.metadata.get("truncation_reason"),
+                            "total_count_exact": result.metadata.get("total_found_exact", True),
                             "execution_time": result.execution_time,
                             "matches": result.matches[:10] if len(result.matches) > 10 else result.matches,
                             "output": result.output
@@ -326,6 +342,7 @@ class CastSearchTool(AsyncTool):
                     search_hidden = action.params.get("search_hidden", True)
                     follow_symlinks = action.params.get("follow_symlinks", True)
                     max_results = action.params.get("max_results", 100)
+                    timeout_seconds = action.params.get("timeout_seconds", 10)
                     show_details = action.params.get("show_details", True)
 
                     if not pattern:
@@ -338,7 +355,8 @@ class CastSearchTool(AsyncTool):
                             max_depth=max_depth,
                             search_hidden=search_hidden,
                             follow_symlinks=follow_symlinks,
-                            max_results=max_results
+                            max_results=max_results,
+                            timeout_seconds=timeout_seconds,
                         )
 
                         result_data = {
@@ -347,6 +365,8 @@ class CastSearchTool(AsyncTool):
                             "total_count": result.total_count,
                             "match_count": len(result.matches),
                             "truncated": result.truncated,
+                            "truncation_reason": result.metadata.get("truncation_reason"),
+                            "total_count_exact": result.metadata.get("total_found_exact", True),
                             "execution_time": result.execution_time,
                             "matches": result.matches[:10] if len(result.matches) > 10 else result.matches,
                             "output": result.output
@@ -558,11 +578,10 @@ class CastSearchTool(AsyncTool):
 
     def _resolve_file_path(self, file_path: Union[str, Path]) -> Path:
         """Resolve file path relative to search root."""
-        p = Path(file_path)
-        if p.is_absolute():
-            return p
+        from ..searchers.path_policy import resolve_within_root
+
         root = self._root_path or (self.acast.search_engine.root_path if self.acast.search_engine else None) or Path.cwd()
-        return Path(root) / file_path
+        return resolve_within_root(root, file_path)
 
     async def _read_file(self,
                          file_path: Union[str, Path],

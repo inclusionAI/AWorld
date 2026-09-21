@@ -65,14 +65,16 @@ class ToolCall(BaseModel):
 
     id: str
     type: str = "function"
-    function: Function = None
+    function: Optional[Function] = None
     extra_content: Optional[dict] = None
 
     # name: str = None
     # arguments: str = None
 
     @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> 'ToolCall':
+    def from_dict(
+        cls, data: Dict[str, Any], *, preserve_missing: bool = False
+    ) -> 'ToolCall':
         """
         Create ToolCall from dictionary representation
 
@@ -82,27 +84,37 @@ class ToolCall(BaseModel):
         Returns:
             ToolCall object
         """
-        if not data:
+        if not data and not preserve_missing:
             return None
 
         tool_id = data.get('id')
         if not tool_id:
-            tool_id = f"call_{hash(str(data)) & 0xffffffff:08x}"
+            tool_id = (
+                ""
+                if preserve_missing
+                else f"call_{hash(str(data)) & 0xffffffff:08x}"
+            )
         tool_type = data.get('type')
         if not tool_type:
             tool_type = 'function'
 
-        function_data = data.get('function', {})
+        raw_function_data = data.get('function')
+        function_missing = not isinstance(raw_function_data, dict)
+        function_data = raw_function_data if not function_missing else {}
         name = function_data.get('name')
         if not name:
-            name = "unknown"
+            name = "" if preserve_missing else "unknown"
 
         arguments = function_data.get('arguments')
         # Ensure arguments is a string
         if arguments is not None and not isinstance(arguments, str):
             arguments = json.dumps(arguments, ensure_ascii=False)
 
-        function = Function(name=name, arguments=arguments)
+        function = (
+            None
+            if preserve_missing and function_missing
+            else Function(name=name, arguments=arguments)
+        )
         if 'model_extra' in data and 'extra_content' in data['model_extra']:
             extra_content = data['model_extra']['extra_content']
         else:
@@ -129,10 +141,14 @@ class ToolCall(BaseModel):
         return {
             "id": self.id,
             "type": self.type,
-            "function": {
-                "name": self.function.name,
-                "arguments": self.function.arguments
-            },
+            "function": (
+                {
+                    "name": self.function.name,
+                    "arguments": self.function.arguments,
+                }
+                if self.function is not None
+                else None
+            ),
             "extra_content": self.extra_content
         }
 
@@ -210,6 +226,8 @@ class ModelResponse:
             finish_reason: str = None,
             reasoning_details: Dict[str, Any] = None,
             video_result: VideoGenerationResult = None,
+            tool_call_progress: bool = False,
+            usage_is_cumulative: bool = False,
             usage_reported: Optional[bool] = None,
     ):
         """
@@ -252,6 +270,13 @@ class ModelResponse:
         self.error = error
         self.raw_response = raw_response
         self.video_result = video_result
+        # In-process liveness evidence for buffered argument deltas. It is
+        # deliberately absent from messages/to_dict: partial arguments are not
+        # executable Tool calls or a persisted model answer.
+        self.tool_call_progress = tool_call_progress
+        # Provider finish receipts summarize preceding usage deltas. Consumers
+        # replace the running total with this snapshot instead of adding it.
+        self.usage_is_cumulative = usage_is_cumulative
 
         # If message is not provided, construct one from other fields
         if message is None:
@@ -421,34 +446,33 @@ class ModelResponse:
         if raw_tool_calls:
             for tool_call in raw_tool_calls:
                 if isinstance(tool_call, dict):
-                    if tool_call.get("id") is None and tool_call.get("function",{}).get("name") is None:
-                        logger.warning(f"Invalid tool call: {tool_call}")
-                        continue
-                    processed_tool_calls.append(ToolCall.from_dict(tool_call))
+                    processed_tool_calls.append(
+                        ToolCall.from_dict(tool_call, preserve_missing=True)
+                    )
                 else:
                     # Handle OpenAI object
-                    if (tool_call.id is None and hasattr(tool_call, 'function')
-                            and (tool_call.function is None
-                                 or (hasattr(tool_call.function, 'name') and tool_call.function.name is None))):
-                        logger.warning(f"Invalid tool call: {tool_call}")
-                        continue
                     tool_call_dict = {
-                        "id": tool_call.id if hasattr(tool_call,
-                                                      'id') else f"call_{hash(str(tool_call)) & 0xffffffff:08x}",
+                        "id": getattr(tool_call, 'id', None),
                         "type": tool_call.type if hasattr(tool_call, 'type') else "function"
                     }
 
                     if hasattr(tool_call, 'function'):
                         function = tool_call.function
-                        tool_call_dict["function"] = {
-                            "name": function.name if hasattr(function, 'name') else None,
-                            "arguments": function.arguments if hasattr(function, 'arguments') else None
-                        }
+                        tool_call_dict["function"] = (
+                            {
+                                "name": function.name if hasattr(function, 'name') else None,
+                                "arguments": function.arguments if hasattr(function, 'arguments') else None
+                            }
+                            if function is not None
+                            else None
+                        )
                     if hasattr(tool_call, 'model_extra'):
                         model_extra = tool_call.model_extra
                         if model_extra:
                             tool_call_dict["model_extra"] = model_extra
-                    processed_tool_calls.append(ToolCall.from_dict(tool_call_dict))
+                    processed_tool_calls.append(
+                        ToolCall.from_dict(tool_call_dict, preserve_missing=True)
+                    )
 
         if message_dict and processed_tool_calls:
             message_dict["tool_calls"] = [tool_call.to_dict() for tool_call in processed_tool_calls]
@@ -522,6 +546,7 @@ class ModelResponse:
                     id=chunk.get('id', 'unknown'),
                     model=chunk.get('model', 'unknown'),
                     content=delta.get('content'),
+                    reasoning_content=delta.get('reasoning_content'),
                     usage=raw_usage,
                     raw_usage=raw_usage,
                     provider_request_id=cls._extract_provider_request_id(chunk),
@@ -538,6 +563,7 @@ class ModelResponse:
                     id=chunk.id if hasattr(chunk, 'id') else 'unknown',
                     model=chunk.model if hasattr(chunk, 'model') else 'unknown',
                     content=delta.content if hasattr(delta, 'content') else None,
+                    reasoning_content=getattr(delta, 'reasoning_content', None),
                     usage=raw_usage,
                     raw_usage=raw_usage,
                     provider_request_id=cls._extract_provider_request_id(chunk),
@@ -550,10 +576,12 @@ class ModelResponse:
 
         # Normal chunk with delta content
         content = ""
+        reasoning_content = None
         processed_tool_calls = []
 
         if hasattr(chunk, 'choices') and chunk.choices:
             delta = chunk.choices[0].delta
+            reasoning_content = getattr(delta, "reasoning_content", None)
             if hasattr(delta, 'content') and delta.content:
                 content = delta.content
             if hasattr(delta, 'tool_calls') and delta.tool_calls:
@@ -582,6 +610,7 @@ class ModelResponse:
             if not delta:
                 delta = chunk['choices'][0].get('message', {})
             content = delta.get('content')
+            reasoning_content = delta.get('reasoning_content')
             raw_tool_calls = delta.get('tool_calls')
             if raw_tool_calls:
                 for tool_call in raw_tool_calls:
@@ -600,6 +629,7 @@ class ModelResponse:
             id=chunk.id if hasattr(chunk, 'id') else chunk.get('id', 'unknown'),
             model=chunk.model if hasattr(chunk, 'model') else chunk.get('model', 'unknown'),
             content=content or "",
+            reasoning_content=reasoning_content,
             tool_calls=processed_tool_calls or None,
             usage=raw_usage,
             raw_usage=raw_usage,
@@ -811,6 +841,15 @@ class ModelResponse:
             model=model,
             error=error_msg,
             message={"role": "assistant", "content": f"Error: {error_msg}"}
+        )
+
+    @property
+    def is_tool_progress_only(self) -> bool:
+        """Whether this chunk only signals buffered Tool argument progress."""
+        return bool(
+            self.tool_call_progress
+            and not (self.content or self.reasoning_content or self.tool_calls)
+            and not (self.error or self.finish_reason or any(self.usage.values()))
         )
 
     def to_dict(self) -> Dict[str, Any]:

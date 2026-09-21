@@ -50,8 +50,10 @@ def test_legacy_doc_is_not_declared_as_docx() -> None:
         normalize_provider_env("doc", {})
 
 
-def test_parse_result_metrics_use_canonical_provider_identity() -> None:
-    result = {"metrics": {"provider": "paddleocr", "provider_version": ""}}
+def test_parse_result_metrics_preserve_actual_and_record_requested_identity() -> None:
+    result = {
+        "metrics": {"provider": "actual-provider", "provider_version": "actual-version"}
+    }
 
     DocumentParseService._apply_provider_identity(
         result,
@@ -61,5 +63,7 @@ def test_parse_result_metrics_use_canonical_provider_identity() -> None:
         },
     )
 
-    assert result["metrics"]["provider"] == "paddle_ocr"
-    assert result["metrics"]["provider_version"] == "paddleocr-vl-1.6"
+    assert result["metrics"]["provider"] == "actual-provider"
+    assert result["metrics"]["provider_version"] == "actual-version"
+    assert result["metrics"]["requested_provider"] == "paddle_ocr"
+    assert result["metrics"]["requested_provider_version"] == "paddleocr-vl-1.6"

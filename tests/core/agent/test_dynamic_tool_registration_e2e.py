@@ -39,6 +39,8 @@ class DynamicEchoTool(AsyncTool):
 @pytest.mark.filterwarnings("ignore:Pydantic serializer warnings:UserWarning")
 async def test_dynamic_tool_registration_survives_second_llm_turn_without_tool_call_mismatch():
     llm_call_count = 0
+    llm_tools = []
+    llm_messages = []
     dynamic_tool = DynamicEchoTool(name="dynamic_echo_tool")
 
     original_memory_instance = memory_main.MEMORY_HOLDER.get("instance")
@@ -48,6 +50,8 @@ async def test_dynamic_tool_registration_survives_second_llm_turn_without_tool_c
     async def fake_acall_llm_model(_llm, messages, model, temperature, tools, stream, context, **kwargs):
         nonlocal llm_call_count
         llm_call_count += 1
+        llm_tools.append(tools)
+        llm_messages.append(messages)
 
         if llm_call_count == 1:
             return ModelResponse(
@@ -83,10 +87,16 @@ async def test_dynamic_tool_registration_survives_second_llm_turn_without_tool_c
         tool_names=["dynamic_echo_tool"],
         wait_tool_result=True,
         feedback_tool_result=True,
+        max_loop_steps=2,
         llm_max_attempts=1,
         llm_retry_delay=0.01,
     )
     agent._llm = object()
+
+    async def unsatisfied_completion(**kwargs):
+        return "additional execution would be required"
+
+    agent._completion_feedback_if_unsatisfied = unsatisfied_completion
 
     try:
         with patch("aworld.agents.llm_agent.acall_llm_model", fake_acall_llm_model):
@@ -97,9 +107,12 @@ async def test_dynamic_tool_registration_survives_second_llm_turn_without_tool_c
                 )
 
         assert response.success is True
-        assert response.answer == "dynamic tool flow completed"
+        assert "dynamic tool flow completed" in response.answer
+        assert "cannot confirm that the task is complete" in response.answer
         assert llm_call_count == 2
         assert dynamic_tool.execution_count == 1
+        assert llm_tools[1] is None
+        assert "bounded finalization turn" in llm_messages[1][-1]["content"]
     finally:
         memory_main.MEMORY_HOLDER.clear()
         if original_memory_instance is not None:

@@ -13,7 +13,17 @@ from pathlib import Path
 from typing import Dict, List, Optional, Any
 
 from .engine import Searcher, SearchParams, SearchResult, SearchType
-from .utils import grep_search_with_fallback, PygrepSearcher
+from .utils import (
+    DEFAULT_MAX_CAPTURE_BYTES,
+    DEFAULT_MAX_FILE_RESULTS,
+    DEFAULT_MAX_SEARCH_BYTES,
+    DEFAULT_SEARCH_TIMEOUT_SECONDS,
+    BoundedResults,
+    _read_bounded_binary_line,
+    PygrepSearcher,
+    grep_search_with_fallback,
+)
+from .path_policy import canonical_root, resolve_within_root
 from ..utils import logger
 
 
@@ -27,7 +37,7 @@ class GrepSearcher(Searcher):
     """
 
     def __init__(self, root_path: Optional[Path] = None):
-        self.root_path = root_path or Path.cwd()
+        self.root_path = canonical_root(root_path or Path.cwd())
         self.max_line_length = 2000
 
     def get_search_type(self) -> SearchType:
@@ -52,8 +62,9 @@ class GrepSearcher(Searcher):
         execution_time = time.time() - start_time
 
         # Apply result limit (underlying searcher already sorts by mod_time)
-        limit = params.max_results
-        truncated = len(matches) > limit
+        limit = min(max(1, int(params.max_results)), DEFAULT_MAX_FILE_RESULTS)
+        producer_truncated = bool(getattr(matches, "truncated", False))
+        truncated = producer_truncated or len(matches) > limit
         final_matches = matches[:limit] if truncated else matches
 
         # Format output
@@ -97,7 +108,12 @@ class GrepSearcher(Searcher):
             metadata={
                 "matches": len(final_matches),
                 "truncated": truncated,
-                "total_found": len(matches)
+                "total_found": len(matches),
+                "total_found_exact": not truncated,
+                "truncation_reason": (
+                    getattr(matches, "truncation_reason", None)
+                    or ("result_limit" if len(matches) > limit else None)
+                ),
             },
             output="\n".join(output_lines),
             truncated=truncated,
@@ -107,36 +123,41 @@ class GrepSearcher(Searcher):
 
     async def _async_search(self, params: SearchParams) -> List[Dict[str, Any]]:
         """Execute search: Ripgrep when available, auto-fallback to Pygrep on failure."""
-        search_path = params.path or str(self.root_path)
-        try:
-            raw = await grep_search_with_fallback(
-                pattern=params.pattern,
-                path=search_path,
-                include_patterns=params.include_patterns,
-                max_count=params.max_results,
-                context_lines=params.context_lines,
-                case_sensitive=params.case_sensitive,
-                follow_symlinks=params.follow_symlinks,
-                search_hidden=params.search_hidden,
-            )
-            return [
-                {
-                    'file_path': m.file_path,
-                    'line_number': m.line_number,
-                    'line_text': m.line_text,
-                    'mod_time': m.mod_time,
-                    'absolute_offset': m.absolute_offset,
-                    'submatches': m.submatches,
-                }
-                for m in raw
-            ]
-        except Exception as e:
-            logger.error(f"Grep search failed: {e}")
-            return []
+        search_path = resolve_within_root(
+            self.root_path, params.path or self.root_path
+        )
+        limit = min(max(1, int(params.max_results)), DEFAULT_MAX_FILE_RESULTS)
+        raw = await grep_search_with_fallback(
+            pattern=params.pattern,
+            path=str(search_path),
+            include_patterns=params.include_patterns,
+            max_count=limit + 1,
+            context_lines=params.context_lines,
+            case_sensitive=params.case_sensitive,
+            follow_symlinks=params.follow_symlinks,
+            search_hidden=params.search_hidden,
+            timeout_seconds=params.timeout_seconds or DEFAULT_SEARCH_TIMEOUT_SECONDS,
+            max_scan_bytes=params.max_bytes or DEFAULT_MAX_SEARCH_BYTES,
+            max_output_bytes=params.max_bytes or DEFAULT_MAX_CAPTURE_BYTES,
+            max_line_length=min(max(1, params.max_line_length), self.max_line_length),
+        )
+        converted = BoundedResults(
+            ({
+                'file_path': m.file_path,
+                'line_number': m.line_number,
+                'line_text': m.line_text,
+                'mod_time': m.mod_time,
+                'absolute_offset': m.absolute_offset,
+                'submatches': m.submatches,
+            } for m in raw),
+            truncated=getattr(raw, "truncated", False),
+            reason=getattr(raw, "truncation_reason", None),
+        )
+        return converted
 
     def set_root_path(self, path: Path):
         """Set root path"""
-        self.root_path = path
+        self.root_path = canonical_root(path)
 
 
 class GlobSearcher(Searcher):
@@ -148,7 +169,7 @@ class GlobSearcher(Searcher):
     """
 
     def __init__(self, root_path: Optional[Path] = None):
-        self.root_path = root_path or Path.cwd()
+        self.root_path = canonical_root(root_path or Path.cwd())
         self.searcher = PygrepSearcher()
 
     def get_search_type(self) -> SearchType:
@@ -192,8 +213,9 @@ class GlobSearcher(Searcher):
         files_with_mtime.sort(key=lambda f: f['mtime'], reverse=True)
 
         # Apply result limit
-        limit = params.max_results
-        truncated = len(files_with_mtime) > limit
+        limit = min(max(1, int(params.max_results)), DEFAULT_MAX_FILE_RESULTS)
+        producer_truncated = bool(getattr(file_paths, "truncated", False))
+        truncated = producer_truncated or len(files_with_mtime) > limit
         final_files = files_with_mtime[:limit] if truncated else files_with_mtime
 
         # Format output
@@ -216,7 +238,12 @@ class GlobSearcher(Searcher):
             metadata={
                 "count": len(final_files),
                 "truncated": truncated,
-                "total_found": len(files_with_mtime)
+                "total_found": len(files_with_mtime),
+                "total_found_exact": not truncated,
+                "truncation_reason": (
+                    getattr(file_paths, "truncation_reason", None)
+                    or ("result_limit" if len(files_with_mtime) > limit else None)
+                ),
             },
             output="\n".join(output_lines),
             truncated=truncated,
@@ -226,31 +253,28 @@ class GlobSearcher(Searcher):
 
     async def _async_search(self, params: SearchParams) -> List[str]:
         """Execute file discovery asynchronously"""
-        search_path = params.path or str(self.root_path)
+        search_path = resolve_within_root(
+            self.root_path, params.path or self.root_path
+        )
 
-        try:
-            # Build include patterns list
-            include_patterns = [params.pattern]
-            if params.include_patterns:
-                include_patterns.extend(params.include_patterns)
+        # Build include patterns list
+        include_patterns = [params.pattern]
+        if params.include_patterns:
+            include_patterns.extend(params.include_patterns)
 
-            file_paths = await self.searcher.find_files(
-                path=search_path,
-                include_patterns=include_patterns,
-                max_depth=params.max_depth,
-                follow_symlinks=params.follow_symlinks,
-                search_hidden=params.search_hidden
-            )
-
-            return file_paths
-
-        except Exception as e:
-            logger.error(f"File discovery failed: {e}")
-            return []
+        return await self.searcher.find_files(
+            path=str(search_path),
+            include_patterns=include_patterns,
+            max_depth=params.max_depth,
+            follow_symlinks=params.follow_symlinks,
+            search_hidden=params.search_hidden,
+            max_count=min(max(1, int(params.max_results)), DEFAULT_MAX_FILE_RESULTS) + 1,
+            timeout_seconds=params.timeout_seconds or DEFAULT_SEARCH_TIMEOUT_SECONDS,
+        )
 
     def set_root_path(self, path: Path):
         """Set root path"""
-        self.root_path = path
+        self.root_path = canonical_root(path)
 
 
 class ReadSearcher(Searcher):
@@ -262,7 +286,7 @@ class ReadSearcher(Searcher):
     """
 
     def __init__(self, root_path: Optional[Path] = None):
-        self.root_path = root_path or Path.cwd()
+        self.root_path = canonical_root(root_path or Path.cwd())
         self.default_read_limit = 2000
         self.max_line_length = 2000
         self.max_bytes = 50 * 1024
@@ -284,16 +308,8 @@ class ReadSearcher(Searcher):
         if not self.validate_params(params):
             raise ValueError("Invalid search parameters")
 
-        file_path = Path(params.path)
-        if not file_path.is_absolute():
-            file_path = self.root_path / file_path
-
-        # Try to get relative path, but fall back to absolute path if not in subpath
-        try:
-            title = str(file_path.relative_to(self.root_path))
-        except ValueError:
-            # File is not in root_path subpath, use absolute path as title
-            title = str(file_path)
+        file_path = resolve_within_root(self.root_path, params.path)
+        title = str(file_path.relative_to(self.root_path))
 
         try:
             # Check if file exists
@@ -315,42 +331,65 @@ class ReadSearcher(Searcher):
                     title, f"Cannot read binary file: {file_path}", start_time
                 )
 
-            # Read file content
-            try:
-                content = file_path.read_text(encoding='utf-8')
-            except UnicodeDecodeError:
-                try:
-                    content = file_path.read_text(encoding='utf-8', errors='ignore')
-                except Exception as e:
-                    return self._create_error_result(
-                        title, f"Failed to read file: {e}", start_time
-                    )
-
-            lines = content.split('\n')
-
-            # Apply offset and limit
-            limit = params.limit or self.default_read_limit
-            offset = params.offset
+            limit = max(1, int(params.limit or self.default_read_limit))
+            offset = max(0, int(params.offset))
+            output_budget = min(
+                self.max_bytes,
+                max(1, int(params.max_bytes)) if params.max_bytes is not None else self.max_bytes,
+            )
+            scan_budget = DEFAULT_MAX_SEARCH_BYTES
+            line_limit = min(max(1, int(params.max_line_length)), self.max_line_length)
 
             raw_lines = []
             bytes_count = 0
+            scanned_bytes = 0
+            total_lines = 0
             truncated_by_bytes = False
+            truncated_line = False
+            scan_truncated = False
+            eof_reached = False
+            last_ended_with_newline = False
 
-            start_idx = offset
-            end_idx = min(len(lines), offset + limit)
-
-            for i in range(start_idx, end_idx):
-                line = lines[i]
-                if len(line) > self.max_line_length:
-                    line = line[:self.max_line_length] + "..."
-
+            def collect_line(line: str, line_index: int, was_truncated: bool = False) -> None:
+                nonlocal bytes_count, truncated_by_bytes, truncated_line
+                if was_truncated and offset <= line_index < offset + limit:
+                    truncated_line = True
+                if not (offset <= line_index < offset + limit) or truncated_by_bytes:
+                    return
                 line_bytes = len(line.encode('utf-8')) + (1 if raw_lines else 0)
-                if bytes_count + line_bytes > self.max_bytes:
+                if bytes_count + line_bytes > output_budget:
                     truncated_by_bytes = True
-                    break
-
+                    return
                 raw_lines.append(line)
                 bytes_count += line_bytes
+
+            with file_path.open('rb') as handle:
+                while scanned_bytes < scan_budget:
+                    item = _read_bounded_binary_line(
+                        handle,
+                        content_limit=line_limit,
+                        scan_limit=scan_budget - scanned_bytes,
+                    )
+                    if item is None:
+                        eof_reached = True
+                        break
+                    line, consumed, complete, was_truncated, ended_with_newline = item
+                    collect_line(line, total_lines, was_truncated)
+                    total_lines += 1
+                    scanned_bytes += consumed
+                    last_ended_with_newline = ended_with_newline
+                    if not complete:
+                        scan_truncated = True
+                        break
+
+            # Preserve the previous split('\n') semantics for small files:
+            # an empty file and a trailing newline expose a final empty line.
+            if eof_reached and (total_lines == 0 or last_ended_with_newline):
+                collect_line("", total_lines)
+                total_lines += 1
+
+            if not eof_reached and scanned_bytes >= scan_budget:
+                scan_truncated = True
 
             # Format output
             formatted_lines = []
@@ -361,13 +400,16 @@ class ReadSearcher(Searcher):
             output = "<file>\n" + "\n".join(formatted_lines)
 
             # Add truncation information
-            total_lines = len(lines)
             last_read_line = offset + len(raw_lines)
             has_more_lines = total_lines > last_read_line
-            truncated = has_more_lines or truncated_by_bytes
+            truncated = has_more_lines or truncated_by_bytes or truncated_line or scan_truncated
 
             if truncated_by_bytes:
-                output += f"\n\n(Output truncated at {self.max_bytes} bytes. Use 'offset' parameter to read content after line {last_read_line})"
+                output += f"\n\n(Output truncated at {output_budget} bytes. Use 'offset' parameter to read content after line {last_read_line})"
+            elif scan_truncated:
+                output += f"\n\n(Read scan truncated at {scan_budget} bytes; total line count is a lower bound.)"
+            elif truncated_line:
+                output += f"\n\n(Long line truncated at {line_limit} characters.)"
             elif has_more_lines:
                 output += f"\n\n(File has more lines. Use 'offset' parameter to read content after line {last_read_line})"
             else:
@@ -385,13 +427,21 @@ class ReadSearcher(Searcher):
                     'lines_read': len(raw_lines),
                     'total_lines': total_lines,
                     'offset': offset,
-                    'bytes_read': bytes_count
+                    'bytes_read': bytes_count,
+                    'bytes_scanned': scanned_bytes,
                 }],
                 metadata={
                     "preview": "\n".join(raw_lines[:20]),
                     "truncated": truncated,
                     "lines_read": len(raw_lines),
-                    "total_lines": total_lines
+                    "total_lines": total_lines,
+                    "total_lines_exact": not scan_truncated,
+                    "truncation_reason": (
+                        "scan_byte_budget" if scan_truncated else
+                        "output_byte_budget" if truncated_by_bytes else
+                        "line_budget" if truncated_line else
+                        "line_limit" if has_more_lines else None
+                    ),
                 },
                 output=output,
                 truncated=truncated,
@@ -421,6 +471,14 @@ class ReadSearcher(Searcher):
     ) -> SearchResult:
         """Read multimedia file as binary and return base64 data URI (plain text, not JSON)."""
         try:
+            size_bytes = file_path.stat().st_size
+            media_limit = max(1, int(os.environ.get("CAST_MEDIA_SIZE_LIMIT_KB", "50"))) * 1024
+            if size_bytes > media_limit:
+                return self._create_error_result(
+                    title,
+                    f"Multimedia file size ({size_bytes} bytes) exceeds limit ({media_limit} bytes)",
+                    start_time,
+                )
             raw_bytes = file_path.read_bytes()
             b64 = base64.b64encode(raw_bytes).decode('ascii')
             data_uri = f"data:{mime_type};base64,{b64}"
@@ -507,4 +565,4 @@ class ReadSearcher(Searcher):
 
     def set_root_path(self, path: Path):
         """Set root path"""
-        self.root_path = path
+        self.root_path = canonical_root(path)

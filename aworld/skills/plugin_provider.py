@@ -83,6 +83,10 @@ class PluginSkillProvider(SkillProvider):
             )
             metadata.setdefault("tool_list", dict(tool_list))
             metadata.setdefault("self_evolve", extract_self_evolve_metadata(front_matter))
+            if "default_enabled" in front_matter:
+                metadata.setdefault(
+                    "default_enabled", front_matter["default_enabled"]
+                )
             declared_assets = (
                 metadata.get("execution_assets")
                 if "execution_assets" in metadata

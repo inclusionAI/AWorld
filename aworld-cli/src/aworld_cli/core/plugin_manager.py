@@ -24,6 +24,26 @@ _INITIAL_DEFAULT_PLUGIN_DIR = DEFAULT_PLUGIN_DIR
 UNMANAGED_PLUGIN_SOURCE = "unmanaged plugin directory"
 
 
+def _redacted_source_location(source_type: str, location: object) -> str:
+    """Return a console-safe source label without paths, credentials, or query data."""
+
+    if source_type != "remote":
+        return f"<{source_type}-source>"
+    parsed = urlparse(str(location))
+    host = parsed.hostname
+    if not host or any(character.isspace() for character in host):
+        return "<remote-source>"
+    if ":" in host and not host.startswith("["):
+        host = f"[{host}]"
+    scheme = parsed.scheme if re.fullmatch(r"[A-Za-z][A-Za-z0-9+.-]*", parsed.scheme) else "remote"
+    try:
+        parsed_port = parsed.port
+    except ValueError:
+        parsed_port = None
+    port = f":{parsed_port}" if parsed_port is not None else ""
+    return f"{scheme}://{host}{port}"
+
+
 def get_default_plugin_dir() -> Path:
     """Resolve the default plugin directory at runtime.
 
@@ -1128,7 +1148,11 @@ class PluginManager:
                         exc=e,
                     )
                     if console:
-                        console.print(f"[yellow]⚠️ Failed to load {source_type} source {plugin_dir}: {e}[/yellow]")
+                        console.print(
+                            f"[yellow]⚠️ Failed to load {source_type} source "
+                            f"({_redacted_source_location(source_type, plugin_dir)}, "
+                            f"{type(e).__name__})[/yellow]"
+                        )
 
         # ========== Lifecycle Step 1: Load Framework Plugins ==========
         await _load_discovered_sources(plugin_dirs, "plugin")
@@ -1144,9 +1168,9 @@ class PluginManager:
             )
         
         local_agents_count = 0
-        for local_dir in local_dirs or []:
+        for local_index, local_dir in enumerate(local_dirs or [], start=1):
             try:
-                log_verbose_boot(logger, f"Scanning local directory: {local_dir}")
+                log_verbose_boot(logger, f"Scanning local agent source #{local_index}")
                 loader = LocalAgentLoader(local_dir, console=console)
                 
                 # Load agents from local directory
@@ -1155,11 +1179,14 @@ class PluginManager:
                 if local_agents:
                     log_verbose_boot(
                         logger,
-                        f"Found {len(local_agents)} agent(s) in {local_dir}",
+                        f"Found {len(local_agents)} agent(s) in local source #{local_index}",
                     )
                     local_agents_count += len(local_agents)
                 else:
-                    log_verbose_boot(logger, f"No agents found in {local_dir}")
+                    log_verbose_boot(
+                        logger,
+                        f"No agents found in local source #{local_index}",
+                    )
                 
                 # Track source information (prioritize local over remote)
                 for agent in local_agents:
@@ -1203,7 +1230,10 @@ class PluginManager:
                     exc=e,
                 )
                 if console:
-                    console.print(f"[yellow]⚠️ Failed to load from {local_dir}: {e}[/yellow]")
+                    console.print(
+                        "[yellow]⚠️ Failed to load a local agent source "
+                        f"({type(e).__name__})[/yellow]"
+                    )
         
         if local_dirs and local_agents_count > 0:
             log_verbose_boot(logger, f"Total local agents loaded: {local_agents_count}")
@@ -1215,9 +1245,12 @@ class PluginManager:
         
         remote_agents_count = 0
         for backend_url in remote_backends or []:
+            display_backend = _redacted_source_location("remote", backend_url)
             try:
                 if console:
-                    console.print(f"[dim]  🔗 Connecting to remote backend: {backend_url}[/dim]")
+                    console.print(
+                        f"[dim]  🔗 Connecting to remote backend: {display_backend}[/dim]"
+                    )
                 loader = RemoteAgentLoader(backend_url, console=console)
                 
                 # Load agents from remote backend
@@ -1225,11 +1258,16 @@ class PluginManager:
                 
                 if remote_agents:
                     if console:
-                        console.print(f"[dim]  ✅ Found {len(remote_agents)} agent(s) from {backend_url}[/dim]")
+                        console.print(
+                            f"[dim]  ✅ Found {len(remote_agents)} agent(s) from "
+                            f"{display_backend}[/dim]"
+                        )
                     remote_agents_count += len(remote_agents)
                 else:
                     if console:
-                        console.print(f"[dim]  ℹ️  No agents found from {backend_url}[/dim]")
+                        console.print(
+                            f"[dim]  ℹ️  No agents found from {display_backend}[/dim]"
+                        )
                 
                 # Track source information (only if local doesn't exist)
                 for agent in remote_agents:
@@ -1257,7 +1295,10 @@ class PluginManager:
                     exc=e,
                 )
                 if console:
-                    console.print(f"[yellow]⚠️ Failed to load from {backend_url}: {e}[/yellow]")
+                    console.print(
+                        f"[yellow]⚠️ Failed to load from {display_backend} "
+                        f"({type(e).__name__})[/yellow]"
+                    )
         
         if remote_backends and remote_agents_count > 0:
             if console:

@@ -30,7 +30,9 @@ from aworld.core.task import Task, TaskResponse
 from aworld.logs.util import logger
 from aworld.memory.main import _default_file_memory_store
 from aworld.runner import Runners
+from aworld.utils.runtime_state import runtime_state_path
 from aworld_cli.core.plugin_manager import PluginManager
+from aworld_cli.core.runtime_completion import configure_runtime_completion
 from aworld_cli.core.skill_activation_resolver import (
     SkillActivationResolver,
     SkillResolverRequest,
@@ -524,6 +526,10 @@ class LocalAgentExecutor(BaseAgentExecutor):
         return should_pause
 
     async def _handle_task_interrupted(self, task: Task, answer: str = "") -> str:
+        # Preserve a typed executor-owned signal.  Returning a partial string is
+        # useful for an interactive session, but it must never be reclassified
+        # as a successful direct/non-interactive task by a higher layer.
+        self.last_task_interrupted = True
         await self._run_plugin_task_hook(
             "task_interrupted",
             {
@@ -717,10 +723,17 @@ class LocalAgentExecutor(BaseAgentExecutor):
         )
         requested = self._extract_requested_skill_names(task_input)
         task_text = str(getattr(task_input, "task_content", "") or "")
-        disabled_skill_names = SkillStateManager().disabled_skill_names()
+        skill_state = SkillStateManager()
+        disabled_skill_names = skill_state.disabled_skill_names()
+        enabled_skill_names = skill_state.enabled_skill_names()
+        sandbox_skills: dict[int, tuple[Any, dict[str, Any]]] = {}
         activation_evidence: list[dict[str, str]] = []
+        runtime_skill_paths = tuple(getattr(self, "runtime_skill_paths", ()))
+        isolated_candidate_skill_paths = tuple(
+            getattr(self, "isolated_candidate_skill_paths", ())
+        )
         isolated_candidate_sources: set[Path] = {
-            Path(item) for item in self.isolated_candidate_skill_paths
+            Path(item) for item in isolated_candidate_skill_paths
         }
 
         for agent in self._iter_swarm_agents():
@@ -739,7 +752,7 @@ class LocalAgentExecutor(BaseAgentExecutor):
                                 "compatibility_sources", []
                             )
                         ),
-                        *self.runtime_skill_paths,
+                        *runtime_skill_paths,
                     ]
                 )
             )
@@ -752,7 +765,7 @@ class LocalAgentExecutor(BaseAgentExecutor):
                                 "isolated_candidate_sources", []
                             )
                         ),
-                        *self.isolated_candidate_skill_paths,
+                        *isolated_candidate_skill_paths,
                     ]
                 )
             )
@@ -771,6 +784,8 @@ class LocalAgentExecutor(BaseAgentExecutor):
                 agent_name=agent_name,
                 task_text=task_text,
                 requested_skill_names=requested,
+                default_skill_names=tuple(resolver_inputs.get("default_skill_names", [])),
+                enabled_skill_names=enabled_skill_names,
                 disabled_skill_names=disabled_skill_names,
                 compatibility_sources=compatibility_sources,
                 compatibility_skill_patterns=tuple(
@@ -789,6 +804,27 @@ class LocalAgentExecutor(BaseAgentExecutor):
             result = resolver.resolve(request)
             if agent_conf is not None:
                 agent_conf.skill_configs = result.skill_configs
+                # Agents and sandboxes retain their own skill configuration
+                # references after construction. Keep the prompt, tool filter,
+                # and execution-asset staging views aligned with this task.
+                agent.skill_configs = result.skill_configs
+                sandbox = getattr(agent, "sandbox", None)
+                if sandbox is not None:
+                    shared_skill_configs = sandbox_skills.setdefault(
+                        id(sandbox), (sandbox, {})
+                    )[1]
+                    for skill_name, skill_config in result.skill_configs.items():
+                        previous = shared_skill_configs.get(skill_name)
+                        if previous is None or (
+                            skill_config.get("active") and not previous.get("active")
+                        ):
+                            shared_skill_configs[skill_name] = skill_config
+                if result.skill_configs:
+                    from aworld.core.context.amni.tool.context_skill_tool import CONTEXT_SKILL
+
+                    tool_names = getattr(agent, "tool_names", None)
+                    if tool_names is not None and CONTEXT_SKILL not in tool_names:
+                        tool_names.append(CONTEXT_SKILL)
             activation_evidence.extend(
                 {
                     **dict(item),
@@ -796,6 +832,12 @@ class LocalAgentExecutor(BaseAgentExecutor):
                 }
                 for item in result.activation_evidence
             )
+        # Shared sandboxes stage assets for every owner, while each agent keeps
+        # its own activation state. Refresh each sandbox only after the union is
+        # complete so a later agent cannot erase an earlier agent's skills.
+        for sandbox, skill_configs in sandbox_skills.values():
+            sandbox.skill_configs = skill_configs
+
         # This state is produced by the actual task-time resolver after it has
         # materialized the configs that ApplicationContext will inject.
         self.last_skill_activation_evidence = tuple(activation_evidence)
@@ -986,6 +1028,16 @@ class LocalAgentExecutor(BaseAgentExecutor):
         task_input = hook_kwargs.get('task_input', task_input)
         image_urls = hook_kwargs.get('image_urls', image_urls) or []
 
+        # Direct benchmark callers may opt in to a high-confidence filesystem
+        # completion contract.  This validates declared outputs without changing
+        # the actual CLI/sandbox working directory. Run this after input hooks so
+        # a caller-installed contract always takes precedence.
+        configure_runtime_completion(
+            context,
+            request=str(original_task_content or ""),
+            workspace_path=context.workspace_path,
+        )
+
         # 5. Build observation with images if provided
         # Use task_input.task_content (which may have been updated by FileParseHook) instead of old task_content
         observation = None
@@ -1068,6 +1120,7 @@ class LocalAgentExecutor(BaseAgentExecutor):
                 from .._globals import console as global_console
                 self.console = global_console
             self.last_task_response = None
+            self.last_task_interrupted = False
             self.last_llm_usage = None
             self.last_skill_activation_evidence = ()
 
@@ -1206,6 +1259,7 @@ class LocalAgentExecutor(BaseAgentExecutor):
                                 if isinstance(output, MessageOutput):
                                     elapsed_sec = (datetime.now() - ctrl.status_start_time).total_seconds() if ctrl.status_start_time else None
                                     tool_calls = output.tool_calls if hasattr(output, "tool_calls") and output.tool_calls else []
+                                    self._track_tool_calls(tool_calls)
                                     current_tool_name = None
                                     if tool_calls and not active_event_mode:
                                         first_tool = tool_calls[0]
@@ -2075,8 +2129,12 @@ class LocalAgentExecutor(BaseAgentExecutor):
         if WorkSpace is None:
             return None
         
-        # Create workspace in current directory under .aworld/workspaces
-        workspace_base = Path.cwd() / ".aworld" / "workspaces"
+        # Keep framework workspace state separate from task artifacts when the
+        # caller supplied an isolated control root.
+        workspace_base = runtime_state_path(
+            "workspaces",
+            default=Path.cwd() / ".aworld" / "workspaces",
+        )
         os.environ['WORKSPACE_PATH'] = str(workspace_base)
         workspace_base.mkdir(parents=True, exist_ok=True)
         

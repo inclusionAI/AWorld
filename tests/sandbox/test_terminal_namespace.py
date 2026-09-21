@@ -115,7 +115,9 @@ async def test_terminal_namespace_rewrites_host_skill_paths_for_remote_execution
     terminal = TerminalNamespace(sandbox)
 
     result = await terminal.run_code(
-        "cd /host/skills/browser-use && python /host/skills/browser-use/scripts/run.py"
+        "cd /host/skills/browser-use && python /host/skills/browser-use/scripts/run.py",
+        cwd="/remote/workspace",
+        env={"MODE": "test"},
     )
 
     assert result == {"success": True, "data": "done", "error": None}
@@ -123,6 +125,10 @@ async def test_terminal_namespace_rewrites_host_skill_paths_for_remote_execution
         "cd /remote/workspace/.aworld/skills/browser-use/feed1234feed1234"
         " && python /remote/workspace/.aworld/skills/browser-use/feed1234feed1234/scripts/run.py"
     )
+    assert captured["parameter"]["timeout"] == 300
+    assert captured["parameter"]["output_format"] == "structured"
+    assert captured["parameter"]["cwd"] == "/remote/workspace"
+    assert captured["parameter"]["env"] == {"MODE": "test"}
     assert sandbox.calls == [("browser-use", sandbox._skill_configs["browser-use"])]
 
 

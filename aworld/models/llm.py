@@ -69,6 +69,7 @@ from aworld.core.context.compiler import (
     ContextEntrypointParityReceipt,
     ContextObservationSidecar,
     ContextInputBudget,
+    RequiredContextBudgetExceeded,
     ContextResolutionTarget,
     FinalCompilePolicy,
     FRAMEWORK_COMPILER_IDENTITY,
@@ -435,7 +436,7 @@ class LLMModel:
                         safety_margin_tokens=context_config_value(
                             "safety_margin_tokens", 512
                         ),
-                        max_item_tokens=context_config_value("max_item_tokens", 10000),
+                        max_item_tokens=context_config_value("max_item_tokens", None),
                     ),
                     require_proven_semantics_for_enforce=context_config_value(
                         "require_proven_semantics_for_enforce", True
@@ -1013,6 +1014,16 @@ class LLMModel:
                     )
         if context is None or self.context_compiler_mode is ContextCompilerMode.OFF:
             return values
+        if (
+            self.context_compiler_mode is ContextCompilerMode.ENFORCE
+            and self._context_checkpoint_policy in {"adaptive", "budget_pressure"}
+            and self._context_artifact_offload
+        ):
+            from aworld.core.context.budget_recovery import restore_recovered_history
+
+            values = restore_recovered_history(
+                context, self._context_agent_identity(context), values, tools,
+            )
         from aworld.agents.final_context_adapter import adapt_agent_final_request
 
         agent_id = self._context_agent_identity(context)
@@ -1026,6 +1037,13 @@ class LLMModel:
             amni_folded_system = isinstance(context, AmniContext)
         except ImportError:
             amni_folded_system = False
+        from aworld.core.context.budget_recovery import recovery_requirements
+
+        required_messages, required_tools, untrusted_messages = recovery_requirements(context, agent_id, values)
+        if required_tools and not required_tools.issubset({
+            tool.get("function", {}).get("name") for tool in (tools or ()) if isinstance(tool, dict)
+        }):
+            raise ValueError("context_history_readback_tool_unavailable")
         message_result, tool_result = adapt_agent_final_request(
             messages=values,
             tools=tools or (),
@@ -1034,6 +1052,9 @@ class LLMModel:
             task_epoch=context.task_epoch,
             agent_id=agent_id,
             amni_folded_system=amni_folded_system,
+            required_message_hashes=required_messages,
+            required_tool_names=required_tools,
+            untrusted_message_hashes=untrusted_messages,
         )
         context.publish_context_observation(
             ContextObservationSidecar.from_adapter_result(
@@ -1122,6 +1143,57 @@ class LLMModel:
             ) from None
 
     def _prepare_context_rollout(
+        self, **kwargs,
+    ):
+        """Recover only total-budget rejection, before any provider invocation.
+
+        Each attempt recompiles the actual messages and Tool catalog, including
+        trust envelopes and reserves. No retry re-executes a Tool or model call.
+        """
+        from aworld.core.context.budget_recovery import MAX_RECOVERY_STEPS, recover_context_budget_bounded
+
+        allowed = (
+            self.context_compiler_mode is ContextCompilerMode.ENFORCE
+            and self._context_checkpoint_policy in {"adaptive", "budget_pressure"}
+            and self._context_artifact_offload
+            and kwargs["context"] is not None
+        )
+        receipts = []
+        for attempt in range(MAX_RECOVERY_STEPS + 1):
+            try:
+                result = self._prepare_context_rollout_once(
+                    **kwargs, defer_budget_failure=allowed and attempt < MAX_RECOVERY_STEPS,
+                    recovery_receipts=receipts,
+                )
+                if receipts and result[0] is not None:
+                    result[0]["budget_recovery"] = receipts
+                return result
+            except RequiredContextBudgetExceeded:
+                try:
+                    recovered, receipt = sync_exec(
+                        recover_context_budget_bounded,
+                        context=kwargs["context"],
+                        agent_id=self._context_agent_identity(kwargs["context"]),
+                        messages=kwargs["messages"], tools=kwargs["tools"],
+                    )
+                except Exception as exc:
+                    # Keep the original budget failure authoritative. Never
+                    # send an unverified replacement after storage failure.
+                    recovered = None
+                    receipt = {"status": "failed", "error_type": type(exc).__name__}
+                receipts.append(receipt)
+                kwargs["context"].context_info["last_context_budget_recovery"] = list(receipts)
+                if recovered is None:
+                    return self._prepare_context_rollout_once(**kwargs, recovery_receipts=receipts)
+                finalized = self._finalize_context_messages(
+                    context=kwargs["context"], request_id=kwargs["request_id"],
+                    messages=recovered, tools=kwargs["tools"],
+                )
+                # The caller holds this private finalized request list. Keep
+                # its provider input and trajectory aligned with the snapshot.
+                kwargs["messages"][:] = finalized
+
+    def _prepare_context_rollout_once(
         self,
         *,
         context: Context | None,
@@ -1135,6 +1207,8 @@ class LLMModel:
         tools: Any,
         model_name: str | None,
         call_shape: ContextCallShape,
+        defer_budget_failure: bool = False,
+        recovery_receipts: list | None = None,
     ) -> tuple[
         dict[str, Any] | None,
         ProviderCandidateEnvelope | None,
@@ -1237,6 +1311,8 @@ class LLMModel:
             "external_action_count_observed": None,
             "provider_lowering_ready": False,
         }
+        if recovery_receipts:
+            base_evidence["budget_recovery"] = list(recovery_receipts)
 
         def elapsed_ms() -> float:
             return round((time.perf_counter() - compile_started) * 1000, 3)
@@ -1496,6 +1572,8 @@ class LLMModel:
                         "reason_code": "entrypoint_parity_receipt_failed",
                     }
         except Exception as exc:
+            if defer_budget_failure and isinstance(exc, RequiredContextBudgetExceeded):
+                raise
             logger.error(
                 "Context candidate compilation failed before provider lowering; "
                 f"error_type={type(exc).__name__}; "
@@ -1875,6 +1953,7 @@ class LLMModel:
                 }
                 updated["usage_normalized"] = usage_normalized
                 provider_usage = getattr(response, "raw_usage", None)
+                updated["usage_available"] = bool(provider_usage)
                 updated["usage_raw"] = self._safe_copy(
                     provider_usage if isinstance(provider_usage, dict) else {}
                 )
@@ -2510,6 +2589,11 @@ class LLMModel:
                 context=context,
                 **kwargs,
             ):
+                if chunk.is_tool_progress_only:
+                    yield chunk
+                    continue
+                tool_progress = chunk.tool_call_progress
+                cumulative_usage = chunk.usage_is_cumulative
                 if self.llm_response_parser:
                     response_parse_args = kwargs.get("response_parse_args") or {}
                     chunk = sync_exec(
@@ -2517,6 +2601,8 @@ class LLMModel:
                         chunk,
                         **response_parse_args,
                     )
+                    chunk.tool_call_progress = tool_progress
+                    chunk.usage_is_cumulative = cumulative_usage
                 log_params["time_cost"] = round(time.time() - start_ms, 3)
                 log_llm_record(
                     "CHUNK",
@@ -2667,20 +2753,28 @@ class LLMModel:
             kwargs[AWORLD_PROVIDER_CANDIDATE_KWARG] = provider_candidate
         if observed_attribution is not None:
             kwargs[AWORLD_PROVIDER_OBSERVED_ATTRIBUTION_KWARG] = observed_attribution
+        provider_stream = self.provider.astream_completion(
+            messages=messages,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            stop=stop,
+            context=context,
+            **kwargs,
+        )
         try:
-            async for chunk in self.provider.astream_completion(
-                messages=messages,
-                temperature=temperature,
-                max_tokens=max_tokens,
-                stop=stop,
-                context=context,
-                **kwargs,
-            ):
+            async for chunk in provider_stream:
+                if chunk.is_tool_progress_only:
+                    yield chunk
+                    continue
+                tool_progress = chunk.tool_call_progress
+                cumulative_usage = chunk.usage_is_cumulative
                 if self.llm_response_parser:
                     response_parse_args = kwargs.get("response_parse_args") or {}
                     chunk = await self.llm_response_parser.parse_chunk(
                         chunk, **response_parse_args
                     )
+                    chunk.tool_call_progress = tool_progress
+                    chunk.usage_is_cumulative = cumulative_usage
                 log_params["time_cost"] = round(time.time() - start_ms, 3)
                 log_llm_record(
                     "CHUNK",
@@ -2714,17 +2808,26 @@ class LLMModel:
                 terminal_error = "provider_stream_failed"
             raise
         finally:
-            persisted_chunk = self._capture_stream_response_record(
-                record_chunk, final_chunk
-            )
-            self._finish_llm_call_record(
-                context=context,
-                request_id=request_id,
-                status=terminal_status,
-                response=persisted_chunk,
-                finished_at=time.time(),
-                error_code=terminal_error,
-            )
+            try:
+                close = getattr(provider_stream, "aclose", None)
+                if close is not None:
+                    await close()
+            except Exception as exc:
+                logger.warning(
+                    f"Provider stream cleanup failed; error_type={type(exc).__name__}"
+                )
+            finally:
+                persisted_chunk = self._capture_stream_response_record(
+                    record_chunk, final_chunk
+                )
+                self._finish_llm_call_record(
+                    context=context,
+                    request_id=request_id,
+                    status=terminal_status,
+                    response=persisted_chunk,
+                    finished_at=time.time(),
+                    error_code=terminal_error,
+                )
 
     def speech_to_text(
         self, audio_file: str, language: str = None, prompt: str = None, **kwargs

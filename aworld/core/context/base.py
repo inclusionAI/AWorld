@@ -199,6 +199,7 @@ class _AgentStepRegistry:
         current_step: int,
         observed_goal_progress_count: int,
         last_goal_progress_agent_step: int | None,
+        goal_progress_observable: bool | None,
     ) -> ElasticStepBudgetDecision:
         key = (agent_id, task_id)
         with self._lock:
@@ -207,6 +208,7 @@ class _AgentStepRegistry:
                 current_step=current_step,
                 observed_goal_progress_count=observed_goal_progress_count,
                 last_goal_progress_agent_step=last_goal_progress_agent_step,
+                goal_progress_observable=goal_progress_observable,
                 state=self._budgets.get(key),
             )
             self._budgets[key] = state
@@ -740,6 +742,7 @@ class Context:
         if cause not in {
             TurnCauseCode.FRAMEWORK_RETRY,
             TurnCauseCode.VALIDATION_REPAIR,
+            TurnCauseCode.ACTION_BUDGET_REPAIR,
         }:
             raise ValueError("only implemented scheduler causes may be scheduled")
         if evidence_hash is not None and not evidence_hash.startswith("sha256:"):
@@ -2567,6 +2570,7 @@ class Context:
         policy: ElasticStepBudgetPolicy,
         observed_goal_progress_count: int,
         last_goal_progress_agent_step: int | None,
+        goal_progress_observable: bool | None = None,
         task_id: str | None = None,
     ) -> ElasticStepBudgetDecision:
         resolved_task_id = task_id or self.task_id
@@ -2581,6 +2585,7 @@ class Context:
             current_step=self.get_agent_step(agent_id, resolved_task_id),
             observed_goal_progress_count=observed_goal_progress_count,
             last_goal_progress_agent_step=last_goal_progress_agent_step,
+            goal_progress_observable=goal_progress_observable,
         )
 
     def open_step(

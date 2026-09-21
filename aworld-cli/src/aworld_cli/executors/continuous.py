@@ -41,6 +41,58 @@ class ContinuousExecutor:
         self.start_time: Optional[datetime] = None
         self.response_history: List[str] = []  # Track recent responses for repetition detection
 
+    @staticmethod
+    def _attach_task_response_evidence(
+        result: Dict[str, Any],
+        task_response: Any,
+        *,
+        include_control_plane: bool = True,
+    ) -> Dict[str, Any]:
+        """Attach trajectory control/data planes even when either is empty.
+
+        Failed runs frequently have an empty inline trajectory but a populated
+        LLM journal or TrajectoryBuildResult.  Gating all evidence on a non-empty
+        trajectory loses the exact counters needed by failure-safe exporters.
+        """
+
+        if task_response is None:
+            return result
+        result["trajectory_capture_mode"] = "task_response"
+
+        trajectory = getattr(task_response, "trajectory", None)
+        if isinstance(trajectory, list):
+            result["trajectory"] = to_serializable(trajectory)
+
+        llm_calls = getattr(task_response, "llm_calls", None)
+        if isinstance(llm_calls, list):
+            result["llm_calls"] = to_serializable(llm_calls)
+
+        for attribute in (
+            "trajectory_build_result",
+            "trajectory_delivery_receipt",
+        ):
+            record = getattr(task_response, attribute, None)
+            if record is None:
+                continue
+            to_dict = getattr(record, "to_dict", None)
+            result[attribute] = to_serializable(
+                to_dict() if callable(to_dict) else record
+            )
+
+        if include_control_plane:
+            task_status = getattr(task_response, "status", None)
+            if task_status is not None:
+                result["task_status"] = to_serializable(task_status)
+            for attribute in ("failure_origin", "failure_code", "error_type"):
+                value = getattr(task_response, attribute, None)
+                if isinstance(value, str) and value:
+                    result[attribute] = value
+            if result.get("failure_origin") == "cancelled" or result.get(
+                "task_status"
+            ) in {"cancelled", "interrupted"}:
+                result["termination_status"] = "cancelled"
+        return result
+
     def _active_steering_runtime(self, *, non_interactive: bool) -> Any | None:
         if non_interactive or not sys.stdin.isatty():
             return None
@@ -215,7 +267,7 @@ class ContinuousExecutor:
                 self.agent_executor.console = global_console
                 # Verify it was set correctly
                 if self.agent_executor.console is not global_console:
-                    self.console.print(f"[yellow]⚠️ Warning: Failed to set agent_executor.console[/yellow]")
+                    self.console.print("[yellow]⚠️ Warning: Failed to set agent_executor.console[/yellow]")
             
             non_interactive = bool(chat_kwargs.pop("non_interactive", False))
             runtime = self._active_steering_runtime(non_interactive=non_interactive)
@@ -389,26 +441,35 @@ class ContinuousExecutor:
 
             self.console.print(f"[dim]💰 ({iteration}) Cost: ${cost:.3f}[/dim]")
 
+            task_response = getattr(self.agent_executor, "last_task_response", None)
+            task_interrupted = bool(
+                getattr(self.agent_executor, "last_task_interrupted", False)
+            )
+            task_succeeded = (
+                False
+                if task_interrupted
+                else getattr(task_response, "success", None)
+            )
+            if task_succeeded is None:
+                task_succeeded = not (
+                    isinstance(response, str)
+                    and response.strip().lower().startswith("task fail, cause:")
+                )
+
             result = {
                 "iteration": iteration,
                 "response": response,
                 "cost": cost,
-                "completed": is_complete,
-                # A terminal TaskResponse is authoritative at every iteration;
-                # waiting for three heuristic completions runs the task again
-                # after it has already finished and can overwrite its terminal
-                # trajectory with an unfinished retry.
-                "immediate_stop": trajectory_completed or (
-                    is_complete and iteration == 1
+                "completed": is_complete and bool(task_succeeded),
+                # A terminal TaskResponse is authoritative at every iteration,
+                # but a failed or interrupted task must never become success.
+                "immediate_stop": bool(task_succeeded) and (
+                    trajectory_completed or (is_complete and iteration == 1)
                 ),
-                "success": True
+                "success": bool(task_succeeded),
             }
-            if isinstance(trajectory, list) and trajectory:
-                result["trajectory"] = to_serializable(trajectory)
-                result["trajectory_capture_mode"] = "task_response"
-                llm_calls = getattr(task_response, "llm_calls", None)
-                if isinstance(llm_calls, list) and llm_calls:
-                    result["llm_calls"] = to_serializable(llm_calls)
+            if task_interrupted:
+                result["termination_status"] = "cancelled"
             activation_evidence = getattr(
                 self.agent_executor,
                 "last_skill_activation_evidence",
@@ -425,17 +486,25 @@ class ContinuousExecutor:
                 and llm_usage.get("ledger_consistent") is True
             ):
                 result["llm_usage"] = to_serializable(llm_usage)
-            return result
+            return self._attach_task_response_evidence(result, task_response)
             
         except Exception as e:
             self.console.print(f"[red]❌ ({iteration}) Error: {e}[/red]")
-            return {
+            result = {
                 "iteration": iteration,
                 "response": str(e),
                 "cost": 0.0,
                 "completed": False,
-                "success": False
+                "success": False,
+                "failure_origin": "infrastructure",
+                "failure_code": "executor_exception",
+                "error_type": type(e).__name__,
             }
+            return self._attach_task_response_evidence(
+                result,
+                getattr(self.agent_executor, "last_task_response", None),
+                include_control_plane=False,
+            )
     
     async def run_continuous(
         self,
@@ -549,7 +618,7 @@ class ContinuousExecutor:
 
                 # Check for immediate stop (first iteration with definitive answer)
                 if result.get("immediate_stop", False):
-                    self.console.print(f"\n[green]🎉 Task completed successfully![/green]")
+                    self.console.print("\n[green]🎉 Task completed successfully![/green]")
                     break
 
                 # Check completion signal

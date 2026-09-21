@@ -21,6 +21,33 @@ def test_filesystem_provider_lists_descriptor_without_usage(tmp_path: Path):
     assert not hasattr(descriptor, "usage")
 
 
+def test_filesystem_provider_exposes_default_enabled_policy(tmp_path: Path) -> None:
+    skill_dir = tmp_path / "skills" / "specialized"
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text(
+        (
+            "---\n"
+            "description: Specialized workflow\n"
+            "default_enabled: false\n"
+            "metadata:\n"
+            "  match_keywords: [specialized]\n"
+            "---\n\n"
+            "# Usage\n"
+        ),
+        encoding="utf-8",
+    )
+
+    provider = FilesystemSkillProvider(provider_id="local", root=tmp_path / "skills")
+    descriptor = provider.list_descriptors()[0]
+    registry = build_compat_registry(tmp_path / "skills")
+    registered_descriptor = registry.list_descriptors()[0]
+    config = registry.build_skill_config(registered_descriptor.skill_id)
+
+    assert descriptor.metadata["default_enabled"] is False
+    assert descriptor.metadata["match_keywords"] == ["specialized"]
+    assert config["default_enabled"] is False
+
+
 def test_collect_skill_docs_uses_framework_adapter(tmp_path: Path):
     skill_dir = tmp_path / "browser-use"
     skill_dir.mkdir(parents=True)

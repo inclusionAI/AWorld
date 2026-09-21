@@ -199,7 +199,9 @@ def test_postprocess_stream_response_preserves_raw_usage_and_request_id_for_buff
     partial_response, partial_finish_reason = provider.postprocess_stream_response(partial_chunk)
     buffered_response, finish_reason = provider.postprocess_stream_response(finish_chunk)
 
-    assert partial_response is None
+    # Buffered argument deltas are returned as liveness-only progress so the
+    # generation budget can observe activity without exposing executable calls.
+    assert partial_response.is_tool_progress_only is True
     assert partial_finish_reason is None
     assert finish_reason == "tool_calls"
     assert buffered_response.usage == {

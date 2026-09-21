@@ -532,7 +532,7 @@ class MemoryAIMessage(MemoryMessage):
         tool_calls = [tool_call.to_dict() for tool_call in self.tool_calls or []] or None
         if tool_calls:
             content = self._to_openai_assistant_content(content)
-            tool_calls = normalize_tool_calls_for_replay(tool_calls)
+            tool_calls = normalize_tool_calls_for_replay(tool_calls, compact=False)
         return {
             "role": self.role,
             "content": content,

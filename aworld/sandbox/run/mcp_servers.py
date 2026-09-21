@@ -1,5 +1,6 @@
 import asyncio
 import json
+import math
 import os
 import re
 import shlex
@@ -30,10 +31,19 @@ from aworld.core.event.base import Message, Constants, BackgroundTaskMessage, To
 from typing_extensions import Optional, List, Dict, Any
 from typing import TYPE_CHECKING
 
-from aworld.mcp_client.utils import mcp_tool_desc_transform, call_api, get_server_instance, cleanup_server, \
-    call_function_tool, mcp_tool_desc_transform_v2, mcp_tool_desc_transform_v2_reuse, call_mcp_tool_with_exit_stack, call_mcp_tool_with_reuse, run as mcp_run
-from mcp.types import TextContent, ImageContent
-
+from aworld.mcp_client.utils import (
+    call_api,
+    call_function_tool,
+    call_mcp_tool_with_exit_stack,
+    call_mcp_tool_with_reuse,
+    cleanup_server,
+    get_server_instance,
+    lower_mcp_call_result,
+    mcp_tool_desc_transform_v2,
+    mcp_tool_desc_transform_v2_reuse,
+    mcp_tool_retry_safe,
+    run as mcp_run,
+)
 from aworld.core.common import ActionResult, Observation
 from aworld.output import Output
 from aworld.sandbox.runtime import SandboxManager
@@ -87,12 +97,22 @@ def _build_tool_call_failure_result(
     parameter_summary = _summarize_tool_parameters(parameter)
     if parameter_summary:
         content += f". Arguments: {parameter_summary}"
+    metadata = {
+        key: value
+        for key, value in (
+            ("failure_category", getattr(error, "failure_category", None)),
+            ("failure_code", getattr(error, "failure_code", None)),
+        )
+        if isinstance(value, str) and value
+    }
     return ActionResult(
+        success=False,
         tool_name=server_name,
         action_name=tool_name,
         content=content,
+        error=error_text,
         keep=True,
-        metadata={},
+        metadata=metadata,
         parameter=parameter,
     )
 
@@ -802,6 +822,31 @@ class McpServers:
             return False
         return bool(re.match(r"^(?:[A-Za-z]:[\\/]|\\\\)", candidate))
 
+    def _resolve_mcp_timeout(self, tool_identifier: str, parameter: Dict[str, Any]) -> float:
+        """Allow the tool's declared execution time plus MCP transport overhead."""
+        tool_timeout = parameter.get("timeout")
+        if "timeout" not in parameter:
+            for tool in self.tool_list or []:
+                function = tool.get("function", {})
+                if function.get("name") != tool_identifier:
+                    continue
+                schema = function.get("parameters", {})
+                properties = schema.get("properties", {})
+                timeout_schema = properties.get("timeout", {})
+                if isinstance(timeout_schema, dict):
+                    tool_timeout = timeout_schema.get("default")
+                break
+
+        if isinstance(tool_timeout, bool) or not isinstance(tool_timeout, (int, float)):
+            return 120.0
+        try:
+            seconds = float(tool_timeout)
+        except OverflowError:
+            return 120.0
+        if not math.isfinite(seconds) or seconds <= 0:
+            return 120.0
+        return max(seconds + 10, 120.0)
+
     async def call_tool(
             self,
             action_list: List[Dict[str, Any]] = None,
@@ -831,11 +876,19 @@ class McpServers:
             # Group by server, run on each server's worker, then merge results back in original action_list order
             from collections import defaultdict
             by_server = defaultdict(list)
+            invalid_results = {}
             for i, action in enumerate(action_list):
                 ad = action if isinstance(action, dict) else vars(action)
                 sn = ad.get("tool_name") or ad.get("server_name")
                 if sn:
                     by_server[sn].append((i, action))
+                else:
+                    invalid_results[i] = _build_tool_call_failure_result(
+                        server_name="",
+                        tool_name=ad.get("action_name") or "",
+                        parameter=ad.get("params", {}),
+                        error=ValueError("Missing tool_name"),
+                    )
             results_by_server = {}
             for server_name, indexed_actions in by_server.items():
                 filtered = [a for _, a in indexed_actions]
@@ -853,12 +906,24 @@ class McpServers:
                     results_by_server[server_name] = part
             indices = {sn: 0 for sn in results_by_server}
             merged = [None] * len(action_list)
+            for index, invalid_result in invalid_results.items():
+                merged[index] = invalid_result
             for i, action in enumerate(action_list):
                 ad = action if isinstance(action, dict) else vars(action)
                 sn = ad.get("tool_name") or ad.get("server_name")
                 if sn and sn in results_by_server and indices[sn] < len(results_by_server[sn]):
                     merged[i] = results_by_server[sn][indices[sn]]
                     indices[sn] += 1
+            for index, result in enumerate(merged):
+                if result is None:
+                    action = action_list[index]
+                    ad = action if isinstance(action, dict) else vars(action)
+                    merged[index] = _build_tool_call_failure_result(
+                        server_name=ad.get("tool_name") or ad.get("server_name") or "",
+                        tool_name=ad.get("action_name") or "",
+                        parameter=ad.get("params", {}),
+                        error=RuntimeError("MCP execution returned no result"),
+                    )
             return merged
         return await manager.run_on_sandbox(
             sandbox_id,
@@ -906,6 +971,15 @@ class McpServers:
                 }
 
                 if not server_name or not tool_name:
+                    missing = "tool_name" if not server_name else "action_name"
+                    results.append(
+                        _build_tool_call_failure_result(
+                            server_name=server_name or "",
+                            tool_name=tool_name or "",
+                            parameter=parameter,
+                            error=ValueError(f"Missing {missing}"),
+                        )
+                    )
                     continue
 
                 replay_error = compacted_replay_execution_error(
@@ -952,6 +1026,14 @@ class McpServers:
                         self._update_metadata(result_key, call_result, operation_info)
                     except Exception as e:
                         logger.warning(f"Error calling function_tool tool: {e}")
+                        results.append(
+                            _build_tool_call_failure_result(
+                                server_name=server_name,
+                                tool_name=tool_name,
+                                parameter=parameter,
+                                error=e,
+                            )
+                        )
                         self._update_metadata(result_key, {"error": str(e)}, operation_info)
                     continue
 
@@ -966,6 +1048,14 @@ class McpServers:
                         self._update_metadata(result_key, call_result, operation_info)
                     except Exception as e:
                         logger.warning(f"Error calling API tool: {e}")
+                        results.append(
+                            _build_tool_call_failure_result(
+                                server_name=server_name,
+                                tool_name=tool_name,
+                                parameter=parameter,
+                                error=e,
+                            )
+                        )
                         self._update_metadata(result_key, {"error": str(e)}, operation_info)
                     continue
 
@@ -989,7 +1079,9 @@ class McpServers:
                             headers={"context": context}
                         )
                         sync_exec(send_message, tool_output_message)
-                    except BaseException as e:
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception as e:
                         logger.warning(f"Error calling progress callback: {e}")
 
                 # Check and supplement tool parameters
@@ -1023,15 +1115,13 @@ class McpServers:
 
                 sandbox_id = self.sandbox.sandbox_id if self.sandbox is not None else None
 
-                # Extract timeout from tool parameters if available, otherwise use default
-                # Add 10 seconds buffer for MCP communication overhead
-                tool_timeout = parameter.get("timeout", 30)
-                if isinstance(tool_timeout, (int, float)):
-                    mcp_timeout = max(float(tool_timeout) + 10, 120.0)
-                else:
-                    mcp_timeout = 120.0
-
-                logger.debug(f"Tool timeout: {tool_timeout}s, MCP timeout: {mcp_timeout}s")
+                mcp_timeout = self._resolve_mcp_timeout(result_key, parameter)
+                logger.debug(f"Tool: {result_key}, MCP timeout: {mcp_timeout}s")
+                retry_safe = mcp_tool_retry_safe(
+                    self.mcp_config,
+                    server_name,
+                    tool_name,
+                )
 
                 if self._should_reuse():
                     # Reuse mode: use cached server instances (delegated to utils.py)
@@ -1045,7 +1135,8 @@ class McpServers:
                         sandbox_id=sandbox_id,
                         progress_callback=progress_callback,
                         max_retry=3,
-                        timeout=mcp_timeout
+                        timeout=mcp_timeout,
+                        retry_safe=retry_safe,
                     )
 
                     if not call_result_raw:
@@ -1061,7 +1152,8 @@ class McpServers:
                         sandbox_id=sandbox_id,
                         progress_callback=progress_callback,
                         max_retry=3,
-                        timeout=mcp_timeout
+                        timeout=mcp_timeout,
+                        retry_safe=retry_safe,
                     )
 
                     if not call_result_raw:
@@ -1081,49 +1173,31 @@ class McpServers:
                     results.append(action_result)
                     self._update_metadata(result_key, {"error": call_mcp_e}, operation_info)
                 else:
-                    if call_result_raw and call_result_raw.content:
-                        metadata = call_result_raw.content[0].model_extra.get("metadata", {})
-                        artifact_datas = []
-
-                        content_list: list[str] = []
-                        for content in call_result_raw.content:
-                            logger.debug(
-                                f"tool_name:{server_name},action_name:{tool_name} call-mcp-tool-result: {content}")
-                            if isinstance(content, TextContent):
-                                content_list.append(content.text)
-                                _metadata = content.model_extra.get("metadata", {})
-                                if "artifact_data" in _metadata and isinstance(_metadata["artifact_data"], dict):
-                                    artifact_datas.append({
-                                        "artifact_type": _metadata["artifact_type"],
-                                        "artifact_data": _metadata["artifact_data"]
-                                    })
-                            elif isinstance(content, ImageContent):
-                                content_list.append(f"data:image/jpeg;base64,{content.data}")
-                                _metadata = content.model_extra.get("metadata", {})
-                                if "artifact_data" in _metadata and isinstance(_metadata["artifact_data"], dict):
-                                    artifact_datas.append({
-                                        "artifact_type": _metadata["artifact_type"],
-                                        "artifact_data": _metadata["artifact_data"]
-                                    })
-                    if metadata and artifact_datas:
-                        metadata["artifacts"] = artifact_datas
-
-                    action_result = ActionResult(
-                        success=True,
-                        tool_name=server_name,
-                        action_name=tool_name,
-                        content=_coalesce_tool_result_content(content_list),
-                        keep=True,
-                        metadata=metadata,
-                        parameter=parameter
+                    action_result = lower_mcp_call_result(
+                        call_result_raw,
+                        server_name=server_name,
+                        tool_name=tool_name,
+                        parameter=parameter,
                     )
                     results.append(action_result)
                     self._update_metadata(result_key, action_result, operation_info)
 
+        except asyncio.CancelledError:
+            raise
         except Exception as e:
             logger.warning(
                 f"Failed to call_tool: {e}.Extra info: session_id = {session_id}, action_list = {action_list}, traceback = {traceback.format_exc()}")
-            return None
+            while len(results) < len(action_list):
+                action = action_list[len(results)]
+                action_dict = action if isinstance(action, dict) else vars(action)
+                results.append(
+                    _build_tool_call_failure_result(
+                        server_name=action_dict.get("tool_name") or action_dict.get("server_name") or "",
+                        tool_name=action_dict.get("action_name") or "",
+                        parameter=action_dict.get("params", {}),
+                        error=e,
+                    )
+                )
 
         # Log first action's server+action for clarity (action_list from call_tool)
         first_server = first_action = ""

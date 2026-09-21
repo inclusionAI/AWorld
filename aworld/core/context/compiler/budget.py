@@ -36,7 +36,7 @@ class ContextInputBudget:
     reserved_output_tokens: int
     provider_protocol_reserve: int
     safety_margin_tokens: int
-    max_item_tokens: int
+    max_item_tokens: int | None = None
 
     def __post_init__(self) -> None:
         _non_negative_integer("context_limit", self.context_limit, positive=True)
@@ -49,7 +49,8 @@ class ContextInputBudget:
         _non_negative_integer(
             "safety_margin_tokens", self.safety_margin_tokens
         )
-        _non_negative_integer("max_item_tokens", self.max_item_tokens, positive=True)
+        if self.max_item_tokens is not None:
+            _non_negative_integer("max_item_tokens", self.max_item_tokens, positive=True)
         if self.available_input_tokens < 0:
             raise ValueError("reserves exceed context limit")
 
@@ -245,10 +246,17 @@ def _sum_estimates(estimates: Iterable[TokenEstimate]) -> TokenEstimate:
     )
 
 
-def _candidate_limit(candidate: BudgetCandidate, budget: ContextInputBudget) -> int:
-    if candidate.item.token_limit is None:
-        return budget.max_item_tokens
-    return min(candidate.item.token_limit, budget.max_item_tokens)
+def _candidate_limit(candidate: BudgetCandidate, budget: ContextInputBudget) -> int | None:
+    limits = tuple(
+        limit for limit in (candidate.item.token_limit, budget.max_item_tokens)
+        if limit is not None
+    )
+    return min(limits) if limits else None
+
+
+def _exceeds_item_limit(candidate: BudgetCandidate, budget: ContextInputBudget) -> bool:
+    limit = _candidate_limit(candidate, budget)
+    return limit is not None and (candidate.tokens.value or 0) > limit
 
 
 def _estimator_is_versioned(estimator: str | None) -> bool:
@@ -303,10 +311,7 @@ def _build_groups(
                 )
             priority = next(iter(selection_priorities))
             priority_domain = ("atomic", group_ref.owner, group_ref.namespace)
-        exceeded = any(
-            (candidate.tokens.value or 0) > _candidate_limit(candidate, budget)
-            for candidate in group_candidates
-        )
+        exceeded = any(_exceeds_item_limit(candidate, budget) for candidate in group_candidates)
         groups.append(
             _CandidateGroup(
                 key=key,
@@ -414,13 +419,14 @@ def plan_context_budget(
         offending = next(
             values[index]
             for index in group.candidate_indexes
-            if (values[index].tokens.value or 0)
-            > _candidate_limit(values[index], budget)
+            if _exceeds_item_limit(values[index], budget)
         )
+        limit = _candidate_limit(offending, budget)
+        assert limit is not None
         raise ItemTokenLimitExceeded(
             item_id=offending.item.id,
             tokens=offending.tokens.value or 0,
-            limit=_candidate_limit(offending, budget),
+            limit=limit,
         )
 
     group_by_candidate_index = {

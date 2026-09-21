@@ -17,6 +17,7 @@ from aworld.core.context.compiler import (
     SourceKind,
     Stability,
     Trust,
+    canonical_json_hash,
     isolate_untrusted_context_item,
 )
 
@@ -30,6 +31,9 @@ def adapt_agent_final_request(
     task_epoch: int,
     agent_id: str,
     amni_folded_system: bool,
+    required_message_hashes: frozenset[str] = frozenset(),
+    required_tool_names: frozenset[str] = frozenset(),
+    untrusted_message_hashes: frozenset[str] = frozenset(),
 ) -> tuple[AdapterResult, AdapterResult]:
     scope = ContextScope(
         kinds=(ScopeKind.TASK, ScopeKind.AGENT),
@@ -90,6 +94,12 @@ def adapt_agent_final_request(
             authority = Authority.RECALLED_MEMORY if role == "assistant" else Authority.UNKNOWN
             trust = Trust.USER_CONTROLLED if role == "assistant" else Trust.UNKNOWN
             required = assistant_group_by_index.get(index) == latest_tool_group
+        if canonical_json_hash(payload) in untrusted_message_hashes:
+            # A framework recovery capsule can contain a preview of Tool data.
+            # Its wire user role must not promote that data to user authority.
+            kind = ContextKind.MEMORY
+            authority = Authority.RECALLED_MEMORY
+            trust = Trust.TOOL_UNTRUSTED
         ref = {
             "role": role,
             "occurrence": index,
@@ -113,7 +123,7 @@ def adapt_agent_final_request(
                 scope=scope,
                 lifetime=Lifetime.TASK,
                 priority=index,
-                required=required,
+                required=required or canonical_json_hash(payload) in required_message_hashes,
                 trust=trust,
                 stability=(
                     Stability.SESSION_STABLE
@@ -145,7 +155,7 @@ def adapt_agent_final_request(
             scope=scope,
             lifetime=Lifetime.TASK,
             priority=index,
-            required=False,
+            required=payload.get("function", {}).get("name") in required_tool_names,
             trust=Trust.TRUSTED,
             stability=Stability.SESSION_STABLE,
             token_limit=None,

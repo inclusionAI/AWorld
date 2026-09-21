@@ -3,14 +3,19 @@
 import time
 
 import asyncio
+import copy
+import inspect
 import json
 import os
 import re
+import threading
 import traceback
 import uuid
 from collections import OrderedDict
+from dataclasses import dataclass, replace
 from datetime import datetime
-from typing import Dict, Any, List, Callable, Optional, Union
+from enum import Enum
+from typing import Dict, Any, List, Callable, Optional, Sequence, Union
 
 import aworld.trace as trace
 from aworld.config.conf import (
@@ -40,6 +45,13 @@ from aworld.core.context.amni.prompt.assembly import (
     validated_amni_system_sections,
 )
 from aworld.core.context.base import Context
+from aworld.core.context.generation_budget import (
+    GenerationBudgetController,
+    GenerationBudgetExceeded,
+    GenerationBudgetPolicy,
+    GenerationPhase,
+    GenerationStopReason,
+)
 from aworld.core.context.compiler.frozen_json import canonical_json_hash
 from aworld.core.context.compiler import CandidateRequestNotEnforceable
 from aworld.core.context.compiler.turn_economics import TurnCauseCode
@@ -64,6 +76,13 @@ from aworld.core.event.base import (
 from aworld.core.exceptions import AWorldRuntimeException
 from aworld.core.model_output_parser import ModelOutputParser
 from aworld.core.tool.tool_desc import get_tool_desc
+from aworld.core.tool.surface import (
+    CapabilityProbe,
+    RequiredToolSurfaceUnavailable,
+    ToolCapabilitySpec,
+    ToolSurfaceProfile,
+    reconcile_tool_surface,
+)
 from aworld.events import eventbus
 from aworld.events.util import send_message, send_message_with_future
 from aworld.logs.prompt_log import PromptLogger
@@ -129,6 +148,70 @@ from aworld.memory.tool_result_compaction import compact_tool_result_for_memory
 import aworld.runners.hook.agent_hooks
 
 
+# Provider SDKs are expected to cooperate with cancellation, but the framework
+# deadline must not depend on that cooperation.  This short grace only gives
+# transports a chance to release resources before their task is detached.
+_GENERATION_CLEANUP_GRACE_SECONDS = 0.1
+_MAX_CONFIGURED_PENDING_GENERATION_TASKS = 256
+_DETACHED_GENERATION_TASKS: set[asyncio.Task] = set()
+_ACTIVE_GENERATION_TASKS: set[asyncio.Task] = set()
+_GENERATION_TASKS_LOCK = threading.Lock()
+
+
+def _one_shot_process_cleanup_enabled() -> bool:
+    value = os.environ.get("AWORLD_DIRECT_RUN_SHUTDOWN_TIMEOUT_SECONDS", "")
+    return bool(value.strip())
+
+
+def _configured_pending_generation_capacity() -> int | None:
+    raw = os.environ.get("AWORLD_MAX_PENDING_GENERATION_TASKS", "").strip()
+    if not raw:
+        return None
+    try:
+        value = int(raw)
+    except ValueError:
+        return None
+    return min(max(1, value), _MAX_CONFIGURED_PENDING_GENERATION_TASKS)
+
+
+DEFAULT_LLM_EXECUTION_TIMEOUT_SECONDS = 360.0
+
+
+class ToolCallParseIssueCode(str, Enum):
+    """Provider-neutral reasons why a declared tool call cannot be executed."""
+
+    MISSING_CALL_ID = "missing_call_id"
+    DUPLICATE_CALL_ID = "duplicate_call_id"
+    MISSING_FUNCTION = "missing_function"
+    MISSING_TOOL_NAME = "missing_tool_name"
+    EMPTY_ARGUMENTS = "empty_arguments"
+    INVALID_ARGUMENTS_JSON = "invalid_arguments_json"
+    ARGUMENTS_NOT_OBJECT = "arguments_not_object"
+
+
+@dataclass(frozen=True)
+class ToolCallParseIssue:
+    """Structured evidence for one malformed tool call in a model response."""
+
+    call_index: int
+    call_id: Optional[str]
+    code: ToolCallParseIssueCode
+
+
+class ToolCallBatchParseError(AWorldRuntimeException):
+    """Raised when a declared tool-call batch cannot be parsed atomically."""
+
+    def __init__(self, issues: List[ToolCallParseIssue]):
+        self.issues = tuple(issues)
+        summary = ", ".join(
+            f"#{issue.call_index + 1}:{issue.code.value}" for issue in self.issues
+        )
+        super().__init__(
+            "Malformed tool-call batch; no tool calls were emitted "
+            f"({summary})"
+        )
+
+
 class LlmOutputParser(ModelOutputParser[ModelResponse, AgentResult]):
     async def parse(self, resp: ModelResponse, **kwargs) -> AgentResult:
         """Parse agent result based ModelResponse."""
@@ -155,11 +238,49 @@ class LlmOutputParser(ModelOutputParser[ModelResponse, AgentResult]):
             logger.info(
                 f"🛠️ [Agent:{agent_id}] Processing {len(resp.tool_calls)} tool call(s)"
             )
+            parsed_tool_calls = []
+            parse_issues = []
+            seen_call_ids = set()
             for idx, tool_call in enumerate(resp.tool_calls):
-                full_name: str = tool_call.function.name
-                if not full_name:
-                    logger.warning(
-                        f"⚠️ [Agent:{agent_id}] Tool call #{idx + 1} has no tool name, skipping."
+                call_id = getattr(tool_call, "id", None)
+                function = getattr(tool_call, "function", None)
+                if not isinstance(call_id, str) or not call_id.strip():
+                    parse_issues.append(
+                        ToolCallParseIssue(
+                            call_index=idx,
+                            call_id=call_id,
+                            code=ToolCallParseIssueCode.MISSING_CALL_ID,
+                        )
+                    )
+                    continue
+                if call_id in seen_call_ids:
+                    parse_issues.append(
+                        ToolCallParseIssue(
+                            call_index=idx,
+                            call_id=call_id,
+                            code=ToolCallParseIssueCode.DUPLICATE_CALL_ID,
+                        )
+                    )
+                    continue
+                seen_call_ids.add(call_id)
+                if function is None:
+                    parse_issues.append(
+                        ToolCallParseIssue(
+                            call_index=idx,
+                            call_id=call_id,
+                            code=ToolCallParseIssueCode.MISSING_FUNCTION,
+                        )
+                    )
+                    continue
+
+                full_name = getattr(function, "name", None)
+                if not isinstance(full_name, str) or not full_name.strip():
+                    parse_issues.append(
+                        ToolCallParseIssue(
+                            call_index=idx,
+                            call_id=call_id,
+                            code=ToolCallParseIssueCode.MISSING_TOOL_NAME,
+                        )
                     )
                     continue
 
@@ -167,24 +288,54 @@ class LlmOutputParser(ModelOutputParser[ModelResponse, AgentResult]):
                     f"🔧 [Agent:{agent_id}] Processing tool call #{idx + 1}: {full_name}, call_id={tool_call.id}"
                 )
 
-                try:
-                    raw_arguments = tool_call.function.arguments
-                    if not isinstance(raw_arguments, str) or not raw_arguments.strip():
-                        logger.warning(
-                            f"⚠️ [Agent:{agent_id}] Tool call #{idx + 1} for {full_name} has invalid arguments: {raw_arguments!r}, skipping."
+                raw_arguments = getattr(function, "arguments", None)
+                if not isinstance(raw_arguments, str) or not raw_arguments.strip():
+                    parse_issues.append(
+                        ToolCallParseIssue(
+                            call_index=idx,
+                            call_id=call_id,
+                            code=ToolCallParseIssueCode.EMPTY_ARGUMENTS,
                         )
-                        continue
-
-                    params = json.loads(raw_arguments)
-                    logger.debug(
-                        f"✅ [Agent:{agent_id}] Successfully parsed tool arguments for {full_name}: {len(params)} param(s)"
-                    )
-                except Exception as e:
-                    logger.warning(
-                        f"⚠️ [Agent:{agent_id}] Failed to parse tool arguments for {full_name}: {tool_call.function.arguments}, error={str(e)}"
                     )
                     continue
 
+                try:
+                    params = json.loads(raw_arguments)
+                except (json.JSONDecodeError, TypeError, ValueError):
+                    parse_issues.append(
+                        ToolCallParseIssue(
+                            call_index=idx,
+                            call_id=call_id,
+                            code=ToolCallParseIssueCode.INVALID_ARGUMENTS_JSON,
+                        )
+                    )
+                    continue
+                if not isinstance(params, dict):
+                    parse_issues.append(
+                        ToolCallParseIssue(
+                            call_index=idx,
+                            call_id=call_id,
+                            code=ToolCallParseIssueCode.ARGUMENTS_NOT_OBJECT,
+                        )
+                    )
+                    continue
+
+                parsed_tool_calls.append((tool_call, full_name, params))
+                logger.debug(
+                    f"✅ [Agent:{agent_id}] Successfully parsed tool arguments for {full_name}: {len(params)} param(s)"
+                )
+
+            if parse_issues:
+                logger.warning(
+                    f"⚠️ [Agent:{agent_id}] Rejected malformed tool-call batch: "
+                    + ", ".join(
+                        f"#{issue.call_index + 1}:{issue.code.value}"
+                        for issue in parse_issues
+                    )
+                )
+                raise ToolCallBatchParseError(parse_issues)
+
+            for tool_call, full_name, params in parsed_tool_calls:
                 # format in framework
                 # agent_info = AgentFactory.agent_instance(agent_id)
                 agent_info = kwargs.get("agent")
@@ -196,16 +347,19 @@ class LlmOutputParser(ModelOutputParser[ModelResponse, AgentResult]):
                     and agent_info.sandbox.mcpservers
                     and agent_info.sandbox.mcpservers.mcp_servers
                 ):
-                    if agent_info.sandbox.mcpservers.map_tool_list:
-                        _original_tool = (
-                            agent_info.sandbox.mcpservers.map_tool_list.get(full_name)
-                        )
+                    # The friendly-name mapping is Agent-scoped.  A shared
+                    # Sandbox can serve multiple agents with disjoint MCP
+                    # allowlists; reading its mutable compatibility mapping
+                    # lets the last initialized agent redirect earlier calls.
+                    agent_tool_mapping = getattr(agent_info, "tool_mapping", {})
+                    if agent_tool_mapping:
+                        _original_tool = agent_tool_mapping.get(full_name)
                         if _original_tool:
                             # map_tool_list maps friendly name to original "server__tool" format
                             # e.g., "bash" → "terminal__mcp_execute_command"
                             full_name = f"mcp__{_original_tool}"
                             logger.info(
-                                f"🔄 [Agent:{agent_id}] Mapped tool name: {original_name} -> {full_name} (via map_tool_list)"
+                                f"🔄 [Agent:{agent_id}] Mapped tool name: {original_name} -> {full_name} (via agent tool_mapping)"
                             )
                     else:
                         tmp_names = full_name.split("__")
@@ -301,8 +455,12 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         event_handler_name: str = None,
         event_driven: bool = True,
         skill_configs: Dict[str, Any] = None,
-        llm_max_attempts: int = 3,
+        llm_max_attempts: int = 2,
         llm_retry_delay: float = 10.0,
+        generation_budget_policy: GenerationBudgetPolicy | None = None,
+        tool_surface_specs: Sequence[ToolCapabilitySpec] | None = None,
+        tool_surface_profile: ToolSurfaceProfile | None = None,
+        tool_surface_probes: Sequence[CapabilityProbe] | None = None,
         enable_subagent: bool = False,
         subagent_search_paths: List[str] = None,
         **kwargs,
@@ -319,8 +477,11 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             output_converter: Function to convert ModelResponse to AgentResult.
             tool_aggregate_func: Aggregation strategy for multiple tool results.
             event_handler_name: Custom handlers for certain types of events.
-            llm_max_attempts: Maximum number of attempts to call LLM. Default is 3. Includes stream and non-stream retries with exponential backoff.
+            llm_max_attempts: Maximum number of attempts to call LLM. Default is 2. Includes stream and non-stream retries with exponential backoff.
             llm_retry_delay: Base delay in seconds between retry attempts. Default is 10.0s. Uses exponential backoff (10s, 20s, 40s...).
+            generation_budget_policy: Optional typed model-generation deadline
+                                      policy. By default it is resolved from
+                                      ``llm_config.context_compiler``.
             enable_subagent: Enable subagent delegation capability. When True, agent can spawn specialized subagents
                              to handle subtasks autonomously. Automatically adds spawn_subagent tool and scans for
                              available subagents (TeamSwarm members + agent.md files). Default: False.
@@ -400,6 +561,29 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         )
         self.llm_max_attempts = max(1, llm_max_attempts)  # Ensure at least 1 attempt
         self.llm_retry_delay = llm_retry_delay
+        if generation_budget_policy is not None and not isinstance(
+            generation_budget_policy, GenerationBudgetPolicy
+        ):
+            raise TypeError(
+                "generation_budget_policy must be a GenerationBudgetPolicy or None"
+            )
+        self._explicit_generation_budget_policy = generation_budget_policy
+        self._tool_surface_specs = tuple(tool_surface_specs or ())
+        self._tool_surface_profile = tool_surface_profile or ToolSurfaceProfile()
+        self._tool_surface_probes = tuple(tool_surface_probes or ())
+        if not all(
+            isinstance(spec, ToolCapabilitySpec)
+            for spec in self._tool_surface_specs
+        ):
+            raise TypeError("tool_surface_specs must contain ToolCapabilitySpec values")
+        if not isinstance(self._tool_surface_profile, ToolSurfaceProfile):
+            raise TypeError("tool_surface_profile must be a ToolSurfaceProfile")
+        if not all(
+            isinstance(probe, CapabilityProbe)
+            for probe in self._tool_surface_probes
+        ):
+            raise TypeError("tool_surface_probes must contain CapabilityProbe values")
+        self.tool_surface_receipt = None
 
         # Initialize subagent capability if enabled
         self.enable_subagent = enable_subagent
@@ -537,6 +721,10 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                 "error_type": type(exc).__name__,
                 "message": str(exc)[:500],
             }
+        finally:
+            context.context_info[
+                f"completion_evidence_resolved_this_turn:{self.id()}"
+            ] = context.get_agent_step(self.id())
         assessment = context.assess_completion_contract(agent_claimed_finished=True)
         if (
             assessment is None
@@ -1135,6 +1323,12 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             logger.warning(
                 f"{self.id()} get tools desc fail, no tool to use. error: {traceback.format_exc()}"
             )
+        recovery_tool = self._context_budget_recovery_tool(context)
+        if recovery_tool and not any(
+            tool.get("function", {}).get("name") == recovery_tool["function"]["name"]
+            for tool in self.tools
+        ):
+            self.tools.append(recovery_tool)
         # Agents as tool
         try:
             self.tools.extend(
@@ -1168,7 +1362,6 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                 processed_tools, tool_mapping = await process_mcp_tools(
                     filtered_mcp_tools
                 )
-                self.sandbox.mcpservers.map_tool_list = tool_mapping
                 self.tools.extend(processed_tools)
                 self.tool_mapping = tool_mapping
 
@@ -1195,6 +1388,36 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             )
 
         await self.process_by_ptc(self.tools, context)
+        self._reconcile_live_tool_surface(context)
+
+    def _reconcile_live_tool_surface(self, context: Context) -> None:
+        """Bind declared capabilities to this Agent's final live schemas."""
+
+        if not self._tool_surface_specs:
+            self.tool_surface_receipt = None
+            return
+        receipt = reconcile_tool_surface(
+            self._tool_surface_specs,
+            live_tool_schemas=tuple(self.tools),
+            probes=self._tool_surface_probes,
+            profile=self._tool_surface_profile,
+        )
+        self.tool_surface_receipt = receipt
+        try:
+            context_info = getattr(context, "context_info", None)
+            if context_info is None:
+                raise TypeError("context has no context_info state")
+            existing = context_info.get("tool_surface_receipts") or {}
+            receipts = dict(existing) if isinstance(existing, dict) else {}
+            receipts[self.id()] = receipt.to_dict()
+            context_info["tool_surface_receipts"] = receipts
+        except Exception as exc:
+            logger.warning(
+                "Failed to record Tool surface receipt; "
+                f"error_type={type(exc).__name__}"
+            )
+        if not receipt.ready:
+            raise RequiredToolSurfaceUnavailable(receipt)
 
     def messages_transform(
         self,
@@ -2256,6 +2479,67 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         )
         return compacted
 
+    @staticmethod
+    def _coerce_loop_budget_final_response(
+        response: ModelResponse,
+    ) -> ModelResponse:
+        """Remove executable intent from the one tool-free finalization response."""
+        sanitized = copy.copy(response)
+        content = (response.content or "").strip()
+        if response.tool_calls:
+            logger.warning(
+                "Model returned %s tool call(s) during a tool-free budget "
+                "finalization turn; executable intent was discarded",
+                len(response.tool_calls),
+            )
+        sanitized.content = content
+        sanitized.tool_calls = []
+        if isinstance(response.message, dict):
+            sanitized.message = dict(response.message)
+            sanitized.message["content"] = content
+            sanitized.message.pop("tool_calls", None)
+        return sanitized
+
+    async def async_finalize_at_loop_budget(
+        self, message: Message, **kwargs
+    ) -> Message | None:
+        """Use the configured boundary step for one tool-free synthesis turn."""
+        try:
+            await self.async_pre_run(message)
+            policy_result = await self.async_policy(
+                message.payload,
+                message=message,
+                _loop_budget_finalization=True,
+                **kwargs,
+            )
+            if not any(
+                str(getattr(action, "policy_info", "") or "").strip()
+                for action in policy_result or []
+            ):
+                raise AWorldRuntimeException(
+                    "bounded finalization returned no textual response"
+                )
+            final_result = await self.async_post_run(
+                policy_result, message.payload, message
+            )
+            message.context.context_info[
+                f"agent_loop_budget_finalized:{self.id()}"
+            ] = True
+            return final_result
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            message.context.context_info[
+                f"agent_loop_budget_finalization_error:{self.id()}"
+            ] = {"error_type": type(exc).__name__}
+            logger.warning(
+                "Bounded finalization failed for agent %s; preserving hard-stop "
+                "behavior (error_type=%s)",
+                self.id(),
+                type(exc).__name__,
+            )
+            return None
+
     async def async_policy(
         self,
         observation: Observation,
@@ -2273,6 +2557,9 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             ActionModel sequence from agent policy
         """
         logger.info(f"Agent{type(self)}#{self.id()}: async_policy start")
+        loop_budget_finalization = bool(
+            kwargs.pop("_loop_budget_finalization", False)
+        )
         # temporary state context
         self.context = message.context
         self._install_runtime_completion_contract(message.context)
@@ -2316,7 +2603,24 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             messages=raw_messages,
             context_compiler_mode=context_compiler_mode,
         )
-        tools = await self._filter_tools(message.context)
+        if loop_budget_finalization:
+            raw_messages = list(raw_messages)
+            raw_messages.append(
+                {
+                    "role": "user",
+                    "content": (
+                        "The execution step budget has been reached. This is the "
+                        "bounded finalization turn and no tools are available. "
+                        "Using only the task and observations already present, "
+                        "produce the best complete final response now. Report "
+                        "verified outcomes and artifacts, state uncertainty instead "
+                        "of inventing results, and do not request another tool call."
+                    ),
+                }
+            )
+            tools = None
+        else:
+            tools = await self._filter_tools(message.context)
         progressive_tool_base_tools = getattr(
             self.llm, "_context_progressive_tool_base_tools", None
         )
@@ -2324,6 +2628,13 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             getattr(self.llm, "_context_progressive_tools", True)
             and progressive_tool_base_tools is not None
         )
+        # Keep the bounded readback action stable from the first request. A
+        # recovery must not have to expand the progressive catalog mid-task.
+        if explicit_progressive_catalog:
+            from aworld.core.context.budget_recovery import READ_TOOL
+
+            if any(tool.get("function", {}).get("name") == READ_TOOL for tool in (tools or ())):
+                progressive_tool_base_tools = tuple(dict.fromkeys((*progressive_tool_base_tools, READ_TOOL)))
         available_tool_ids = tuple(
             str(function.get("name"))
             for schema in (tools or ())
@@ -2336,7 +2647,8 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             getattr(self.llm, "_context_task_catalog_policy", "sticky") == "sticky"
         )
         if (
-            getattr(self.llm, "_context_progressive_skills", True)
+            not loop_budget_finalization
+            and getattr(self.llm, "_context_progressive_skills", True)
             and context_compiler_mode != "off"
         ):
             from aworld.skills.progressive_context import (
@@ -2372,7 +2684,9 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                     "Progressive Skill publication failed in non-enforce mode; "
                     f"traceback={traceback.format_exc()}"
                 )
-        if not tools:
+        if loop_budget_finalization:
+            tools = None
+        elif not tools:
             tools = None
             if explicit_progressive_catalog and context_compiler_mode == "enforce":
                 from aworld.core.context.compiler import (
@@ -2693,6 +3007,8 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             raise AWorldRuntimeException(str(e)) from e
         finally:
             self._safe_record_llm_call_response(message, llm_call_id, llm_response)
+            if loop_budget_finalization and llm_response:
+                llm_response = self._coerce_loop_budget_final_response(llm_response)
             if not invoke_completed:
                 raise
             if llm_response:
@@ -2734,6 +3050,22 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                             agent=self,
                             use_tools_in_prompt=self.use_tools_in_prompt,
                         )
+                    if loop_budget_finalization and agent_result.is_call_tool:
+                        logger.warning(
+                            "Agent %s attempted tool work during its bounded "
+                            "finalization turn; returning the textual response only",
+                            self.id(),
+                        )
+                        agent_result = AgentResult(
+                            actions=[
+                                ActionModel(
+                                    agent_name=self.id(),
+                                    policy_info=llm_response.content or "",
+                                )
+                            ],
+                            current_state=agent_result.current_state,
+                            is_call_tool=False,
+                        )
                     candidate_finished = not agent_result.is_call_tool
                     if candidate_finished:
                         validation_feedback = (
@@ -2749,6 +3081,31 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                                 final_response_text=llm_response.content or "",
                             )
                         )
+                    if loop_budget_finalization and validation_feedback:
+                        final_text = (llm_response.content or "").strip()
+                        final_text = (
+                            f"{final_text}\n\n"
+                            "The completion contract remains unsatisfied, so I "
+                            "cannot confirm that the task is complete."
+                        ).strip()
+                        llm_response.content = final_text
+                        if isinstance(llm_response.message, dict):
+                            llm_response.message = dict(llm_response.message)
+                            llm_response.message["content"] = final_text
+                        agent_result = AgentResult(
+                            actions=[
+                                ActionModel(
+                                    agent_name=self.id(),
+                                    policy_info=final_text,
+                                )
+                            ],
+                            current_state=agent_result.current_state,
+                            is_call_tool=False,
+                        )
+                        message.context.context_info[
+                            f"agent_loop_budget_validation_blocked:{self.id()}"
+                        ] = True
+                        validation_feedback = None
                     # skip summary on final round
                     await self._add_message_to_memory(
                         payload=llm_response,
@@ -3477,7 +3834,666 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
     ) -> Optional[List[Dict[str, Any]]]:
         return messages
 
+    def _resolve_generation_budget_policy(self) -> GenerationBudgetPolicy:
+        """Resolve one immutable policy for the complete Agent model turn."""
+        if self._explicit_generation_budget_policy is not None:
+            return self._explicit_generation_budget_policy
+        llm_config = getattr(self.conf, "llm_config", None)
+        compiler_config = getattr(llm_config, "context_compiler", None)
+
+        def configured(name: str, default: Any) -> Any:
+            if isinstance(compiler_config, dict):
+                return compiler_config.get(name, default)
+            return getattr(compiler_config, name, default)
+
+        total_timeout = configured("generation_total_timeout_seconds", None)
+        if total_timeout is None:
+            total_timeout = DEFAULT_LLM_EXECUTION_TIMEOUT_SECONDS
+        return GenerationBudgetPolicy(
+            total_timeout_seconds=total_timeout,
+            stream_idle_timeout_seconds=configured(
+                "generation_stream_idle_timeout_seconds", None
+            ),
+            active_tool_free_timeout_seconds=configured(
+                "generation_active_tool_free_timeout_seconds", None
+            ),
+            action_repair_timeout_seconds=configured(
+                "generation_action_repair_timeout_seconds", None
+            ),
+            action_repair_max_output_tokens=configured(
+                "generation_action_repair_max_output_tokens", 1024
+            ),
+            partial_response_context_chars=configured(
+                "generation_partial_response_context_chars", 8192
+            ),
+            action_repair_enabled=configured(
+                "generation_action_repair_enabled", False
+            ),
+        )
+
+    @staticmethod
+    def _generation_partial_counts(
+        response: ModelResponse | None,
+    ) -> tuple[int, int]:
+        if response is None:
+            return 0, 0
+        content = getattr(response, "content", None)
+        content_chars = len(content) if isinstance(content, str) else 0
+        tool_calls = getattr(response, "tool_calls", None)
+        return content_chars, len(tool_calls) if isinstance(tool_calls, list) else 0
+
+    def _with_generation_partial(
+        self,
+        exc: GenerationBudgetExceeded,
+        *,
+        controller: GenerationBudgetController,
+        response: ModelResponse | None,
+    ) -> GenerationBudgetExceeded:
+        content_chars, tool_call_count = self._generation_partial_counts(response)
+        return GenerationBudgetExceeded(
+            controller.receipt(
+                exc.reason,
+                partial_response_chars=content_chars,
+                tool_call_count=tool_call_count,
+                repair_scheduled=exc.receipt.repair_scheduled,
+            ),
+            partial_response=response,
+            source_exception=exc.source_exception,
+        )
+
+    def _record_generation_budget_exception(
+        self,
+        context: Context | None,
+        exc: GenerationBudgetExceeded,
+    ) -> None:
+        """Best-effort privacy-safe projection onto existing runtime metrics."""
+        if exc.recorded:
+            return
+        exc.recorded = True
+        if context is None:
+            return
+        try:
+            event_manager = getattr(context, "event_manager", None)
+            runtime_context = (
+                getattr(event_manager, "context", None)
+                if event_manager is not None
+                else None
+            ) or context
+            events = runtime_context.context_info.get("generation_budget_events")
+            if not isinstance(events, list):
+                events = []
+            events.append(exc.receipt.to_dict())
+            runtime_context.context_info["generation_budget_events"] = events
+            metric_name = {
+                GenerationStopReason.CALLER_CANCELLED: (
+                    "generation_caller_cancelled_count"
+                ),
+                GenerationStopReason.PROVIDER_TIMEOUT: (
+                    "generation_provider_timeout_count"
+                ),
+                GenerationStopReason.PROVIDER_CANCELLED: (
+                    "generation_provider_cancelled_count"
+                ),
+                GenerationStopReason.STREAM_IDLE_TIMEOUT: (
+                    "generation_stream_idle_timeout_count"
+                ),
+                GenerationStopReason.ACTIVE_STREAM_OVER_BUDGET: (
+                    "generation_active_stream_over_budget_count"
+                ),
+                GenerationStopReason.CALL_DEADLINE_EXCEEDED: (
+                    "generation_call_deadline_exceeded_count"
+                ),
+                GenerationStopReason.ACTION_REPAIR_TIMEOUT: (
+                    "generation_action_repair_timeout_count"
+                ),
+                GenerationStopReason.ACTION_REPAIR_EXHAUSTED: (
+                    "generation_action_repair_exhausted_count"
+                ),
+            }[exc.reason]
+            increment_watchdog_metric(context, metric_name)
+            if exc.receipt.repair_scheduled:
+                increment_watchdog_metric(
+                    context, "generation_action_repair_scheduled_count"
+                )
+        except Exception as record_exc:
+            logger.warning(
+                "Generation budget evidence recording failed; "
+                f"error_type={type(record_exc).__name__}"
+            )
+
+    @staticmethod
+    def _consume_generation_task_result(task: asyncio.Task) -> None:
+        with _GENERATION_TASKS_LOCK:
+            _DETACHED_GENERATION_TASKS.discard(task)
+            _ACTIVE_GENERATION_TASKS.discard(task)
+        try:
+            task.exception()
+        except BaseException:
+            pass
+
+    @staticmethod
+    def _discard_active_generation_task(task: asyncio.Task) -> None:
+        with _GENERATION_TASKS_LOCK:
+            _ACTIVE_GENERATION_TASKS.discard(task)
+
+    @classmethod
+    def _create_generation_task(cls, awaitable) -> asyncio.Task | None:
+        with _GENERATION_TASKS_LOCK:
+            for task in tuple(_ACTIVE_GENERATION_TASKS):
+                if task.done():
+                    _ACTIVE_GENERATION_TASKS.discard(task)
+            capacity = _configured_pending_generation_capacity()
+            if capacity is not None and len(_ACTIVE_GENERATION_TASKS) >= capacity:
+                return None
+            task = asyncio.ensure_future(awaitable)
+            _ACTIVE_GENERATION_TASKS.add(task)
+        task.add_done_callback(cls._discard_active_generation_task)
+        return task
+
+    @classmethod
+    def _detach_generation_task(cls, task: asyncio.Task) -> None:
+        if task.done():
+            cls._consume_generation_task_result(task)
+            return
+        with _GENERATION_TASKS_LOCK:
+            _DETACHED_GENERATION_TASKS.add(task)
+        task.add_done_callback(cls._consume_generation_task_result)
+
+    @classmethod
+    def _cleanup_capacity_available(cls) -> bool:
+        with _GENERATION_TASKS_LOCK:
+            for task in tuple(_ACTIVE_GENERATION_TASKS):
+                if task.done():
+                    _ACTIVE_GENERATION_TASKS.discard(task)
+            capacity = _configured_pending_generation_capacity()
+            return capacity is None or len(_ACTIVE_GENERATION_TASKS) < capacity
+
+    @classmethod
+    async def _cancel_generation_task(cls, task: asyncio.Task) -> None:
+        if _one_shot_process_cleanup_enabled():
+            cls._detach_generation_task(task)
+            return
+        if not task.done():
+            task.cancel()
+        try:
+            done, _ = await asyncio.wait(
+                {task}, timeout=_GENERATION_CLEANUP_GRACE_SECONDS
+            )
+        except BaseException:
+            if not task.done():
+                task.cancel()
+                cls._detach_generation_task(task)
+            raise
+        if task in done:
+            cls._consume_generation_task_result(task)
+            return
+        # A provider coroutine may swallow CancelledError.  Do not let its
+        # cooperative cleanup turn a generation deadline into an unbounded
+        # wait.  A second cancel is best effort; the callback safely consumes
+        # any eventual exception from the detached task.
+        task.cancel()
+        cls._detach_generation_task(task)
+        logger.warning(
+            "Model provider cleanup exceeded its bounded grace period; "
+            "the provider task was detached"
+        )
+
+    @classmethod
+    async def _close_generation_stream(cls, resp_stream) -> None:
+        if _one_shot_process_cleanup_enabled():
+            return
+        close_task: asyncio.Task | None = None
+        try:
+            close = getattr(resp_stream, "aclose", None)
+            if not callable(close):
+                return
+            if not cls._cleanup_capacity_available():
+                logger.warning(
+                    "Skipping model stream cleanup because detached provider "
+                    "cleanup capacity is exhausted"
+                )
+                return
+            close_result = close()
+            if not inspect.isawaitable(close_result):
+                logger.debug("Model stream aclose() returned a non-awaitable result")
+                return
+            close_task = cls._create_generation_task(close_result)
+            if close_task is None:
+                close_awaitable = getattr(close_result, "close", None)
+                if callable(close_awaitable):
+                    close_awaitable()
+                logger.warning(
+                    "Skipping model stream cleanup because detached provider "
+                    "cleanup capacity is exhausted"
+                )
+                return
+            done, _ = await asyncio.wait(
+                {close_task}, timeout=_GENERATION_CLEANUP_GRACE_SECONDS
+            )
+        except asyncio.CancelledError as close_exc:
+            if close_task is not None and not close_task.done():
+                close_task.cancel()
+                cls._detach_generation_task(close_task)
+            current_task = asyncio.current_task()
+            if current_task is not None and current_task.cancelling():
+                raise
+            logger.debug(
+                "Model stream cleanup did not complete normally; "
+                f"error_type={type(close_exc).__name__}"
+            )
+            return
+        except BaseException as close_exc:
+            if close_task is not None and not close_task.done():
+                close_task.cancel()
+                cls._detach_generation_task(close_task)
+            logger.debug(
+                "Model stream cleanup did not complete normally; "
+                f"error_type={type(close_exc).__name__}"
+            )
+            return
+        if close_task in done:
+            try:
+                close_task.result()
+            except BaseException as close_exc:
+                logger.debug(
+                    "Model stream cleanup did not complete normally; "
+                    f"error_type={type(close_exc).__name__}"
+                )
+            return
+        close_task.cancel()
+        cls._detach_generation_task(close_task)
+        logger.warning(
+            "Model stream cleanup exceeded its bounded grace period; "
+            "the cleanup task was detached"
+        )
+
+    @staticmethod
+    def _is_provider_timeout_exception(exc: BaseException) -> bool:
+        timeout_type_names = {
+            "TimeoutError",
+            "TimeoutException",
+            "ReadTimeout",
+            "WriteTimeout",
+            "ConnectTimeout",
+            "PoolTimeout",
+            "APITimeoutError",
+        }
+        return any(
+            cls.__name__ in timeout_type_names for cls in type(exc).__mro__
+        )
+
+    async def _await_generation_operation(
+        self,
+        awaitable,
+        *,
+        controller: GenerationBudgetController,
+        streaming: bool,
+    ):
+        """Await provider work without confusing its timeout with our deadline."""
+        if not self._cleanup_capacity_available():
+            close = getattr(awaitable, "close", None)
+            if callable(close):
+                close()
+            raise AWorldRuntimeException(
+                "Model generation cannot start because detached provider "
+                "cleanup capacity is exhausted"
+            )
+        operation = self._create_generation_task(awaitable)
+        if operation is None:
+            close = getattr(awaitable, "close", None)
+            if callable(close):
+                close()
+            raise AWorldRuntimeException(
+                "Model generation cannot start because detached provider "
+                "cleanup capacity is exhausted"
+            )
+        deadline = controller.next_deadline(streaming=streaming)
+        try:
+            if deadline is None:
+                try:
+                    return await operation
+                except Exception as exc:
+                    if self._is_provider_timeout_exception(exc):
+                        raise GenerationBudgetExceeded(
+                            controller.receipt(
+                                GenerationStopReason.PROVIDER_TIMEOUT
+                            ),
+                            source_exception=exc,
+                        ) from exc
+                    raise
+            else:
+                remaining = max(0.0, deadline.expires_at - controller.now())
+                done, _ = await asyncio.wait({operation}, timeout=remaining)
+            if operation not in done:
+                await self._cancel_generation_task(operation)
+                raise GenerationBudgetExceeded(
+                    controller.receipt(deadline.reason)
+                )
+            try:
+                return operation.result()
+            except Exception as exc:
+                if self._is_provider_timeout_exception(exc):
+                    raise GenerationBudgetExceeded(
+                        controller.receipt(GenerationStopReason.PROVIDER_TIMEOUT),
+                        source_exception=exc,
+                    ) from exc
+                raise
+        except asyncio.CancelledError:
+            current_task = asyncio.current_task()
+            if operation.done() and operation.cancelled() and not (
+                current_task and current_task.cancelling()
+            ):
+                raise GenerationBudgetExceeded(
+                    controller.receipt(GenerationStopReason.PROVIDER_CANCELLED)
+                ) from None
+            await self._cancel_generation_task(operation)
+            raise
+
+    async def _consume_model_stream(
+        self,
+        *,
+        messages: List[Dict[str, Any]],
+        message: Message,
+        tools: List[Dict[str, Any]] | None,
+        float_temperature: float,
+        prompt_tokens_est: int,
+        controller: GenerationBudgetController,
+        request_kwargs: Dict[str, Any],
+    ) -> ModelResponse:
+        """Consume one stream while retaining the existing output surfaces."""
+        llm_response = ModelResponse(id="", model="", content="", tool_calls=[])
+        provider_kwargs = {
+            key: value for key, value in request_kwargs.items() if key != "stream"
+        }
+        resp_stream = acall_llm_model_stream(
+            self.llm,
+            messages=messages,
+            model=self.model_name,
+            temperature=float_temperature,
+            tools=tools,
+            stream=True,
+            context=message.context,
+            **provider_kwargs,
+        )
+        controller.begin_stream(action_available=bool(tools))
+        stream_iterator = resp_stream.__aiter__()
+        try:
+            while True:
+                try:
+                    chunk = await self._await_generation_operation(
+                        stream_iterator.__anext__(),
+                        controller=controller,
+                        streaming=True,
+                    )
+                except StopAsyncIteration:
+                    break
+                except GenerationBudgetExceeded as exc:
+                    raise self._with_generation_partial(
+                        exc, controller=controller, response=llm_response
+                    ) from exc
+
+                tool_progress = bool(getattr(chunk, "tool_call_progress", False))
+                meaningful_progress = bool(
+                    chunk.content
+                    or chunk.reasoning_content
+                    or chunk.tool_calls
+                    or tool_progress
+                )
+                if meaningful_progress:
+                    controller.observe_stream_activity(
+                        meaningful_content_observed=True,
+                        tool_call_observed=bool(chunk.tool_calls) or tool_progress,
+                    )
+                if chunk.is_tool_progress_only:
+                    continue
+
+                logger.info(
+                    f"llm_agent chunk [agent_name={self.name()}, agent_id={self.id()}]: {chunk}"
+                )
+                if chunk.content:
+                    llm_response.content += chunk.content
+                if chunk.reasoning_content:
+                    llm_response.reasoning_content = (
+                        llm_response.reasoning_content or ""
+                    ) + chunk.reasoning_content
+                if chunk.tool_calls:
+                    for tc in chunk.tool_calls:
+                        if (
+                            tc.function is not None
+                            and tc.function.name == "unknown"
+                            and llm_response.tool_calls
+                        ):
+                            last = llm_response.tool_calls[-1]
+                            if last.function is not None:
+                                last.function.arguments = (
+                                    last.function.arguments or ""
+                                ) + (tc.function.arguments or "")
+                        else:
+                            llm_response.tool_calls.append(tc)
+                if chunk.error:
+                    llm_response.error = chunk.error
+                llm_response.id = chunk.id
+                llm_response.model = chunk.model
+                llm_response.usage = nest_dict_counter(
+                    {} if chunk.usage_is_cumulative else llm_response.usage,
+                    chunk.usage,
+                    ignore_zero=False,
+                )
+                if getattr(chunk, "usage_reported", False) is True:
+                    llm_response.usage_reported = True
+                chunk_raw_usage = getattr(chunk, "raw_usage", None)
+                if isinstance(chunk_raw_usage, dict) and chunk_raw_usage:
+                    llm_response.raw_usage = nest_dict_counter(
+                        llm_response.raw_usage or {},
+                        chunk_raw_usage,
+                        ignore_zero=False,
+                    )
+                if isinstance(chunk.message, dict):
+                    llm_response.message.update(chunk.message)
+                if llm_response.tool_calls:
+                    llm_response.message["tool_calls"] = [
+                        tc.to_dict() for tc in llm_response.tool_calls
+                    ]
+                await send_message(
+                    ChunkMessage(
+                        payload=chunk,
+                        source_type="llm",
+                        session_id=message.context.session_id,
+                        headers=message.headers,
+                    )
+                )
+                task = message.context.get_task() if message.context else None
+                if (
+                    task
+                    and hasattr(task, "outputs")
+                    and hasattr(task.outputs, "add_output")
+                ):
+                    from aworld.output.base import ChunkOutput
+
+                    usage = llm_response.usage or {}
+                    output_tokens = usage.get("completion_tokens")
+                    output_estimated = False
+                    if output_tokens is None or output_tokens == 0:
+                        output_tokens = max(0, len(llm_response.content or "") // 4)
+                        output_estimated = True
+                    input_tokens = usage.get("prompt_tokens")
+                    input_estimated = False
+                    if input_tokens is None or input_tokens == 0:
+                        input_tokens = prompt_tokens_est
+                        input_estimated = True
+                    tool_call_count = len(llm_response.tool_calls or [])
+                    tool_call_content_length = sum(
+                        len(
+                            getattr(getattr(tc, "function", None), "arguments", None)
+                            or ""
+                        )
+                        for tc in llm_response.tool_calls or []
+                    )
+                    metadata = {
+                        "output_tokens": output_tokens,
+                        "input_tokens": input_tokens,
+                        "tool_calls_count": tool_call_count,
+                        "tool_calls_content_length": tool_call_content_length,
+                        "output_tokens_estimated": output_estimated,
+                        "input_tokens_estimated": input_estimated,
+                        "tool_calls_count_estimated": True,
+                        "tool_calls_content_estimated": True,
+                        "agent_id": self.id(),
+                        "agent_name": self.name(),
+                        "model_name": getattr(chunk, "model", None)
+                        or getattr(llm_response, "model", None)
+                        or self.model_name,
+                    }
+                    await task.outputs.add_output(
+                        ChunkOutput(data=chunk, metadata=metadata)
+                    )
+            return llm_response
+        except asyncio.CancelledError:
+            controller.cancelled_partial_response = llm_response
+            raise
+        finally:
+            await self._close_generation_stream(resp_stream)
+
+    @staticmethod
+    def _bounded_partial_for_repair(content: str, *, limit: int) -> str:
+        if len(content) <= limit:
+            return content
+        marker = "[Earlier partial response omitted by the runtime action budget.]\n"
+        if limit <= len(marker):
+            return content[-limit:]
+        return marker + content[-(limit - len(marker)) :]
+
+    def _build_action_repair_messages(
+        self,
+        *,
+        messages: List[Dict[str, Any]],
+        partial_response: ModelResponse | None,
+        policy: GenerationBudgetPolicy,
+    ) -> List[Dict[str, Any]]:
+        continuation = copy.deepcopy(messages)
+        partial_content = getattr(partial_response, "content", None)
+        if isinstance(partial_content, str) and partial_content:
+            continuation.append(
+                {
+                    "role": "assistant",
+                    "content": self._bounded_partial_for_repair(
+                        partial_content,
+                        limit=policy.partial_response_context_chars,
+                    ),
+                }
+            )
+        continuation.append(
+            {
+                "role": "user",
+                "content": (
+                    "Runtime action budget reached. Do not expand or repeat the "
+                    "analysis. Continue from the partial response and take the "
+                    "next concrete action now by calling an available tool. If "
+                    "no tool is actually required, return only the concise final "
+                    "answer."
+                ),
+            }
+        )
+        return continuation
+
+    async def _invoke_action_budget_repair(
+        self,
+        *,
+        messages: List[Dict[str, Any]],
+        message: Message,
+        tools: List[Dict[str, Any]],
+        float_temperature: float,
+        controller: GenerationBudgetController,
+        request_kwargs: Dict[str, Any],
+    ) -> ModelResponse:
+        policy = controller.policy
+        repair_kwargs = dict(request_kwargs)
+        configured_max = repair_kwargs.get("max_tokens")
+        if isinstance(configured_max, int) and not isinstance(configured_max, bool):
+            repair_kwargs["max_tokens"] = min(
+                configured_max, policy.action_repair_max_output_tokens
+            )
+        elif isinstance(
+            repair_kwargs.get("max_completion_tokens"), int
+        ) and not isinstance(repair_kwargs.get("max_completion_tokens"), bool):
+            repair_kwargs["max_completion_tokens"] = min(
+                repair_kwargs["max_completion_tokens"],
+                policy.action_repair_max_output_tokens,
+            )
+        else:
+            repair_kwargs["max_tokens"] = policy.action_repair_max_output_tokens
+        repair_kwargs["stream"] = True
+        prompt_tokens_est = 0
+        try:
+            breakdown = ModelUtils.calculate_token_breakdown(
+                messages, self.model_name or "gpt-4o"
+            )
+            prompt_tokens_est = breakdown.get("total", 0) or 0
+        except Exception:
+            pass
+        try:
+            response = await self._consume_model_stream(
+                messages=messages,
+                message=message,
+                tools=tools,
+                float_temperature=float_temperature,
+                prompt_tokens_est=prompt_tokens_est,
+                controller=controller,
+                request_kwargs=repair_kwargs,
+            )
+        except GenerationBudgetExceeded as exc:
+            self._record_generation_budget_exception(message.context, exc)
+            raise
+        if response and (
+            response.content or response.tool_calls or response.reasoning_content
+        ):
+            increment_watchdog_metric(
+                message.context, "generation_action_repair_completed_count"
+            )
+            usage_process(response.usage, message.context)
+            return response
+        exhausted = GenerationBudgetExceeded(
+            controller.receipt(GenerationStopReason.ACTION_REPAIR_EXHAUSTED),
+            partial_response=response,
+        )
+        self._record_generation_budget_exception(message.context, exhausted)
+        raise exhausted
+
     async def invoke_model(
+        self, messages: List[Dict[str, str]] = [], message: Message = None, **kwargs
+    ) -> ModelResponse:
+        """Run one LLM turn under typed, composable generation deadlines."""
+        controller = GenerationBudgetController(
+            self._resolve_generation_budget_policy()
+        )
+        try:
+            return await self._invoke_model_with_retries(
+                messages=messages,
+                message=message,
+                _generation_budget_controller=controller,
+                **kwargs,
+            )
+        except GenerationBudgetExceeded as exc:
+            self._record_generation_budget_exception(
+                message.context if message is not None else None, exc
+            )
+            raise
+        except asyncio.CancelledError:
+            context = message.context if message is not None else None
+            partial = controller.cancelled_partial_response
+            content_chars, tool_call_count = self._generation_partial_counts(partial)
+            cancelled = GenerationBudgetExceeded(
+                controller.receipt(
+                    GenerationStopReason.CALLER_CANCELLED,
+                    partial_response_chars=content_chars,
+                    tool_call_count=tool_call_count,
+                ),
+                partial_response=partial,
+            )
+            self._record_generation_budget_exception(context, cancelled)
+            raise
+
+    async def _invoke_model_with_retries(
         self, messages: List[Dict[str, str]] = [], message: Message = None, **kwargs
     ) -> ModelResponse:
         """Perform LLM call with retry mechanism.
@@ -3493,12 +4509,21 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         llm_response = None
         context = message.context if message else None
         failure_output_sent = False
+        controller = kwargs.pop("_generation_budget_controller", None)
+        if not isinstance(controller, GenerationBudgetController):
+            controller = GenerationBudgetController(
+                self._resolve_generation_budget_policy()
+            )
 
         # Prepare parameters once before retry loop
         try:
             tools = kwargs.pop("prepared_tools", None)
             if tools is None:
-                tools = await self._filter_tools(message.context)
+                tools = await self._await_generation_operation(
+                    self._filter_tools(message.context),
+                    controller=controller,
+                    streaming=False,
+                )
             if not tools:
                 # Some model must be clearly defined as None
                 tools = None
@@ -3562,131 +4587,15 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                             prompt_tokens_est = breakdown.get("total", 0) or 0
                         except Exception:
                             pass
-
-                        llm_response = ModelResponse(
-                            id="", model="", content="", tool_calls=[]
-                        )
-                        resp_stream = acall_llm_model_stream(
-                            self.llm,
+                        llm_response = await self._consume_model_stream(
                             messages=messages,
-                            model=self.model_name,
-                            temperature=float_temperature,
+                            message=message,
                             tools=tools,
-                            stream=True,
-                            context=message.context,
-                            **kwargs,
+                            float_temperature=float_temperature,
+                            prompt_tokens_est=prompt_tokens_est,
+                            controller=controller,
+                            request_kwargs=kwargs,
                         )
-
-                        async for chunk in resp_stream:
-                            logger.info(
-                                f"llm_agent chunk [agent_name={self.name()}, agent_id={self.id()}]: {chunk}"
-                            )
-                            if chunk.content:
-                                llm_response.content += chunk.content
-                            if chunk.tool_calls:
-                                for tc in chunk.tool_calls:
-                                    if (
-                                        tc.function.name == "unknown"
-                                        and llm_response.tool_calls
-                                    ):
-                                        last = llm_response.tool_calls[-1]
-                                        last.function.arguments = (
-                                            last.function.arguments or ""
-                                        ) + (tc.function.arguments or "")
-                                    else:
-                                        llm_response.tool_calls.append(tc)
-                            if chunk.error:
-                                llm_response.error = chunk.error
-                            llm_response.id = chunk.id
-                            llm_response.model = chunk.model
-                            llm_response.usage = nest_dict_counter(
-                                llm_response.usage, chunk.usage, ignore_zero=False
-                            )
-                            if getattr(chunk, "usage_reported", False) is True:
-                                llm_response.usage_reported = True
-                            chunk_raw_usage = getattr(chunk, "raw_usage", None)
-                            if isinstance(chunk_raw_usage, dict) and chunk_raw_usage:
-                                llm_response.raw_usage = nest_dict_counter(
-                                    llm_response.raw_usage or {},
-                                    chunk_raw_usage,
-                                    ignore_zero=False,
-                                )
-                            llm_response.message.update(chunk.message)
-                            if llm_response.tool_calls:
-                                llm_response.message["tool_calls"] = [
-                                    tc.to_dict() for tc in llm_response.tool_calls
-                                ]
-
-                            await send_message(
-                                ChunkMessage(
-                                    payload=chunk,
-                                    source_type="llm",
-                                    session_id=message.context.session_id,
-                                    headers=message.headers,
-                                )
-                            )
-                            # Add chunk to task outputs for local executor to display (with token/tool_calls stats)
-                            task = (
-                                message.context.get_task() if message.context else None
-                            )
-                            if (
-                                task
-                                and hasattr(task, "outputs")
-                                and hasattr(task.outputs, "add_output")
-                            ):
-                                from aworld.output.base import ChunkOutput
-
-                                u = llm_response.usage or {}
-                                out_tok = u.get("completion_tokens")
-                                out_estimated = False
-                                if out_tok is None or out_tok == 0:
-                                    out_tok = max(
-                                        0, len(llm_response.content or "") // 4
-                                    )
-                                    out_estimated = True
-                                inp_tok = u.get("prompt_tokens")
-                                inp_estimated = False
-                                if inp_tok is None or inp_tok == 0:
-                                    inp_tok = prompt_tokens_est
-                                    inp_estimated = True
-                                tc_count = (
-                                    len(llm_response.tool_calls)
-                                    if llm_response.tool_calls
-                                    else 0
-                                )
-                                tc_estimated = True  # streaming: count may be incomplete until stream ends
-                                tc_content_len = 0
-                                if llm_response.tool_calls:
-                                    tc_content_len = sum(
-                                        len(
-                                            getattr(
-                                                getattr(tc, "function"),
-                                                "arguments",
-                                                None,
-                                            )
-                                            or ""
-                                        )
-                                        for tc in llm_response.tool_calls
-                                    )
-                                meta = {
-                                    "output_tokens": out_tok,
-                                    "input_tokens": inp_tok,
-                                    "tool_calls_count": tc_count,
-                                    "tool_calls_content_length": tc_content_len,
-                                    "output_tokens_estimated": out_estimated,
-                                    "input_tokens_estimated": inp_estimated,
-                                    "tool_calls_count_estimated": tc_estimated,
-                                    "tool_calls_content_estimated": True,  # char count, approx
-                                    "agent_id": self.id(),
-                                    "agent_name": self.name(),
-                                    "model_name": getattr(chunk, "model", None)
-                                    or getattr(llm_response, "model", None)
-                                    or self.model_name,
-                                }
-                                await task.outputs.add_output(
-                                    ChunkOutput(data=chunk, metadata=meta)
-                                )
-
                     else:
                         # Remove stream-only kwargs to avoid leaking stale stream options into fallback calls.
                         non_stream_kwargs = {
@@ -3695,18 +4604,21 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                             if k not in {"stream", "stream_options"}
                         }
                         logger.info(
-                            f"🔀 Using non-stream mode (no timeout limit, relies on httpx client timeout)"
+                            "🔀 Using non-stream mode with the shared generation deadline"
                         )
-
-                        llm_response = await acall_llm_model(
-                            self.llm,
-                            messages=messages,
-                            model=self.model_name,
-                            temperature=float_temperature,
-                            tools=tools,
-                            stream=False,  # Explicitly use non-stream mode
-                            context=message.context,
-                            **non_stream_kwargs,
+                        llm_response = await self._await_generation_operation(
+                            acall_llm_model(
+                                self.llm,
+                                messages=messages,
+                                model=self.model_name,
+                                temperature=float_temperature,
+                                tools=tools,
+                                stream=False,
+                                context=message.context,
+                                **non_stream_kwargs,
+                            ),
+                            controller=controller,
+                            streaming=False,
                         )
 
                     # Check if we got a valid response
@@ -3735,12 +4647,71 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                         )
                         if attempt < self.llm_max_attempts:
                             attempt += 1
-                            await asyncio.sleep(self.llm_retry_delay)
+                            await self._await_generation_operation(
+                                asyncio.sleep(self.llm_retry_delay),
+                                controller=controller,
+                                streaming=False,
+                            )
                             continue
                         else:
                             raise AWorldRuntimeException(error_msg)
 
                 except Exception as e:
+                    if isinstance(e, GenerationBudgetExceeded):
+                        can_repair = (
+                            e.reason
+                            is GenerationStopReason.ACTIVE_STREAM_OVER_BUDGET
+                            and controller.phase is GenerationPhase.PRIMARY
+                            and bool(tools)
+                            and not controller.repair_attempted
+                            and controller.policy.action_repair_enabled
+                        )
+                        if can_repair:
+                            scheduled = GenerationBudgetExceeded(
+                                replace(
+                                    e.receipt,
+                                    repair_attempted=True,
+                                    repair_scheduled=True,
+                                ),
+                                partial_response=e.partial_response,
+                                source_exception=e.source_exception,
+                            )
+                            self._record_generation_budget_exception(
+                                context, scheduled
+                            )
+                            if not controller.begin_action_repair():
+                                raise e
+                            schedule_turn_cause = getattr(
+                                context, "schedule_turn_cause", None
+                            )
+                            if callable(schedule_turn_cause):
+                                try:
+                                    schedule_turn_cause(
+                                        TurnCauseCode.ACTION_BUDGET_REPAIR,
+                                        evidence_hash=canonical_json_hash(
+                                            scheduled.receipt.to_dict()
+                                        ),
+                                    )
+                                except Exception as schedule_exc:
+                                    logger.warning(
+                                        "Failed to type action-budget repair turn; "
+                                        f"error_type={type(schedule_exc).__name__}"
+                                    )
+                            repair_messages = self._build_action_repair_messages(
+                                messages=messages,
+                                partial_response=e.partial_response,
+                                policy=controller.policy,
+                            )
+                            return await self._invoke_action_budget_repair(
+                                messages=repair_messages,
+                                message=message,
+                                tools=tools,
+                                float_temperature=float_temperature,
+                                controller=controller,
+                                request_kwargs=kwargs,
+                            )
+                        self._record_generation_budget_exception(context, e)
+
                     await self._raise_if_task_interrupted(
                         context,
                         reason="LLM call interrupted during provider execution",
@@ -3776,6 +4747,21 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                             )
                         )
                         failure_output_sent = True
+                        raise
+
+                    if isinstance(e, GenerationBudgetExceeded) and e.reason in {
+                        GenerationStopReason.ACTIVE_STREAM_OVER_BUDGET,
+                        GenerationStopReason.CALL_DEADLINE_EXCEEDED,
+                        GenerationStopReason.ACTION_REPAIR_TIMEOUT,
+                        GenerationStopReason.ACTION_REPAIR_EXHAUSTED,
+                    }:
+                        await self._save_failed_request_context(
+                            messages=messages,
+                            tools=tools,
+                            error=str(e),
+                            attempt=attempt,
+                            context=message.context,
+                        )
                         raise
 
                     # Check if this is a context length error - don't retry for these
@@ -3826,7 +4812,11 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                         logger.info(
                             f"⏳ Retrying in {backoff_delay}s (exponential backoff)..."
                         )
-                        await asyncio.sleep(backoff_delay)
+                        await self._await_generation_operation(
+                            asyncio.sleep(backoff_delay),
+                            controller=controller,
+                            streaming=False,
+                        )
 
                         attempt += 1
                         continue
@@ -4064,6 +5054,25 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             self._finished = True
         return self.finished
 
+    def _context_budget_recovery_tool(self, context: Context):
+        """Provide only bounded workspace readback, without enabling ingestion."""
+        if not self._is_amni_context(context):
+            return None
+        if (
+            self._context_compiler_mode_value() != "enforce"
+            or getattr(self.llm, "_context_checkpoint_policy", "explicit") not in {"adaptive", "budget_pressure"}
+            or not getattr(self.llm, "_context_artifact_offload", True)
+        ):
+            return None
+        from aworld.core.context.amni.tool.context_knowledge_tool import CONTEXT_KNOWLEDGE
+        from aworld.core.context.budget_recovery import READ_TOOL
+
+        schemas = tool_desc_transform(
+            get_tool_desc(), tools=[CONTEXT_KNOWLEDGE],
+            black_tool_actions=getattr(self, "black_tool_actions", {}) or {},
+        )
+        return next((schema for schema in schemas if schema.get("function", {}).get("name") == READ_TOOL), None)
+
     async def _filter_tools(self, context: Context) -> List[Dict[str, Any]]:
         from aworld.core.context.amni import AmniContext
 
@@ -4086,12 +5095,19 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             )
             return []
 
-        return await skill_translate_tools(
+        selected = await skill_translate_tools(
             skills=skills,
             skill_configs=self.skill_configs,
             tools=self.tools,
             tool_mapping=self.tool_mapping,
         )
+        recovery_tool = self._context_budget_recovery_tool(context)
+        if recovery_tool and not any(
+            tool.get("function", {}).get("name") == recovery_tool["function"]["name"]
+            for tool in selected
+        ):
+            selected.append(recovery_tool)
+        return selected
 
     @staticmethod
     def _requested_skill_names_from_context(context: Context) -> List[str]:
@@ -4109,6 +5125,9 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         if not isinstance(skill_config, dict):
             return False
         if skill_config.get("type") == "agent":
+            return False
+        execution_assets = skill_config.get("execution_assets")
+        if isinstance(execution_assets, dict) and execution_assets.get("enabled"):
             return False
         return not bool(skill_config.get("tool_list"))
 
@@ -4177,7 +5196,7 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             )
 
     def to_dict(self):
-        return {
+        attributes = {
             "name": self.name(),
             "conf": self.conf,
             "desc": self.desc(),
@@ -4199,6 +5218,15 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             "event_driven": self.event_driven,
             "skill_configs": self.skill_configs,
         }
+        if self._explicit_generation_budget_policy is not None:
+            attributes["generation_budget_policy"] = (
+                self._explicit_generation_budget_policy
+            )
+        if self._tool_surface_specs:
+            attributes["tool_surface_specs"] = self._tool_surface_specs
+            attributes["tool_surface_profile"] = self._tool_surface_profile
+            attributes["tool_surface_probes"] = self._tool_surface_probes
+        return attributes
 
     @staticmethod
     async def agent_to_dict(agent: "LLMAgent", override: Dict[str, Any] = None):

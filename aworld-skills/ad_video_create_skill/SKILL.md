@@ -1,5 +1,6 @@
 ---
 name: ad_video_create
+default_enabled: false
 description: Create ad-ready product video from product images, with or without character/subject images. The workflow leverages AI-powered image composition, scene understanding, and video generation. Video prompts should follow commercial shot language—visual hooks, product presence, hero shots, detail showcase, function expression, and dynamic visuals.
 ---
 

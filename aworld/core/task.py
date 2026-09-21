@@ -22,6 +22,19 @@ if TYPE_CHECKING:
     from aworld.core.agent.swarm import Swarm
 
 
+class TaskFailureOrigin(str, enum.Enum):
+    """Stable control-plane origin for an unsuccessful task response.
+
+    This separates an agent that could not satisfy the user's task from a
+    framework/provider failure that prevented a valid attempt.  The value is
+    intentionally content-free so callers never have to parse ``msg``.
+    """
+
+    TASK = "task"
+    INFRASTRUCTURE = "infrastructure"
+    CANCELLED = "cancelled"
+
+
 @dataclass
 class Task:
     id: str = field(default_factory=lambda: uuid.uuid1().hex)
@@ -131,6 +144,11 @@ class TaskResponse:
     # compatibility data plane and is not reconstructed from this metadata.
     trajectory_build_result: TrajectoryBuildResult | None = field(default=None)
     trajectory_delivery_receipt: TrajectoryDeliveryReceipt | None = field(default=None)
+    # Appended to preserve the positional constructor order of the public
+    # TaskResponse contract. ``msg``/``answer`` remain the user-visible plane.
+    failure_origin: str | None = field(default=None)
+    failure_code: str | None = field(default=None)
+    error_type: str | None = field(default=None)
 
     @property
     def trajectory_status(self) -> str | None:
@@ -153,7 +171,7 @@ class TaskResponse:
         return result.trajectory_checksum if result is not None else None
 
     def to_dict(self) -> Dict[str, Any]:
-        return {
+        payload = {
             "id": self.id,
             "trace_id": self.trace_id,
             "answer": self.answer,
@@ -180,6 +198,13 @@ class TaskResponse:
             "trajectory_ref": self.trajectory_ref,
             "trajectory_checksum": self.trajectory_checksum,
         }
+        # Preserve the historical success payload exactly; the typed failure
+        # keys are an additive control plane only when evidence exists.
+        for key in ("failure_origin", "failure_code", "error_type"):
+            value = getattr(self, key)
+            if value is not None:
+                payload[key] = value
+        return payload
 
 
 class Runner(object):

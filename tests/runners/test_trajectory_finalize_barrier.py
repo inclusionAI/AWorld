@@ -10,7 +10,14 @@ from aworld.config import ConfigDict
 from aworld.core.common import StreamingMode
 from aworld.core.common import TaskItem
 from aworld.core.context.base import Context
+from aworld.core.context.generation_budget import (
+    GenerationBudgetExceeded,
+    GenerationBudgetReceipt,
+    GenerationPhase,
+    GenerationStopReason,
+)
 from aworld.core.event.base import Constants, Message, TopicType
+from aworld.core.exceptions import AWorldRuntimeException
 from aworld.core.task import Task, TaskResponse
 from aworld.core.trajectory import (
     TrajectoryBuildStatus,
@@ -22,6 +29,11 @@ from aworld.core.trajectory_update_registry import TrajectoryUpdateOutcome
 from aworld.dataset.trajectory_io import read_trajectory_records
 from aworld.runners.event_runner import TaskEventRunner
 from aworld.runners.handler.task import DefaultTaskHandler
+from aworld_cli.executors.continuous import ContinuousExecutor
+from aworld_cli.main import (
+    _direct_run_has_explicit_task_failure,
+    _direct_run_infrastructure_failure,
+)
 
 
 class _Step:
@@ -75,6 +87,66 @@ def _runner(*, timeout=1, sub_task=False):
         {"save_message_handle_result": lambda self, **kwargs: None},
     )()
     return runner, context
+
+
+@pytest.mark.asyncio
+async def test_wrapped_agent_budget_failure_keeps_origin_across_execution_layers():
+    runner, context = _runner()
+    emitted = []
+
+    class _Events:
+        async def emit_message(self, event):
+            emitted.append(event)
+
+    runner.event_mng = _Events()
+
+    async def failing_handler(_message):
+        receipt = GenerationBudgetReceipt(
+            reason=GenerationStopReason.ACTION_REPAIR_EXHAUSTED,
+            phase=GenerationPhase.ACTION_REPAIR,
+            elapsed_seconds=2.0,
+            phase_elapsed_seconds=1.0,
+            partial_response_available=True,
+            partial_response_chars=12,
+            tool_call_count=0,
+            repair_attempted=True,
+        )
+        try:
+            raise GenerationBudgetExceeded(receipt)
+        except GenerationBudgetExceeded as exc:
+            raise AWorldRuntimeException("legacy wrapper") from exc
+
+    await runner._handle_task(
+        Message(headers={"context": context}),
+        failing_handler,
+    )
+
+    assert len(emitted) == 1
+    error_event = emitted[0]
+    assert error_event.headers["task_failure"] == {
+        "origin": "task",
+        "code": "action_repair_exhausted",
+        "error_type": "GenerationBudgetExceeded",
+    }
+
+    runner.should_stop_task = lambda _message: _async_result(False)
+    runner.stop = lambda: _async_result(None)
+    response_events = [
+        event async for event in DefaultTaskHandler(runner).handle(error_event)
+    ]
+    response = response_events[-1].payload
+    result = {
+        "iteration": 1,
+        "response": response.answer,
+        "success": response.success,
+        "completed": False,
+    }
+    ContinuousExecutor._attach_task_response_evidence(result, response)
+    summary = {"results": [result]}
+
+    assert result["failure_origin"] == "task"
+    assert _direct_run_has_explicit_task_failure(summary) is True
+    assert _direct_run_infrastructure_failure(summary) is None
 
 
 @pytest.mark.asyncio

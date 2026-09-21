@@ -13,6 +13,7 @@ from .types import CronJob, CronSchedule, CronPayload, CronJobState
 from .store import FileBasedCronStore
 from .executor import CronExecutor
 from .scheduler import CronScheduler
+from aworld.utils.runtime_state import runtime_state_path
 
 __all__ = [
     'CronJob',
@@ -40,7 +41,9 @@ def get_scheduler() -> CronScheduler:
     global _scheduler_instance
 
     if _scheduler_instance is None:
-        store = FileBasedCronStore(".aworld/cron.json")
+        store = FileBasedCronStore(
+            runtime_state_path("cron.json", default=".aworld/cron.json")
+        )
         executor = CronExecutor()
         _scheduler_instance = CronScheduler(store, executor)
 

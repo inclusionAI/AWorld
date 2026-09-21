@@ -162,7 +162,7 @@ def _preferred_text_boundary(content: str, maximum: int) -> int:
 def _segment_required_text_message(
     item: ContextItem,
     *,
-    max_item_tokens: int,
+    max_item_tokens: int | None,
 ) -> tuple[ContextItem, ...]:
     """Split an oversized required text message without dropping any content.
 
@@ -180,10 +180,12 @@ def _segment_required_text_message(
         or not isinstance(payload.get("content"), str)
     ):
         return (item,)
-    limit = min(
-        max_item_tokens,
-        item.token_limit if item.token_limit is not None else max_item_tokens,
+    limits = tuple(
+        limit for limit in (max_item_tokens, item.token_limit) if limit is not None
     )
+    if not limits:
+        return (item,)
+    limit = min(limits)
     if limit <= 0:
         return (item,)
     estimate = estimate_canonical_json_tokens(payload).value

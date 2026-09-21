@@ -19,10 +19,14 @@ from aworld.logs.util import logger
 from aworld.memory.main import MemoryFactory
 from aworld.memory.models import MemorySummary, MessageMetadata
 from aworld.models.utils import num_tokens_from_messages
+from aworld.utils.runtime_state import runtime_state_path
 
 def get_default_history_path() -> Path:
-    """Default CLI history path: ~/.aworld/cli_history.jsonl."""
-    return Path.home() / ".aworld" / "cli_history.jsonl"
+    """Return the CLI history path, honoring isolated runtime state."""
+    return runtime_state_path(
+        "cli_history.jsonl",
+        default=Path.home() / ".aworld" / "cli_history.jsonl",
+    )
 
 
 def get_limit_str() -> Optional[str]:
