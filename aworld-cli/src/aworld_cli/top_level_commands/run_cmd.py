@@ -454,6 +454,7 @@ class RunTopLevelCommand:
         from aworld_cli.main import (
             DirectRunLiveSummary,
             _direct_run_failure_outcome,
+            _emit_direct_run_agent_termination,
             _resolve_agent_dirs,
             _run_direct_mode,
             _self_evolve_config_from_cli_mode,
@@ -461,6 +462,7 @@ class RunTopLevelCommand:
             init_middlewares,
         )
         from aworld_cli.run_outcome import (
+            DirectRunOutcome,
             DirectRunErrorCode,
             DirectRunStage,
             DirectRunStatus,
@@ -583,25 +585,29 @@ class RunTopLevelCommand:
             except (AttributeError, ValueError):
                 deadline_stage = DirectRunStage.AGENT_EXECUTION
             startup_timeout = deadline_stage is DirectRunStage.PROVIDER_START
-            outcome = _direct_run_failure_outcome(
-                stage=deadline_stage,
-                error_code=(
-                    DirectRunErrorCode.PROVIDER_START_TIMEOUT
-                    if startup_timeout
-                    else DirectRunErrorCode.AGENT_BUDGET_EXHAUSTED
-                ),
-                agent_name=agent_name,
-                details={
-                    "error_type": type(exc).__name__,
-                    "phase": getattr(exc, "phase", "task_deadline"),
-                },
-                status=(
-                    DirectRunStatus.INFRASTRUCTURE_FAILED
-                    if startup_timeout
-                    else DirectRunStatus.TASK_FAILED
-                ),
-                summary=getattr(exc, "summary", None),
-            )
+            if startup_timeout:
+                outcome = _direct_run_failure_outcome(
+                    stage=deadline_stage,
+                    error_code=DirectRunErrorCode.PROVIDER_START_TIMEOUT,
+                    agent_name=agent_name,
+                    details={
+                        "error_type": type(exc).__name__,
+                        "phase": getattr(exc, "phase", "task_deadline"),
+                    },
+                    status=DirectRunStatus.INFRASTRUCTURE_FAILED,
+                    summary=getattr(exc, "summary", None),
+                )
+            else:
+                summary = getattr(exc, "summary", None)
+                _emit_direct_run_agent_termination(
+                    agent_name=agent_name,
+                    summary=summary,
+                    reason="task_deadline_exhausted",
+                )
+                outcome = DirectRunOutcome.from_summary(
+                    summary,
+                    status=DirectRunStatus.SUCCEEDED,
+                )
         except Exception as exc:
             outcome = _direct_run_failure_outcome(
                 stage=DirectRunStage.ORCHESTRATION,

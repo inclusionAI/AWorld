@@ -331,7 +331,7 @@ def test_run_command_writes_minimal_atif_for_pre_execution_failure(
     assert _marker_payload(stderr, "AWORLD_RUN_OUTCOME=")["process_exit_code"] == 1
 
 
-def test_run_command_finalizes_caller_deadline_as_budget_exhaustion(
+def test_run_command_returns_caller_deadline_attempt_to_verifier(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
     tmp_path,
@@ -346,6 +346,7 @@ def test_run_command_finalizes_caller_deadline_as_budget_exhaustion(
                 "success": False,
                 "completed": False,
                 "trajectory_capture_mode": "live_context",
+                "trajectory_fidelity": "partial",
                 "trajectory": [
                     {
                         "meta": {"session_id": "session-live", "step": 1},
@@ -383,7 +384,6 @@ def test_run_command_finalizes_caller_deadline_as_budget_exhaustion(
         "aworld_cli.top_level_commands.run_cmd.bootstrap_runtime",
         lambda **_kwargs: None,
     )
-    monkeypatch.setenv("AWORLD_TASK_FAILURE_EXIT_CODE", "64")
     trajectory_path = tmp_path / "trajectory.json"
     outcome_path = tmp_path / "outcome.json"
     args = SimpleNamespace(
@@ -412,34 +412,30 @@ def test_run_command_finalizes_caller_deadline_as_budget_exhaustion(
         SimpleNamespace(argv=("aworld-cli", "run")),
     )
 
-    assert exit_code == 64
+    assert exit_code == 0
     trajectory = json.loads(trajectory_path.read_text(encoding="utf-8"))
     assert trajectory["agent"]["version"] != "unknown"
     aworld = trajectory["extra"]["aworld"]
-    assert aworld["completion_state"] == "incomplete"
-    assert aworld["run_outcome"]["semantic_status"] == "task_failed"
-    assert aworld["run_outcome"]["process_exit_code"] == 64
+    assert aworld["completion_state"] == "complete"
+    assert aworld["run_outcome"]["semantic_status"] == "succeeded"
+    assert aworld["run_outcome"]["process_exit_code"] == 0
     assert aworld["trajectory_fidelity"] == "partial"
     assert aworld["llm_call_count"] == 2
     assert aworld["tool_call_count"] == 1
     assert aworld["action_count"] == 1
     assert len(trajectory["steps"]) == 2
     assert trajectory["steps"][1]["tool_calls"][0]["function_name"] == "terminal"
-    assert aworld["run_outcome"]["failure"] == {
-        "stage": "agent_execution",
-        "error_code": "agent_budget_exhausted",
-        "error_type": "DirectRunDeadlineExceeded",
-    }
+    assert "failure" not in aworld["run_outcome"]
     persisted = json.loads(outcome_path.read_text(encoding="utf-8"))
     assert {
         key: value for key, value in persisted.items() if key != "atif_export"
     } == aworld["run_outcome"]
     assert persisted["atif_export"]["status"] == "persisted"
     stderr = capsys.readouterr().err
-    assert _marker_payload(stderr, "AWORLD_RUN_FAILURE=")["details"] == {
-        "error_type": "DirectRunDeadlineExceeded",
-        "phase": "task_deadline",
-    }
+    assert "AWORLD_RUN_FAILURE=" not in stderr
+    assert _marker_payload(stderr, "AWORLD_AGENT_TERMINATION=")["reason"] == (
+        "task_deadline_exhausted"
+    )
     assert _marker_payload(stderr, "AWORLD_RUN_OUTCOME=") == persisted
 
 
