@@ -30,7 +30,7 @@ PARSEBENCH_SCOPE_FILENAME = "parsebench-scope.json"
 PARSEBENCH_SCOPE_RUNTIME_PATH = "/workspace/parsebench-scope.json"
 SELECTION_MANIFEST_SCHEMA_VERSION = "aworld-parsebench-selection-manifest/v2"
 PINNED_FULL_SELECTION_MANIFEST_SHA256 = (
-    "sha256:b4a3da46bf933a35d94880674fe6ba899e945a50c323d7bf6a7f2033cb126078"
+    "sha256:b5b0f90580fdb2fd7bed4fd4279ff8ada632d5980a3f338fe5e58a6541025eaf"
 )
 # Public task/verifier base. The scorer source, dependencies, Dockerfiles and
 # embedded verifier are independently pinned by the full selection manifest.
