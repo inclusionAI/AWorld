@@ -1416,7 +1416,7 @@ async def test_noninteractive_aworld_fails_after_zero_provider_capture_retries(
 
 
 @pytest.mark.asyncio
-async def test_noninteractive_aworld_propagates_terminal_task_failure(
+async def test_noninteractive_aworld_returns_terminal_task_result_to_verifier(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
@@ -1467,11 +1467,14 @@ async def test_noninteractive_aworld_propagates_terminal_task_failure(
         non_interactive=True,
     )
 
-    assert succeeded.status is DirectRunStatus.TASK_FAILED
-    payload = _failure_payload(capsys.readouterr().err)
-    assert payload["stage"] == "agent_execution"
-    assert payload["error_code"] == "agent_task_failed"
-    assert payload["details"] == {"provider_evidence": True}
+    assert succeeded.status is DirectRunStatus.SUCCEEDED
+    assert succeeded.process_exit_code == 0
+    payload = _marker_payload(
+        capsys.readouterr().err,
+        "AWORLD_AGENT_TERMINATION=",
+    )
+    assert payload["status"] == "completed"
+    assert payload["reason"] == "completion_contract_unsatisfied"
 
 
 @pytest.mark.asyncio

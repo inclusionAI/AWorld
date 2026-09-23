@@ -1487,6 +1487,34 @@ def _emit_direct_run_failure(
     return payload
 
 
+def _emit_direct_run_agent_termination(
+    *,
+    agent_name: str,
+    summary: dict | None,
+    reason: str,
+) -> None:
+    """Log an unsuccessful Agent stop without relabelling it as a harness failure."""
+
+    metrics = DirectRunOutcome.from_summary(
+        summary,
+        status=DirectRunStatus.SUCCEEDED,
+    )
+    payload = {
+        "schema_version": "aworld.run.agent-termination.v1",
+        "status": "completed",
+        "agent_name": agent_name,
+        "reason": reason,
+        "llm_call_count": metrics.llm_call_count,
+        "tool_call_count": metrics.tool_call_count,
+        "action_count": metrics.action_count,
+    }
+    print(
+        "AWORLD_AGENT_TERMINATION="
+        + json.dumps(payload, ensure_ascii=False, sort_keys=True),
+        file=sys.stderr,
+    )
+
+
 def _direct_run_failure_outcome(
     *,
     stage: DirectRunStage | str,
@@ -2018,14 +2046,17 @@ async def _run_direct_mode(
     if incomplete_results:
         unfinished = incomplete_results[-1]
         semantic = unfinished.get("semantic_status", unfinished.get("task_status"))
-        return _direct_run_failure_outcome(
-            stage=DirectRunStage.AGENT_EXECUTION,
-            error_code=(DirectRunErrorCode.AGENT_BUDGET_EXHAUSTED if semantic == "budget_exhausted"
-                        else DirectRunErrorCode.AGENT_INCOMPLETE),
+        reason = unfinished.get("completion_reason")
+        if not isinstance(reason, str) or not reason:
+            reason = str(semantic or "agent_incomplete")
+        _emit_direct_run_agent_termination(
             agent_name=agent_name,
-            details={"recoverable": unfinished.get("recoverable") is True},
             summary=summary,
-            status=DirectRunStatus.TASK_FAILED,
+            reason=reason,
+        )
+        return DirectRunOutcome.from_summary(
+            summary,
+            status=DirectRunStatus.SUCCEEDED,
         )
     if not _direct_run_succeeded(summary):
         if require_explicit_failure_origin and not _direct_run_has_explicit_task_failure(
@@ -2038,13 +2069,27 @@ async def _run_direct_mode(
                 details={"provider_evidence": _direct_run_has_provider_evidence(summary)},
                 summary=summary,
             )
-        return _direct_run_failure_outcome(
-            stage=DirectRunStage.AGENT_EXECUTION,
-            error_code=DirectRunErrorCode.AGENT_TASK_FAILED,
+        failed_results = [
+            result
+            for result in (summary or {}).get("results", [])
+            if isinstance(result, dict) and not bool(result.get("success"))
+        ]
+        reason = next(
+            (
+                str(result.get("failure_code") or result.get("completion_reason"))
+                for result in reversed(failed_results)
+                if result.get("failure_code") or result.get("completion_reason")
+            ),
+            "agent_task_unsolved",
+        )
+        _emit_direct_run_agent_termination(
             agent_name=agent_name,
-            details={"provider_evidence": True},
             summary=summary,
-            status=DirectRunStatus.TASK_FAILED,
+            reason=reason,
+        )
+        return DirectRunOutcome.from_summary(
+            summary,
+            status=DirectRunStatus.SUCCEEDED,
         )
     activation_evidence = getattr(
         agent_executor,

@@ -77,6 +77,7 @@ _BACKGROUND_SUBAGENT_ACTIONS = (
     "cancel_task",
 )
 _GENERATION_BUDGET_ENV_NAMES = (
+    "AWORLD_GENERATION_BUDGET_MODE",
     "AWORLD_GENERATION_TOTAL_TIMEOUT_SECONDS",
     "AWORLD_GENERATION_STREAM_IDLE_TIMEOUT_SECONDS",
     "AWORLD_GENERATION_ACTIVE_TOOL_FREE_TIMEOUT_SECONDS",
@@ -201,15 +202,28 @@ def resolve_aworld_tool_surface_enforcement() -> bool:
 
 
 def resolve_aworld_generation_budget() -> Optional[GenerationBudgetPolicy]:
-    """Resolve optional runner-owned generation limits without task heuristics."""
+    """Resolve explicitly enabled generation watchdogs.
 
-    if not any(name in os.environ for name in _GENERATION_BUDGET_ENV_NAMES):
+    Benchmark exploration is normally bounded by ``AWORLD_MAX_LOOP_STEPS``.
+    Legacy Runtime images may still inject individual generation timeout and
+    repair variables; those variables must not truncate an agentic attempt
+    unless the caller also opts into generation watchdog mode.  This keeps
+    stale adapter configuration from changing the semantic task outcome.
+    """
+
+    mode = os.environ.get("AWORLD_GENERATION_BUDGET_MODE", "max_steps_only")
+    mode = mode.strip().lower()
+    if mode in {"", "max_steps_only", "disabled", "off", "none"}:
         return None
+    if mode not in {"enabled", "watchdog"}:
+        raise ValueError(
+            "AWORLD_GENERATION_BUDGET_MODE must be 'max_steps_only' or 'enabled'"
+        )
     # A single opt-in must not silently enable every optional deadline for a
     # normal CLI user. Runtime adapters explicitly provide the full benchmark
     # policy; unspecified general-mode controls stay disabled.
     defaults = GenerationBudgetPolicy(
-        total_timeout_seconds=360.0,
+        total_timeout_seconds=None,
         stream_idle_timeout_seconds=None,
         active_tool_free_timeout_seconds=None,
         action_repair_timeout_seconds=None,

@@ -171,6 +171,7 @@ def test_generation_budget_env_is_opt_in(
 def test_generation_budget_env_builds_typed_policy(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.setenv("AWORLD_GENERATION_BUDGET_MODE", "enabled")
     monkeypatch.setenv("AWORLD_GENERATION_TOTAL_TIMEOUT_SECONDS", "none")
     monkeypatch.setenv(
         "AWORLD_GENERATION_ACTIVE_TOOL_FREE_TIMEOUT_SECONDS",
@@ -194,20 +195,27 @@ def test_generation_budget_env_builds_typed_policy(
     ("name", "value", "expected"),
     [
         ("AWORLD_GENERATION_TOTAL_TIMEOUT_SECONDS", "600", (600.0, None, None, None, False)),
-        ("AWORLD_GENERATION_STREAM_IDLE_TIMEOUT_SECONDS", "45", (360.0, 45.0, None, None, False)),
-        ("AWORLD_GENERATION_ACTIVE_TOOL_FREE_TIMEOUT_SECONDS", "75", (360.0, None, 75.0, None, False)),
-        ("AWORLD_GENERATION_ACTION_REPAIR_TIMEOUT_SECONDS", "30", (360.0, None, None, 30.0, False)),
-        ("AWORLD_GENERATION_ACTION_REPAIR_ENABLED", "true", (360.0, None, None, None, True)),
+        ("AWORLD_GENERATION_STREAM_IDLE_TIMEOUT_SECONDS", "45", (None, 45.0, None, None, False)),
+        ("AWORLD_GENERATION_ACTIVE_TOOL_FREE_TIMEOUT_SECONDS", "75", (None, None, 75.0, None, False)),
+        ("AWORLD_GENERATION_ACTION_REPAIR_TIMEOUT_SECONDS", "30", (None, None, None, 30.0, False)),
+        ("AWORLD_GENERATION_ACTION_REPAIR_ENABLED", "true", (None, None, None, None, True)),
     ],
 )
 def test_generation_budget_partial_opt_in_does_not_enable_other_controls(
     monkeypatch: pytest.MonkeyPatch,
     name: str,
     value: str,
-    expected: tuple[float, float | None, float | None, float | None, bool],
+    expected: tuple[
+        float | None,
+        float | None,
+        float | None,
+        float | None,
+        bool,
+    ],
 ) -> None:
     for env_name in aworld_agent._GENERATION_BUDGET_ENV_NAMES:
         monkeypatch.delenv(env_name, raising=False)
+    monkeypatch.setenv("AWORLD_GENERATION_BUDGET_MODE", "enabled")
     monkeypatch.setenv(name, value)
 
     policy = resolve_aworld_generation_budget()
@@ -248,10 +256,22 @@ def test_generation_budget_env_rejects_invalid_values(
     value: str,
     message: str,
 ) -> None:
+    monkeypatch.setenv("AWORLD_GENERATION_BUDGET_MODE", "enabled")
     monkeypatch.setenv(name, value)
 
     with pytest.raises(ValueError, match=message):
         resolve_aworld_generation_budget()
+
+
+def test_legacy_generation_budget_env_is_ignored_without_explicit_mode(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("AWORLD_GENERATION_BUDGET_MODE", raising=False)
+    monkeypatch.setenv("AWORLD_GENERATION_TOTAL_TIMEOUT_SECONDS", "938")
+    monkeypatch.setenv("AWORLD_GENERATION_ACTIVE_TOOL_FREE_TIMEOUT_SECONDS", "240")
+    monkeypatch.setenv("AWORLD_GENERATION_ACTION_REPAIR_ENABLED", "true")
+
+    assert resolve_aworld_generation_budget() is None
 
 
 def test_builtin_subagent_allowlist_is_explicit_and_ordered(

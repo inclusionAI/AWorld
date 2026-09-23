@@ -72,7 +72,7 @@ def _message(task_id: str = "generation-budget") -> Message:
     )
 
 
-def test_default_agent_keeps_only_legacy_total_timeout() -> None:
+def test_default_agent_uses_max_steps_without_generation_deadlines() -> None:
     agent = _ToolAgent(
         name="Aworld",
         conf=AgentConfig(
@@ -84,7 +84,7 @@ def test_default_agent_keeps_only_legacy_total_timeout() -> None:
 
     policy = agent._resolve_generation_budget_policy()
 
-    assert policy.total_timeout_seconds == 360.0
+    assert policy.total_timeout_seconds is None
     assert policy.stream_idle_timeout_seconds is None
     assert policy.active_tool_free_timeout_seconds is None
     assert policy.action_repair_timeout_seconds is None

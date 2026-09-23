@@ -8,7 +8,7 @@ from aworld.core.context.base import Context
 from aworld.core.context.compiler import ArtifactRequirement, CompletionContract, CompletionMode, ValidationCommand
 from aworld_cli.core.runtime_completion import configure_runtime_completion, resolve_runtime_completion_evidence
 from aworld_cli.executors.continuous import ContinuousExecutor
-from aworld_cli.run_outcome import DirectRunOutcome, DirectRunStatus
+from aworld_cli.run_outcome import DirectRunOutcome
 from types import SimpleNamespace
 
 
@@ -127,8 +127,10 @@ async def test_goal_verify_pipefail_blocks_claimed_completion(tmp_path):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("semantic,code", [("incomplete","agent_incomplete"), ("budget_exhausted","agent_budget_exhausted")])
-async def test_direct_cli_preserves_compatible_gate_shape_with_specific_reason(monkeypatch, semantic, code):
+@pytest.mark.parametrize("semantic", ["incomplete", "budget_exhausted"])
+async def test_direct_cli_returns_incomplete_attempt_to_verifier(
+    monkeypatch, capsys, semantic
+):
     from aworld_cli import main as main_module
     class Runtime:
         def __init__(self, *args, **kwargs): pass
@@ -147,6 +149,8 @@ async def test_direct_cli_preserves_compatible_gate_shape_with_specific_reason(m
     monkeypatch.setattr("aworld.core.scheduler.get_scheduler", lambda: object())
     result = await main_module._run_direct_mode(prompt="work", agent_name="Aworld", non_interactive=True)
     payload = result.to_dict()
-    assert payload["semantic_status"] == "task_failed"
-    assert payload["failure"] == {"stage":"agent_execution", "error_code":code}
-    assert "recoverable" not in payload
+    assert result.summary["results"][0]["semantic_status"] == semantic
+    assert payload["semantic_status"] == "succeeded"
+    assert payload["process_exit_code"] == 0
+    assert "failure" not in payload
+    assert 'AWORLD_AGENT_TERMINATION=' in capsys.readouterr().err

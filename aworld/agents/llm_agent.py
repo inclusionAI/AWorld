@@ -3962,9 +3962,12 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                 return compiler_config.get(name, default)
             return getattr(compiler_config, name, default)
 
+        # Agentic runs are bounded by the Agent loop's max-step guard.  Do not
+        # silently add a second, per-generation wall clock budget: a long
+        # reasoning/tool-selection turn is still useful task work and its
+        # answer must be allowed to reach the benchmark verifier.  Callers
+        # that truly need a generation watchdog can pass an explicit policy.
         total_timeout = configured("generation_total_timeout_seconds", None)
-        if total_timeout is None:
-            total_timeout = DEFAULT_LLM_EXECUTION_TIMEOUT_SECONDS
         return GenerationBudgetPolicy(
             total_timeout_seconds=total_timeout,
             stream_idle_timeout_seconds=configured(
