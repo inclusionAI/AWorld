@@ -120,3 +120,39 @@ async def test_pre_llm_cost_hook_skips_self_evolve_before_cli_lookups(monkeypatc
     result = await PreLlmCostHook().exec(message, context=context)
 
     assert result is message
+
+
+@pytest.mark.asyncio
+async def test_pre_llm_cost_hook_silently_skips_missing_history(
+    monkeypatch,
+    tmp_path,
+):
+    from aworld_cli.executors import pre_llm_cost_hook
+    from aworld_cli.executors.pre_llm_cost_hook import PreLlmCostHook
+
+    history_path = tmp_path / "missing-history.jsonl"
+    printed = []
+    monkeypatch.setattr(
+        pre_llm_cost_hook.AgentFactory,
+        "agent_instance",
+        lambda _name: _Agent("Aworld"),
+    )
+    monkeypatch.setattr(
+        "aworld_cli.core.context.get_default_history_path",
+        lambda: history_path,
+    )
+    message = Message(
+        category="agent_hook",
+        payload={"event": "before_llm_call"},
+        sender="Aworld",
+        headers={"console": SimpleNamespace(print=printed.append)},
+    )
+    context = SimpleNamespace(
+        session_id="direct-session",
+        execution_scope="cli_interactive",
+    )
+
+    result = await PreLlmCostHook().exec(message, context=context)
+
+    assert result is message
+    assert printed == []

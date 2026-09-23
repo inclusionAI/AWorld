@@ -27,6 +27,8 @@ from aworld.core.tool.surface import (
 )
 from aworld.logs.util import logger
 from aworld_cli.core.context_tool import CONTEXT_TOOL
+from aworld_cli.core.model_profiles import resolve_context_compiler_env, resolve_context_window_env
+from aworld.tools.workbench_tool import WORKBENCH, WORKBENCH_SCHEMA_IDS
 from aworld_cli.core.builtin_skills import AWORLD_DEFAULT_SKILL_NAMES
 from aworld_cli.core.skill_registry import build_skill_resolver_inputs
 from .audio.audio import build_audio_swarm
@@ -57,7 +59,7 @@ from aworld.config import AgentConfig, ModelConfig
 CAST_ANALYSIS = "CAST_ANALYSIS"
 CAST_CODER = "CAST_CODER"
 CAST_SEARCH = "CAST_SEARCH"
-AWORLD_MAX_LOOP_STEPS_HARD_LIMIT = 240
+AWORLD_MAX_LOOP_STEPS_HARD_LIMIT = 1024
 AWORLD_DEFAULT_MAX_COMPLETION_TOKENS = 16384
 AWORLD_MAX_COMPLETION_TOKENS_HARD_LIMIT = 64000
 AWORLD_BUILTIN_SUBAGENT_NAMES = (
@@ -75,6 +77,7 @@ _BACKGROUND_SUBAGENT_ACTIONS = (
     "cancel_task",
 )
 _GENERATION_BUDGET_ENV_NAMES = (
+    "AWORLD_GENERATION_BUDGET_MODE",
     "AWORLD_GENERATION_TOTAL_TIMEOUT_SECONDS",
     "AWORLD_GENERATION_STREAM_IDLE_TIMEOUT_SECONDS",
     "AWORLD_GENERATION_ACTIVE_TOOL_FREE_TIMEOUT_SECONDS",
@@ -199,15 +202,28 @@ def resolve_aworld_tool_surface_enforcement() -> bool:
 
 
 def resolve_aworld_generation_budget() -> Optional[GenerationBudgetPolicy]:
-    """Resolve optional runner-owned generation limits without task heuristics."""
+    """Resolve explicitly enabled generation watchdogs.
 
-    if not any(name in os.environ for name in _GENERATION_BUDGET_ENV_NAMES):
+    Benchmark exploration is normally bounded by ``AWORLD_MAX_LOOP_STEPS``.
+    Legacy Runtime images may still inject individual generation timeout and
+    repair variables; those variables must not truncate an agentic attempt
+    unless the caller also opts into generation watchdog mode.  This keeps
+    stale adapter configuration from changing the semantic task outcome.
+    """
+
+    mode = os.environ.get("AWORLD_GENERATION_BUDGET_MODE", "max_steps_only")
+    mode = mode.strip().lower()
+    if mode in {"", "max_steps_only", "disabled", "off", "none"}:
         return None
+    if mode not in {"enabled", "watchdog"}:
+        raise ValueError(
+            "AWORLD_GENERATION_BUDGET_MODE must be 'max_steps_only' or 'enabled'"
+        )
     # A single opt-in must not silently enable every optional deadline for a
     # normal CLI user. Runtime adapters explicitly provide the full benchmark
     # policy; unspecified general-mode controls stay disabled.
     defaults = GenerationBudgetPolicy(
-        total_timeout_seconds=360.0,
+        total_timeout_seconds=None,
         stream_idle_timeout_seconds=None,
         active_tool_free_timeout_seconds=None,
         action_repair_timeout_seconds=None,
@@ -322,6 +338,7 @@ def _aworld_root_tool_policy(
 
     tool_names = [
         CONTEXT_TOOL,
+        WORKBENCH,
         *(
             [CAST_SEARCH]
             if _CAST_TOOLS_AVAILABLE and profile.profile_id == "general"
@@ -389,9 +406,18 @@ def load_aworld_system_prompt(
 
 
 def resolve_aworld_max_loop_steps() -> int:
-    """Resolve the bounded soft limit for one Aworld agent task."""
+    """Resolve an optional step guard for one execution segment.
 
-    raw_value = os.environ.get("AWORLD_MAX_LOOP_STEPS", "120")
+    AWorld owns this harness guard instead of relying on Harbor policy. The
+    default of 1024 prevents an unbounded model/tool loop while leaving normal
+    benchmark work to the caller-owned task deadline. Callers may opt into a
+    smaller positive guard; exhaustion is a checkpointed budget_exhausted
+    outcome, never success.
+    """
+
+    raw_value = os.environ.get("AWORLD_MAX_LOOP_STEPS")
+    if raw_value is None or not raw_value.strip():
+        return AWORLD_MAX_LOOP_STEPS_HARD_LIMIT
     try:
         max_loop_steps = int(raw_value)
     except ValueError as exc:
@@ -613,10 +639,12 @@ def build_aworld_agent(include_skills: Optional[str] = None):
             llm_api_key=os.getenv("LLM_API_KEY"),
             llm_base_url=os.getenv("LLM_BASE_URL", "https://api.openai.com/v1"),
             llm_temperature=float(os.environ.get("LLM_TEMPERATURE", "0.1")),
+            max_model_len=resolve_context_window_env(),
+            context_compiler=resolve_context_compiler_env(),
             params={"max_completion_tokens": max_completion_tokens},
             llm_stream_call=os.environ.get("STREAM", "0").lower() in ("1", "true", "yes")
         ),
-        use_vision=False,  # Enable if needed for image analysis
+        use_vision=True,
         skill_configs={},
         ext={"skill_resolver_inputs": resolver_inputs},
     )
@@ -668,6 +696,12 @@ def build_aworld_agent(include_skills: Optional[str] = None):
         black_tool_actions=black_tool_actions,
         tool_surface_specs=(
             ToolCapabilitySpec(
+                capability_id="workbench",
+                schema_ids=WORKBENCH_SCHEMA_IDS,
+                lifecycle=ToolLifecycle.IMMEDIATE,
+                required=enforce_tool_surface,
+            ),
+            ToolCapabilitySpec(
                 capability_id="terminal",
                 schema_ids=("run_code",),
                 lifecycle=ToolLifecycle.IMMEDIATE,
@@ -683,6 +717,8 @@ def build_aworld_agent(include_skills: Optional[str] = None):
         **budgeted_agent_kwargs,
     )
     aworld_agent.tool_surface_profile = tool_surface_profile
+    # Native workbench operations share only this locally created Sandbox.
+    aworld_agent._task_workspace_local_path = os.path.realpath(os.getcwd())
 
     if sub_agents:
         logger.info(

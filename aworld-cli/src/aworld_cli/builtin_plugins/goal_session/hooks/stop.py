@@ -6,6 +6,7 @@ from aworld_cli.builtin_plugins.goal_session.common import (
     resolve_goal_control_action,
 )
 from aworld_cli.builtin_plugins.goal_session.hooks.task_completed import (
+    _persistable_state,
     build_goal_context_prompt,
     goal_status,
     is_goal_active,
@@ -19,6 +20,8 @@ class GoalCommand(PluginBoundCommand):
         return "prompt"
 
     def resolve_command_type(self, context: CommandContext) -> str:
+        if resolve_goal_control_action(context.user_args) == "resume":
+            return "prompt"
         if resolve_goal_control_action(context.user_args):
             return "tool"
         return "prompt"
@@ -27,6 +30,15 @@ class GoalCommand(PluginBoundCommand):
         return resolve_goal_control_action(context.user_args) is None
 
     async def pre_execute(self, context: CommandContext):
+        if resolve_goal_control_action(context.user_args) == "resume":
+            handle = self.get_state_handle(context)
+            current = handle.read() if handle else {}
+            if goal_status(current) not in {"paused", "active"}:
+                return "Only a paused or active goal can resume; a reached attempt limit requires an explicit new goal."
+            maximum = current.get("max_turns")
+            if maximum is not None and current.get("turn_count", 1) >= maximum:
+                handle.update({"active": False, "status": "budget_limited"})
+                return "The goal's maximum number of attempts was reached. Resume does not reset it."
         if resolve_goal_control_action(context.user_args):
             return None
         try:
@@ -137,17 +149,43 @@ class GoalCommand(PluginBoundCommand):
                     "last_task_status": "paused",
                 }
             )
+            if context.executor is not None and hasattr(context.executor, "request_goal_pause"):
+                context.executor.request_goal_pause()
+            return build_goal_context_prompt(updated)
+
+        if action == "resume":
+            if goal_status(current) not in {"paused", "active"}:
+                return "Only a paused or active goal can resume; a reached attempt limit cannot be reset by resume."
+            maximum = current.get("max_turns")
+            if maximum is not None and current.get("turn_count", 1) >= maximum:
+                return build_goal_context_prompt(handle.update({"active": False, "status": "budget_limited"}))
+            if context.executor is not None and current.get("last_task_id"):
+                context.executor._resume_context_checkpoint_once = True
+                context.executor._resume_goal_work_scope_once = {
+                    "source_task_id": current["last_task_id"],
+                    "source_task_epoch": current.get("last_task_epoch"),
+                }
+                context.executor._resume_goal_agent_ids_once = current.get("agent_ids_by_name") or {}
+            updated = _persistable_state({**current,
+                "active": True, "status": "active",
+                "turn_count": current.get("turn_count", 1) + 1,
+            })
+            handle.write(updated)
             return build_goal_context_prompt(updated)
 
         if action == "clear":
             if not current:
                 return "No goal state to clear."
             handle.clear()
+            if context.executor is not None and hasattr(context.executor, "request_goal_pause"):
+                context.executor.request_goal_pause()
             return "Goal cleared."
 
         return "Unknown /goal action."
 
     async def get_prompt(self, context: CommandContext) -> str:
+        if resolve_goal_control_action(context.user_args) == "resume":
+            return await self.execute(context)
         state = self._build_start_state(context)
         return build_goal_context_prompt(state)
 

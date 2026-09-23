@@ -9,6 +9,15 @@ WATCHDOG_METRICS_KEY = "post_tool_progress_metrics"
 SEMANTIC_PROGRESS_KEY = "context_semantic_progress"
 _SEMANTIC_RUNTIME_KEY = "semantic_progress"
 _POST_TOOL_TURNS_RUNTIME_KEY = "post_tool_turns"
+_RECENT_SEMANTIC_PAIR_WINDOW = 8
+_PROGRESS_GUARD_REPEAT_THRESHOLD = 3
+_PROGRESS_GUARD_MESSAGE = (
+    "AWorld progress guard: this operation/result pattern already repeated in "
+    "the bounded recent window. Use the evidence already available. Your next "
+    "tool action must either mutate a task artifact or produce new validation "
+    "evidence. Do not repeat this read or an equivalent read over the same "
+    "evidence."
+)
 
 
 def _select_semantic_state(shared: Any, local: Any) -> dict[str, Any] | None:
@@ -181,8 +190,6 @@ def record_semantic_tool_progress(
         }
     )
     result_hash = semantic_result_fingerprint(serialized_observation)
-    same_operation = operation_hash == previous.get("operation_hash")
-    same_result = result_hash == previous.get("result_hash")
     completion_assessment = None
     try:
         completion_assessment = runtime_context.assess_completion_contract(
@@ -231,6 +238,58 @@ def record_semantic_tool_progress(
         semantic_fingerprint(completion_projection)
         if completion_projection is not None
         else None
+    )
+    completion_evidence_fingerprint = (
+        semantic_fingerprint(
+            {
+                "artifacts": {
+                    str(item.requirement_id): {
+                        "exists": item.exists,
+                        "content_hash": item.content_hash,
+                        "media_type": item.media_type,
+                    }
+                    for item in getattr(
+                        runtime_context, "_completion_artifact_evidence", ()
+                    )
+                },
+                "immutable_inputs": {
+                    str(item.input_id): {
+                        "expected_hash": item.expected_hash,
+                        "observed_hash": item.observed_hash,
+                    }
+                    for item in getattr(
+                        runtime_context,
+                        "_completion_immutable_input_evidence",
+                        (),
+                    )
+                },
+                "self_checks": {
+                    str(item.command_id): {
+                        "exit_code": item.exit_code,
+                        "output_hash": item.output_hash,
+                    }
+                    for item in getattr(
+                        runtime_context, "_completion_self_checks", ()
+                    )
+                },
+                "final_evidence_codes": sorted(
+                    getattr(
+                        runtime_context, "_completion_final_evidence_codes", ()
+                    )
+                ),
+                "external_verifier_passed": bool(
+                    getattr(runtime_context, "_completion_external_verifier", None)
+                    and runtime_context._completion_external_verifier.passed
+                ),
+            }
+        )
+        if completion_projection is not None
+        else None
+    )
+    validation_evidence_advanced = bool(
+        completion_evidence_fingerprint
+        and completion_evidence_fingerprint
+        != previous.get("completion_evidence_fingerprint")
     )
     goal_progress_observable = completion_projection is not None
     completion_positive_evidence = (
@@ -308,26 +367,48 @@ def record_semantic_tool_progress(
         if goal_progress or not goal_progress_observable
         else int(previous.get("no_goal_progress_count", 0) or 0) + 1
     )
-    repetition_count = (
-        int(previous.get("repetition_count", 0) or 0) + 1
-        if same_operation and same_result and not artifact_advanced
-        else 1
+    semantic_pair_hash = semantic_fingerprint(
+        {"operation_hash": operation_hash, "result_hash": result_hash}
     )
-    low_information_gain_count = (
-        int(previous.get("low_information_gain_count", 0) or 0) + 1
-        if same_result and not artifact_advanced
-        else 1
+    progress_guard_reset = artifact_advanced or validation_evidence_advanced
+    previous_pairs = previous.get("recent_operation_result_hashes")
+    recent_pairs = (
+        [
+            value
+            for value in previous_pairs
+            if isinstance(value, str)
+        ][-(_RECENT_SEMANTIC_PAIR_WINDOW - 1) :]
+        if isinstance(previous_pairs, list) and not progress_guard_reset
+        else []
     )
-    history = list(previous.get("recent_result_hashes") or [])[-7:]
+    recent_pairs.append(semantic_pair_hash)
+    previous_results = previous.get("recent_result_hashes")
+    history = (
+        [
+            value
+            for value in previous_results
+            if isinstance(value, str)
+        ][-(_RECENT_SEMANTIC_PAIR_WINDOW - 1) :]
+        if isinstance(previous_results, list) and not progress_guard_reset
+        else []
+    )
     history.append(result_hash)
+    repetition_count = recent_pairs.count(semantic_pair_hash)
+    low_information_gain_count = history.count(result_hash)
+    progress_guard_required = (
+        repetition_count >= _PROGRESS_GUARD_REPEAT_THRESHOLD
+        and not progress_guard_reset
+    )
     if artifact_fingerprint:
         recent_artifact_fingerprints.append(artifact_fingerprint)
     state = {
         "agent_id": agent_id,
         "operation_hash": operation_hash,
         "result_hash": result_hash,
+        "operation_result_hash": semantic_pair_hash,
         "repetition_count": repetition_count,
         "low_information_gain_count": low_information_gain_count,
+        "recent_operation_result_hashes": recent_pairs,
         "recent_result_hashes": history,
         "recent_artifact_fingerprints": recent_artifact_fingerprints[-8:],
         "artifact_changed": artifact_changed,
@@ -336,8 +417,14 @@ def record_semantic_tool_progress(
         "rollback_performed": rollback_performed,
         "implicit_artifact_loss": implicit_artifact_loss,
         "completion_fingerprint": completion_fingerprint,
+        "completion_evidence_fingerprint": completion_evidence_fingerprint,
         "completion_score": completion_score,
         "completion_advanced": completion_advanced,
+        "validation_evidence_advanced": validation_evidence_advanced,
+        "progress_guard_reset": progress_guard_reset,
+        "progress_guard_required": progress_guard_required,
+        "progress_guard_repeat_threshold": _PROGRESS_GUARD_REPEAT_THRESHOLD,
+        "progress_guard_recent_window": _RECENT_SEMANTIC_PAIR_WINDOW,
         "goal_progress_observable": goal_progress_observable,
         "goal_progress": goal_progress,
         "goal_progress_count": goal_progress_count,
@@ -397,13 +484,17 @@ def record_semantic_tool_progress(
     metrics["semantic_tool_observation_count"] = (
         int(metrics.get("semantic_tool_observation_count", 0) or 0) + 1
     )
-    if same_operation and same_result and not artifact_advanced:
+    if repetition_count > 1 and not progress_guard_reset:
         metrics["repeated_operation_count"] = (
             int(metrics.get("repeated_operation_count", 0) or 0) + 1
         )
-    if same_result and not artifact_advanced:
+    if low_information_gain_count > 1 and not progress_guard_reset:
         metrics["low_information_gain_count"] = (
             int(metrics.get("low_information_gain_count", 0) or 0) + 1
+        )
+    if progress_guard_reset:
+        metrics["semantic_recent_window_reset_count"] = (
+            int(metrics.get("semantic_recent_window_reset_count", 0) or 0) + 1
         )
     if artifact_changed:
         metrics["task_artifact_change_count"] = (
@@ -466,6 +557,10 @@ def acknowledge_semantic_checkpoint(context, *, agent_id: str) -> None:
     state["repetition_count"] = 0
     state["low_information_gain_count"] = 0
     state["no_goal_progress_count"] = 0
+    state["recent_operation_result_hashes"] = []
+    state["recent_result_hashes"] = []
+    state["progress_guard_required"] = False
+    state["progress_guard_reset"] = True
     state["runtime_revision"] = int(state.get("runtime_revision", 0) or 0) + 1
     state_by_agent[agent_id] = state
     runtime_context.context_info[SEMANTIC_PROGRESS_KEY] = state_by_agent
@@ -487,13 +582,49 @@ def arm_post_tool_progress_watchdog(
     if runtime_context is None:
         return None
 
-    record_semantic_tool_progress(
+    semantic_progress = record_semantic_tool_progress(
         runtime_context,
         tool_name=tool_name,
         agent_id=agent_id,
         actions=actions,
         observation=followup_observation,
     )
+    if semantic_progress and semantic_progress.get("progress_guard_required") is True:
+        guard = {
+            "schema_version": "aworld.post-tool-progress-guard/v1",
+            "reason": "repeated_operation_result_pair",
+            "repeat_count": semantic_progress.get("repetition_count"),
+            "threshold": semantic_progress.get("progress_guard_repeat_threshold"),
+            "recent_window": semantic_progress.get("progress_guard_recent_window"),
+            "pattern_hash": semantic_progress.get("operation_result_hash"),
+        }
+        info = dict(followup_observation.info or {})
+        info["progress_guard"] = guard
+        followup_observation.info = info
+        results = followup_observation.action_result or []
+        if results:
+            result = results[0]
+            content = result.content
+            content_text = content if isinstance(content, str) else str(content or "")
+            if _PROGRESS_GUARD_MESSAGE not in content_text:
+                result.content = (
+                    f"{content_text}\n\n{_PROGRESS_GUARD_MESSAGE}".strip()
+                )
+            metadata = dict(result.metadata or {})
+            metadata["progress_guard"] = guard
+            result.metadata = metadata
+        content = followup_observation.content
+        if isinstance(content, str) or content is None:
+            content_text = content or ""
+            if _PROGRESS_GUARD_MESSAGE not in content_text:
+                followup_observation.content = (
+                    f"{content_text}\n\n{_PROGRESS_GUARD_MESSAGE}".strip()
+                )
+        metrics = _metrics_dict(runtime_context)
+        metrics["progress_guard_injected_count"] = (
+            int(metrics.get("progress_guard_injected_count", 0) or 0) + 1
+        )
+        runtime_context.context_info[WATCHDOG_METRICS_KEY] = metrics
 
     from aworld.core.context.compiler import (
         ADAPTIVE_WORK_STATE_KEY,

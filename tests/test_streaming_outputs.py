@@ -3,12 +3,76 @@ import contextlib
 
 import pytest
 
-from aworld.output.outputs import StreamingOutputs
+from aworld.output.outputs import StreamingOutputProtocolError, StreamingOutputs
 
 
 class DummyOutput:
     def output_type(self):
         return "dummy"
+
+
+@pytest.mark.anyio
+async def test_streaming_outputs_propagates_producer_failure_without_queue_output():
+    fail_producer = asyncio.Event()
+
+    async def producer():
+        await fail_producer.wait()
+        raise RuntimeError("producer failed before publishing an output")
+
+    outputs = StreamingOutputs(task_id="task-1")
+    outputs._run_impl_task = asyncio.create_task(producer())
+    stream = outputs.stream_events()
+    next_output = asyncio.create_task(stream.__anext__())
+    # Let the consumer pass its initial producer-state check and start waiting
+    # on the empty queue before the producer fails.
+    await asyncio.sleep(0)
+    fail_producer.set()
+
+    with pytest.raises(RuntimeError, match="producer failed before publishing"):
+        await asyncio.wait_for(next_output, timeout=1.0)
+
+
+@pytest.mark.anyio
+async def test_streaming_outputs_yields_final_output_then_propagates_failure():
+    start_producer = asyncio.Event()
+    outputs = StreamingOutputs(task_id="task-1")
+
+    async def producer():
+        await start_producer.wait()
+        await outputs.add_output(DummyOutput())
+        await asyncio.sleep(0)
+        raise RuntimeError("producer failed after publishing an output")
+
+    outputs._run_impl_task = asyncio.create_task(producer())
+    stream = outputs.stream_events()
+    first_output = asyncio.create_task(stream.__anext__())
+    await asyncio.sleep(0)
+    start_producer.set()
+
+    assert isinstance(await asyncio.wait_for(first_output, timeout=1.0), DummyOutput)
+    with pytest.raises(RuntimeError, match="failed after publishing"):
+        await asyncio.wait_for(stream.__anext__(), timeout=1.0)
+
+
+@pytest.mark.anyio
+async def test_streaming_outputs_stops_when_producer_returns_without_signal():
+    finish_producer = asyncio.Event()
+
+    async def producer():
+        await finish_producer.wait()
+
+    outputs = StreamingOutputs(task_id="task-1")
+    outputs._run_impl_task = asyncio.create_task(producer())
+    stream = outputs.stream_events()
+    next_output = asyncio.create_task(stream.__anext__())
+    await asyncio.sleep(0)
+    finish_producer.set()
+
+    with pytest.raises(
+        StreamingOutputProtocolError,
+        match="without publishing a completion signal",
+    ):
+        await asyncio.wait_for(next_output, timeout=1.0)
 
 
 @pytest.mark.anyio

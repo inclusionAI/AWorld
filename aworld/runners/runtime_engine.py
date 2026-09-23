@@ -138,31 +138,33 @@ class LocalRuntime(RuntimeEngine):
 
         futures = []
         results = {}
-
+        from aworld.core.task import Task
+        lifetime = Task(timeout=self.conf.get('timeout'))
+        pool = ProcessPoolExecutor(num_process)
+        completed = False
         try:
-            with ProcessPoolExecutor(num_process) as pool:
-                for func in funcs:
-                    futures.append(pool.submit(RuntimeEngine.func_wrapper, func, *args, **kwargs))
-
-                # Wait for all futures to complete with timeout
-                timeout = self.conf.get('timeout', 300)
-                for idx, future in enumerate(futures):
-                    try:
-                        res = future.result(timeout=timeout)  # 5 minute timeout per task
-                        if res:
-                            if hasattr(res, 'id'):
-                                results[res.id] = res
-                            else:
-                                results[f"{idx}"] = res
-                    except TimeoutError:
-                        logger.error(f"Task execution timed out after {timeout} seconds")
-                    except Exception as e:
-                        logger.error(f"Task execution failed: {e}, traceback: {traceback.format_exc()}")
-                        if future.exception():
-                            logger.debug(f"Exception details: {future.exception()}")
+            for func in funcs:
+                futures.append(pool.submit(RuntimeEngine.func_wrapper, func, *args, **kwargs))
+            for idx, future in enumerate(futures):
+                res = await asyncio.wait_for(
+                    asyncio.wrap_future(future), timeout=lifetime.remaining_seconds()
+                )
+                if res:
+                    results[res.id if hasattr(res, 'id') else str(idx)] = res
+            completed = True
         except Exception as e:
             logger.error(f"ProcessPoolExecutor failed: {e}, traceback: {traceback.format_exc()}")
             raise
+        finally:
+            if not completed:
+                # Cancelling a concurrent Future does not stop an already-running
+                # worker. This pool owns its processes; cancel/pause must not
+                # block on the context manager's implicit shutdown(wait=True).
+                for process in tuple((getattr(pool, '_processes', None) or {}).values()):
+                    process.terminate()
+                pool.shutdown(wait=False, cancel_futures=True)
+            else:
+                await asyncio.to_thread(pool.shutdown, wait=True)
 
         return results
 

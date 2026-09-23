@@ -2,6 +2,7 @@
 Continuous execution executor for running agents in a loop.
 """
 import asyncio
+import re
 import sys
 from datetime import datetime, timedelta
 from typing import Optional, Dict, Any, Union, List
@@ -83,10 +84,13 @@ class ContinuousExecutor:
             task_status = getattr(task_response, "status", None)
             if task_status is not None:
                 result["task_status"] = to_serializable(task_status)
-            for attribute in ("failure_origin", "failure_code", "error_type"):
+            for attribute in ("failure_origin", "failure_code", "error_type", "semantic_status", "completion_reason"):
                 value = getattr(task_response, attribute, None)
                 if isinstance(value, str) and value:
                     result[attribute] = value
+            recoverable = getattr(task_response, "recoverable", None)
+            if isinstance(recoverable, bool):
+                result["recoverable"] = recoverable
             if result.get("failure_origin") == "cancelled" or result.get(
                 "task_status"
             ) in {"cancelled", "interrupted"}:
@@ -231,7 +235,15 @@ class ContinuousExecutor:
             "llm error",
             "rate limit exceeded",
         )
-        return not any(marker in normalized for marker in failure_markers)
+        if any(marker in normalized for marker in failure_markers):
+            return False
+        return not bool(
+            re.search(
+                r"\b(?:i|we)\s+(?:need|have|plan|intend)\s+to\s+"
+                r"(?:continue|finish|complete|fix|implement|test|run|check)\b",
+                normalized,
+            )
+        )
     
     async def run_iteration(
         self,
@@ -311,7 +323,18 @@ class ContinuousExecutor:
                 is_complete = True
                 self.console.print(f"[green]✅ ({iteration}) Completion signal detected![/green]")
 
-            if trajectory_completed:
+            # A runtime completion record or a caller-selected completion signal
+            # can finish a run. Repeated/substantial prose is not verification.
+            task_response = getattr(self.agent_executor, "last_task_response", None)
+            semantic_status = getattr(task_response, "semantic_status", None)
+            if semantic_status is not None:
+                is_complete = semantic_status == "succeeded"
+            elif task_response is not None:
+                is_complete = is_complete or (
+                    getattr(task_response, "success", False) is True
+                    and getattr(task_response, "status", None) in {"finished", "success"}
+                )
+            if semantic_status is None and trajectory_completed:
                 is_complete = True
                 self.console.print(
                     f"[green]✅ ({iteration}) Task completed - terminal "
@@ -322,8 +345,9 @@ class ContinuousExecutor:
             # supplies an action ledger, an unfinished tool turn or runtime
             # placeholder must never be promoted to completion by prose or
             # repetition similarity.
-            response_can_signal_completion = self._response_can_signal_completion(
-                response
+            response_can_signal_completion = (
+                semantic_status is None
+                and self._response_can_signal_completion(response)
             )
             if (
                 not is_complete
@@ -450,6 +474,8 @@ class ContinuousExecutor:
                 if task_interrupted
                 else getattr(task_response, "success", None)
             )
+            if semantic_status in {"incomplete", "budget_exhausted"}:
+                task_succeeded = False
             if task_succeeded is None:
                 task_succeeded = not (
                     isinstance(response, str)

@@ -2,7 +2,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from aworld.core.common import ActionModel, Observation
+from aworld.core.common import ActionModel, ActionResult, Observation
 from aworld.core.context.base import Context
 from aworld.core.event.base import Constants, TopicType
 from aworld.core.task import Task
@@ -128,3 +128,62 @@ async def test_post_tool_progress_watchdog_accepts_null_action_error(monkeypatch
     assert emitted[0].payload.action_result[0].tool_name is None
     assert emitted[0].payload.action_result[0].action_name is None
     assert emitted[0].payload.action_result[0].tool_call_id is None
+
+
+def test_progress_guard_is_injected_into_abab_tool_observation():
+    context = Context(task_id="progress-guard-abab")
+
+    def arm(label: str, index: int) -> Observation:
+        command = (
+            "sed -n '214,330p' ars.R"
+            if label == "a"
+            else "sed -n '331,420p' ars.R"
+        )
+        result_text = f"private-tool-result-{label}"
+        observation = Observation(
+            content=result_text,
+            action_result=[
+                ActionResult(content=result_text, success=True)
+            ],
+        )
+        arm_post_tool_progress_watchdog(
+            context,
+            tool_name="terminal",
+            agent_id="agent",
+            actions=[
+                ActionModel(
+                    tool_name="terminal",
+                    action_name="run_code",
+                    tool_call_id=f"call-{index}",
+                    params={"code": command},
+                )
+            ],
+            followup_observation=observation,
+            followup_sender="terminal",
+        )
+        return observation
+
+    for index, label in enumerate(("a", "b", "a", "b", "a"), start=1):
+        observation = arm(label, index)
+
+    guard = observation.info["progress_guard"]
+    assert guard["reason"] == "repeated_operation_result_pair"
+    assert guard["repeat_count"] == 3
+    assert guard["threshold"] == 3
+    assert guard["recent_window"] == 8
+    assert guard["pattern_hash"].startswith("sha256:")
+    assert "sed -n" not in repr(guard)
+    assert "private-tool-result" not in repr(guard)
+    result_content = observation.action_result[0].content
+    assert "Use the evidence already available" in result_content
+    assert "must either mutate a task artifact or produce new validation evidence" in result_content
+    assert "Do not repeat this read or an equivalent read" in result_content
+    assert "AWorld progress guard" in observation.content
+    state = context.context_info["post_tool_progress_watchdog"]
+    assert state["followup_observation"]["info"]["progress_guard"] == guard
+    assert (
+        context.context_info["post_tool_progress_metrics"][
+            "progress_guard_injected_count"
+        ]
+        == 1
+    )

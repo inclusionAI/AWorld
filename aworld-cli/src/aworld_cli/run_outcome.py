@@ -9,10 +9,14 @@ process/trajectory decisions without parsing user-visible text.
 from __future__ import annotations
 
 import os
+import re
 from collections.abc import Iterator, Mapping
 from dataclasses import dataclass
 from enum import Enum
 from typing import Any
+
+
+_CONTROL_IDENTIFIER = re.compile(r"^[A-Za-z][A-Za-z0-9_.:-]{0,127}$")
 
 
 class DirectRunStatus(str, Enum):
@@ -41,7 +45,10 @@ class DirectRunErrorCode(str, Enum):
     AGENT_NOT_FOUND = "agent_not_found"
     EXECUTOR_CREATION_FAILED = "executor_creation_failed"
     PROVIDER_CALL_NOT_CAPTURED = "provider_call_not_captured"
+    PROVIDER_START_TIMEOUT = "provider_start_timeout"
     AGENT_TASK_FAILED = "agent_task_failed"
+    AGENT_INCOMPLETE = "agent_incomplete"
+    AGENT_BUDGET_EXHAUSTED = "agent_budget_exhausted"
     AGENT_EXECUTION_INFRASTRUCTURE_FAILED = "agent_execution_infrastructure_failed"
     AGENT_EXECUTION_UNTYPED_FAILURE = "agent_execution_untyped_failure"
     DIRECT_RUN_EXCEPTION = "direct_run_exception"
@@ -325,11 +332,18 @@ class DirectRunOutcome(Mapping[str, Any]):
             "last_successful_checkpoint": self.last_successful_checkpoint,
         }
         if self.failure_record:
-            payload["failure"] = {
+            failure = {
                 key: self.failure_record[key]
                 for key in ("stage", "error_code")
                 if self.failure_record.get(key) is not None
             }
+            details = self.failure_record.get("details")
+            if isinstance(details, Mapping):
+                for key in ("failure_code", "error_type"):
+                    value = details.get(key)
+                    if isinstance(value, str) and _CONTROL_IDENTIFIER.fullmatch(value):
+                        failure[key] = value
+            payload["failure"] = failure
         if atif_export is not None:
             payload["atif_export"] = dict(atif_export)
         return payload

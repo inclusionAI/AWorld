@@ -49,7 +49,7 @@ def test_run_command_only_uses_one_shot_loop_for_non_interactive_mode(
     async def fake_direct_run(**_kwargs):
         return {"results": []}
 
-    def capture_run(coro, *, one_shot: bool = False):
+    def capture_run(coro, *, one_shot: bool = False, **_kwargs):
         captured.append(one_shot)
         return asyncio.run(coro)
 
@@ -99,4 +99,3 @@ def test_run_dispatch_only_requests_hard_exit_for_non_interactive_mode(
         ["aworld-cli", "run"],
     ) is True
     assert captured == [(0, non_interactive)]
-

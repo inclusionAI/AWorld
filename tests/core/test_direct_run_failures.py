@@ -1,5 +1,6 @@
 import asyncio
 import json
+import time
 from types import SimpleNamespace
 
 import pytest
@@ -53,6 +54,28 @@ def test_task_failure_exit_code_is_opt_in_for_supervised_runtimes(
     monkeypatch.setenv("AWORLD_TASK_FAILURE_EXIT_CODE", "125")
     assert main_module._direct_run_failure_outcome(**kwargs).process_exit_code == 1
 
+
+def test_outcome_preserves_safe_nested_failure_diagnostics() -> None:
+    outcome = DirectRunOutcome.from_summary(
+        None,
+        status=DirectRunStatus.INFRASTRUCTURE_FAILED,
+        failure_record={
+            "stage": "agent_execution",
+            "error_code": "agent_execution_infrastructure_failed",
+            "details": {
+                "failure_code": "runtime_exception",
+                "error_type": "ProviderConnectionError",
+                "message": "must not enter the control-plane outcome",
+            },
+        },
+    )
+
+    assert outcome.to_dict()["failure"] == {
+        "stage": "agent_execution",
+        "error_code": "agent_execution_infrastructure_failed",
+        "failure_code": "runtime_exception",
+        "error_type": "ProviderConnectionError",
+    }
 
 @pytest.mark.asyncio
 async def test_direct_run_reports_agent_load_failure_and_returns_typed_outcome(
@@ -306,6 +329,188 @@ def test_run_command_writes_minimal_atif_for_pre_execution_failure(
     stderr = capsys.readouterr().err
     assert _marker_payload(stderr, "AWORLD_ATIF_EXPORT=")["status"] == "persisted"
     assert _marker_payload(stderr, "AWORLD_RUN_OUTCOME=")["process_exit_code"] == 1
+
+
+def test_run_command_finalizes_caller_deadline_as_budget_exhaustion(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    tmp_path,
+) -> None:
+    from aworld_cli.async_runtime import DirectRunDeadlineExceeded
+
+    live_summary = {
+        "results": [
+            {
+                "iteration": 1,
+                "response": "",
+                "success": False,
+                "completed": False,
+                "trajectory_capture_mode": "live_context",
+                "trajectory": [
+                    {
+                        "meta": {"session_id": "session-live", "step": 1},
+                        "action": {
+                            "content": "Installing the requested runtime.",
+                            "tool_calls": [
+                                {
+                                    "id": "tool-1",
+                                    "function": {
+                                        "name": "terminal",
+                                        "arguments": '{"command":"install"}',
+                                    },
+                                }
+                            ],
+                        },
+                    }
+                ],
+                "llm_calls": [
+                    {"request_id": "request-1"},
+                    {"request_id": "request-2"},
+                ],
+            }
+        ]
+    }
+
+    def deadline_exceeded(_coro, **_kwargs):
+        _coro.close()
+        raise DirectRunDeadlineExceeded(summary=live_summary)
+
+    monkeypatch.setattr(
+        "aworld_cli.top_level_commands.run_cmd.run_direct_async",
+        deadline_exceeded,
+    )
+    monkeypatch.setattr(
+        "aworld_cli.top_level_commands.run_cmd.bootstrap_runtime",
+        lambda **_kwargs: None,
+    )
+    monkeypatch.setenv("AWORLD_TASK_FAILURE_EXIT_CODE", "64")
+    trajectory_path = tmp_path / "trajectory.json"
+    outcome_path = tmp_path / "outcome.json"
+    args = SimpleNamespace(
+        task="perform a long task",
+        agent="Aworld",
+        skill=None,
+        max_runs=None,
+        max_cost=None,
+        max_duration=None,
+        completion_signal=None,
+        completion_threshold=3,
+        non_interactive=True,
+        session_id=None,
+        env_file=".env",
+        remote_backend=None,
+        agent_dir=None,
+        agent_file=None,
+        skill_path=None,
+        emit_trajectory=False,
+        trajectory_output=str(trajectory_path),
+        outcome_output=str(outcome_path),
+    )
+
+    exit_code = RunTopLevelCommand().run(
+        args,
+        SimpleNamespace(argv=("aworld-cli", "run")),
+    )
+
+    assert exit_code == 64
+    trajectory = json.loads(trajectory_path.read_text(encoding="utf-8"))
+    assert trajectory["agent"]["version"] != "unknown"
+    aworld = trajectory["extra"]["aworld"]
+    assert aworld["completion_state"] == "incomplete"
+    assert aworld["run_outcome"]["semantic_status"] == "task_failed"
+    assert aworld["run_outcome"]["process_exit_code"] == 64
+    assert aworld["trajectory_fidelity"] == "partial"
+    assert aworld["llm_call_count"] == 2
+    assert aworld["tool_call_count"] == 1
+    assert aworld["action_count"] == 1
+    assert len(trajectory["steps"]) == 2
+    assert trajectory["steps"][1]["tool_calls"][0]["function_name"] == "terminal"
+    assert aworld["run_outcome"]["failure"] == {
+        "stage": "agent_execution",
+        "error_code": "agent_budget_exhausted",
+        "error_type": "DirectRunDeadlineExceeded",
+    }
+    persisted = json.loads(outcome_path.read_text(encoding="utf-8"))
+    assert {
+        key: value for key, value in persisted.items() if key != "atif_export"
+    } == aworld["run_outcome"]
+    assert persisted["atif_export"]["status"] == "persisted"
+    stderr = capsys.readouterr().err
+    assert _marker_payload(stderr, "AWORLD_RUN_FAILURE=")["details"] == {
+        "error_type": "DirectRunDeadlineExceeded",
+        "phase": "task_deadline",
+    }
+    assert _marker_payload(stderr, "AWORLD_RUN_OUTCOME=") == persisted
+
+
+def test_run_command_preserves_startup_watchdog_stage(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    tmp_path,
+) -> None:
+    from aworld_cli.async_runtime import DirectRunDeadlineExceeded
+
+    def startup_deadline_exceeded(_coro, **_kwargs):
+        _coro.close()
+        raise DirectRunDeadlineExceeded(
+            stage="provider_start",
+            phase="awaiting_first_provider_attempt",
+        )
+
+    monkeypatch.setattr(
+        "aworld_cli.top_level_commands.run_cmd.run_direct_async",
+        startup_deadline_exceeded,
+    )
+    monkeypatch.setattr(
+        "aworld_cli.top_level_commands.run_cmd.bootstrap_runtime",
+        lambda **_kwargs: None,
+    )
+    monkeypatch.setenv("AWORLD_TASK_FAILURE_EXIT_CODE", "64")
+    trajectory_path = tmp_path / "trajectory.json"
+    args = SimpleNamespace(
+        task="stalled startup",
+        agent="Aworld",
+        skill=None,
+        max_runs=None,
+        max_cost=None,
+        max_duration=None,
+        completion_signal=None,
+        completion_threshold=3,
+        non_interactive=True,
+        session_id=None,
+        env_file=".env",
+        remote_backend=None,
+        agent_dir=None,
+        agent_file=None,
+        skill_path=None,
+        emit_trajectory=False,
+        trajectory_output=str(trajectory_path),
+        outcome_output=None,
+    )
+
+    assert RunTopLevelCommand().run(
+        args,
+        SimpleNamespace(argv=("aworld-cli", "run")),
+    ) == 1
+
+    trajectory = json.loads(trajectory_path.read_text(encoding="utf-8"))
+    failure = trajectory["extra"]["aworld"]["run_outcome"]["failure"]
+    assert failure == {
+        "stage": "provider_start",
+        "error_code": "provider_start_timeout",
+        "error_type": "DirectRunDeadlineExceeded",
+    }
+    assert trajectory["extra"]["aworld"]["run_outcome"]["semantic_status"] == (
+        "infrastructure_failed"
+    )
+    failure_marker = _marker_payload(
+        capsys.readouterr().err,
+        "AWORLD_RUN_FAILURE=",
+    )
+    assert failure_marker["details"] == {
+        "error_type": "DirectRunDeadlineExceeded",
+        "phase": "awaiting_first_provider_attempt",
+    }
 
 
 def test_run_command_writes_partial_atif_before_returning_task_failure(
@@ -673,6 +878,166 @@ def test_summary_payload_preserves_zero_step_task_response_evidence() -> None:
     assert payload["trajectory_capture_mode"] == "task_response"
 
 
+def test_live_partial_summary_uses_reconciled_calls_and_projects_atif_steps() -> None:
+    from aworld.core.context.amni import ApplicationContext
+    from aworld_cli.atif import build_atif_trajectory
+
+    context = ApplicationContext.create(
+        session_id="session-live",
+        task_id="task-live",
+        task_content="test",
+    )
+    transport_copy = context.deep_copy()
+    transport_copy.append_llm_call(
+        {
+            "task_id": "task-live",
+            "agent_id": "Aworld",
+            "request_id": "request-1",
+            "provider_invoked": True,
+            "provider_attempt_status": "attempted",
+            "status": "success",
+            "finished_at": 1_700_000_000,
+            "response": {
+                "message": {
+                    "role": "assistant",
+                    "content": "Inspecting the workspace.",
+                    "tool_calls": [
+                        {
+                            "id": "tool-1",
+                            "function": {
+                                "name": "WORKBENCH",
+                                "arguments": "{}",
+                            },
+                        }
+                    ],
+                }
+            },
+        }
+    )
+    transport_copy.append_llm_call(
+        {
+            "task_id": "task-live",
+            "agent_id": "Aworld",
+            "request_id": "request-2",
+            "provider_invoked": True,
+            "provider_attempt_status": "attempted",
+            "status": "success",
+            "finished_at": 1_700_000_001,
+            "response": {
+                "message": {
+                    "role": "assistant",
+                    "content": "Installing R.",
+                    "tool_calls": [
+                        {
+                            "id": "tool-2",
+                            "function": {
+                                "name": "terminal",
+                                "arguments": '{"command":"apt-get install r-base"}',
+                            },
+                        }
+                    ],
+                }
+            },
+        }
+    )
+
+    summary = main_module._partial_summary_from_agent_executor(
+        SimpleNamespace(context=context, last_task_response=None)
+    )
+    outcome = DirectRunOutcome.from_summary(
+        summary,
+        status=DirectRunStatus.TASK_FAILED,
+    )
+    payload = main_module._trajectory_payload_from_direct_run_summary(
+        summary,
+        prompt="test",
+        agent_name="Aworld",
+    )
+    trajectory = build_atif_trajectory(
+        payload,
+        prompt="test",
+        agent_name="Aworld",
+        agent_version="0.2.8",
+        run_outcome=outcome.to_dict(),
+    )
+
+    assert context.get_llm_calls() == []
+    assert outcome.llm_call_count == 2
+    assert outcome.tool_call_count == 2
+    assert outcome.action_count == 2
+    assert outcome.trajectory_fidelity == "partial"
+    assert payload["trajectory_capture_mode"] == "live_context"
+    assert [step["message"] for step in trajectory["steps"][1:]] == [
+        "Inspecting the workspace.",
+        "Installing R.",
+    ]
+    assert [
+        step["tool_calls"][0]["function_name"]
+        for step in trajectory["steps"][1:]
+    ] == ["WORKBENCH", "terminal"]
+
+
+@pytest.mark.asyncio
+async def test_live_partial_summary_copy_failure_does_not_mask_deadline(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    from aworld_cli.async_runtime import DirectRunDeadlineExceeded
+
+    class BrokenDeepCopy:
+        def __deepcopy__(self, _memo):
+            raise RuntimeError("copy unavailable")
+
+    context = SimpleNamespace(
+        task_id="task-live",
+        get_reconciled_llm_calls=lambda: [
+            {
+                "task_id": "task-live",
+                "request_id": "request-1",
+                "provider_invoked": True,
+                "response": {"message": {"content": BrokenDeepCopy()}},
+            }
+        ],
+    )
+    executor = SimpleNamespace(context=context, last_task_response=None)
+
+    class DummyRuntime:
+        def __init__(self, *args, **kwargs) -> None:
+            self._scheduler = None
+
+        async def _load_agents(self):
+            return [SimpleNamespace(name="Aworld")]
+
+        def _bind_scheduler_default_agent(self, _agent_name: str) -> None:
+            pass
+
+        async def _create_executor(self, _agent):
+            return executor
+
+        def _restore_executor_session(self, *_args, **_kwargs) -> None:
+            pass
+
+    class DummyContinuousExecutor:
+        def __init__(self, *_args, **_kwargs) -> None:
+            pass
+
+        async def run_continuous(self, **_kwargs):
+            raise DirectRunDeadlineExceeded()
+
+    monkeypatch.setattr(main_module, "CliRuntime", DummyRuntime)
+    monkeypatch.setattr(main_module, "ContinuousExecutor", DummyContinuousExecutor)
+    monkeypatch.setattr("aworld.core.scheduler.get_scheduler", lambda: object())
+
+    with pytest.raises(DirectRunDeadlineExceeded) as raised:
+        await main_module._run_direct_mode(
+            prompt="test",
+            agent_name="Aworld",
+        )
+
+    assert raised.value.summary is None
+    assert "live evidence recovery failed open" in caplog.text
+
+
 def test_direct_run_outcome_uses_build_counts_and_last_successful_checkpoint() -> None:
     outcome = DirectRunOutcome.from_summary(
         {
@@ -717,6 +1082,123 @@ def test_direct_run_outcome_uses_build_counts_and_last_successful_checkpoint() -
     }
 
 
+def test_live_provider_evidence_ignores_pre_provider_stream_state() -> None:
+    calls: list[dict] = []
+
+    class Context:
+        task_id = "task-current"
+
+        @staticmethod
+        def get_llm_calls():
+            return calls
+
+    executor = SimpleNamespace(context=Context())
+    cursor = main_module._live_provider_evidence_cursor(executor)
+    calls.append(
+        {
+            "task_id": "task-current",
+            "capture_stage": "compiled",
+            "provider_invoked": False,
+        }
+    )
+    # A StepOutput can exist before async_pre_run reaches the provider.  It
+    # must not be accepted as provider-start evidence.
+    executor._aworld_cli_execution_evidence_sequence = 99
+
+    assert not main_module._new_live_provider_evidence(executor, cursor=cursor)
+
+    calls[0].update(
+        {
+            "provider_invoked": True,
+            "provider_attempt_status": "attempted",
+        }
+    )
+    assert main_module._new_live_provider_evidence(executor, cursor=cursor)
+
+
+def test_live_provider_evidence_reads_shared_deep_copy_fan_in() -> None:
+    from aworld.core.context.amni import ApplicationContext
+
+    context = ApplicationContext.create(
+        task_id="task-current",
+        task_content="test",
+    )
+    executor = SimpleNamespace(context=context)
+    cursor = main_module._live_provider_evidence_cursor(executor)
+    transport_copy = context.deep_copy()
+    transport_copy.append_llm_call(
+        {
+            "task_id": "task-current",
+            "request_id": "request-1",
+            "provider_invoked": True,
+            "provider_attempt_status": "attempted",
+        }
+    )
+
+    assert context.get_llm_calls() == []
+    assert main_module._new_live_provider_evidence(executor, cursor=cursor)
+
+
+@pytest.mark.asyncio
+async def test_deep_copy_provider_attempt_disarms_startup_watchdog(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from aworld.core.context.amni import ApplicationContext
+
+    monkeypatch.setenv("AWORLD_DIRECT_RUN_FIRST_PROVIDER_TIMEOUT_SECONDS", "0.02")
+    monkeypatch.setenv("AWORLD_TASK_DEADLINE_EPOCH_SECONDS", str(time.time() + 1))
+    monkeypatch.setenv("AWORLD_TERMINAL_COMPLETION_RESERVE_SECONDS", "0")
+    context = ApplicationContext.create(
+        task_id="task-current",
+        task_content="test",
+    )
+    executor = SimpleNamespace(context=context)
+    cursor = main_module._live_provider_evidence_cursor(executor)
+
+    async def provider_work() -> str:
+        await asyncio.sleep(0.005)
+        transport_copy = context.deep_copy()
+        transport_copy.append_llm_call(
+            {
+                "task_id": "task-current",
+                "request_id": "request-1",
+                "provider_invoked": True,
+                "provider_attempt_status": "attempted",
+            }
+        )
+        await asyncio.sleep(0.05)
+        return "complete"
+
+    assert await main_module.run_with_first_provider_start_watchdog(
+        provider_work(),
+        evidence_observed=lambda: main_module._new_live_provider_evidence(
+            executor,
+            cursor=cursor,
+        ),
+    ) == "complete"
+
+
+def test_live_provider_evidence_probe_errors_reach_fail_open_boundary(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    class BrokenContext:
+        task_id = "task-current"
+
+        @staticmethod
+        def get_reconciled_llm_calls():
+            raise RuntimeError("fan-in unavailable")
+
+    with pytest.raises(RuntimeError, match="fan-in unavailable"):
+        main_module._live_provider_evidence_cursor(
+            SimpleNamespace(context=BrokenContext())
+        )
+
+    assert main_module._initial_live_provider_evidence_cursor(
+        SimpleNamespace(context=BrokenContext())
+    ) is None
+    assert "initial provider-evidence probe failed open" in caplog.text
+
+
 @pytest.mark.asyncio
 async def test_direct_run_defaults_to_one_complete_agent_run(
     monkeypatch: pytest.MonkeyPatch,
@@ -757,6 +1239,64 @@ async def test_direct_run_defaults_to_one_complete_agent_run(
     await main_module._run_direct_mode(prompt="test", agent_name="Aworld")
 
     assert captured["max_runs"] == 1
+
+
+@pytest.mark.asyncio
+async def test_direct_run_watchdog_covers_pre_provider_executor_stall(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from aworld_cli.async_runtime import DirectRunDeadlineExceeded
+
+    selected_agent = SimpleNamespace(name="Aworld")
+    executor = SimpleNamespace(context=None)
+    release = asyncio.Event()
+
+    class DummyRuntime:
+        def __init__(self, *args, **kwargs) -> None:
+            self._scheduler = None
+
+        async def _load_agents(self):
+            return [selected_agent]
+
+        def _bind_scheduler_default_agent(self, _agent_name: str) -> None:
+            pass
+
+        async def _create_executor(self, _agent):
+            return executor
+
+        def _restore_executor_session(self, *_args, **_kwargs) -> None:
+            pass
+
+    class DummyContinuousExecutor:
+        def __init__(self, *_args, **_kwargs) -> None:
+            pass
+
+        async def run_continuous(self, **_kwargs):
+            await release.wait()
+
+    monkeypatch.setattr(main_module, "CliRuntime", DummyRuntime)
+    monkeypatch.setattr(main_module, "ContinuousExecutor", DummyContinuousExecutor)
+    monkeypatch.setattr("aworld.core.scheduler.get_scheduler", lambda: object())
+    monkeypatch.setenv(
+        "AWORLD_DIRECT_RUN_FIRST_PROVIDER_TIMEOUT_SECONDS",
+        "0.02",
+    )
+    monkeypatch.setenv(
+        "AWORLD_TASK_DEADLINE_EPOCH_SECONDS",
+        str(time.time() + 1),
+    )
+    monkeypatch.setenv("AWORLD_TERMINAL_COMPLETION_RESERVE_SECONDS", "0")
+
+    with pytest.raises(DirectRunDeadlineExceeded) as raised:
+        await main_module._run_direct_mode(
+            prompt="test",
+            agent_name="Aworld",
+            non_interactive=True,
+        )
+    assert raised.value.stage == "provider_start"
+    assert raised.value.phase == "awaiting_first_provider_attempt"
+    release.set()
+    await asyncio.sleep(0)
 
 
 @pytest.mark.asyncio
@@ -876,7 +1416,7 @@ async def test_noninteractive_aworld_fails_after_zero_provider_capture_retries(
 
 
 @pytest.mark.asyncio
-async def test_noninteractive_aworld_propagates_terminal_task_failure(
+async def test_noninteractive_aworld_returns_terminal_task_result_to_verifier(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
@@ -927,11 +1467,14 @@ async def test_noninteractive_aworld_propagates_terminal_task_failure(
         non_interactive=True,
     )
 
-    assert succeeded.status is DirectRunStatus.TASK_FAILED
-    payload = _failure_payload(capsys.readouterr().err)
-    assert payload["stage"] == "agent_execution"
-    assert payload["error_code"] == "agent_task_failed"
-    assert payload["details"] == {"provider_evidence": True}
+    assert succeeded.status is DirectRunStatus.SUCCEEDED
+    assert succeeded.process_exit_code == 0
+    payload = _marker_payload(
+        capsys.readouterr().err,
+        "AWORLD_AGENT_TERMINATION=",
+    )
+    assert payload["status"] == "completed"
+    assert payload["reason"] == "completion_contract_unsatisfied"
 
 
 @pytest.mark.asyncio

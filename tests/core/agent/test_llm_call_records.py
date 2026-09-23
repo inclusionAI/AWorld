@@ -480,7 +480,7 @@ def test_explicit_model_output_budget_is_bound_without_provider_specific_logic()
 
     assert explicit["max_tokens"] == 8192
     assert (
-        agent.llm.context_candidate_policy.final_policy.input_budget.reserved_output_tokens
+        agent.llm.resolve_request_context_budget(explicit).reserved_output_tokens
         == 8192
     )
 

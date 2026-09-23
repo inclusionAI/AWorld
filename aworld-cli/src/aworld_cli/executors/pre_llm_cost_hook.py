@@ -13,15 +13,14 @@ When LIMIT_TOKENS is set and current session token usage exceeds it:
 """
 import os
 import sys
-from pathlib import Path
 
+from aworld.core.agent.base import AgentFactory
 from aworld.core.context.base import Context
 from aworld.core.event.base import Message
 from aworld.logs.util import logger
 from aworld.runners.hook.hook_factory import HookFactory
 from aworld.runners.hook.hooks import PreLLMCallHook
 from aworld.runners.hook.scoped import ExecutionScopedHook
-from aworld.core.agent.base import AgentFactory, BaseAgent
 
 try:
     from .._globals import console as global_console
@@ -103,8 +102,10 @@ class PreLlmCostHook(ExecutionScopedHook, PreLLMCallHook):
 
             history_path = get_default_history_path()
             if not history_path.exists():
-                if console:
-                    console.print("[dim]No history file. Start chatting to generate history.[/dim]")
+                logger.debug(
+                    "PreLlmCostHook skipped missing history file: %s",
+                    history_path,
+                )
                 return message
 
             session_id = getattr(context, "session_id", None) if context else None

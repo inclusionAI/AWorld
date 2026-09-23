@@ -95,4 +95,3 @@ def test_tool_result_log_measures_end_to_end_duration_from_model_call(
     assert fields["status"] == "success"
     assert fields["args"]["code"] == "sleep 2"
     assert executor._tool_call_started_at == {}
-

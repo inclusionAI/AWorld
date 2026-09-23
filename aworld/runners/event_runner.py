@@ -178,6 +178,93 @@ class TaskEventRunner(TaskRunner):
         return epoch
 
     async def run(self) -> Any:
+        """Supervise caller limits across bootstrap as well as event handling.
+
+        This poll is a control responsiveness bound, not an execution budget.
+        In particular None never becomes an implicit hour/day timeout.
+        """
+        if await self._caller_requested_stop():
+            self._ensure_terminal_delivery_state()
+            await self._finalize_execution_not_started_for_delivery()
+            self._bootstrap_complete.set()
+            await self.task.outputs.mark_completed(self._task_response)
+            return self._task_response
+        execution = asyncio.create_task(self._run_lifecycle())
+        try:
+            while not execution.done():
+                remaining = self.task.remaining_seconds()
+                poll = min(0.1, remaining) if remaining is not None else 0.1
+                await asyncio.wait({execution}, timeout=max(0.0, poll))
+                if execution.done():
+                    break
+                if await self._caller_requested_stop():
+                    try:
+                        await self._cancel_and_join_execution(execution)
+                    except asyncio.CancelledError:
+                        pass
+                    return self._task_response
+            return await execution
+        except BaseException:
+            if not execution.done():
+                # Join the same finalization attempt under repeated cancellation.
+                # A primary bootstrap/provider error must not be overwritten by
+                # a later cancellation while its terminal record is committed.
+                await self._cancel_and_join_execution(execution)
+            else:
+                execution.result()
+            raise
+
+    @staticmethod
+    async def _cancel_and_join_execution(execution):
+        execution.cancel()
+        while not execution.done():
+            try:
+                await asyncio.shield(execution)
+            except asyncio.CancelledError:
+                continue
+            except BaseException:
+                break
+        return execution.result()
+
+    async def _caller_requested_stop(self) -> bool:
+        # ``task.context`` may be a fully constructed ApplicationContext whose
+        # Task binding is intentionally deferred to ``TaskRunner.pre_run``.
+        # Use it as response evidence, but never call its task-status API until
+        # the runner-owned context has been installed and bound by pre_run.
+        runtime_context = getattr(self, "context", None)
+        response_context = runtime_context or self.task.context
+        get_bound_task = getattr(runtime_context, "get_task", None)
+        runtime_context_bound = callable(get_bound_task) and get_bound_task() is self.task
+        status = self.task.task_status
+        if (
+            status not in {TaskStatusValue.INTERRUPTED, TaskStatusValue.CANCELLED}
+            and runtime_context_bound
+        ):
+            status = await runtime_context.get_task_status()
+        cancelled = status in {TaskStatusValue.INTERRUPTED, TaskStatusValue.CANCELLED}
+        timeout = self.task.timeout
+        timed_out = (
+            isinstance(timeout, (int, float))
+            and not isinstance(timeout, bool)
+            and timeout > 0
+            and self.timeout_elapsed_seconds() >= timeout
+        )
+        if not cancelled and not timed_out:
+            return False
+        status = status if cancelled else TaskStatusValue.TIMEOUT
+        code = ("cancelled" if status == TaskStatusValue.CANCELLED else "interrupted") if cancelled else "task_timeout"
+        self._task_response = TaskResponse(
+            id=self.task.id, context=response_context, answer="", success=False, status=status,
+            msg=f"Task stopped: {code}", failure_code=code,
+            failure_origin=TaskFailureOrigin.CANCELLED.value if cancelled else TaskFailureOrigin.INFRASTRUCTURE.value,
+            semantic_status="incomplete" if cancelled else "budget_exhausted",
+            completion_reason=code, recoverable=False,
+        )
+        if runtime_context_bound:
+            await runtime_context.update_task_status(self.task.id, status)
+        return True
+
+    async def _run_lifecycle(self) -> Any:
         """Preserve the primary failure while typing pre-execution outcomes."""
         self._ensure_terminal_delivery_state()
         primary_error: BaseException | None = None
@@ -363,7 +450,10 @@ class TaskEventRunner(TaskRunner):
                         'is_sub_task': self.task.is_sub_task,
                         'time_cost': time_cost,
                         'token_usage': token_usage,
-                        'status': 'success',
+                        'status': resp.status,
+                        'semantic_status': resp.semantic_status,
+                        'completion_reason': resp.completion_reason,
+                        'recoverable': resp.recoverable,
                         'timestamp': time.time()
                     }
 
@@ -392,7 +482,8 @@ class TaskEventRunner(TaskRunner):
                                 'task_id': self.task.id,
                                 'time_cost': time_cost,
                                 'token_usage': token_usage,
-                                'status': 'success'
+                                'status': resp.status,
+                                'semantic_status': resp.semantic_status,
                             },
                             session_id=self.context.session_id,
                             sender='task_runner'
@@ -810,7 +901,7 @@ class TaskEventRunner(TaskRunner):
                 failure = classify_task_exception(e)
                 error_msg = Message(
                     category=Constants.TASK,
-                    payload=TaskItem(msg=str(e), data=message),
+                    payload=TaskItem(msg=str(e), data=message, failure=failure),
                     sender=self.name,
                     session_id=self.context.session_id,
                     topic=TopicType.ERROR,
@@ -986,7 +1077,7 @@ class TaskEventRunner(TaskRunner):
             failure = classify_task_exception(e)
             error_msg = Message(
                 category=Constants.TASK,
-                payload=TaskItem(msg=str(e), data=message),
+                payload=TaskItem(msg=str(e), data=message, failure=failure),
                 sender=self.name,
                 session_id=self.context.session_id,
                 topic=TopicType.ERROR,
@@ -1564,24 +1655,7 @@ class TaskEventRunner(TaskRunner):
         task_flag = self.task_flag
         time_cost = time.time() - self.start_time
 
-        # Check timeout
-        timeout_elapsed = self.timeout_elapsed_seconds() if self.task.timeout > 0 else 0
-        if 0 < self.task.timeout < timeout_elapsed:
-            logger.warn(
-                f"{task_flag} task {self.task.id} timeout after {timeout_elapsed} seconds.")
-            self._task_response = TaskResponse(
-                answer='',
-                success=False,
-                context=message.context if message else self.context,
-                id=self.task.id,
-                time_cost=(time.time() - self.start_time),
-                usage=self._current_token_usage(),
-                msg=f'Task timeout after {timeout_elapsed} seconds.',
-                status=TaskStatusValue.TIMEOUT,
-                failure_origin=TaskFailureOrigin.INFRASTRUCTURE.value,
-                failure_code="task_timeout",
-            )
-            await self.context.update_task_status(self.task.id, TaskStatusValue.TIMEOUT)
+        if await self._caller_requested_stop():
             return True
 
         # Check Task status from context

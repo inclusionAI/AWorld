@@ -177,6 +177,13 @@ def _configured_pending_generation_capacity() -> int | None:
 DEFAULT_LLM_EXECUTION_TIMEOUT_SECONDS = 360.0
 
 
+@dataclass(frozen=True)
+class _ValidationRepairContinuation:
+    observation: Observation
+    kwargs: dict
+    validation_feedback: str = ""
+
+
 class ToolCallParseIssueCode(str, Enum):
     """Provider-neutral reasons why a declared tool call cannot be executed."""
 
@@ -687,8 +694,20 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         mode = self._runtime_completion_mode or getattr(
             self.llm, "_context_completion_mode", "off"
         )
+        existing = context.completion_contract
+        owned_extension = any(existing is getattr(context, attribute, None)
+                              for attribute in ("_workspace_completion_owned_contract", "_goal_completion_owned_contract"))
+        if existing is not None and owned_extension and any(
+            contract is getattr(context, attribute, None)
+            for attribute in ("_workspace_completion_caller_contract", "_goal_completion_base_contract")
+        ):
+            # The local executor appended actual delivery/goal evidence to this
+            # same caller contract. Reinstalling it would silently drop checks.
+            return
+        if existing is not None and existing != contract:
+            raise ValueError("the Context and primary Agent supply conflicting completion contracts")
         if (
-            context.completion_contract == contract
+            existing == contract
             and context.completion_mode is CompletionMode(mode)
             and getattr(context, "_completion_evidence_resolver", None)
             is self._runtime_completion_evidence_resolver
@@ -735,11 +754,39 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         reasons = ", ".join(assessment.reason_codes)
         if assessment.status is CompletionStatus.REPAIR_REQUIRED:
             context.increment_completion_repair_attempt()
-            return (
-                "The runtime completion contract rejected the completion claim "
-                f"({reasons}). Continue working, gather new evidence, and rerun focused checks."
-            )
-        return None
+        return (
+            "The runtime completion contract rejected the completion claim "
+            f"({reasons}). Continue working, gather new evidence, and rerun focused checks."
+            + self._completion_delivery_feedback(context)
+        )
+
+    @staticmethod
+    def _completion_delivery_feedback(context) -> str:
+        """Expose bounded checker metadata without replaying checker output."""
+        validation = context.context_info.get("delivery_validation")
+        if not isinstance(validation, dict):
+            return (" Use WORKBENCH inspect to review the delivery requirements and latest checks."
+                    if context.context_info.get("task_workspace_binding") else "")
+        receipt = validation.get("receipt", validation)
+        receipt = receipt if isinstance(receipt, dict) else {}
+        failed = [check for check in receipt.get("checks", [])
+                  if isinstance(check, dict) and check.get("success") is not True]
+        details = []
+        for check in failed[:5]:
+            summary = {key: check[key][:180] for key in ("id", "kind", "path", "status", "error_type")
+                       if isinstance(check.get(key), str)}
+            details.append(summary)
+        message = ""
+        if details:
+            message = " Executed delivery check failures: " + json.dumps(details, ensure_ascii=False, separators=(",", ":"))
+            if len(failed) > len(details):
+                message += f" ({len(failed) - len(details)} more failed checks)."
+        readback = validation.get("readback")
+        if isinstance(readback, dict) and readback.get("valid") is False:
+            message += " Published artifact readback is invalid."
+        if receipt.get("unchanged") is False:
+            message += " Artifact or input bytes changed during validation."
+        return message + " Use WORKBENCH inspect to review the latest validation details, repair the affected output, then validate again."
 
     def _record_llm_call_request(
         self,
@@ -2547,6 +2594,38 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         message: Message = None,
         **kwargs,
     ) -> List[ActionModel]:
+        """Continue completion repairs without recursive stack growth."""
+        repair_feedback = None
+        while True:
+            try:
+                result = await self._async_policy_once(observation, info=info, message=message, **kwargs)
+            except Exception as exc:
+                if repair_feedback is None or not self._should_degrade_result_validation_retry_error(exc):
+                    raise
+                return await self._degrade_result_validation_retry(message, repair_feedback, exc)
+            if not isinstance(result, _ValidationRepairContinuation):
+                return result
+            repair_feedback = result.validation_feedback or str(result.observation.content)
+            await self._raise_if_task_interrupted(message.context, reason="completion repair interrupted")
+            if await self.should_terminate_loop(message):
+                await self._resolve_completion_at_loop_budget(message)
+                self._finished = True
+                return [ActionModel(agent_name=self.id(), policy_info=(
+                    "The configured maximum number of attempts was reached before delivery validation passed. "
+                    "Work remains incomplete; retained progress is available for continuation."
+                ))]
+            message.context.update_agent_step(self.id())
+            self.loop_step += 1
+            observation, kwargs = result.observation, result.kwargs
+            await asyncio.sleep(0)
+
+    async def _async_policy_once(
+        self,
+        observation: Observation,
+        info: Dict[str, Any] = {},
+        message: Message = None,
+        **kwargs,
+    ) -> List[ActionModel]:
         """The strategy of an agent can be to decide which tools to use in the environment, or to delegate tasks to other agents.
 
         Args:
@@ -2598,6 +2677,9 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         raw_messages = await self.build_llm_input(
             observation, info, message=message, **kwargs
         )
+        from aworld.core.context.work_progress import retain_work_progress, checkpoint_work_progress
+        retain_work_progress(message.context, self.id())
+        await checkpoint_work_progress(message.context, self.id())
         raw_messages = await self._apply_adaptive_context_policy(
             context=message.context,
             messages=raw_messages,
@@ -2612,7 +2694,8 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                         "The execution step budget has been reached. This is the "
                         "bounded finalization turn and no tools are available. "
                         "Using only the task and observations already present, "
-                        "produce the best complete final response now. Report "
+                        "save a handoff summary of current progress and unfinished work. "
+                        "This is a budget stop, not successful task completion. Report "
                         "verified outcomes and artifacts, state uncertainty instead "
                         "of inventing results, and do not request another tool call."
                     ),
@@ -3028,28 +3111,37 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                         )
                         await send_message(output_message)
                 else:
-                    if self.output_converter and isinstance(
-                        self.output_converter, Callable
-                    ):
-                        if asyncio.iscoroutinefunction(self.output_converter):
-                            agent_result = await self.output_converter(
-                                llm_response,
-                                agent_id=self.id(),
-                                use_tools_in_prompt=self.use_tools_in_prompt,
-                            )
+                    try:
+                        if self.output_converter and isinstance(
+                            self.output_converter, Callable
+                        ):
+                            if asyncio.iscoroutinefunction(self.output_converter):
+                                agent_result = await self.output_converter(
+                                    llm_response,
+                                    agent_id=self.id(),
+                                    use_tools_in_prompt=self.use_tools_in_prompt,
+                                )
+                            else:
+                                agent_result = self.output_converter(
+                                    llm_response,
+                                    agent_id=self.id(),
+                                    use_tools_in_prompt=self.use_tools_in_prompt,
+                                )
                         else:
-                            agent_result = self.output_converter(
+                            agent_result = await self.output_converter.parse(
                                 llm_response,
                                 agent_id=self.id(),
+                                agent=self,
                                 use_tools_in_prompt=self.use_tools_in_prompt,
                             )
-                    else:
-                        agent_result = await self.output_converter.parse(
-                            llm_response,
-                            agent_id=self.id(),
-                            agent=self,
-                            use_tools_in_prompt=self.use_tools_in_prompt,
+                    except ToolCallBatchParseError as exc:
+                        validation_feedback = (
+                            "The model returned an incomplete or malformed tool-call batch. "
+                            "No calls in that batch were executed. Emit a complete, smaller "
+                            "tool call and continue from observed work. Issue codes: "
+                            + ",".join(issue.code.value for issue in exc.issues)
                         )
+                        agent_result = AgentResult(actions=[], is_call_tool=False)
                     if loop_budget_finalization and agent_result.is_call_tool:
                         logger.warning(
                             "Agent %s attempted tool work during its bounded "
@@ -3067,14 +3159,18 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                             is_call_tool=False,
                         )
                     candidate_finished = not agent_result.is_call_tool
-                    if candidate_finished:
+                    response_incomplete = bool(
+                        isinstance(llm_response.message, dict)
+                        and llm_response.message.get("aworld_incomplete_reason")
+                    )
+                    if candidate_finished and not validation_feedback and not response_incomplete:
                         validation_feedback = (
                             await self._completion_feedback_if_unsatisfied(
                                 context=message.context,
                                 final_response_text=llm_response.content or "",
                             )
                         )
-                    if candidate_finished and not validation_feedback:
+                    if candidate_finished and not validation_feedback and not response_incomplete:
                         validation_feedback = (
                             self._build_result_validation_feedback_from_context(
                                 context=message.context,
@@ -3151,12 +3247,15 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                 info=info,
                 message=message,
                 kwargs=kwargs,
+                iterative=True,
             )
 
         message.context.context_info.pop(
             self._result_validation_retry_key(self.id()), None
         )
 
+        retain_work_progress(message.context, self.id(), plan=llm_response.content)
+        await checkpoint_work_progress(message.context, self.id())
         if self.is_agent_finished(llm_response, agent_result):
             policy_result = agent_result.actions
         else:
@@ -3173,6 +3272,8 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                 policy_result = await self.execution_tools(
                     agent_result.actions, message
                 )
+        if self.finished:
+            await checkpoint_work_progress(message.context, self.id(), force=True)
         await self.send_agent_response_output(
             self, llm_response, message.context, kwargs.get("outputs")
         )
@@ -3521,7 +3622,12 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             "2. If current evidence clearly points to a different target or scope, discard it and search again.\n"
             "3. Do not require every anchor string to appear verbatim; use anchors only to orient the target.\n"
             "4. Only continue blocking when the requested outcome was not produced or evidence conflicts with the goal.\n"
-            "5. If you still cannot verify the outcome, explain the practical mismatch and the next evidence needed.\n"
+            "5. Before attempting another final answer, execute at least one "
+            "concrete tool action that changes the result or verifies it against "
+            "the failed requirement.\n"
+            "6. Do not repeat a completion claim without new tool evidence. If "
+            "you still cannot verify the outcome, explain the practical mismatch "
+            "and the next evidence needed.\n"
         )
 
     @staticmethod
@@ -3544,6 +3650,7 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         info: Dict[str, Any],
         message: Message,
         kwargs: Dict[str, Any],
+        iterative: bool = False,
     ) -> List[ActionModel]:
         retry_key = self._result_validation_retry_key(self.id())
         retry_count = int(message.context.context_info.get(retry_key, 0) or 0)
@@ -3560,7 +3667,12 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                 artifact_evidence_text=evidence.get("artifact", ""),
             )
 
-        if retry_count >= 1:
+        contract = getattr(message.context, "completion_contract", None)
+        maximum_repairs = contract.max_repairs if contract is not None else 1
+        if maximum_repairs is not None and retry_count >= maximum_repairs:
+            from aworld.core.context.execution_state import record_execution_state, checkpoint_execution_state
+            record_execution_state(message.context, self.id(), "incomplete", "validation_repair_exhausted", recoverable=False)
+            await checkpoint_execution_state(message.context)
             self._finished = True
             return [
                 ActionModel(
@@ -3606,6 +3718,8 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                 "provider_native_prompt_cache",
             }
         }
+        if iterative:
+            return _ValidationRepairContinuation(followup_observation, recursive_kwargs, validation_feedback)
         try:
             return await self.async_policy(
                 followup_observation,
@@ -3616,25 +3730,27 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         except Exception as exc:
             if not self._should_degrade_result_validation_retry_error(exc):
                 raise
+            return await self._degrade_result_validation_retry(message, validation_feedback, exc)
 
-            logger.warning(
-                "Result validation follow-up degraded for agent %s after LLM retry failure: %s",
-                self.id(),
-                exc,
-            )
-            message.context.context_info.pop(retry_key, None)
-            self._finished = True
-            return [
-                ActionModel(
-                    agent_name=self.id(),
-                    policy_info=(
-                        f"{validation_feedback}\n"
-                        "The follow-up validation round failed because the model returned an empty or invalid "
-                        "response. I cannot confirm the task is complete with the current evidence, so I am not "
-                        "claiming success."
-                    ),
-                )
-            ]
+    async def _degrade_result_validation_retry(self, message, validation_feedback, exc):
+        logger.warning(
+            "Result validation follow-up degraded for agent %s after LLM retry failure: %s",
+            self.id(), exc,
+        )
+        message.context.context_info.pop(self._result_validation_retry_key(self.id()), None)
+        from aworld.core.context.execution_state import record_execution_state, checkpoint_execution_state
+        record_execution_state(message.context, self.id(), "incomplete", "validation_repair_unavailable", recoverable=False)
+        await checkpoint_execution_state(message.context)
+        self._finished = True
+        return [ActionModel(
+            agent_name=self.id(),
+            policy_info=(
+                f"{validation_feedback}\n"
+                "The follow-up validation round failed because the model returned an empty or invalid "
+                "response. I cannot confirm the task is complete with the current evidence, so I am not "
+                "claiming success."
+            ),
+        )]
 
     async def execution_tools(
         self, actions: List[ActionModel], message: Message = None, **kwargs
@@ -3846,9 +3962,12 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                 return compiler_config.get(name, default)
             return getattr(compiler_config, name, default)
 
+        # Agentic runs are bounded by the Agent loop's max-step guard.  Do not
+        # silently add a second, per-generation wall clock budget: a long
+        # reasoning/tool-selection turn is still useful task work and its
+        # answer must be allowed to reach the benchmark verifier.  Callers
+        # that truly need a generation watchdog can pass an explicit policy.
         total_timeout = configured("generation_total_timeout_seconds", None)
-        if total_timeout is None:
-            total_timeout = DEFAULT_LLM_EXECUTION_TIMEOUT_SECONDS
         return GenerationBudgetPolicy(
             total_timeout_seconds=total_timeout,
             stream_idle_timeout_seconds=configured(
@@ -4208,7 +4327,6 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         resp_stream = acall_llm_model_stream(
             self.llm,
             messages=messages,
-            model=self.model_name,
             temperature=float_temperature,
             tools=tools,
             stream=True,
@@ -4270,6 +4388,8 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                                 ) + (tc.function.arguments or "")
                         else:
                             llm_response.tool_calls.append(tc)
+                if chunk.finish_reason is not None:
+                    llm_response.finish_reason = chunk.finish_reason
                 if chunk.error:
                     llm_response.error = chunk.error
                 llm_response.id = chunk.id
@@ -4347,12 +4467,100 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                     await task.outputs.add_output(
                         ChunkOutput(data=chunk, metadata=metadata)
                     )
+            require_terminal_reason = os.environ.get(
+                "AWORLD_REQUIRE_STREAM_FINISH_REASON", ""
+            ).strip().lower() in {"1", "true", "yes", "on"}
+            if require_terminal_reason:
+                llm_response.message["aworld_stream_terminal_observed"] = (
+                    llm_response.finish_reason is not None
+                )
             return llm_response
         except asyncio.CancelledError:
             controller.cancelled_partial_response = llm_response
             raise
         finally:
             await self._close_generation_stream(resp_stream)
+
+    @staticmethod
+    def _declares_future_work(content: str | None) -> bool:
+        """Return whether the final sentence explicitly promises another action.
+
+        This is intentionally narrower than generic intent classification.  A
+        normal answer may discuss future work, but a tool-using agent response
+        that ends with an imperative-to-self such as ``Let me read ...`` or
+        ``I need to check ...`` has not actually finished that action.  Fenced
+        examples are ignored and conversational closers such as ``let me know``
+        are deliberately outside the action vocabulary.
+        """
+
+        if not content or not content.strip():
+            return False
+        prose = re.sub(r"```.*?```", " ", content, flags=re.DOTALL)
+        sentences = [
+            item.strip().strip("\"'`*_ -")
+            for item in re.split(r"(?<=[.!?])\s+|\n+", prose.strip())
+            if item.strip()
+        ]
+        if not sentences:
+            return False
+        final_sentence = sentences[-1]
+        return bool(
+            re.match(
+                r"^(?:(?:next|now|then),?\s+)?"
+                r"(?:let me|i(?:'ll| will| need to| am going to| plan to))\s+"
+                r"(?:now\s+)?"
+                r"(?:continue(?:\s+(?:to|with))?|read|check|inspect|wait|monitor|"
+                r"resume|run|test|build|implement|fix|download|look|examine|"
+                r"finish|complete)\b",
+                final_sentence,
+                flags=re.IGNORECASE,
+            )
+        )
+
+    @staticmethod
+    def _incomplete_model_response_reason(response: ModelResponse | None) -> str | None:
+        if response is None:
+            return None
+        response_message = (
+            response.message if isinstance(response.message, dict) else {}
+        )
+        if response_message.get("aworld_stream_terminal_observed") is False:
+            return "model_stream_ended_without_finish_reason"
+        if response.finish_reason in {"length", "max_tokens", "max_output_tokens"}:
+            return "model_output_truncated"
+        if response.finish_reason in {"content_filter", "error", "cancelled"}:
+            return "model_output_interrupted"
+        ids = set()
+        for call in response.tool_calls or []:
+            function = getattr(call, "function", None)
+            call_id = getattr(call, "id", None)
+            if not call_id or call_id in ids or not function or not function.name:
+                return "malformed_tool_call_batch"
+            ids.add(call_id)
+            try:
+                arguments = json.loads(function.arguments)
+            except (TypeError, ValueError):
+                return "incomplete_tool_arguments"
+            if not isinstance(arguments, dict):
+                return "invalid_tool_arguments"
+        if response.tool_calls:
+            return None
+        if not str(response.content or "").strip():
+            return "reasoning_only_response" if response.reasoning_content else None
+        if LLMAgent._declares_future_work(response.content):
+            return "model_declared_future_work"
+        return None
+
+    @staticmethod
+    def _incomplete_model_response(response: ModelResponse | None, reason: str) -> ModelResponse:
+        # Preserve usage/finish metadata for diagnostics; discard executable and
+        # unfinished prose rather than presenting a truncated plan as completion.
+        result = copy.copy(response) if response is not None else ModelResponse(id="", model="")
+        result.content = "Work remains incomplete after bounded model-response recovery (" + reason + "). Progress is retained for continuation."
+        result.tool_calls = []
+        result.message = {"role": "assistant", "content": result.content,
+                          "aworld_incomplete_reason": reason, "aworld_recoverable": True}
+        return result
 
     @staticmethod
     def _bounded_partial_for_repair(content: str, *, limit: int) -> str:
@@ -4444,6 +4652,19 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         except GenerationBudgetExceeded as exc:
             self._record_generation_budget_exception(message.context, exc)
             raise
+        incomplete_reason = self._incomplete_model_response_reason(response)
+        if incomplete_reason:
+            content_chars, tool_call_count = self._generation_partial_counts(response)
+            exhausted = GenerationBudgetExceeded(
+                controller.receipt(
+                    GenerationStopReason.ACTION_REPAIR_EXHAUSTED,
+                    partial_response_chars=content_chars,
+                    tool_call_count=tool_call_count,
+                ),
+                partial_response=response,
+            )
+            self._record_generation_budget_exception(message.context, exhausted)
+            raise exhausted
         if response and (
             response.content or response.tool_calls or response.reasoning_content
         ):
@@ -4610,7 +4831,6 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                             acall_llm_model(
                                 self.llm,
                                 messages=messages,
-                                model=self.model_name,
                                 temperature=float_temperature,
                                 tools=tools,
                                 stream=False,
@@ -4621,6 +4841,38 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                             streaming=False,
                         )
 
+                    # A non-empty provider response is not necessarily a completed
+                    # action. In particular length-stop batches must be discarded
+                    # atomically even if an early call happens to be valid JSON.
+                    incomplete_reason = self._incomplete_model_response_reason(llm_response)
+                    if incomplete_reason:
+                        if llm_response:
+                            usage_process(llm_response.usage, message.context)
+                        from aworld.core.context.execution_state import record_execution_state
+                        record_execution_state(context, self.id(), "incomplete", incomplete_reason)
+                        if attempt < self.llm_max_attempts:
+                            attempt += 1
+                            messages = list(messages) + [{
+                                "role": "user",
+                                "content": (
+                                    "Runtime response recovery: the previous model response was "
+                                    + incomplete_reason
+                                    + ". No tool calls from that response were executed. "
+                                    "Continue from observed work. Use a smaller complete JSON tool "
+                                    "call, or provide a final answer only when the task is complete."
+                                ),
+                            }]
+                            continue
+                        record_execution_state(
+                            context,
+                            self.id(),
+                            "incomplete",
+                            incomplete_reason,
+                            recoverable=True,
+                        )
+                        return self._incomplete_model_response(llm_response, incomplete_reason)
+                    from aworld.core.context.execution_state import record_execution_state
+                    record_execution_state(context, self.id(), "running", "model_response_accepted")
                     # Check if we got a valid response
                     if llm_response and (
                         llm_response.content
@@ -5051,6 +5303,43 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         self, llm_response: ModelResponse, agent_result: AgentResult
     ) -> bool:
         if not agent_result.is_call_tool:
+            from aworld.core.context.execution_state import record_execution_state
+            response_metadata = llm_response.message if isinstance(llm_response.message, dict) else {}
+            reason = response_metadata.get("aworld_incomplete_reason")
+            recoverable_reason = bool(
+                reason and response_metadata.get("aworld_recoverable", False)
+            )
+            raw_reason = self._incomplete_model_response_reason(llm_response)
+            if raw_reason and not reason:
+                self._finished = False
+                if getattr(self, "context", None) is not None:
+                    record_execution_state(self.context, self.id(), "incomplete", raw_reason)
+                return False
+            if not reason and getattr(self, "context", None) is not None:
+                from aworld.core.context.compiler import CompletionMode, CompletionStatus
+                assessment = self.context.assess_completion_contract(agent_claimed_finished=True)
+                if (assessment is not None and assessment.mode is CompletionMode.ENFORCE
+                        and assessment.status is not CompletionStatus.SATISFIED):
+                    self._finished = False
+                    record_execution_state(self.context, self.id(), "incomplete", "completion_contract_unsatisfied")
+                    return False
+            if recoverable_reason:
+                self._finished = False
+                if getattr(self, "context", None) is not None:
+                    record_execution_state(
+                        self.context,
+                        self.id(),
+                        "incomplete",
+                        reason,
+                        recoverable=True,
+                    )
+                return False
+            if getattr(self, "context", None) is not None:
+                record_execution_state(
+                    self.context, self.id(), "incomplete" if reason else "succeeded",
+                    reason or "agent_final_response",
+                    recoverable=bool(reason and response_metadata.get("aworld_recoverable", False)),
+                )
             self._finished = True
         return self.finished
 

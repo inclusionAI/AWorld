@@ -15,7 +15,13 @@ _MISSING = object()
 def invoke_tool(request, monkeypatch):
     reuse = request.param
 
-    async def invoke(parameter, schema_default=_MISSING, *, declared_tool="run_code"):
+    async def invoke(
+        parameter,
+        schema_default=_MISSING,
+        *,
+        declared_tool="run_code",
+        expect_success=True,
+    ):
         calls = []
         scheduled = []
 
@@ -100,7 +106,12 @@ def invoke_tool(request, monkeypatch):
                 {"tool_name": "terminal", "action_name": "run_code", "params": parameter}
             ]
         )
-        assert len(results) == 1 and results[0].success
+        assert len(results) == 1
+        if not expect_success:
+            assert results[0].success is False
+            assert calls == []
+            return results[0]
+        assert results[0].success
         assert len(calls) == 1
         assert calls[0]["parameter"] is parameter
         assert set(parameter) == original_keys  # Transport defaults are never tool arguments.
@@ -120,7 +131,7 @@ def invoke_tool(request, monkeypatch):
         (_MISSING, 300, 310),
         (_MISSING, 170.5, 180.5),
         (_MISSING, 30, 120),
-        (_MISSING, _MISSING, 120),
+        (_MISSING, _MISSING, 310),
     ],
 )
 async def test_call_tool_timeout_uses_explicit_value_then_discovered_schema(
@@ -135,7 +146,7 @@ async def test_call_tool_timeout_uses_explicit_value_then_discovered_schema(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("value", [True, False, None, "300", -1, 0, float("nan"), float("inf"), -float("inf"), 10**1000])
+@pytest.mark.parametrize("value", [True, False, None, -1, 0, float("nan"), float("inf"), -float("inf"), 10**1000])
 @pytest.mark.parametrize("source", ["explicit", "schema"])
 async def test_call_tool_invalid_timeout_falls_back_without_rewriting_arguments(
     invoke_tool, value, source
@@ -144,11 +155,17 @@ async def test_call_tool_invalid_timeout_falls_back_without_rewriting_arguments(
     default = value if source == "schema" else 300
     if source == "explicit":
         parameter["timeout"] = value
-    assert await invoke_tool(parameter, default) == 120
-    if source == "explicit":
+        result = await invoke_tool(
+            parameter,
+            default,
+            expect_success=False,
+        )
+        assert "timeout" in result.content
         assert parameter["timeout"] is value
+    else:
+        assert await invoke_tool(parameter, default) == 310
 
 
 @pytest.mark.asyncio
 async def test_call_tool_does_not_borrow_another_tools_timeout(invoke_tool):
-    assert await invoke_tool({}, 300, declared_tool="other_run") == 120
+    assert await invoke_tool({}, 300, declared_tool="other_run") == 310

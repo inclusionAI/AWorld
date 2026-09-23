@@ -1,6 +1,7 @@
 import abc
 import time
 import asyncio
+import math
 from pydantic import BaseModel
 from typing import Optional, List, Dict, Any
 from aworld.core.event.base import Message
@@ -457,7 +458,7 @@ class RuntimeStateManager(InheritanceSingleton):
             return RunNodeBusiType.TOOL
         return RunNodeBusiType.TASK
 
-    async def wait_for_node_completion(self, node_id: str, timeout: float = 120.0, interval: float = 1.0) -> RunNode:
+    async def wait_for_node_completion(self, node_id: str, timeout: float | None = None, interval: float = 1.0) -> RunNode:
         '''Poll for node status until completion or timeout.
 
         Args:
@@ -472,7 +473,14 @@ class RuntimeStateManager(InheritanceSingleton):
             Exception: If node does not exist
             TimeoutError: If waiting times out
         '''
-        start_time = time.time()
+        if timeout is not None and (
+            isinstance(timeout, bool) or not isinstance(timeout, (int, float))
+            or not math.isfinite(timeout) or timeout < 0
+        ):
+            raise ValueError("timeout must be finite non-negative seconds or None")
+        if isinstance(interval, bool) or not isinstance(interval, (int, float)) or not math.isfinite(interval) or interval <= 0:
+            raise ValueError("interval must be positive finite seconds")
+        start_time = time.monotonic()
         log_start_time = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
         logger.info(f"wait for node completion: {node_id}, start_time:{log_start_time}")
 
@@ -487,14 +495,15 @@ class RuntimeStateManager(InheritanceSingleton):
                 return node
 
             # Check if timed out
-            if time.time() - start_time > timeout:
+            elapsed = time.monotonic() - start_time
+            if timeout is not None and elapsed >= timeout:
                 self.run_timeout(node_id, result_msg=f"Waiting for node completion timed out after {timeout} seconds")
                 node = self._find_node(node_id)
                 logger.warn(f"wait for node completion timed out: {node_id}, node: {node}")
                 return node
 
             # Wait for the specified interval before polling again
-            await asyncio.sleep(interval)
+            await asyncio.sleep(min(interval, timeout - elapsed) if timeout is not None else interval)
 
     async def create_group(self, group_id: str,
                            session_id: str,

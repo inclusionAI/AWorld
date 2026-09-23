@@ -126,7 +126,18 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
             self.conf = ConfigDict(conf)
         elif isinstance(conf, AgentConfig):
             # To add flexibility
-            self.conf = ConfigDict(conf.model_dump())
+            values = conf.model_dump()
+            compiler = conf.llm_config.context_compiler
+            if isinstance(compiler, BaseModel):
+                reserve_field = type(compiler).model_fields.get("reserved_output_tokens")
+                if (reserve_field is not None
+                        and "reserved_output_tokens" not in compiler.model_fields_set
+                        and compiler.reserved_output_tokens == reserve_field.default):
+                    # A full dump must not turn the implicit compiler reserve
+                    # into an explicit floor. Retain all other config values,
+                    # including in-place edits and caller-supplied dicts.
+                    values["llm_config"]["context_compiler"].pop("reserved_output_tokens", None)
+            self.conf = ConfigDict(values)
         else:
             logger.warning(f"Unknown conf type: {type(conf)}")
 
@@ -912,6 +923,16 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
             state_context.context_info[f"agent_loop_budget_exhausted:{self.id()}"] = (
                 dict(exhaustion)
             )
+        from aworld.core.context.execution_state import (
+            record_execution_state, checkpoint_execution_state,
+        )
+        from aworld.core.context.work_progress import record_budget_handoff
+        recoverable = record_budget_handoff(context, self.id())
+        record_execution_state(
+            context, self.id(), "budget_exhausted", "agent_loop_budget_exhausted",
+            recoverable=recoverable,
+        )
+        await checkpoint_execution_state(context)
         resolver = getattr(context, "resolve_completion_evidence", None)
         resolved_step = context.context_info.pop(
             f"completion_evidence_resolved_this_turn:{self.id()}", None

@@ -72,7 +72,7 @@ def _message(task_id: str = "generation-budget") -> Message:
     )
 
 
-def test_default_agent_keeps_only_legacy_total_timeout() -> None:
+def test_default_agent_uses_max_steps_without_generation_deadlines() -> None:
     agent = _ToolAgent(
         name="Aworld",
         conf=AgentConfig(
@@ -84,7 +84,7 @@ def test_default_agent_keeps_only_legacy_total_timeout() -> None:
 
     policy = agent._resolve_generation_budget_policy()
 
-    assert policy.total_timeout_seconds == 360.0
+    assert policy.total_timeout_seconds is None
     assert policy.stream_idle_timeout_seconds is None
     assert policy.active_tool_free_timeout_seconds is None
     assert policy.action_repair_timeout_seconds is None
@@ -273,6 +273,11 @@ async def test_started_tool_call_disarms_tool_free_deadline(
                 ],
             )
 
+        yield ModelResponse(
+            id="tool", model="fake-model", finish_reason="tool_calls",
+            tool_calls=[ToolCall(id="call-1", function=Function(name="unknown", arguments='"}'))],
+        )
+
     monkeypatch.setattr(llm_agent_module, "acall_llm_model_stream", tool_stream)
     agent = _agent(
         policy=GenerationBudgetPolicy(
@@ -291,7 +296,7 @@ async def test_started_tool_call_disarms_tool_free_deadline(
     )
 
     assert len(response.tool_calls) == 1
-    assert response.tool_calls[0].function.arguments.endswith("xxxxxx")
+    assert response.tool_calls[0].function.arguments == '{"content":"xxxxxx"}'
     assert message.context.context_info.get("generation_budget_events") is None
 
 
@@ -855,3 +860,49 @@ async def test_action_repair_cannot_repair_itself_in_a_loop(
         GenerationStopReason.ACTIVE_STREAM_OVER_BUDGET.value,
         GenerationStopReason.ACTION_REPAIR_TIMEOUT.value,
     ]
+
+
+@pytest.mark.asyncio
+async def test_truncated_action_repair_is_typed_as_exhausted(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    calls = 0
+
+    async def fake_stream(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            while True:
+                await asyncio.sleep(0.002)
+                yield ModelResponse(
+                    id="primary", model="fake-model", content="planning "
+                )
+        yield ModelResponse(id="repair", model="fake-model", content="still planning")
+        yield ModelResponse(
+            id="repair", model="fake-model", finish_reason="length"
+        )
+
+    monkeypatch.setattr(llm_agent_module, "acall_llm_model_stream", fake_stream)
+    agent = _agent(
+        policy=GenerationBudgetPolicy(
+            total_timeout_seconds=0.5,
+            stream_idle_timeout_seconds=0.1,
+            active_tool_free_timeout_seconds=0.01,
+            action_repair_timeout_seconds=0.1,
+            action_repair_max_output_tokens=64,
+        )
+    )
+    message = _message("truncated-repair")
+
+    with pytest.raises(GenerationBudgetExceeded) as raised:
+        await agent.invoke_model(
+            messages=[{"role": "user", "content": "create the artifact"}],
+            message=message,
+            stream=True,
+        )
+
+    assert raised.value.reason is GenerationStopReason.ACTION_REPAIR_EXHAUSTED
+    assert raised.value.partial_response.finish_reason == "length"
+    assert calls == 2
+    events = message.context.context_info["generation_budget_events"]
+    assert events[-1]["reason"] == GenerationStopReason.ACTION_REPAIR_EXHAUSTED.value

@@ -880,7 +880,8 @@ async def test_aworld_result_validation_retry_degrades_empty_llm_response():
     assert len(result) == 1
     assert "not claiming success" in result[0].policy_info
     assert "follow-up validation round failed" in result[0].policy_info
-    assert context.context_info == {}
+    assert context.context_info["agent_execution_state"]["status"] == "incomplete"
+    assert context.context_info["agent_execution_state"]["reason"] == "validation_repair_unavailable"
     assert agent._finished is True
 
 

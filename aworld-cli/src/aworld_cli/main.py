@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import copy
 import json
 import logging
 import os
@@ -16,6 +17,10 @@ from typing import Optional
 
 from aworld.plugins.discovery import discover_plugins
 
+from .async_runtime import (
+    DirectRunDeadlineExceeded,
+    run_with_first_provider_start_watchdog,
+)
 from .run_outcome import (
     DirectRunErrorCode,
     DirectRunOutcome,
@@ -26,6 +31,7 @@ from .run_outcome import (
 
 _AWORLD_PRE_PROVIDER_MAX_ATTEMPTS = 2
 _CONTROL_DETAIL_IDENTIFIER = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
+_LOGGER = logging.getLogger(__name__)
 
 
 def _direct_run_summary(value: object) -> dict | None:
@@ -49,6 +55,70 @@ def _direct_run_has_provider_evidence(summary: object) -> bool:
         if isinstance(llm_calls, list) and llm_calls:
             return True
     return False
+
+
+def _live_provider_evidence_cursor(agent_executor: object) -> tuple[object, int]:
+    """Snapshot explicit provider-boundary evidence for the active task."""
+
+    context = getattr(agent_executor, "context", None)
+    calls: object = None
+    get_calls = getattr(context, "get_reconciled_llm_calls", None)
+    if not callable(get_calls):
+        get_calls = getattr(context, "get_llm_calls", None)
+    if callable(get_calls):
+        # Let probe failures reach the watchdog's fail-open boundary.  Treating
+        # an observability exception as zero evidence turns a healthy task into
+        # a false provider-start timeout.
+        calls = get_calls()
+        if not isinstance(calls, list):
+            raise TypeError("provider evidence probe must return a list")
+    elif context is not None:
+        context_info = getattr(context, "context_info", None)
+        if isinstance(context_info, dict):
+            calls = context_info.get("llm_calls")
+    task_id = getattr(context, "task_id", None)
+    provider_evidence_count = sum(
+        1
+        for record in (calls if isinstance(calls, list) else ())
+        if isinstance(record, dict)
+        and (task_id is None or record.get("task_id") == task_id)
+        and (
+            record.get("provider_invoked") is True
+            or record.get("provider_attempt_status") == "attempted"
+        )
+    )
+    return context, provider_evidence_count
+
+
+def _new_live_provider_evidence(
+    agent_executor: object,
+    *,
+    cursor: tuple[object, int],
+) -> bool:
+    """Detect the current task's first explicit provider invocation."""
+
+    initial_context, initial_count = cursor
+    context, evidence_count = _live_provider_evidence_cursor(agent_executor)
+    return evidence_count > 0 and (
+        context is not initial_context or evidence_count > initial_count
+    )
+
+
+def _initial_live_provider_evidence_cursor(
+    agent_executor: object,
+) -> tuple[object, int] | None:
+    """Capture the baseline or disable the watchdog when observation is broken."""
+
+    try:
+        return _live_provider_evidence_cursor(agent_executor)
+    except Exception as exc:
+        # Provider evidence is advisory. An unavailable initial snapshot must
+        # not turn a healthy task into an orchestration failure or timeout.
+        _LOGGER.warning(
+            "Direct-run initial provider-evidence probe failed open; error_type=%s",
+            type(exc).__name__,
+        )
+        return None
 
 
 def _direct_run_succeeded(summary: object) -> bool:
@@ -240,6 +310,7 @@ def _trajectory_payload_from_direct_run_summary(
         llm_calls: list[dict] = []
         trajectory_build_results: list[dict] = []
         saw_task_response_capture = False
+        capture_modes: list[str] = []
         fidelities: list[str] = []
         raw_summary_activation_evidence = summary.get(
             "skill_activation_evidence"
@@ -268,6 +339,9 @@ def _trajectory_payload_from_direct_run_summary(
                 llm_calls.extend(item for item in raw_llm_calls if isinstance(item, dict))
             if result.get("trajectory_capture_mode") == "task_response":
                 saw_task_response_capture = True
+            capture_mode = result.get("trajectory_capture_mode")
+            if isinstance(capture_mode, str) and capture_mode:
+                capture_modes.append(capture_mode)
             raw_build_result = result.get("trajectory_build_result")
             if isinstance(raw_build_result, dict):
                 saw_task_response_capture = True
@@ -292,7 +366,11 @@ def _trajectory_payload_from_direct_run_summary(
         if saw_task_response_capture:
             payload = {
                 "trajectory": task_response_trajectory,
-                "trajectory_capture_mode": "task_response",
+                "trajectory_capture_mode": (
+                    "live_context"
+                    if "live_context" in capture_modes
+                    else "task_response"
+                ),
             }
             payload["llm_calls"] = llm_calls
             if trajectory_build_results:
@@ -1350,7 +1428,7 @@ def _direct_run_control_details(details: Optional[dict]) -> dict:
         value = details.get(key)
         if isinstance(value, bool):
             projected[key] = value
-    for key in ("error_type", "failure_code", "trajectory_capture_mode"):
+    for key in ("error_type", "failure_code", "phase", "trajectory_capture_mode"):
         value = details.get(key)
         if isinstance(value, str) and _CONTROL_DETAIL_IDENTIFIER.fullmatch(value):
             projected[key] = value
@@ -1409,6 +1487,34 @@ def _emit_direct_run_failure(
     return payload
 
 
+def _emit_direct_run_agent_termination(
+    *,
+    agent_name: str,
+    summary: dict | None,
+    reason: str,
+) -> None:
+    """Log an unsuccessful Agent stop without relabelling it as a harness failure."""
+
+    metrics = DirectRunOutcome.from_summary(
+        summary,
+        status=DirectRunStatus.SUCCEEDED,
+    )
+    payload = {
+        "schema_version": "aworld.run.agent-termination.v1",
+        "status": "completed",
+        "agent_name": agent_name,
+        "reason": reason,
+        "llm_call_count": metrics.llm_call_count,
+        "tool_call_count": metrics.tool_call_count,
+        "action_count": metrics.action_count,
+    }
+    print(
+        "AWORLD_AGENT_TERMINATION="
+        + json.dumps(payload, ensure_ascii=False, sort_keys=True),
+        file=sys.stderr,
+    )
+
+
 def _direct_run_failure_outcome(
     *,
     stage: DirectRunStage | str,
@@ -1447,11 +1553,30 @@ def _direct_run_failure_outcome(
 
 
 def _partial_summary_from_agent_executor(agent_executor: object) -> dict | None:
-    """Recover the latest finalized TaskResponse after orchestration failure."""
+    """Recover finalized or live task evidence after orchestration failure.
+
+    A caller-owned deadline can stop direct mode before EventRunner publishes a
+    ``TaskResponse``. Provider records are journaled earlier, on transport
+    copies of the task context, so use the reconciled fan-in as the live
+    fallback. Evidence recovery is observability and must always fail open.
+    """
+
+    try:
+        return _build_partial_summary_from_agent_executor(agent_executor)
+    except Exception as exc:
+        _LOGGER.warning(
+            "Direct-run live summary recovery failed open; error_type=%s",
+            type(exc).__name__,
+        )
+        return None
+
+
+def _build_partial_summary_from_agent_executor(
+    agent_executor: object,
+) -> dict | None:
+    """Build a partial summary; callers must wrap this best-effort projection."""
 
     task_response = getattr(agent_executor, "last_task_response", None)
-    if task_response is None:
-        return None
     result = {
         "iteration": 1,
         "response": "",
@@ -1459,9 +1584,27 @@ def _partial_summary_from_agent_executor(agent_executor: object) -> dict | None:
         "completed": False,
         "success": False,
     }
-    try:
+    if task_response is not None:
         ContinuousExecutor._attach_task_response_evidence(result, task_response)
-    except Exception:
+
+    context = getattr(agent_executor, "context", None)
+    live_calls = _live_provider_call_records(context)
+    captured_calls = result.get("llm_calls")
+    if live_calls and (
+        not isinstance(captured_calls, list)
+        or len(live_calls) > len(captured_calls)
+    ):
+        result["llm_calls"] = live_calls
+        result["trajectory_capture_mode"] = "live_context"
+
+    captured_trajectory = result.get("trajectory")
+    if not isinstance(captured_trajectory, list) or not captured_trajectory:
+        live_trajectory = _live_trajectory_from_llm_calls(live_calls, context=context)
+        if live_trajectory:
+            result["trajectory"] = live_trajectory
+            result["trajectory_capture_mode"] = "live_context"
+
+    if task_response is None and not live_calls and not result.get("trajectory"):
         return None
     return {
         "total_runs": 1,
@@ -1469,6 +1612,99 @@ def _partial_summary_from_agent_executor(agent_executor: object) -> dict | None:
         "total_cost": 0.0,
         "results": [result],
     }
+
+
+def _live_provider_call_records(context: object) -> list[dict]:
+    """Copy task-scoped provider attempts from a live Context, fail open."""
+
+    if context is None:
+        return []
+    get_calls = getattr(context, "get_reconciled_llm_calls", None)
+    if not callable(get_calls):
+        get_calls = getattr(context, "get_llm_calls", None)
+    try:
+        calls = get_calls() if callable(get_calls) else []
+        if not isinstance(calls, list):
+            return []
+        task_id = getattr(context, "task_id", None)
+        selected = [
+            record
+            for record in calls
+            if isinstance(record, dict)
+            and (task_id is None or record.get("task_id") in {None, task_id})
+            and record.get("request_id")
+            and (
+                record.get("provider_invoked") is True
+                or record.get("provider_attempt_status") == "attempted"
+            )
+        ]
+        return copy.deepcopy(selected)
+    except Exception as exc:
+        _LOGGER.warning(
+            "Direct-run live evidence recovery failed open; error_type=%s",
+            type(exc).__name__,
+        )
+        return []
+
+
+def _live_trajectory_from_llm_calls(
+    calls: list[dict],
+    *,
+    context: object,
+) -> list[dict]:
+    """Project completed provider responses into the native trajectory shape."""
+
+    trajectory: list[dict] = []
+    task_id = getattr(context, "task_id", None)
+    session_id = getattr(context, "session_id", None)
+    for record in calls:
+        response = record.get("response")
+        if not isinstance(response, dict):
+            continue
+        message = response.get("message")
+        if not isinstance(message, dict):
+            continue
+        raw_tool_calls = message.get("tool_calls")
+        tool_calls = (
+            [copy.deepcopy(call) for call in raw_tool_calls if isinstance(call, dict)]
+            if isinstance(raw_tool_calls, list)
+            else []
+        )
+        content = message.get("content")
+        if content is None and not tool_calls:
+            continue
+        meta = {
+            "step": len(trajectory) + 1,
+            "task_id": record.get("task_id") or task_id,
+            "session_id": session_id,
+            "agent_id": record.get("agent_id"),
+            "execute_time": record.get("finished_at") or record.get("started_at"),
+        }
+        trajectory.append(
+            {
+                "meta": {key: value for key, value in meta.items() if value is not None},
+                "action": {
+                    "content": content if isinstance(content, str) else str(content or ""),
+                    "tool_calls": tool_calls,
+                },
+            }
+        )
+    return trajectory
+
+
+class DirectRunLiveSummary:
+    """Invocation-local bridge from the running executor to its supervisor."""
+
+    def __init__(self) -> None:
+        self._agent_executor: object | None = None
+
+    def bind(self, agent_executor: object) -> None:
+        self._agent_executor = agent_executor
+
+    def snapshot(self) -> dict | None:
+        if self._agent_executor is None:
+            return None
+        return _partial_summary_from_agent_executor(self._agent_executor)
 
 
 def _prefer_captured_summary(
@@ -1509,6 +1745,7 @@ async def _run_direct_mode(
     show_iteration_header: bool = True,
     echo_prompt_as_turn: bool = False,
     self_evolve_config=None,
+    live_summary: DirectRunLiveSummary | None = None,
 ) -> object:
     """
     Run agent in direct mode (non-interactive).
@@ -1628,6 +1865,9 @@ async def _run_direct_mode(
             agent_name=agent_name,
         )
 
+    if live_summary is not None:
+        live_summary.bind(agent_executor)
+
     # Match interactive mode so direct runs can access runtime-scoped features
     # such as steering checkpoints and HUD state.
     try:
@@ -1701,19 +1941,27 @@ async def _run_direct_mode(
     summary = None
     try:
         for provider_attempt in range(1, max_provider_attempts + 1):
-            summary = await continuous_executor.run_continuous(
-                prompt=multimodal_prompt,
-                agent_name=agent_name,
-                requested_skill_names=requested_skill_names,
-                non_interactive=non_interactive,
-                max_runs=max_runs,
-                max_cost=max_cost,
-                max_duration=max_duration,
-                completion_signal=completion_signal,
-                completion_threshold=completion_threshold,
-                show_start_banner=show_start_banner,
-                show_iteration_header=show_iteration_header,
-                echo_prompt_as_turn=echo_prompt_as_turn,
+            evidence_cursor = _initial_live_provider_evidence_cursor(agent_executor)
+            summary = await run_with_first_provider_start_watchdog(
+                continuous_executor.run_continuous(
+                    prompt=multimodal_prompt,
+                    agent_name=agent_name,
+                    requested_skill_names=requested_skill_names,
+                    non_interactive=non_interactive,
+                    max_runs=max_runs,
+                    max_cost=max_cost,
+                    max_duration=max_duration,
+                    completion_signal=completion_signal,
+                    completion_threshold=completion_threshold,
+                    show_start_banner=show_start_banner,
+                    show_iteration_header=show_iteration_header,
+                    echo_prompt_as_turn=echo_prompt_as_turn,
+                ),
+                evidence_observed=lambda: evidence_cursor is None
+                or _new_live_provider_evidence(
+                    agent_executor,
+                    cursor=evidence_cursor,
+                ),
             )
             if _direct_run_cancelled(summary):
                 break
@@ -1739,6 +1987,14 @@ async def _run_direct_mode(
                 },
                 summary=summary,
             )
+    except DirectRunDeadlineExceeded as exc:
+        recovered = _prefer_captured_summary(
+            summary,
+            agent_executor=agent_executor,
+        )
+        if recovered is not None:
+            exc.summary = recovered
+        raise
     except asyncio.CancelledError:
         summary = _prefer_captured_summary(
             summary,
@@ -1782,6 +2038,26 @@ async def _run_direct_mode(
             details=infrastructure_failure,
             summary=summary,
         )
+    incomplete_results = [
+        result for result in (summary or {}).get("results", [])
+        if isinstance(result, dict) and result.get("semantic_status", result.get("task_status"))
+        in {"incomplete", "budget_exhausted"}
+    ]
+    if incomplete_results:
+        unfinished = incomplete_results[-1]
+        semantic = unfinished.get("semantic_status", unfinished.get("task_status"))
+        reason = unfinished.get("completion_reason")
+        if not isinstance(reason, str) or not reason:
+            reason = str(semantic or "agent_incomplete")
+        _emit_direct_run_agent_termination(
+            agent_name=agent_name,
+            summary=summary,
+            reason=reason,
+        )
+        return DirectRunOutcome.from_summary(
+            summary,
+            status=DirectRunStatus.SUCCEEDED,
+        )
     if not _direct_run_succeeded(summary):
         if require_explicit_failure_origin and not _direct_run_has_explicit_task_failure(
             summary
@@ -1793,13 +2069,27 @@ async def _run_direct_mode(
                 details={"provider_evidence": _direct_run_has_provider_evidence(summary)},
                 summary=summary,
             )
-        return _direct_run_failure_outcome(
-            stage=DirectRunStage.AGENT_EXECUTION,
-            error_code=DirectRunErrorCode.AGENT_TASK_FAILED,
+        failed_results = [
+            result
+            for result in (summary or {}).get("results", [])
+            if isinstance(result, dict) and not bool(result.get("success"))
+        ]
+        reason = next(
+            (
+                str(result.get("failure_code") or result.get("completion_reason"))
+                for result in reversed(failed_results)
+                if result.get("failure_code") or result.get("completion_reason")
+            ),
+            "agent_task_unsolved",
+        )
+        _emit_direct_run_agent_termination(
             agent_name=agent_name,
-            details={"provider_evidence": True},
             summary=summary,
-            status=DirectRunStatus.TASK_FAILED,
+            reason=reason,
+        )
+        return DirectRunOutcome.from_summary(
+            summary,
+            status=DirectRunStatus.SUCCEEDED,
         )
     activation_evidence = getattr(
         agent_executor,

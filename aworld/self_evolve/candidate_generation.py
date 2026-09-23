@@ -15,6 +15,7 @@ from aworld.core.context.compiler import reviewed_provider_lowerings
 from aworld.core.task import Task
 from aworld.logs.util import logger
 from aworld.models.model_response import ModelResponse
+from aworld.models.context_window import resolve_model_context_window
 from aworld.runner import Runners
 from aworld.utils.common import nest_dict_counter
 
@@ -439,9 +440,11 @@ def _positive_token_limit(value: Any) -> int | None:
 
 
 def _model_aware_candidate_output_limit(model_config: ModelConfig) -> int:
-    max_model_len = _positive_token_limit(model_config.max_model_len)
-    if max_model_len is None:
-        return DEFAULT_CANDIDATE_OUTPUT_TOKEN_LIMIT
+    max_model_len = resolve_model_context_window(
+        model_config.llm_model_name,
+        context_limit=model_config.context_compiler.context_limit,
+        max_model_len=model_config.max_model_len,
+    ).tokens
     return max(
         1,
         min(

@@ -2,7 +2,7 @@ import argparse
 import shlex
 
 
-GOAL_CONTROL_ACTIONS = {"status", "pause", "clear"}
+GOAL_CONTROL_ACTIONS = {"status", "pause", "clear", "resume"}
 
 
 class GoalArgumentParser(argparse.ArgumentParser):

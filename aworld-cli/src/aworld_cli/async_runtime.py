@@ -8,18 +8,168 @@ cancellation cannot keep the task process alive after its outcome is known.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
+import math
 import os
 import sys
-from collections.abc import Coroutine
+import time
+from collections.abc import Callable, Coroutine, Mapping
 from typing import Any, TypeVar
 
-
 BOUNDED_ASYNC_SHUTDOWN_ENV = "AWORLD_DIRECT_RUN_SHUTDOWN_TIMEOUT_SECONDS"
+FIRST_PROVIDER_START_TIMEOUT_ENV = (
+    "AWORLD_DIRECT_RUN_FIRST_PROVIDER_TIMEOUT_SECONDS"
+)
+TASK_DEADLINE_EPOCH_ENV = "AWORLD_TASK_DEADLINE_EPOCH_SECONDS"
+TASK_COMPLETION_RESERVE_ENV = "AWORLD_TERMINAL_COMPLETION_RESERVE_SECONDS"
 _MAX_SHUTDOWN_TIMEOUT_SECONDS = 30.0
+_EVIDENCE_POLL_INTERVAL_SECONDS = 0.05
 _DEFAULT_ONE_SHOT_SHUTDOWN_TIMEOUT_SECONDS = 5.0
 _T = TypeVar("_T")
 logger = logging.getLogger(__name__)
+
+
+class DirectRunDeadlineExceeded(TimeoutError):
+    """The caller-owned task deadline expired before direct mode returned."""
+
+    def __init__(
+        self,
+        *,
+        stage: str = "agent_execution",
+        phase: str = "task_deadline",
+        summary: Mapping[str, Any] | None = None,
+    ) -> None:
+        self.stage = stage
+        self.phase = phase
+        self.summary = dict(summary) if isinstance(summary, Mapping) else None
+        super().__init__(f"direct-run deadline exceeded during {phase}")
+
+
+def _bounded_stack_label(value: object, *, fallback: str) -> str:
+    text = value if isinstance(value, str) and value else fallback
+    sanitized = "".join(
+        character
+        if character.isalnum() or character in {".", "_", "-"}
+        else "_"
+        for character in text
+    )
+    return sanitized[:128] or fallback
+
+
+def _safe_task_stack(
+    task: asyncio.Task[Any],
+    *,
+    limit: int = 8,
+) -> list[dict[str, object]]:
+    """Return a bounded control-plane stack without locals or source text."""
+
+    try:
+        frames = task.get_stack(limit=limit)
+    except Exception:
+        return []
+    result: list[dict[str, object]] = []
+    for frame in frames[-limit:]:
+        code = frame.f_code
+        result.append(
+            {
+                "module": _bounded_stack_label(
+                    frame.f_globals.get("__name__"),
+                    fallback="unknown",
+                ),
+                "file": _bounded_stack_label(
+                    os.path.basename(code.co_filename),
+                    fallback="unknown",
+                ),
+                "function": _bounded_stack_label(
+                    code.co_name,
+                    fallback="unknown",
+                ),
+                "line": max(0, int(frame.f_lineno)),
+            }
+        )
+    return result
+
+
+def _safe_await_chain_stack(
+    task: asyncio.Task[Any],
+    *,
+    limit: int = 16,
+) -> list[dict[str, object]]:
+    """Return the suspended coroutine chain without formatting user data.
+
+    ``Task.get_stack()`` commonly exposes only the task's outermost suspended
+    frame.  Startup diagnostics need the actual awaited executor/provider
+    frame to distinguish a loader stall from a tool or model stall, while
+    retaining the existing rule that locals, source text and coroutine reprs
+    never enter logs.
+    """
+
+    frames: list[dict[str, object]] = []
+    try:
+        current: object | None = task.get_coro()
+    except Exception:
+        current = None
+    seen: set[int] = set()
+    while current is not None and len(frames) < limit:
+        identity = id(current)
+        if identity in seen:
+            break
+        seen.add(identity)
+
+        frame = None
+        awaited = None
+        for frame_attribute, await_attribute in (
+            ("cr_frame", "cr_await"),
+            ("ag_frame", "ag_await"),
+            ("gi_frame", "gi_yieldfrom"),
+        ):
+            candidate = getattr(current, frame_attribute, None)
+            if candidate is not None:
+                frame = candidate
+                awaited = getattr(current, await_attribute, None)
+                break
+        if frame is None:
+            break
+        code = frame.f_code
+        frames.append(
+            {
+                "module": _bounded_stack_label(
+                    frame.f_globals.get("__name__"),
+                    fallback="unknown",
+                ),
+                "file": _bounded_stack_label(
+                    os.path.basename(code.co_filename),
+                    fallback="unknown",
+                ),
+                "function": _bounded_stack_label(
+                    code.co_name,
+                    fallback="unknown",
+                ),
+                "line": max(0, int(frame.f_lineno)),
+            }
+        )
+        current = awaited
+
+    return frames or _safe_task_stack(task, limit=min(limit, 8))
+
+
+def _capture_deadline_summary(
+    provider: Callable[[], Mapping[str, Any] | None] | None,
+) -> dict[str, Any] | None:
+    """Best-effort snapshot of evidence before the one-shot loop closes."""
+
+    if provider is None:
+        return None
+    try:
+        summary = provider()
+    except Exception as exc:
+        logger.warning(
+            "Direct-run deadline evidence snapshot failed open; error_type=%s",
+            type(exc).__name__,
+        )
+        return None
+    return dict(summary) if isinstance(summary, Mapping) else None
 
 
 def _bounded_shutdown_timeout() -> float | None:
@@ -36,6 +186,164 @@ def _bounded_shutdown_timeout() -> float | None:
             f"than {_MAX_SHUTDOWN_TIMEOUT_SECONDS:g}"
         )
     return value
+
+
+def _direct_run_timeout() -> float | None:
+    """Return the time available before the caller's completion reserve.
+
+    The process supervisor owns the absolute deadline.  Direct mode must stop
+    early enough to replace its initial ``in_progress`` ATIF checkpoint with a
+    terminal outcome and atomically persist the matching outcome sidecar.
+    """
+
+    raw_deadline = os.environ.get(TASK_DEADLINE_EPOCH_ENV)
+    if raw_deadline is None or not raw_deadline.strip():
+        return None
+    raw_reserve = os.environ.get(TASK_COMPLETION_RESERVE_ENV, "0")
+    try:
+        deadline = float(raw_deadline)
+        reserve = float(raw_reserve)
+    except ValueError as exc:
+        raise ValueError(
+            f"{TASK_DEADLINE_EPOCH_ENV} and {TASK_COMPLETION_RESERVE_ENV} "
+            "must be numeric"
+        ) from exc
+    if not math.isfinite(deadline) or deadline <= 0:
+        raise ValueError(f"{TASK_DEADLINE_EPOCH_ENV} must be positive and finite")
+    if not math.isfinite(reserve) or reserve < 0:
+        raise ValueError(
+            f"{TASK_COMPLETION_RESERVE_ENV} must be non-negative and finite"
+        )
+    return max(0.0, deadline - time.time() - reserve)
+
+
+def _first_provider_start_timeout() -> float | None:
+    """Return the bounded startup budget anchored to the caller deadline.
+
+    AWorld must not invent a process lifetime for ordinary CLI users.  The
+    first-provider watchdog is therefore opt-in and is valid only when the
+    enclosing supervisor supplied its absolute task deadline.  The relative
+    cap identifies a stalled startup early, while the caller deadline remains
+    the authoritative upper bound and retains space for terminal persistence.
+    """
+
+    raw_timeout = os.environ.get(FIRST_PROVIDER_START_TIMEOUT_ENV)
+    if raw_timeout is None or not raw_timeout.strip():
+        return None
+    try:
+        timeout = float(raw_timeout)
+    except ValueError as exc:
+        raise ValueError(
+            f"{FIRST_PROVIDER_START_TIMEOUT_ENV} must be positive and finite"
+        ) from exc
+    if not math.isfinite(timeout) or timeout <= 0:
+        raise ValueError(
+            f"{FIRST_PROVIDER_START_TIMEOUT_ENV} must be positive and finite"
+        )
+    caller_remaining = _direct_run_timeout()
+    if caller_remaining is None:
+        raise ValueError(
+            f"{FIRST_PROVIDER_START_TIMEOUT_ENV} requires "
+            f"{TASK_DEADLINE_EPOCH_ENV}"
+        )
+    return min(timeout, caller_remaining)
+
+
+async def run_with_first_provider_start_watchdog(
+    coro: Coroutine[Any, Any, _T],
+    *,
+    evidence_observed: Callable[[], bool],
+) -> _T:
+    """Bound pre-provider startup, then leave normal generation untouched.
+
+    ``evidence_observed`` must become true only when the current task records
+    an explicit provider invocation/attempt.  Pre-provider ``StepOutput`` and
+    compiler-only request records do not qualify.  Once the provider boundary
+    is reached this watchdog is permanently disarmed; existing generation
+    deadlines remain responsible for provider latency and stream progress.
+
+    Like the outer direct-run deadline, this helper deliberately does not
+    cancel untrusted provider work on timeout.  The CLI first persists its
+    terminal outcome, after which the configured one-shot process boundary
+    reaps remaining work.  This is a cooperative event-loop boundary; code
+    that blocks the loop synchronously is still bounded by the caller's
+    external process supervisor.
+    """
+
+    try:
+        timeout = _first_provider_start_timeout()
+    except BaseException:
+        coro.close()
+        raise
+    if timeout is None:
+        return await coro
+
+    task = asyncio.create_task(coro)
+    expires_at = asyncio.get_running_loop().time() + timeout
+    while True:
+        try:
+            if evidence_observed():
+                return await task
+        except Exception as exc:
+            # Evidence is observability, not execution authority.  A broken
+            # probe must never abort a task that may otherwise complete.
+            logger.warning(
+                "Direct-run provider-evidence probe failed open; error_type=%s",
+                type(exc).__name__,
+            )
+            return await task
+
+        remaining = expires_at - asyncio.get_running_loop().time()
+        if remaining <= 0:
+            _silence_destroyed_task_warning(task)
+            safe_stack = json.dumps(
+                _safe_await_chain_stack(task),
+                ensure_ascii=True,
+                separators=(",", ":"),
+                sort_keys=True,
+            )
+            logger.error(
+                "Direct-run startup watchdog expired; "
+                "stage=provider_start phase=awaiting_first_provider_attempt "
+                "task_stack=%s",
+                safe_stack,
+            )
+            raise DirectRunDeadlineExceeded(
+                stage="provider_start",
+                phase="awaiting_first_provider_attempt",
+            )
+
+        try:
+            done, _pending = await asyncio.wait(
+                {task},
+                timeout=min(_EVIDENCE_POLL_INTERVAL_SECONDS, remaining),
+            )
+        except BaseException:
+            if not task.done():
+                _silence_destroyed_task_warning(task)
+            raise
+        if task in done:
+            return task.result()
+
+
+async def _run_until_deadline(
+    coro: Coroutine[Any, Any, _T],
+    *,
+    timeout: float,
+    deadline_summary: Callable[[], Mapping[str, Any] | None] | None = None,
+) -> _T:
+    task = asyncio.create_task(coro)
+    done, _pending = await asyncio.wait({task}, timeout=timeout)
+    if task in done:
+        return task.result()
+    # Do not cancel provider-owned work here.  Cancellation handlers are
+    # outside our trust boundary and may block the loop synchronously.  The
+    # explicit one-shot process boundary reaps them after final evidence is
+    # persisted by the caller.
+    _silence_destroyed_task_warning(task)
+    raise DirectRunDeadlineExceeded(
+        summary=_capture_deadline_summary(deadline_summary),
+    )
 
 
 def _silence_destroyed_task_warning(task: asyncio.Task[Any]) -> None:
@@ -94,6 +402,7 @@ def _run_with_bounded_shutdown(coro: Coroutine[Any, Any, _T], timeout: float) ->
 def run_direct_async(
     coro: Coroutine[Any, Any, _T],
     *,
+    deadline_summary: Callable[[], Mapping[str, Any] | None] | None = None,
     one_shot: bool = False,
 ) -> _T:
     """Run direct-mode work with optional one-shot shutdown enforcement.
@@ -113,15 +422,30 @@ def run_direct_async(
         coro.close()
         raise RuntimeError("run_direct_async() cannot be called from a running loop")
     try:
-        timeout = _bounded_shutdown_timeout()
+        shutdown_timeout = _bounded_shutdown_timeout()
+        direct_timeout = _direct_run_timeout()
     except BaseException:
         coro.close()
         raise
-    if timeout is None and one_shot:
-        timeout = _DEFAULT_ONE_SHOT_SHUTDOWN_TIMEOUT_SECONDS
-    if timeout is None:
-        return asyncio.run(coro)
-    return _run_with_bounded_shutdown(coro, timeout)
+    if shutdown_timeout is None and one_shot:
+        shutdown_timeout = _DEFAULT_ONE_SHOT_SHUTDOWN_TIMEOUT_SECONDS
+    if direct_timeout is not None and shutdown_timeout is None:
+        coro.close()
+        raise ValueError(
+            f"{TASK_DEADLINE_EPOCH_ENV} requires {BOUNDED_ASYNC_SHUTDOWN_ENV}"
+        )
+    bounded_coro = (
+        _run_until_deadline(
+            coro,
+            timeout=direct_timeout,
+            deadline_summary=deadline_summary,
+        )
+        if direct_timeout is not None
+        else coro
+    )
+    if shutdown_timeout is None:
+        return asyncio.run(bounded_coro)
+    return _run_with_bounded_shutdown(bounded_coro, shutdown_timeout)
 
 
 def hard_exit_direct_run_if_configured(
@@ -149,6 +473,11 @@ def hard_exit_direct_run_if_configured(
 
 __all__ = [
     "BOUNDED_ASYNC_SHUTDOWN_ENV",
+    "FIRST_PROVIDER_START_TIMEOUT_ENV",
+    "TASK_COMPLETION_RESERVE_ENV",
+    "TASK_DEADLINE_EPOCH_ENV",
+    "DirectRunDeadlineExceeded",
     "hard_exit_direct_run_if_configured",
     "run_direct_async",
+    "run_with_first_provider_start_watchdog",
 ]

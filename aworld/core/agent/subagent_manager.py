@@ -603,7 +603,7 @@ class SubagentManager:
                             cloned_agent.conf,
                             "max_input_tokens",
                             delegation_spec.token_budget,
-                        ),
+                        ) or delegation_spec.token_budget,
                         delegation_spec.token_budget,
                     )
 

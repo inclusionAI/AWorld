@@ -620,14 +620,14 @@ async def test_goal_task_completed_hook_marks_goal_complete_on_exact_completion_
     )
 
     result = await hooks["task_completed"][0].run(
-        event={"final_answer": "All done.\n<promise>COMPLETE</promise>", "task_status": "completed"},
+        event={"final_answer": "All done.\n<promise>COMPLETE</promise>", "task_status": "completed", "semantic_status": "succeeded"},
         state={"__plugin_state__": handle, **handle.read()},
     )
 
     assert result.action == "allow"
     assert handle.read()["status"] == "complete"
     assert handle.read()["active"] is False
-    assert handle.read()["last_task_status"] == "completed"
+    assert handle.read()["last_task_status"] == "succeeded"
 
 
 @pytest.mark.asyncio
@@ -656,7 +656,9 @@ async def test_goal_task_error_hook_persists_last_error_excerpt(tmp_path):
         state={"__plugin_state__": handle, **handle.read()},
     )
 
-    assert result.action == "allow"
+    assert result.action == "block_and_continue"
+    assert handle.read()["status"] == "active"
+    assert handle.read()["turn_count"] == 3
     assert handle.read()["last_task_status"] == "error"
     assert "pytest failed" in handle.read()["last_error"]
     assert "pytest failed" in handle.read()["last_error_excerpt"]

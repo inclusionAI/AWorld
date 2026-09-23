@@ -68,7 +68,8 @@ class CompletionContract:
     validation_commands: tuple[ValidationCommand, ...]
     max_evidence_age_seconds: int | None
     required_final_evidence: tuple[str, ...]
-    max_repairs: int = 1
+    max_repairs: int | None = 1
+    required_self_check_ids: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "required_artifacts", tuple(self.required_artifacts))
@@ -77,16 +78,20 @@ class CompletionContract:
         object.__setattr__(
             self, "required_final_evidence", tuple(self.required_final_evidence)
         )
+        object.__setattr__(self, "required_self_check_ids", tuple(self.required_self_check_ids))
+        if any(not isinstance(check_id, str) or not check_id for check_id in self.required_self_check_ids):
+            raise ValueError("required_self_check_ids must be non-empty strings")
         if self.max_evidence_age_seconds is not None and (
             isinstance(self.max_evidence_age_seconds, bool)
             or not isinstance(self.max_evidence_age_seconds, int)
             or self.max_evidence_age_seconds < 0
         ):
             raise ValueError("max_evidence_age_seconds must be non-negative or None")
-        if isinstance(self.max_repairs, bool) or not isinstance(
-            self.max_repairs, int
-        ) or self.max_repairs < 0:
-            raise ValueError("max_repairs must be non-negative")
+        if self.max_repairs is not None and (
+            isinstance(self.max_repairs, bool) or not isinstance(self.max_repairs, int)
+            or self.max_repairs < 0
+        ):
+            raise ValueError("max_repairs must be non-negative or None")
 
 
 @dataclass(frozen=True, slots=True)
@@ -201,8 +206,10 @@ def assess_completion(
             reasons.add("immutable_input_evidence_missing")
         elif evidence.expected_hash != evidence.observed_hash:
             reasons.add("immutable_input_changed")
-    for command in contract.validation_commands:
-        evidence = checks.get(command.command_id)
+    required_checks = {command.command_id for command in contract.validation_commands}
+    required_checks.update(contract.required_self_check_ids)
+    for check_id in required_checks:
+        evidence = checks.get(check_id)
         if evidence is None:
             reasons.add("self_check_missing")
         elif evidence.exit_code != 0:
@@ -228,7 +235,7 @@ def assess_completion(
         status = CompletionStatus.SATISFIED
     elif mode is CompletionMode.OBSERVE:
         status = CompletionStatus.SATISFIED
-    elif repair_attempt < contract.max_repairs:
+    elif contract.max_repairs is None or repair_attempt < contract.max_repairs:
         status = CompletionStatus.REPAIR_REQUIRED
     else:
         status = CompletionStatus.FAILED

@@ -149,7 +149,11 @@ async def long_wait_message_state(message: Message):
         msg_id=msg_id,
         msg_from=message.sender)
     # wait for message node completion
-    res_node = await state_mng.wait_for_node_completion(node_id=msg_id)
+    task = message.context.get_task() if message.context else None
+    res_node = await state_mng.wait_for_node_completion(
+        node_id=msg_id,
+        timeout=task.remaining_seconds() if task is not None else None,
+    )
     if res_node.status == RunNodeStatus.SUCCESS or res_node.results:
         # get result and status from node
         if not res_node or not res_node.results:

@@ -13,10 +13,18 @@ def handle_event(event, state):
     if handle is None:
         return {"action": "allow"}
 
+    latest = handle.read()
+    if not latest.get("objective"):
+        return {"action": "allow"}
+    state = latest
+
     partial_answer = event.get("partial_answer") or ""
     updated = dict(state)
     updated.update(
         {
+            "active": False,
+            "status": "paused",
+            "last_task_id": event.get("task_id") or state.get("last_task_id"),
             "last_task_status": event.get("task_status") or "interrupted",
             "last_error": "",
             "last_error_excerpt": None,

@@ -13,7 +13,10 @@ from aworld_cli.executors.stats import (
     StreamTokenStats,
     build_complete_llm_usage_summary,
     build_llm_usage_observability,
+    resolve_stream_context_window,
 )
+from aworld.config.conf import ModelConfig
+from aworld.models.context_window import DEFAULT_CONTEXT_WINDOW_TOKENS, resolve_model_context_window
 from aworld_cli.executors.base_executor import BaseAgentExecutor
 from aworld_cli.runtime.base import BaseCliRuntime
 from aworld.plugins.discovery import discover_plugins
@@ -140,6 +143,202 @@ def test_stream_token_stats_exports_hud_usage_snapshot():
     assert usage["total_tokens"] == 1500
     assert usage["context_used"] == 1500
 
+
+def test_stream_context_display_uses_emitting_agent_deployment_window():
+    def agent(identity, window):
+        return SimpleNamespace(
+            id=lambda: identity, name=lambda: identity,
+            _llm=SimpleNamespace(resolve_context_window=lambda: resolve_model_context_window(
+                "gateway-alias", max_model_len=window,
+            )),
+            conf=SimpleNamespace(llm_config=ModelConfig(
+                llm_model_name="gateway-alias", max_model_len=window,
+            )),
+        )
+    swarm = SimpleNamespace(agents={
+        "small": agent("small", 32_000),
+        "large": agent("large", 1_000_000),
+    })
+    resolved = resolve_stream_context_window(
+        swarm, model_name="gateway-alias", agent_id="large", agent_name="Display label",
+    )
+    stats = StreamTokenStats()
+    stats.update(
+        agent_id="large", agent_name="large", input_tokens=200_000,
+        output_tokens=0, tool_calls_count=0, model_name="gateway-alias",
+        context_window=resolved.tokens, context_window_source=resolved.source,
+    )
+    usage = stats.to_hud_usage()
+    assert usage["context_max"] == 1_000_000
+    assert usage["context_percent"] == 20
+    assert usage["context_window_source"] == "explicit_max_model_len"
+    assert "20%" in stats.format_streaming_line("1s")
+    stats.clear()
+    assert stats.to_hud_usage()["context_max"] == 1_000_000
+    # A stream without an agent identity must not borrow either declaration.
+    ambiguous = resolve_stream_context_window(swarm, model_name="gateway-alias")
+    assert ambiguous.source == "fallback"
+
+
+def test_stream_context_display_honors_compiler_window_override():
+    config = ModelConfig(
+        llm_model_name="gateway-alias", max_model_len=1_000_000,
+        context_compiler={"context_limit": 500_000},
+    )
+    swarm = SimpleNamespace(agents={"root": SimpleNamespace(
+        name=lambda: "Aworld", conf=SimpleNamespace(llm_config=config),
+        _llm=SimpleNamespace(resolve_context_window=lambda: resolve_model_context_window(
+            config.llm_model_name, context_limit=config.context_compiler.context_limit,
+            max_model_len=config.max_model_len,
+        )),
+    )})
+    resolved = resolve_stream_context_window(swarm, agent_name="Aworld")
+    assert resolved.tokens == 500_000
+    assert resolved.source == "explicit_context_limit"
+
+
+
+def _window_record(request_id, agent_id, tokens, *, model="gateway-alias", task_id="task-1", source="explicit_max_model_len"):
+    return {
+        "request_id": request_id, "task_id": task_id, "agent_id": agent_id,
+        "model": model,
+        "context_rollout": {"context_window_resolution": {
+            "tokens": tokens, "source": source, "model_name": model,
+            "matched_model": model if source == "model_registry" else None,
+        }},
+    }
+
+
+@pytest.mark.parametrize("output_type", ["chunk", "message"])
+def test_stream_context_reads_actual_request_for_both_output_shapes(output_type):
+    from aworld.models.model_response import ModelResponse
+    from aworld.output.base import ChunkOutput, MessageOutput
+
+    response = ModelResponse(id="response-1", content="ok", model="gpt-4o", provider_request_id="provider-1")
+    metadata = {"agent_id": "a", "agent_name": "Aworld", "request_id": "current"}
+    output = (ChunkOutput(data=response, metadata=metadata) if output_type == "chunk"
+              else MessageOutput(source=response, metadata=metadata))
+    current = _window_record("current", "a", 128000, model="gpt-4o", source="model_registry")
+    calls = [current, _window_record("later-child", "b", 32000),
+             _window_record("other-task", "a", 1000000, task_id="task-2")]
+    resolver = MagicMock(side_effect=AssertionError("request evidence must take precedence"))
+    swarm = SimpleNamespace(agents={"a": SimpleNamespace(_llm=SimpleNamespace(resolve_context_window=resolver))})
+    result = resolve_stream_context_window(
+        swarm, context=SimpleNamespace(get_llm_calls=lambda: calls), task_id="task-1",
+        output=output, model_name="gpt-4.1",
+    )
+    assert result.tokens == 128000
+    assert result.model_name == "gpt-4o"
+    assert result.source == "model_registry"
+    resolver.assert_not_called()
+
+
+
+@pytest.mark.parametrize("output_field", ["source", "data"])
+def test_stream_context_can_match_provider_request_id_from_response(output_field):
+    call = _window_record("internal-request", "a", 900000)
+    call["provider_request_id"] = "provider-request"
+    other = _window_record("other", "a", 32000)
+    output = SimpleNamespace(**{output_field: SimpleNamespace(provider_request_id="provider-request")})
+    result = resolve_stream_context_window(
+        None, context=SimpleNamespace(get_llm_calls=lambda: [call, other]), output=output,
+        task_id="task-1", agent_id="a", model_name="gateway-alias",
+    )
+    assert result.tokens == 900000
+
+def test_stream_context_matches_agent_and_task_without_request_metadata():
+    calls = [_window_record("old", "a", 32000), _window_record("current", "a", 1000000),
+             _window_record("child", "b", 64000),
+             _window_record("other-task", "a", 200000, task_id="task-2")]
+    context = SimpleNamespace(get_llm_calls=lambda: calls)
+    result = resolve_stream_context_window(
+        None, context=context, task_id="task-1", agent_id="a", model_name="gateway-alias",
+    )
+    assert result.tokens == 1000000
+    ambiguous = resolve_stream_context_window(None, context=context, task_id="task-1", model_name="gateway-alias")
+    assert ambiguous.source == "fallback"
+
+
+@pytest.mark.parametrize("request_id,agent_id", [("missing", "a"), ("current", "other")])
+def test_stream_context_never_substitutes_a_different_request_or_agent(request_id, agent_id):
+    calls = [_window_record("current", "a", 1000000)]
+    result = resolve_stream_context_window(
+        None, context=SimpleNamespace(get_llm_calls=lambda: calls), task_id="task-1",
+        request_id=request_id, agent_id=agent_id, model_name="gateway-alias",
+    )
+    assert result.tokens == DEFAULT_CONTEXT_WINDOW_TOKENS and result.source == "fallback"
+
+
+@pytest.mark.parametrize("model", [None, ""])
+def test_stream_context_retains_recorded_unknown_model_and_source(model):
+    call = _window_record("current", "a", 456789, model=model, source="custom_deployment_receipt")
+    result = resolve_stream_context_window(
+        None, context=SimpleNamespace(get_llm_calls=lambda: [call]),
+        request_id="current", model_name="gpt-4.1",
+    )
+    assert result.tokens == 456789
+    assert result.model_name == model
+    assert result.source == "custom_deployment_receipt"
+
+
+def test_stream_context_missing_current_capture_does_not_reuse_old_window():
+    calls = [_window_record("old", "a", 1000000),
+             {"request_id": "current", "agent_id": "a", "task_id": "task-1", "model": "gpt-4o"}]
+    result = resolve_stream_context_window(
+        None, context=SimpleNamespace(get_llm_calls=lambda: calls), task_id="task-1", agent_id="a",
+    )
+    assert result.tokens == 128000 and result.source == "model_registry"
+
+
+def test_stream_context_uses_initialized_readonly_resolver_for_configured_model_override():
+    from aworld.models.llm import LLMModel
+    from aworld.models.openai_provider import OpenAIProvider
+
+    # Construct no provider or SDK client. Only exercise the real read-only API.
+    provider = object.__new__(OpenAIProvider)
+    provider.model_name = "gpt-4.1"
+    provider.kwargs = {"params": {"model": "gpt-4o"}}
+    provider.is_http_provider = False
+    model = object.__new__(LLMModel)
+    model.provider = provider
+    model._context_model_name = "gpt-4.1"
+    model._context_explicit_limit = None
+    model._context_explicit_model_len = 1000000
+    model._context_candidate_policy = model._adaptive_context_policy = SimpleNamespace(final_policy=None)
+
+    class ExistingAgent:
+        _llm = model
+        @property
+        def llm(self):
+            raise AssertionError("HUD must not access the lazy client property")
+        def id(self):
+            return "a"
+        def name(self):
+            return "Aworld"
+
+    swarm = SimpleNamespace(agents={"a": ExistingAgent()})
+    result = resolve_stream_context_window(swarm, agent_id="a")
+    assert result.model_name == "gpt-4o"
+    assert result.tokens == 128000 and result.source == "model_registry"
+    # A response from a per-call switch must not borrow configured capacity.
+    changed = resolve_stream_context_window(swarm, agent_id="a", model_name="gpt-4")
+    assert changed.tokens == 8192 and changed.source == "model_registry"
+
+
+def test_stream_context_without_initialized_model_uses_registry_only():
+    class UninitializedAgent:
+        _llm = None
+        conf = SimpleNamespace(llm_config=ModelConfig(llm_model_name="gpt-4.1", max_model_len=1000000))
+        @property
+        def llm(self):
+            raise AssertionError("HUD must not construct a model client")
+        def id(self):
+            return "a"
+
+    result = resolve_stream_context_window(
+        SimpleNamespace(agents={"a": UninitializedAgent()}), agent_id="a", model_name="gateway-alias",
+    )
+    assert result.tokens == DEFAULT_CONTEXT_WINDOW_TOKENS and result.source == "fallback"
 
 def test_local_executor_publishes_stream_updates_to_runtime():
     runtime = DummyRuntime()

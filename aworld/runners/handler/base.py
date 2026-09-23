@@ -64,9 +64,17 @@ class DefaultHandler(Handler[Message, AsyncGenerator[Message, None]]):
         if await self.runner.should_stop_task(message):
             await self.runner.stop()
             return
+        # The runner owns the absolute deadline and cancellation projection.
+        # Recomputing a duration here used to reset retry lifetimes and required
+        # every caller to manufacture a numeric timeout for unbounded tasks.
         timeout = message.context.get_task().timeout
-        time_cost = self.runner.timeout_elapsed_seconds() if timeout > 0 else 0
-        if message.topic != TopicType.CANCEL and timeout > 0 and time_cost > timeout:
+        bounded_timeout = (
+            isinstance(timeout, (int, float))
+            and not isinstance(timeout, bool)
+            and timeout > 0
+        )
+        time_cost = self.runner.timeout_elapsed_seconds() if bounded_timeout else 0
+        if message.topic != TopicType.CANCEL and bounded_timeout and time_cost > timeout:
             logger.warn(
                 f"[{self.name()}] {message.context.get_task().id} task timeout after {time_cost} seconds.")
             yield CancelMessage(

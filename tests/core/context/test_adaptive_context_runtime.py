@@ -99,6 +99,8 @@ def test_semantic_progress_detects_repetition_and_low_information_gain():
     state = semantic_progress_for_agent(context, agent_id="agent")
     assert state["repetition_count"] == 3
     assert state["low_information_gain_count"] == 3
+    assert state["progress_guard_required"] is True
+    assert len(state["recent_operation_result_hashes"]) == 3
     assert state["goal_progress_observable"] is False
     assert state["no_goal_progress_count"] == 0
     acknowledge_semantic_checkpoint(context, agent_id="agent")
@@ -106,6 +108,178 @@ def test_semantic_progress_detects_repetition_and_low_information_gain():
     assert state["repetition_count"] == 0
     assert state["low_information_gain_count"] == 0
     assert state["no_goal_progress_count"] == 0
+    assert state["recent_operation_result_hashes"] == []
+    assert state["recent_result_hashes"] == []
+    assert state["progress_guard_required"] is False
+
+    state = record_semantic_tool_progress(
+        context,
+        tool_name="terminal",
+        agent_id="agent",
+        actions=[
+            ActionModel(
+                tool_name="terminal",
+                action_name="run_code",
+                tool_call_id="after-checkpoint",
+                params={"code": "cat status"},
+            )
+        ],
+        observation=observation,
+    )
+    assert state["repetition_count"] == 1
+    assert state["progress_guard_required"] is False
+
+
+def test_semantic_progress_detects_abab_operation_result_loop():
+    context = Context(task_id="semantic-progress-abab")
+
+    def record(label: str, call_id: str):
+        return record_semantic_tool_progress(
+            context,
+            tool_name="terminal",
+            agent_id="agent",
+            actions=[
+                ActionModel(
+                    tool_name="terminal",
+                    action_name="run_code",
+                    tool_call_id=call_id,
+                    params={
+                        "code": (
+                            "sed -n '214,330p' ars.R"
+                            if label == "a"
+                            else "sed -n '331,420p' ars.R"
+                        )
+                    },
+                )
+            ],
+            observation=Observation(
+                action_result=[
+                    ActionResult(content=f"stable-range-{label}", success=True)
+                ]
+            ),
+        )
+
+    for index, label in enumerate(("a", "b", "a", "b", "a"), start=1):
+        state = record(label, f"call-{index}")
+
+    assert state["repetition_count"] == 3
+    assert state["low_information_gain_count"] == 3
+    assert state["progress_guard_required"] is True
+    assert len(state["recent_operation_result_hashes"]) == 5
+    assert len(set(state["recent_operation_result_hashes"])) == 2
+    assert "sed -n" not in repr(state)
+    assert "stable-range" not in repr(state)
+
+
+def test_semantic_progress_artifact_advance_resets_recent_pair_window():
+    context = Context(task_id="semantic-progress-artifact-reset")
+    action = ActionModel(
+        tool_name="terminal",
+        action_name="run_code",
+        params={"code": "cat artifact"},
+    )
+    unchanged = Observation(
+        action_result=[ActionResult(content="same", success=True)]
+    )
+    for index in range(3):
+        state = record_semantic_tool_progress(
+            context,
+            tool_name="terminal",
+            agent_id="agent",
+            actions=[action.model_copy(update={"tool_call_id": f"read-{index}"})],
+            observation=unchanged,
+        )
+    assert state["progress_guard_required"] is True
+
+    advanced = record_semantic_tool_progress(
+        context,
+        tool_name="terminal",
+        agent_id="agent",
+        actions=[action.model_copy(update={"tool_call_id": "mutated"})],
+        observation=Observation(
+            action_result=[
+                ActionResult(
+                    content="same",
+                    success=True,
+                    metadata={
+                        "context_management": {
+                            "artifact_changed": True,
+                            "artifact_fingerprint_after": "artifact-v2",
+                        }
+                    },
+                )
+            ]
+        ),
+    )
+
+    assert advanced["artifact_advanced"] is True
+    assert advanced["progress_guard_reset"] is True
+    assert advanced["repetition_count"] == 1
+    assert advanced["low_information_gain_count"] == 1
+    assert len(advanced["recent_operation_result_hashes"]) == 1
+    assert advanced["progress_guard_required"] is False
+
+
+def test_semantic_progress_new_validation_evidence_resets_recent_pair_window():
+    context = Context(task_id="semantic-progress-validation-reset")
+    context.configure_completion_contract(
+        CompletionContract(
+            required_artifacts=(),
+            immutable_inputs=(),
+            validation_commands=(),
+            max_evidence_age_seconds=None,
+            required_final_evidence=(),
+            required_self_check_ids=("focused-check",),
+        ),
+        mode=CompletionMode.ENFORCE,
+    )
+    observed_at = datetime.now(timezone.utc)
+    context.record_completion_self_check(
+        SelfCheckEvidence(
+            command_id="focused-check",
+            exit_code=1,
+            output_hash="sha256:failed",
+            observed_at=observed_at,
+        )
+    )
+    action = ActionModel(
+        tool_name="terminal",
+        action_name="run_code",
+        params={"code": "verify artifact"},
+    )
+    observation = Observation(
+        action_result=[ActionResult(content="unchanged", success=True)]
+    )
+    for index in range(3):
+        state = record_semantic_tool_progress(
+            context,
+            tool_name="terminal",
+            agent_id="agent",
+            actions=[action.model_copy(update={"tool_call_id": f"verify-{index}"})],
+            observation=observation,
+        )
+    assert state["progress_guard_required"] is True
+
+    context.record_completion_self_check(
+        SelfCheckEvidence(
+            command_id="focused-check",
+            exit_code=0,
+            output_hash="sha256:passed",
+            observed_at=observed_at,
+        )
+    )
+    advanced = record_semantic_tool_progress(
+        context,
+        tool_name="terminal",
+        agent_id="agent",
+        actions=[action.model_copy(update={"tool_call_id": "verify-new"})],
+        observation=observation,
+    )
+
+    assert advanced["validation_evidence_advanced"] is True
+    assert advanced["progress_guard_reset"] is True
+    assert advanced["repetition_count"] == 1
+    assert advanced["progress_guard_required"] is False
 
 
 def test_semantic_progress_fans_in_across_context_transport_copies():
@@ -196,7 +370,7 @@ def test_semantic_progress_records_bounded_work_state_for_checkpoint_resume():
     assert "inspect --current-state" in continuation
     assert "verified-current-state" in continuation
     assert "must-not-enter-context" not in continuation
-    assert "<redacted>" in continuation
+    assert "\\u003credacted\\u003e" in continuation
 
 
 def test_work_state_preserves_only_typed_retrievable_artifact_refs():

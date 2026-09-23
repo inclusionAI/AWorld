@@ -1,8 +1,9 @@
 import re
+import uuid
 from datetime import datetime, timezone
 
 
-DEFAULT_MAX_TURNS = 5
+DEFAULT_MAX_TURNS = None
 MAX_SUMMARY_LENGTH = 160
 ELLIPSIS = "..."
 VISIBLE_GOAL_STATUSES = {"active", "paused", "budget_limited", "complete"}
@@ -20,6 +21,14 @@ def _coerce_positive_int(value, default=None):
     return parsed if parsed > 0 else default
 
 
+def _max_turns(value):
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+        raise ValueError("max_turns must be a positive integer or None")
+    return value
+
+
 def summarize_text(text: str | None, limit: int = MAX_SUMMARY_LENGTH) -> str | None:
     if text is None:
         return None
@@ -33,6 +42,13 @@ def goal_status(state: dict | None) -> str:
     if not isinstance(state, dict):
         return "none"
     raw_status = str(state.get("status") or "").strip().lower()
+    if raw_status == "budget_limited" and (
+        state.get("max_turns") is None
+        or (_coerce_positive_int(state.get("turn_count"), 1) or 1) < _max_turns(state["max_turns"])
+    ):
+        # Older drafts persisted deadline/no-progress stops with this status.
+        # They remain resumable; only an actual attempt limit blocks resume.
+        return "paused"
     if raw_status in VISIBLE_GOAL_STATUSES:
         return raw_status
     if state.get("active"):
@@ -65,9 +81,10 @@ def new_goal_contract_state(
     return {
         "active": True,
         "status": "active",
+        "workspace_id": uuid.uuid4().hex,
         "objective": str(objective or "").strip(),
         "turn_count": 1,
-        "max_turns": _coerce_positive_int(max_turns, DEFAULT_MAX_TURNS),
+        "max_turns": _max_turns(max_turns),
         "verification_commands": commands,
         "completion_promise": (completion_promise or "").strip() or None,
         "completion_promise_satisfied": False,
@@ -87,7 +104,7 @@ def build_goal_context_prompt(state: dict) -> str:
     status = goal_status(state)
     objective = str(state.get("objective") or "").strip() or "(missing objective)"
     turn_count = _coerce_positive_int(state.get("turn_count"), 1) or 1
-    max_turns = _coerce_positive_int(state.get("max_turns"), DEFAULT_MAX_TURNS)
+    max_turns = _max_turns(state.get("max_turns"))
     commands = [str(item).strip() for item in (state.get("verification_commands") or []) if str(item).strip()]
     completion_promise = (state.get("completion_promise") or "").strip() or None
     last_task_status = str(state.get("last_task_status") or "").strip()
@@ -117,7 +134,7 @@ def build_goal_context_prompt(state: dict) -> str:
     else:
         lines.append("Completion promise: none")
         if status in {"active", "budget_limited"}:
-            lines.append("Keep iterating until the operator pauses, clears, or the goal budget is exhausted.")
+            lines.append("Keep iterating until the objective is verified complete, the operator pauses or clears it, or the optional maximum number of attempts is reached.")
 
     if last_task_status:
         lines.append(f"Last task status: {last_task_status}")
@@ -141,16 +158,22 @@ def build_goal_context_prompt(state: dict) -> str:
 
 
 def apply_turn_outcome(state: dict, event: dict) -> tuple[dict, bool]:
-    updated = dict(state)
+    updated = _persistable_state(state)
     current_turn = _coerce_positive_int(updated.get("turn_count"), 1) or 1
-    max_turns = _coerce_positive_int(updated.get("max_turns"), DEFAULT_MAX_TURNS)
+    max_turns = _max_turns(updated.get("max_turns"))
     final_answer = event.get("final_answer") or ""
     promise = (updated.get("completion_promise") or "").strip() or None
     satisfied_promise = promise is not None and _extract_completion_promise(final_answer) == promise
+    semantic_status = event.get("semantic_status")
+    if semantic_status != "succeeded":
+        satisfied_promise = False
 
     updated.update(
         {
-            "last_task_status": event.get("task_status") or "completed",
+            "last_task_status": semantic_status or event.get("task_status") or "completed",
+            "last_task_id": event.get("task_id"),
+            "last_task_epoch": event.get("task_epoch"),
+            "completion_reason": event.get("completion_reason"),
             "last_final_answer": final_answer,
             "last_final_answer_excerpt": summarize_text(final_answer),
             "last_error": "",
@@ -161,7 +184,7 @@ def apply_turn_outcome(state: dict, event: dict) -> tuple[dict, bool]:
         }
     )
 
-    if satisfied_promise:
+    if satisfied_promise or (promise is None and semantic_status == "succeeded"):
         updated.update({"active": False, "status": "complete"})
         return updated, False
 
@@ -174,7 +197,10 @@ def apply_turn_outcome(state: dict, event: dict) -> tuple[dict, bool]:
 
 
 def _persistable_state(payload: dict) -> dict:
-    return {key: value for key, value in payload.items() if key != "__plugin_state__"}
+    # Discard the time-bound contract from early goal-state drafts. The CLI
+    # only stops on completion, operator control, or an optional attempt limit.
+    return {key: value for key, value in payload.items()
+            if key not in {"__plugin_state__", "timeout_seconds", "deadline_epoch_seconds"}}
 
 
 def handle_event(event, state):
@@ -184,6 +210,12 @@ def handle_event(event, state):
     handle = state.get("__plugin_state__")
     if handle is None:
         return {"action": "allow"}
+
+    # A pause/clear may race with an in-flight task completion hook.
+    latest = handle.read()
+    if not is_goal_active(latest):
+        return {"action": "allow"}
+    state = latest
 
     updated_state, should_continue = apply_turn_outcome(state, event)
     handle.write(_persistable_state(updated_state))

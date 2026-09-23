@@ -2,11 +2,39 @@ from __future__ import annotations
 
 import os
 import json
+import re
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
 from aworld.config.conf import ModelConfig
+
+
+CONTEXT_WINDOW_ENV = "AWORLD_CONTEXT_WINDOW_TOKENS"
+CONTEXT_LIMIT_ENV = "AWORLD_CONTEXT_LIMIT_TOKENS"
+
+
+def _context_window_value(value, source: str) -> int | None:
+    if value is None or (isinstance(value, str) and not value.strip()):
+        return None
+    if isinstance(value, str):
+        if not re.fullmatch(r"[0-9]+", value.strip()):
+            raise ValueError(f"{source} must be a positive integer")
+        value = int(value.strip())
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        raise ValueError(f"{source} must be a positive integer")
+    return value
+
+
+def resolve_context_window_env() -> int | None:
+    """Optional explicit deployment window; unset/blank keeps adaptive lookup."""
+    return _context_window_value(os.environ.get(CONTEXT_WINDOW_ENV), CONTEXT_WINDOW_ENV)
+
+
+def resolve_context_compiler_env() -> dict[str, int]:
+    """Read an optional explicit compiler window without making defaults explicit."""
+    limit = _context_window_value(os.environ.get(CONTEXT_LIMIT_ENV), CONTEXT_LIMIT_ENV)
+    return {"context_limit": limit} if limit is not None else {}
 
 
 def resolve_model_profile(
@@ -116,6 +144,8 @@ def _profile_from_env() -> dict[str, Any] | None:
         "api_key": api_key,
         "base_url": os.environ.get("LLM_BASE_URL"),
         "temperature": os.environ.get("LLM_TEMPERATURE"),
+        "max_model_len": resolve_context_window_env(),
+        "context_compiler": resolve_context_compiler_env(),
     }
 
 
@@ -179,6 +209,12 @@ def _model_config_from_profile(profile: Mapping[str, Any]) -> ModelConfig | None
         kwargs["llm_temperature"] = float(temperature)
     if isinstance(params, Mapping):
         kwargs["params"] = dict(params)
+    window = _profile_value(profile, "max_model_len", "context_window", "context_window_tokens", CONTEXT_WINDOW_ENV)
+    if window is not None:
+        kwargs["max_model_len"] = _context_window_value(window, "model profile context window")
+    compiler = _profile_value(profile, "context_compiler")
+    if isinstance(compiler, Mapping):
+        kwargs["context_compiler"] = dict(compiler)
     return ModelConfig(**kwargs)
 
 

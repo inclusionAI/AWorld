@@ -6,10 +6,112 @@ from typing import Any, Dict, List, Optional
 
 from rich.console import Console
 
-try:
-    from aworld.models.utils import ModelUtils
-except ImportError:
-    ModelUtils = None
+from aworld.models.context_window import ContextWindowResolution, resolve_model_context_window
+
+
+def _record_context_window(record: Dict[str, Any]) -> Optional[ContextWindowResolution]:
+    rollout = record.get("context_rollout")
+    resolution = rollout.get("context_window_resolution") if isinstance(rollout, dict) else None
+    if not isinstance(resolution, dict):
+        return None
+    tokens = resolution.get("tokens")
+    source = resolution.get("source")
+    model_name = resolution.get("model_name")
+    matched_model = resolution.get("matched_model")
+    if (isinstance(tokens, bool) or not isinstance(tokens, int) or tokens <= 0
+            or not isinstance(source, str) or not source
+            or (model_name is not None and not isinstance(model_name, str))
+            or (matched_model is not None and not isinstance(matched_model, str))):
+        return None
+    return ContextWindowResolution(tokens, source, model_name, matched_model)
+
+
+def resolve_stream_context_window(
+    swarm: Any, *, model_name: Optional[str] = None,
+    agent_id: Optional[str] = None, agent_name: Optional[str] = None,
+    context: Any = None, task_id: Optional[str] = None,
+    request_id: Optional[str] = None, provider_request_id: Optional[str] = None,
+    output: Any = None,
+) -> ContextWindowResolution:
+    """Read the emitting request's capacity without initializing a model client.
+
+    Captured request evidence takes precedence over a live model's read-only
+    resolver. An ambiguous stream uses only the shared registry/fallback; a
+    collaborator's deployment declaration is never inferred from its model alias.
+    """
+    metadata = getattr(output, "metadata", None)
+    metadata = metadata if isinstance(metadata, dict) else {}
+    agent_id = metadata.get("agent_id") or agent_id
+    agent_name = metadata.get("agent_name") or agent_name
+    request_id = metadata.get("request_id") or metadata.get("llm_request_id") or request_id
+    provider_request_id = metadata.get("provider_request_id") or provider_request_id
+    task_id = getattr(output, "task_id", None) or task_id or getattr(context, "task_id", None)
+    for field in ("source", "data"):
+        response = getattr(output, field, None)
+        provider_request_id = provider_request_id or getattr(response, "provider_request_id", None)
+
+    registry = getattr(swarm, "agents", None)
+    candidates = []
+    if isinstance(registry, dict):
+        for key, agent in registry.items():
+            current_id = agent.id() if callable(getattr(agent, "id", None)) else key
+            current_name = agent.name() if callable(getattr(agent, "name", None)) else getattr(agent, "name", None)
+            if agent_id and agent_id not in (key, current_id):
+                continue
+            if not agent_id and (not agent_name or agent_name != current_name):
+                continue
+            candidates.append((agent, current_id))
+    selected_agent = candidates[0][0] if len(candidates) == 1 else None
+    record_agent_id = candidates[0][1] if len(candidates) == 1 else agent_id
+
+    get_calls = getattr(context, "get_llm_calls", None)
+    try:
+        calls = get_calls() if callable(get_calls) else []
+    except Exception:
+        calls = []
+    matched_call = None
+    for record in reversed(calls if isinstance(calls, (list, tuple)) else []):
+        if not isinstance(record, dict):
+            continue
+        if task_id is not None and record.get("task_id") != task_id:
+            continue
+        if record_agent_id and record.get("agent_id") != record_agent_id:
+            continue
+        if request_id:
+            if record.get("request_id") != request_id:
+                continue
+        elif provider_request_id:
+            if record.get("provider_request_id") != provider_request_id:
+                continue
+        elif not record_agent_id:
+            continue
+        matched_call = record
+        break
+    if matched_call is not None:
+        # Only the newest matching call can describe this event. An older
+        # successful capture must not substitute for a missing current capture.
+        resolution = _record_context_window(matched_call)
+        if resolution is not None:
+            return resolution
+        recorded_model = matched_call.get("model")
+        return resolve_model_context_window(recorded_model if isinstance(recorded_model, str) else None)
+    if request_id or provider_request_id:
+        # A named request that was not captured does not identify a different
+        # call merely because that call used the same agent/model.
+        return resolve_model_context_window(model_name)
+
+    # Accessing agent.llm would lazily construct an SDK client for display.
+    model = getattr(selected_agent, "_llm", None)
+    resolver = getattr(model, "resolve_context_window", None)
+    if callable(resolver):
+        try:
+            resolution = resolver()
+        except Exception:
+            resolution = None
+        if isinstance(resolution, ContextWindowResolution):
+            if model_name in (None, "unknown", resolution.model_name):
+                return resolution
+    return resolve_model_context_window(model_name)
 
 
 def _merge_usage_dicts(accumulator: Dict[str, Any], usage: Dict[str, Any]) -> Dict[str, Any]:
@@ -328,6 +430,8 @@ class StreamTokenStats:
         tool_calls: Optional[List[Any]] = None,
         content: Optional[str] = None,
         model_name: Optional[str] = None,
+        context_window: Optional[int] = None,
+        context_window_source: Optional[str] = None,
     ) -> None:
         """Update stats for the current agent. Clears previous agent's data."""
         key = agent_id or "default"
@@ -339,6 +443,8 @@ class StreamTokenStats:
             "tool_calls_content_length": tool_calls_content_length,
             "agent_name": agent_name or key,
             "model_name": model_name,
+            "context_window": context_window,
+            "context_window_source": context_window_source,
             "output_estimated": output_estimated,
             "input_estimated": input_estimated,
             "tool_calls_estimated": tool_calls_estimated,
@@ -397,6 +503,13 @@ class StreamTokenStats:
             return inp + out_val
         return None
 
+    @staticmethod
+    def _context_window(stats: Dict[str, Any]) -> int:
+        explicit = stats.get("context_window")
+        if isinstance(explicit, int) and not isinstance(explicit, bool) and explicit > 0:
+            return explicit
+        return resolve_model_context_window(stats.get("model_name")).tokens
+
     def to_hud_usage(self) -> Dict[str, Any]:
         """Export current stats as a HUD-friendly usage snapshot."""
         stats = self.get_current_stats() or self._last_for_history
@@ -408,12 +521,7 @@ class StreamTokenStats:
         total_tokens = self._compute_total_tokens(stats) or (input_tokens + output_tokens)
         model_name = stats.get("model_name")
 
-        context_max = 0
-        if model_name and ModelUtils:
-            try:
-                context_max = ModelUtils.get_context_window(model_name)
-            except Exception:
-                context_max = 0
+        context_max = self._context_window(stats)
 
         context_percent = int((total_tokens / context_max) * 100) if context_max else None
         return {
@@ -422,6 +530,9 @@ class StreamTokenStats:
             "total_tokens": total_tokens,
             "context_used": total_tokens,
             "context_max": context_max or None,
+            "context_window_source": stats.get("context_window_source") or (
+                "explicit_stream_window" if stats.get("context_window") else resolve_model_context_window(model_name).source
+            ),
             "context_percent": context_percent,
             "model": model_name,
             "tool_calls_count": stats.get("tool_calls_count", 0),
@@ -451,8 +562,8 @@ class StreamTokenStats:
 
         # Add context usage visualization
         total_tokens = self._compute_total_tokens(stats)
-        if total_tokens is not None and model_name and ModelUtils:
-            max_tokens = ModelUtils.get_context_window(model_name)
+        if total_tokens is not None:
+            max_tokens = self._context_window(stats)
             if max_tokens > 0:
                 # Show visual progress bar
                 context_bar = format_context_bar(total_tokens, max_tokens, bar_width=10)
@@ -460,10 +571,6 @@ class StreamTokenStats:
             else:
                 # Fallback to token count
                 parts.append(f"[dim]~{format_tokens(total_tokens)} tokens[/dim]")
-        elif total_tokens is not None:
-            # No model info, just show token count
-            parts.append(f"[dim]~{format_tokens(total_tokens)} tokens[/dim]")
-
         parts.append(f"[dim]{elapsed_str}[/dim]")
         parts.append(f"[dim]{format_timestamp()}[/dim]")
         return "  ".join(parts)
@@ -493,8 +600,8 @@ class StreamTokenStats:
 
                 # Add context usage visualization
                 total_tokens = self._compute_total_tokens(stats)
-                if total_tokens is not None and model_name and ModelUtils:
-                    max_tokens = ModelUtils.get_context_window(model_name)
+                if total_tokens is not None:
+                    max_tokens = self._context_window(stats)
                     if max_tokens > 0:
                         # Show visual progress bar
                         context_bar = format_context_bar(total_tokens, max_tokens, bar_width=10)

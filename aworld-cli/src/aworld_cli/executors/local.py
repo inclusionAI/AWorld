@@ -8,6 +8,8 @@ import time
 import re
 import shutil
 import traceback
+import uuid
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from time import monotonic
@@ -44,6 +46,7 @@ from .stats import (
     build_complete_llm_usage_summary,
     build_llm_usage_observability,
     format_elapsed,
+    resolve_stream_context_window,
 )
 from .stream import (
     ActiveSteeringCommitBuffer,
@@ -72,6 +75,12 @@ class _PauseForQueuedSteeringCheckpoint(Exception):
     """Internal control-flow signal for yielding to queued steering at a safe checkpoint."""
 
     pass
+
+
+@dataclass(frozen=True)
+class _GoalContinuation:
+    prompt: str
+    context: Any = None
 
 
 class LocalAgentExecutor(BaseAgentExecutor):
@@ -909,7 +918,7 @@ class LocalAgentExecutor(BaseAgentExecutor):
             session_id = self.session_id
         
         if not task_id:
-            task_id = f"task_{datetime.now().strftime('%Y%m%d%H%M%S')}"
+            task_id = f"task_{datetime.now().strftime('%Y%m%d%H%M%S')}_{uuid.uuid4().hex[:8]}"
         
         # 🔥 Hook: PRE_INPUT_PARSE
         original_task_content = task_content if origin_user_input is None else origin_user_input
@@ -1028,15 +1037,36 @@ class LocalAgentExecutor(BaseAgentExecutor):
         task_input = hook_kwargs.get('task_input', task_input)
         image_urls = hook_kwargs.get('image_urls', image_urls) or []
 
-        # Direct benchmark callers may opt in to a high-confidence filesystem
-        # completion contract.  This validates declared outputs without changing
-        # the actual CLI/sandbox working directory. Run this after input hooks so
-        # a caller-installed contract always takes precedence.
+        # Bind native filesystem authority before preparing originals. Goal
+        # segments share a durable identity; ordinary requests never do.
+        goal_state = self._goal_session_state()
+        workspace_request = str(original_task_content or "")
+        if goal_state.get("active"):
+            workspace_request = str(goal_state.get("objective") or workspace_request)
+        root_agent = getattr(self.swarm, "communicate_agent", None)
+        if isinstance(root_agent, list):
+            root_agent = root_agent[0] if len(root_agent) == 1 else None
+        install_contract = getattr(root_agent, "_install_runtime_completion_contract", None)
+        if callable(install_contract):
+            install_contract(context)
+        local_path = getattr(root_agent, "_task_workspace_local_path", None)
+        if os.path.realpath(context.workspace_path) == local_path:
+            from aworld.core.task_workspace.session import bind_task_workspace, goal_workspace_identity
+            scope = {"session_id": str(session_id), "task_id": str(task_id)}
+            if goal_state.get("active"):
+                scope = {"session_id": str(session_id), "goal_id": goal_workspace_identity(goal_state)}
+            bind_task_workspace(context, context.workspace_path, scope)
         configure_runtime_completion(
-            context,
-            request=str(original_task_content or ""),
+            context, request=workspace_request,
             workspace_path=context.workspace_path,
         )
+        goal_commands = goal_state.get("verification_commands")
+        if goal_state.get("active") and goal_commands:
+            from aworld_cli.core.runtime_completion import configure_goal_completion
+            configure_goal_completion(
+                context, verification_commands=goal_commands,
+                workspace_path=context.workspace_path,
+            )
 
         # 5. Build observation with images if provided
         # Use task_input.task_content (which may have been updated by FileParseHook) instead of old task_content
@@ -1074,7 +1104,6 @@ class LocalAgentExecutor(BaseAgentExecutor):
                 stream=False,
                 exit_on_failure=True
             ),
-            timeout=60 * 60,
             observation=observation
         )
         # Bind the resolver output to the concrete task.  The signed replay
@@ -1099,6 +1128,63 @@ class LocalAgentExecutor(BaseAgentExecutor):
         message: Union[str, tuple[str, List[str]]],
         requested_skill_names: Optional[List[str]] = None,
     ) -> str:
+        """Run until completion, user stop, or an optional goal attempt limit."""
+        previous_context = None
+        self._active_chat_task = asyncio.current_task()
+        try:
+            while True:
+                result = await self._chat_turn(
+                    message, requested_skill_names=requested_skill_names,
+                    _previous_goal_context=previous_context,
+                )
+                if not isinstance(result, _GoalContinuation):
+                    return result
+                message = result.prompt
+                previous_context = result.context
+                # Give cancellation/queued controls a scheduling point between turns.
+                await asyncio.sleep(0)
+        except asyncio.CancelledError:
+            await self._run_plugin_task_hook("task_interrupted", {
+                "session_id": self.session_id, "task_status": "interrupted",
+                "partial_answer": "",
+            })
+            raise
+        finally:
+            self._active_goal_task = None
+            self._active_chat_task = None
+
+    def _goal_session_state(self) -> dict:
+        runtime = getattr(self, "_base_runtime", None)
+        if runtime is None or not hasattr(runtime, "build_plugin_hook_state"):
+            return {}
+        return runtime.build_plugin_hook_state("goal-session", "session", self)
+
+    def _goal_agent_ids(self) -> dict[str, str]:
+        """Stable configured names bridge UUID agent IDs after process restart.
+
+        Ambiguous names are deliberately excluded, never guessed.
+        """
+        groups = {}
+        for agent in (getattr(self.swarm, "agents", None) or {}).values():
+            name = agent.name() if callable(agent.name) else agent.name
+            groups.setdefault(name, []).append(agent.id())
+        return {name: ids[0] for name, ids in groups.items() if len(ids) == 1}
+
+    def request_goal_pause(self) -> None:
+        task = getattr(self, "_active_goal_task", None)
+        if task is not None:
+            task.request_pause()
+        chat = getattr(self, "_active_chat_task", None)
+        if chat is not None and not chat.done():
+            chat.cancel()
+
+    async def _chat_turn(
+        self,
+        message: Union[str, tuple[str, List[str]]],
+        requested_skill_names: Optional[List[str]] = None,
+        *,
+        _previous_goal_context: Any = None,
+    ) -> str | _GoalContinuation:
             """
             Execute chat with local agent using Task/Runners pattern.
             
@@ -1140,6 +1226,18 @@ class LocalAgentExecutor(BaseAgentExecutor):
                 image_urls=image_urls,
                 requested_skill_names=requested_skill_names,
             )
+            if _previous_goal_context is not None:
+                from aworld.core.context.work_progress import carry_goal_work_state
+                carry_goal_work_state(_previous_goal_context, task.context)
+            resume_scope = getattr(self, "_resume_goal_work_scope_once", None)
+            if resume_scope is not None:
+                from aworld.core.context.work_progress import resume_goal_work_state
+                old_ids = getattr(self, "_resume_goal_agent_ids_once", {})
+                new_ids = self._goal_agent_ids()
+                mapping = {old_id: new_ids[name] for name, old_id in old_ids.items() if name in new_ids}
+                resume_goal_work_state(task.context, **resume_scope, agent_id_mapping=mapping)
+                self._resume_goal_work_scope_once = None
+                self._resume_goal_agent_ids_once = None
             task_skill_activation_evidence = tuple(
                 getattr(
                     task,
@@ -1189,6 +1287,15 @@ class LocalAgentExecutor(BaseAgentExecutor):
             hook_result = await self._execute_hooks(ExecutorHookPoint.PRE_RUN_TASK, **hook_kwargs)
             # Get updated task from kwargs
             task = hook_kwargs.get('task', task)
+            if isinstance(task, Task):
+                state = self._goal_session_state()
+                if state.get("active") and state.get("__plugin_state__") is not None:
+                    state["__plugin_state__"].update({
+                        "last_task_id": task.id,
+                        "last_task_epoch": getattr(task.context, "task_epoch", None),
+                        "agent_ids_by_name": self._goal_agent_ids(),
+                    })
+                self._active_goal_task = task
 
             # 4. Run task with streaming
             try:
@@ -1415,6 +1522,10 @@ class LocalAgentExecutor(BaseAgentExecutor):
                                             # Update stream_token_stats if we have any token data
                                             if input_tokens is not None or output_tokens is not None:
                                                 logger.info(f"📊 Updating token stats - agent: {current_agent_name}, model: {model_name}, input: {input_tokens}, output: {output_tokens}, tool_calls: {tool_calls_count}")
+                                                context_window = resolve_stream_context_window(
+                                                    self.swarm, model_name=model_name, agent_name=current_agent_name,
+                                                    context=task.context, task_id=task.id, output=output,
+                                                )
                                                 stream_token_stats.update(
                                                     agent_id=None,
                                                     agent_name=current_agent_name,
@@ -1424,7 +1535,9 @@ class LocalAgentExecutor(BaseAgentExecutor):
                                                     output_estimated=(output_tokens is not None and usage is None),
                                                     input_estimated=(input_tokens is not None and usage is None),
                                                     tool_calls_estimated=False,
-                                                    model_name=model_name,
+                                                    model_name=context_window.model_name,
+                                                    context_window=context_window.tokens,
+                                                    context_window_source=context_window.source,
                                                 )
                                                 logger.info(f"📊 Token stats successfully updated - current stats: {stream_token_stats.get_current_stats()}")
                                                 self._publish_hud_stream_update(
@@ -1695,6 +1808,11 @@ class LocalAgentExecutor(BaseAgentExecutor):
                                     # 🔧 FIX: Update token stats and log the update
                                     if out_tok is not None or inp_tok is not None or tc_count is not None:
                                         logger.debug(f"📊 Updating token stats - agent: {agent_name}, model: {model_name}, input: {inp_tok}, output: {out_tok}, tool_calls: {tc_count}")
+                                        context_window = resolve_stream_context_window(
+                                            self.swarm, model_name=model_name,
+                                            agent_id=agent_id, agent_name=agent_name,
+                                            context=task.context, task_id=task.id, output=output,
+                                        )
                                         stream_token_stats.update(
                                             agent_id, agent_name,
                                             out_tok if out_tok is not None else 0,
@@ -1707,7 +1825,9 @@ class LocalAgentExecutor(BaseAgentExecutor):
                                             tool_calls_content_estimated=tc_content_est,
                                             tool_calls=ctrl.buffer.accumulated_tool_calls if ctrl.buffer.accumulated_tool_calls else None,
                                             content=ctrl.buffer.accumulated_content if ctrl.buffer.accumulated_content else None,
-                                            model_name=model_name,
+                                            model_name=context_window.model_name,
+                                            context_window=context_window.tokens,
+                                            context_window_source=context_window.source,
                                         )
                                         logger.debug(f"📊 Token stats updated successfully - current stats: {stream_token_stats.get_current_stats()}")
                                         current_tool_name = None
@@ -1794,7 +1914,13 @@ class LocalAgentExecutor(BaseAgentExecutor):
                         logger.info(f"📊 consume_stream interrupted - token stats: {stream_token_stats.get_current_stats() if stream_token_stats else None}")
                         raise  # Re-raise so caller can handle (e.g. continue to next prompt)
                     except Exception as e:
-                        logger.error(f"📊 consume_stream error - token stats: {stream_token_stats.get_current_stats() if stream_token_stats else None}")
+                        logger.error(
+                            "📊 consume_stream error - error_type=%s token_stats=%s",
+                            type(e).__name__,
+                            stream_token_stats.get_current_stats()
+                            if stream_token_stats
+                            else None,
+                        )
                         if self.console and not active_event_mode:
                             error_body = Text("Error in stream consumption: ")
                             error_body.append(str(e))
@@ -1896,7 +2022,10 @@ class LocalAgentExecutor(BaseAgentExecutor):
                 if hasattr(outputs, '_run_impl_task') and outputs._run_impl_task and not outputs.is_complete:
                     try:
                         # Wait with timeout to avoid hanging
-                        final_result = await asyncio.wait_for(outputs._run_impl_task, timeout=1.0)
+                        # A completed stream can precede durable finalization.
+                        # Waiting one second used to cancel that producer and
+                        # incorrectly promote a partial streamed answer.
+                        final_result = await outputs._run_impl_task
                         if self.console:
                             self.console.print(f"[dim]📋 Final result received: {type(final_result)}[/dim]")
                         
@@ -2040,6 +2169,10 @@ class LocalAgentExecutor(BaseAgentExecutor):
                         "task_id": task.id,
                         "session_id": self.session_id,
                         "task_status": "idle",
+                        "semantic_status": getattr(final_task_response, "semantic_status", None),
+                        "completion_reason": getattr(final_task_response, "completion_reason", None),
+                        "recoverable": getattr(final_task_response, "recoverable", None),
+                        "task_epoch": getattr(task.context, "task_epoch", None),
                         "final_answer": answer,
                         "usage": final_usage,
                         "llm_calls": final_llm_calls,
@@ -2071,9 +2204,9 @@ class LocalAgentExecutor(BaseAgentExecutor):
                         getattr(result, "follow_up_prompt", None) or getattr(result, "updated_input", None)
                     )
                     if follow_up_prompt:
-                        return await self.chat(
+                        return _GoalContinuation(
                             follow_up_prompt,
-                            requested_skill_names=requested_skill_names,
+                            task.context if isinstance(task, Task) else None,
                         )
                 self.last_skill_activation_evidence = (
                     task_skill_activation_evidence
@@ -2093,11 +2226,18 @@ class LocalAgentExecutor(BaseAgentExecutor):
                     # Don't let hook errors mask the original error
                     if self.console:
                         self.console.print(f"[yellow]⚠️ Hook error: {hook_err}[/yellow]")
-                await self._run_plugin_task_hook(
+                self.last_task_response = TaskResponse(
+                    success=False, answer="", status="failed",
+                    failure_origin="infrastructure", failure_code="execution_error",
+                    semantic_status="incomplete", completion_reason=type(err).__name__,
+                    recoverable=True,
+                )
+                task_error_results = await self._run_plugin_task_hook(
                     "task_error",
                     {
                         "task_id": getattr(task, 'id', None) if 'task' in locals() else None,
                         "session_id": self.session_id,
+                        "task_epoch": getattr(getattr(task, "context", None), "task_epoch", None),
                         "task_status": "error",
                         "error": str(err),
                         "error_type": type(err).__name__,
@@ -2112,6 +2252,11 @@ class LocalAgentExecutor(BaseAgentExecutor):
                     self.console.print("[red]❌ [/red]", end=" ")
                     self.console.print(error_msg, markup=False)
                 self._publish_hud_task_finished(task.id, task_status="error")
+                for _, result in task_error_results:
+                    if getattr(result, "action", None) == "block_and_continue":
+                        prompt = self._resolve_hook_text(getattr(result, "follow_up_prompt", None))
+                        if prompt:
+                            return _GoalContinuation(prompt, task.context)
                 raise
     
     # Note: _format_tool_call, _format_tool_calls, _render_message_output,
