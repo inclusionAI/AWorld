@@ -108,6 +108,34 @@ class DefaultTaskHandler(TaskHandler):
                 origin = TaskFailureOrigin.INFRASTRUCTURE.value
             code = failure.get("code")
             error_type = failure.get("error_type")
+            failure_code = code if isinstance(code, str) else "runtime_exception"
+            task_owned = origin == TaskFailureOrigin.TASK.value
+            response_status = (
+                TaskStatusValue.INCOMPLETE if task_owned else TaskStatusValue.FAILED
+            )
+            recoverable = task_owned or failure_code in {
+                "provider_timeout",
+                "idle_timeout",
+                "call_deadline_exceeded",
+                "action_repair_timeout",
+            }
+            logger.warning(
+                "AWORLD_TASK_RESPONSE_FAILURE="
+                + json.dumps(
+                    {
+                        "schema_version": "aworld.task.response-failure.v1",
+                        "task_id": self.runner.task.id,
+                        "task_status": response_status,
+                        "semantic_status": "incomplete",
+                        "failure_origin": origin,
+                        "failure_code": failure_code,
+                        "error_type": error_type if isinstance(error_type, str) else None,
+                        "recoverable": recoverable,
+                    },
+                    ensure_ascii=False,
+                    sort_keys=True,
+                )
+            )
             self.runner._task_response = TaskResponse(msg=task_item.msg,
                                                       answer=self._build_user_safe_error_answer(task_item.msg),
                                                       context=message.context,
@@ -115,13 +143,13 @@ class DefaultTaskHandler(TaskHandler):
                                                       id=self.runner.task.id,
                                                       time_cost=(time.time() - self.runner.start_time),
                                                       usage=self.runner.context.token_usage,
-                                                      status=TaskStatusValue.FAILED,
+                                                      status=response_status,
                                                       failure_origin=origin,
-                                                      failure_code=code if isinstance(code, str) else "runtime_exception",
+                                                      failure_code=failure_code,
                                                       error_type=error_type if isinstance(error_type, str) else None,
                                                       semantic_status="incomplete",
-                                                      completion_reason=code if isinstance(code, str) else "runtime_exception",
-                                                      recoverable=code in {"provider_timeout", "idle_timeout", "call_deadline_exceeded", "action_repair_timeout"})
+                                                      completion_reason=failure_code,
+                                                      recoverable=recoverable)
             await self.runner.stop()
             yield Message(payload=self.runner._task_response,
                           session_id=message.session_id,

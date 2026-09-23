@@ -2,6 +2,7 @@
 Continuous execution executor for running agents in a loop.
 """
 import asyncio
+import json
 import re
 import sys
 from datetime import datetime, timedelta
@@ -267,6 +268,11 @@ class ContinuousExecutor:
         """
 
         session_id = getattr(self.agent_executor, 'session_id', 'unknown')
+        previous_task_response = getattr(
+            self.agent_executor,
+            "last_task_response",
+            None,
+        )
         if show_iteration_header:
             self.console.print(f"\n[bold cyan]🔄({iteration}) Starting iteration  session: {session_id}[/bold cyan]")
         
@@ -516,20 +522,72 @@ class ContinuousExecutor:
             
         except Exception as e:
             self.console.print(f"[red]❌ ({iteration}) Error: {e}[/red]")
+            task_response = getattr(self.agent_executor, "last_task_response", None)
+            fresh_task_response = (
+                task_response is not None
+                and task_response is not previous_task_response
+            )
+            response_failure_origin = (
+                getattr(task_response, "failure_origin", None)
+                if fresh_task_response
+                else None
+            )
+            failure_origin = (
+                response_failure_origin
+                if response_failure_origin in {"task", "infrastructure", "cancelled"}
+                else ("task" if fresh_task_response else "infrastructure")
+            )
+            failure_code = (
+                getattr(task_response, "failure_code", None)
+                if fresh_task_response
+                else None
+            ) or ("runtime_exception" if fresh_task_response else "executor_exception")
+            error_type = (
+                getattr(task_response, "error_type", None)
+                if fresh_task_response
+                else None
+            ) or type(e).__name__
+            diagnostic = {
+                "schema_version": "aworld.executor.exception.v1",
+                "iteration": iteration,
+                "fresh_task_response": fresh_task_response,
+                "failure_origin": failure_origin,
+                "failure_code": failure_code,
+                "error_type": error_type,
+                "task_status": (
+                    getattr(task_response, "status", None)
+                    if fresh_task_response
+                    else None
+                ),
+                "semantic_status": (
+                    getattr(task_response, "semantic_status", None)
+                    if fresh_task_response
+                    else None
+                ),
+            }
+            print(
+                "AWORLD_EXECUTOR_EXCEPTION="
+                + json.dumps(diagnostic, ensure_ascii=False, sort_keys=True),
+                file=sys.stderr,
+            )
             result = {
                 "iteration": iteration,
-                "response": str(e),
+                "response": (
+                    getattr(task_response, "answer", None)
+                    if fresh_task_response
+                    else str(e)
+                ) or "Task ended before a final answer was produced.",
                 "cost": 0.0,
                 "completed": False,
                 "success": False,
-                "failure_origin": "infrastructure",
-                "failure_code": "executor_exception",
-                "error_type": type(e).__name__,
+                "failure_origin": failure_origin,
+                "failure_code": failure_code,
+                "error_type": error_type,
             }
             return self._attach_task_response_evidence(
                 result,
-                getattr(self.agent_executor, "last_task_response", None),
-                include_control_plane=False,
+                task_response,
+                include_control_plane=fresh_task_response,
             )
     
     async def run_continuous(

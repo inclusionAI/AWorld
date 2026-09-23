@@ -1507,7 +1507,24 @@ def _emit_direct_run_agent_termination(
         "llm_call_count": metrics.llm_call_count,
         "tool_call_count": metrics.tool_call_count,
         "action_count": metrics.action_count,
+        "last_successful_checkpoint": metrics.last_successful_checkpoint,
     }
+    failed_results = [
+        result
+        for result in (summary or {}).get("results", [])
+        if isinstance(result, dict) and not bool(result.get("success"))
+    ]
+    if failed_results:
+        terminal = failed_results[-1]
+        for source_key, target_key in (
+            ("failure_origin", "failure_origin"),
+            ("failure_code", "failure_code"),
+            ("error_type", "error_type"),
+            ("semantic_status", "semantic_status"),
+        ):
+            value = terminal.get(source_key)
+            if isinstance(value, str) and _CONTROL_DETAIL_IDENTIFIER.fullmatch(value):
+                payload[target_key] = value
     print(
         "AWORLD_AGENT_TERMINATION="
         + json.dumps(payload, ensure_ascii=False, sort_keys=True),

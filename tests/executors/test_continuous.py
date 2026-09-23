@@ -281,6 +281,48 @@ async def test_run_iteration_executor_exception_keeps_fresh_infrastructure_origi
 
 
 @pytest.mark.asyncio
+async def test_run_iteration_preserves_fresh_task_response_after_outer_exception() -> None:
+    task_response = SimpleNamespace(
+        success=False,
+        status="incomplete",
+        semantic_status="incomplete",
+        recoverable=True,
+        failure_origin="task",
+        failure_code="runtime_exception",
+        error_type="RuntimeError",
+        completion_reason="runtime_exception",
+        answer="partial agent answer",
+        trajectory=[{"role": "assistant", "content": "partial"}],
+        llm_calls=[{"request_id": "call-1"}],
+        trajectory_build_result=None,
+        trajectory_delivery_receipt=None,
+    )
+
+    class RaisingExecutor:
+        last_task_response = None
+        last_task_interrupted = False
+
+        async def chat(self, *_args, **_kwargs):
+            self.last_task_response = task_response
+            raise RuntimeError("framework cleanup failed")
+
+    continuous = ContinuousExecutor(
+        RaisingExecutor(),
+        console=Console(file=StringIO(), force_terminal=False),
+    )
+    result = await continuous.run_iteration(1, "hello", agent_name="Aworld")
+
+    assert result["response"] == "partial agent answer"
+    assert result["failure_origin"] == "task"
+    assert result["failure_code"] == "runtime_exception"
+    assert result["task_status"] == "incomplete"
+    assert result["semantic_status"] == "incomplete"
+    assert result["recoverable"] is True
+    assert result["trajectory"] == [{"role": "assistant", "content": "partial"}]
+    assert result["llm_calls"] == [{"request_id": "call-1"}]
+
+
+@pytest.mark.asyncio
 async def test_run_continuous_stops_on_terminal_task_response_at_any_iteration() -> None:
     class FakeExecutor:
         session_id = "sess-terminal"

@@ -196,6 +196,45 @@ async def test_typed_runtime_failure_survives_filtered_message_headers():
 
 
 @pytest.mark.asyncio
+async def test_unknown_runtime_failure_after_execution_is_returned_to_verifier():
+    runner, context = _runner()
+    runner._execution_started = True
+    emitted = []
+
+    class _Events:
+        async def emit_message(self, event):
+            emitted.append(event)
+
+    runner.event_mng = _Events()
+
+    async def failing_handler(_message):
+        raise RuntimeError("agent exploration failed")
+
+    await runner._handle_task(
+        Message(headers={"context": context}),
+        failing_handler,
+    )
+
+    error_event = emitted[0]
+    assert error_event.headers["task_failure"] == {
+        "origin": "task",
+        "code": "runtime_exception",
+        "error_type": "RuntimeError",
+    }
+    runner.should_stop_task = lambda _message: _async_result(False)
+    runner.stop = lambda: _async_result(None)
+    response_events = [
+        event async for event in DefaultTaskHandler(runner).handle(error_event)
+    ]
+    response = response_events[-1].payload
+
+    assert response.status == "incomplete"
+    assert response.semantic_status == "incomplete"
+    assert response.failure_origin == "task"
+    assert response.recoverable is True
+
+
+@pytest.mark.asyncio
 async def test_finalize_waits_for_high_watermark_before_storage_snapshot(monkeypatch):
     runner, context = _runner()
     registry = context.trajectory_update_registry

@@ -70,14 +70,19 @@ _AGENT_GENERATION_FAILURES = {
 }
 
 
-def classify_task_exception(exc: BaseException) -> dict[str, str]:
+def classify_task_exception(
+    exc: BaseException,
+    *,
+    execution_started: bool = False,
+) -> dict[str, str]:
     """Project an execution exception onto a privacy-safe failure plane.
 
     Active Tool-free generation and an exhausted bounded repair are agent/task
     outcomes: the provider was live, but the agent failed to produce a usable
-    action. Provider liveness, global deadlines, missing required schemas, and
-    all unknown exceptions are infrastructure failures. Caller cancellation is
-    kept distinct from both.
+    action. Provider liveness, global deadlines, and missing required schemas
+    are infrastructure failures. An unknown exception fails closed before
+    execution starts, but becomes a scoreable task outcome once agent execution
+    has begun. Caller cancellation is kept distinct from both.
     """
 
     current: BaseException | None = exc
@@ -115,10 +120,38 @@ def classify_task_exception(exc: BaseException) -> dict[str, str]:
             "error_type": error_type,
         }
     return {
-        "origin": TaskFailureOrigin.INFRASTRUCTURE.value,
+        "origin": (
+            TaskFailureOrigin.TASK.value
+            if execution_started
+            else TaskFailureOrigin.INFRASTRUCTURE.value
+        ),
         "code": "runtime_exception",
         "error_type": error_type,
     }
+
+
+def _task_exception_diagnostic(
+    *,
+    task_id: str,
+    stage: str,
+    failure: Mapping[str, object],
+    execution_started: bool,
+    handler: str | None = None,
+) -> dict[str, object]:
+    """Build a content-free diagnostic record for terminal exception routing."""
+
+    diagnostic: dict[str, object] = {
+        "schema_version": "aworld.task.exception.v1",
+        "task_id": task_id,
+        "stage": stage,
+        "execution_started": execution_started,
+        "failure_origin": failure.get("origin"),
+        "failure_code": failure.get("code"),
+        "error_type": failure.get("error_type"),
+    }
+    if handler:
+        diagnostic["handler"] = handler
+    return diagnostic
 
 
 class TaskEventRunner(TaskRunner):
@@ -898,7 +931,25 @@ class TaskEventRunner(TaskRunner):
                                                                   message=message)
             except Exception as e:
                 logger.warning(f"{handler} process fail. {traceback.format_exc()}")
-                failure = classify_task_exception(e)
+                failure = classify_task_exception(
+                    e,
+                    execution_started=self._execution_started,
+                )
+                handler_name = getattr(handler, "__name__", type(handler).__name__)
+                logger.error(
+                    "AWORLD_TASK_EXCEPTION="
+                    + json.dumps(
+                        _task_exception_diagnostic(
+                            task_id=self.task.id,
+                            stage="handler_process",
+                            handler=handler_name,
+                            failure=failure,
+                            execution_started=self._execution_started,
+                        ),
+                        ensure_ascii=False,
+                        sort_keys=True,
+                    )
+                )
                 error_msg = Message(
                     category=Constants.TASK,
                     payload=TaskItem(msg=str(e), data=message, failure=failure),
@@ -1074,7 +1125,23 @@ class TaskEventRunner(TaskRunner):
                 await self._common_process(message)
         except Exception as e:
             logger.error(f"consume message fail. {traceback.format_exc()}")
-            failure = classify_task_exception(e)
+            failure = classify_task_exception(
+                e,
+                execution_started=self._execution_started,
+            )
+            logger.error(
+                "AWORLD_TASK_EXCEPTION="
+                + json.dumps(
+                    _task_exception_diagnostic(
+                        task_id=self.task.id,
+                        stage="event_consume",
+                        failure=failure,
+                        execution_started=self._execution_started,
+                    ),
+                    ensure_ascii=False,
+                    sort_keys=True,
+                )
+            )
             error_msg = Message(
                 category=Constants.TASK,
                 payload=TaskItem(msg=str(e), data=message, failure=failure),

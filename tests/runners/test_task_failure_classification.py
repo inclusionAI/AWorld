@@ -83,6 +83,20 @@ def test_unknown_runtime_exception_fails_closed_as_infrastructure() -> None:
     assert "sensitive" not in repr(evidence)
 
 
+def test_unknown_runtime_exception_after_execution_is_scoreable_task_outcome() -> None:
+    evidence = classify_task_exception(
+        RuntimeError("sensitive message"),
+        execution_started=True,
+    )
+
+    assert evidence == {
+        "origin": TaskFailureOrigin.TASK.value,
+        "code": "runtime_exception",
+        "error_type": "RuntimeError",
+    }
+    assert "sensitive" not in repr(evidence)
+
+
 def test_wrapped_generation_failure_retains_typed_cause() -> None:
     cause = _budget_error(GenerationStopReason.ACTION_REPAIR_EXHAUSTED)
     try:
