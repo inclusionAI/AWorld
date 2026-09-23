@@ -86,6 +86,16 @@ _TASK_RESPONSE_CAPABILITY_MAX_BYTES_ENV = (
     "AWORLD_SELF_EVOLVE_TASK_RESPONSE_CAPABILITY_MAX_BYTES"
 )
 _DEFAULT_TASK_RESPONSE_CAPABILITY_MAX_BYTES = 8_000_000
+_LIVE_ATIF_CHECKPOINT_INTERVAL_ENV = "AWORLD_LIVE_ATIF_CHECKPOINT_INTERVAL_SECONDS"
+
+
+def _live_atif_checkpoint_interval_seconds() -> float:
+    raw = os.environ.get(_LIVE_ATIF_CHECKPOINT_INTERVAL_ENV, "30")
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        return 30.0
+    return value if 1.0 <= value <= 300.0 else 30.0
 
 
 def _bounded_text(value: object, *, max_chars: int) -> str:
@@ -520,19 +530,22 @@ class RunTopLevelCommand:
             agent_name=agent_name,
         )
         if checkpoint_receipt is not None and checkpoint_receipt.status.value == "failed":
-            outcome = _direct_run_failure_outcome(
-                stage=DirectRunStage.ORCHESTRATION,
-                error_code=DirectRunErrorCode.ATIF_EXPORT_FAILED,
-                agent_name=agent_name,
-            )
-            return self._finalize_outcome(
-                args=args,
-                agent_name=agent_name,
-                outcome=outcome,
-                task_response_capability=task_response_capability,
+            print(
+                "AWORLD_INITIAL_ATIF_CHECKPOINT="
+                + json.dumps(checkpoint_receipt.to_dict(), ensure_ascii=False, sort_keys=True),
+                file=sys.stderr,
             )
 
-        live_summary = DirectRunLiveSummary()
+        live_summary = DirectRunLiveSummary(
+            checkpoint_writer=(
+                lambda summary: self._write_live_atif_checkpoint(
+                    args=args,
+                    agent_name=agent_name,
+                    summary=summary,
+                )
+            ) if getattr(args, "trajectory_output", None) else None,
+            checkpoint_interval_seconds=_live_atif_checkpoint_interval_seconds(),
+        )
         try:
             direct_run_result = run_direct_async(
                 _run_direct_mode(
@@ -677,6 +690,57 @@ class RunTopLevelCommand:
         )
 
     @staticmethod
+    def _write_live_atif_checkpoint(*, args, agent_name: str, summary: dict):
+        """Atomically persist live execution evidence without affecting the task."""
+
+        trajectory_output = getattr(args, "trajectory_output", None)
+        if not trajectory_output:
+            return None
+        from aworld_cli.atif import build_atif_trajectory, try_write_atif_trajectory
+        from aworld_cli.main import _trajectory_payload_from_direct_run_summary
+        from aworld_cli.run_outcome import DirectRunOutcome, DirectRunStatus
+
+        payload = _trajectory_payload_from_direct_run_summary(
+            summary,
+            prompt=args.task,
+            agent_name=agent_name,
+        )
+        metrics = DirectRunOutcome.from_summary(
+            summary,
+            status=DirectRunStatus.SUCCEEDED,
+        )
+        payload.update(
+            {
+                "trajectory_capture_mode": "live_context",
+                "trajectory_fidelity": "partial",
+                "llm_call_count": metrics.llm_call_count,
+                "tool_call_count": metrics.tool_call_count,
+                "action_count": metrics.action_count,
+            }
+        )
+        trajectory = build_atif_trajectory(
+            payload,
+            prompt=args.task,
+            agent_name=agent_name,
+            agent_version=_aworld_agent_version(),
+            model_name=os.environ.get("LLM_MODEL_NAME"),
+            run_outcome={
+                "semantic_status": "in_progress",
+                "process_exit_code": 1,
+                "trajectory_fidelity": "partial",
+                "llm_call_count": metrics.llm_call_count,
+                "tool_call_count": metrics.tool_call_count,
+                "action_count": metrics.action_count,
+                "last_successful_checkpoint": metrics.last_successful_checkpoint,
+            },
+        )
+        return try_write_atif_trajectory(
+            trajectory_output,
+            trajectory,
+            trajectory_fidelity="partial",
+        )
+
+    @staticmethod
     def _finalize_outcome(
         *,
         args,
@@ -773,23 +837,9 @@ class RunTopLevelCommand:
         else:
             atif_marker = None
 
+        # ATIF is an observability artifact. Export failure is recorded in the
+        # receipt but must never rewrite the independent task outcome.
         final_outcome = outcome
-        if (
-            trajectory_output
-            and export_receipt.status is AtifExportStatus.FAILED
-        ):
-            final_outcome = replace(
-                outcome,
-                status=DirectRunStatus.INFRASTRUCTURE_FAILED,
-                # A typed task-failure code is reserved for a completely
-                # finalized run. Export failure is infrastructure failure and
-                # must never retain that trusted supervisor signal.
-                process_exit_code=1,
-                failure_record={
-                    "stage": DirectRunStage.ORCHESTRATION.value,
-                    "error_code": DirectRunErrorCode.ATIF_EXPORT_FAILED.value,
-                },
-            )
 
         outcome_marker = (
             "AWORLD_RUN_OUTCOME="

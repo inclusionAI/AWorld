@@ -709,7 +709,7 @@ def test_run_command_replaces_checkpoint_before_stubborn_cleanup_finishes(
     assert persisted_outcome["tool_call_count"] == 1
 
 
-def test_run_command_export_failure_forces_infrastructure_exit(
+def test_run_command_export_failure_does_not_replace_task_outcome(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
     tmp_path,
@@ -771,19 +771,63 @@ def test_run_command_export_failure_forces_infrastructure_exit(
         SimpleNamespace(argv=("aworld-cli", "run")),
     )
 
-    assert exit_code == 1
+    assert exit_code == 64
     stderr = capsys.readouterr().err
     export = _marker_payload(stderr, "AWORLD_ATIF_EXPORT=")
     assert export["status"] == "failed"
     assert export["error_type"] == "OSError"
     assert "private path detail" not in stderr
     final_outcome = _marker_payload(stderr, "AWORLD_RUN_OUTCOME=")
-    assert final_outcome["semantic_status"] == "infrastructure_failed"
-    assert final_outcome["process_exit_code"] == 1
+    assert final_outcome["semantic_status"] == "task_failed"
+    assert final_outcome["process_exit_code"] == 64
     assert final_outcome["failure"] == {
-        "stage": "orchestration",
-        "error_code": "atif_export_failed",
+        "stage": "agent_execution",
+        "error_code": "agent_task_failed",
     }
+    assert final_outcome["atif_export"]["status"] == "failed"
+
+
+def test_successful_task_stays_successful_when_atif_export_fails(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    tmp_path,
+) -> None:
+    outcome = DirectRunOutcome.from_summary(
+        {
+            "results": [
+                {
+                    "success": True,
+                    "completed": True,
+                    "trajectory_capture_mode": "task_response",
+                    "trajectory": [{"meta": {"step": 1}, "action": {"content": "done"}}],
+                    "llm_calls": [{"request_id": "request-1"}],
+                }
+            ]
+        },
+        status=DirectRunStatus.SUCCEEDED,
+    )
+
+    monkeypatch.setattr(
+        "aworld_cli.atif.write_atif_trajectory",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("private path")),
+    )
+    args = SimpleNamespace(
+        task="test",
+        emit_trajectory=False,
+        trajectory_output=str(tmp_path / "trajectory.json"),
+        outcome_output=None,
+    )
+
+    exit_code = RunTopLevelCommand._finalize_outcome(
+        args=args,
+        agent_name="Aworld",
+        outcome=outcome,
+    )
+
+    assert exit_code == 0
+    final_outcome = _marker_payload(capsys.readouterr().err, "AWORLD_RUN_OUTCOME=")
+    assert final_outcome["semantic_status"] == "succeeded"
+    assert final_outcome["process_exit_code"] == 0
     assert final_outcome["atif_export"]["status"] == "failed"
 
 
@@ -971,6 +1015,66 @@ def test_live_partial_summary_uses_reconciled_calls_and_projects_atif_steps() ->
         step["tool_calls"][0]["function_name"]
         for step in trajectory["steps"][1:]
     ] == ["WORKBENCH", "terminal"]
+
+
+def test_live_atif_checkpoint_replaces_startup_checkpoint(tmp_path) -> None:
+    output_path = tmp_path / "trajectory.json"
+    args = SimpleNamespace(task="test", trajectory_output=str(output_path))
+    summary = {
+        "results": [
+            {
+                "iteration": 1,
+                "success": False,
+                "completed": False,
+                "trajectory_capture_mode": "live_context",
+                "trajectory": [
+                    {
+                        "meta": {"step": 1},
+                        "action": {"content": "Inspecting", "tool_calls": []},
+                    }
+                ],
+                "llm_calls": [{"request_id": "request-1"}],
+            }
+        ]
+    }
+
+    receipt = RunTopLevelCommand._write_live_atif_checkpoint(
+        args=args,
+        agent_name="Aworld",
+        summary=summary,
+    )
+
+    assert receipt.status.value == "persisted"
+    trajectory = json.loads(output_path.read_text(encoding="utf-8"))
+    assert trajectory["extra"]["trajectory_capture_mode"] == "live_context"
+    assert trajectory["extra"]["aworld"]["run_outcome"]["semantic_status"] == "in_progress"
+    assert trajectory["extra"]["aworld"]["run_outcome"]["llm_call_count"] == 1
+    assert len(trajectory["steps"]) == 2
+
+
+@pytest.mark.asyncio
+async def test_live_summary_periodically_persists_execution_evidence() -> None:
+    written = asyncio.Event()
+    summary = {
+        "results": [
+            {
+                "success": False,
+                "llm_calls": [{"request_id": "request-1"}],
+                "trajectory": [{"meta": {"step": 1}}],
+            }
+        ]
+    }
+
+    live_summary = main_module.DirectRunLiveSummary(
+        checkpoint_writer=lambda value: written.set() if value is summary else None,
+        checkpoint_interval_seconds=0.01,
+    )
+    live_summary.snapshot = lambda: summary
+    live_summary.bind(SimpleNamespace())
+
+    await asyncio.wait_for(written.wait(), timeout=1)
+    live_summary.stop_checkpointing()
+    await asyncio.sleep(0)
 
 
 @pytest.mark.asyncio

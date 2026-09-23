@@ -13,7 +13,7 @@ import os
 import re
 import sys
 from pathlib import Path
-from typing import Optional
+from typing import Callable, Optional
 
 from aworld.plugins.discovery import discover_plugins
 
@@ -1712,11 +1712,59 @@ def _live_trajectory_from_llm_calls(
 class DirectRunLiveSummary:
     """Invocation-local bridge from the running executor to its supervisor."""
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        *,
+        checkpoint_writer: Callable[[dict], object] | None = None,
+        checkpoint_interval_seconds: float = 30.0,
+    ) -> None:
         self._agent_executor: object | None = None
+        self._checkpoint_writer = checkpoint_writer
+        self._checkpoint_interval_seconds = max(0.01, checkpoint_interval_seconds)
+        self._checkpoint_task: asyncio.Task[None] | None = None
 
     def bind(self, agent_executor: object) -> None:
         self._agent_executor = agent_executor
+        if self._checkpoint_writer is not None and self._checkpoint_task is None:
+            self._checkpoint_task = asyncio.create_task(
+                self._checkpoint_live_trajectory()
+            )
+            owner = asyncio.current_task()
+            if owner is not None:
+                owner.add_done_callback(lambda _task: self.stop_checkpointing())
+
+    def stop_checkpointing(self) -> None:
+        task = self._checkpoint_task
+        if task is not None and not task.done():
+            task.cancel()
+
+    async def _checkpoint_live_trajectory(self) -> None:
+        """Periodically replace the startup ATIF with best-effort live evidence."""
+
+        while True:
+            await asyncio.sleep(self._checkpoint_interval_seconds)
+            summary = self.snapshot()
+            if summary is None or not _direct_run_has_provider_evidence(summary):
+                continue
+            try:
+                receipt = self._checkpoint_writer(summary) if self._checkpoint_writer else None
+                payload = {
+                    "schema_version": "aworld.live-atif-checkpoint.v1",
+                    "status": getattr(getattr(receipt, "status", None), "value", "written"),
+                    "trajectory_fidelity": getattr(receipt, "trajectory_fidelity", "partial"),
+                }
+                print(
+                    "AWORLD_LIVE_ATIF_CHECKPOINT="
+                    + json.dumps(payload, ensure_ascii=False, sort_keys=True),
+                    file=sys.stderr,
+                )
+            except Exception as exc:
+                # Live trajectory persistence is observability only. The next
+                # interval or terminal writer may still succeed.
+                _LOGGER.warning(
+                    "Live ATIF checkpoint failed open; error_type=%s",
+                    type(exc).__name__,
+                )
 
     def snapshot(self) -> dict | None:
         if self._agent_executor is None:
