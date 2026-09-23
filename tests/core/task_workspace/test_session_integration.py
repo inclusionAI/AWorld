@@ -388,16 +388,13 @@ async def test_final_gate_checks_public_policy_without_candidate_publication(wor
 
 
 @pytest.mark.asyncio
-async def test_dynamic_artifact_self_check_participates_in_default_completion(
+async def test_dynamic_agent_self_check_does_not_create_a_default_completion_gate(
     workspace,
 ):
     context = context_for(workspace, "Create a report.")
     context.record_completion_final_evidence("agent_final_response")
     await context.resolve_completion_evidence()
-    assert (
-        context.assess_completion_contract(agent_claimed_finished=True).status
-        == CompletionStatus.SATISFIED
-    )
+    assert context.assess_completion_contract(agent_claimed_finished=True) is None
     target = workspace / "chosen.json"
     target.write_text("not json")
     saved = await invoke(
@@ -411,13 +408,7 @@ async def test_dynamic_artifact_self_check_participates_in_default_completion(
     )
     assert receipt["eligible"] is False
     await context.resolve_completion_evidence()
-    assert (
-        context.assess_completion_contract(agent_claimed_finished=True).status
-        != CompletionStatus.SATISFIED
-    )
+    assert context.assess_completion_contract(agent_claimed_finished=True) is None
     target.write_text('{"value": 3}')
     await context.resolve_completion_evidence()
-    assert (
-        context.assess_completion_contract(agent_claimed_finished=True).status
-        == CompletionStatus.SATISFIED
-    )
+    assert context.assess_completion_contract(agent_claimed_finished=True) is None

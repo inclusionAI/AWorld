@@ -2,6 +2,7 @@
 Continuous execution executor for running agents in a loop.
 """
 import asyncio
+import re
 import sys
 from datetime import datetime, timedelta
 from typing import Optional, Dict, Any, Union, List
@@ -234,7 +235,15 @@ class ContinuousExecutor:
             "llm error",
             "rate limit exceeded",
         )
-        return not any(marker in normalized for marker in failure_markers)
+        if any(marker in normalized for marker in failure_markers):
+            return False
+        return not bool(
+            re.search(
+                r"\b(?:i|we)\s+(?:need|have|plan|intend)\s+to\s+"
+                r"(?:continue|finish|complete|fix|implement|test|run|check)\b",
+                normalized,
+            )
+        )
     
     async def run_iteration(
         self,

@@ -155,6 +155,15 @@ class DefaultTaskHandler(TaskHandler):
             if completion_blocked:
                 semantic_status = "incomplete"
                 reason = "completion_contract_unsatisfied"
+            completion_infrastructure_failure = self.runner.context.context_info.get(
+                "completion_infrastructure_failure"
+            )
+            if not isinstance(completion_infrastructure_failure, dict):
+                completion_infrastructure_failure = {}
+            completion_failure_is_infrastructure = bool(
+                completion_blocked
+                and completion_infrastructure_failure.get("failure_code")
+            )
             unsuccessful = completion_blocked or incomplete
             status = (
                 TaskStatusValue.BUDGET_EXHAUSTED if semantic_status == "budget_exhausted"
@@ -178,12 +187,21 @@ class DefaultTaskHandler(TaskHandler):
                                                           if completion_blocked else reason
                                                       ),
                                                       failure_origin=(
-                                                          TaskFailureOrigin.TASK.value
+                                                          TaskFailureOrigin.INFRASTRUCTURE.value
+                                                          if completion_failure_is_infrastructure
+                                                          else TaskFailureOrigin.TASK.value
                                                           if unsuccessful else None
                                                       ),
                                                       failure_code=(
-                                                          "completion_contract_unsatisfied"
+                                                          completion_infrastructure_failure.get("failure_code")
+                                                          if completion_failure_is_infrastructure
+                                                          else "completion_contract_unsatisfied"
                                                           if completion_blocked else reason
+                                                      ),
+                                                      error_type=(
+                                                          completion_infrastructure_failure.get("error_type")
+                                                          if completion_failure_is_infrastructure
+                                                          else None
                                                       ))
 
             logger.info(f"{task_flag} task {self.runner.task.id} receive finished message.")

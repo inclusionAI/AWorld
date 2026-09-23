@@ -501,6 +501,7 @@ async def evaluate_delivery(context, contract):
     success = False
     receipt = {}
     session = None
+    context.context_info.pop("completion_infrastructure_failure", None)
     try:
         session = get_task_workspace(context)
         checks = session._checks()
@@ -560,6 +561,19 @@ async def evaluate_delivery(context, contract):
         receipt["policy_violations"] = violations
         now = datetime.now(timezone.utc)
         success = receipt.get("success") is True and not violations
+        error_checks = [
+            check
+            for check in receipt.get("checks", [])
+            if check.get("status") == "error"
+        ]
+        if error_checks:
+            first_error = error_checks[0]
+            context.context_info["completion_infrastructure_failure"] = {
+                "failure_code": "delivery_validator_error",
+                "error_type": str(
+                    first_error.get("error_type") or "ValidationError"
+                ),
+            }
         for check in receipt.get("checks", []):
             context.record_completion_self_check(
                 SelfCheckEvidence(
@@ -602,6 +616,10 @@ async def evaluate_delivery(context, contract):
     except (OSError, ValueError, RuntimeError, KeyError, TypeError) as exc:
         receipt = {"success": False, "error": f"{type(exc).__name__}: {exc}"}
         context.context_info["delivery_validation"] = receipt
+        context.context_info["completion_infrastructure_failure"] = {
+            "failure_code": "delivery_validator_exception",
+            "error_type": type(exc).__name__,
+        }
         if session is not None:
             try:
                 session.record_final_validation(receipt)

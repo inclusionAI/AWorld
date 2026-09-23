@@ -273,7 +273,7 @@ async def test_later_native_checks_cannot_overwrite_a_caller_command_failure(nat
 
 
 @pytest.mark.asyncio
-async def test_explicit_empty_outputs_keeps_later_self_checks_active(native, monkeypatch):
+async def test_explicit_empty_outputs_do_not_activate_later_agent_self_checks(native, monkeypatch):
     monkeypatch.setenv('AWORLD_REQUIRED_ARTIFACTS_JSON', '[]')
     context = await native.build('Explain CSV headers.')
     assert context.completion_contract.required_artifacts == ()
@@ -282,4 +282,4 @@ async def test_explicit_empty_outputs_keeps_later_self_checks_active(native, mon
     await get_task_workspace(context).execute('revise_checks', {
         'checks':[{'id':'later-json','kind':'json','path':'later.json'}], 'reason':'Validate the added output',
     })
-    assert await finish(native, context) is not CompletionStatus.SATISFIED
+    assert await finish(native, context) is CompletionStatus.SATISFIED

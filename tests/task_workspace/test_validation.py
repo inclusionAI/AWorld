@@ -249,6 +249,49 @@ def test_command_must_detect_negative_fixture_and_fingerprints_checker(tmp_path)
     )
 
 
+def test_command_placeholder_resolves_unique_workspace_relative_artifact(tmp_path):
+    actual = write(tmp_path, "process.py", "good")
+    wrong = write(tmp_path, "wrong", "bad")
+    script = checker(tmp_path)
+    logical_key = "/app/dclm/ray_processing/process.py"
+    check = command_check(script)
+    check["argv"][-1] = "{artifact:ray_processing/process.py}"
+    check["negative_controls"] = [
+        {"replacements": {logical_key: "wrong"}}
+    ]
+
+    result = validate(
+        {logical_key: actual},
+        [check],
+        {"wrong": wrong},
+        working_dir=tmp_path,
+    )
+
+    assert result["success"], result
+
+
+def test_command_placeholder_rejects_ambiguous_relative_artifact(tmp_path):
+    first = write(tmp_path, "first.py", "good")
+    second = write(tmp_path, "second.py", "good")
+    script = checker(tmp_path)
+    check = command_check(script)
+    check["argv"][-1] = "{artifact:process.py}"
+    check["negative_controls"] = []
+
+    result = validate(
+        {
+            "/workspace/a/process.py": first,
+            "/workspace/b/process.py": second,
+        },
+        [check],
+        working_dir=tmp_path,
+    )
+
+    assert result["success"] is False
+    assert result["checks"][0]["status"] == "error"
+    assert "ambiguous command file placeholder" in result["checks"][0]["error"]
+
+
 def test_exit_zero_and_always_pass_are_not_reliable(tmp_path):
     actual = write(tmp_path, "out", "good")
     wrong = write(tmp_path, "wrong", "bad")

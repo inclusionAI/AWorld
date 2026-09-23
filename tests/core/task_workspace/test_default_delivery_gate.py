@@ -69,6 +69,7 @@ def _agent(context, **kwargs):
 @pytest.mark.asyncio
 async def test_default_cli_build_enforces_literal_output_and_agent_cannot_finish_early(local_facade, monkeypatch, tmp_path):
     monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv('AWORLD_REQUIRED_ARTIFACTS_JSON', '["result.json"]')
     executor = object.__new__(LocalAgentExecutor)
     executor._base_runtime = None
     executor.session_id = 'delivery'
@@ -90,7 +91,7 @@ async def test_default_cli_build_enforces_literal_output_and_agent_cannot_finish
     assert task.context.completion_mode is CompletionMode.ENFORCE
     assert task.context.completion_contract.max_repairs is None
     assert task.context.completion_contract.max_evidence_age_seconds is None
-    assert 'workbench.delivery' in task.context.completion_contract.required_self_check_ids
+    assert task.context.completion_contract.required_artifacts
     agent = _agent(task.context)
     response = ModelResponse(id='final', model='offline', content='All done.', finish_reason='stop')
     parsed = await LlmOutputParser().parse(response, agent_id=agent.id())
@@ -98,9 +99,6 @@ async def test_default_cli_build_enforces_literal_output_and_agent_cannot_finish
         assert await agent._completion_feedback_if_unsatisfied(context=task.context, final_response_text='All done.')
         assert not agent.is_agent_finished(response, parsed)
         assert get_execution_state(task.context)['status'] == 'incomplete'
-    (tmp_path / 'result.json').write_text('not JSON')
-    assert await agent._completion_feedback_if_unsatisfied(context=task.context, final_response_text='All done.')
-    assert not agent.is_agent_finished(response, parsed)
     (tmp_path / 'result.json').write_text('{"delivered":true}')
     assert await agent._completion_feedback_if_unsatisfied(context=task.context, final_response_text='All done.') is None
     assert agent.is_agent_finished(response, parsed)
@@ -303,7 +301,7 @@ async def test_agent_caller_contract_does_not_replace_workspace_or_goal_extensio
     extended = configure_runtime_completion(context, request='Write unrelated.json.', workspace_path=tmp_path)
     agent._install_runtime_completion_contract(context)
     assert context.completion_contract is extended
-    assert 'workbench.delivery' in extended.required_self_check_ids
+    assert extended.required_self_check_ids == ()
     goal_extended = configure_goal_completion(context, verification_commands=['true'], workspace_path=tmp_path)
     agent._install_runtime_completion_contract(context)
     assert context.completion_contract is goal_extended
@@ -333,12 +331,12 @@ async def test_goal_extension_executes_custom_caller_checks_once(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_default_question_passes_without_files_but_later_failed_self_check_gates_finish(local_facade, tmp_path):
+async def test_default_question_does_not_gain_a_later_agent_authored_gate(local_facade, tmp_path):
     context = Context(task_id='initially-no-delivery')
     _bind(context, tmp_path)
     contract = configure_runtime_completion(context, request='Explain how CSV headers work.', workspace_path=tmp_path)
-    assert contract.required_artifacts == ()
-    assert contract.required_self_check_ids == ('workbench.delivery',)
+    assert contract is None
+    assert context.completion_mode is CompletionMode.OFF
     agent = _agent(context)
     assert await agent._completion_feedback_if_unsatisfied(context=context, final_response_text='A header names columns.') is None
     path = tmp_path / 'later.json'
@@ -351,7 +349,7 @@ async def test_default_question_passes_without_files_but_later_failed_self_check
             exit_code = 1
         target.record_completion_self_check(SelfCheckEvidence('workbench.delivery', exit_code, None, datetime.now(timezone.utc)))
     local_facade.evaluate_delivery = later_check
-    assert await agent._completion_feedback_if_unsatisfied(context=context, final_response_text='The added file is done.')
+    assert await agent._completion_feedback_if_unsatisfied(context=context, final_response_text='The added file is done.') is None
     response = ModelResponse(id='later-final', model='offline', content='Done.', finish_reason='stop')
     parsed = await LlmOutputParser().parse(response, agent_id=agent.id())
-    assert not agent.is_agent_finished(response, parsed)
+    assert agent.is_agent_finished(response, parsed)

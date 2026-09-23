@@ -270,6 +270,11 @@ def _attach_workspace_completion(context, existing):
     input_ids = tuple(item["id"] for item in delivery.get("inputs", []) if item.get("immutable") is True)
     check_ids = tuple(check["id"] for item in delivery.get("outputs", []) for check in item["checks"])
     check_ids += tuple(check["id"] for check in delivery.get("checks", []))
+    if not delivery.get("outputs") and not input_ids and not check_ids:
+        # A mutable input-only task has no runtime-owned delivery requirement.
+        # Do not turn optional agent-authored WORKBENCH checks into a global
+        # completion gate for unrelated benchmarks.
+        return existing
     caller_ids = {command.command_id for command in existing.validation_commands}
     caller_ids.update(existing.required_self_check_ids)
     if caller_ids.intersection((*check_ids, "workbench.delivery")):
@@ -374,9 +379,18 @@ def configure_runtime_completion(
         [check["id"] for item in delivery["outputs"] for check in item["checks"]]
         + [check["id"] for check in delivery.get("checks", [])]
     ))
-    # Even an ordinary question keeps the aggregate hook: it passes with no
-    # deliverables, but rechecks any artifacts/self-checks added later through
-    # the workbench. Ambiguous text still creates no guessed file requirement.
+    if not requirements and not inputs and not check_ids:
+        context.context_info["runtime_completion_contract"] = {
+            "mode": "off",
+            "requested_mode": mode.value,
+            "source": "no_enforceable_delivery",
+            "source_hash": delivery["source_hash"],
+            "coverage_status": delivery["coverage_status"],
+            "required_artifacts": [],
+            "delivery_check_ids": [],
+            "max_repairs": resolve_completion_max_repairs(),
+        }
+        return None
     check_ids = (*check_ids, "workbench.delivery")
     contract = CompletionContract(
         required_artifacts=requirements, immutable_inputs=inputs,

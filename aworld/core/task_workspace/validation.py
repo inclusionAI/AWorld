@@ -719,11 +719,31 @@ async def _command(
         raise ValueError("command checks require argv, never shell text")
 
     def resolve(mapping):
+        def lookup(collection, logical_key: str):
+            if logical_key in collection:
+                return collection[logical_key]
+            requested = Path(logical_key)
+            if (
+                requested.is_absolute()
+                or not requested.parts
+                or requested == Path(".")
+                or ".." in requested.parts
+            ):
+                raise ValueError("unknown command file placeholder")
+            requested_parts = requested.parts
+            matches = [
+                value
+                for key, value in collection.items()
+                if len(Path(key).parts) >= len(requested_parts)
+                and Path(key).parts[-len(requested_parts) :] == requested_parts
+            ]
+            if len(matches) != 1:
+                raise ValueError("unknown or ambiguous command file placeholder")
+            return matches[0]
+
         def replace(match):
             collection = mapping if match[1] == "artifact" else input_files
-            if match[2] not in collection:
-                raise ValueError("unknown command file placeholder")
-            return str(Path(collection[match[2]]).absolute())
+            return str(Path(lookup(collection, match[2])).absolute())
 
         return [re.sub(r"\{(artifact|input):([^{}]+)\}", replace, arg) for arg in argv]
 

@@ -377,6 +377,54 @@ async def test_finished_event_cannot_promote_scoped_incomplete_work(semantic, ex
 
 
 @pytest.mark.asyncio
+async def test_finished_event_classifies_validator_errors_as_infrastructure():
+    from aworld.core.context.compiler import CompletionMode, CompletionStatus
+    from aworld.core.event.base import Message, Constants, TopicType
+    from aworld.runners.handler.task import DefaultTaskHandler
+
+    task = Task(id="validator-error")
+    context = SimpleNamespace(
+        task_id=task.id,
+        task_epoch=None,
+        token_usage={},
+        context_info={
+            "completion_infrastructure_failure": {
+                "failure_code": "delivery_validator_error",
+                "error_type": "ValueError",
+            }
+        },
+        merge_context=lambda _: None,
+        assess_completion_contract=lambda **_: SimpleNamespace(
+            mode=CompletionMode.ENFORCE,
+            status=CompletionStatus.FAILED,
+            reason_codes=("self_check_failed",),
+        ),
+    )
+    runner = SimpleNamespace(
+        task=task,
+        context=context,
+        start_time=0,
+        stop=AsyncMock(),
+    )
+    message = Message(
+        category=Constants.TASK,
+        topic=TopicType.FINISHED,
+        payload="validator failed",
+        headers={"context": context},
+    )
+
+    events = [
+        event
+        async for event in DefaultTaskHandler(runner)._do_handle(message)
+    ]
+    response = events[-1].payload
+
+    assert response.failure_origin == "infrastructure"
+    assert response.failure_code == "delivery_validator_error"
+    assert response.error_type == "ValueError"
+
+
+@pytest.mark.asyncio
 async def test_process_runtime_explicit_budget_cancels_owned_workers(monkeypatch):
     from aworld.config import RunConfig
     from aworld.runners.runtime_engine import LocalRuntime

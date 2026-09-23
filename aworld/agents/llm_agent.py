@@ -4556,7 +4556,7 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         result.content = "Work remains incomplete after bounded model-response recovery (" + reason + "). Progress is retained for continuation."
         result.tool_calls = []
         result.message = {"role": "assistant", "content": result.content,
-                          "aworld_incomplete_reason": reason, "aworld_recoverable": False}
+                          "aworld_incomplete_reason": reason, "aworld_recoverable": True}
         return result
 
     @staticmethod
@@ -4860,7 +4860,13 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                                 ),
                             }]
                             continue
-                        record_execution_state(context, self.id(), "incomplete", incomplete_reason, recoverable=False)
+                        record_execution_state(
+                            context,
+                            self.id(),
+                            "incomplete",
+                            incomplete_reason,
+                            recoverable=True,
+                        )
                         return self._incomplete_model_response(llm_response, incomplete_reason)
                     from aworld.core.context.execution_state import record_execution_state
                     record_execution_state(context, self.id(), "running", "model_response_accepted")
@@ -5297,6 +5303,9 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             from aworld.core.context.execution_state import record_execution_state
             response_metadata = llm_response.message if isinstance(llm_response.message, dict) else {}
             reason = response_metadata.get("aworld_incomplete_reason")
+            recoverable_reason = bool(
+                reason and response_metadata.get("aworld_recoverable", False)
+            )
             raw_reason = self._incomplete_model_response_reason(llm_response)
             if raw_reason and not reason:
                 self._finished = False
@@ -5311,6 +5320,17 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                     self._finished = False
                     record_execution_state(self.context, self.id(), "incomplete", "completion_contract_unsatisfied")
                     return False
+            if recoverable_reason:
+                self._finished = False
+                if getattr(self, "context", None) is not None:
+                    record_execution_state(
+                        self.context,
+                        self.id(),
+                        "incomplete",
+                        reason,
+                        recoverable=True,
+                    )
+                return False
             if getattr(self, "context", None) is not None:
                 record_execution_state(
                     self.context, self.id(), "incomplete" if reason else "succeeded",

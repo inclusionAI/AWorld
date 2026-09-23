@@ -174,7 +174,10 @@ async def test_unusable_response_exhausts_bounded_recovery_truthfully(monkeypatc
     assert result.tool_calls == []
     assert result.message["aworld_incomplete_reason"] == reason
     assert get_execution_state(message.context)["status"] == "incomplete"
-    assert get_execution_state(message.context)["recoverable"] is False
+    assert get_execution_state(message.context)["recoverable"] is True
+    agent.context = message.context
+    parsed = await LlmOutputParser().parse(result, agent_id=agent.id())
+    assert not agent.is_agent_finished(result, parsed)
 
 
 @pytest.mark.asyncio
