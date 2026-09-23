@@ -129,7 +129,7 @@ def task_toml() -> bytes:
 
     return (
         b'schema_version = "1.4"\n\n'
-        b'artifacts = ["/logs/artifacts"]\n\n'
+        b'artifacts = ["/logs/artifacts/document.md", "/logs/artifacts/layout.json"]\n\n'
         b"[metadata]\n"
         b'author_name = "ParseBench Dataset adapter"\n'
         b'difficulty = "benchmark"\n'
