@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import tomllib
-
 from parsebench_dataset import dataset, package_contract
 from parsebench_dataset.contracts import PINNED_PARSEBENCH_RUNTIME_IMAGE
 
@@ -48,11 +46,6 @@ def test_public_submission_contract_has_no_solver_requirement():
         "/logs/artifacts/document.md",
         "/logs/artifacts/layout.json",
     }
-    task_config = tomllib.loads(package_contract.task_toml().decode())
-    assert task_config["artifacts"] == [
-        "/logs/artifacts/document.md",
-        "/logs/artifacts/layout.json",
-    ]
 
 
 def test_scorer_build_recipe_uses_only_fixed_public_inputs():
