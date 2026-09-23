@@ -2126,7 +2126,7 @@ async def _run_direct_mode(
     if not _direct_run_succeeded(summary):
         if require_explicit_failure_origin and not _direct_run_has_explicit_task_failure(
             summary
-        ):
+        ) and not _direct_run_has_provider_evidence(summary):
             return _direct_run_failure_outcome(
                 stage=DirectRunStage.AGENT_EXECUTION,
                 error_code=DirectRunErrorCode.AGENT_EXECUTION_UNTYPED_FAILURE,

@@ -42,8 +42,10 @@ def _truthy_env(value: str | None) -> bool:
 
 
 def resolve_completion_mode(value: str | None = None) -> CompletionMode:
-    """Resolve the caller mode; local literal delivery checks enforce by default."""
+    """Resolve the caller mode; completion checks are advisory by default."""
 
+    # Preserve the legacy evidence/contract shape. CLI execution only treats
+    # this mode as blocking when the caller explicitly supplied ``enforce``.
     default = "enforce"
     raw_value = os.environ.get(COMPLETION_MODE_ENV, default) if value is None else value
     normalized = (raw_value or "off").strip().lower()
@@ -320,6 +322,22 @@ def configure_runtime_completion(
     """
     mode = resolve_completion_mode()
     existing = getattr(context, "completion_contract", None)
+    explicit_mode = (os.environ.get(COMPLETION_MODE_ENV) or "").strip().lower()
+    previous_enforcement = context.context_info.get(
+        "completion_enforcement_explicit"
+    )
+    context.context_info["completion_enforcement_explicit"] = (
+        previous_enforcement
+        if isinstance(previous_enforcement, bool)
+        else bool(
+            explicit_mode == CompletionMode.ENFORCE.value
+            or (
+                existing is not None
+                and getattr(context, "completion_mode", None)
+                is CompletionMode.ENFORCE
+            )
+        )
+    )
     explicit_paths = _configured_artifact_paths()
     artifact_field_provided = bool((os.environ.get(REQUIRED_ARTIFACTS_ENV) or "").strip())
     validation_commands = _configured_validation_commands()
@@ -420,6 +438,7 @@ def configure_goal_completion(context, *, verification_commands: Sequence[str], 
     """
     if not verification_commands:
         return getattr(context, "completion_contract", None)
+    context.context_info["completion_enforcement_explicit"] = True
     if any(not isinstance(command, str) or not command.strip() for command in verification_commands):
         raise ValueError("goal verification commands must be non-empty strings")
     shell = shutil.which("bash")

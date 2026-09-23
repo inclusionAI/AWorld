@@ -165,7 +165,7 @@ Place the file in the directory specified by `LOCAL_AGENTS_DIR` or use `--agent-
 - `AWORLD_CONTROL_ROOT`: Optional directory for framework-owned runtime state such as cron state, session workspaces, transcripts, plugin state, and Tool-call logs. It does not change the task working directory.
 - `AWORLD_CONTEXT_WINDOW_TOKENS`: Optional positive integer declaring the selected deployment's context window (`ModelConfig.max_model_len`). Unset or blank preserves model-aware resolution.
 - `AWORLD_CONTEXT_LIMIT_TOKENS`: Optional positive integer for an explicit compiler window (`context_compiler.context_limit`), which takes precedence over the deployment window. Unset or blank adds no compiler override.
-- `AWORLD_COMPLETION_MODE`: Optional direct-run completion contract mode: `off` (default), `observe`, or `enforce`.
+- `AWORLD_COMPLETION_MODE`: Optional direct-run completion contract mode: `off`, `observe`, or `enforce`. When unset, completion evidence is collected advisory-only and does not override the model's decision to finish; blocking requires an explicit `enforce` value.
 - `AWORLD_COMPLETION_MAX_REPAIRS`: Optional non-negative integer limiting model-driven completion repair turns. Unset or blank preserves the historical unbounded repair contract; `0` disables repair turns.
 - `AWORLD_INFER_REQUIRED_ARTIFACTS`: When true, infer required artifacts only from explicit output-path declarations in the task. Intended for controlled execution runtimes together with `AWORLD_COMPLETION_MODE`.
 - `AWORLD_REQUIRED_ARTIFACTS_JSON`: Optional JSON array of artifact paths supplied by a runtime instead of relying on inference.

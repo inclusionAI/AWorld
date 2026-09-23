@@ -29,7 +29,7 @@ def _build_runner() -> TaskEventRunner:
 
 
 @pytest.mark.asyncio
-async def test_post_tool_progress_watchdog_retries_once_then_fails(monkeypatch):
+async def test_post_tool_progress_watchdog_retries_twice_then_returns_scoreable_stop(monkeypatch):
     runner = _build_runner()
     emitted = []
 
@@ -80,9 +80,21 @@ async def test_post_tool_progress_watchdog_retries_once_then_fails(monkeypatch):
     handled = await runner._check_post_tool_progress_watchdog()
 
     assert handled is True
-    assert emitted[1].category == Constants.TASK
-    assert emitted[1].topic == TopicType.ERROR
-    assert "post-tool progress watchdog" in emitted[1].payload.msg
+    assert emitted[1].category == Constants.AGENT
+    assert emitted[1].headers["history_sanitized_retry"] is True
+    assert "post_tool_continuation_token" not in emitted[1].headers
+    assert runner.context.context_info["post_tool_progress_watchdog"]["retry_count"] == 2
+
+    runner.context.context_info["post_tool_progress_watchdog"]["armed_at"] = 30.0
+    monkeypatch.setattr("aworld.runners.event_runner.time.time", lambda: 40.0)
+    handled = await runner._check_post_tool_progress_watchdog()
+
+    assert handled is True
+    assert emitted[2].category == Constants.TASK
+    assert emitted[2].topic == TopicType.ERROR
+    assert emitted[2].headers["task_failure"]["origin"] == "task"
+    assert emitted[2].headers["task_failure"]["code"] == "post_tool_continuation_lost"
+    assert "post-tool progress watchdog" in emitted[2].payload.msg
     assert "post_tool_progress_watchdog" not in runner.context.context_info
 
 

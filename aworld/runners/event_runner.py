@@ -361,6 +361,14 @@ class TaskEventRunner(TaskRunner):
         poll_seconds = float(self.task.conf.get("post_tool_progress_watchdog_poll_seconds", 1) or 1)
         return min(max(poll_seconds, 0.1), max(timeout_seconds, 0.1))
 
+    def _post_tool_watchdog_max_retries(self) -> int:
+        value = self.task.conf.get("post_tool_progress_watchdog_max_retries", 2)
+        try:
+            retries = int(value)
+        except (TypeError, ValueError):
+            retries = 2
+        return min(max(retries, 1), 5)
+
     async def _check_post_tool_progress_watchdog(self) -> bool:
         state = self.context.context_info.get(WATCHDOG_STATE_KEY)
         if not isinstance(state, dict):
@@ -374,7 +382,8 @@ class TaskEventRunner(TaskRunner):
         increment_watchdog_metric(self.context, "watchdog_trigger_count")
 
         retry_count = int(state.get("retry_count", 0) or 0)
-        if retry_count == 0:
+        maximum_retries = self._post_tool_watchdog_max_retries()
+        if retry_count < maximum_retries:
             observation_payload = state.get("followup_observation") or {}
             observation = Observation(**observation_payload)
             retry_context = self.context.deep_copy()
@@ -389,7 +398,7 @@ class TaskEventRunner(TaskRunner):
                     "watchdog": "post_tool_progress",
                     "agent_id": state.get("agent_id"),
                     "tool_name": state.get("tool_name"),
-                    "retry_count": 1,
+                    "retry_count": retry_count + 1,
                 }),
             )
             retry_message = AgentMessage(
@@ -401,13 +410,10 @@ class TaskEventRunner(TaskRunner):
                     "context": retry_context,
                     "history_sanitized_retry": True,
                     "post_tool_watchdog_retry": True,
-                    "post_tool_continuation_token": state.get(
-                        "continuation_token"
-                    ),
                 },
             )
             next_state = dict(state)
-            next_state["retry_count"] = 1
+            next_state["retry_count"] = retry_count + 1
             next_state["armed_at"] = time.time()
             next_state["retry_message_id"] = retry_message.id
             self.context.context_info[WATCHDOG_STATE_KEY] = next_state
@@ -425,15 +431,25 @@ class TaskEventRunner(TaskRunner):
             f"nor finished after retry. agent={state.get('agent_id')}, tool={state.get('tool_name')}, "
             f"tool_call_ids={state.get('tool_call_ids')}"
         )
+        failure = {
+            "origin": TaskFailureOrigin.TASK.value,
+            "code": "post_tool_continuation_lost",
+            "error_type": "PostToolContinuationLost",
+        }
         self.context.context_info.pop(WATCHDOG_STATE_KEY, None)
         await self.event_mng.emit_message(
             Message(
                 category=Constants.TASK,
-                payload=TaskItem(msg=reason, data=state, stop=True),
+                payload=TaskItem(
+                    msg=reason,
+                    data=state,
+                    stop=True,
+                    failure=failure,
+                ),
                 sender=self.__class__.__name__,
                 session_id=self.context.session_id,
                 topic=TopicType.ERROR,
-                headers={"context": self.context},
+                headers={"context": self.context, "task_failure": failure},
             )
         )
         logger.error(reason)
@@ -950,6 +966,11 @@ class TaskEventRunner(TaskRunner):
                         sort_keys=True,
                     )
                 )
+                if await self._try_model_finalization_after_task_exception(
+                    message,
+                    failure=failure,
+                ):
+                    return
                 error_msg = Message(
                     category=Constants.TASK,
                     payload=TaskItem(msg=str(e), data=message, failure=failure),
@@ -962,6 +983,70 @@ class TaskEventRunner(TaskRunner):
                                                               message=message,
                                                               result=error_msg)
                 await self.event_mng.emit_message(error_msg)
+
+    async def _try_model_finalization_after_task_exception(
+        self,
+        message: Message,
+        *,
+        failure: Mapping[str, object],
+    ) -> bool:
+        """Give the model one tool-free answer turn after a task-owned failure."""
+
+        if (
+            failure.get("origin") != TaskFailureOrigin.TASK.value
+            or message.category != Constants.AGENT
+            or message.headers.get("runtime_exception_finalization") is True
+        ):
+            return False
+        agent = None
+        agents = getattr(getattr(self, "swarm", None), "agents", None)
+        if isinstance(agents, Mapping) and message.receiver:
+            agent = agents.get(message.receiver)
+        if agent is None:
+            agent = getattr(self.task, "agent", None)
+        if agent is None:
+            communicate_agent = getattr(
+                getattr(self, "swarm", None),
+                "communicate_agent",
+                None,
+            )
+            if isinstance(communicate_agent, (list, tuple)):
+                agent = communicate_agent[0] if len(communicate_agent) == 1 else None
+            else:
+                agent = communicate_agent
+        finalize = getattr(agent, "async_finalize_at_loop_budget", None)
+        if not callable(finalize):
+            return False
+
+        recovery_message = copy.copy(message)
+        recovery_message.headers = {
+            **message.headers,
+            "runtime_exception_finalization": True,
+        }
+        try:
+            result = await finalize(recovery_message)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.warning(
+                "Runtime-exception model finalization failed; task_id={} error_type={}",
+                self.task.id,
+                type(exc).__name__,
+            )
+            return False
+        if not isinstance(result, Message):
+            return False
+        self.context.context_info["runtime_exception_finalization"] = {
+            "failure_code": failure.get("code"),
+            "error_type": failure.get("error_type"),
+            "status": "answer_produced",
+        }
+        await self.event_mng.emit_message(result)
+        logger.warning(
+            "Recovered task-owned runtime exception with a tool-free model answer; task_id={}",
+            self.task.id,
+        )
+        return True
 
     async def _raw_task(self, messages: List[Message]):
         # process in framework

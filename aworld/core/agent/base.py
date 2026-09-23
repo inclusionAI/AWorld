@@ -213,7 +213,7 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
         self.max_loop_steps = kwargs.pop("max_loop_steps", 20)
         circuit_threshold = kwargs.pop(
             "infrastructure_error_circuit_breaker_threshold",
-            self.conf.get("infrastructure_error_circuit_breaker_threshold", 3),
+            self.conf.get("infrastructure_error_circuit_breaker_threshold", 0),
         )
         if (
             isinstance(circuit_threshold, bool)
@@ -351,7 +351,11 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
             final_result = sync_exec(
                 self.async_finalize_at_loop_budget, message, **kwargs
             )
-            sync_exec(self._resolve_completion_at_loop_budget, message)
+            sync_exec(
+                self._resolve_completion_at_loop_budget,
+                message,
+                preserve_final_status=final_result is not None,
+            )
             self.postprocess_terminate_loop(message)
             if final_result is not None:
                 return final_result
@@ -447,7 +451,10 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
                 final_result = await self.async_finalize_at_loop_budget(
                     message, **kwargs
                 )
-                await self._resolve_completion_at_loop_budget(message)
+                await self._resolve_completion_at_loop_budget(
+                    message,
+                    preserve_final_status=final_result is not None,
+                )
                 self.postprocess_terminate_loop(message)
                 if final_result is not None:
                     return final_result
@@ -887,7 +894,12 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
         """
         return None
 
-    async def _resolve_completion_at_loop_budget(self, message: Message) -> None:
+    async def _resolve_completion_at_loop_budget(
+        self,
+        message: Message,
+        *,
+        preserve_final_status: bool = False,
+    ) -> None:
         context = getattr(message, "context", None)
         if context is None:
             return
@@ -905,6 +917,8 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
                 )
             ),
         }
+        if preserve_final_status:
+            exhaustion["final_answer_preserved"] = True
         event_manager = getattr(context, "event_manager", None)
         state_context = (
             getattr(event_manager, "context", None)
@@ -928,10 +942,14 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
         )
         from aworld.core.context.work_progress import record_budget_handoff
         recoverable = record_budget_handoff(context, self.id())
-        record_execution_state(
-            context, self.id(), "budget_exhausted", "agent_loop_budget_exhausted",
-            recoverable=recoverable,
-        )
+        if not preserve_final_status:
+            record_execution_state(
+                context,
+                self.id(),
+                "budget_exhausted",
+                "agent_loop_budget_exhausted",
+                recoverable=recoverable,
+            )
         await checkpoint_execution_state(context)
         resolver = getattr(context, "resolve_completion_evidence", None)
         resolved_step = context.context_info.pop(

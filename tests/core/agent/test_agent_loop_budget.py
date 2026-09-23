@@ -52,7 +52,11 @@ def _agent_message(agent: BaseAgent, context: Context, payload: Observation) -> 
 async def test_repeated_typed_infrastructure_failure_opens_circuit_at_threshold():
     agent = LoopBudgetAgent(
         name="infra-circuit",
-        conf=AgentConfig(llm_provider="mock", llm_model_name="mock-model"),
+        conf=AgentConfig(
+            llm_provider="mock",
+            llm_model_name="mock-model",
+            infrastructure_error_circuit_breaker_threshold=3,
+        ),
         max_loop_steps=100,
     )
     context = Context(task_id="infra-task", session_id="infra-session")
@@ -81,7 +85,11 @@ async def test_repeated_typed_infrastructure_failure_opens_circuit_at_threshold(
 def test_circuit_ignores_untyped_tool_failures_and_resets_after_success():
     agent = LoopBudgetAgent(
         name="infra-reset",
-        conf=AgentConfig(llm_provider="mock", llm_model_name="mock-model"),
+        conf=AgentConfig(
+            llm_provider="mock",
+            llm_model_name="mock-model",
+            infrastructure_error_circuit_breaker_threshold=3,
+        ),
     )
     context = Context(task_id="infra-reset-task", session_id="infra-session")
 
@@ -127,6 +135,15 @@ def test_agent_config_can_disable_infrastructure_error_circuit_breaker():
             llm_model_name="mock-model",
             infrastructure_error_circuit_breaker_threshold=0,
         ),
+    )
+
+    assert agent.infrastructure_error_circuit_breaker_threshold == 0
+
+
+def test_infrastructure_error_circuit_breaker_is_opt_in():
+    agent = LoopBudgetAgent(
+        name="circuit-default",
+        conf=AgentConfig(llm_provider="mock", llm_model_name="mock-model"),
     )
 
     assert agent.infrastructure_error_circuit_breaker_threshold == 0
@@ -327,6 +344,7 @@ async def test_llm_agent_uses_budget_boundary_for_one_finalization_turn():
     assert agent.finalization_requested is True
     exhaustion = context.context_info[f"agent_loop_budget_exhausted:{agent.id()}"]
     assert exhaustion["finalization_performed"] is True
+    assert exhaustion["final_answer_preserved"] is True
 
 
 def test_sync_llm_agent_uses_budget_boundary_for_finalization():
@@ -361,6 +379,7 @@ def test_sync_llm_agent_uses_budget_boundary_for_finalization():
     assert agent.finalization_requested is True
     exhaustion = context.context_info[f"agent_loop_budget_exhausted:{agent.id()}"]
     assert exhaustion["finalization_performed"] is True
+    assert exhaustion["final_answer_preserved"] is True
 
 
 @pytest.mark.asyncio

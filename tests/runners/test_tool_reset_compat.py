@@ -286,6 +286,42 @@ async def test_default_task_handler_preserves_typed_failure_evidence():
 
 
 @pytest.mark.asyncio
+async def test_task_owned_failure_preserves_latest_model_answer():
+    runner = MagicMock()
+    runner.task = SimpleNamespace(max_retry_count=0, hooks=None, is_sub_task=False, id="task-1")
+    runner.context = Context()
+    runner.context.get_reconciled_llm_calls = lambda: [
+        {"response": {"message": {"content": "best available model answer"}}}
+    ]
+    runner.start_time = 0.0
+    runner.stop = AsyncMock()
+    runner.should_stop_task = AsyncMock(return_value=False)
+    context = Context()
+    context.set_task(SimpleNamespace(timeout=0))
+    context.get_reconciled_llm_calls = runner.context.get_reconciled_llm_calls
+    message = Message(
+        category=Constants.TASK,
+        payload=TaskItem(msg="runtime failed", data=None, stop=True),
+        session_id="session-1",
+        topic=TopicType.ERROR,
+        headers={
+            "context": context,
+            "task_failure": {
+                "origin": "task",
+                "code": "runtime_exception",
+                "error_type": "RuntimeError",
+            },
+        },
+    )
+
+    outputs = [msg async for msg in DefaultTaskHandler(runner).handle(message)]
+
+    response = outputs[-1].payload
+    assert response.answer == "best available model answer"
+    assert response.status == "incomplete"
+
+
+@pytest.mark.asyncio
 async def test_task_runner_accepts_sync_reset_for_async_tool():
     tool = SyncResetAsyncTool(name="async_broken_tool")
     swarm = MagicMock()

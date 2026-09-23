@@ -235,6 +235,58 @@ async def test_unknown_runtime_failure_after_execution_is_returned_to_verifier()
 
 
 @pytest.mark.asyncio
+async def test_task_owned_handler_exception_gets_one_model_finalization_turn():
+    runner, context = _runner()
+    runner._execution_started = True
+    emitted = []
+
+    class _Events:
+        async def emit_message(self, event):
+            emitted.append(event)
+
+    class _Agent:
+        async def async_finalize_at_loop_budget(self, message, **_kwargs):
+            return Message(
+                category=Constants.AGENT,
+                payload="best available answer",
+                sender="agent-1",
+                session_id=message.session_id,
+                headers=message.headers,
+            )
+
+    runner.event_mng = _Events()
+    runner.task.agent = _Agent()
+
+    class _Handler:
+        def id(self):
+            return "handler-1"
+
+        def name(self):
+            return "handler"
+
+        async def handle(self, _message):
+            raise RuntimeError("recoverable execution failure")
+
+    await runner._handle_task(
+        Message(
+            category=Constants.AGENT,
+            headers={"context": context},
+            session_id="session-1",
+        ),
+        _Handler().handle,
+    )
+
+    assert len(emitted) == 1
+    assert emitted[0].payload == "best available answer"
+    assert emitted[0].headers["runtime_exception_finalization"] is True
+    assert context.context_info["runtime_exception_finalization"] == {
+        "failure_code": "runtime_exception",
+        "error_type": "RuntimeError",
+        "status": "answer_produced",
+    }
+
+
+@pytest.mark.asyncio
 async def test_finalize_waits_for_high_watermark_before_storage_snapshot(monkeypatch):
     runner, context = _runner()
     registry = context.trajectory_update_registry

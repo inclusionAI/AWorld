@@ -12,13 +12,14 @@ from aworld_cli.run_outcome import DirectRunOutcome
 from types import SimpleNamespace
 
 
-def test_explicit_outputs_enforce_without_natural_language_guessing(monkeypatch, tmp_path):
+def test_explicit_outputs_keep_contract_shape_without_enforce_opt_in(monkeypatch, tmp_path):
     monkeypatch.delenv("AWORLD_COMPLETION_MODE", raising=False)
     monkeypatch.setenv("AWORLD_REQUIRED_ARTIFACTS_JSON", '["result.json"]')
     monkeypatch.setenv("AWORLD_INFER_REQUIRED_ARTIFACTS", "true")
     context = Context(task_id="explicit")
     contract = configure_runtime_completion(context, request="Maybe write optional.csv if needed", workspace_path=tmp_path)
     assert context.completion_mode is CompletionMode.ENFORCE
+    assert context.context_info["completion_enforcement_explicit"] is False
     assert [r.path for r in contract.required_artifacts] == [str(tmp_path / "result.json")]
 
 

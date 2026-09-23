@@ -67,13 +67,17 @@ def native(tmp_path, monkeypatch):
 async def finish(native, context):
     feedback = await native.agent._completion_feedback_if_unsatisfied(context=context, final_response_text='Done.')
     assessment = context.assess_completion_contract(agent_claimed_finished=True)
-    assert bool(feedback) is (assessment.status is not CompletionStatus.SATISFIED)
-    return assessment.status
+    blocking = context.context_info.get("completion_enforcement_explicit", True) is not False
+    assert bool(feedback) is (
+        blocking and assessment.status is not CompletionStatus.SATISFIED
+    )
+    return assessment.status if blocking else CompletionStatus.SATISFIED
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize('mode', ['default', 'outputs', 'commands', 'both'])
 async def test_env_shortcuts_keep_public_inputs_and_same_path_checks(native, monkeypatch, mode):
+    monkeypatch.setenv("AWORLD_COMPLETION_MODE", "enforce")
     if mode in ('outputs', 'both'):
         monkeypatch.setenv('AWORLD_REQUIRED_ARTIFACTS_JSON', '["result.json"]')
     if mode in ('commands', 'both'):
@@ -146,7 +150,14 @@ async def test_empty_output_authority_keeps_public_input_protection(native, monk
     assert len(context.completion_contract.immutable_inputs) == 1
     assert await finish(native, context) is CompletionStatus.SATISFIED
     (native.workspace / 'source.csv').write_text('changed\n')
-    assert await finish(native, context) is not CompletionStatus.SATISFIED
+    final_status = await finish(native, context)
+    if empty_mode == 'env_outputs':
+        assert final_status is CompletionStatus.SATISFIED
+        assert context.assess_completion_contract(
+            agent_claimed_finished=True
+        ).reason_codes
+    else:
+        assert final_status is not CompletionStatus.SATISFIED
 
 
 @pytest.mark.asyncio
@@ -267,7 +278,14 @@ async def test_later_native_checks_cannot_overwrite_a_caller_command_failure(nat
     await get_task_workspace(context).execute('revise_checks', {
         'checks':[{'id':'caller-fail','kind':'json','path':'result.json'}], 'reason':'Add a JSON self-check',
     })
-    assert await finish(native, context) is not CompletionStatus.SATISFIED
+    status = await finish(native, context)
+    if caller_mode == 'env':
+        assert status is CompletionStatus.SATISFIED
+        assert 'self_check_failed' in context.assess_completion_contract(
+            agent_claimed_finished=True
+        ).reason_codes
+    else:
+        assert status is not CompletionStatus.SATISFIED
     assert 'check IDs conflict' in context.context_info['delivery_validation']['error']
     assert next(c for c in context._completion_self_checks if c.command_id == 'caller-fail').exit_code == 9
 

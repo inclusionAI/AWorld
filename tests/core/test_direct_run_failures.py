@@ -1578,7 +1578,7 @@ async def test_noninteractive_aworld_returns_terminal_task_result_to_verifier(
 
 
 @pytest.mark.asyncio
-async def test_one_shot_aworld_fails_closed_for_untyped_agent_failure(
+async def test_one_shot_aworld_returns_untyped_post_provider_failure_to_verifier(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
@@ -1628,10 +1628,12 @@ async def test_one_shot_aworld_fails_closed_for_untyped_agent_failure(
         non_interactive=True,
     )
 
-    assert outcome.status is DirectRunStatus.INFRASTRUCTURE_FAILED
-    payload = _failure_payload(capsys.readouterr().err)
-    assert payload["error_code"] == "agent_execution_untyped_failure"
-    assert payload["details"] == {"provider_evidence": True}
+    assert outcome.status is DirectRunStatus.SUCCEEDED
+    payload = _marker_payload(
+        capsys.readouterr().err,
+        "AWORLD_AGENT_TERMINATION=",
+    )
+    assert payload["reason"] == "agent_task_unsolved"
 
 
 @pytest.mark.asyncio

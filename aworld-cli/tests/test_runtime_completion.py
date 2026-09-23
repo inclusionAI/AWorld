@@ -9,8 +9,17 @@ from aworld_cli.core.runtime_completion import (
     configure_goal_completion,
     configure_runtime_completion,
     infer_declared_output_paths,
+    resolve_completion_mode,
     resolve_completion_max_repairs,
 )
+
+
+def test_completion_contract_shape_stays_legacy_without_explicit_enforcement(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("AWORLD_COMPLETION_MODE", raising=False)
+
+    assert resolve_completion_mode() is CompletionMode.ENFORCE
 
 
 def test_inference_selects_output_path_but_not_input_path() -> None:

@@ -340,7 +340,7 @@ class ContinuousExecutor:
                     getattr(task_response, "success", False) is True
                     and getattr(task_response, "status", None) in {"finished", "success"}
                 )
-            if semantic_status is None and trajectory_completed:
+            if semantic_status is None and trajectory_completed and not non_interactive:
                 is_complete = True
                 self.console.print(
                     f"[green]✅ ({iteration}) Task completed - terminal "
@@ -352,7 +352,8 @@ class ContinuousExecutor:
             # placeholder must never be promoted to completion by prose or
             # repetition similarity.
             response_can_signal_completion = (
-                semantic_status is None
+                not non_interactive
+                and semantic_status is None
                 and self._response_can_signal_completion(response)
             )
             if (

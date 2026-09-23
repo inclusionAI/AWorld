@@ -745,10 +745,15 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                 f"completion_evidence_resolved_this_turn:{self.id()}"
             ] = context.get_agent_step(self.id())
         assessment = context.assess_completion_contract(agent_claimed_finished=True)
+        enforcement_explicit = context.context_info.get(
+            "completion_enforcement_explicit",
+            True,
+        )
         if (
             assessment is None
             or assessment.mode is CompletionMode.OFF
             or assessment.status is CompletionStatus.SATISFIED
+            or enforcement_explicit is False
         ):
             return None
         reasons = ", ".join(assessment.reason_codes)
@@ -4563,6 +4568,34 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         return result
 
     @staticmethod
+    def _context_overflow_response(messages: List[Dict[str, Any]]) -> ModelResponse:
+        """Preserve the latest model text without misreporting user cancellation."""
+
+        content = next(
+            (
+                item.get("content", "").strip()
+                for item in reversed(messages)
+                if isinstance(item, dict)
+                and item.get("role") == "assistant"
+                and isinstance(item.get("content"), str)
+                and item.get("content", "").strip()
+            ),
+            "The context window was exhausted before another model response could be produced.",
+        )
+        return ModelResponse(
+            id=uuid.uuid4().hex,
+            model="",
+            content=content,
+            finish_reason="error",
+            message={
+                "role": "assistant",
+                "content": content,
+                "aworld_incomplete_reason": "context_window_exceeded",
+                "aworld_recoverable": False,
+            },
+        )
+
+    @staticmethod
     def _bounded_partial_for_repair(content: str, *, limit: int) -> str:
         if len(content) <= limit:
             return content
@@ -5029,25 +5062,15 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                                 headers={"context": message.context},
                             )
                         )
-                        # Meaning context too long, will return directly. You can develop a Processor to truncate or compress it.
-                        await send_message(
-                            Message(
-                                category=Constants.TASK,
-                                topic=TopicType.CANCEL,
-                                payload=TaskItem(data=messages, msg=str(e)),
-                                sender=self.id(),
-                                priority=-1,
-                                session_id=message.context.session_id
-                                if message.context
-                                else "",
-                                headers={"context": message.context},
-                            )
+                        from aworld.core.context.execution_state import record_execution_state
+                        record_execution_state(
+                            context,
+                            self.id(),
+                            "incomplete",
+                            "context_window_exceeded",
+                            recoverable=False,
                         )
-                        return ModelResponse(
-                            id=uuid.uuid4().hex,
-                            model=self.model_name,
-                            content=to_serializable(messages),
-                        )
+                        return self._context_overflow_response(messages)
 
                     # If we haven't reached max attempts, try again
                     if attempt < self.llm_max_attempts:
@@ -5319,6 +5342,9 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                 from aworld.core.context.compiler import CompletionMode, CompletionStatus
                 assessment = self.context.assess_completion_contract(agent_claimed_finished=True)
                 if (assessment is not None and assessment.mode is CompletionMode.ENFORCE
+                        and self.context.context_info.get(
+                            "completion_enforcement_explicit", True
+                        ) is not False
                         and assessment.status is not CompletionStatus.SATISFIED):
                     self._finished = False
                     record_execution_state(self.context, self.id(), "incomplete", "completion_contract_unsatisfied")

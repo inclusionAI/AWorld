@@ -20,20 +20,21 @@ repair must also be complete: a truncated or unterminated repair raises the
 typed `action_repair_exhausted` stop instead of being returned as normal output.
 Standalone integrations retain the compatibility default unless they opt in.
 
-A step-budget finalization is a handoff summary. It always produces
-`budget_exhausted`, including when the summary sounds successful. The state is
-stored under `agent_execution_state`, with task/epoch identity, reason, and
-recoverability. The task handler projects this state into TaskResponse. CLI
-summaries preserve these distinctions; the existing supervised outcome schema
-continues to use `task_failed`, with `failure.stage=agent_execution` and
-`failure.error_code=agent_incomplete` or `agent_budget_exhausted`.
+A step-budget boundary requests one tool-free final answer from the model. When
+that synthesis succeeds, its completion status is preserved and the exhausted
+budget is recorded separately as execution metadata; answer correctness remains
+the verifier's responsibility. When synthesis cannot produce an answer, the
+state is `budget_exhausted` under `agent_execution_state`, with task/epoch
+identity, reason, and recoverability. The task handler projects that incomplete
+state into TaskResponse without fabricating success.
 
 ## Explicit verification
 
 `AWORLD_REQUIRED_ARTIFACTS_JSON` is a caller-supplied JSON array of output paths.
-It enables enforcement by default unless `AWORLD_COMPLETION_MODE` is explicitly
-set. Optional natural-language output inference remains advisory and must not
-add guessed requirements to an explicit contract.
+It records structured completion evidence but remains advisory unless
+`AWORLD_COMPLETION_MODE=enforce` is explicitly set. Optional natural-language
+output inference remains advisory and must not add guessed requirements to an
+explicit contract.
 
 `AWORLD_COMPLETION_MAX_REPAIRS` optionally limits model-driven completion repair
 turns with a non-negative integer. Unset or blank retains the historical

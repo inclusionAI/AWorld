@@ -67,8 +67,9 @@ def _agent(context, **kwargs):
 
 
 @pytest.mark.asyncio
-async def test_default_cli_build_enforces_literal_output_and_agent_cannot_finish_early(local_facade, monkeypatch, tmp_path):
+async def test_explicit_enforce_mode_blocks_missing_literal_output(local_facade, monkeypatch, tmp_path):
     monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("AWORLD_COMPLETION_MODE", "enforce")
     monkeypatch.setenv('AWORLD_REQUIRED_ARTIFACTS_JSON', '["result.json"]')
     executor = object.__new__(LocalAgentExecutor)
     executor._base_runtime = None
@@ -125,7 +126,12 @@ async def test_caller_check_survives_derived_path_and_aggregate_attachment(local
 
 
 @pytest.mark.asyncio
-async def test_old_pass_is_invalidated_when_delivery_evaluation_fails(local_facade, tmp_path):
+async def test_old_pass_is_invalidated_when_delivery_evaluation_fails(
+    local_facade,
+    monkeypatch,
+    tmp_path,
+):
+    monkeypatch.setenv("AWORLD_COMPLETION_MODE", "enforce")
     context = Context(task_id='freshness')
     _bind(context, tmp_path)
     (tmp_path / 'result.json').write_text('{}')

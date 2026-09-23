@@ -425,6 +425,49 @@ async def test_finished_event_classifies_validator_errors_as_infrastructure():
 
 
 @pytest.mark.asyncio
+async def test_advisory_completion_contract_does_not_override_model_finish():
+    from aworld.core.context.compiler import CompletionMode, CompletionStatus
+    from aworld.core.event.base import Message, Constants, TopicType
+    from aworld.runners.handler.task import DefaultTaskHandler
+
+    task = Task(id="advisory-completion")
+    context = SimpleNamespace(
+        task_id=task.id,
+        task_epoch=None,
+        token_usage={},
+        context_info={"completion_enforcement_explicit": False},
+        merge_context=lambda _: None,
+        assess_completion_contract=lambda **_: SimpleNamespace(
+            mode=CompletionMode.ENFORCE,
+            status=CompletionStatus.FAILED,
+            reason_codes=("required_artifact_missing",),
+        ),
+    )
+    runner = SimpleNamespace(
+        task=task,
+        context=context,
+        start_time=0,
+        stop=AsyncMock(),
+    )
+    message = Message(
+        category=Constants.TASK,
+        topic=TopicType.FINISHED,
+        payload="model final answer",
+        headers={"context": context},
+    )
+
+    events = [
+        event
+        async for event in DefaultTaskHandler(runner)._do_handle(message)
+    ]
+    response = events[-1].payload
+
+    assert response.success is True
+    assert response.semantic_status == "succeeded"
+    assert response.answer == "model final answer"
+
+
+@pytest.mark.asyncio
 async def test_process_runtime_explicit_budget_cancels_owned_workers(monkeypatch):
     from aworld.config import RunConfig
     from aworld.runners.runtime_engine import LocalRuntime

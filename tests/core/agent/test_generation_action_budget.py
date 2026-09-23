@@ -906,3 +906,17 @@ async def test_truncated_action_repair_is_typed_as_exhausted(
     assert calls == 2
     events = message.context.context_info["generation_budget_events"]
     assert events[-1]["reason"] == GenerationStopReason.ACTION_REPAIR_EXHAUSTED.value
+
+
+def test_context_overflow_preserves_latest_answer_without_cancellation() -> None:
+    response = Agent._context_overflow_response(
+        [
+            {"role": "user", "content": "work"},
+            {"role": "assistant", "content": "partial useful answer"},
+            {"role": "tool", "content": "large output"},
+        ]
+    )
+
+    assert response.content == "partial useful answer"
+    assert response.message["aworld_incomplete_reason"] == "context_window_exceeded"
+    assert response.message["aworld_recoverable"] is False

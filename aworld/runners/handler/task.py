@@ -62,6 +62,31 @@ class DefaultTaskHandler(TaskHandler):
 
         return f"Task fail, cause: {message}"
 
+    @staticmethod
+    def _latest_model_answer(context) -> str | None:
+        """Recover the latest model text without treating it as verified success."""
+
+        getter = getattr(context, "get_reconciled_llm_calls", None)
+        try:
+            calls = getter() if callable(getter) else None
+        except Exception:
+            calls = None
+        if not isinstance(calls, list):
+            calls = getattr(context, "context_info", {}).get("llm_calls", [])
+        for call in reversed(calls if isinstance(calls, list) else []):
+            if not isinstance(call, dict):
+                continue
+            response = call.get("response")
+            if not isinstance(response, dict):
+                continue
+            message = response.get("message")
+            content = message.get("content") if isinstance(message, dict) else None
+            if not isinstance(content, str):
+                content = response.get("content")
+            if isinstance(content, str) and content.strip():
+                return content.strip()
+        return None
+
     def is_valid_message(self, message: Message):
         if message.category != Constants.TASK:
             return False
@@ -119,6 +144,11 @@ class DefaultTaskHandler(TaskHandler):
                 "call_deadline_exceeded",
                 "action_repair_timeout",
             }
+            answer = (
+                self._latest_model_answer(message.context)
+                if task_owned
+                else None
+            ) or self._build_user_safe_error_answer(task_item.msg)
             logger.warning(
                 "AWORLD_TASK_RESPONSE_FAILURE="
                 + json.dumps(
@@ -137,7 +167,7 @@ class DefaultTaskHandler(TaskHandler):
                 )
             )
             self.runner._task_response = TaskResponse(msg=task_item.msg,
-                                                      answer=self._build_user_safe_error_answer(task_item.msg),
+                                                      answer=answer,
                                                       context=message.context,
                                                       success=False,
                                                       id=self.runner.task.id,
@@ -165,6 +195,9 @@ class DefaultTaskHandler(TaskHandler):
             completion_blocked = (
                 completion is not None
                 and completion.mode is CompletionMode.ENFORCE
+                and self.runner.context.context_info.get(
+                    "completion_enforcement_explicit", True
+                ) is not False
                 and completion.status is not CompletionStatus.SATISFIED
             )
             execution_state = self.runner.context.context_info.get("agent_execution_state", {})

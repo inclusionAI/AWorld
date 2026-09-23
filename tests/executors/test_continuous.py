@@ -203,6 +203,28 @@ async def test_local_interruption_signal_cannot_be_reclassified_as_success() -> 
 
 
 @pytest.mark.asyncio
+async def test_noninteractive_run_does_not_infer_completion_from_answer_text() -> None:
+    async def fake_chat(_prompt: str, **_kwargs):
+        return "The task is completed successfully: " + ("evidence " * 40)
+
+    continuous = ContinuousExecutor(
+        SimpleNamespace(chat=fake_chat, session_id="sess-1", last_task_response=None),
+        console=Console(file=StringIO(), force_terminal=False),
+    )
+
+    result = await continuous.run_iteration(
+        1,
+        "hello",
+        agent_name="Aworld",
+        non_interactive=True,
+    )
+
+    assert result["success"] is True
+    assert result["completed"] is False
+    assert result["immediate_stop"] is False
+
+
+@pytest.mark.asyncio
 async def test_run_iteration_preserves_control_plane_when_inline_trajectory_is_empty() -> None:
     async def fake_chat(prompt: str, **kwargs):
         return "Task fail, cause: provider_timeout"
