@@ -26,7 +26,7 @@ def test_runtime_registry_includes_builtin_filex_without_configured_sources(
     skills = view.get_all_skills()
 
     assert set(skills) == {"filex"}
-    assert skills["filex"]["default_enabled"] is True
+    assert skills["filex"]["default_enabled"] is False
     assert skills["filex"]["active"] is False
     assert Path(skills["filex"]["asset_root"]) == get_builtin_skills_path() / "filex"
     assert "scripts/filex.py" in skills["filex"]["execution_assets"]["relative_paths"]
@@ -46,27 +46,28 @@ def test_runtime_registry_includes_builtin_filex_without_configured_sources(
         "读取文档并总结重点",
     ],
 )
-def test_builtin_filex_activates_for_document_tasks_without_skill_hints(task: str) -> None:
+def test_builtin_filex_stays_disabled_for_document_tasks_without_skill_hints(
+    task: str,
+) -> None:
     result = SkillActivationResolver().resolve(
         SkillResolverRequest(plugin_roots=(), runtime_scope="session", task_text=task)
     )
 
-    assert result.active_skill_names == ("filex",)
-    assert result.skill_configs["filex"]["active"] is True
+    assert "filex" not in result.available_skill_names
+    assert result.active_skill_names == ()
 
 
 @pytest.mark.parametrize(
     "task",
     ["What is 2 + 2?", "Fix password validation", "Create a video", "Explain Python generators"],
 )
-def test_builtin_filex_is_available_but_not_forced_for_other_tasks(task: str) -> None:
+def test_builtin_filex_stays_disabled_for_other_tasks(task: str) -> None:
     result = SkillActivationResolver().resolve(
         SkillResolverRequest(plugin_roots=(), runtime_scope="session", task_text=task)
     )
 
-    assert "filex" in result.available_skill_names
+    assert "filex" not in result.available_skill_names
     assert result.active_skill_names == ()
-    assert result.skill_configs["filex"]["active"] is False
 
 
 def test_builtin_filex_respects_persisted_user_disable(tmp_path: Path) -> None:
@@ -113,6 +114,7 @@ def test_builtin_filex_is_independent_of_compatibility_skill_patterns() -> None:
             plugin_roots=(),
             runtime_scope="session",
             task_text="Read report.pdf",
+            requested_skill_names=("filex",),
             compatibility_skill_patterns=("browser-use",),
         )
     )
@@ -120,7 +122,7 @@ def test_builtin_filex_is_independent_of_compatibility_skill_patterns() -> None:
     assert result.active_skill_names == ("filex",)
 
 
-def test_local_executor_resolves_builtin_filex_without_agent_configuration(
+def test_local_executor_keeps_builtin_filex_disabled_without_explicit_selection(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     from aworld_cli.executors.local import LocalAgentExecutor
@@ -144,8 +146,7 @@ def test_local_executor_resolves_builtin_filex_without_agent_configuration(
         SimpleNamespace(task_content="Summarize report.pdf", metadata={})
     )
 
-    assert agent.conf.skill_configs["filex"]["active"] is True
-    assert "/skills/filex/scripts/filex.py" in agent.conf.skill_configs["filex"]["usage"]
+    assert "filex" not in agent.conf.skill_configs
 
 
 def test_builtin_manifest_declares_the_canonical_source_and_assets() -> None:
@@ -160,7 +161,7 @@ def test_builtin_manifest_declares_the_canonical_source_and_assets() -> None:
     assert all((root / relative).is_file() for relative in entry["execution_assets"])
 
 
-def test_aworld_agent_enables_filex_without_task_or_gateway_skill_hints(
+def test_aworld_agent_requires_explicit_filex_enable(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     from aworld_cli.builtin_agents.smllc.agents import aworld_agent
@@ -186,13 +187,13 @@ def test_aworld_agent_enables_filex_without_task_or_gateway_skill_hints(
     task = SimpleNamespace(task_content="Proceed with the task", metadata={})
     executor._resolve_swarm_skills(task)
 
+    assert "filex" not in root.skill_configs
+
+    state.enable_skill("filex")
+    executor._resolve_swarm_skills(task)
     assert root.skill_configs["filex"]["active"] is True
     assert root.conf.skill_configs == root.skill_configs
     assert "--layout-format parse-output" in root.skill_configs["filex"]["usage"]
-
-    state.disable_skill("filex")
-    executor._resolve_swarm_skills(task)
-    assert "filex" not in root.skill_configs
 
 
 @pytest.mark.parametrize("requested", [(), ("browser-use",)])
@@ -213,7 +214,7 @@ def test_aworld_defaults_preserve_automatic_and_explicit_skill_selection(
         compatibility_sources=(str(tmp_path),),
     ))
 
-    assert result.active_skill_names == (requested or ("filex", "browser-use"))
+    assert result.active_skill_names == (requested or ("browser-use",))
 
 
 def test_agent_defaults_do_not_override_user_skill_definition(tmp_path: Path) -> None:

@@ -2,7 +2,7 @@
 name: filex
 description: Parse workspace files, HTTP(S) file URLs, or supported source URLs such as YouTube into Markdown, inspect source routing, and inspect resumable PDF batch status with the FileX CLI inside an AWorld sandbox. Use for reading, extracting, transcribing, inspecting, summarizing, or answering questions about PDF, Word, PowerPoint, Excel, CSV, text, Markdown, image, audio, or video files.
 metadata:
-  default_enabled: true
+  default_enabled: false
   match_keywords:
     - pdf
     - docx

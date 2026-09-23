@@ -65,14 +65,15 @@ from aworld_cli.core.skill_activation_resolver import SkillActivationResolver, S
 root = get_builtin_skills_path()
 assert root == Path(sys.argv[1]) / 'aworld_cli' / 'builtin_skills', root
 result = SkillActivationResolver().resolve(SkillResolverRequest(
-    plugin_roots=(), runtime_scope='session', task_text='Summarize the attached PDF'))
+    plugin_roots=(), runtime_scope='session', task_text='Summarize the attached PDF',
+    requested_skill_names=('filex',)))
 assert result.active_skill_names == ('filex',), result
 assert Path(result.skill_configs['filex']['asset_root']) == root / 'filex'
 assert (root / 'filex/scripts/filex.py').is_file()
 default_result = SkillActivationResolver().resolve(SkillResolverRequest(
     plugin_roots=(), runtime_scope='session', task_text='',
     default_skill_names=AWORLD_DEFAULT_SKILL_NAMES))
-assert default_result.active_skill_names == ('filex',), default_result
+assert default_result.active_skill_names == (), default_result
 """
     subprocess.run(
         [sys.executable, "-c", code, str(installed)],

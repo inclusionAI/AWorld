@@ -188,9 +188,8 @@ async def test_local_executor_resolves_skills_from_task_input(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("requested", [[], ["filex"]], ids=["agent-default", "explicit"])
 async def test_resolved_filex_reaches_prompt_tools_and_sandbox(
-    monkeypatch: pytest.MonkeyPatch, requested: list[str]
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(
         "aworld_cli.executors.local.PluginManager",
@@ -227,7 +226,7 @@ async def test_resolved_filex_reaches_prompt_tools_and_sandbox(
         task_id="filex-runtime-task",
         task_content="Process the supplied input and write the requested artifacts.",
     )
-    context.task_input_object.metadata["requested_skill_names"] = requested
+    context.task_input_object.metadata["requested_skill_names"] = ["filex"]
     executor = LocalAgentExecutor(Swarm(agent))
     executor._resolve_swarm_skills(context.task_input_object)
     # A second task resolution must refresh caches without duplicating tools.
