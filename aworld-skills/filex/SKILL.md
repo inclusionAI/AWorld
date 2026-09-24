@@ -96,12 +96,17 @@ flows rather than deployment-specific object-store workflows.
 5. Run the parse synchronously in the foreground with enough terminal-tool
    time. For evaluation or durable handoff, request an artifact bundle and an
    explicit layout format.
-6. Validate the JSON result, then read `output_path` and inspect the generated
-   Markdown or artifact bundle. Logs are diagnostic evidence, not the result
-   contract.
+6. Use the JSON result, returned paths, page coverage, and warnings to decide
+   whether further inspection would help the task. Keep established facts in
+   task state and revisit them when the source, artifacts, or requirements change.
 7. On failure, preserve the wrapper's JSON error, provider/model identity, task
    id, and any checkpoint. Retry only after the first process has ended and the
    failure is understood.
+
+You decide when the requested deliverables are ready and return the final
+response. Choose any additional quality checks according to the user's task.
+Managed runtimes collect and validate provenance after execution; that receipt
+processing does not require another model inspection or a WORKBENCH candidate.
 
 ## Allow time for document parsing
 
@@ -264,16 +269,13 @@ each optional `items[].layout_segments[]` entry is itself a box object with
 }
 ```
 
-Do not wrap a segment in another `bbox` object. When a valid item has only its
-single `bbox`, `layout_segments` may be omitted. Before finishing, check every
-page and every item/segment, not just whether JSON loads: page dimensions must
-be positive, coordinates must be finite numbers, `x`/`y` must be nonnegative,
-`w`/`h` must be positive, and boxes must stay within their page. Preserve the
-actual source geometry and Canonical17 labels. These are acceptance checks on
-FileX's committed output, never instructions to repair it in place. If a check
-fails, preserve the bundle as evidence and rerun FileX into a fresh artifact
-directory with corrected inputs or configuration. A well-formed JSON file alone
-does not establish that the layout follows the required schema.
+In this format, a segment is a box object itself; `layout_segments` may be
+omitted when an item has only its single `bbox`. Page dimensions and box sizes
+are positive, coordinates are finite and nonnegative, and boxes fit within the
+page using Canonical17 labels. Use this schema when interpreting a parser result
+or a reported diagnostic. Select further inspection or a corrected parse when
+it addresses a concrete issue with the requested deliverables, preserving the
+original bundle and its provenance.
 
 ParseOutput export requires a provider that emits real layout geometry. For
 PNG, JPG/JPEG, WebP, GIF, and BMP inputs with `--artifacts-dir` and
