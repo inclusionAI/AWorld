@@ -142,7 +142,7 @@ async def test_post_tool_progress_watchdog_accepts_null_action_error(monkeypatch
     assert emitted[0].payload.action_result[0].tool_call_id is None
 
 
-def test_progress_guard_is_injected_into_abab_tool_observation():
+def test_repeated_operations_do_not_inject_instructions_into_tool_results():
     context = Context(task_id="progress-guard-abab")
 
     def arm(label: str, index: int) -> Observation:
@@ -178,24 +178,10 @@ def test_progress_guard_is_injected_into_abab_tool_observation():
     for index, label in enumerate(("a", "b", "a", "b", "a"), start=1):
         observation = arm(label, index)
 
-    guard = observation.info["progress_guard"]
-    assert guard["reason"] == "repeated_operation_result_pair"
-    assert guard["repeat_count"] == 3
-    assert guard["threshold"] == 3
-    assert guard["recent_window"] == 8
-    assert guard["pattern_hash"].startswith("sha256:")
-    assert "sed -n" not in repr(guard)
-    assert "private-tool-result" not in repr(guard)
-    result_content = observation.action_result[0].content
-    assert "Use the evidence already available" in result_content
-    assert "must either mutate a task artifact or produce new validation evidence" in result_content
-    assert "Do not repeat this read or an equivalent read" in result_content
-    assert "AWorld progress guard" in observation.content
+    assert observation.content == "private-tool-result-a"
+    assert observation.action_result[0].content == "private-tool-result-a"
+    assert "progress_guard" not in (observation.info or {})
     state = context.context_info["post_tool_progress_watchdog"]
-    assert state["followup_observation"]["info"]["progress_guard"] == guard
-    assert (
-        context.context_info["post_tool_progress_metrics"][
-            "progress_guard_injected_count"
-        ]
-        == 1
-    )
+    assert state["followup_observation"]["content"] == "private-tool-result-a"
+    from aworld.runners.post_tool_progress import semantic_progress_for_agent
+    assert semantic_progress_for_agent(context, agent_id="agent")["repetition_count"] == 3

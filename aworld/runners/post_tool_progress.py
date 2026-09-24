@@ -11,13 +11,7 @@ _SEMANTIC_RUNTIME_KEY = "semantic_progress"
 _POST_TOOL_TURNS_RUNTIME_KEY = "post_tool_turns"
 _RECENT_SEMANTIC_PAIR_WINDOW = 8
 _PROGRESS_GUARD_REPEAT_THRESHOLD = 3
-_PROGRESS_GUARD_MESSAGE = (
-    "AWorld progress guard: this operation/result pattern already repeated in "
-    "the bounded recent window. Use the evidence already available. Your next "
-    "tool action must either mutate a task artifact or produce new validation "
-    "evidence. Do not repeat this read or an equivalent read over the same "
-    "evidence."
-)
+
 
 
 def _select_semantic_state(shared: Any, local: Any) -> dict[str, Any] | None:
@@ -582,50 +576,13 @@ def arm_post_tool_progress_watchdog(
     if runtime_context is None:
         return None
 
-    semantic_progress = record_semantic_tool_progress(
+    record_semantic_tool_progress(
         runtime_context,
         tool_name=tool_name,
         agent_id=agent_id,
         actions=actions,
         observation=followup_observation,
     )
-    if semantic_progress and semantic_progress.get("progress_guard_required") is True:
-        guard = {
-            "schema_version": "aworld.post-tool-progress-guard/v1",
-            "reason": "repeated_operation_result_pair",
-            "repeat_count": semantic_progress.get("repetition_count"),
-            "threshold": semantic_progress.get("progress_guard_repeat_threshold"),
-            "recent_window": semantic_progress.get("progress_guard_recent_window"),
-            "pattern_hash": semantic_progress.get("operation_result_hash"),
-        }
-        info = dict(followup_observation.info or {})
-        info["progress_guard"] = guard
-        followup_observation.info = info
-        results = followup_observation.action_result or []
-        if results:
-            result = results[0]
-            content = result.content
-            content_text = content if isinstance(content, str) else str(content or "")
-            if _PROGRESS_GUARD_MESSAGE not in content_text:
-                result.content = (
-                    f"{content_text}\n\n{_PROGRESS_GUARD_MESSAGE}".strip()
-                )
-            metadata = dict(result.metadata or {})
-            metadata["progress_guard"] = guard
-            result.metadata = metadata
-        content = followup_observation.content
-        if isinstance(content, str) or content is None:
-            content_text = content or ""
-            if _PROGRESS_GUARD_MESSAGE not in content_text:
-                followup_observation.content = (
-                    f"{content_text}\n\n{_PROGRESS_GUARD_MESSAGE}".strip()
-                )
-        metrics = _metrics_dict(runtime_context)
-        metrics["progress_guard_injected_count"] = (
-            int(metrics.get("progress_guard_injected_count", 0) or 0) + 1
-        )
-        runtime_context.context_info[WATCHDOG_METRICS_KEY] = metrics
-
     from aworld.core.context.compiler import (
         ADAPTIVE_WORK_STATE_KEY,
         semantic_fingerprint,
