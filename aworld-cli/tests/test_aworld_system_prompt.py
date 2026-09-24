@@ -61,6 +61,17 @@ def test_render_aworld_system_prompt_disables_unavailable_delegation() -> None:
     assert "developer" not in prompt
 
 
+def test_render_aworld_system_prompt_uses_actual_workspace(monkeypatch, tmp_path) -> None:
+    monkeypatch.chdir(tmp_path)
+    prompt = render_aworld_system_prompt(available_tools=["terminal", "CONTEXT_TOOL"])
+
+    assert f"Your working directory is {tmp_path.resolve()}" in prompt
+    assert "{{working_directory}}" not in prompt
+    assert "DeepSeek Harness" not in prompt
+    assert "matrixllm.aisearch" not in prompt
+    assert "read_output_artifact" in prompt
+
+
 def test_aworld_max_loop_steps_defaults_to_no_step_limit(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

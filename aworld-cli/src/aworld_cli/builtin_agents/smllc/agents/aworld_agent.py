@@ -359,6 +359,7 @@ def render_aworld_system_prompt(
     replacements = {
         "{{current_date}}": current.strftime("%Y-%m-%d"),
         "{{current_datetime}}": current.strftime("%Y-%m-%d %H:%M:%S"),
+        "{{working_directory}}": os.path.realpath(os.getcwd()),
         "{{available_tools}}": (
             ", ".join(sorted(set(available_tools))) or "none"
         ),
