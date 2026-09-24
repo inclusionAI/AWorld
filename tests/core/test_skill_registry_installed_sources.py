@@ -13,11 +13,11 @@ from aworld_cli.core.skill_registry import (
     reset_skill_registry,
     resolve_explicit_skill_sources,
 )
-from aworld_cli.builtin_agents.smllc.agents.audio import audio as audio_module
-from aworld_cli.builtin_agents.smllc.agents.developer import developer as developer_module
-from aworld_cli.builtin_agents.smllc.agents.diffusion import diffusion as diffusion_module
-from aworld_cli.builtin_agents.smllc.agents.evaluator import evaluator as evaluator_module
-from aworld_cli.builtin_agents.smllc.agents.image import image as image_module
+from aworld_cli.builtin_agents.smllc.optional_agents.audio import audio as audio_module
+from aworld_cli.builtin_agents.smllc.optional_agents.developer import developer as developer_module
+from aworld_cli.builtin_agents.smllc.optional_agents.diffusion import diffusion as diffusion_module
+from aworld_cli.builtin_agents.smllc.optional_agents.evaluator import evaluator as evaluator_module
+from aworld_cli.builtin_agents.smllc.optional_agents.image import image as image_module
 
 
 def _write_skill(root: Path, skill_name: str, description: str) -> None:

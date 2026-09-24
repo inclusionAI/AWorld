@@ -10,8 +10,6 @@ from aworld_cli.core.skill_activation_resolver import (
 
 DEFAULT_RUNTIME_SKILLS = {
     "agent-browser",
-    "filex",
-    "media_comprehension",
 }
 
 

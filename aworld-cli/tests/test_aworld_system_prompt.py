@@ -1,4 +1,9 @@
+import os
+import subprocess
+import sys
 from datetime import datetime
+from pathlib import Path
+from types import SimpleNamespace
 from zoneinfo import ZoneInfo
 
 import pytest
@@ -290,6 +295,64 @@ def test_builtin_subagents_can_be_disabled_for_one_shot_runners(
     assert resolve_aworld_builtin_subagents() == ()
 
 
+def test_default_agent_executes_without_loading_specialists(monkeypatch, tmp_path) -> None:
+    monkeypatch.delenv("AWORLD_BUILTIN_SUBAGENTS", raising=False)
+    monkeypatch.setenv("LLM_MODEL_NAME", "gpt-4")
+    monkeypatch.setenv("LLM_API_KEY", "offline")
+    monkeypatch.chdir(tmp_path)
+
+    def unexpected_import(name):
+        pytest.fail(f"Default agent must not import a specialist: {name}")
+
+    monkeypatch.setattr(aworld_agent, "import_module", unexpected_import)
+    assert resolve_aworld_builtin_subagents() == ()
+    swarm = aworld_agent.build_aworld_agent()
+    assert len(swarm.agents) == 1
+    root = next(iter(swarm.agents.values()))
+    assert root.name() == "Aworld"
+    assert root.enable_subagent is False
+    tools, _ = _aworld_root_tool_policy(
+        resolve_aworld_tool_surface_profile(), has_subagents=False,
+    )
+    assert "async_spawn_subagent" not in tools
+
+
+def test_default_cli_discovery_registers_only_main_agent(tmp_path) -> None:
+    # A fresh process catches eager decorator registrations that constructing
+    # the root alone cannot detect in an already populated test registry.
+    repo = Path(__file__).resolve().parents[2]
+    env = {
+        **os.environ,
+        "AWORLD_DISABLE_AUTO_DOTENV": "1",
+        "PYTHONPATH": os.pathsep.join((str(repo), str(repo / "aworld-cli/src"))),
+    }
+    env.pop("AWORLD_BUILTIN_SUBAGENTS", None)
+    script = """
+import asyncio
+import sys
+from pathlib import Path
+import aworld_cli
+from aworld_cli.core.agent_registry import LocalAgentRegistry
+from aworld_cli.runtime.loaders import PluginLoader
+bundle = Path(aworld_cli.__file__).parent / "builtin_agents/smllc"
+agents = asyncio.run(PluginLoader(bundle).load_agents())
+assert [agent.name for agent in agents] == ["Aworld"], agents
+assert [agent.name for agent in LocalAgentRegistry.list_agents()] == ["Aworld"]
+assert not any(".optional_agents." in name for name in sys.modules)
+"""
+    result = subprocess.run(
+        [sys.executable, "-c", script], cwd=tmp_path, env=env,
+        capture_output=True, text=True, timeout=60,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+@pytest.mark.parametrize("value", ["all", "auto"])
+def test_specialists_can_still_be_explicitly_enabled(monkeypatch, value) -> None:
+    monkeypatch.setenv("AWORLD_BUILTIN_SUBAGENTS", value)
+    assert resolve_aworld_builtin_subagents() == aworld_agent.AWORLD_BUILTIN_SUBAGENT_NAMES
+
+
 def test_builtin_subagent_allowlist_rejects_unknown_names(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -368,29 +431,38 @@ def test_optional_subagent_failures_do_not_hide_healthy_subagents(
         "extract_agents_from_swarm",
         lambda swarm: [FakeAgent(swarm)],
     )
-    monkeypatch.setattr(
-        aworld_agent,
-        "build_diffusion_swarm",
-        successful_builder("diffusion"),
-    )
-    monkeypatch.setattr(
-        aworld_agent,
-        "build_avatar_swarm",
-        failing_builder,
-    )
-    monkeypatch.setattr(
-        aworld_agent,
-        "build_audio_swarm",
-        successful_builder("audio"),
-    )
-    monkeypatch.setattr(
-        aworld_agent,
-        "build_image_swarm",
-        successful_builder("image"),
-    )
+    imported = []
+
+    def load_specialist(module_name):
+        imported.append(module_name)
+        name = module_name.rsplit(".", 1)[-1]
+        builder = failing_builder if name == "avatar" else successful_builder(name)
+        return SimpleNamespace(**{f"build_{name}_swarm": builder})
+
+    monkeypatch.setattr(aworld_agent, "import_module", load_specialist)
 
     shared_sandbox = object()
-    agents = aworld_agent._build_aworld_sub_agents(sandbox=shared_sandbox)
+    agents = aworld_agent._build_aworld_sub_agents(
+        sandbox=shared_sandbox, enabled_names=aworld_agent.AWORLD_BUILTIN_SUBAGENT_NAMES,
+    )
 
     assert aworld_agent._subagent_names(agents) == ["audio", "diffusion", "image"]
     assert seen_sandboxes == [shared_sandbox] * 4
+    assert [name.rsplit(".", 1)[-1] for name in imported] == [
+        "diffusion", "avatar", "audio", "image",
+    ]
+
+
+def test_unselected_specialists_are_not_imported(monkeypatch) -> None:
+    imported = []
+
+    def load_specialist(module_name):
+        imported.append(module_name)
+        return SimpleNamespace(build_image_swarm=lambda **kwargs: "image")
+
+    monkeypatch.setattr(aworld_agent, "import_module", load_specialist)
+    monkeypatch.setattr(aworld_agent, "extract_agents_from_swarm", lambda swarm: [swarm])
+    assert aworld_agent._build_aworld_sub_agents(object(), enabled_names=("image",)) == ["image"]
+    assert imported == [
+        "aworld_cli.builtin_agents.smllc.optional_agents.image.image",
+    ]

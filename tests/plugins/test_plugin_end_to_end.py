@@ -132,9 +132,9 @@ def test_builtin_memory_plugin_registers_memory_command():
 
 def test_builtin_agent_bundle_namespace_moves_to_builtin_agents_package():
     from aworld_cli.builtin_agents.smllc.agents.aworld_agent import load_aworld_system_prompt
-    from aworld_cli.builtin_agents.smllc.agents.avatar.avatar import build_avatar_swarm
+    from aworld_cli.builtin_agents.smllc.optional_agents.avatar.avatar import build_avatar_swarm
 
-    assert "cron" in load_aworld_system_prompt()
+    assert "cron" in load_aworld_system_prompt(available_tools=["cron"])
     assert callable(build_avatar_swarm)
 
 

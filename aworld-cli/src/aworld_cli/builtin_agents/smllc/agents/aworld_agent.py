@@ -1,13 +1,4 @@
-"""
-Aworld Agent - A versatile AI agent that can execute tasks directly or delegate to agent teams.
-
-This agent supports:
-1. Direct task execution: Handle tasks directly using available tools and skills
-2. Agent team delegation: Create and delegate tasks to specialized agent teams when needed
-
-Role: Aworld - A versatile AI assistant capable of solving any task through direct execution
-or coordinated multi-agent collaboration.
-"""
+"""AWorld's general-purpose automation agent with opt-in specialist collaborators."""
 import os
 import sys
 from datetime import datetime, timedelta, timezone
@@ -31,12 +22,6 @@ from aworld_cli.core.model_profiles import resolve_context_compiler_env, resolve
 from aworld.tools.workbench_tool import WORKBENCH, WORKBENCH_SCHEMA_IDS
 from aworld_cli.core.builtin_skills import AWORLD_DEFAULT_SKILL_NAMES
 from aworld_cli.core.skill_registry import build_skill_resolver_inputs
-from .audio.audio import build_audio_swarm
-from .avatar.avatar import build_avatar_swarm
-from .developer.developer import build_developer_swarm
-from .diffusion.diffusion import build_diffusion_swarm
-from .evaluator.evaluator import build_evaluator_swarm
-from .image.image import build_image_swarm
 from .mac_ui_automation import (
     augment_aworld_agent_builtin_tools,
     augment_aworld_agent_mcp_servers,
@@ -301,7 +286,7 @@ def resolve_aworld_generation_budget() -> Optional[GenerationBudgetPolicy]:
 def resolve_aworld_builtin_subagents() -> tuple[str, ...]:
     """Resolve an explicit, task-text-independent collaborator allowlist."""
 
-    raw_value = os.environ.get("AWORLD_BUILTIN_SUBAGENTS", "all").strip().lower()
+    raw_value = os.environ.get("AWORLD_BUILTIN_SUBAGENTS", "none").strip().lower()
     if raw_value in {"all", "auto"}:
         return AWORLD_BUILTIN_SUBAGENT_NAMES
     if raw_value in {"", "none"}:
@@ -516,37 +501,27 @@ def _build_aworld_sub_agents(
     """Build optional collaborators before publishing root capabilities."""
 
     enabled = set(
-        AWORLD_BUILTIN_SUBAGENT_NAMES
-        if enabled_names is None
-        else enabled_names
+        resolve_aworld_builtin_subagents() if enabled_names is None else enabled_names
     )
-    builders = []
-    if _CAST_TOOLS_AVAILABLE:
-        if "developer" in enabled:
-            builders.append(
-                ("developer", lambda: build_developer_swarm(sandbox=sandbox))
-            )
-        if "evaluator" in enabled:
-            builders.append(
-                ("evaluator", lambda: build_evaluator_swarm(sandbox=sandbox))
-            )
-    elif {"developer", "evaluator"} & enabled:
+    if not _CAST_TOOLS_AVAILABLE and {"developer", "evaluator"} & enabled:
         logger.warning(
             "Developer and evaluator sub-agents are disabled because CAST "
             f"dependencies are unavailable: {_CAST_TOOLS_UNAVAILABLE_REASON}"
         )
-    optional_builders = (
-        ("diffusion", lambda: build_diffusion_swarm(sandbox=sandbox)),
-        ("avatar", lambda: build_avatar_swarm(sandbox=sandbox)),
-        ("audio", lambda: build_audio_swarm(sandbox=sandbox)),
-        ("image", lambda: build_image_swarm(sandbox=sandbox)),
-    )
-    builders.extend(item for item in optional_builders if item[0] in enabled)
+        enabled.difference_update({"developer", "evaluator"})
 
     sub_agents = []
-    for label, builder in builders:
+    bundle_package = __package__.rsplit(".", 1)[0]
+    for label in AWORLD_BUILTIN_SUBAGENT_NAMES:
+        if label not in enabled:
+            continue
         try:
-            sub_agents.extend(extract_agents_from_swarm(builder()))
+            # Specialists live outside the automatically scanned agents tree.
+            # Import only selected modules so their dependencies and decorator
+            # registrations cannot affect a default CLI run.
+            module = import_module(f"{bundle_package}.optional_agents.{label}.{label}")
+            builder = getattr(module, f"build_{label}_swarm")
+            sub_agents.extend(extract_agents_from_swarm(builder(sandbox=sandbox)))
         except Exception as exc:
             logger.warning(
                 f"Optional Aworld {label} sub-agent is unavailable: {exc}"
@@ -569,7 +544,7 @@ def build_context_config(debug_mode):
 
 @agent(
     name="Aworld",
-    desc="Aworld is a versatile AI assistant that can execute tasks directly or delegate to specialized agent teams. Use when you need: (1) General-purpose task execution, (2) Complex multi-step problem solving, (3) Coordination of specialized agent teams, (4) Adaptive task handling that switches between direct execution and team delegation",
+    desc="A general-purpose automation agent that plans and executes tasks with available tools, adapts to observed results, and delivers verified outcomes.",
     context_config=build_context_config(
         debug_mode=True,
     ),
@@ -577,34 +552,24 @@ def build_context_config(debug_mode):
 )
 def build_aworld_agent(include_skills: Optional[str] = None):
     """
-    Build the Aworld agent with integrated capabilities for direct execution and team delegation.
+    Build the default automation agent with terminal, workspace and context tools.
 
-    This agent is equipped with:
-    - Comprehensive tool access for direct task execution
-    - Agent team delegation capabilities
-    - Multiple skills for various task types
-    - Adaptive execution strategy (direct vs. team-based)
-    - FileSystemMemoryStore for persistent memory storage
-
-    The agent can:
-    1. Execute tasks directly using available tools and skills
-    2. Delegate complex tasks to specialized agent teams
-    3. Coordinate multi-agent workflows when needed
-    4. Adapt execution strategy based on task complexity
-    5. Persist conversation memory to filesystem via Sandbox
+    Skills follow their exposure policy and user settings. Specialized collaborators
+    are loaded only when selected through AWORLD_BUILTIN_SUBAGENTS. The default
+    swarm contains only Aworld; durable tools depend on the tool surface profile.
 
     Args:
         include_skills (str, optional): Specify which skills to include.
             - Comma-separated list: "notify,bash" (exact match for each name)
             - Regex pattern: "notify.*" (pattern match)
-            - If None, uses INCLUDE_SKILLS environment variable or loads all skills
+            - Skill discovery respects default_enabled and explicit user settings
 
     Returns:
         TeamSwarm: A TeamSwarm instance containing the Aworld agent
 
     Example:
         >>> agent = build_aworld_agent()
-        >>> # Agent can execute tasks directly or delegate to teams
+        >>> # Agent executes directly with its configured tools
         >>> # Memory is persisted to filesystem automatically
     """
 
@@ -677,7 +642,7 @@ def build_aworld_agent(include_skills: Optional[str] = None):
     )
     aworld_agent = agent_class(
         name="Aworld",
-        desc="Aworld - A versatile AI assistant capable of executing tasks directly or delegating to agent teams",
+        desc="AWorld - An autonomous agent for planning, executing and completing automation tasks",
         conf=agent_config,
         system_prompt=load_aworld_system_prompt(
             available_tools=prompt_capabilities,

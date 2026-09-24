@@ -1,5 +1,6 @@
 ---
 name: media_comprehension
+default_enabled: false
 description: |
   An intelligent assistant specialized in handling media files (images/audio/video). **Only for media file analysis**, does not handle document types.
 

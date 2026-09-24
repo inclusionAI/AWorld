@@ -461,7 +461,7 @@ def _show_banner(console=None):
         title.append("   ╚═╝  ╚═╝ ╚══╝╚══╝  ╚═════╝ ╚═╝  ╚═╝╚══════╝╚═════╝ \n", style="bold bright_magenta")
         
         # Subtitle
-        subtitle = Text("\n   🚀 The Agent Runtime for Self-Improvement — Build & Orchestrate AI Agents\n", style="italic bright_white")
+        subtitle = Text("\n   🚀 A general-purpose agent for autonomous task execution\n", style="italic bright_white")
         
         # Create features table
         features_table = Table(show_header=False, box=None, padding=(0, 2))
@@ -470,19 +470,19 @@ def _show_banner(console=None):
         features_table.add_column("Description", style="bright_white")
         
         features_table.add_row(
-            "🎬",
-            "[bold bright_green]Video Creation[/bold bright_green]",
-            "[dim]One-sentence to blockbuster video generation[/dim]"
+            "⚙️",
+            "[bold bright_green]Task Automation[/bold bright_green]",
+            "[dim]Plan, execute, and follow work through to completion[/dim]"
         )
         features_table.add_row(
             "💻",
-            "[bold bright_green]Code Generation[/bold bright_green]",
-            "[dim]AI-powered code generation and development[/dim]"
+            "[bold bright_green]Tools & Skills[/bold bright_green]",
+            "[dim]Work with files, commands, and configured capabilities[/dim]"
         )
         features_table.add_row(
-            "🔬",
-            "[bold bright_green]AI for Science[/bold bright_green]",
-            "[dim]Automated scientific research exploration[/dim]"
+            "🕒",
+            "[bold bright_green]Scheduled Work[/bold bright_green]",
+            "[dim]Manage recurring tasks when scheduling is available[/dim]"
         )
         
         # Get version info
@@ -508,12 +508,11 @@ def _show_banner(console=None):
         
     except ImportError:
         # Fallback if rich is not available
-        print("\nAWorld CLI - AI-Powered Content Creation & Scientific Research Platform\n")
+        print("\nAWorld CLI - A general-purpose agent for autonomous task execution\n")
         print("Core Features:")
-        print("  🎬 Video Creation - One-sentence to blockbuster")
-        print("  💻 Code Generation - AI-powered code development")
-        print("  🔬 AI for Science - Automated research exploration")
-        print("\nCore Advantages: 多(Versatile) 快(Fast) 好(Quality) 省(Efficient)\n")
+        print("  ⚙️ Task Automation - Plan, execute, and complete tasks")
+        print("  💻 Tools & Skills - Files, commands, and configured capabilities")
+        print("  🕒 Scheduled Work - Recurring tasks when scheduling is available")
 
 
 def _suppress_keyboard_interrupt_traceback(exc_type, exc_value, exc_tb):

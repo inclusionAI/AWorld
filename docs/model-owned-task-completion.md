@@ -22,3 +22,19 @@ returns. The previous strategy-changing `adaptive` policy is opt-in.
 
 An external runner should save the final answer and artifacts, record any
 execution failure separately, and invoke its verifier after execution ends.
+
+## Default automation agent
+
+The CLI loads `Aworld` as its sole default built-in agent. Its prompt guides
+planning, execution, observation, recovery, and completion of general automation
+tasks. The model chooses the workflow and useful checks. Durable scheduling is
+available only when the configured tool surface supports it.
+
+Specialist agents live in `aworld-cli/src/aworld_cli/builtin_agents/smllc/optional_agents`,
+outside the default agent discovery directory. They are imported only when
+explicitly selected through `AWORLD_BUILTIN_SUBAGENTS`, for example
+`AWORLD_BUILTIN_SUBAGENTS=developer,evaluator`. The default is `none`; `all`
+and the legacy `auto` value explicitly enable all available specialists.
+The available names are `developer`, `evaluator`, `diffusion`, `avatar`, `audio`,
+and `image`. Skill activation remains independently controlled by
+`default_enabled`, `--skill`, and persisted user settings.

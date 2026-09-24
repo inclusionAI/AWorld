@@ -14,7 +14,7 @@ from aworld.runners.hook.hooks import PreLLMCallHook, PostLLMCallHook
 from aworld.sandbox import Sandbox
 from aworld_cli.core import agent
 from aworld_cli.core.skill_registry import build_skill_resolver_inputs
-from ..sandbox_factory import create_agent_sandbox
+from ...agents.sandbox_factory import create_agent_sandbox
 
 
 @HookFactory.register(name="pre_audio_hook")
