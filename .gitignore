@@ -79,6 +79,7 @@ data/processed/
 data/workspaces/
 gaia-benchmark/
 examples/gaia/gaia_dataset/
+/benchmark-datasets/parsebench/
 
 # Compiled files
 *.com
