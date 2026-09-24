@@ -112,10 +112,11 @@ def test_circuit_ignores_untyped_tool_failures_and_resets_after_success():
     assert state["consecutive_count"] == 1
 
 
-def test_default_adaptive_context_installs_elastic_budget_policy():
+def test_explicit_adaptive_context_installs_elastic_budget_policy():
     agent = LoopBudgetAgent(
         name="adaptive-default",
-        conf=AgentConfig(llm_provider="mock", llm_model_name="mock-model"),
+        conf=AgentConfig(llm_provider="mock", llm_model_name="mock-model",
+                         context_compiler={"elastic_step_budget": True}),
         max_loop_steps=20,
     )
 
@@ -275,7 +276,7 @@ async def test_async_run_emits_task_completion_and_resolves_contract_at_budget()
     assert exhaustion["loop_step"] == 1
     assert exhaustion["context_agent_step"] == 1
     assert exhaustion["max_loop_steps"] == 1
-    assert exhaustion["elastic_budget"]["decision"] == "no_new_goal_progress"
+    assert "elastic_budget" not in exhaustion
 
 
 @pytest.mark.asyncio

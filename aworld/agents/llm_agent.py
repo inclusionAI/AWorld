@@ -2320,7 +2320,10 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             messages = restore_adaptive_continuation(
                 messages,
                 continuation_capsule,
-                keep_recent=AdaptiveCheckpointPolicy().keep_recent_messages,
+                keep_recent=(
+                    None if policy_name == "budget_pressure"
+                    else AdaptiveCheckpointPolicy().keep_recent_messages
+                ),
             )
             messages = attach_work_state(messages)
             prompt_tokens = int(estimate_canonical_json_tokens(messages).value or 0)
@@ -2386,6 +2389,10 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             record_adaptive_context_metrics(state_context, progress_reset=True)
             save_adaptive_state()
         if not decision.checkpoint:
+            if policy_name == "budget_pressure":
+                if adaptive_state.get("compaction_active") is True:
+                    save_continuation_capsule(messages)
+                return messages
             if adaptive_state.get("compaction_active") is True:
                 compacted, _ = compact_message_history(
                     messages, keep_recent=adaptive_policy.keep_recent_messages
@@ -2404,9 +2411,20 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                 return compacted
             return messages
 
-        compacted, receipt = compact_message_history(
-            messages, keep_recent=adaptive_policy.keep_recent_messages
-        )
+        keep_recent = adaptive_policy.keep_recent_messages
+        if policy_name == "budget_pressure":
+            keep_recent = max(keep_recent, len(messages) // 2)
+        while True:
+            compacted, receipt = compact_message_history(
+                messages, keep_recent=keep_recent
+            )
+            if (
+                policy_name != "budget_pressure"
+                or keep_recent <= adaptive_policy.keep_recent_messages
+                or estimate_canonical_json_tokens(compacted).value <= input_budget * 0.8
+            ):
+                break
+            keep_recent = max(adaptive_policy.keep_recent_messages, keep_recent // 2)
         compacted = attach_work_state(compacted)
         reasons = [reason.value for reason in decision.reasons]
         no_progress_checkpoint = (
@@ -2476,7 +2494,8 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             ),
         }
         compacted = list(compacted)
-        compacted.append(progress_signal)
+        if policy_name == "adaptive":
+            compacted.append(progress_signal)
         effective_prompt_tokens = int(
             estimate_canonical_json_tokens(compacted).value or 0
         )
@@ -3967,11 +3986,8 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                 return compiler_config.get(name, default)
             return getattr(compiler_config, name, default)
 
-        # Agentic runs are bounded by the Agent loop's max-step guard.  Do not
-        # silently add a second, per-generation wall clock budget: a long
-        # reasoning/tool-selection turn is still useful task work and its
-        # answer must be allowed to reach the benchmark verifier.  Callers
-        # that truly need a generation watchdog can pass an explicit policy.
+        # Generation watchdogs are opt-in. A long reasoning/tool-selection
+        # turn must not be cut short by an implicit budget.
         total_timeout = configured("generation_total_timeout_seconds", None)
         return GenerationBudgetPolicy(
             total_timeout_seconds=total_timeout,
@@ -4487,42 +4503,6 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             await self._close_generation_stream(resp_stream)
 
     @staticmethod
-    def _declares_future_work(content: str | None) -> bool:
-        """Return whether the final sentence explicitly promises another action.
-
-        This is intentionally narrower than generic intent classification.  A
-        normal answer may discuss future work, but a tool-using agent response
-        that ends with an imperative-to-self such as ``Let me read ...`` or
-        ``I need to check ...`` has not actually finished that action.  Fenced
-        examples are ignored and conversational closers such as ``let me know``
-        are deliberately outside the action vocabulary.
-        """
-
-        if not content or not content.strip():
-            return False
-        prose = re.sub(r"```.*?```", " ", content, flags=re.DOTALL)
-        sentences = [
-            item.strip().strip("\"'`*_ -")
-            for item in re.split(r"(?<=[.!?])\s+|\n+", prose.strip())
-            if item.strip()
-        ]
-        if not sentences:
-            return False
-        final_sentence = sentences[-1]
-        return bool(
-            re.match(
-                r"^(?:(?:next|now|then),?\s+)?"
-                r"(?:let me|i(?:'ll| will| need to| am going to| plan to))\s+"
-                r"(?:now\s+)?"
-                r"(?:continue(?:\s+(?:to|with))?|read|check|inspect|wait|monitor|"
-                r"resume|run|test|build|implement|fix|download|look|examine|"
-                r"finish|complete)\b",
-                final_sentence,
-                flags=re.IGNORECASE,
-            )
-        )
-
-    @staticmethod
     def _incomplete_model_response_reason(response: ModelResponse | None) -> str | None:
         if response is None:
             return None
@@ -4552,8 +4532,6 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             return None
         if not str(response.content or "").strip():
             return "reasoning_only_response" if response.reasoning_content else None
-        if LLMAgent._declares_future_work(response.content):
-            return "model_declared_future_work"
         return None
 
     @staticmethod

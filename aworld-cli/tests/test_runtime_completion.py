@@ -14,12 +14,12 @@ from aworld_cli.core.runtime_completion import (
 )
 
 
-def test_completion_contract_shape_stays_legacy_without_explicit_enforcement(
+def test_completion_checks_are_off_by_default(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.delenv("AWORLD_COMPLETION_MODE", raising=False)
 
-    assert resolve_completion_mode() is CompletionMode.ENFORCE
+    assert resolve_completion_mode() is CompletionMode.OFF
 
 
 def test_inference_selects_output_path_but_not_input_path() -> None:
@@ -305,6 +305,7 @@ def test_completion_max_repairs_env_applies_to_runtime_contracts(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
+    monkeypatch.setenv("AWORLD_COMPLETION_MODE", "enforce")
     monkeypatch.setenv("AWORLD_COMPLETION_MAX_REPAIRS", "3")
 
     artifact_contract = build_runtime_completion_contract(

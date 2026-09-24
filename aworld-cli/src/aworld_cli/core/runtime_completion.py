@@ -1,8 +1,7 @@
-"""Runtime-owned completion contracts for direct execution tasks.
+"""Opt-in completion contracts for callers that explicitly request checks.
 
-Caller contracts take priority. Locally bound execution also enforces literal
-public delivery requirements with source provenance and executed checks.
-Ambiguous requirements remain visible without guessing paths or results.
+The default CLI path leaves task completion to the model. Structured checks
+remain available for callers that choose observe or enforce mode.
 """
 
 from __future__ import annotations
@@ -42,11 +41,9 @@ def _truthy_env(value: str | None) -> bool:
 
 
 def resolve_completion_mode(value: str | None = None) -> CompletionMode:
-    """Resolve the caller mode; completion checks are advisory by default."""
+    """Model finalization is authoritative unless a caller opts into checks."""
 
-    # Preserve the legacy evidence/contract shape. CLI execution only treats
-    # this mode as blocking when the caller explicitly supplied ``enforce``.
-    default = "enforce"
+    default = "off"
     raw_value = os.environ.get(COMPLETION_MODE_ENV, default) if value is None else value
     normalized = (raw_value or "off").strip().lower()
     try:
@@ -338,6 +335,14 @@ def configure_runtime_completion(
             )
         )
     )
+    if mode is CompletionMode.OFF and existing is None:
+        if context.context_info.get("task_workspace_binding") is not None:
+            from aworld.core.task_workspace.session import prepare_task_workspace
+            prepare_task_workspace(context, request=request or "", workspace_path=workspace_path)
+        context.context_info["runtime_completion_contract"] = {
+            "mode": "off", "requested_mode": "off", "source": "model_final_response",
+        }
+        return None
     explicit_paths = _configured_artifact_paths()
     artifact_field_provided = bool((os.environ.get(REQUIRED_ARTIFACTS_ENV) or "").strip())
     validation_commands = _configured_validation_commands()

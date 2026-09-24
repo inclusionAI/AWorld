@@ -3,7 +3,6 @@ Continuous execution executor for running agents in a loop.
 """
 import asyncio
 import json
-import re
 import sys
 from datetime import datetime, timedelta
 from typing import Optional, Dict, Any, Union, List
@@ -41,7 +40,6 @@ class ContinuousExecutor:
         self.console = console if console is not None else global_console
         self.total_cost: float = 0.0
         self.start_time: Optional[datetime] = None
-        self.response_history: List[str] = []  # Track recent responses for repetition detection
 
     @staticmethod
     def _attach_task_response_evidence(
@@ -221,31 +219,6 @@ class ContinuousExecutor:
             and not (isinstance(tool_calls, (list, tuple)) and tool_calls)
         )
 
-    @staticmethod
-    def _response_can_signal_completion(response: Any) -> bool:
-        """Exclude empty placeholders and runtime failures from heuristics."""
-
-        if not isinstance(response, str):
-            return False
-        normalized = " ".join(response.casefold().split())
-        if normalized in {"", "none", "null"}:
-            return False
-        failure_markers = (
-            "task fail, cause:",
-            "failed to call llm model",
-            "llm error",
-            "rate limit exceeded",
-        )
-        if any(marker in normalized for marker in failure_markers):
-            return False
-        return not bool(
-            re.search(
-                r"\b(?:i|we)\s+(?:need|have|plan|intend)\s+to\s+"
-                r"(?:continue|finish|complete|fix|implement|test|run|check)\b",
-                normalized,
-            )
-        )
-    
     async def run_iteration(
         self,
         iteration: int,
@@ -316,9 +289,6 @@ class ContinuousExecutor:
 
             task_response = getattr(self.agent_executor, "last_task_response", None)
             trajectory = getattr(task_response, "trajectory", None)
-            has_task_response_trajectory = bool(
-                isinstance(trajectory, list) and trajectory
-            )
             trajectory_completed = self._trajectory_establishes_completion(
                 trajectory
             )
@@ -346,125 +316,6 @@ class ContinuousExecutor:
                     f"[green]✅ ({iteration}) Task completed - terminal "
                     "TaskResponse action observed![/green]"
                 )
-
-            # Text heuristics are a legacy fallback only.  When TaskResponse
-            # supplies an action ledger, an unfinished tool turn or runtime
-            # placeholder must never be promoted to completion by prose or
-            # repetition similarity.
-            response_can_signal_completion = (
-                not non_interactive
-                and semantic_status is None
-                and self._response_can_signal_completion(response)
-            )
-            if (
-                not is_complete
-                and not has_task_response_trajectory
-                and response_can_signal_completion
-                and iteration == 1
-            ):
-                # Check if agent gave a definitive answer (not asking questions or saying it will try)
-                normalized_response = response.lower()
-
-                # Definitive completion indicators (command execution)
-                execution_indicators = [
-                    "成功执行",
-                    "执行成功",
-                    "命令执行成功",
-                    "任务完成",
-                    "已完成",
-                    "输出结果",
-                    "执行结果",
-                    "successfully executed",
-                    "execution successful",
-                    "command executed",
-                    "task completed",
-                ]
-
-                # Definitive answer indicators (Q&A tasks)
-                answer_indicators = [
-                    "作者是",
-                    "答案是",
-                    "结果是",
-                    "主要是",
-                    "根据.*信息",
-                    "具体信息如下",
-                    "关键信息",
-                    "the author is",
-                    "the answer is",
-                    "the result is",
-                    "according to",
-                    "based on",
-                ]
-
-                # Continuation indicators (agent wants to keep working)
-                continuation_indicators = [
-                    "让我",
-                    "我将",
-                    "接下来",
-                    "需要继续",
-                    "还需要",
-                    "应该继续",
-                    "让我们继续",
-                    "let me",
-                    "i will",
-                    "i'll",
-                    "we should continue",
-                    "we need to",
-                    "next, i",
-                    "next, we",
-                ]
-
-                has_execution = any(indicator in normalized_response for indicator in execution_indicators)
-                has_answer = any(indicator in normalized_response for indicator in answer_indicators)
-                has_continuation = any(indicator in normalized_response for indicator in continuation_indicators)
-
-                # Response length check: if response is substantial (>200 chars) and structured
-                is_substantial = len(response) > 200 and ("\n" in response or "：" in response or ":" in response)
-
-                # Decision logic:
-                # 1. Command execution task: has execution indicator + no continuation
-                # 2. Q&A task: has answer indicator OR (substantial response + no continuation)
-                if (has_execution or has_answer or is_substantial) and not has_continuation:
-                    is_complete = True
-                    completion_reason = "execution" if has_execution else ("answer" if has_answer else "substantial response")
-                    self.console.print(f"[green]✅ ({iteration}) Task completed - agent gave definitive {completion_reason}![/green]")
-
-            # Intelligent repetition detection: Check if agent is repeating the same answer
-            if (
-                not is_complete
-                and not has_task_response_trajectory
-                and response_can_signal_completion
-            ):
-                # Normalize response for comparison (remove extra whitespace, lowercase)
-                normalized_response = " ".join(response.lower().split())
-
-                # Check if this response is very similar to recent responses
-                if len(self.response_history) >= 1:
-                    # Compare with last response (reduced from 2 to make it more sensitive)
-                    recent_responses = self.response_history[-1:]
-                    similarity_scores = []
-
-                    for past_response in recent_responses:
-                        # Simple similarity: check if 70%+ of words are the same (reduced from 80%)
-                        words_current = set(normalized_response.split())
-                        words_past = set(past_response.split())
-
-                        if not words_current:
-                            continue
-
-                        intersection = words_current & words_past
-                        similarity = len(intersection) / len(words_current)
-                        similarity_scores.append(similarity)
-
-                    # If last response is 70%+ similar, consider task complete
-                    if similarity_scores and all(s >= 0.7 for s in similarity_scores):
-                        is_complete = True
-                        self.console.print(f"[green]✅ ({iteration}) Repetition detected - task appears complete![/green]")
-
-                # Add current response to history (keep last 3)
-                self.response_history.append(normalized_response)
-                if len(self.response_history) > 3:
-                    self.response_history.pop(0)
 
             # TODO: Extract actual cost from response if available
             # For now, we'll use a placeholder
@@ -631,7 +482,6 @@ class ContinuousExecutor:
         """
         self.start_time = datetime.now()
         self.total_cost = 0.0
-        self.response_history = []  # Reset history for new task
         
         # Format prompt for display
         if isinstance(prompt, tuple):

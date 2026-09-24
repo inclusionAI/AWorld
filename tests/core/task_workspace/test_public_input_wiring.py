@@ -1,4 +1,4 @@
-"""Public inputs stay active through the real default CLI/session completion path."""
+"""Public inputs stay active when callers opt into CLI completion contracts."""
 import json
 import sys
 from types import SimpleNamespace
@@ -26,6 +26,7 @@ def native(tmp_path, monkeypatch):
     monkeypatch.chdir(workspace)
     for name in ('AWORLD_COMPLETION_MODE', 'AWORLD_REQUIRED_ARTIFACTS_JSON', 'AWORLD_VALIDATION_COMMANDS_JSON', 'AWORLD_INFER_REQUIRED_ARTIFACTS'):
         monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv('AWORLD_COMPLETION_MODE', 'observe')
     monkeypatch.setenv('AWORLD_TASK_WORKSPACE_ROOT', str(tmp_path / 'stores'))
     monkeypatch.setenv('AWORLD_BUILTIN_SUBAGENTS', 'none')
     monkeypatch.setenv('LLM_MODEL_NAME', 'offline')

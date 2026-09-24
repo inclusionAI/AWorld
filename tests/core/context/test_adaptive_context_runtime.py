@@ -843,7 +843,7 @@ def test_adaptive_policy_has_cooldown_and_budget_pressure_modes():
     assert not cooled_down.checkpoint
     pressure_only = evaluate_adaptive_checkpoint(
         policy_name="budget_pressure",
-        prompt_tokens=80,
+        prompt_tokens=95,
         input_budget=100,
         repetition_count=99,
         low_information_gain_count=99,

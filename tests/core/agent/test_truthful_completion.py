@@ -33,14 +33,14 @@ def tool(arguments, call_id="call-1"):
         "I am going to continue with the implementation",
     ),
 )
-def test_explicit_future_action_is_not_a_completion(content):
+def test_final_response_wording_does_not_override_model_completion(content):
     response = ModelResponse(
         id="future-work", model="fake", content=content, finish_reason="stop"
     )
 
     assert (
         module.LLMAgent._incomplete_model_response_reason(response)
-        == "model_declared_future_work"
+        is None
     )
 
 
@@ -63,7 +63,7 @@ def test_completion_detector_does_not_reject_reports_or_conversational_closers(c
 
 
 @pytest.mark.asyncio
-async def test_declared_future_work_gets_a_bounded_continuation_turn(monkeypatch):
+async def test_model_stop_does_not_trigger_a_wording_based_retry(monkeypatch):
     calls = []
 
     async def response(*args, **kwargs):
@@ -92,9 +92,8 @@ async def test_declared_future_work_gets_a_bounded_continuation_turn(monkeypatch
         stream=False,
     )
 
-    assert len(calls) == 2
-    assert "model_declared_future_work" in calls[1][-1]["content"]
-    assert result.content.startswith("The download completed")
+    assert len(calls) == 1
+    assert result.content.startswith("The download is at 86%")
 
 
 @pytest.mark.asyncio

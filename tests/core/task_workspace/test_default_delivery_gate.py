@@ -145,7 +145,8 @@ async def test_old_pass_is_invalidated_when_delivery_evaluation_fails(
     assert context.assess_completion_contract(agent_claimed_finished=True).status is not CompletionStatus.SATISFIED
 
 
-def test_custom_unbound_context_never_runs_host_derived_checks(local_facade, tmp_path):
+def test_custom_unbound_context_never_runs_host_derived_checks(local_facade, monkeypatch, tmp_path):
+    monkeypatch.setenv("AWORLD_COMPLETION_MODE", "enforce")
     context = Context(task_id='remote')
     assert configure_runtime_completion(context, request='Write result.json.', workspace_path=tmp_path) is None
     assert context.context_info['delivery_evaluation_unavailable'] == 'local_workspace_not_bound'

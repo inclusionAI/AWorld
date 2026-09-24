@@ -204,20 +204,20 @@ def resolve_aworld_tool_surface_enforcement() -> bool:
 def resolve_aworld_generation_budget() -> Optional[GenerationBudgetPolicy]:
     """Resolve explicitly enabled generation watchdogs.
 
-    Benchmark exploration is normally bounded by ``AWORLD_MAX_LOOP_STEPS``.
+    Task completion belongs to the model. Caller deadlines remain external.
     Legacy Runtime images may still inject individual generation timeout and
     repair variables; those variables must not truncate an agentic attempt
     unless the caller also opts into generation watchdog mode.  This keeps
     stale adapter configuration from changing the semantic task outcome.
     """
 
-    mode = os.environ.get("AWORLD_GENERATION_BUDGET_MODE", "max_steps_only")
+    mode = os.environ.get("AWORLD_GENERATION_BUDGET_MODE", "off")
     mode = mode.strip().lower()
     if mode in {"", "max_steps_only", "disabled", "off", "none"}:
         return None
     if mode not in {"enabled", "watchdog"}:
         raise ValueError(
-            "AWORLD_GENERATION_BUDGET_MODE must be 'max_steps_only' or 'enabled'"
+            "AWORLD_GENERATION_BUDGET_MODE must be 'off' or 'enabled'"
         )
     # A single opt-in must not silently enable every optional deadline for a
     # normal CLI user. Runtime adapters explicitly provide the full benchmark
@@ -406,24 +406,17 @@ def load_aworld_system_prompt(
 
 
 def resolve_aworld_max_loop_steps() -> int:
-    """Resolve an optional step guard for one execution segment.
-
-    AWorld owns this harness guard instead of relying on Harbor policy. The
-    default of 1024 prevents an unbounded model/tool loop while leaving normal
-    benchmark work to the caller-owned task deadline. Callers may opt into a
-    smaller positive guard; exhaustion is a checkpointed budget_exhausted
-    outcome, never success.
-    """
+    """Resolve a caller-requested step limit; zero leaves completion to the model."""
 
     raw_value = os.environ.get("AWORLD_MAX_LOOP_STEPS")
     if raw_value is None or not raw_value.strip():
-        return AWORLD_MAX_LOOP_STEPS_HARD_LIMIT
+        return 0
     try:
         max_loop_steps = int(raw_value)
     except ValueError as exc:
-        raise ValueError("AWORLD_MAX_LOOP_STEPS must be a positive integer") from exc
-    if max_loop_steps <= 0:
-        raise ValueError("AWORLD_MAX_LOOP_STEPS must be a positive integer")
+        raise ValueError("AWORLD_MAX_LOOP_STEPS must be a non-negative integer") from exc
+    if max_loop_steps < 0:
+        raise ValueError("AWORLD_MAX_LOOP_STEPS must be a non-negative integer")
     if max_loop_steps > AWORLD_MAX_LOOP_STEPS_HARD_LIMIT:
         raise ValueError(
             "AWORLD_MAX_LOOP_STEPS must not exceed the hard limit of "
@@ -724,6 +717,6 @@ def build_aworld_agent(include_skills: Optional[str] = None):
         logger.info(
             f"Adding {len(sub_agents)} initialized sub-agent(s) to Aworld TeamSwarm"
         )
-        return TeamSwarm(aworld_agent, *sub_agents, max_steps=100)
+        return TeamSwarm(aworld_agent, *sub_agents)
     logger.info("No sub-agents initialized; Aworld will execute directly")
     return TeamSwarm(aworld_agent)

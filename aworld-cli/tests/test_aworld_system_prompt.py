@@ -56,20 +56,20 @@ def test_render_aworld_system_prompt_disables_unavailable_delegation() -> None:
     assert "developer" not in prompt
 
 
-def test_aworld_max_loop_steps_defaults_to_harness_guard(
+def test_aworld_max_loop_steps_defaults_to_no_step_limit(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.delenv("AWORLD_MAX_LOOP_STEPS", raising=False)
 
-    assert resolve_aworld_max_loop_steps() == 1024
+    assert resolve_aworld_max_loop_steps() == 0
 
 
-def test_aworld_max_loop_steps_blank_uses_harness_guard(
+def test_aworld_max_loop_steps_blank_uses_no_step_limit(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("AWORLD_MAX_LOOP_STEPS", "  ")
 
-    assert resolve_aworld_max_loop_steps() == 1024
+    assert resolve_aworld_max_loop_steps() == 0
 
 
 def test_aworld_max_completion_tokens_defaults_to_16384(
@@ -299,7 +299,7 @@ def test_builtin_subagent_allowlist_rejects_unknown_names(
         resolve_aworld_builtin_subagents()
 
 
-@pytest.mark.parametrize("value", ["0", "-1", "invalid"])
+@pytest.mark.parametrize("value", ["-1", "invalid"])
 def test_aworld_max_completion_tokens_rejects_invalid_values(
     monkeypatch: pytest.MonkeyPatch,
     value: str,
@@ -319,14 +319,14 @@ def test_aworld_max_completion_tokens_cannot_exceed_hard_limit(
         resolve_aworld_max_completion_tokens()
 
 
-@pytest.mark.parametrize("value", ["0", "-1", "invalid"])
+@pytest.mark.parametrize("value", ["-1", "invalid"])
 def test_aworld_max_loop_steps_rejects_invalid_values(
     monkeypatch: pytest.MonkeyPatch,
     value: str,
 ) -> None:
     monkeypatch.setenv("AWORLD_MAX_LOOP_STEPS", value)
 
-    with pytest.raises(ValueError, match="positive integer"):
+    with pytest.raises(ValueError, match="non-negative integer"):
         resolve_aworld_max_loop_steps()
 
 

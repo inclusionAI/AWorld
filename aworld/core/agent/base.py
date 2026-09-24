@@ -210,7 +210,8 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
                 skill_configs=self.skill_configs,
             )
         self.loop_step = 0
-        self.max_loop_steps = kwargs.pop("max_loop_steps", 20)
+        # A step limit is a caller opt-in, not a completion heuristic.
+        self.max_loop_steps = kwargs.pop("max_loop_steps", 0)
         circuit_threshold = kwargs.pop(
             "infrastructure_error_circuit_breaker_threshold",
             self.conf.get("infrastructure_error_circuit_breaker_threshold", 0),

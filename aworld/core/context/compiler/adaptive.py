@@ -114,7 +114,7 @@ def adaptive_escalation_message(stage: AdaptiveEscalationStage) -> str:
 
 @dataclass(frozen=True, slots=True)
 class AdaptiveCheckpointPolicy:
-    budget_pressure_ratio: float = 0.78
+    budget_pressure_ratio: float = 0.95
     repeated_operation_threshold: int = 3
     low_information_gain_threshold: int = 3
     no_goal_progress_threshold: int = 6
@@ -362,9 +362,8 @@ def compact_message_history(
     marker = {
         "role": "user",
         "content": (
-            "AWorld compacted earlier low-value or repetitive turns at a verified "
-            "checkpoint. Preserve the original task and use the recent evidence. "
-            "Do not repeat an operation unless it can produce new information."
+            "AWorld compacted earlier messages to fit the model context window. "
+            "Continue from the original task, retained work state, and tool results."
         ),
     }
     compacted: list[dict[str, Any]] = []
@@ -385,7 +384,7 @@ def restore_adaptive_continuation(
     messages: Sequence[Mapping[str, Any]],
     capsule: Sequence[Mapping[str, Any]] | None,
     *,
-    keep_recent: int = 8,
+    keep_recent: int | None = 8,
 ) -> list[dict[str, Any]]:
     """Merge a prior verified continuation capsule with newly replayed history.
 
@@ -433,6 +432,18 @@ def restore_adaptive_continuation(
                 return role, "tool_calls", call_ids
         return role, semantic_fingerprint(message)
 
+    if keep_recent is None:
+        # The capsule already contains retained history. Append only messages
+        # after its latest replayed entry, rather than resurrecting discarded
+        # history or trimming every subsequent turn to a fixed-size suffix.
+        previous_ids = {identity(message) for message in previous_body}
+        last_shared = max(
+            (index for index, message in enumerate(current_body)
+             if identity(message) in previous_ids),
+            default=-1,
+        )
+        current_body = current_body[last_shared + 1:]
+
     body: list[dict[str, Any]] = []
     seen: set[tuple[Any, ...]] = set()
     for message in [*previous_body, *current_body]:
@@ -443,6 +454,8 @@ def restore_adaptive_continuation(
         body.append(message)
 
     merged = [*current_prefix, *body]
+    if keep_recent is None:
+        return merged
     compacted, _ = compact_message_history(merged, keep_recent=keep_recent)
     return compacted
 

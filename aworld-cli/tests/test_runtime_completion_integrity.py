@@ -12,20 +12,20 @@ from aworld_cli.run_outcome import DirectRunOutcome
 from types import SimpleNamespace
 
 
-def test_explicit_outputs_keep_contract_shape_without_enforce_opt_in(monkeypatch, tmp_path):
-    monkeypatch.delenv("AWORLD_COMPLETION_MODE", raising=False)
+def test_explicit_outputs_can_be_observed_without_enforcement(monkeypatch, tmp_path):
+    monkeypatch.setenv("AWORLD_COMPLETION_MODE", "observe")
     monkeypatch.setenv("AWORLD_REQUIRED_ARTIFACTS_JSON", '["result.json"]')
     monkeypatch.setenv("AWORLD_INFER_REQUIRED_ARTIFACTS", "true")
     context = Context(task_id="explicit")
     contract = configure_runtime_completion(context, request="Maybe write optional.csv if needed", workspace_path=tmp_path)
-    assert context.completion_mode is CompletionMode.ENFORCE
+    assert context.completion_mode is CompletionMode.OBSERVE
     assert context.context_info["completion_enforcement_explicit"] is False
     assert [r.path for r in contract.required_artifacts] == [str(tmp_path / "result.json")]
 
 
 @pytest.mark.asyncio
 async def test_text_saying_pass_does_not_override_real_validation_failure(monkeypatch, tmp_path):
-    monkeypatch.delenv("AWORLD_COMPLETION_MODE", raising=False)
+    monkeypatch.setenv("AWORLD_COMPLETION_MODE", "observe")
     monkeypatch.delenv("AWORLD_REQUIRED_ARTIFACTS_JSON", raising=False)
     monkeypatch.setenv("AWORLD_VALIDATION_COMMANDS_JSON", json.dumps([
         {"command_id":"check", "argv":[sys.executable, "-c", "print('ALL TESTS PASSED'); raise SystemExit(2)"]}

@@ -378,7 +378,7 @@ async def test_million_token_default_still_archives_and_restores_completed_histo
     model.provider_name = "azure_openai"
     assert model.resolve_context_window().tokens == 1_000_000
     assert model.resolve_context_window().source == "fallback"
-    assert model._context_checkpoint_policy == "adaptive"
+    assert model._context_checkpoint_policy == "budget_pressure"
     assert model._context_artifact_offload is True
 
     messages = _long_tool_exchange()

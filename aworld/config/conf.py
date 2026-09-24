@@ -155,7 +155,7 @@ def resolve_provider_native_cache_intent(configs: Iterable[Any]) -> bool:
 
 
 class ContextCompilerRuntimeConfig(BaseConfig):
-    # Adaptive Context is the shipped default for the capability-gated runtime.
+    # Context capacity protection is independent from task completion.
     # Callers retain an explicit ``off``/``shadow`` rollback path.
     mode: Literal["off", "observe", "shadow", "enforce"] = "enforce"
     compiler_version: str = "v1"
@@ -180,9 +180,9 @@ class ContextCompilerRuntimeConfig(BaseConfig):
     progressive_tool_base_tools: Optional[List[str]] = None
     progressive_tool_unmanaged_policy: Literal["preserve", "drop"] = "preserve"
     task_catalog_policy: Literal["per_call", "sticky"] = "sticky"
-    checkpoint_policy: Literal["explicit", "budget_pressure", "adaptive"] = "adaptive"
-    destructive_sandbox_checkpoint: bool = True
-    elastic_step_budget: bool = True
+    checkpoint_policy: Literal["explicit", "budget_pressure", "adaptive"] = "budget_pressure"
+    destructive_sandbox_checkpoint: bool = False
+    elastic_step_budget: bool = False
     step_budget_extension_steps: int = Field(default=40, gt=0)
     step_budget_hard_limit: int = Field(default=240, gt=0)
     step_budget_recent_progress_window: int = Field(default=20, gt=0)
@@ -191,13 +191,8 @@ class ContextCompilerRuntimeConfig(BaseConfig):
     context_inspector: bool = True
     trace_level: Literal["none", "summary", "decisions", "full_redacted"] = "decisions"
     completion_contract: Literal["off", "observe", "enforce"] = "off"
-    # One model turn shares a hard wall deadline. Streaming additionally has
-    # an idle deadline and an active Tool-free action deadline, leaving a
-    # bounded continuation window instead of spending the whole turn on
-    # provider-visible reasoning. ``None`` disables an individual optional
-    # deadline; for the total config field it inherits the stable public
-    # 360-second default. Direct ``GenerationBudgetPolicy`` construction can
-    # explicitly disable the total deadline as well.
+    # Optional provider watchdogs are caller-controlled. ``None`` leaves each
+    # deadline disabled; the default agent does not budget model reasoning.
     generation_total_timeout_seconds: Optional[float] = Field(default=None, gt=0)
     generation_stream_idle_timeout_seconds: Optional[float] = Field(
         default=None, gt=0

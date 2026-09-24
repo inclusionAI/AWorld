@@ -58,10 +58,10 @@ def test_adaptive_context_is_default_on_with_explicit_rollback_modes():
     default = ModelConfig().context_compiler
 
     assert default.mode == "enforce"
-    assert default.checkpoint_policy == "adaptive"
+    assert default.checkpoint_policy == "budget_pressure"
     assert default.scoped_instructions == "nested"
-    assert default.destructive_sandbox_checkpoint is True
-    assert default.elastic_step_budget is True
+    assert default.destructive_sandbox_checkpoint is False
+    assert default.elastic_step_budget is False
     assert default.step_budget_extension_steps == 40
     assert default.step_budget_hard_limit == 240
     assert default.step_budget_recent_progress_window == 20
