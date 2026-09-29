@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from typing import Optional, TYPE_CHECKING
+from typing import Any, Optional, TYPE_CHECKING
 
 from aworld.runners.ralph.policy import RalphLoopPolicy
 
@@ -31,6 +31,7 @@ class IterationInputBuilder:
         iteration: int,
         previous_answer: Optional[str] = None,
         reflection_feedback: Optional[str] = None,
+        attempt_receipt: Optional[dict[str, Any]] = None,
     ) -> IterationInput:
         if iteration <= 1:
             return IterationInput(
@@ -42,6 +43,14 @@ class IterationInputBuilder:
             previous_answer = await self.memory_store.read_answer(task_id, iteration - 1)
         if reflection_feedback is None:
             reflection_feedback = await self.memory_store.read_reflection_feedback(task_id, iteration - 1)
+        if attempt_receipt is None:
+            metadata = getattr(
+                getattr(self.memory_store.context, "loop_state", None),
+                "metadata",
+                {},
+            )
+            candidate = metadata.get("last_attempt_receipt") if isinstance(metadata, dict) else None
+            attempt_receipt = candidate if isinstance(candidate, dict) else None
 
         return IterationInput(
             task_input=self._compose_task_input(
@@ -49,6 +58,7 @@ class IterationInputBuilder:
                 iteration=iteration,
                 previous_answer=previous_answer,
                 reflection_feedback=reflection_feedback,
+                attempt_receipt=attempt_receipt,
             ),
             reuse_context=self.policy.execution_mode == "reuse_context",
         )
@@ -59,6 +69,7 @@ class IterationInputBuilder:
         iteration: int,
         previous_answer: Optional[str],
         reflection_feedback: Optional[str],
+        attempt_receipt: Optional[dict[str, Any]],
     ) -> str:
         sections: list[str] = [f"Iteration: {iteration}", ""]
 
@@ -70,6 +81,9 @@ class IterationInputBuilder:
                 "Previous answer summary:",
                 previous_answer or "No previous answer available.",
                 "",
+                "Previous attempt receipt:",
+                self._format_attempt_receipt(attempt_receipt),
+                "",
                 "Reflection feedback:",
                 reflection_feedback or DEFAULT_REFLECTION_FEEDBACK,
                 "",
@@ -78,6 +92,25 @@ class IterationInputBuilder:
             ]
         )
         return "\n".join(sections).strip()
+
+    @staticmethod
+    def _format_attempt_receipt(receipt: Optional[dict[str, Any]]) -> str:
+        if not receipt:
+            return "No structured receipt available."
+        values = []
+        for key in (
+            "semantic_succeeded",
+            "completion_claimed",
+            "verification_required",
+            "verification_passed",
+            "acceptance_satisfied",
+            "disposition",
+            "decision_reason",
+        ):
+            value = receipt.get(key)
+            if isinstance(value, (str, bool)) or value is None:
+                values.append(f"- {key}: {value}")
+        return "\n".join(values) or "No structured receipt available."
 
     def _execution_rule(self) -> str:
         if self.policy.execution_mode == "reuse_context":

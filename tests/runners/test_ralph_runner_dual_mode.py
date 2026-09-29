@@ -135,6 +135,43 @@ async def test_iteration_input_builder_reuse_context_omits_original_task_header(
 
 
 @pytest.mark.asyncio
+async def test_iteration_input_builder_includes_structured_attempt_receipt(tmp_path):
+    context = LoopContext(
+        completion_criteria=CompletionCriteria(),
+        loop_state=LoopState(
+            metadata={
+                "last_attempt_receipt": {
+                    "semantic_succeeded": True,
+                    "completion_claimed": True,
+                    "verification_required": True,
+                    "verification_passed": False,
+                    "acceptance_satisfied": False,
+                    "disposition": "continue",
+                    "decision_reason": "verification_failed",
+                }
+            }
+        ),
+        work_dir=str(tmp_path),
+    )
+    builder = IterationInputBuilder(
+        policy=RalphLoopPolicy(execution_mode="fresh_context", verify_enabled=True),
+        memory_store=LoopMemoryStore(context),
+    )
+
+    payload = await builder.build(
+        task_id="task-1",
+        original_task="Build a REST API",
+        iteration=2,
+        previous_answer="Implemented the API",
+        reflection_feedback="Tests failed",
+    )
+
+    assert "Previous attempt receipt:" in payload.task_input
+    assert "verification_passed: False" in payload.task_input
+    assert "decision_reason: verification_failed" in payload.task_input
+
+
+@pytest.mark.asyncio
 async def test_ralph_runner_build_iteration_context_uses_fresh_sub_context(tmp_path):
     task = Task(input="Build API", conf=RalphConfig(execution_mode="fresh_context", workspace=str(tmp_path)))
     runner = RalphRunner(task=task, completion_criteria=CompletionCriteria())
@@ -248,7 +285,7 @@ async def test_ralph_runner_do_run_invokes_iteration_evaluator_after_execution(t
         loop_state=LoopState(),
         work_dir=str(tmp_path),
     )
-    response = TaskResponse(id=task.id, answer="done", success=True)
+    response = TaskResponse(id=task.id, answer="done", success=False)
     runner._execute_task = AsyncMock(return_value=response)
     runner.evaluator = AsyncMock()
     runner.evaluator.evaluate.return_value = IterationEvaluationResult(summary="done")
@@ -285,7 +322,7 @@ async def test_ralph_runner_do_run_still_calls_evaluator_when_run_on_each_iterat
         loop_state=LoopState(),
         work_dir=str(tmp_path),
     )
-    response = TaskResponse(id=task.id, answer="done", success=True)
+    response = TaskResponse(id=task.id, answer="done", success=False)
     runner._execute_task = AsyncMock(return_value=response)
     runner.evaluator = AsyncMock()
     runner.evaluator.evaluate.return_value = IterationEvaluationResult(summary="done")
@@ -386,7 +423,7 @@ async def test_ralph_runner_do_run_does_not_verify_before_non_completion_stop(tm
         loop_state=LoopState(),
         work_dir=str(tmp_path),
     )
-    response = TaskResponse(id=task.id, answer="done", success=True)
+    response = TaskResponse(id=task.id, answer="done", success=False)
     runner._execute_task = AsyncMock(return_value=response)
     runner.evaluator = AsyncMock()
     runner.evaluator.evaluate.return_value = IterationEvaluationResult(summary="done")
@@ -429,7 +466,7 @@ async def test_ralph_runner_do_run_keeps_loop_alive_when_before_completion_verif
         work_dir=str(tmp_path),
     )
     first_response = TaskResponse(id=task.id, answer="first", success=True)
-    second_response = TaskResponse(id=task.id, answer="second", success=True)
+    second_response = TaskResponse(id=task.id, answer="second", success=False)
     runner._execute_task = AsyncMock(side_effect=[first_response, second_response])
     runner.evaluator = AsyncMock()
     runner.evaluator.evaluate.side_effect = [
@@ -447,7 +484,7 @@ async def test_ralph_runner_do_run_keeps_loop_alive_when_before_completion_verif
     runner.stop_detector.should_stop = AsyncMock(
         side_effect=[
             type("StopDecision", (), {"should_stop": False, "stop_type": StopType.NONE, "reason": None})(),
-            type("StopDecision", (), {"should_stop": True, "stop_type": StopType.COMPLETION, "reason": "done"})(),
+            type("StopDecision", (), {"should_stop": False, "stop_type": StopType.NONE, "reason": None})(),
             type("StopDecision", (), {"should_stop": True, "stop_type": StopType.MAX_ITERATIONS, "reason": "stop"})(),
         ]
     )
@@ -476,3 +513,157 @@ async def test_ralph_runner_do_run_keeps_loop_alive_when_before_completion_verif
             phase="post_iteration",
         ),
     ]
+
+
+@pytest.mark.asyncio
+async def test_ralph_runner_treats_typed_success_as_completion_without_waiting_for_limit(tmp_path):
+    task = Task(input="Build API", conf=RalphConfig(workspace=str(tmp_path)))
+    runner = RalphRunner(task=task, completion_criteria=CompletionCriteria(max_iterations=5))
+    runner.loop_context = LoopContext(
+        completion_criteria=CompletionCriteria(max_iterations=5),
+        loop_state=LoopState(),
+        work_dir=str(tmp_path),
+    )
+    response = TaskResponse(
+        id=task.id,
+        answer="done",
+        success=True,
+        semantic_status="succeeded",
+    )
+    runner._execute_task = AsyncMock(return_value=response)
+    runner.evaluator = AsyncMock()
+    runner.evaluator.evaluate.return_value = IterationEvaluationResult(summary="done")
+    runner.stop_detector.should_stop = AsyncMock(
+        return_value=type(
+            "StopDecision",
+            (),
+            {"should_stop": False, "stop_type": StopType.NONE, "reason": None},
+        )()
+    )
+
+    result = await runner.do_run()
+
+    assert result is response
+    assert runner._execute_task.await_count == 1
+    assert runner.loop_context.loop_state.completion_confirmations == 1
+    assert runner.loop_context.loop_state.metadata["last_attempt_receipt"][
+        "disposition"
+    ] == "complete"
+
+
+@pytest.mark.asyncio
+async def test_ralph_failed_precompletion_verification_requires_a_new_attempt(tmp_path):
+    task = Task(
+        input="Build API",
+        conf=RalphConfig(
+            workspace=str(tmp_path),
+            verify=RalphVerifyConfig(
+                enabled=True,
+                commands=["pytest -q"],
+                run_on_each_iteration=False,
+                run_before_completion=True,
+            ),
+        ),
+    )
+    runner = RalphRunner(task=task, completion_criteria=CompletionCriteria(max_iterations=3))
+    runner.loop_context = LoopContext(
+        completion_criteria=CompletionCriteria(max_iterations=3),
+        loop_state=LoopState(),
+        work_dir=str(tmp_path),
+    )
+    first = TaskResponse(id=task.id, answer="first", success=True, semantic_status="succeeded")
+    second = TaskResponse(id=task.id, answer="second", success=True, semantic_status="succeeded")
+    runner._execute_task = AsyncMock(side_effect=[first, second])
+    runner.evaluator = AsyncMock()
+    runner.evaluator.evaluate.side_effect = [
+        IterationEvaluationResult(summary="first"),
+        IterationEvaluationResult(
+            summary="first",
+            verify_result=VerifyResult(
+                passed=False,
+                commands=[VerifyCommandResult("pytest -q", 1, "FAILED", False)],
+            ),
+            reflection_feedback="Verification failed",
+        ),
+        IterationEvaluationResult(summary="second"),
+        IterationEvaluationResult(
+            summary="second",
+            verify_result=VerifyResult(
+                passed=True,
+                commands=[VerifyCommandResult("pytest -q", 0, "ok", True)],
+            ),
+        ),
+    ]
+    runner.stop_detector.should_stop = AsyncMock(
+        return_value=type(
+            "StopDecision",
+            (),
+            {"should_stop": False, "stop_type": StopType.NONE, "reason": None},
+        )()
+    )
+
+    result = await runner.do_run()
+
+    assert result is second
+    assert runner._execute_task.await_count == 2
+    assert runner.loop_context.loop_state.metadata["last_attempt_receipt"][
+        "disposition"
+    ] == "complete"
+
+
+@pytest.mark.asyncio
+async def test_ralph_runner_recovers_from_one_attempt_error_without_external_failure(tmp_path):
+    task = Task(input="Build API", conf=RalphConfig(workspace=str(tmp_path)))
+    runner = RalphRunner(task=task, completion_criteria=CompletionCriteria(max_iterations=3))
+    await runner.pre_run()
+    completed = TaskResponse(
+        id=task.id,
+        answer="recovered",
+        success=True,
+        semantic_status="succeeded",
+    )
+    runner._execute_task = AsyncMock(
+        side_effect=[RuntimeError("temporary provider failure"), completed]
+    )
+    runner.evaluator = AsyncMock()
+    runner.evaluator.evaluate.return_value = IterationEvaluationResult(summary="recovered")
+
+    result = await runner.do_run()
+
+    assert result is completed
+    assert runner._execute_task.await_count == 2
+    assert runner.loop_context.loop_state.successful_steps == 1
+    assert runner.loop_context.loop_state.consecutive_failures == 0
+
+
+@pytest.mark.asyncio
+async def test_ralph_attempt_limit_returns_budget_exhausted_not_success(tmp_path):
+    task = Task(input="Build API", conf=RalphConfig(workspace=str(tmp_path)))
+    runner = RalphRunner(task=task, completion_criteria=CompletionCriteria(max_iterations=1))
+    await runner.pre_run()
+    incomplete = TaskResponse(
+        id=task.id,
+        answer="partial",
+        success=False,
+        semantic_status="incomplete",
+        recoverable=True,
+    )
+    runner._execute_task = AsyncMock(return_value=incomplete)
+
+    result = await runner.do_run()
+
+    assert result is incomplete
+    assert result.success is False
+    assert result.semantic_status == "budget_exhausted"
+    assert result.completion_reason == "max_iterations"
+    assert runner.loop_context.loop_state.metadata["last_attempt_receipt"] == {
+        "schema_version": "aworld.ralph.attempt-receipt/v1",
+        "iteration": 1,
+        "semantic_succeeded": False,
+        "completion_claimed": False,
+        "verification_required": False,
+        "verification_passed": None,
+        "acceptance_satisfied": False,
+        "disposition": "limit_reached",
+        "decision_reason": "iteration_limit_reached",
+    }

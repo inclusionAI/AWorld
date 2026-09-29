@@ -3,9 +3,16 @@
 from aworld.core.task import Runner, Task, TaskResponse
 from aworld.logs.util import logger
 from aworld.runners.event_runner import TaskEventRunner
-from aworld.runners.ralph.evaluator import IterationEvaluator
+from aworld.runners.ralph.evaluator import IterationEvaluationResult, IterationEvaluator
 from aworld.runners.ralph.detect.types import StopType
 from aworld.runners.ralph.input_builder import IterationInput, IterationInputBuilder
+from aworld.runners.ralph.loop_control import (
+    AcceptanceEvidence,
+    ExecutionLimits,
+    LoopDecision,
+    LoopDisposition,
+    decide_after_attempt,
+)
 from aworld.runners.ralph.policy import RalphLoopPolicy
 from aworld.utils.run_util import exec_tasks
 from aworld.runners.ralph.config import RalphConfig
@@ -64,8 +71,7 @@ class RalphRunner(Runner):
         execution_result = TaskResponse()
         while True:
             cur_task = self.task
-            self.loop_context.iteration += 1
-            iter_num = self.loop_context.iteration
+            iter_num = self.loop_context.iteration + 1
 
             # 1. Check stop conditions
             logger.info(f"Iteration {iter_num} Stop condition check...")
@@ -77,22 +83,144 @@ class RalphRunner(Runner):
                     break
 
             # 2. Execute task
+            self.loop_context.iteration = iter_num
             logger.info(f"Iteration {iter_num} Executing task...")
             try:
                 execution_result = await self._execute_task(cur_task, iter_num=iter_num)
                 self._last_execution_result = execution_result
                 self._last_executed_iteration = iter_num
-                await self._evaluate_iteration(
+                evaluation = await self._evaluate_iteration(
                     task=cur_task,
                     iter_num=iter_num,
                     execution_result=execution_result,
                     phase="post_iteration",
                 )
-            except:
-                logger.error(f"Error executing task: {cur_task.id}")
-                # error process
+                decision = await self._decide_after_attempt(
+                    task=cur_task,
+                    iter_num=iter_num,
+                    execution_result=execution_result,
+                    evaluation=evaluation,
+                )
+                if decision.disposition is LoopDisposition.COMPLETE:
+                    break
+                if decision.disposition is LoopDisposition.LIMIT_REACHED:
+                    self._mark_limit_reached(execution_result)
+                    break
+            except Exception as exc:
+                logger.exception(f"Error executing Ralph attempt for task: {cur_task.id}")
+                execution_result = TaskResponse(
+                    id=cur_task.id,
+                    success=False,
+                    status="incomplete",
+                    semantic_status="incomplete",
+                    completion_reason="attempt_error",
+                    recoverable=True,
+                    failure_origin="infrastructure",
+                    failure_code=type(exc).__name__,
+                    msg=str(exc),
+                )
+                self._last_execution_result = execution_result
+                self._last_executed_iteration = iter_num
+                decision = self._record_attempt_decision(
+                    iter_num=iter_num,
+                    evidence=AcceptanceEvidence(semantic_succeeded=False),
+                )
+                if decision.disposition is LoopDisposition.LIMIT_REACHED:
+                    self._mark_limit_reached(execution_result)
+                    break
 
         return execution_result
+
+    def _semantic_succeeded(self, execution_result: TaskResponse) -> bool:
+        status = getattr(execution_result, "semantic_status", None)
+        if status is not None:
+            return status == "succeeded"
+        return bool(getattr(execution_result, "success", False))
+
+    def _verification_required(self) -> bool:
+        verify = self.ralph_config.verify
+        return bool(
+            verify.enabled
+            and verify.commands
+            and (verify.run_on_each_iteration or verify.run_before_completion)
+        )
+
+    async def _decide_after_attempt(
+        self,
+        *,
+        task: Task,
+        iter_num: int,
+        execution_result: TaskResponse,
+        evaluation: IterationEvaluationResult,
+    ) -> LoopDecision:
+        semantic_succeeded = self._semantic_succeeded(execution_result)
+        verify_result = evaluation.verify_result
+        if (
+            semantic_succeeded
+            and self._verification_required()
+            and verify_result is None
+            and not self.ralph_config.verify.run_on_each_iteration
+            and self.ralph_config.verify.run_before_completion
+        ):
+            evaluation = await self._evaluate_iteration(
+                task=task,
+                iter_num=iter_num,
+                execution_result=execution_result,
+                phase="before_completion",
+            )
+            verify_result = evaluation.verify_result
+
+        evidence = AcceptanceEvidence(
+            semantic_succeeded=semantic_succeeded,
+            completion_claimed=semantic_succeeded,
+            verification_required=self._verification_required(),
+            verification_passed=(
+                verify_result.passed if verify_result is not None else None
+            ),
+        )
+        return self._record_attempt_decision(iter_num=iter_num, evidence=evidence)
+
+    def _record_attempt_decision(
+        self,
+        *,
+        iter_num: int,
+        evidence: AcceptanceEvidence,
+    ) -> LoopDecision:
+        decision = decide_after_attempt(
+            evidence,
+            current_iteration=iter_num,
+            limits=ExecutionLimits(
+                max_iterations=self.completion_criteria.max_iterations
+            ),
+        )
+        state = self.loop_context.loop_state
+        if decision.acceptance_satisfied:
+            state.completion_confirmations += 1
+            state.successful_steps += 1
+            state.consecutive_failures = 0
+        else:
+            state.completion_confirmations = 0
+            state.failed_steps += 1
+            state.consecutive_failures += 1
+        state.metadata["last_attempt_receipt"] = {
+            "schema_version": "aworld.ralph.attempt-receipt/v1",
+            "iteration": iter_num,
+            "semantic_succeeded": evidence.semantic_succeeded,
+            "completion_claimed": evidence.completion_claimed,
+            "verification_required": evidence.verification_required,
+            "verification_passed": evidence.verification_passed,
+            "acceptance_satisfied": decision.acceptance_satisfied,
+            "disposition": decision.disposition.value,
+            "decision_reason": decision.reason,
+        }
+        return decision
+
+    def _mark_limit_reached(self, execution_result: TaskResponse) -> None:
+        execution_result.success = False
+        execution_result.status = "budget_exhausted"
+        execution_result.semantic_status = "budget_exhausted"
+        execution_result.completion_reason = "max_iterations"
+        execution_result.recoverable = False
 
     def _init_stop_detector(self):
         detectors = self.ralph_config.stop_condition.stop_detectors or []
@@ -120,6 +248,7 @@ class RalphRunner(Runner):
             phase="before_completion",
         )
         if evaluation.verify_result is not None and not evaluation.verify_result.passed:
+            self.loop_context.loop_state.completion_confirmations = 0
             logger.info("Pre-completion verification failed; continuing Ralph loop for another repair iteration.")
             return False
         return True

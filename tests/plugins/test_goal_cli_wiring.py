@@ -129,6 +129,7 @@ async def test_cli_goal_carries_intent_between_real_task_builds_and_revalidates(
         "Produce delivery.txt", verification_commands=["test -f delivery.txt"],
     )
     executor, _ = _executor(monkeypatch, tmp_path, state, "worker-id")
+    executor._resolve_swarm_skills.return_value = ()
     contexts, calls = _context_factory(monkeypatch)
     tasks = []
 
@@ -142,6 +143,7 @@ async def test_cli_goal_carries_intent_between_real_task_builds_and_revalidates(
         if len(tasks) == 1:
             retain_work_progress(context, "worker-id", plan="Generate delivery then validate it")
         else:
+            assert "Unsatisfied evidence: self_check_failed" in task.input
             migrated = context.context_info["adaptive_work_state:worker-id"]
             assert migrated["scope"]["task_id"] == task.id
             assert migrated["carried_from"]["task_id"] == tasks[0].id

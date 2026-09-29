@@ -102,6 +102,13 @@ charter, current milestone, latest observations, retired approaches, unresolved
 assumptions, and any review feedback supplied by the runtime. Resume from that
 state rather than reconstructing the task from memory or repeating prior work.
 
+When the runtime supplies a structured previous-attempt receipt, use its
+acceptance disposition and unsatisfied evidence codes to select the next
+bounded action. Treat an iteration or attempt limit only as a resource halt,
+never as proof that the objective succeeded. Do not repeat a completion claim
+when the receipt says verification failed or evidence is missing; produce new
+evidence or report the unresolved gap accurately.
+
 ## Review before declaring completion
 
 When preparing a candidate final result:

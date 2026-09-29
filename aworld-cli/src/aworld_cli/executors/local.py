@@ -2180,6 +2180,39 @@ class LocalAgentExecutor(BaseAgentExecutor):
                         logger.error(f"💾 Traceback: {traceback.format_exc()}")
                         # Don't fail the whole request if history save fails
 
+                completion_assessment_payload = None
+                assess_completion = getattr(
+                    getattr(task, "context", None),
+                    "assess_completion_contract",
+                    None,
+                )
+                if callable(assess_completion):
+                    try:
+                        completion_assessment = assess_completion(
+                            agent_claimed_finished=True
+                        )
+                    except Exception as exc:
+                        logger.debug(
+                            f"Unable to project completion assessment to task hook: {exc}"
+                        )
+                    else:
+                        if completion_assessment is not None:
+                            completion_assessment_payload = {
+                                "mode": getattr(
+                                    getattr(completion_assessment, "mode", None),
+                                    "value",
+                                    getattr(completion_assessment, "mode", None),
+                                ),
+                                "status": getattr(
+                                    getattr(completion_assessment, "status", None),
+                                    "value",
+                                    getattr(completion_assessment, "status", None),
+                                ),
+                                "reason_codes": list(
+                                    getattr(completion_assessment, "reason_codes", ())
+                                )[:8],
+                            }
+
                 task_completed_results = await self._run_plugin_task_hook(
                     "task_completed",
                     {
@@ -2189,6 +2222,7 @@ class LocalAgentExecutor(BaseAgentExecutor):
                         "semantic_status": getattr(final_task_response, "semantic_status", None),
                         "completion_reason": getattr(final_task_response, "completion_reason", None),
                         "recoverable": getattr(final_task_response, "recoverable", None),
+                        "completion_assessment": completion_assessment_payload,
                         "task_epoch": getattr(task.context, "task_epoch", None),
                         "final_answer": answer,
                         "usage": final_usage,

@@ -41,6 +41,96 @@ def test_incomplete_promise_does_not_complete_goal_and_old_deadline_is_ignored()
 def test_goal_without_promise_stops_on_typed_success():
     state, again = apply_turn_outcome(new_goal_contract_state("work"), {"semantic_status":"succeeded"})
     assert not again and state["status"] == "complete"
+    assert state["last_attempt_receipt"]["disposition"] == "complete"
+    assert state["last_attempt_receipt"]["acceptance_satisfied"] is True
+
+
+def test_goal_persists_structured_verification_receipt_for_next_attempt():
+    state, again = apply_turn_outcome(
+        new_goal_contract_state("work", verification_commands=["pytest -q"]),
+        {
+            "task_id": "attempt-1",
+            "semantic_status": "incomplete",
+            "completion_reason": "completion_contract_unsatisfied",
+            "recoverable": True,
+            "final_answer": "I implemented the change.",
+        },
+    )
+
+    assert again is True
+    assert state["last_attempt_receipt"] == {
+        "schema_version": "aworld.goal.attempt-receipt/v1",
+        "attempt": 1,
+        "task_id": "attempt-1",
+        "semantic_status": "incomplete",
+        "completion_reason": "completion_contract_unsatisfied",
+        "recoverable": True,
+        "completion_claimed": True,
+        "verification_required": True,
+        "verification_passed": False,
+        "acceptance_reason_codes": [],
+        "acceptance_satisfied": False,
+        "disposition": "continue",
+        "decision_reason": "semantic_incomplete",
+    }
+
+    prompt = __import__(
+        "aworld_cli.builtin_plugins.goal_session.hooks.task_completed",
+        fromlist=["build_goal_context_prompt"],
+    ).build_goal_context_prompt(state)
+    assert "Last attempt receipt:" in prompt
+    assert "Verification: failed" in prompt
+    assert "Decision: continue (semantic_incomplete)" in prompt
+
+
+def test_goal_receipt_carries_bounded_typed_acceptance_reasons():
+    state, again = apply_turn_outcome(
+        new_goal_contract_state("work", verification_commands=["pytest -q"]),
+        {
+            "semantic_status": "incomplete",
+            "completion_reason": "completion_contract_unsatisfied",
+            "completion_assessment": {
+                "mode": "enforce",
+                "status": "repair_required",
+                "reason_codes": [
+                    "self_check_failed",
+                    "required_artifact_missing",
+                    *[f"extra-{index}" for index in range(10)],
+                ],
+            },
+        },
+    )
+
+    assert again is True
+    receipt = state["last_attempt_receipt"]
+    assert receipt["acceptance_reason_codes"] == [
+        "self_check_failed",
+        "required_artifact_missing",
+        "extra-0",
+        "extra-1",
+        "extra-2",
+        "extra-3",
+        "extra-4",
+        "extra-5",
+    ]
+    prompt = __import__(
+        "aworld_cli.builtin_plugins.goal_session.hooks.task_completed",
+        fromlist=["build_goal_context_prompt"],
+    ).build_goal_context_prompt(state)
+    assert "Unsatisfied evidence: self_check_failed, required_artifact_missing" in prompt
+    assert "extra-6" not in prompt
+
+
+def test_goal_attempt_limit_is_persisted_as_a_non_successful_halt_receipt():
+    state, again = apply_turn_outcome(
+        new_goal_contract_state("work", max_turns=1),
+        {"semantic_status": "incomplete", "completion_reason": "needs_more_work"},
+    )
+
+    assert again is False
+    assert state["status"] == "budget_limited"
+    assert state["last_attempt_receipt"]["disposition"] == "limit_reached"
+    assert state["last_attempt_receipt"]["acceptance_satisfied"] is False
 
 
 def test_untyped_text_promise_is_not_completion_evidence():

@@ -2,9 +2,17 @@ import re
 import uuid
 from datetime import datetime, timezone
 
+from aworld.runners.ralph.loop_control import (
+    AcceptanceEvidence,
+    ExecutionLimits,
+    LoopDisposition,
+    decide_after_attempt,
+)
+
 
 DEFAULT_MAX_TURNS = None
 MAX_SUMMARY_LENGTH = 160
+MAX_REASON_CODES = 8
 ELLIPSIS = "..."
 VISIBLE_GOAL_STATUSES = {"active", "paused", "budget_limited", "complete"}
 
@@ -97,6 +105,7 @@ def new_goal_contract_state(
         "last_error_excerpt": None,
         "last_partial_answer": "",
         "last_partial_answer_excerpt": None,
+        "last_attempt_receipt": None,
     }
 
 
@@ -153,6 +162,36 @@ def build_goal_context_prompt(state: dict) -> str:
     if excerpt:
         lines.append(f"Last outcome excerpt: {excerpt}")
 
+    receipt = state.get("last_attempt_receipt")
+    if isinstance(receipt, dict):
+        if receipt.get("verification_required"):
+            verification = (
+                "passed" if receipt.get("verification_passed") is True else "failed"
+                if receipt.get("verification_passed") is False else "missing"
+            )
+        else:
+            verification = "not required"
+        lines.extend(
+            [
+                "Last attempt receipt:",
+                f"- Semantic status: {receipt.get('semantic_status') or 'unknown'}",
+                f"- Completion claim: {'present' if receipt.get('completion_claimed') else 'missing'}",
+                f"- Verification: {verification}",
+                f"- Decision: {receipt.get('disposition') or 'continue'} "
+                f"({receipt.get('decision_reason') or 'unspecified'})",
+            ]
+        )
+        completion_reason = str(receipt.get("completion_reason") or "").strip()
+        if completion_reason:
+            lines.append(f"- Attempt reason: {completion_reason}")
+        reason_codes = [
+            item
+            for item in (receipt.get("acceptance_reason_codes") or ())
+            if isinstance(item, str) and item
+        ][:MAX_REASON_CODES]
+        if reason_codes:
+            lines.append(f"- Unsatisfied evidence: {', '.join(reason_codes)}")
+
     lines.append("</goal_contract>")
     return "\n".join(lines)
 
@@ -167,6 +206,51 @@ def apply_turn_outcome(state: dict, event: dict) -> tuple[dict, bool]:
     semantic_status = event.get("semantic_status")
     if semantic_status != "succeeded":
         satisfied_promise = False
+    completion_claimed = promise is None or satisfied_promise
+    completion_assessment = event.get("completion_assessment")
+    if not isinstance(completion_assessment, dict):
+        completion_assessment = {}
+    assessment_status = str(completion_assessment.get("status") or "").strip().lower()
+    assessment_mode = str(completion_assessment.get("mode") or "").strip().lower()
+    reason_codes = [
+        str(item).strip()
+        for item in (completion_assessment.get("reason_codes") or ())
+        if isinstance(item, str) and item.strip()
+    ][:MAX_REASON_CODES]
+    verification_required = bool(updated.get("verification_commands")) or assessment_mode == "enforce"
+    verification_passed = (
+        assessment_status == "satisfied"
+        if verification_required and assessment_status
+        else semantic_status == "succeeded"
+        if verification_required
+        else None
+    )
+    evidence = AcceptanceEvidence(
+        semantic_succeeded=semantic_status == "succeeded",
+        completion_claimed=completion_claimed,
+        verification_required=verification_required,
+        verification_passed=verification_passed,
+    )
+    decision = decide_after_attempt(
+        evidence,
+        current_iteration=current_turn,
+        limits=ExecutionLimits(max_iterations=max_turns),
+    )
+    receipt = {
+        "schema_version": "aworld.goal.attempt-receipt/v1",
+        "attempt": current_turn,
+        "task_id": event.get("task_id"),
+        "semantic_status": semantic_status or event.get("task_status") or "unknown",
+        "completion_reason": event.get("completion_reason"),
+        "recoverable": event.get("recoverable"),
+        "completion_claimed": completion_claimed,
+        "verification_required": verification_required,
+        "verification_passed": verification_passed,
+        "acceptance_reason_codes": reason_codes,
+        "acceptance_satisfied": decision.acceptance_satisfied,
+        "disposition": decision.disposition.value,
+        "decision_reason": decision.reason,
+    }
 
     updated.update(
         {
@@ -181,14 +265,15 @@ def apply_turn_outcome(state: dict, event: dict) -> tuple[dict, bool]:
             "last_partial_answer": "",
             "last_partial_answer_excerpt": None,
             "completion_promise_satisfied": satisfied_promise,
+            "last_attempt_receipt": receipt,
         }
     )
 
-    if satisfied_promise or (promise is None and semantic_status == "succeeded"):
+    if decision.disposition is LoopDisposition.COMPLETE:
         updated.update({"active": False, "status": "complete"})
         return updated, False
 
-    if max_turns is not None and current_turn >= max_turns:
+    if decision.disposition is LoopDisposition.LIMIT_REACHED:
         updated.update({"active": False, "status": "budget_limited"})
         return updated, False
 
