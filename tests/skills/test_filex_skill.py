@@ -30,6 +30,9 @@ def test_filex_skill_documents_adapted_workflow_and_runtime_boundaries() -> None
 
     assert "FILEX_WORKSPACE_ROOT" in usage
     assert "AWorld runtime supplies the selected FileX VLM" in usage
+    assert "FileX is disabled by default" in usage
+    assert "explicitly selects this skill" in usage
+    assert "An unselected baseline run must not invoke FileX" in usage
     assert "`gateway_vllm` object in `--env-file`" in usage
     assert "weaken reproducibility" in usage
     assert "`output_path`" in usage

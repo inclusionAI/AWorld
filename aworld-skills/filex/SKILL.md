@@ -54,9 +54,18 @@ metadata:
 
 # Use FileX
 
-Choose this skill when the task needs content from an existing document or media
-source. FileX does not need to run for unrelated tasks or to create new documents
-or media.
+FileX is disabled by default. Choose this skill when the task needs content from
+an existing document or media source. FileX does not need to run for unrelated
+tasks or to create new documents or media.
+
+When the caller explicitly selects this skill, the selection is an execution
+requirement rather than a suggestion. Complete the FileX workflow before using a
+generic parser or claiming the task is finished. In a managed artifact-producing
+runtime, create the canonical bundle under `FILEX_ARTIFACTS_ROOT` and require a
+successful wrapper result. If FileX cannot parse the supplied source, report the
+FileX failure; do not silently fall back to another parser or synthesize evidence.
+An unselected baseline run must not invoke FileX merely because the built-in skill
+is installed.
 
 Use the bundled wrapper for FileX `inspect`, `parse`, and `status`. It validates workspace paths, resolves supported URL sources, keeps credentials out of command-line arguments, preserves FileX JSON fields, and returns `output_path` for synchronous parsing.
 
