@@ -1,20 +1,25 @@
 from __future__ import annotations
 
 import asyncio
+from dataclasses import replace
 
 import pytest
 
 import aworld.agents.llm_agent as llm_agent_module
 from aworld.agents.llm_agent import Agent
 from aworld.config.conf import AgentConfig
+from aworld.core.common import ActionModel, Observation
 from aworld.core.context.base import Context
+from aworld.core.context.execution_state import get_execution_state
 from aworld.core.context.generation_budget import (
+    GenerationBudgetController,
     GenerationBudgetExceeded,
     GenerationBudgetPolicy,
     GenerationStopReason,
 )
 from aworld.core.context.session import Session
 from aworld.core.event.base import Constants, Message
+from aworld.core.execution_protocol import ExecutionProtocolStore
 from aworld.core.task import Task
 from aworld.models.model_response import Function, ModelResponse, ToolCall
 
@@ -89,6 +94,376 @@ def test_default_agent_uses_max_steps_without_generation_deadlines() -> None:
     assert policy.active_tool_free_timeout_seconds is None
     assert policy.action_repair_timeout_seconds is None
     assert policy.action_repair_enabled is False
+
+
+def _long_running_generation_agent(
+    *,
+    armed: bool,
+    generation_policy: GenerationBudgetPolicy | None = None,
+    context_compiler: dict | None = None,
+) -> Agent:
+    config_kwargs = {
+        "llm_provider": "openai",
+        "llm_model_name": "fake-model",
+        "llm_api_key": "fake-key",
+    }
+    if context_compiler is not None:
+        config_kwargs["context_compiler"] = context_compiler
+    agent = _ToolAgent(
+        name="Aworld",
+        conf=AgentConfig(**config_kwargs),
+        generation_budget_policy=generation_policy,
+    )
+    agent.skill_configs = {"long-running-agent": {"active": True}}
+    context = Context(task_id="long-running-generation-budget")
+    context.set_task(
+        Task(
+            id="long-running-generation-budget",
+            name="long-running-generation-budget",
+            input="test request",
+        )
+    )
+    agent.context = context
+    if armed:
+        protocol_policy = agent._resolve_execution_protocol_policy()
+        store = ExecutionProtocolStore(context, agent.id(), protocol_policy)
+        store.save(replace(store.load(), long_horizon_armed=True))
+    return agent
+
+
+def test_active_long_running_skill_keeps_generation_watchdog_off_before_arming() -> (
+    None
+):
+    policy = _long_running_generation_agent(
+        armed=False
+    )._resolve_generation_budget_policy()
+
+    assert policy.total_timeout_seconds is None
+    assert policy.stream_idle_timeout_seconds is None
+    assert policy.active_tool_free_timeout_seconds is None
+    assert policy.action_repair_timeout_seconds is None
+    assert policy.action_repair_enabled is False
+
+
+def test_armed_protocol_keeps_watchdog_off_when_skill_is_inactive() -> None:
+    agent = _long_running_generation_agent(armed=True)
+    agent.skill_configs["long-running-agent"]["active"] = False
+
+    policy = agent._resolve_generation_budget_policy()
+
+    assert policy.total_timeout_seconds is None
+    assert policy.stream_idle_timeout_seconds is None
+    assert policy.active_tool_free_timeout_seconds is None
+    assert policy.action_repair_timeout_seconds is None
+    assert policy.action_repair_enabled is False
+
+
+def test_armed_long_running_skill_enables_liveness_only_watchdog_defaults() -> None:
+    policy = _long_running_generation_agent(
+        armed=True
+    )._resolve_generation_budget_policy()
+
+    assert policy.total_timeout_seconds == 360
+    assert policy.stream_idle_timeout_seconds == 120
+    assert policy.active_tool_free_timeout_seconds is None
+    assert policy.action_repair_timeout_seconds is None
+    assert policy.action_repair_enabled is False
+
+
+def test_explicit_generation_compiler_configuration_wins_after_arming() -> None:
+    policy = _long_running_generation_agent(
+        armed=True,
+        context_compiler={"generation_total_timeout_seconds": 17},
+    )._resolve_generation_budget_policy()
+
+    assert policy.total_timeout_seconds == 17
+    assert policy.stream_idle_timeout_seconds is None
+    assert policy.active_tool_free_timeout_seconds is None
+    assert policy.action_repair_timeout_seconds is None
+    assert policy.action_repair_enabled is False
+
+
+def test_explicit_generation_policy_wins_after_long_running_protocol_arms() -> None:
+    explicit = GenerationBudgetPolicy(
+        total_timeout_seconds=31,
+        stream_idle_timeout_seconds=7,
+        active_tool_free_timeout_seconds=11,
+        action_repair_timeout_seconds=None,
+        action_repair_enabled=False,
+    )
+    resolved = _long_running_generation_agent(
+        armed=True,
+        generation_policy=explicit,
+    )._resolve_generation_budget_policy()
+
+    assert resolved is explicit
+
+
+def test_explicit_disabled_generation_mode_suppresses_automatic_watchdog() -> None:
+    agent = _long_running_generation_agent(armed=True)
+    agent._generation_budget_explicit_fields = frozenset({"generation_budget_mode"})
+
+    policy = agent._resolve_generation_budget_policy()
+
+    assert policy.total_timeout_seconds is None
+    assert policy.stream_idle_timeout_seconds is None
+    metrics = agent.context.context_info[f"generation_budget_policy:{agent.id()}"]
+    assert metrics["policy_source"] == "explicit_config"
+
+
+def test_automatic_watchdog_reserves_task_time_for_finalization() -> None:
+    agent = _long_running_generation_agent(armed=True)
+    agent.context.set_task(
+        Task(
+            id="long-running-generation-budget",
+            input="test request",
+            timeout=65,
+        )
+    )
+
+    policy = agent._resolve_generation_budget_policy(agent.context)
+
+    assert 4.0 < policy.total_timeout_seconds <= 5.0
+    assert policy.stream_idle_timeout_seconds == policy.total_timeout_seconds
+    assert policy.active_tool_free_timeout_seconds is None
+    assert policy.action_repair_enabled is False
+    metrics = agent.context.context_info[f"generation_budget_policy:{agent.id()}"]
+    assert metrics["policy_source"] == "long_horizon_auto"
+
+
+def _generation_timeout(
+    reason: GenerationStopReason = GenerationStopReason.CALL_DEADLINE_EXCEEDED,
+) -> GenerationBudgetExceeded:
+    controller = GenerationBudgetController(
+        GenerationBudgetPolicy(
+            total_timeout_seconds=1,
+            stream_idle_timeout_seconds=None,
+            active_tool_free_timeout_seconds=None,
+            action_repair_timeout_seconds=None,
+            action_repair_enabled=False,
+        )
+    )
+    return GenerationBudgetExceeded(controller.receipt(reason))
+
+
+@pytest.mark.asyncio
+async def test_automatic_timeout_runs_one_tool_free_finalization() -> None:
+    agent = _long_running_generation_agent(armed=True)
+    calls: list[dict] = []
+
+    async def attempt(observation, **kwargs):
+        calls.append(kwargs)
+        if len(calls) == 1:
+            raise _generation_timeout()
+        assert kwargs["_loop_budget_finalization"] is True
+        return [ActionModel(agent_name=agent.id(), policy_info="bounded summary")]
+
+    agent._async_policy_once = attempt
+    message = Message(category=Constants.AGENT, headers={"context": agent.context})
+
+    result = await agent.async_policy(Observation(content="continue"), message=message)
+
+    assert result[0].policy_info == "bounded summary"
+    assert len(calls) == 2
+    state = get_execution_state(agent.context)
+    assert state["status"] == "succeeded"
+    assert state["reason"] == "long_horizon_generation_budget_finalized"
+    metrics = agent.context.context_info["long_horizon_generation_budget_metrics"]
+    assert metrics["policy_source"] == "long_horizon_auto"
+    assert metrics["last_outcome"] == "finalized"
+
+
+@pytest.mark.asyncio
+async def test_automatic_timeout_finalization_failure_returns_honest_result() -> None:
+    agent = _long_running_generation_agent(armed=True)
+    calls = 0
+
+    async def attempt(observation, **kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise _generation_timeout(GenerationStopReason.IDLE_TIMEOUT)
+        raise RuntimeError("finalization provider unavailable")
+
+    agent._async_policy_once = attempt
+    message = Message(category=Constants.AGENT, headers={"context": agent.context})
+
+    result = await agent.async_policy(Observation(content="continue"), message=message)
+
+    assert calls == 2
+    assert "does not claim successful completion" in result[0].policy_info
+    state = get_execution_state(agent.context)
+    assert state["status"] == "succeeded"
+    assert state["reason"] == "long_horizon_generation_budget_fail_open"
+
+
+@pytest.mark.asyncio
+async def test_automatic_timeout_finalization_is_claimed_only_once() -> None:
+    agent = _long_running_generation_agent(armed=True)
+    context = agent.context
+    assert agent._claim_long_horizon_generation_finalization(context) is True
+
+    calls = 0
+
+    async def attempt(observation, **kwargs):
+        nonlocal calls
+        calls += 1
+        raise _generation_timeout()
+
+    agent._async_policy_once = attempt
+    message = Message(category=Constants.AGENT, headers={"context": context})
+
+    result = await agent.async_policy(Observation(content="continue"), message=message)
+
+    assert calls == 1
+    assert "does not claim successful completion" in result[0].policy_info
+
+
+@pytest.mark.asyncio
+async def test_explicit_watchdog_timeout_remains_fail_closed() -> None:
+    explicit = GenerationBudgetPolicy(
+        total_timeout_seconds=1,
+        stream_idle_timeout_seconds=None,
+        active_tool_free_timeout_seconds=None,
+        action_repair_timeout_seconds=None,
+        action_repair_enabled=False,
+    )
+    agent = _long_running_generation_agent(
+        armed=True,
+        generation_policy=explicit,
+    )
+
+    async def attempt(observation, **kwargs):
+        raise _generation_timeout()
+
+    agent._async_policy_once = attempt
+    message = Message(category=Constants.AGENT, headers={"context": agent.context})
+
+    with pytest.raises(GenerationBudgetExceeded):
+        await agent.async_policy(Observation(content="continue"), message=message)
+
+
+class _ProductionBoundaryTimeoutAgent(Agent):
+    def __init__(self, *args, fail_once: bool, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.fail_once = fail_once
+        self.invoke_count = 0
+
+    async def _add_message_to_memory(self, *args, **kwargs):
+        return None
+
+    async def build_llm_input(self, observation, info=None, message=None, **kwargs):
+        return [{"role": "user", "content": str(observation.content or "")}]
+
+    async def _filter_tools(self, context=None):
+        return None
+
+    async def invoke_model(self, messages=None, message=None, **kwargs):
+        self.invoke_count += 1
+        if self.fail_once and self.invoke_count > 1:
+            content = "bounded production-path summary"
+            return ModelResponse(
+                id="finalized",
+                model="fake-model",
+                content=content,
+                message={"role": "assistant", "content": content},
+                finish_reason="stop",
+                usage={"prompt_tokens": 1, "completion_tokens": 1},
+            )
+        raise _generation_timeout()
+
+
+def _production_boundary_timeout_agent(
+    *,
+    generation_policy: GenerationBudgetPolicy | None = None,
+    fail_once: bool,
+) -> tuple[Agent, Context]:
+    agent = _ProductionBoundaryTimeoutAgent(
+        name="Aworld",
+        conf=AgentConfig(
+            llm_provider="openai",
+            llm_model_name="fake-model",
+            llm_api_key="fake-key",
+        ),
+        generation_budget_policy=generation_policy,
+        fail_once=fail_once,
+    )
+    agent._llm = object()
+    agent.skill_configs = {"long-running-agent": {"active": True}}
+    context = Context(task_id="production-boundary-timeout")
+    context.set_task(
+        Task(
+            id="production-boundary-timeout",
+            input="test request",
+        )
+    )
+    agent.context = context
+    policy = agent._resolve_execution_protocol_policy()
+    store = ExecutionProtocolStore(context, agent.id(), policy)
+    store.save(replace(store.load(), long_horizon_armed=True))
+    return agent, context
+
+
+@pytest.mark.asyncio
+async def test_production_invoke_timeout_reaches_auto_fail_open_boundary() -> None:
+    agent, context = _production_boundary_timeout_agent(fail_once=True)
+    message = Message(category=Constants.AGENT, headers={"context": context})
+
+    result = await agent.async_policy(
+        Observation(content="continue"), message=message
+    )
+
+    assert agent.invoke_count == 2
+    assert result[0].policy_info == "bounded production-path summary"
+    assert get_execution_state(context)["reason"] == (
+        "long_horizon_generation_budget_finalized"
+    )
+
+
+@pytest.mark.asyncio
+async def test_production_invoke_timeout_with_explicit_policy_stays_typed() -> None:
+    explicit = GenerationBudgetPolicy(
+        total_timeout_seconds=1,
+        stream_idle_timeout_seconds=None,
+        active_tool_free_timeout_seconds=None,
+        action_repair_timeout_seconds=None,
+        action_repair_enabled=False,
+    )
+    agent, context = _production_boundary_timeout_agent(
+        generation_policy=explicit,
+        fail_once=False,
+    )
+    message = Message(category=Constants.AGENT, headers={"context": context})
+
+    with pytest.raises(GenerationBudgetExceeded):
+        await agent.async_policy(
+            Observation(content="continue"), message=message
+        )
+
+    assert agent.invoke_count == 1
+
+
+@pytest.mark.asyncio
+async def test_generation_finalization_claim_is_atomic_across_context_copies() -> None:
+    agent = _long_running_generation_agent(armed=True)
+    context = agent.context
+    transported = context.deep_copy()
+
+    claims = await asyncio.gather(
+        asyncio.to_thread(
+            agent._claim_long_horizon_generation_finalization,
+            context,
+        ),
+        asyncio.to_thread(
+            agent._claim_long_horizon_generation_finalization,
+            transported,
+        ),
+    )
+
+    assert sorted(claims) == [False, True]
+
+    context.task_id = "next-task"
+    assert agent._claim_long_horizon_generation_finalization(context) is True
 
 
 @pytest.fixture(autouse=True)
@@ -219,9 +594,7 @@ async def test_no_tool_stream_is_not_subject_to_active_action_deadline(
             await asyncio.sleep(0.003)
             yield ModelResponse(id="text", model="fake-model", content="answer ")
 
-    monkeypatch.setattr(
-        llm_agent_module, "acall_llm_model_stream", text_only_stream
-    )
+    monkeypatch.setattr(llm_agent_module, "acall_llm_model_stream", text_only_stream)
     agent = _agent(
         policy=GenerationBudgetPolicy(
             total_timeout_seconds=0.5,
@@ -274,8 +647,12 @@ async def test_started_tool_call_disarms_tool_free_deadline(
             )
 
         yield ModelResponse(
-            id="tool", model="fake-model", finish_reason="tool_calls",
-            tool_calls=[ToolCall(id="call-1", function=Function(name="unknown", arguments='"}'))],
+            id="tool",
+            model="fake-model",
+            finish_reason="tool_calls",
+            tool_calls=[
+                ToolCall(id="call-1", function=Function(name="unknown", arguments='"}'))
+            ],
         )
 
     monkeypatch.setattr(llm_agent_module, "acall_llm_model_stream", tool_stream)
@@ -360,9 +737,10 @@ async def test_provider_timeout_is_not_mislabeled_as_framework_deadline(
         )
 
     assert raised.value.reason is GenerationStopReason.PROVIDER_TIMEOUT
-    assert message.context.context_info["generation_budget_events"][-1][
-        "reason"
-    ] == GenerationStopReason.PROVIDER_TIMEOUT.value
+    assert (
+        message.context.context_info["generation_budget_events"][-1]["reason"]
+        == GenerationStopReason.PROVIDER_TIMEOUT.value
+    )
 
 
 @pytest.mark.asyncio
@@ -427,9 +805,7 @@ async def test_generation_deadline_does_not_wait_forever_for_provider_cleanup(
                 continue
 
     monkeypatch.setattr(llm_agent_module, "acall_llm_model", stubborn_provider)
-    monkeypatch.setattr(
-        llm_agent_module, "_GENERATION_CLEANUP_GRACE_SECONDS", 0.01
-    )
+    monkeypatch.setattr(llm_agent_module, "_GENERATION_CLEANUP_GRACE_SECONDS", 0.01)
     agent = _agent(
         policy=GenerationBudgetPolicy(
             total_timeout_seconds=0.01,
@@ -478,9 +854,7 @@ async def test_caller_cancellation_is_not_blocked_by_provider_cleanup(
                 continue
 
     monkeypatch.setattr(llm_agent_module, "acall_llm_model", stubborn_provider)
-    monkeypatch.setattr(
-        llm_agent_module, "_GENERATION_CLEANUP_GRACE_SECONDS", 0.01
-    )
+    monkeypatch.setattr(llm_agent_module, "_GENERATION_CLEANUP_GRACE_SECONDS", 0.01)
     agent = _agent(
         policy=GenerationBudgetPolicy(
             total_timeout_seconds=1,
@@ -546,9 +920,7 @@ async def test_stream_close_is_bounded_when_provider_cleanup_stalls(
         "acall_llm_model_stream",
         lambda *args, **kwargs: StubbornStream(),
     )
-    monkeypatch.setattr(
-        llm_agent_module, "_GENERATION_CLEANUP_GRACE_SECONDS", 0.01
-    )
+    monkeypatch.setattr(llm_agent_module, "_GENERATION_CLEANUP_GRACE_SECONDS", 0.01)
     agent = _agent(
         policy=GenerationBudgetPolicy(
             total_timeout_seconds=1,
@@ -680,9 +1052,7 @@ async def test_detached_provider_cleanup_capacity_is_finite(
                 continue
 
     monkeypatch.setenv("AWORLD_MAX_PENDING_GENERATION_TASKS", "3")
-    monkeypatch.setattr(
-        llm_agent_module, "_GENERATION_CLEANUP_GRACE_SECONDS", 0.001
-    )
+    monkeypatch.setattr(llm_agent_module, "_GENERATION_CLEANUP_GRACE_SECONDS", 0.001)
     llm_agent_module._DETACHED_GENERATION_TASKS.clear()
     llm_agent_module._ACTIVE_GENERATION_TASKS.clear()
     agent = _agent(
@@ -705,9 +1075,7 @@ async def test_detached_provider_cleanup_capacity_is_finite(
             await agent._cancel_generation_task(task)
         assert len(llm_agent_module._DETACHED_GENERATION_TASKS) == 3
 
-        with pytest.raises(
-            Exception, match="cleanup capacity is exhausted"
-        ):
+        with pytest.raises(Exception, match="cleanup capacity is exhausted"):
             await agent._await_generation_operation(
                 stubborn_provider(),
                 controller=llm_agent_module.GenerationBudgetController(
@@ -739,9 +1107,7 @@ async def test_concurrent_provider_timeouts_cannot_exceed_cleanup_capacity(
                 continue
 
     monkeypatch.setenv("AWORLD_MAX_PENDING_GENERATION_TASKS", "3")
-    monkeypatch.setattr(
-        llm_agent_module, "_GENERATION_CLEANUP_GRACE_SECONDS", 0.001
-    )
+    monkeypatch.setattr(llm_agent_module, "_GENERATION_CLEANUP_GRACE_SECONDS", 0.001)
     llm_agent_module._DETACHED_GENERATION_TASKS.clear()
     llm_agent_module._ACTIVE_GENERATION_TASKS.clear()
     agent = _agent(
@@ -878,9 +1244,7 @@ async def test_truncated_action_repair_is_typed_as_exhausted(
                     id="primary", model="fake-model", content="planning "
                 )
         yield ModelResponse(id="repair", model="fake-model", content="still planning")
-        yield ModelResponse(
-            id="repair", model="fake-model", finish_reason="length"
-        )
+        yield ModelResponse(id="repair", model="fake-model", finish_reason="length")
 
     monkeypatch.setattr(llm_agent_module, "acall_llm_model_stream", fake_stream)
     agent = _agent(

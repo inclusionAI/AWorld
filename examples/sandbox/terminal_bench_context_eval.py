@@ -920,7 +920,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--agent-timeout-sec",
         type=float,
-        help="Override the per-run AWorld agent timeout; typed timeout evidence is retained.",
+        help=(
+            "Override the outer per-run process timeout. A bounded adaptive "
+            "cleanup reserve is deducted and both deadlines are recorded."
+        ),
     )
     parser.add_argument(
         "--verifier-timeout-sec",
@@ -947,6 +950,10 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     parser.add_argument("--keep-containers", action="store_true")
+    parser.add_argument(
+        "--docker-network",
+        help="Optional existing Docker network used by task containers.",
+    )
     parser.add_argument(
         "--verifier-mode",
         choices=("packaged", "python-functions"),
@@ -1752,6 +1759,14 @@ def summarize_results(results: list[dict], baseline_variant: str) -> dict:
     }
 
 
+def split_agent_timeout(agent_timeout: float) -> tuple[float, float]:
+    """Return a positive Task lifetime and bounded outer cleanup reserve."""
+    if not math.isfinite(agent_timeout) or agent_timeout <= 0:
+        raise ValueError("agent timeout must be positive")
+    cleanup_reserve = min(60.0, agent_timeout * 0.1)
+    return agent_timeout - cleanup_reserve, cleanup_reserve
+
+
 def execute_job(
     *,
     docker: str,
@@ -1775,6 +1790,7 @@ def execute_job(
     verifier_timeout_sec_override: float | None = None,
     external_mcp_config_path: Path | None = None,
     model_seed: int | None = None,
+    docker_network: str | None = None,
 ) -> dict:
     run_dir = (
         output_dir / "runs" / fixture.name / variant_name / f"repeat-{repetition:02d}"
@@ -1815,6 +1831,8 @@ def execute_job(
     container = f"aworld-eval-{fixture.name[:24]}-{uuid.uuid4().hex[:10]}"
     environment = fixture.config["environment"]
     command = [docker, "run", "-d", "--name", container]
+    if docker_network:
+        command.extend(["--network", docker_network])
     if environment.get("cpus"):
         command.extend(["--cpus", str(environment["cpus"])])
     if environment.get("memory_mb"):
@@ -1896,6 +1914,10 @@ def execute_job(
             if agent_timeout_sec_override is not None
             else configured_agent_timeout + 60
         )
+        # Keep process cleanup outside the framework task lifetime while
+        # exposing the actual caller deadline to Task.remaining_seconds().
+        task_timeout, cleanup_reserve = split_agent_timeout(agent_timeout)
+        agent_command.extend(["--task-timeout-sec", str(task_timeout)])
         agent_environment = os.environ.copy()
         repo_root = str(RUNNER.resolve().parents[2])
         existing_pythonpath = agent_environment.get("PYTHONPATH")
@@ -1917,6 +1939,9 @@ def execute_job(
                 "finished_at_epoch": ended,
                 "wall_time_seconds": max(0.0, ended - agent_started_at),
                 "configured_max_steps": max_steps,
+                "outer_timeout_seconds": agent_timeout,
+                "task_timeout_seconds": task_timeout,
+                "cleanup_reserve_seconds": cleanup_reserve,
             }
             return payload
 
@@ -2326,6 +2351,12 @@ def main() -> None:
             "minimum_host_available_memory_mb": args.minimum_host_available_memory_mb,
             "wait_timeout_sec": args.resource_wait_timeout_sec,
         },
+        "agent_deadline_policy": {
+            "outer_timeout_override_seconds": args.agent_timeout_sec,
+            "cleanup_reserve_formula": "min(60, outer_timeout * 0.1)",
+            "task_timeout_formula": "outer_timeout - cleanup_reserve",
+        },
+        "docker_network": args.docker_network,
         "created_at_epoch": time.time(),
     }
     write_json(output_dir / "experiment_manifest.json", experiment)
@@ -2456,6 +2487,7 @@ def main() -> None:
             verifier_timeout_sec_override=args.verifier_timeout_sec,
             external_mcp_config_path=args.mcp_config,
             model_seed=args.seed + repetition - 1,
+            docker_network=args.docker_network,
         )
         result["resource_admission"] = capacity
         write_json(

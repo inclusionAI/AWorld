@@ -55,6 +55,11 @@ from aworld.core.context.generation_budget import (
 from aworld.core.context.compiler.frozen_json import canonical_json_hash
 from aworld.core.context.compiler import CandidateRequestNotEnforceable
 from aworld.core.context.compiler.turn_economics import TurnCauseCode
+from aworld.core.execution_protocol import (
+    ExecutionProtocolPolicy,
+    ExecutionProtocolStore,
+    ProtocolMode,
+)
 from aworld.core.context.compiler.parity import (
     ContextEntryPoint,
     _ContextEntrypointClaim,
@@ -182,6 +187,13 @@ class _ValidationRepairContinuation:
     observation: Observation
     kwargs: dict
     validation_feedback: str = ""
+
+
+@dataclass(frozen=True)
+class _LongHorizonReviewContinuation:
+    observation: Observation
+    kwargs: dict
+    fallback_actions: tuple[ActionModel, ...]
 
 
 class ToolCallParseIssueCode(str, Enum):
@@ -465,6 +477,7 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         llm_max_attempts: int = 2,
         llm_retry_delay: float = 10.0,
         generation_budget_policy: GenerationBudgetPolicy | None = None,
+        execution_protocol_policy: ExecutionProtocolPolicy | None = None,
         tool_surface_specs: Sequence[ToolCapabilitySpec] | None = None,
         tool_surface_profile: ToolSurfaceProfile | None = None,
         tool_surface_probes: Sequence[CapabilityProbe] | None = None,
@@ -489,6 +502,10 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             generation_budget_policy: Optional typed model-generation deadline
                                       policy. By default it is resolved from
                                       ``llm_config.context_compiler``.
+            execution_protocol_policy: Optional domain-independent long-horizon
+                                       supervision policy. When omitted, the
+                                       existing ``long-running-agent`` Skill
+                                       activation determines guide/off behavior.
             enable_subagent: Enable subagent delegation capability. When True, agent can spawn specialized subagents
                              to handle subtasks autonomously. Automatically adds spawn_subagent tool and scans for
                              available subagents (TeamSwarm members + agent.md files). Default: False.
@@ -515,6 +532,30 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                 llm_base_url=base_url,
                 llm_temperature=float(os.getenv("LLM_TEMPERATURE", "0.7")),
             )
+        serialized_generation_fields = kwargs.pop(
+            "_generation_budget_explicit_fields", None
+        )
+        if serialized_generation_fields is None:
+            source_llm_config = (
+                conf.get("llm_config")
+                if isinstance(conf, dict)
+                else getattr(conf, "llm_config", None)
+            )
+            source_compiler_config = (
+                source_llm_config.get("context_compiler")
+                if isinstance(source_llm_config, dict)
+                else getattr(source_llm_config, "context_compiler", None)
+            )
+            source_fields = (
+                source_compiler_config.keys()
+                if isinstance(source_compiler_config, dict)
+                else getattr(source_compiler_config, "model_fields_set", set())
+            )
+        else:
+            source_fields = serialized_generation_fields
+        self._generation_budget_explicit_fields = frozenset(
+            str(name) for name in source_fields if str(name).startswith("generation_")
+        )
         super(Agent, self).__init__(
             name,
             conf,
@@ -575,6 +616,13 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                 "generation_budget_policy must be a GenerationBudgetPolicy or None"
             )
         self._explicit_generation_budget_policy = generation_budget_policy
+        if execution_protocol_policy is not None and not isinstance(
+            execution_protocol_policy, ExecutionProtocolPolicy
+        ):
+            raise TypeError(
+                "execution_protocol_policy must be ExecutionProtocolPolicy or None"
+            )
+        self._explicit_execution_protocol_policy = execution_protocol_policy
         self._tool_surface_specs = tuple(tool_surface_specs or ())
         self._tool_surface_profile = tool_surface_profile or ToolSurfaceProfile()
         self._tool_surface_probes = tuple(tool_surface_probes or ())
@@ -717,6 +765,16 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             contract,
             mode=CompletionMode(mode),
             evidence_resolver=self._runtime_completion_evidence_resolver,
+        )
+
+    def _resolve_execution_protocol_policy(self) -> ExecutionProtocolPolicy:
+        """Use explicit framework policy or derive it from normal Skill activation."""
+        if self._explicit_execution_protocol_policy is not None:
+            return self._explicit_execution_protocol_policy
+        skill = (self.skill_configs or {}).get("long-running-agent")
+        active = isinstance(skill, dict) and skill.get("active") is True
+        return ExecutionProtocolPolicy(
+            mode=ProtocolMode.GUIDE if active else ProtocolMode.OFF
         )
 
     async def _completion_feedback_if_unsatisfied(
@@ -2620,13 +2678,94 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
     ) -> List[ActionModel]:
         """Continue completion repairs without recursive stack growth."""
         repair_feedback = None
+        from aworld.runners.execution_protocol import load_candidate_fallback
+
+        long_horizon_fallback = load_candidate_fallback(message.context, self.id())
         while True:
             try:
-                result = await self._async_policy_once(observation, info=info, message=message, **kwargs)
+                attempt = self._async_policy_once(observation, info=info, message=message, **kwargs)
+                if long_horizon_fallback is None:
+                    result = await attempt
+                else:
+                    policy = self._resolve_execution_protocol_policy()
+                    timeout = float(
+                        getattr(policy, "final_review_timeout_seconds", 45.0)
+                    )
+                    get_task = getattr(message.context, "get_task", None)
+                    try:
+                        task = get_task() if callable(get_task) else None
+                        remaining = (
+                            task.remaining_seconds() if task is not None else None
+                        )
+                    except Exception:
+                        remaining = None
+                    if isinstance(remaining, (int, float)) and not isinstance(
+                        remaining, bool
+                    ):
+                        timeout = min(timeout, max(0.1, float(remaining) - 5.0))
+                    result = await asyncio.wait_for(attempt, timeout=timeout)
             except Exception as exc:
+                if long_horizon_fallback is not None:
+                    from aworld.runners.execution_protocol import (
+                        clear_candidate_fallback,
+                        record_review_error,
+                    )
+                    from aworld.core.context.execution_state import (
+                        record_execution_state,
+                    )
+
+                    record_review_error(message.context, self.id())
+                    clear_candidate_fallback(message.context, self.id())
+                    record_execution_state(
+                        message.context,
+                        self.id(),
+                        "succeeded",
+                        "long_horizon_review_fail_open",
+                        recoverable=False,
+                    )
+                    self._finished = True
+                    return list(long_horizon_fallback)
+                if self._is_long_horizon_auto_generation_timeout(exc, message.context):
+                    return await self._recover_long_horizon_generation_timeout(
+                        exc=exc,
+                        observation=observation,
+                        info=info,
+                        message=message,
+                        kwargs=kwargs,
+                    )
                 if repair_feedback is None or not self._should_degrade_result_validation_retry_error(exc):
                     raise
                 return await self._degrade_result_validation_retry(message, repair_feedback, exc)
+            if isinstance(result, _LongHorizonReviewContinuation):
+                long_horizon_fallback = result.fallback_actions
+                await self._raise_if_task_interrupted(
+                    message.context, reason="long-horizon final review interrupted"
+                )
+                if await self.should_terminate_loop(message):
+                    from aworld.runners.execution_protocol import (
+                        clear_candidate_fallback,
+                        record_review_error,
+                    )
+                    from aworld.core.context.execution_state import (
+                        record_execution_state,
+                    )
+
+                    record_review_error(message.context, self.id())
+                    clear_candidate_fallback(message.context, self.id())
+                    record_execution_state(
+                        message.context,
+                        self.id(),
+                        "succeeded",
+                        "long_horizon_review_budget_fail_open",
+                        recoverable=False,
+                    )
+                    self._finished = True
+                    return list(long_horizon_fallback)
+                message.context.update_agent_step(self.id())
+                self.loop_step += 1
+                observation, kwargs = result.observation, result.kwargs
+                await asyncio.sleep(0)
+                continue
             if not isinstance(result, _ValidationRepairContinuation):
                 return result
             repair_feedback = result.validation_feedback or str(result.observation.content)
@@ -2642,6 +2781,154 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             self.loop_step += 1
             observation, kwargs = result.observation, result.kwargs
             await asyncio.sleep(0)
+
+    def _is_long_horizon_auto_generation_timeout(
+        self,
+        exc: Exception,
+        context: Context,
+    ) -> bool:
+        """Identify only liveness stops owned by the automatic armed policy."""
+        if not isinstance(exc, GenerationBudgetExceeded):
+            return False
+        if exc.reason not in {
+            GenerationStopReason.CALL_DEADLINE_EXCEEDED,
+            GenerationStopReason.IDLE_TIMEOUT,
+            GenerationStopReason.PROVIDER_TIMEOUT,
+            GenerationStopReason.PROVIDER_CANCELLED,
+        }:
+            return False
+        return self._automatic_generation_budget_policy(context) is not None
+
+    def _claim_long_horizon_generation_finalization(self, context: Context) -> bool:
+        """Claim the sole auto-timeout finalization for this scoped task."""
+        from aworld.core.context.execution_state import state_context
+
+        owner = state_context(context)
+        if owner is None:
+            return False
+        key = "long_horizon_generation_finalization_claim"
+        scope = {
+            "task_id": getattr(context, "task_id", None),
+            "task_epoch": getattr(context, "task_epoch", None),
+            "agent_id": self.id(),
+        }
+        claim = getattr(owner, "claim_task_runtime_token", None)
+        token = f"{key}:epoch-{scope['task_epoch']}"
+        try:
+            claimed = claim(self.id(), token) if callable(claim) else False
+        except Exception:
+            claimed = False
+        if not claimed:
+            return False
+        owner.context_info[f"{key}:{self.id()}"] = scope
+        return True
+
+    @staticmethod
+    def _long_horizon_generation_timeout_text(reason: str) -> str:
+        return (
+            "AWorld stopped waiting after the long-horizon model-generation "
+            f"liveness deadline ({reason}). Work already completed in the "
+            "environment is preserved, but the final state could not be "
+            "rechecked. This response does not claim successful completion."
+        )
+
+    def _record_long_horizon_generation_recovery(
+        self,
+        context: Context,
+        *,
+        reason: str,
+        outcome: str,
+    ) -> None:
+        key = "long_horizon_generation_budget_metrics"
+        metrics = context.context_info.get(key)
+        if not isinstance(metrics, dict):
+            metrics = {}
+        metrics["policy_source"] = "long_horizon_auto"
+        metrics["last_reason"] = reason
+        metrics["last_outcome"] = outcome
+        metrics["timeout_count"] = int(metrics.get("timeout_count", 0) or 0) + 1
+        metrics[f"outcome:{outcome}"] = (
+            int(metrics.get(f"outcome:{outcome}", 0) or 0) + 1
+        )
+        context.context_info[key] = metrics
+
+    async def _recover_long_horizon_generation_timeout(
+        self,
+        *,
+        exc: GenerationBudgetExceeded,
+        observation: Observation,
+        info: Dict[str, Any],
+        message: Message,
+        kwargs: Dict[str, Any],
+    ) -> List[ActionModel]:
+        """Fail open through one bounded Tool-free synthesis attempt."""
+        from aworld.core.context.execution_state import record_execution_state
+
+        context = message.context
+        reason = exc.reason.value
+        if self._claim_long_horizon_generation_finalization(context):
+            protocol_policy = self._resolve_execution_protocol_policy()
+            timeout = float(protocol_policy.final_review_timeout_seconds)
+            get_task = getattr(context, "get_task", None)
+            try:
+                task = get_task() if callable(get_task) else None
+                remaining = task.remaining_seconds() if task is not None else None
+            except Exception:
+                remaining = None
+            if isinstance(remaining, (int, float)) and not isinstance(remaining, bool):
+                timeout = min(timeout, max(0.1, float(remaining) - 5.0))
+            finalization_kwargs = dict(kwargs)
+            finalization_kwargs.pop("_loop_budget_finalization", None)
+            try:
+                result = await asyncio.wait_for(
+                    self._async_policy_once(
+                        observation,
+                        info=info,
+                        message=message,
+                        _loop_budget_finalization=True,
+                        **finalization_kwargs,
+                    ),
+                    timeout=timeout,
+                )
+                if isinstance(result, list) and any(
+                    str(getattr(action, "policy_info", "") or "").strip()
+                    for action in result
+                ):
+                    record_execution_state(
+                        context,
+                        self.id(),
+                        "succeeded",
+                        "long_horizon_generation_budget_finalized",
+                        recoverable=False,
+                    )
+                    self._record_long_horizon_generation_recovery(
+                        context, reason=reason, outcome="finalized"
+                    )
+                    self._finished = True
+                    return result
+            except asyncio.CancelledError:
+                raise
+            except Exception as finalization_exc:
+                logger.warning(
+                    "Long-horizon generation finalization failed for agent %s; "
+                    "returning an honest fail-open response (error_type=%s)",
+                    self.id(),
+                    type(finalization_exc).__name__,
+                )
+
+        text = self._long_horizon_generation_timeout_text(reason)
+        record_execution_state(
+            context,
+            self.id(),
+            "succeeded",
+            "long_horizon_generation_budget_fail_open",
+            recoverable=False,
+        )
+        self._record_long_horizon_generation_recovery(
+            context, reason=reason, outcome="honest_fallback"
+        )
+        self._finished = True
+        return [ActionModel(agent_name=self.id(), policy_info=text)]
 
     async def _async_policy_once(
         self,
@@ -2660,12 +2947,28 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             ActionModel sequence from agent policy
         """
         logger.info(f"Agent{type(self)}#{self.id()}: async_policy start")
-        loop_budget_finalization = bool(
-            kwargs.pop("_loop_budget_finalization", False)
-        )
+        loop_budget_finalization = bool(kwargs.pop("_loop_budget_finalization", False))
         # temporary state context
         self.context = message.context
         self._install_runtime_completion_contract(message.context)
+        from aworld.runners.execution_protocol import configure_execution_protocol
+
+        configure_execution_protocol(
+            message.context, self.id(), self._resolve_execution_protocol_policy()
+        )
+        from aworld.runners.execution_protocol import (
+            execution_protocol_requires_tool_free_finalization,
+        )
+
+        protocol_repair_finalization = (
+            not loop_budget_finalization
+            and execution_protocol_requires_tool_free_finalization(
+                message.context, self.id()
+            )
+        )
+        tool_free_finalization = (
+            loop_budget_finalization or protocol_repair_finalization
+        )
         context_compiler_mode = self._context_compiler_mode_value()
         self._bind_context_output_budget(kwargs)
         # A turn boundary expires single-call/turn sidecars before new owner
@@ -2709,6 +3012,17 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             messages=raw_messages,
             context_compiler_mode=context_compiler_mode,
         )
+        if not tool_free_finalization:
+            from aworld.runners.execution_protocol import (
+                consume_execution_protocol_guidance,
+            )
+
+            execution_guidance = consume_execution_protocol_guidance(
+                message.context, self.id()
+            )
+            if execution_guidance:
+                raw_messages = list(raw_messages)
+                raw_messages.append({"role": "user", "content": execution_guidance})
         if loop_budget_finalization:
             raw_messages = list(raw_messages)
             raw_messages.append(
@@ -2722,6 +3036,21 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                         "This is a budget stop, not successful task completion. Report "
                         "verified outcomes and artifacts, state uncertainty instead "
                         "of inventing results, and do not request another tool call."
+                    ),
+                }
+            )
+            tools = None
+        elif protocol_repair_finalization:
+            raw_messages = list(raw_messages)
+            raw_messages.append(
+                {
+                    "role": "user",
+                    "content": (
+                        "AWorld long-horizon repair finalization: the one bounded "
+                        "repair Tool action has completed. No more tools are "
+                        "available in this turn. Reconcile the resulting observation "
+                        "with the original public request and return the best current "
+                        "final response. State material uncertainty accurately."
                     ),
                 }
             )
@@ -2754,7 +3083,7 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             getattr(self.llm, "_context_task_catalog_policy", "sticky") == "sticky"
         )
         if (
-            not loop_budget_finalization
+            not tool_free_finalization
             and getattr(self.llm, "_context_progressive_skills", True)
             and context_compiler_mode != "off"
         ):
@@ -2791,7 +3120,7 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                     "Progressive Skill publication failed in non-enforce mode; "
                     f"traceback={traceback.format_exc()}"
                 )
-        if loop_budget_finalization:
+        if tool_free_finalization:
             tools = None
         elif not tools:
             tools = None
@@ -2979,6 +3308,7 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         invoke_completed = False
         agent_result = None
         validation_feedback = None
+        long_horizon_review_feedback = None
         if source_span:
             source_span.set_attribute(
                 "messages", json.dumps(serializable_messages, ensure_ascii=False)
@@ -3104,6 +3434,11 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         except asyncio.CancelledError:
             logger.info(f"{self.id()} LLM flow interrupted during invoke_model")
             raise
+        except GenerationBudgetExceeded:
+            # Preserve typed liveness stops for the outer Agent policy. Auto
+            # long-horizon timeouts fail open there; explicit watchdogs keep
+            # their existing fail-closed behavior.
+            raise
         except Exception as e:
             await self._raise_if_task_interrupted(
                 message.context if message else None,
@@ -3114,7 +3449,7 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             raise AWorldRuntimeException(str(e)) from e
         finally:
             self._safe_record_llm_call_response(message, llm_call_id, llm_response)
-            if loop_budget_finalization and llm_response:
+            if tool_free_finalization and llm_response:
                 llm_response = self._coerce_loop_budget_final_response(llm_response)
             if not invoke_completed:
                 raise
@@ -3166,7 +3501,7 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                             + ",".join(issue.code.value for issue in exc.issues)
                         )
                         agent_result = AgentResult(actions=[], is_call_tool=False)
-                    if loop_budget_finalization and agent_result.is_call_tool:
+                    if tool_free_finalization and agent_result.is_call_tool:
                         logger.warning(
                             "Agent %s attempted tool work during its bounded "
                             "finalization turn; returning the textual response only",
@@ -3183,25 +3518,110 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                             is_call_tool=False,
                         )
                     candidate_finished = not agent_result.is_call_tool
+                    if (
+                        protocol_repair_finalization
+                        and candidate_finished
+                        and not any(
+                            str(getattr(action, "policy_info", "") or "").strip()
+                            for action in agent_result.actions
+                        )
+                    ):
+                        from aworld.runners.execution_protocol import (
+                            load_candidate_fallback,
+                        )
+
+                        fallback = load_candidate_fallback(message.context, self.id())
+                        if fallback is not None:
+                            fallback_text = str(fallback[0].policy_info or "")
+                            llm_response.content = fallback_text
+                            if isinstance(llm_response.message, dict):
+                                llm_response.message = dict(llm_response.message)
+                                llm_response.message["content"] = fallback_text
+                            agent_result = AgentResult(
+                                actions=list(fallback),
+                                current_state=agent_result.current_state,
+                                is_call_tool=False,
+                            )
+                    if agent_result.is_call_tool:
+                        from aworld.runners.execution_protocol import (
+                            clear_candidate_fallback,
+                            load_candidate_fallback,
+                            record_review_error,
+                            record_review_tool_action,
+                        )
+
+                        fallback = load_candidate_fallback(message.context, self.id())
+                        if fallback is not None and len(agent_result.actions) != 1:
+                            record_review_error(message.context, self.id())
+                            clear_candidate_fallback(message.context, self.id())
+                            fallback_text = str(fallback[0].policy_info or "")
+                            llm_response.content = fallback_text
+                            if isinstance(llm_response.message, dict):
+                                llm_response.message = dict(llm_response.message)
+                                llm_response.message["content"] = fallback_text
+                                llm_response.message["tool_calls"] = None
+                            agent_result = AgentResult(
+                                actions=list(fallback),
+                                current_state=agent_result.current_state,
+                                is_call_tool=False,
+                            )
+                            candidate_finished = True
+                        else:
+                            record_review_tool_action(message.context, self.id())
                     response_incomplete = bool(
                         isinstance(llm_response.message, dict)
                         and llm_response.message.get("aworld_incomplete_reason")
                     )
-                    if candidate_finished and not validation_feedback and not response_incomplete:
+                    if (
+                        candidate_finished
+                        and not loop_budget_finalization
+                        and not validation_feedback
+                        and not response_incomplete
+                    ):
+                        from aworld.runners.execution_protocol import (
+                            clear_candidate_fallback,
+                            final_review_guidance,
+                            record_candidate_final,
+                            store_candidate_fallback,
+                        )
+
+                        protocol_transition = record_candidate_final(
+                            message.context, self.id()
+                        )
+                        long_horizon_review_feedback = final_review_guidance(
+                            protocol_transition
+                        )
+                        if long_horizon_review_feedback:
+                            store_candidate_fallback(
+                                message.context, self.id(), agent_result.actions
+                            )
+                        else:
+                            clear_candidate_fallback(message.context, self.id())
+                    if (
+                        candidate_finished
+                        and not long_horizon_review_feedback
+                        and not validation_feedback
+                        and not response_incomplete
+                    ):
                         validation_feedback = (
                             await self._completion_feedback_if_unsatisfied(
                                 context=message.context,
                                 final_response_text=llm_response.content or "",
                             )
                         )
-                    if candidate_finished and not validation_feedback and not response_incomplete:
+                    if (
+                        candidate_finished
+                        and not long_horizon_review_feedback
+                        and not validation_feedback
+                        and not response_incomplete
+                    ):
                         validation_feedback = (
                             self._build_result_validation_feedback_from_context(
                                 context=message.context,
                                 final_response_text=llm_response.content or "",
                             )
                         )
-                    if loop_budget_finalization and validation_feedback:
+                    if tool_free_finalization and validation_feedback:
                         final_text = (llm_response.content or "").strip()
                         final_text = (
                             f"{final_text}\n\n"
@@ -3258,6 +3678,30 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                 raise AWorldRuntimeException(f"{self.id()} failed to get LLM response")
 
         logger.info(f"agent_result: {agent_result}")
+
+        if long_horizon_review_feedback:
+            recursive_kwargs = {
+                key: value
+                for key, value in kwargs.items()
+                if key
+                not in {
+                    "response_parse_args",
+                    "prepared_tools",
+                    "prompt_assembly_plan",
+                    "provider_native_prompt_cache",
+                }
+            }
+            followup_observation = Observation(
+                observer=self.id(),
+                from_agent_name=self.id(),
+                to_agent_name=self.id(),
+                content=long_horizon_review_feedback,
+            )
+            return _LongHorizonReviewContinuation(
+                observation=followup_observation,
+                kwargs=recursive_kwargs,
+                fallback_actions=tuple(agent_result.actions),
+            )
 
         if validation_feedback:
             logger.warning(
@@ -3974,10 +4418,90 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
     ) -> Optional[List[Dict[str, Any]]]:
         return messages
 
-    def _resolve_generation_budget_policy(self) -> GenerationBudgetPolicy:
-        """Resolve one immutable policy for the complete Agent model turn."""
+    def _automatic_generation_budget_policy(
+        self,
+        context: Context | None = None,
+    ) -> GenerationBudgetPolicy | None:
+        """Return an armed Skill watchdog without overriding caller policy."""
         if self._explicit_generation_budget_policy is not None:
-            return self._explicit_generation_budget_policy
+            return None
+        if self._generation_budget_explicit_fields:
+            return None
+        skill = (self.skill_configs or {}).get("long-running-agent")
+        if not (isinstance(skill, dict) and skill.get("active") is True):
+            return None
+        context = context or getattr(self, "context", None)
+        if context is None:
+            return None
+        try:
+            protocol_policy = self._resolve_execution_protocol_policy()
+            protocol_state = ExecutionProtocolStore(
+                context,
+                self.id(),
+                protocol_policy,
+            ).load()
+        except Exception:
+            return None
+        if not protocol_state.long_horizon_armed:
+            return None
+
+        total_timeout = 360.0
+        idle_timeout = 120.0
+        get_task = getattr(context, "get_task", None)
+        try:
+            task = get_task() if callable(get_task) else None
+            remaining_seconds = task.remaining_seconds() if task is not None else None
+        except Exception:
+            remaining_seconds = None
+        if isinstance(remaining_seconds, (int, float)) and not isinstance(
+            remaining_seconds, bool
+        ):
+            available_seconds = max(
+                0.1,
+                float(remaining_seconds)
+                - float(protocol_policy.finalization_reserve_seconds),
+            )
+            total_timeout = min(total_timeout, available_seconds)
+            idle_timeout = min(idle_timeout, total_timeout)
+
+        # Automatic protection is liveness-only. Active-stream truncation and
+        # action repair remain caller-owned because they can change semantics.
+        return GenerationBudgetPolicy(
+            total_timeout_seconds=total_timeout,
+            stream_idle_timeout_seconds=idle_timeout,
+            active_tool_free_timeout_seconds=None,
+            action_repair_timeout_seconds=None,
+            action_repair_enabled=False,
+        )
+
+    def _resolve_generation_budget_policy(
+        self,
+        context: Context | None = None,
+    ) -> GenerationBudgetPolicy:
+        """Resolve one immutable policy for the complete Agent model turn."""
+        metric_context = context or getattr(self, "context", None)
+
+        def publish(
+            policy: GenerationBudgetPolicy,
+            source: str,
+        ) -> GenerationBudgetPolicy:
+            if metric_context is not None:
+                metric_context.context_info[f"generation_budget_policy:{self.id()}"] = {
+                    "policy_source": source,
+                    "total_timeout_seconds": policy.total_timeout_seconds,
+                    "stream_idle_timeout_seconds": (policy.stream_idle_timeout_seconds),
+                    "active_tool_free_timeout_seconds": (
+                        policy.active_tool_free_timeout_seconds
+                    ),
+                    "action_repair_timeout_seconds": (
+                        policy.action_repair_timeout_seconds
+                    ),
+                    "action_repair_enabled": policy.action_repair_enabled,
+                }
+            return policy
+
+        if self._explicit_generation_budget_policy is not None:
+            return publish(self._explicit_generation_budget_policy, "explicit_policy")
         llm_config = getattr(self.conf, "llm_config", None)
         compiler_config = getattr(llm_config, "context_compiler", None)
 
@@ -3986,10 +4510,15 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                 return compiler_config.get(name, default)
             return getattr(compiler_config, name, default)
 
+        automatic = self._automatic_generation_budget_policy(context)
+        if automatic is not None:
+            return publish(automatic, "long_horizon_auto")
+
         # Generation watchdogs are opt-in. A long reasoning/tool-selection
-        # turn must not be cut short by an implicit budget.
+        # turn must not be cut short by an implicit budget before the generic
+        # long-horizon protocol has armed for the current task.
         total_timeout = configured("generation_total_timeout_seconds", None)
-        return GenerationBudgetPolicy(
+        policy = GenerationBudgetPolicy(
             total_timeout_seconds=total_timeout,
             stream_idle_timeout_seconds=configured(
                 "generation_stream_idle_timeout_seconds", None
@@ -4010,6 +4539,12 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                 "generation_action_repair_enabled", False
             ),
         )
+        source = (
+            "explicit_config"
+            if self._generation_budget_explicit_fields
+            else "disabled_default"
+        )
+        return publish(policy, source)
 
     @staticmethod
     def _generation_partial_counts(
@@ -4696,7 +5231,9 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
     ) -> ModelResponse:
         """Run one LLM turn under typed, composable generation deadlines."""
         controller = GenerationBudgetController(
-            self._resolve_generation_budget_policy()
+            self._resolve_generation_budget_policy(
+                message.context if message is not None else None
+            )
         )
         try:
             return await self._invoke_model_with_retries(
@@ -4744,7 +5281,7 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         controller = kwargs.pop("_generation_budget_controller", None)
         if not isinstance(controller, GenerationBudgetController):
             controller = GenerationBudgetController(
-                self._resolve_generation_budget_policy()
+                self._resolve_generation_budget_policy(context)
             )
 
         # Prepare parameters once before retry loop
@@ -5510,10 +6047,17 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             "event_handler_name": self.event_handler_name,
             "event_driven": self.event_driven,
             "skill_configs": self.skill_configs,
+            "_generation_budget_explicit_fields": tuple(
+                sorted(self._generation_budget_explicit_fields)
+            ),
         }
         if self._explicit_generation_budget_policy is not None:
             attributes["generation_budget_policy"] = (
                 self._explicit_generation_budget_policy
+            )
+        if self._explicit_execution_protocol_policy is not None:
+            attributes["execution_protocol_policy"] = (
+                self._explicit_execution_protocol_policy
             )
         if self._tool_surface_specs:
             attributes["tool_surface_specs"] = self._tool_surface_specs

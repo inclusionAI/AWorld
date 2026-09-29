@@ -423,6 +423,7 @@ def record_semantic_tool_progress(
         "goal_progress": goal_progress,
         "goal_progress_count": goal_progress_count,
         "last_goal_progress_agent_step": last_goal_progress_agent_step,
+        "current_agent_step": current_agent_step,
         "no_goal_progress_count": no_goal_progress_count,
         "updated_at": time.time(),
         "runtime_revision": int(previous.get("runtime_revision", 0) or 0) + 1,
@@ -512,6 +513,17 @@ def record_semantic_tool_progress(
         )
     runtime_context.context_info[WATCHDOG_METRICS_KEY] = metrics
     metrics["adaptive_work_state_revision"] = int(work_state.get("revision", 0) or 0)
+    try:
+        from aworld.runners.execution_protocol import record_tool_protocol_event
+
+        record_tool_protocol_event(runtime_context, agent_id, state)
+    except Exception:
+        # The long-horizon controller is advisory.  Its observation path must
+        # never turn a successful Tool call into a task execution failure.
+        metrics["execution_protocol_observation_error_count"] = (
+            int(metrics.get("execution_protocol_observation_error_count", 0) or 0)
+            + 1
+        )
     return state
 
 

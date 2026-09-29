@@ -10,6 +10,7 @@ from aworld_cli.core.skill_activation_resolver import (
 
 DEFAULT_RUNTIME_SKILLS = {
     "agent-browser",
+    "long-running-agent",
 }
 
 
@@ -96,7 +97,10 @@ def test_repo_skill_catalog_exposes_only_general_skills_by_default() -> None:
     )
 
     assert set(default_view.available_skill_names) == DEFAULT_RUNTIME_SKILLS
-    assert len(management_view.available_skill_names) == 17
+    assert set(management_view.available_skill_names) == set(
+        collect_skill_docs(skills_root)
+    )
+    assert "long-running-agent" in management_view.available_skill_names
     assert {
         name
         for name, config in management_view.skill_configs.items()

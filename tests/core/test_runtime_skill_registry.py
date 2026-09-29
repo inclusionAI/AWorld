@@ -140,4 +140,4 @@ def test_runtime_skill_registry_never_loads_self_evolve_draft_root(
         cwd=tmp_path,
     )
 
-    assert set(registry_view.get_all_skills()) == {"filex"}
+    assert set(registry_view.get_all_skills()) == {"filex", "long-running-agent"}

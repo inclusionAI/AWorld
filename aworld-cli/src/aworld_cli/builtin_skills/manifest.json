@@ -5,6 +5,14 @@
       "source": "aworld-skills/filex",
       "skill_file": "filex/SKILL.md",
       "execution_assets": ["filex/scripts/filex.py"]
+    },
+    "long-running-agent": {
+      "source": "aworld-skills/long-running-agent",
+      "skill_file": "long-running-agent/SKILL.md",
+      "execution_assets": [
+        "long-running-agent/references/execution-semantics.md",
+        "long-running-agent/references/checkpoints-and-review.md"
+      ]
     }
   }
 }

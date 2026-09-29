@@ -617,6 +617,12 @@ def build_aworld_agent(include_skills: Optional[str] = None):
     tool_surface_profile = resolve_aworld_tool_surface_profile()
     enforce_tool_surface = resolve_aworld_tool_surface_enforcement()
     generation_budget_policy = resolve_aworld_generation_budget()
+    generation_budget_explicit_fields = (
+        ("generation_budget_mode",)
+        if "AWORLD_GENERATION_BUDGET_MODE" in os.environ
+        and generation_budget_policy is None
+        else ()
+    )
 
     # Resolve optional collaborators before constructing the root agent so its
     # prompt and tool catalog describe capabilities that actually exist.
@@ -672,6 +678,7 @@ def build_aworld_agent(include_skills: Optional[str] = None):
         llm_max_attempts=3,
         llm_retry_delay=2.0,
         generation_budget_policy=generation_budget_policy,
+        _generation_budget_explicit_fields=generation_budget_explicit_fields,
         max_loop_steps=resolve_aworld_max_loop_steps(),
         **budgeted_agent_kwargs,
     )

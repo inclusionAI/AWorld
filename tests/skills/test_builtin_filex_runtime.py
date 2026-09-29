@@ -25,7 +25,7 @@ def test_runtime_registry_includes_builtin_filex_without_configured_sources(
     view = build_runtime_skill_registry_view(cwd=tmp_path)
     skills = view.get_all_skills()
 
-    assert set(skills) == {"filex"}
+    assert set(skills) == {"filex", "long-running-agent"}
     assert skills["filex"]["default_enabled"] is False
     assert skills["filex"]["active"] is False
     assert Path(skills["filex"]["asset_root"]) == get_builtin_skills_path() / "filex"
@@ -182,7 +182,10 @@ def test_aworld_agent_requires_explicit_filex_enable(
     executor = LocalAgentExecutor.__new__(LocalAgentExecutor)
     executor.swarm = swarm
     root = executor._iter_swarm_agents()[0]
-    assert root.conf.ext["skill_resolver_inputs"]["default_skill_names"] == ["filex"]
+    assert root.conf.ext["skill_resolver_inputs"]["default_skill_names"] == [
+        "filex",
+        "long-running-agent",
+    ]
 
     task = SimpleNamespace(task_content="Proceed with the task", metadata={})
     executor._resolve_swarm_skills(task)
@@ -214,7 +217,9 @@ def test_aworld_defaults_preserve_automatic_and_explicit_skill_selection(
         compatibility_sources=(str(tmp_path),),
     ))
 
-    assert result.active_skill_names == (requested or ("browser-use",))
+    assert result.active_skill_names == (
+        requested or ("long-running-agent", "browser-use")
+    )
 
 
 def test_agent_defaults_do_not_override_user_skill_definition(tmp_path: Path) -> None:
@@ -230,4 +235,4 @@ def test_agent_defaults_do_not_override_user_skill_definition(tmp_path: Path) ->
         compatibility_sources=(str(tmp_path),),
     ))
 
-    assert result.active_skill_names == ()
+    assert result.active_skill_names == ("long-running-agent",)

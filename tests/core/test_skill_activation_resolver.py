@@ -354,7 +354,11 @@ def test_resolver_management_view_includes_default_disabled_skill(
         )
     )
 
-    assert result.available_skill_names == ("filex", "video-production")
+    assert result.available_skill_names == (
+        "filex",
+        "long-running-agent",
+        "video-production",
+    )
     assert result.active_skill_names == ()
 
 

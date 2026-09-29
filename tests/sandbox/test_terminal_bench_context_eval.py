@@ -86,6 +86,61 @@ def test_variant_contract_accepts_context_policy_only(tmp_path):
     assert loaded["context_compiler"]["mode"] == "enforce"
 
 
+def test_variant_contract_uses_existing_skill_disable_surface(tmp_path):
+    runner = _load_example("docker_terminal_bench")
+    variant = tmp_path / "variant.json"
+    variant.write_text(
+        json.dumps(
+            {
+                "schema_version": "aworld.context-eval-variant/v1",
+                "name": "without-long-running",
+                "disabled_skill_names": ["long-running-agent"],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    loaded = runner._load_variant(variant)
+
+    assert loaded["disabled_skill_names"] == ["long-running-agent"]
+
+
+@pytest.mark.parametrize(
+    "value",
+    ["long-running-agent", [""], ["long-running-agent", "long-running-agent"]],
+)
+def test_variant_contract_rejects_invalid_skill_disable_list(tmp_path, value):
+    runner = _load_example("docker_terminal_bench")
+    variant = tmp_path / "variant.json"
+    variant.write_text(
+        json.dumps(
+            {
+                "schema_version": "aworld.context-eval-variant/v1",
+                "name": "invalid",
+                "disabled_skill_names": value,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="disabled_skill_names"):
+        runner._load_variant(variant)
+
+
+def test_framework_skill_resolution_respects_default_and_disable() -> None:
+    runner = _load_example("docker_terminal_bench")
+
+    enabled, active = runner._load_framework_skills("Handle the request")
+    disabled, disabled_active = runner._load_framework_skills(
+        "Handle the request", disabled_skill_names=("long-running-agent",)
+    )
+
+    assert "long-running-agent" in active
+    assert enabled["long-running-agent"]["active"] is True
+    assert "long-running-agent" not in disabled
+    assert "long-running-agent" not in disabled_active
+
+
 def test_git_snapshot_binds_dirty_runtime_content_not_only_status_paths():
     runner = _load_example("docker_terminal_bench")
 
@@ -1702,7 +1757,10 @@ def test_agent_timeout_override_is_the_effective_typed_timeout(tmp_path, monkeyp
         config={"environment": {}, "agent": {"timeout_sec": 900}},
     )
 
+    calls = []
+
     def fake_run(command, **kwargs):
+        calls.append(command)
         if command[0] == sys.executable:
             raise subprocess.TimeoutExpired(command, kwargs["timeout"])
         return subprocess.CompletedProcess(command, 0, stdout="image-id\n", stderr="")
@@ -1728,6 +1786,30 @@ def test_agent_timeout_override_is_the_effective_typed_timeout(tmp_path, monkeyp
         "reason_code": "agent_timeout",
         "timeout_sec": 12.5,
     }
+    agent_command = next(command for command in calls if command[0] == sys.executable)
+    timeout_index = agent_command.index("--task-timeout-sec")
+    assert agent_command[timeout_index + 1] == "11.25"
+    execution = result["agent_execution"]
+    assert execution["outer_timeout_seconds"] == 12.5
+    assert execution["task_timeout_seconds"] == 11.25
+    assert execution["cleanup_reserve_seconds"] == 1.25
+
+
+@pytest.mark.parametrize(
+    ("outer", "expected_task", "expected_reserve"),
+    [(1.0, 0.9, 0.1), (0.5, 0.45, 0.05)],
+)
+def test_agent_timeout_split_keeps_small_task_deadlines_positive(
+    outer,
+    expected_task,
+    expected_reserve,
+):
+    harness = _load_example("terminal_bench_context_eval")
+
+    task_timeout, reserve = harness.split_agent_timeout(outer)
+
+    assert task_timeout == pytest.approx(expected_task)
+    assert reserve == pytest.approx(expected_reserve)
 
 
 def test_timeout_recovers_provider_attempt_without_synthesizing_trajectory(tmp_path):

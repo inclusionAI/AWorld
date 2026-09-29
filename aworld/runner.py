@@ -139,7 +139,9 @@ class Runners:
             swarm: Swarm = None,
             tool_names: List[str] = [],
             session_id: str = None,
-            run_conf: RunConfig = None
+            run_conf: RunConfig = None,
+            *,
+            timeout: float | None = None
     ) -> TaskResponse:
         return sync_exec(
             Runners.run,
@@ -148,6 +150,7 @@ class Runners:
             swarm=swarm,
             tool_names=tool_names,
             session_id=session_id,
+            timeout=timeout,
             run_conf=run_conf
         )
 
@@ -158,7 +161,9 @@ class Runners:
             swarm: Swarm = None,
             tool_names: List[str] = [],
             session_id: str = None,
-            run_conf: RunConfig = None
+            run_conf: RunConfig = None,
+            *,
+            timeout: float | None = None
     ) -> TaskResponse:
         """Run agent directly with input and tool names.
 
@@ -168,6 +173,8 @@ class Runners:
             swarm: Multi-agent topo.
             tool_names: Tool name list.
             session_id: Session id.
+            timeout: Optional task lifetime in seconds. Propagated to
+                     ``Task.remaining_seconds()`` for bounded finalization.
 
         Returns:
             TaskResponse: Task response.
@@ -183,7 +190,8 @@ class Runners:
             swarm = Swarm(agent)
 
         task = Task(input=input, swarm=swarm, tool_names=tool_names,
-                    event_driven=swarm.event_driven, session_id=session_id)
+                    event_driven=swarm.event_driven, session_id=session_id,
+                    timeout=timeout)
         res = await Runners.run_task(task, run_conf=run_conf)
         return res.get(task.id)
 

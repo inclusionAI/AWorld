@@ -328,6 +328,22 @@ def test_default_agent_executes_without_loading_specialists(monkeypatch, tmp_pat
     assert "async_spawn_subagent" not in tools
 
 
+def test_cli_explicit_generation_budget_off_suppresses_skill_auto_watchdog(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    monkeypatch.setenv("AWORLD_GENERATION_BUDGET_MODE", "off")
+    monkeypatch.setenv("AWORLD_BUILTIN_SUBAGENTS", "none")
+    monkeypatch.setenv("LLM_MODEL_NAME", "gpt-4")
+    monkeypatch.setenv("LLM_API_KEY", "offline")
+    monkeypatch.chdir(tmp_path)
+
+    swarm = aworld_agent.build_aworld_agent()
+    root = next(iter(swarm.agents.values()))
+
+    assert "generation_budget_mode" in root._generation_budget_explicit_fields
+
+
 def test_default_cli_discovery_registers_only_main_agent(tmp_path) -> None:
     # A fresh process catches eager decorator registrations that constructing
     # the root alone cannot detect in an already populated test registry.

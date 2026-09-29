@@ -447,6 +447,37 @@ def _semantic_progress_evidence(agent) -> dict:
     }
 
 
+def _execution_protocol_evidence(agent) -> dict:
+    """Export bounded control state without task, prompt, or Tool payload text."""
+    context = getattr(agent, "context", None)
+    if context is None:
+        return {
+            "schema_version": "aworld.execution-protocol-evidence/v1",
+            "status": "unavailable",
+            "reason_code": "agent_context_unavailable",
+        }
+    from aworld.core.execution_protocol import ExecutionProtocolStore
+    from aworld.runners.execution_protocol import (
+        EXECUTION_PROTOCOL_METRICS_KEY,
+        execution_protocol_policy,
+    )
+    from aworld.core.context.execution_state import state_context
+
+    policy = execution_protocol_policy(context, agent.id())
+    state = ExecutionProtocolStore(context, agent.id(), policy).load()
+    owner = state_context(context)
+    metrics = getattr(owner, "context_info", {}).get(
+        EXECUTION_PROTOCOL_METRICS_KEY, {}
+    )
+    return {
+        "schema_version": "aworld.execution-protocol-evidence/v1",
+        "status": "available",
+        "policy": policy.to_dict(),
+        "state": state.to_dict(),
+        "metrics": metrics if isinstance(metrics, dict) else {},
+    }
+
+
 async def _configure_benchmark_completion_contract(
     agent,
     sandbox,
@@ -847,6 +878,7 @@ def _load_variant(path: Path | None) -> dict:
             "context_cache": {},
             "context_compiler": {},
             "docker_output_policy": {},
+            "disabled_skill_names": [],
         }
     payload = json.loads(path.read_text(encoding="utf-8"))
     allowed = {
@@ -856,11 +888,13 @@ def _load_variant(path: Path | None) -> dict:
         "context_cache",
         "context_compiler",
         "docker_output_policy",
+        "disabled_skill_names",
     }
     unexpected = sorted(set(payload) - allowed)
     if unexpected:
         raise ValueError(
-            "Context evaluation variants may only change context/output policy; "
+            "Evaluation variants may only change context/output policy or the "
+            "existing Skill disable list; "
             f"unexpected fields: {', '.join(unexpected)}"
         )
     if not payload.get("name"):
@@ -869,6 +903,14 @@ def _load_variant(path: Path | None) -> dict:
     payload.setdefault("context_cache", {})
     payload.setdefault("context_compiler", {})
     payload.setdefault("docker_output_policy", {})
+    payload.setdefault("disabled_skill_names", [])
+    disabled_skill_names = payload["disabled_skill_names"]
+    if not isinstance(disabled_skill_names, list) or not all(
+        isinstance(name, str) and name.strip() for name in disabled_skill_names
+    ):
+        raise ValueError("disabled_skill_names must be a list of non-empty names")
+    if len(set(disabled_skill_names)) != len(disabled_skill_names):
+        raise ValueError("disabled_skill_names must not contain duplicates")
     from aworld.evaluations.context_benefit import ContextVariant
 
     settings = {
@@ -906,6 +948,28 @@ def _load_task_skills(path: Path | None) -> dict[str, dict]:
         descriptor.skill_name: registry.build_skill_config(descriptor.skill_id)
         for descriptor in descriptors
     }
+
+
+def _load_framework_skills(
+    instruction: str, *, disabled_skill_names: tuple[str, ...] = ()
+) -> tuple[dict[str, dict], tuple[str, ...]]:
+    """Resolve built-ins through the same enable/disable surface as the CLI."""
+    from aworld_cli.core.builtin_skills import AWORLD_DEFAULT_SKILL_NAMES
+    from aworld_cli.core.skill_activation_resolver import (
+        SkillActivationResolver,
+        SkillResolverRequest,
+    )
+
+    resolved = SkillActivationResolver().resolve(
+        SkillResolverRequest(
+            plugin_roots=(),
+            runtime_scope="session",
+            task_text=instruction,
+            disabled_skill_names=disabled_skill_names,
+            default_skill_names=AWORLD_DEFAULT_SKILL_NAMES,
+        )
+    )
+    return resolved.skill_configs, resolved.active_skill_names
 
 
 def load_external_mcp_config(path: Path | None) -> tuple[dict, dict]:
@@ -993,6 +1057,8 @@ def _agent_loop_budget(
 def _git_snapshot() -> dict:
     runtime_pathspecs = (
         "aworld",
+        "aworld-cli",
+        "aworld-skills",
         "examples/evaluations",
         "examples/sandbox",
         "pyproject.toml",
@@ -1091,6 +1157,14 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--max-steps", type=int, default=10)
     parser.add_argument(
+        "--task-timeout-sec",
+        type=float,
+        help=(
+            "Propagate the caller's task deadline into AWorld so bounded "
+            "finalization can reserve time before process cleanup."
+        ),
+    )
+    parser.add_argument(
         "--llm-max-attempts",
         type=int,
         default=3,
@@ -1186,6 +1260,8 @@ async def run(args: argparse.Namespace) -> int:
         raise ValueError("--llm-max-tokens must be positive")
     if args.llm_retry_delay_sec < 0:
         raise ValueError("--llm-retry-delay-sec must be non-negative")
+    if args.task_timeout_sec is not None and args.task_timeout_sec <= 0:
+        raise ValueError("--task-timeout-sec must be positive")
     args.output_dir.mkdir(parents=True, exist_ok=True)
     log_dir = args.output_dir / "logs"
     log_dir.mkdir(parents=True, exist_ok=True)
@@ -1242,7 +1318,12 @@ async def run(args: argparse.Namespace) -> int:
 
     instruction = args.instruction.read_text(encoding="utf-8")
     variant = _load_variant(args.variant_config)
-    skill_configs = _load_task_skills(args.skills_directory)
+    framework_skill_configs, active_framework_skills = _load_framework_skills(
+        instruction,
+        disabled_skill_names=tuple(variant["disabled_skill_names"]),
+    )
+    task_skill_configs = _load_task_skills(args.skills_directory)
+    skill_configs = {**framework_skill_configs, **task_skill_configs}
     external_mcp_config, external_mcp_evidence = load_external_mcp_config(
         args.mcp_config
     )
@@ -1268,7 +1349,7 @@ async def run(args: argparse.Namespace) -> int:
         system_prompt = SYSTEM_PROMPT + (
             " Task-provided Skill assets are mounted read-only at /aworld-skills. "
             "Activate only relevant Skills and use the container paths documented there."
-            if skill_configs
+            if task_skill_configs
             else ""
         )
         agent = Agent(
@@ -1352,7 +1433,11 @@ async def run(args: argparse.Namespace) -> int:
             verifier_mode=args.completion_verifier_mode,
             verifier_scratch_root=args.output_dir,
         )
-        response = await Runners.run(instruction, agent=agent)
+        response = await Runners.run(
+            instruction,
+            agent=agent,
+            timeout=args.task_timeout_sec,
+        )
         response_payload = to_serializable(response.to_dict())
         trajectory_payload = to_serializable(response.trajectory)
         llm_journal_path = args.output_dir / "llm_calls.journal.jsonl"
@@ -1451,6 +1536,10 @@ async def run(args: argparse.Namespace) -> int:
                 args.output_dir / "semantic_progress.json",
                 _semantic_progress_evidence(agent),
             ),
+            "execution_protocol.json": _write_json(
+                args.output_dir / "execution_protocol.json",
+                _execution_protocol_evidence(agent),
+            ),
             "context_trace.json": _write_json(
                 args.output_dir / "context_trace.json",
                 [
@@ -1498,7 +1587,7 @@ async def run(args: argparse.Namespace) -> int:
                 "llm_retry_delay_sec": args.llm_retry_delay_sec,
                 "system_prompt_sha256": _sha256_bytes(system_prompt.encode("utf-8")),
                 "instruction_sha256": _sha256_bytes(instruction.encode("utf-8")),
-                "task_skill_count": len(skill_configs),
+                "task_skill_count": len(task_skill_configs),
                 "task_skill_catalog_sha256": _sha256_bytes(
                     json.dumps(
                         {
@@ -1508,12 +1597,13 @@ async def run(args: argparse.Namespace) -> int:
                                     str(config.get("usage") or "").encode("utf-8")
                                 ),
                             }
-                            for name, config in sorted(skill_configs.items())
+                            for name, config in sorted(task_skill_configs.items())
                         },
                         ensure_ascii=False,
                         sort_keys=True,
                     ).encode("utf-8")
                 ),
+                "active_framework_skills": list(active_framework_skills),
                 "external_mcp": external_mcp_evidence,
                 "structural_capture_only": args.deterministic_capture_provider,
                 "context_storage_isolated": True,
