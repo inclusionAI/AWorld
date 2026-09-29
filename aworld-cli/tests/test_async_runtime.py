@@ -14,10 +14,51 @@ from aworld_cli.async_runtime import (
     TASK_COMPLETION_RESERVE_ENV,
     TASK_DEADLINE_EPOCH_ENV,
     DirectRunDeadlineExceeded,
+    direct_run_task_budget,
     hard_exit_direct_run_if_configured,
     run_direct_async,
     run_with_first_provider_start_watchdog,
 )
+
+
+def test_task_budget_requires_explicit_bounded_direct_runtime(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    deadline = time.time() + 120
+    monkeypatch.setenv(TASK_DEADLINE_EPOCH_ENV, str(deadline))
+    monkeypatch.setenv(TASK_COMPLETION_RESERVE_ENV, "12")
+    monkeypatch.delenv(BOUNDED_ASYNC_SHUTDOWN_ENV, raising=False)
+
+    assert direct_run_task_budget() is None
+
+    monkeypatch.setenv(BOUNDED_ASYNC_SHUTDOWN_ENV, "5")
+    budget = direct_run_task_budget()
+    assert budget is not None
+    assert budget.deadline_epoch_seconds == deadline
+    assert budget.timeout_seconds == pytest.approx(120, abs=1)
+    assert budget.completion_reserve_seconds == 12
+
+
+@pytest.mark.parametrize(
+    ("deadline", "reserve", "match"),
+    [
+        ("nan", "1", "positive and finite"),
+        ("1", "nan", "non-negative and finite"),
+        ("1", "-1", "non-negative and finite"),
+    ],
+)
+def test_task_budget_validates_deadline_and_reserve(
+    monkeypatch: pytest.MonkeyPatch,
+    deadline: str,
+    reserve: str,
+    match: str,
+) -> None:
+    monkeypatch.setenv(BOUNDED_ASYNC_SHUTDOWN_ENV, "5")
+    monkeypatch.setenv(TASK_DEADLINE_EPOCH_ENV, deadline)
+    monkeypatch.setenv(TASK_COMPLETION_RESERVE_ENV, reserve)
+
+    with pytest.raises(ValueError, match=match):
+        direct_run_task_budget()
 
 
 def test_direct_async_keeps_standard_asyncio_run_by_default(
@@ -348,10 +389,12 @@ def test_hard_exit_is_disabled_for_ordinary_cli(
     assert hard_exit_direct_run_if_configured(9) is None
 
 
+@pytest.mark.parametrize("value", ["0", "nan"])
 def test_invalid_bounded_shutdown_does_not_leak_coroutine(
     monkeypatch: pytest.MonkeyPatch,
+    value: str,
 ) -> None:
-    monkeypatch.setenv(BOUNDED_ASYNC_SHUTDOWN_ENV, "0")
+    monkeypatch.setenv(BOUNDED_ASYNC_SHUTDOWN_ENV, value)
 
     with pytest.raises(ValueError, match="must be greater than 0"):
         run_direct_async(asyncio.sleep(0))

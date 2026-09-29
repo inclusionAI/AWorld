@@ -15,6 +15,7 @@ import os
 import sys
 import time
 from collections.abc import Callable, Coroutine, Mapping
+from dataclasses import dataclass
 from typing import Any, TypeVar
 
 BOUNDED_ASYNC_SHUTDOWN_ENV = "AWORLD_DIRECT_RUN_SHUTDOWN_TIMEOUT_SECONDS"
@@ -28,6 +29,15 @@ _EVIDENCE_POLL_INTERVAL_SECONDS = 0.05
 _DEFAULT_ONE_SHOT_SHUTDOWN_TIMEOUT_SECONDS = 5.0
 _T = TypeVar("_T")
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True, slots=True)
+class DirectRunTaskBudget:
+    """Validated caller budget shared by Task and the direct-run boundary."""
+
+    deadline_epoch_seconds: float
+    timeout_seconds: float
+    completion_reserve_seconds: float
 
 
 class DirectRunDeadlineExceeded(TimeoutError):
@@ -180,7 +190,11 @@ def _bounded_shutdown_timeout() -> float | None:
         value = float(raw)
     except ValueError as exc:
         raise ValueError(f"{BOUNDED_ASYNC_SHUTDOWN_ENV} must be numeric") from exc
-    if value <= 0 or value > _MAX_SHUTDOWN_TIMEOUT_SECONDS:
+    if (
+        not math.isfinite(value)
+        or value <= 0
+        or value > _MAX_SHUTDOWN_TIMEOUT_SECONDS
+    ):
         raise ValueError(
             f"{BOUNDED_ASYNC_SHUTDOWN_ENV} must be greater than 0 and no more "
             f"than {_MAX_SHUTDOWN_TIMEOUT_SECONDS:g}"
@@ -188,12 +202,11 @@ def _bounded_shutdown_timeout() -> float | None:
     return value
 
 
-def _direct_run_timeout() -> float | None:
-    """Return the time available before the caller's completion reserve.
+def _caller_task_budget() -> DirectRunTaskBudget | None:
+    """Parse the caller budget without deciding whether the CLI adopts it.
 
-    The process supervisor owns the absolute deadline.  Direct mode must stop
-    early enough to replace its initial ``in_progress`` ATIF checkpoint with a
-    terminal outcome and atomically persist the matching outcome sidecar.
+    The first-provider watchdog also uses this parser before direct execution
+    validates the one-shot process boundary.
     """
 
     raw_deadline = os.environ.get(TASK_DEADLINE_EPOCH_ENV)
@@ -214,7 +227,50 @@ def _direct_run_timeout() -> float | None:
         raise ValueError(
             f"{TASK_COMPLETION_RESERVE_ENV} must be non-negative and finite"
         )
-    return max(0.0, deadline - time.time() - reserve)
+    return DirectRunTaskBudget(
+        deadline_epoch_seconds=deadline,
+        timeout_seconds=max(1e-9, deadline - time.time()),
+        completion_reserve_seconds=reserve,
+    )
+
+
+def _direct_run_task_budget() -> DirectRunTaskBudget | None:
+    """Return a caller budget only for an explicitly bounded direct run.
+
+    An ambient deadline alone remains inert for ordinary CLI invocations.  A
+    process supervisor opts in by also configuring bounded async shutdown.
+    The Task receives the raw caller deadline, while the direct runner stops
+    before the completion reserve so outcome evidence can be persisted.
+    """
+
+    if _bounded_shutdown_timeout() is None:
+        return None
+    return _caller_task_budget()
+
+
+def direct_run_task_budget() -> DirectRunTaskBudget | None:
+    """Expose the typed direct-runtime budget to the CLI Task builder."""
+
+    return _direct_run_task_budget()
+
+
+def _direct_run_timeout() -> float | None:
+    """Return the time available before the caller's completion reserve.
+
+    The process supervisor owns the absolute deadline.  Direct mode must stop
+    early enough to replace its initial ``in_progress`` ATIF checkpoint with a
+    terminal outcome and atomically persist the matching outcome sidecar.
+    """
+
+    budget = _caller_task_budget()
+    if budget is None:
+        return None
+    return max(
+        0.0,
+        budget.deadline_epoch_seconds
+        - time.time()
+        - budget.completion_reserve_seconds,
+    )
 
 
 def _first_provider_start_timeout() -> float | None:
@@ -473,10 +529,12 @@ def hard_exit_direct_run_if_configured(
 
 __all__ = [
     "BOUNDED_ASYNC_SHUTDOWN_ENV",
+    "DirectRunTaskBudget",
     "FIRST_PROVIDER_START_TIMEOUT_ENV",
     "TASK_COMPLETION_RESERVE_ENV",
     "TASK_DEADLINE_EPOCH_ENV",
     "DirectRunDeadlineExceeded",
+    "direct_run_task_budget",
     "hard_exit_direct_run_if_configured",
     "run_direct_async",
     "run_with_first_provider_start_watchdog",

@@ -39,6 +39,7 @@ from aworld_cli.core.skill_activation_resolver import (
     SkillActivationResolver,
     SkillResolverRequest,
 )
+from aworld_cli.async_runtime import direct_run_task_budget
 from .base_executor import BaseAgentExecutor
 from .hooks import ExecutorHookPoint, ExecutorHook
 from .stats import (
@@ -1092,6 +1093,7 @@ class LocalAgentExecutor(BaseAgentExecutor):
         # 6. Build task with context and observation
         self._attest_context_entry_point(context)
         context.set_state("context_entry_point", self._context_entry_point())
+        direct_run_budget = direct_run_task_budget()
         task = Task(
             id=context.task_id,
             user_id=context.user_id,
@@ -1100,6 +1102,21 @@ class LocalAgentExecutor(BaseAgentExecutor):
             endless_threshold=5,
             swarm=self.swarm,
             context=context,
+            timeout=(
+                direct_run_budget.timeout_seconds
+                if direct_run_budget is not None
+                else None
+            ),
+            deadline_epoch_seconds=(
+                direct_run_budget.deadline_epoch_seconds
+                if direct_run_budget is not None
+                else None
+            ),
+            completion_reserve_seconds=(
+                direct_run_budget.completion_reserve_seconds
+                if direct_run_budget is not None
+                else None
+            ),
             conf=TaskConfig(
                 stream=False,
                 exit_on_failure=True

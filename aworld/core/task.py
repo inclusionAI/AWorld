@@ -83,6 +83,9 @@ class Task:
     # Explicit identity epoch for repeated executions of the same task id.
     trajectory_task_epoch: int | None = field(default=None)
     deadline_epoch_seconds: float | None = field(default=None)
+    # Appended to preserve the positional constructor order of the public Task
+    # contract. This time is owned by the caller after agent execution stops.
+    completion_reserve_seconds: float | None = field(default=None)
     _deadline_monotonic: float | None = field(default=None, init=False, repr=False)
     _bound_deadline_epoch_seconds: float | None = field(default=None, init=False, repr=False)
 
@@ -103,6 +106,16 @@ class Task:
                 or (value <= 0 if name == "timeout" else value < 0)
             ):
                 raise ValueError(f"{name} must be a finite positive number or None")
+        reserve = self.completion_reserve_seconds
+        if reserve is not None and (
+            isinstance(reserve, bool)
+            or not isinstance(reserve, (int, float))
+            or not math.isfinite(reserve)
+            or reserve < 0
+        ):
+            raise ValueError(
+                "completion_reserve_seconds must be a finite non-negative number or None"
+            )
 
     def bind_deadline(self) -> float | None:
         """Bind the caller's budget once; wall-clock rollback cannot extend it.
@@ -175,6 +188,7 @@ class Task:
             "group_id": self.group_id,
             "max_retry_count": self.max_retry_count,
             "timeout": self.timeout,
+            "completion_reserve_seconds": self.completion_reserve_seconds,
             "deadline_epoch_seconds": self.deadline_epoch_seconds,
             "parent_task_id": self.parent_task.id if self.parent_task else None,
             "task_status": self.task_status,

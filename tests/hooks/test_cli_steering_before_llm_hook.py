@@ -1,4 +1,5 @@
 import json
+import time
 from types import SimpleNamespace
 
 import pytest
@@ -209,6 +210,41 @@ async def test_local_executor_preserves_explicit_origin_user_input(
     # ambient aggregate deadline. This was already the a92 lifetime contract.
     assert task.deadline_epoch_seconds is None
     assert task.remaining_seconds() is None
+
+
+@pytest.mark.asyncio
+async def test_local_executor_adopts_explicit_direct_runtime_budget(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+):
+    async def _fake_from_input(task_input, workspace=None, context_config=None):
+        return _DummyContext(task_input)
+
+    async def _fake_create_workspace(_session_id):
+        return tmp_path / "workspace"
+
+    agent = Agent(name="developer", conf=AgentConfig(skill_configs={}))
+    executor = LocalAgentExecutor(Swarm(agent))
+    monkeypatch.setattr(
+        "aworld_cli.executors.local.ApplicationContext.from_input",
+        _fake_from_input,
+    )
+    monkeypatch.setattr(executor, "_create_workspace", _fake_create_workspace)
+
+    deadline = time.time() + 360
+    monkeypatch.setenv("AWORLD_DIRECT_RUN_SHUTDOWN_TIMEOUT_SECONDS", "5")
+    monkeypatch.setenv("AWORLD_TASK_DEADLINE_EPOCH_SECONDS", str(deadline))
+    monkeypatch.setenv("AWORLD_TERMINAL_COMPLETION_RESERVE_SECONDS", "36")
+    task = await executor._build_task(
+        "Complete the bounded task",
+        session_id="session-1",
+        task_id="task-1",
+    )
+
+    assert task.deadline_epoch_seconds == deadline
+    assert task.timeout == pytest.approx(360, abs=1)
+    assert task.remaining_seconds() == pytest.approx(360, abs=1)
+    assert task.completion_reserve_seconds == 36
 
 
 def test_local_executor_streaming_output_can_be_suppressed_for_interactive_steering(

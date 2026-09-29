@@ -247,8 +247,21 @@ class SkillActivationResolver:
         request: SkillResolverRequest,
     ) -> tuple[str, ...]:
         if request.requested_skill_names:
+            # Explicit selection is additive to agent defaults.  This keeps a
+            # default-enabled framework capability (for example the built-in
+            # long-running protocol) active when a caller also requests a
+            # task-specific skill such as FileX.  Persisted disables remain
+            # authoritative because those candidates were filtered above.
             requested: list[str] = []
             available = {candidate.skill_name for candidate in candidates}
+            eligible_defaults = {
+                candidate.skill_name
+                for candidate in candidates
+                if candidate.metadata.get("default_enabled", True) is not False
+            }
+            for skill_name in request.default_skill_names:
+                if skill_name in eligible_defaults and skill_name not in requested:
+                    requested.append(skill_name)
             for skill_name in request.requested_skill_names:
                 if skill_name not in available:
                     raise ValueError(f"Requested skill is not available: {skill_name}")

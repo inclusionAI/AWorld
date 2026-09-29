@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import replace
+from types import SimpleNamespace
 
 import pytest
 
@@ -204,9 +205,15 @@ def test_explicit_disabled_generation_mode_suppresses_automatic_watchdog() -> No
     agent._generation_budget_explicit_fields = frozenset({"generation_budget_mode"})
 
     policy = agent._resolve_generation_budget_policy()
+    finalization_policy = agent._resolve_generation_budget_policy(
+        agent.context,
+        finalization_turn=True,
+    )
 
     assert policy.total_timeout_seconds is None
     assert policy.stream_idle_timeout_seconds is None
+    assert finalization_policy.total_timeout_seconds is None
+    assert finalization_policy.stream_idle_timeout_seconds is None
     metrics = agent.context.context_info[f"generation_budget_policy:{agent.id()}"]
     assert metrics["policy_source"] == "explicit_config"
 
@@ -223,12 +230,49 @@ def test_automatic_watchdog_reserves_task_time_for_finalization() -> None:
 
     policy = agent._resolve_generation_budget_policy(agent.context)
 
-    assert 4.0 < policy.total_timeout_seconds <= 5.0
+    # The protocol derives a 15% finalization window from the bounded Task
+    # instead of applying the fixed 60-second reserve to short tasks.
+    assert 55.0 < policy.total_timeout_seconds <= 55.25
     assert policy.stream_idle_timeout_seconds == policy.total_timeout_seconds
     assert policy.active_tool_free_timeout_seconds is None
     assert policy.action_repair_enabled is False
     metrics = agent.context.context_info[f"generation_budget_policy:{agent.id()}"]
     assert metrics["policy_source"] == "long_horizon_auto"
+
+
+def test_finalization_turn_uses_agent_window_before_external_reserve() -> None:
+    agent = _long_running_generation_agent(armed=True)
+    task = Task(
+        id="long-running-finalization-budget",
+        input="test request",
+        timeout=360,
+        completion_reserve_seconds=36,
+    )
+    # Model the instant at which P=81 seconds remains: the ordinary turn must
+    # stop, while finalization retains F=45 seconds before external reserve E.
+    task.remaining_seconds = lambda: 81.0
+    agent.context.set_task(task)
+
+    normal = agent._resolve_generation_budget_policy(agent.context)
+    finalization = agent._resolve_generation_budget_policy(
+        agent.context,
+        finalization_turn=True,
+    )
+    clock = SimpleNamespace(now=0.0)
+    normal_controller = GenerationBudgetController(
+        normal,
+        clock=lambda: clock.now,
+    )
+    finalization_controller = GenerationBudgetController(
+        finalization,
+        clock=lambda: clock.now,
+    )
+
+    assert normal.total_timeout_seconds == pytest.approx(0.1)
+    assert finalization.total_timeout_seconds == pytest.approx(45.0)
+    clock.now = 1.0
+    assert normal_controller.remaining_seconds(streaming=False) == 0.0
+    assert finalization_controller.remaining_seconds(streaming=False) == 44.0
 
 
 def _generation_timeout(

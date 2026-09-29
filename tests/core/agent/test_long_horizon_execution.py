@@ -149,6 +149,61 @@ def test_agent_uses_existing_skill_activation_as_protocol_switch() -> None:
     assert agent._resolve_execution_protocol_policy().mode is ProtocolMode.OFF
 
 
+@pytest.mark.parametrize(
+    ("total,external,expected"),
+    [
+        (30.0, 3.0, 7.05),
+        (60.0, 6.0, 14.1),
+        (360.0, 36.0, 81.0),
+        (3753.0, 60.0, 105.0),
+    ],
+)
+def test_default_protocol_derives_three_part_finalization_budget(
+    total: float,
+    external: float,
+    expected: float,
+) -> None:
+    context = Context(task_id="adaptive-reserve")
+    context.set_task(Task(
+        id="adaptive-reserve",
+        input="complete the task",
+        timeout=total,
+        completion_reserve_seconds=external,
+    ))
+    agent = Agent(
+        name="Aworld",
+        conf=AgentConfig(
+            llm_provider="openai",
+            llm_model_name="offline",
+            llm_api_key="offline",
+        ),
+    )
+    agent.skill_configs = {"long-running-agent": {"active": True}}
+
+    policy = agent._resolve_execution_protocol_policy(context)
+
+    assert policy.mode is ProtocolMode.GUIDE
+    assert policy.finalization_reserve_seconds == pytest.approx(expected)
+    assert policy.finalization_reserve_seconds > external
+    assert policy.finalization_reserve_seconds < total
+
+
+def test_explicit_protocol_policy_is_not_rewritten_by_task_budget() -> None:
+    context = Context(task_id="explicit-reserve")
+    context.set_task(Task(
+        id="explicit-reserve",
+        timeout=30,
+        completion_reserve_seconds=3,
+    ))
+    explicit = ExecutionProtocolPolicy(
+        mode=ProtocolMode.OBSERVE,
+        finalization_reserve_seconds=12,
+    )
+    agent = _agent(context, explicit)
+
+    assert agent._resolve_execution_protocol_policy(context) is explicit
+
+
 def test_explicit_execution_protocol_policy_survives_agent_round_trip() -> None:
     context = Context(task_id="round-trip")
     policy = ExecutionProtocolPolicy(

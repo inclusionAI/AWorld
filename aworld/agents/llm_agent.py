@@ -767,14 +767,61 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             evidence_resolver=self._runtime_completion_evidence_resolver,
         )
 
-    def _resolve_execution_protocol_policy(self) -> ExecutionProtocolPolicy:
+    def _resolve_execution_protocol_policy(
+        self, context: Context | None = None
+    ) -> ExecutionProtocolPolicy:
         """Use explicit framework policy or derive it from normal Skill activation."""
         if self._explicit_execution_protocol_policy is not None:
             return self._explicit_execution_protocol_policy
         skill = (self.skill_configs or {}).get("long-running-agent")
         active = isinstance(skill, dict) and skill.get("active") is True
-        return ExecutionProtocolPolicy(
+        policy = ExecutionProtocolPolicy(
             mode=ProtocolMode.GUIDE if active else ProtocolMode.OFF
+        )
+        if not active or context is None:
+            return policy
+
+        # Derive a stable three-part deadline once from typed Task budget:
+        # solve window -> bounded finalization -> caller-owned persistence.
+        # ``Task.timeout`` is the original lifetime, so this does not shrink on
+        # every policy lookup as ``remaining_seconds()`` would.
+        get_task = getattr(context, "get_task", None)
+        try:
+            task = get_task() if callable(get_task) else None
+            total = getattr(task, "timeout", None)
+            external_reserve = getattr(
+                task, "completion_reserve_seconds", None
+            )
+        except Exception:
+            return policy
+        if (
+            isinstance(total, bool)
+            or not isinstance(total, (int, float))
+            or total <= 0
+        ):
+            return policy
+        if (
+            isinstance(external_reserve, bool)
+            or not isinstance(external_reserve, (int, float))
+            or external_reserve < 0
+        ):
+            external_reserve = 0.0
+        available = max(0.0, float(total) - float(external_reserve))
+        finalization_window = min(
+            float(policy.final_review_timeout_seconds),
+            0.15 * available,
+        )
+        protocol_reserve = float(external_reserve) + max(
+            0.1, finalization_window
+        )
+        # Even malformed caller budgets must leave a non-empty solve window.
+        protocol_reserve = min(
+            protocol_reserve,
+            max(0.0, float(total) - min(0.1, float(total) * 0.5)),
+        )
+        return replace(
+            policy,
+            finalization_reserve_seconds=protocol_reserve,
         )
 
     async def _completion_feedback_if_unsatisfied(
@@ -2629,6 +2676,40 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             sanitized.message.pop("tool_calls", None)
         return sanitized
 
+    @staticmethod
+    def _remaining_before_completion_reserve(
+        context: Context | None,
+        *,
+        cap_seconds: float,
+    ) -> float:
+        """Return agent-owned time without consuming caller persistence time."""
+        if context is None:
+            return max(0.1, cap_seconds)
+        get_task = getattr(context, "get_task", None)
+        try:
+            task = get_task() if callable(get_task) else None
+            remaining = task.remaining_seconds() if task is not None else None
+            external_reserve = getattr(
+                task, "completion_reserve_seconds", 0.0
+            ) if task is not None else 0.0
+        except Exception:
+            return max(0.1, cap_seconds)
+        if (
+            isinstance(remaining, bool)
+            or not isinstance(remaining, (int, float))
+        ):
+            return max(0.1, cap_seconds)
+        if (
+            isinstance(external_reserve, bool)
+            or not isinstance(external_reserve, (int, float))
+            or external_reserve < 0
+        ):
+            external_reserve = 0.0
+        return min(
+            max(0.1, cap_seconds),
+            max(0.1, float(remaining) - float(external_reserve)),
+        )
+
     async def async_finalize_at_loop_budget(
         self, message: Message, **kwargs
     ) -> Message | None:
@@ -2687,22 +2768,14 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                 if long_horizon_fallback is None:
                     result = await attempt
                 else:
-                    policy = self._resolve_execution_protocol_policy()
+                    policy = self._resolve_execution_protocol_policy(message.context)
                     timeout = float(
                         getattr(policy, "final_review_timeout_seconds", 45.0)
                     )
-                    get_task = getattr(message.context, "get_task", None)
-                    try:
-                        task = get_task() if callable(get_task) else None
-                        remaining = (
-                            task.remaining_seconds() if task is not None else None
-                        )
-                    except Exception:
-                        remaining = None
-                    if isinstance(remaining, (int, float)) and not isinstance(
-                        remaining, bool
-                    ):
-                        timeout = min(timeout, max(0.1, float(remaining) - 5.0))
+                    timeout = self._remaining_before_completion_reserve(
+                        message.context,
+                        cap_seconds=timeout,
+                    )
                     result = await asyncio.wait_for(attempt, timeout=timeout)
             except Exception as exc:
                 if long_horizon_fallback is not None:
@@ -2867,16 +2940,12 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         context = message.context
         reason = exc.reason.value
         if self._claim_long_horizon_generation_finalization(context):
-            protocol_policy = self._resolve_execution_protocol_policy()
+            protocol_policy = self._resolve_execution_protocol_policy(context)
             timeout = float(protocol_policy.final_review_timeout_seconds)
-            get_task = getattr(context, "get_task", None)
-            try:
-                task = get_task() if callable(get_task) else None
-                remaining = task.remaining_seconds() if task is not None else None
-            except Exception:
-                remaining = None
-            if isinstance(remaining, (int, float)) and not isinstance(remaining, bool):
-                timeout = min(timeout, max(0.1, float(remaining) - 5.0))
+            timeout = self._remaining_before_completion_reserve(
+                context,
+                cap_seconds=timeout,
+            )
             finalization_kwargs = dict(kwargs)
             finalization_kwargs.pop("_loop_budget_finalization", None)
             try:
@@ -2954,7 +3023,9 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         from aworld.runners.execution_protocol import configure_execution_protocol
 
         configure_execution_protocol(
-            message.context, self.id(), self._resolve_execution_protocol_policy()
+            message.context,
+            self.id(),
+            self._resolve_execution_protocol_policy(message.context),
         )
         from aworld.runners.execution_protocol import (
             execution_protocol_requires_tool_free_finalization,
@@ -2969,6 +3040,11 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         tool_free_finalization = (
             loop_budget_finalization or protocol_repair_finalization
         )
+        if tool_free_finalization:
+            # Consumed by invoke_model; never forwarded to a provider.  A
+            # finalization turn runs until the caller-owned persistence
+            # reserve, rather than subtracting the protocol reserve twice.
+            kwargs["_long_horizon_finalization_turn"] = True
         context_compiler_mode = self._context_compiler_mode_value()
         self._bind_context_output_budget(kwargs)
         # A turn boundary expires single-call/turn sidecars before new owner
@@ -4434,7 +4510,7 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         if context is None:
             return None
         try:
-            protocol_policy = self._resolve_execution_protocol_policy()
+            protocol_policy = self._resolve_execution_protocol_policy(context)
             protocol_state = ExecutionProtocolStore(
                 context,
                 self.id(),
@@ -4474,9 +4550,33 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             action_repair_enabled=False,
         )
 
+    def _finalization_generation_budget_policy(
+        self,
+        context: Context | None,
+    ) -> GenerationBudgetPolicy | None:
+        """Bound one tool-free finalization turn at the caller reserve."""
+        if context is None:
+            return None
+        skill = (self.skill_configs or {}).get("long-running-agent")
+        if not (isinstance(skill, dict) and skill.get("active") is True):
+            return None
+        timeout = self._remaining_before_completion_reserve(
+            context,
+            cap_seconds=45.0,
+        )
+        return GenerationBudgetPolicy(
+            total_timeout_seconds=timeout,
+            stream_idle_timeout_seconds=timeout,
+            active_tool_free_timeout_seconds=None,
+            action_repair_timeout_seconds=None,
+            action_repair_enabled=False,
+        )
+
     def _resolve_generation_budget_policy(
         self,
         context: Context | None = None,
+        *,
+        finalization_turn: bool = False,
     ) -> GenerationBudgetPolicy:
         """Resolve one immutable policy for the complete Agent model turn."""
         metric_context = context or getattr(self, "context", None)
@@ -4509,6 +4609,11 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             if isinstance(compiler_config, dict):
                 return compiler_config.get(name, default)
             return getattr(compiler_config, name, default)
+
+        if finalization_turn and not self._generation_budget_explicit_fields:
+            finalization = self._finalization_generation_budget_policy(context)
+            if finalization is not None:
+                return publish(finalization, "long_horizon_finalization")
 
         automatic = self._automatic_generation_budget_policy(context)
         if automatic is not None:
@@ -5230,9 +5335,13 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         self, messages: List[Dict[str, str]] = [], message: Message = None, **kwargs
     ) -> ModelResponse:
         """Run one LLM turn under typed, composable generation deadlines."""
+        finalization_turn = bool(
+            kwargs.pop("_long_horizon_finalization_turn", False)
+        )
         controller = GenerationBudgetController(
             self._resolve_generation_budget_policy(
-                message.context if message is not None else None
+                message.context if message is not None else None,
+                finalization_turn=finalization_turn,
             )
         )
         try:

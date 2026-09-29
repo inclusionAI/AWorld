@@ -218,8 +218,22 @@ def test_aworld_defaults_preserve_automatic_and_explicit_skill_selection(
     ))
 
     assert result.active_skill_names == (
-        requested or ("long-running-agent", "browser-use")
+        ("long-running-agent", *requested)
+        if requested
+        else ("long-running-agent", "browser-use")
     )
+
+
+def test_explicit_filex_keeps_default_long_running_skill_active() -> None:
+    result = SkillActivationResolver().resolve(SkillResolverRequest(
+        plugin_roots=(),
+        runtime_scope="session",
+        task_text="Read the input and complete a long task",
+        default_skill_names=AWORLD_DEFAULT_SKILL_NAMES,
+        requested_skill_names=("filex",),
+    ))
+
+    assert result.active_skill_names == ("long-running-agent", "filex")
 
 
 def test_agent_defaults_do_not_override_user_skill_definition(tmp_path: Path) -> None:
