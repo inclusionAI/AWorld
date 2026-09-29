@@ -1,12 +1,16 @@
 from dataclasses import replace
 
+import pytest
+
 from aworld.core.execution_protocol import (
     ControllerAction,
     DecisionReason,
     EventKind,
+    ExecutionHorizon,
     ExecutionProtocolEvent,
     ExecutionProtocolPolicy,
     ExecutionProtocolState,
+    ModelExecutionProfile,
     ProtocolPhase,
     ProtocolScope,
     ReviewOutcome,
@@ -29,6 +33,25 @@ def _armed_state():
     return replace(_state(), long_horizon_armed=True)
 
 
+def _profile(
+    *,
+    horizon: ExecutionHorizon = ExecutionHorizon.LONG,
+    confidence: float = 0.9,
+    milestone_count: int = 3,
+    expected_tool_actions: int = 8,
+):
+    return ExecutionProtocolEvent(
+        kind=EventKind.MODEL_EXECUTION_PROFILE,
+        model_execution_profile=ModelExecutionProfile(
+            horizon=horizon,
+            confidence=confidence,
+            milestone_count=milestone_count,
+            expected_tool_actions=expected_tool_actions,
+            verification_required=True,
+        ),
+    )
+
+
 def test_off_mode_is_completely_inert():
     state = _state()
     transition = transition_execution_protocol(
@@ -40,6 +63,52 @@ def test_off_mode_is_completely_inert():
     assert transition.state is state
     assert transition.decision.action is ControllerAction.CONTINUE
     assert transition.decision.reason is DecisionReason.DISABLED
+
+
+def test_high_confidence_model_profile_arms_before_tool_threshold():
+    transition = transition_execution_protocol(
+        _state(),
+        _profile(),
+        ExecutionProtocolPolicy(mode="guide", activation_event_threshold=20),
+    )
+
+    assert transition.state.long_horizon_armed is True
+    assert transition.state.model_execution_profile is not None
+    assert transition.state.tool_observation_count == 0
+    assert transition.decision.reason is DecisionReason.MODEL_LONG_HORIZON
+
+
+@pytest.mark.parametrize(
+    "event",
+    [
+        _profile(horizon=ExecutionHorizon.SHORT),
+        _profile(confidence=0.69),
+        _profile(milestone_count=1, expected_tool_actions=5),
+    ],
+)
+def test_model_profile_cannot_arm_without_credible_long_signal(event):
+    transition = transition_execution_protocol(
+        _state(), event, ExecutionProtocolPolicy(mode="guide")
+    )
+
+    assert transition.state.long_horizon_armed is False
+    assert transition.state.model_execution_profile is not None
+
+
+def test_short_model_profile_cannot_suppress_framework_tool_fallback():
+    policy = ExecutionProtocolPolicy(mode="guide", activation_event_threshold=3)
+    state = transition_execution_protocol(
+        _state(), _profile(horizon=ExecutionHorizon.SHORT), policy
+    ).state
+    for step in range(1, 4):
+        state = transition_execution_protocol(
+            state,
+            _tool(current_step=step, evidence_advanced=True),
+            policy,
+        ).state
+
+    assert state.tool_observation_count == 3
+    assert state.long_horizon_armed is True
 
 
 def test_observe_reports_would_replan_without_issuing_guidance():

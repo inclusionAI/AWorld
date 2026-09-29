@@ -14,10 +14,12 @@ from aworld.core.task import Task
 from aworld.runners.execution_protocol import (
     configure_execution_protocol,
     consume_execution_protocol_guidance,
+    execution_protocol_accepts_model_profile,
     execution_protocol_requires_tool_free_finalization,
     final_review_guidance,
     load_candidate_fallback,
     record_candidate_final,
+    record_model_execution_profile,
     record_review_tool_action,
     record_tool_protocol_event,
     store_candidate_fallback,
@@ -91,6 +93,48 @@ def test_observe_mode_records_without_changing_the_prompt() -> None:
     assert transition is not None
     assert transition.decision.action is ControllerAction.WOULD_REQUEST_REPLAN
     assert consume_execution_protocol_guidance(context, "agent") is None
+
+
+def test_model_profile_arms_early_and_is_accepted_only_once() -> None:
+    context = _context("model-profile")
+    policy = ExecutionProtocolPolicy(
+        mode=ProtocolMode.GUIDE,
+        activation_event_threshold=20,
+    )
+    configure_execution_protocol(context, "agent", policy)
+
+    assert execution_protocol_accepts_model_profile(context, "agent") is True
+    transition = record_model_execution_profile(
+        context,
+        "agent",
+        {
+            "horizon": "long",
+            "confidence": 0.9,
+            "milestone_count": 3,
+            "expected_tool_actions": 9,
+            "verification_required": True,
+        },
+    )
+
+    assert transition is not None
+    assert transition.state.long_horizon_armed is True
+    assert execution_protocol_accepts_model_profile(context, "agent") is False
+    assert record_model_execution_profile(context, "agent", {}) is None
+
+
+def test_invalid_model_profile_fails_open_and_does_not_repeat() -> None:
+    context = _context("invalid-model-profile")
+    policy = ExecutionProtocolPolicy(mode=ProtocolMode.GUIDE)
+    configure_execution_protocol(context, "agent", policy)
+
+    assert record_model_execution_profile(
+        context,
+        "agent",
+        {"horizon": "long", "confidence": "certain"},
+    ) is None
+    assert execution_protocol_accepts_model_profile(context, "agent") is False
+    state = ExecutionProtocolStore(context, "agent", policy).load()
+    assert state.long_horizon_armed is False
 
 
 def test_final_review_is_requested_once_and_unknown_submits_current_result() -> None:

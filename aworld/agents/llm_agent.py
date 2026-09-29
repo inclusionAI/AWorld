@@ -161,6 +161,7 @@ _MAX_CONFIGURED_PENDING_GENERATION_TASKS = 256
 _DETACHED_GENERATION_TASKS: set[asyncio.Task] = set()
 _ACTIVE_GENERATION_TASKS: set[asyncio.Task] = set()
 _GENERATION_TASKS_LOCK = threading.Lock()
+_LONG_HORIZON_EXECUTION_PROFILE_PARAM = "__aworld_execution_profile"
 
 
 def _one_shot_process_cleanup_enabled() -> bool:
@@ -823,6 +824,107 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             policy,
             finalization_reserve_seconds=protocol_reserve,
         )
+
+    def _long_horizon_skill_active(self) -> bool:
+        skill = (self.skill_configs or {}).get("long-running-agent")
+        return isinstance(skill, dict) and skill.get("active") is True
+
+    @staticmethod
+    def _long_horizon_execution_profile_schema() -> dict[str, Any]:
+        return {
+            "type": "object",
+            "description": (
+                "Optional one-time AWorld control-plane assessment. Include it "
+                "only with the same real Tool call you already need when the "
+                "task credibly requires sustained dependent work. It is removed "
+                "before Tool execution. Omit it for short or uncertain work."
+            ),
+            "additionalProperties": False,
+            "properties": {
+                "horizon": {"type": "string", "enum": ["short", "long"]},
+                "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+                "milestone_count": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 64,
+                },
+                "expected_tool_actions": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 1024,
+                },
+                "verification_required": {"type": "boolean"},
+            },
+            "required": [
+                "horizon",
+                "confidence",
+                "milestone_count",
+                "expected_tool_actions",
+                "verification_required",
+            ],
+        }
+
+    def _with_long_horizon_execution_profile(
+        self,
+        tools: List[Dict[str, Any]] | None,
+        context: Context,
+    ) -> tuple[List[Dict[str, Any]] | None, bool]:
+        """Offer a one-time typed assessment on existing real Tool calls."""
+        if not tools or not self._long_horizon_skill_active():
+            return tools, False
+        from aworld.runners.execution_protocol import (
+            execution_protocol_accepts_model_profile,
+        )
+
+        if not execution_protocol_accepts_model_profile(context, self.id()):
+            return tools, False
+
+        augmented: list[dict[str, Any]] = []
+        offered = False
+        for schema in tools:
+            candidate = copy.deepcopy(schema)
+            function = candidate.get("function") if isinstance(candidate, dict) else None
+            parameters = (
+                function.get("parameters") if isinstance(function, dict) else None
+            )
+            properties = (
+                parameters.get("properties")
+                if isinstance(parameters, dict)
+                else None
+            )
+            if (
+                isinstance(properties, dict)
+                and _LONG_HORIZON_EXECUTION_PROFILE_PARAM not in properties
+            ):
+                properties[_LONG_HORIZON_EXECUTION_PROFILE_PARAM] = (
+                    self._long_horizon_execution_profile_schema()
+                )
+                offered = True
+            augmented.append(candidate)
+        return augmented, offered
+
+    def _consume_long_horizon_execution_profile(
+        self,
+        result: AgentResult,
+        context: Context,
+        *,
+        offered: bool,
+    ) -> None:
+        """Strip control metadata before Tool dispatch and record it once."""
+        if not self._long_horizon_skill_active():
+            return
+        profiles: list[Any] = []
+        for action in result.actions or ():
+            params = getattr(action, "params", None)
+            if not isinstance(params, dict):
+                continue
+            if _LONG_HORIZON_EXECUTION_PROFILE_PARAM in params:
+                profiles.append(params.pop(_LONG_HORIZON_EXECUTION_PROFILE_PARAM))
+        if not profiles or not offered:
+            return
+        from aworld.runners.execution_protocol import record_model_execution_profile
+
+        record_model_execution_profile(context, self.id(), profiles[0])
 
     async def _completion_feedback_if_unsatisfied(
         self, *, context: Context, final_response_text: str
@@ -3040,6 +3142,7 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         tool_free_finalization = (
             loop_budget_finalization or protocol_repair_finalization
         )
+        execution_profile_offered = False
         if tool_free_finalization:
             # Consumed by invoke_model; never forwarded to a provider.  A
             # finalization turn runs until the caller-owned persistence
@@ -3133,6 +3236,12 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             tools = None
         else:
             tools = await self._filter_tools(message.context)
+            tools, execution_profile_offered = (
+                self._with_long_horizon_execution_profile(
+                    tools,
+                    message.context,
+                )
+            )
         progressive_tool_base_tools = getattr(
             self.llm, "_context_progressive_tool_base_tools", None
         )
@@ -3577,6 +3686,11 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                             + ",".join(issue.code.value for issue in exc.issues)
                         )
                         agent_result = AgentResult(actions=[], is_call_tool=False)
+                    self._consume_long_horizon_execution_profile(
+                        agent_result,
+                        message.context,
+                        offered=execution_profile_offered,
+                    )
                     if tool_free_finalization and agent_result.is_call_tool:
                         logger.warning(
                             "Agent %s attempted tool work during its bounded "

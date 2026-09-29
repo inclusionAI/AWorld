@@ -3,10 +3,12 @@ from dataclasses import FrozenInstanceError, replace
 import pytest
 
 from aworld.core.execution_protocol import (
+    ExecutionHorizon,
     EventKind,
     ExecutionProtocolEvent,
     ExecutionProtocolPolicy,
     ExecutionProtocolState,
+    ModelExecutionProfile,
     ProtocolMode,
     ProtocolScope,
 )
@@ -15,9 +17,71 @@ from aworld.core.execution_protocol import (
 @pytest.mark.parametrize(
     ("field", "value"),
     [
+        ("horizon", "maybe"),
+        ("confidence", True),
+        ("confidence", -0.1),
+        ("confidence", 1.1),
+        ("milestone_count", 0),
+        ("milestone_count", 65),
+        ("expected_tool_actions", -1),
+        ("expected_tool_actions", 1025),
+        ("verification_required", "yes"),
+    ],
+)
+def test_model_execution_profile_rejects_invalid_bounds(field, value):
+    values = {
+        "horizon": "long",
+        "confidence": 0.9,
+        "milestone_count": 3,
+        "expected_tool_actions": 8,
+        "verification_required": True,
+        field: value,
+    }
+
+    with pytest.raises(ValueError):
+        ModelExecutionProfile.from_mapping(values)
+
+
+def test_model_execution_profile_has_a_stable_typed_round_trip():
+    profile = ModelExecutionProfile.from_mapping(
+        {
+            "horizon": "long",
+            "confidence": 0.85,
+            "milestone_count": 4,
+            "expected_tool_actions": 12,
+            "verification_required": True,
+        }
+    )
+
+    assert profile.horizon is ExecutionHorizon.LONG
+    assert ModelExecutionProfile.from_mapping(profile.to_dict()) == profile
+
+
+def test_model_execution_profile_rejects_unknown_fields():
+    with pytest.raises(ValueError, match="unknown fields"):
+        ModelExecutionProfile.from_mapping(
+            {
+                "horizon": "long",
+                "confidence": 0.9,
+                "milestone_count": 3,
+                "expected_tool_actions": 8,
+                "verification_required": True,
+                "task_text": "must never enter control state",
+            }
+        )
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
         ("history_limit", 0),
         ("history_limit", 257),
         ("activation_event_threshold", 0),
+        ("model_activation_confidence_threshold", 1.1),
+        ("model_activation_min_milestones", 0),
+        ("model_activation_min_milestones", 65),
+        ("model_activation_min_tool_actions", 0),
+        ("model_activation_min_tool_actions", 1025),
         ("stagnation_event_threshold", True),
         ("max_replans", -1),
         ("max_replans", 17),
@@ -79,6 +143,20 @@ def test_event_validates_generic_measurements_and_review_shape():
             kind=EventKind.TOOL_OBSERVATION,
             review_outcome="unknown",
         )
+    profile = ModelExecutionProfile(
+        horizon=ExecutionHorizon.LONG,
+        confidence=0.9,
+        milestone_count=3,
+        expected_tool_actions=8,
+        verification_required=True,
+    )
+    with pytest.raises(ValueError, match="model_execution_profile"):
+        ExecutionProtocolEvent(
+            kind=EventKind.TOOL_OBSERVATION,
+            model_execution_profile=profile,
+        )
+    with pytest.raises(ValueError, match="requires"):
+        ExecutionProtocolEvent(kind=EventKind.MODEL_EXECUTION_PROFILE)
 
 
 def test_state_round_trip_contains_no_raw_task_or_tool_text():
@@ -103,6 +181,31 @@ def test_state_round_trip_contains_no_raw_task_or_tool_text():
     assert "operation-hash" in payload
     assert "task_input" not in payload
     assert "tool_output" not in payload
+
+
+def test_state_round_trip_preserves_content_free_model_profile():
+    scope = ProtocolScope(task_id="task", task_epoch=3, agent_id="agent")
+    profile = ModelExecutionProfile(
+        horizon=ExecutionHorizon.SHORT,
+        confidence=0.8,
+        milestone_count=1,
+        expected_tool_actions=2,
+        verification_required=True,
+    )
+    state = ExecutionProtocolState.initial(scope).append_event(
+        ExecutionProtocolEvent(
+            kind=EventKind.MODEL_EXECUTION_PROFILE,
+            model_execution_profile=profile,
+        ),
+        history_limit=4,
+    )
+    state = replace(state, model_execution_profile=profile)
+
+    restored = ExecutionProtocolState.from_dict(state.to_dict())
+
+    assert restored == state
+    assert restored.model_execution_profile == profile
+    assert "task_input" not in str(restored.to_dict())
 
 
 def test_state_rejects_corrupt_persisted_history():

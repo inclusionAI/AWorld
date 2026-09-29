@@ -1,16 +1,22 @@
 from __future__ import annotations
 
 import asyncio
+import json
 
 import pytest
 
 from aworld.agents.llm_agent import Agent, _LongHorizonReviewContinuation
 from aworld.config.conf import AgentConfig
+from aworld.core.agent.base import AgentResult
 from aworld.core.common import ActionModel, Observation
 from aworld.core.context.base import Context
 from aworld.core.context.execution_state import get_execution_state
 from aworld.core.event.base import Constants, Message
-from aworld.core.execution_protocol import ExecutionProtocolPolicy, ProtocolMode
+from aworld.core.execution_protocol import (
+    ExecutionProtocolPolicy,
+    ExecutionProtocolStore,
+    ProtocolMode,
+)
 from aworld.core.task import Task
 from aworld.models.model_response import Function, ModelResponse, ToolCall
 from aworld.runners.execution_protocol import (
@@ -147,6 +153,223 @@ def test_agent_uses_existing_skill_activation_as_protocol_switch() -> None:
     assert agent._resolve_execution_protocol_policy().mode is ProtocolMode.GUIDE
     agent.skill_configs["long-running-agent"]["active"] = False
     assert agent._resolve_execution_protocol_policy().mode is ProtocolMode.OFF
+
+
+def test_agent_offers_optional_model_profile_on_existing_tool_call() -> None:
+    context = Context(task_id="profile-schema")
+    context.set_task(Task(id="profile-schema", timeout=600))
+    policy = ExecutionProtocolPolicy(mode=ProtocolMode.GUIDE)
+    agent = _agent(context, policy)
+    agent.skill_configs = {"long-running-agent": {"active": True}}
+    configure_execution_protocol(context, agent.id(), policy)
+    tools = [
+        {
+            "type": "function",
+            "function": {
+                "name": "terminal__execute",
+                "parameters": {
+                    "type": "object",
+                    "properties": {"command": {"type": "string"}},
+                    "required": ["command"],
+                },
+            },
+        }
+    ]
+
+    augmented, offered = agent._with_long_horizon_execution_profile(tools, context)
+
+    assert offered is True
+    assert "__aworld_execution_profile" not in (
+        tools[0]["function"]["parameters"]["properties"]
+    )
+    profile = augmented[0]["function"]["parameters"]["properties"][
+        "__aworld_execution_profile"
+    ]
+    assert profile["type"] == "object"
+    assert profile["additionalProperties"] is False
+    assert set(profile["required"]) == {
+        "horizon",
+        "confidence",
+        "milestone_count",
+        "expected_tool_actions",
+        "verification_required",
+    }
+
+
+def test_agent_consumes_model_profile_without_forwarding_it_to_tool() -> None:
+    context = Context(task_id="profile-consume")
+    context.set_task(Task(id="profile-consume", timeout=600))
+    policy = ExecutionProtocolPolicy(
+        mode=ProtocolMode.GUIDE,
+        activation_event_threshold=20,
+    )
+    agent = _agent(context, policy)
+    agent.skill_configs = {"long-running-agent": {"active": True}}
+    configure_execution_protocol(context, agent.id(), policy)
+    action = ActionModel(
+        tool_name="terminal",
+        action_name="execute",
+        params={
+            "command": "make test",
+            "__aworld_execution_profile": {
+                "horizon": "long",
+                "confidence": 0.9,
+                "milestone_count": 4,
+                "expected_tool_actions": 12,
+                "verification_required": True,
+            },
+        },
+    )
+    result = AgentResult(current_state=None, actions=[action], is_call_tool=True)
+
+    agent._consume_long_horizon_execution_profile(result, context, offered=True)
+
+    assert action.params == {"command": "make test"}
+    state = ExecutionProtocolStore(context, agent.id(), policy).load()
+    assert state.long_horizon_armed is True
+
+
+def test_agent_strips_stale_profile_schema_value_without_recording_again() -> None:
+    context = Context(task_id="profile-stale-catalog")
+    context.set_task(Task(id="profile-stale-catalog", timeout=600))
+    policy = ExecutionProtocolPolicy(mode=ProtocolMode.GUIDE)
+    agent = _agent(context, policy)
+    agent.skill_configs = {"long-running-agent": {"active": True}}
+    configure_execution_protocol(context, agent.id(), policy)
+    action = ActionModel(
+        tool_name="terminal",
+        action_name="execute",
+        params={
+            "command": "pwd",
+            "__aworld_execution_profile": {
+                "horizon": "long",
+                "confidence": 0.99,
+                "milestone_count": 10,
+                "expected_tool_actions": 50,
+                "verification_required": True,
+            },
+        },
+    )
+    result = AgentResult(current_state=None, actions=[action], is_call_tool=True)
+
+    agent._consume_long_horizon_execution_profile(result, context, offered=False)
+
+    assert action.params == {"command": "pwd"}
+    state = ExecutionProtocolStore(context, agent.id(), policy).load()
+    assert state.model_execution_profile is None
+    assert state.long_horizon_armed is False
+
+
+def test_disabled_skill_does_not_offer_model_profile() -> None:
+    context = Context(task_id="profile-disabled")
+    context.set_task(Task(id="profile-disabled", timeout=600))
+    policy = ExecutionProtocolPolicy(mode=ProtocolMode.GUIDE)
+    agent = _agent(context, policy)
+    agent.skill_configs = {"long-running-agent": {"active": False}}
+    configure_execution_protocol(context, agent.id(), policy)
+    tools = [
+        {
+            "type": "function",
+            "function": {
+                "name": "terminal__execute",
+                "parameters": {"type": "object", "properties": {}},
+            },
+        }
+    ]
+
+    augmented, offered = agent._with_long_horizon_execution_profile(tools, context)
+
+    assert offered is False
+    assert augmented == tools
+
+
+@pytest.mark.asyncio
+async def test_production_policy_path_arms_and_strips_profile_in_same_tool_turn() -> None:
+    captured_tools = None
+
+    class ProfileAgent(Agent):
+        async def _add_message_to_memory(self, *args, **kwargs):
+            return None
+
+        async def build_llm_input(self, observation, info=None, message=None, **kwargs):
+            return [{"role": "user", "content": str(observation.content or "")}]
+
+        async def _filter_tools(self, context=None):
+            return [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "terminal__execute",
+                        "parameters": {
+                            "type": "object",
+                            "properties": {"command": {"type": "string"}},
+                            "required": ["command"],
+                        },
+                    },
+                }
+            ]
+
+        async def invoke_model(self, messages=None, message=None, **kwargs):
+            nonlocal captured_tools
+            captured_tools = kwargs["prepared_tools"]
+            arguments = {
+                "command": "make test",
+                "__aworld_execution_profile": {
+                    "horizon": "long",
+                    "confidence": 0.95,
+                    "milestone_count": 4,
+                    "expected_tool_actions": 12,
+                    "verification_required": True,
+                },
+            }
+            return ModelResponse(
+                id="profile-response",
+                model="offline",
+                content="",
+                tool_calls=[
+                    ToolCall(
+                        id="call-1",
+                        function=Function(
+                            name="terminal__execute",
+                            arguments=json.dumps(arguments),
+                        ),
+                    )
+                ],
+                finish_reason="tool_calls",
+                usage={"prompt_tokens": 1, "completion_tokens": 1},
+            )
+
+    context = Context(task_id="profile-production-path")
+    context.set_task(Task(id="profile-production-path", timeout=600))
+    policy = ExecutionProtocolPolicy(
+        mode=ProtocolMode.GUIDE,
+        activation_event_threshold=20,
+    )
+    agent = ProfileAgent(
+        name="Aworld",
+        conf=AgentConfig(
+            llm_provider="openai",
+            llm_model_name="offline",
+            llm_api_key="offline",
+        ),
+        execution_protocol_policy=policy,
+        max_loop_steps=0,
+    )
+    agent.skill_configs = {"long-running-agent": {"active": True}}
+    message = Message(category=Constants.AGENT, headers={"context": context})
+
+    result = await agent.async_policy(
+        Observation(content="complete the task"),
+        message=message,
+    )
+
+    assert captured_tools is not None
+    assert "__aworld_execution_profile" in captured_tools[0]["function"][
+        "parameters"
+    ]["properties"]
+    assert result[0].params == {"command": "make test"}
+    state = ExecutionProtocolStore(context, agent.id(), policy).load()
+    assert state.long_horizon_armed is True
 
 
 @pytest.mark.parametrize(

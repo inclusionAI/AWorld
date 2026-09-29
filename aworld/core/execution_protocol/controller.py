@@ -9,6 +9,7 @@ from .models import (
     ControllerDecision,
     DecisionReason,
     EventKind,
+    ExecutionHorizon,
     ExecutionProtocolEvent,
     ExecutionProtocolPolicy,
     ExecutionProtocolState,
@@ -90,6 +91,41 @@ def transition_execution_protocol(
 
     next_state = state.append_event(event, history_limit=policy.history_limit)
 
+    if event.kind is EventKind.MODEL_EXECUTION_PROFILE:
+        if state.model_execution_profile is not None:
+            return ProtocolTransition(
+                next_state,
+                _decision(
+                    ControllerAction.CONTINUE,
+                    DecisionReason.MODEL_PROFILE_ALREADY_RECORDED,
+                ),
+            )
+        profile = event.model_execution_profile
+        next_state = replace(next_state, model_execution_profile=profile)
+        credible_long = (
+            profile is not None
+            and profile.horizon is ExecutionHorizon.LONG
+            and profile.confidence
+            >= policy.model_activation_confidence_threshold
+            and (
+                profile.milestone_count
+                >= policy.model_activation_min_milestones
+                or profile.expected_tool_actions
+                >= policy.model_activation_min_tool_actions
+            )
+        )
+        if credible_long:
+            next_state = replace(next_state, long_horizon_armed=True)
+            reason = DecisionReason.MODEL_LONG_HORIZON
+        elif profile is not None and profile.horizon is ExecutionHorizon.SHORT:
+            reason = DecisionReason.MODEL_SHORT_HORIZON
+        else:
+            reason = DecisionReason.MODEL_PROFILE_INSUFFICIENT
+        return ProtocolTransition(
+            next_state,
+            _decision(ControllerAction.CONTINUE, reason),
+        )
+
     if event.kind is EventKind.TOOL_OBSERVATION:
         if _is_progress(event):
             next_state = replace(next_state, stagnant_observations=0)
@@ -105,7 +141,9 @@ def transition_execution_protocol(
 
         stagnant = _is_stagnant(next_state, event, policy)
         should_arm = (
-            next_state.event_count >= policy.activation_event_threshold or stagnant
+            next_state.tool_observation_count
+            >= policy.activation_event_threshold
+            or stagnant
         )
         if should_arm and not next_state.long_horizon_armed:
             next_state = replace(next_state, long_horizon_armed=True)

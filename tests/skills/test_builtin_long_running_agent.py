@@ -77,3 +77,13 @@ def test_long_running_agent_stages_its_referenced_guidance() -> None:
         "references/checkpoints-and-review.md",
         "references/execution-semantics.md",
     }
+
+
+def test_builtin_skill_requests_profile_only_with_a_real_tool_call() -> None:
+    skill = (get_builtin_skills_path() / "long-running-agent" / "SKILL.md").read_text(
+        encoding="utf-8"
+    )
+
+    assert "__aworld_execution_profile" in skill
+    assert "same real tool call" in skill
+    assert "Do not make a separate Tool call" in skill

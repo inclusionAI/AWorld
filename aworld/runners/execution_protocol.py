@@ -17,6 +17,7 @@ from aworld.core.execution_protocol import (
     ExecutionProtocolEvent,
     ExecutionProtocolPolicy,
     ExecutionProtocolStore,
+    ModelExecutionProfile,
     ProtocolMode,
     ProtocolTransition,
     ReviewOutcome,
@@ -27,6 +28,7 @@ EXECUTION_PROTOCOL_POLICY_KEY = "execution_protocol_policy"
 EXECUTION_PROTOCOL_PENDING_KEY = "execution_protocol_pending_guidance"
 EXECUTION_PROTOCOL_METRICS_KEY = "execution_protocol_metrics"
 EXECUTION_PROTOCOL_FALLBACK_KEY = "execution_protocol_candidate_fallback"
+EXECUTION_PROTOCOL_MODEL_PROFILE_KEY = "execution_protocol_model_profile_attempt"
 _MAX_FALLBACK_CHARS = 64_000
 
 
@@ -115,9 +117,18 @@ def _record_transition_metrics(context, transition: ProtocolTransition) -> None:
     action = transition.decision.action.value
     reason = transition.decision.reason.value
     metrics["event_count"] = transition.state.event_count
+    metrics["tool_observation_count"] = transition.state.tool_observation_count
     metrics["replan_count"] = transition.state.replan_count
     metrics["final_review_count"] = transition.state.final_review_count
     metrics["repair_count"] = transition.state.repair_count
+    metrics["long_horizon_armed"] = transition.state.long_horizon_armed
+    if transition.state.model_execution_profile is not None:
+        metrics["model_horizon"] = (
+            transition.state.model_execution_profile.horizon.value
+        )
+        metrics["model_confidence"] = (
+            transition.state.model_execution_profile.confidence
+        )
     metrics["last_action"] = action
     metrics["last_reason"] = reason
     metrics[f"action:{action}"] = int(metrics.get(f"action:{action}", 0) or 0) + 1
@@ -177,6 +188,63 @@ def record_tool_protocol_event(
             },
         )
     return transition
+
+
+def execution_protocol_accepts_model_profile(context, agent_id: str) -> bool:
+    """Return whether one optional model profile may still be offered."""
+    policy = execution_protocol_policy(context, agent_id)
+    if policy.mode is ProtocolMode.OFF:
+        return False
+    state = ExecutionProtocolStore(context, agent_id, policy).load()
+    return (
+        not state.long_horizon_armed
+        and state.model_execution_profile is None
+        and _read_runtime_value(
+            context,
+            agent_id,
+            EXECUTION_PROTOCOL_MODEL_PROFILE_KEY,
+        )
+        is None
+    )
+
+
+def record_model_execution_profile(
+    context,
+    agent_id: str,
+    value: Mapping[str, Any],
+) -> ProtocolTransition | None:
+    """Validate and record one content-free model activation assessment.
+
+    Malformed or repeated assessments fail open and never block ordinary Tool
+    execution. The attempt marker prevents a bad model response from injecting
+    the same control metadata on every later turn.
+    """
+    if not execution_protocol_accepts_model_profile(context, agent_id):
+        return None
+    try:
+        profile = ModelExecutionProfile.from_mapping(value)
+    except (TypeError, ValueError, KeyError):
+        _write_runtime_value(
+            context,
+            agent_id,
+            EXECUTION_PROTOCOL_MODEL_PROFILE_KEY,
+            {"status": "invalid"},
+        )
+        return None
+    _write_runtime_value(
+        context,
+        agent_id,
+        EXECUTION_PROTOCOL_MODEL_PROFILE_KEY,
+        {"status": "recorded"},
+    )
+    return _apply_event(
+        context,
+        agent_id,
+        ExecutionProtocolEvent(
+            kind=EventKind.MODEL_EXECUTION_PROFILE,
+            model_execution_profile=profile,
+        ),
+    )
 
 
 def consume_execution_protocol_guidance(context, agent_id: str) -> str | None:
@@ -359,15 +427,18 @@ def final_review_guidance(transition: ProtocolTransition | None) -> str | None:
 __all__ = [
     "EXECUTION_PROTOCOL_METRICS_KEY",
     "EXECUTION_PROTOCOL_FALLBACK_KEY",
+    "EXECUTION_PROTOCOL_MODEL_PROFILE_KEY",
     "EXECUTION_PROTOCOL_PENDING_KEY",
     "EXECUTION_PROTOCOL_POLICY_KEY",
     "configure_execution_protocol",
     "clear_candidate_fallback",
     "consume_execution_protocol_guidance",
     "execution_protocol_policy",
+    "execution_protocol_accepts_model_profile",
     "execution_protocol_requires_tool_free_finalization",
     "final_review_guidance",
     "record_candidate_final",
+    "record_model_execution_profile",
     "record_review_error",
     "record_review_tool_action",
     "record_tool_protocol_event",

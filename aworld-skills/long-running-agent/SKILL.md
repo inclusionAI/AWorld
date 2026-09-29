@@ -28,6 +28,23 @@ because this skill is enabled. Adopt the long-running workflow only when the
 runtime requests a checkpoint or final review, or when sustained dependent work
 actually needs a recoverable rolling plan.
 
+## Declare a long horizon without a separate turn
+
+When an actual Tool call exposes the optional
+`__aworld_execution_profile` parameter, use it only when you can make a
+high-confidence estimate from the task and current plan. Include the profile in
+the same real tool call that you already need; the runtime removes it before
+the Tool executes. Do not make a separate Tool call merely to classify the
+task, and do not delay useful work to produce the profile.
+
+Set `horizon` to `long` only for sustained dependent work, such as multiple
+milestones or an expected sequence of at least several Tool actions. Report a
+bounded estimate through `confidence`, `milestone_count`,
+`expected_tool_actions`, and `verification_required`. Use `short` or omit the
+profile when the work is direct or uncertain. This is an advisory planning
+assessment: the runtime may still arm from observed execution, stagnation, or
+the deadline reserve, and your declaration is not evidence of completion.
+
 ## Establish a rolling charter
 
 Restate the requested outcome as a compact working charter:

@@ -7,6 +7,7 @@ the numeric and boolean fields on :class:`ExecutionProtocolEvent`.
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field, replace
 from enum import Enum
 from typing import Any, ClassVar, Mapping
@@ -26,7 +27,13 @@ class ProtocolPhase(str, Enum):
     COMPLETE = "complete"
 
 
+class ExecutionHorizon(str, Enum):
+    SHORT = "short"
+    LONG = "long"
+
+
 class EventKind(str, Enum):
+    MODEL_EXECUTION_PROFILE = "model_execution_profile"
     TOOL_OBSERVATION = "tool_observation"
     REPLAN_APPLIED = "replan_applied"
     CANDIDATE_FINAL = "candidate_final"
@@ -57,6 +64,10 @@ class DecisionReason(str, Enum):
     DISABLED = "protocol_disabled"
     OBSERVATION_RECORDED = "observation_recorded"
     PROGRESS_OBSERVED = "progress_observed"
+    MODEL_LONG_HORIZON = "model_long_horizon"
+    MODEL_SHORT_HORIZON = "model_short_horizon"
+    MODEL_PROFILE_INSUFFICIENT = "model_profile_insufficient"
+    MODEL_PROFILE_ALREADY_RECORDED = "model_profile_already_recorded"
     STAGNATION_DETECTED = "stagnation_detected"
     REPLAN_LIMIT_REACHED = "replan_limit_reached"
     REPLAN_APPLIED = "replan_applied"
@@ -74,6 +85,80 @@ class DecisionReason(str, Enum):
 
 
 @dataclass(frozen=True, slots=True)
+class ModelExecutionProfile:
+    """Bounded, content-free model assessment from an ordinary Tool turn."""
+
+    horizon: ExecutionHorizon
+    confidence: float
+    milestone_count: int
+    expected_tool_actions: int
+    verification_required: bool
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.horizon, ExecutionHorizon):
+            try:
+                object.__setattr__(self, "horizon", ExecutionHorizon(self.horizon))
+            except (TypeError, ValueError) as exc:
+                raise ValueError("horizon must be short or long") from exc
+        if (
+            isinstance(self.confidence, bool)
+            or not isinstance(self.confidence, (int, float))
+            or not math.isfinite(self.confidence)
+            or not 0.0 <= float(self.confidence) <= 1.0
+        ):
+            raise ValueError("confidence must be finite and in the range [0, 1]")
+        object.__setattr__(self, "confidence", float(self.confidence))
+        for name, maximum in (
+            ("milestone_count", 64),
+            ("expected_tool_actions", 1024),
+        ):
+            value = getattr(self, name)
+            minimum = 1 if name == "milestone_count" else 0
+            if (
+                isinstance(value, bool)
+                or not isinstance(value, int)
+                or value < minimum
+                or value > maximum
+            ):
+                raise ValueError(
+                    f"{name} must be an integer in the range [{minimum}, {maximum}]"
+                )
+        if not isinstance(self.verification_required, bool):
+            raise ValueError("verification_required must be a boolean")
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "horizon": self.horizon.value,
+            "confidence": self.confidence,
+            "milestone_count": self.milestone_count,
+            "expected_tool_actions": self.expected_tool_actions,
+            "verification_required": self.verification_required,
+        }
+
+    @classmethod
+    def from_mapping(cls, value: Mapping[str, Any]) -> "ModelExecutionProfile":
+        if not isinstance(value, Mapping):
+            raise ValueError("model execution profile must be a mapping")
+        expected = {
+            "horizon",
+            "confidence",
+            "milestone_count",
+            "expected_tool_actions",
+            "verification_required",
+        }
+        unknown = set(value) - expected
+        if unknown:
+            raise ValueError("model execution profile contains unknown fields")
+        return cls(
+            horizon=value.get("horizon"),
+            confidence=value.get("confidence"),
+            milestone_count=value.get("milestone_count"),
+            expected_tool_actions=value.get("expected_tool_actions"),
+            verification_required=value.get("verification_required"),
+        )
+
+
+@dataclass(frozen=True, slots=True)
 class ExecutionProtocolPolicy:
     """Validated limits for one task-scoped execution protocol."""
 
@@ -82,6 +167,9 @@ class ExecutionProtocolPolicy:
     mode: ProtocolMode = ProtocolMode.OFF
     history_limit: int = 32
     activation_event_threshold: int = 6
+    model_activation_confidence_threshold: float = 0.7
+    model_activation_min_milestones: int = 2
+    model_activation_min_tool_actions: int = 6
     stagnation_event_threshold: int = 6
     repetition_threshold: int = 3
     low_information_gain_threshold: int = 3
@@ -101,6 +189,8 @@ class ExecutionProtocolPolicy:
         for name in (
             "history_limit",
             "activation_event_threshold",
+            "model_activation_min_milestones",
+            "model_activation_min_tool_actions",
             "stagnation_event_threshold",
             "repetition_threshold",
             "low_information_gain_threshold",
@@ -111,6 +201,21 @@ class ExecutionProtocolPolicy:
                 raise ValueError(f"{name} must be a positive integer")
         if self.history_limit > 256:
             raise ValueError("history_limit must not exceed 256")
+        if self.model_activation_min_milestones > 64:
+            raise ValueError("model_activation_min_milestones must not exceed 64")
+        if self.model_activation_min_tool_actions > 1024:
+            raise ValueError("model_activation_min_tool_actions must not exceed 1024")
+        confidence = self.model_activation_confidence_threshold
+        if (
+            isinstance(confidence, bool)
+            or not isinstance(confidence, (int, float))
+            or not math.isfinite(confidence)
+            or not 0.0 <= float(confidence) <= 1.0
+        ):
+            raise ValueError(
+                "model_activation_confidence_threshold must be finite and in "
+                "the range [0, 1]"
+            )
         for name in ("max_replans", "max_final_reviews", "max_repairs"):
             value = getattr(self, name)
             if isinstance(value, bool) or not isinstance(value, int) or value < 0:
@@ -145,6 +250,13 @@ class ExecutionProtocolPolicy:
             "mode": self.mode.value,
             "history_limit": self.history_limit,
             "activation_event_threshold": self.activation_event_threshold,
+            "model_activation_confidence_threshold": (
+                self.model_activation_confidence_threshold
+            ),
+            "model_activation_min_milestones": self.model_activation_min_milestones,
+            "model_activation_min_tool_actions": (
+                self.model_activation_min_tool_actions
+            ),
             "stagnation_event_threshold": self.stagnation_event_threshold,
             "repetition_threshold": self.repetition_threshold,
             "low_information_gain_threshold": self.low_information_gain_threshold,
@@ -168,6 +280,15 @@ class ExecutionProtocolPolicy:
             # Additive v1 field: older serialized v1 policies use the safe
             # short-task bypass default when restored.
             activation_event_threshold=value.get("activation_event_threshold", 6),
+            model_activation_confidence_threshold=value.get(
+                "model_activation_confidence_threshold", 0.7
+            ),
+            model_activation_min_milestones=value.get(
+                "model_activation_min_milestones", 2
+            ),
+            model_activation_min_tool_actions=value.get(
+                "model_activation_min_tool_actions", 6
+            ),
             stagnation_event_threshold=value.get("stagnation_event_threshold"),
             repetition_threshold=value.get("repetition_threshold"),
             low_information_gain_threshold=value.get("low_information_gain_threshold"),
@@ -243,6 +364,7 @@ class ExecutionProtocolEvent:
     operation_hash: str | None = None
     result_hash: str | None = None
     review_outcome: ReviewOutcome | None = None
+    model_execution_profile: ModelExecutionProfile | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.kind, EventKind):
@@ -288,6 +410,26 @@ class ExecutionProtocolEvent:
             raise ValueError("review_result requires review_outcome")
         if self.kind is not EventKind.REVIEW_RESULT and self.review_outcome is not None:
             raise ValueError("review_outcome is valid only for review_result")
+        if (
+            self.kind is EventKind.MODEL_EXECUTION_PROFILE
+            and self.model_execution_profile is None
+        ):
+            raise ValueError(
+                "model_execution_profile event requires model_execution_profile"
+            )
+        if (
+            self.kind is not EventKind.MODEL_EXECUTION_PROFILE
+            and self.model_execution_profile is not None
+        ):
+            raise ValueError(
+                "model_execution_profile is valid only for model_execution_profile events"
+            )
+        if self.model_execution_profile is not None and not isinstance(
+            self.model_execution_profile, ModelExecutionProfile
+        ):
+            raise ValueError(
+                "model_execution_profile must be ModelExecutionProfile or None"
+            )
 
     def to_record(self, sequence: int) -> "ProtocolEventRecord":
         return ProtocolEventRecord(
@@ -304,6 +446,7 @@ class ExecutionProtocolEvent:
             operation_hash=self.operation_hash,
             result_hash=self.result_hash,
             review_outcome=self.review_outcome,
+            model_execution_profile=self.model_execution_profile,
         )
 
 
@@ -322,6 +465,7 @@ class ProtocolEventRecord:
     operation_hash: str | None = None
     result_hash: str | None = None
     review_outcome: ReviewOutcome | None = None
+    model_execution_profile: ModelExecutionProfile | None = None
 
     def __post_init__(self) -> None:
         for name in (
@@ -358,6 +502,24 @@ class ProtocolEventRecord:
             raise ValueError("review_result record requires review_outcome")
         if self.kind is not EventKind.REVIEW_RESULT and self.review_outcome is not None:
             raise ValueError("review_outcome is valid only for review_result records")
+        if (
+            self.kind is EventKind.MODEL_EXECUTION_PROFILE
+            and self.model_execution_profile is None
+        ):
+            raise ValueError(
+                "model_execution_profile record requires model_execution_profile"
+            )
+        if (
+            self.kind is not EventKind.MODEL_EXECUTION_PROFILE
+            and self.model_execution_profile is not None
+        ):
+            raise ValueError(
+                "model_execution_profile is valid only for model profile records"
+            )
+        if self.model_execution_profile is not None and not isinstance(
+            self.model_execution_profile, ModelExecutionProfile
+        ):
+            raise ValueError("record model_execution_profile has invalid type")
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -376,11 +538,17 @@ class ProtocolEventRecord:
             "review_outcome": self.review_outcome.value
             if self.review_outcome
             else None,
+            "model_execution_profile": (
+                self.model_execution_profile.to_dict()
+                if self.model_execution_profile is not None
+                else None
+            ),
         }
 
     @classmethod
     def from_dict(cls, value: Mapping[str, Any]) -> "ProtocolEventRecord":
         outcome = value.get("review_outcome")
+        profile = value.get("model_execution_profile")
         return cls(
             sequence=_non_negative_int(value.get("sequence"), "sequence"),
             kind=EventKind(value.get("kind")),
@@ -403,6 +571,11 @@ class ProtocolEventRecord:
             operation_hash=value.get("operation_hash"),
             result_hash=value.get("result_hash"),
             review_outcome=ReviewOutcome(outcome) if outcome is not None else None,
+            model_execution_profile=(
+                ModelExecutionProfile.from_mapping(profile)
+                if profile is not None
+                else None
+            ),
         )
 
 
@@ -414,6 +587,7 @@ class ExecutionProtocolState:
     phase: ProtocolPhase = ProtocolPhase.EXECUTE
     revision: int = 0
     event_count: int = 0
+    tool_observation_count: int = 0
     attempt_epoch: int = 0
     stagnant_observations: int = 0
     replan_count: int = 0
@@ -424,6 +598,7 @@ class ExecutionProtocolState:
     review_pending: bool = False
     finalization_entered: bool = False
     long_horizon_armed: bool = False
+    model_execution_profile: ModelExecutionProfile | None = None
     history: tuple[ProtocolEventRecord, ...] = field(default_factory=tuple)
 
     def __post_init__(self) -> None:
@@ -437,6 +612,7 @@ class ExecutionProtocolState:
         for name in (
             "revision",
             "event_count",
+            "tool_observation_count",
             "attempt_epoch",
             "stagnant_observations",
             "replan_count",
@@ -459,6 +635,12 @@ class ExecutionProtocolState:
             isinstance(item, ProtocolEventRecord) for item in self.history
         ):
             raise ValueError("history must contain protocol event records")
+        if self.model_execution_profile is not None and not isinstance(
+            self.model_execution_profile, ModelExecutionProfile
+        ):
+            raise ValueError(
+                "model_execution_profile must be ModelExecutionProfile or None"
+            )
         if self.history:
             sequences = tuple(item.sequence for item in self.history)
             if sequences != tuple(range(sequences[0], sequences[0] + len(sequences))):
@@ -478,6 +660,11 @@ class ExecutionProtocolState:
             self,
             revision=self.revision + 1,
             event_count=self.event_count + 1,
+            tool_observation_count=(
+                self.tool_observation_count + 1
+                if event.kind is EventKind.TOOL_OBSERVATION
+                else self.tool_observation_count
+            ),
             history=(*self.history, record)[-history_limit:],
         )
 
@@ -491,6 +678,7 @@ class ExecutionProtocolState:
             "phase": self.phase.value,
             "revision": self.revision,
             "event_count": self.event_count,
+            "tool_observation_count": self.tool_observation_count,
             "attempt_epoch": self.attempt_epoch,
             "stagnant_observations": self.stagnant_observations,
             "replan_count": self.replan_count,
@@ -501,6 +689,11 @@ class ExecutionProtocolState:
             "review_pending": self.review_pending,
             "finalization_entered": self.finalization_entered,
             "long_horizon_armed": self.long_horizon_armed,
+            "model_execution_profile": (
+                self.model_execution_profile.to_dict()
+                if self.model_execution_profile is not None
+                else None
+            ),
             "history": [item.to_dict() for item in self.history],
         }
 
@@ -511,11 +704,17 @@ class ExecutionProtocolState:
         history = value.get("history", [])
         if not isinstance(history, list):
             raise ValueError("history must be a list")
+        profile = value.get("model_execution_profile")
+        event_count = _non_negative_int(value.get("event_count"), "event_count")
         return cls(
             scope=ProtocolScope.from_dict(value.get("scope", {})),
             phase=ProtocolPhase(value.get("phase")),
             revision=_non_negative_int(value.get("revision"), "revision"),
-            event_count=_non_negative_int(value.get("event_count"), "event_count"),
+            event_count=event_count,
+            tool_observation_count=_non_negative_int(
+                value.get("tool_observation_count", event_count),
+                "tool_observation_count",
+            ),
             attempt_epoch=_non_negative_int(
                 value.get("attempt_epoch", 0), "attempt_epoch"
             ),
@@ -538,6 +737,11 @@ class ExecutionProtocolState:
             review_pending=value.get("review_pending", False),
             finalization_entered=value.get("finalization_entered", False),
             long_horizon_armed=value.get("long_horizon_armed", False),
+            model_execution_profile=(
+                ModelExecutionProfile.from_mapping(profile)
+                if profile is not None
+                else None
+            ),
             history=tuple(ProtocolEventRecord.from_dict(item) for item in history),
         )
 
@@ -560,8 +764,10 @@ __all__ = [
     "DecisionReason",
     "EventKind",
     "ExecutionProtocolEvent",
+    "ExecutionHorizon",
     "ExecutionProtocolPolicy",
     "ExecutionProtocolState",
+    "ModelExecutionProfile",
     "ProtocolEventRecord",
     "ProtocolMode",
     "ProtocolPhase",
