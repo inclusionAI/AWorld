@@ -102,6 +102,17 @@ def test_paddle_ocr_label_exports_text_without_changing_parser_geometry() -> Non
     }
 
 
+def test_exports_orientation_and_provider_confidence() -> None:
+    ir = _real_provider_ir()
+    ir["pages"][0]["original_orientation_angle"] = 270
+    ir["pages"][0]["elements"][0]["confidence"] = 0.87
+
+    page = _export(ir)["layout_pages"][0]
+
+    assert page["original_orientation_angle"] == 270
+    assert page["items"][1]["bbox"]["confidence"] == pytest.approx(0.87)
+
+
 def test_noncontiguous_pages_and_missing_reading_order_keep_source_identity() -> None:
     ir = _real_provider_ir()
     page = ir["pages"][0]
@@ -157,6 +168,7 @@ def test_empty_real_pages_and_items_remain_empty(schema: str) -> None:
         lambda ir: ir["pages"][0]["elements"][0].update(text=None),
         lambda ir: ir["pages"][0]["elements"][0].update(reading_order=1.5),
         lambda ir: ir["pages"][0]["elements"][0].update(confidence=1.1),
+        lambda ir: ir["pages"][0].update(original_orientation_angle=45),
     ],
 )
 def test_invalid_ir_is_rejected_without_guessed_geometry(mutate) -> None:

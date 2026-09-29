@@ -33,6 +33,7 @@ class TextLayerSpan:
     bold: bool
     italic: bool
     heading_level: int | None = None
+    script: str | None = None
 
     def to_document_ir(self) -> dict[str, Any]:
         payload = asdict(self)
@@ -132,11 +133,55 @@ def overlay_text_layer_formatting(
     )
     for span in ordered:
         text = _clean_text(span.text)
-        if len(text) < 2:
+        if len(text) < 2 and span.script is None:
             continue
         if span.heading_level is not None:
             updated = _promote_matching_line(updated, text, span.heading_level)
-        updated = _wrap_first_plain_occurrence(updated, text, bold=span.bold, italic=span.italic)
+        updated = _wrap_first_plain_occurrence(
+            updated,
+            text,
+            bold=span.bold,
+            italic=span.italic,
+            script=span.script,
+        )
+    return updated
+
+
+def overlay_document_ir_semantics(markdown: str, document_ir: dict[str, Any]) -> str:
+    """Recover block-level headings and lists from native layout labels.
+
+    Paddle's layout detector often identifies a title or list item correctly
+    even when the recognition model emits the block as plain text.  Promote
+    only exact, single-line matches so layout evidence can restore Markdown
+    semantics without rewriting text or trusting verbose VLM descriptions.
+    """
+
+    pages = document_ir.get("pages")
+    if not isinstance(pages, list) or not markdown.strip():
+        return markdown
+
+    updated = markdown
+    for page in pages:
+        if not isinstance(page, dict):
+            continue
+        elements = page.get("elements")
+        if not isinstance(elements, list):
+            continue
+        for element in elements:
+            if not isinstance(element, dict):
+                continue
+            text = _clean_text(str(element.get("text") or ""))
+            if not text or len(text) > 240 or "\n" in str(element.get("text") or ""):
+                continue
+            label = "-".join(
+                str(element.get("type") or "").strip().lower().replace("_", " ").split()
+            )
+            if label in {"title", "doc-title"}:
+                updated = _promote_matching_line(updated, text, 1)
+            elif label in {"section-header", "paragraph-title", "heading"}:
+                updated = _promote_matching_line(updated, text, 2)
+            elif label in {"list-item", "list-items"}:
+                updated = _promote_matching_list_item(updated, text)
     return updated
 
 
@@ -150,7 +195,12 @@ def render_text_layer_markdown(pages: list[list[TextLayerSpan]]) -> str:
             text = span.text
             if not text.strip():
                 continue
-            styled = _style_text(text.strip(), bold=span.bold, italic=span.italic)
+            styled = _style_text(
+                text.strip(),
+                bold=span.bold,
+                italic=span.italic,
+                script=span.script,
+            )
             if span.heading_level is not None:
                 styled = f"{'#' * span.heading_level} {styled}"
             chunks.append(styled)
@@ -186,8 +236,9 @@ def _assign_heading_levels(spans: list[TextLayerSpan]) -> list[TextLayerSpan]:
         reverse=True,
     )[:6]
     level_by_size = {size: index + 1 for index, size in enumerate(candidates)}
+    scripts = _infer_scripts(spans, body_size)
     output: list[TextLayerSpan] = []
-    for span in spans:
+    for index, span in enumerate(spans):
         level = level_by_size.get(round(span.font_size, 1))
         output.append(
             TextLayerSpan(
@@ -200,9 +251,53 @@ def _assign_heading_levels(spans: list[TextLayerSpan]) -> list[TextLayerSpan]:
                 bold=span.bold,
                 italic=span.italic,
                 heading_level=level,
+                script=scripts.get(index),
             )
         )
     return output
+
+
+def _infer_scripts(
+    spans: list[TextLayerSpan], body_size: float
+) -> dict[int, str]:
+    """Infer high-confidence super/subscript spans from PDF baselines.
+
+    The inference is intentionally conservative: a candidate must be smaller
+    than body text, horizontally adjacent to a larger span, and vertically
+    displaced by a meaningful fraction of the neighbouring font size.
+    """
+
+    scripts: dict[int, str] = {}
+    if body_size <= 0:
+        return scripts
+    for index, span in enumerate(spans):
+        if (
+            not span.text.strip()
+            or span.font_size <= 0
+            or span.font_size > body_size * 0.82
+            or len(_clean_text(span.text)) > 12
+        ):
+            continue
+        best: tuple[float, TextLayerSpan] | None = None
+        for other_index, other in enumerate(spans):
+            if other_index == index or other.font_size < span.font_size * 1.2:
+                continue
+            estimated_width = max(len(_clean_text(other.text)), 1) * other.font_size * 0.55
+            horizontal_gap = min(
+                abs(span.x - (other.x + estimated_width)),
+                abs(other.x - (span.x + max(len(_clean_text(span.text)), 1) * span.font_size * 0.55)),
+            )
+            if horizontal_gap > max(other.font_size * 1.5, 18.0):
+                continue
+            vertical_delta = span.y - other.y
+            if not other.font_size * 0.18 <= abs(vertical_delta) <= other.font_size * 0.9:
+                continue
+            distance = horizontal_gap + abs(vertical_delta)
+            if best is None or distance < best[0]:
+                best = (distance, other)
+        if best is not None:
+            scripts[index] = "superscript" if span.y > best[1].y else "subscript"
+    return scripts
 
 
 def _font_descriptor(font: dict[str, Any]) -> dict[str, Any]:
@@ -230,14 +325,26 @@ def _is_effectively_empty(markdown: str) -> bool:
     return not lines or all(_AUTOGENERATED_TITLE_RE.match(line) for line in lines)
 
 
-def _style_text(text: str, *, bold: bool, italic: bool) -> str:
+def _style_text(
+    text: str,
+    *,
+    bold: bool,
+    italic: bool,
+    script: str | None = None,
+) -> str:
     if bold and italic:
-        return f"***{text}***"
-    if bold:
-        return f"**{text}**"
-    if italic:
-        return f"*{text}*"
-    return text
+        styled = f"***{text}***"
+    elif bold:
+        styled = f"**{text}**"
+    elif italic:
+        styled = f"*{text}*"
+    else:
+        styled = text
+    if script == "superscript":
+        return f"<sup>{styled}</sup>"
+    if script == "subscript":
+        return f"<sub>{styled}</sub>"
+    return styled
 
 
 def _flexible_pattern(text: str) -> re.Pattern[str]:
@@ -267,13 +374,44 @@ def _promote_matching_line(markdown: str, text: str, level: int) -> str:
     return markdown
 
 
-def _wrap_first_plain_occurrence(markdown: str, text: str, *, bold: bool, italic: bool) -> str:
-    if not bold and not italic:
+def _promote_matching_list_item(markdown: str, text: str) -> str:
+    normalized = text.casefold()
+    lines = markdown.splitlines()
+    for index, line in enumerate(lines):
+        plain = re.sub(r"<[^>]+>|[*_~`]", "", line)
+        plain = re.sub(r"^\s*(?:[-+*•‣▪◦]|\d+[.)])\s+", "", plain)
+        if _clean_text(plain).casefold() != normalized:
+            continue
+        if re.match(r"^\s*(?:[-+*]|\d+[.)])\s+", line):
+            return markdown
+        content = re.sub(r"^\s*[•‣▪◦]\s*", "", line).strip()
+        lines[index] = f"- {content}"
+        return "\n".join(lines)
+    return markdown
+
+
+def _wrap_first_plain_occurrence(
+    markdown: str,
+    text: str,
+    *,
+    bold: bool,
+    italic: bool,
+    script: str | None = None,
+) -> str:
+    if not bold and not italic and script is None:
         return markdown
-    if sum(character.isalnum() for character in text) < 3:
+    alnum_count = sum(character.isalnum() for character in text)
+    if alnum_count < 3 and script is None:
         return markdown
-    pattern = _flexible_pattern(text)
-    for match in pattern.finditer(markdown):
+    pattern = (
+        re.compile(re.escape(text), re.IGNORECASE)
+        if script is not None and alnum_count < 3
+        else _flexible_pattern(text)
+    )
+    matches = list(pattern.finditer(markdown))
+    if script is not None and alnum_count < 3 and len(matches) != 1:
+        return markdown
+    for match in matches:
         line_start = markdown.rfind("\n", 0, match.start()) + 1
         line_end = markdown.find("\n", match.end())
         if line_end < 0:
@@ -292,6 +430,8 @@ def _wrap_first_plain_occurrence(markdown: str, text: str, *, bold: bool, italic
         after = markdown[match.end() : match.end() + 4]
         if "**" in before or "**" in after or before.endswith("*") or after.startswith("*"):
             continue
-        replacement = _style_text(match.group(0), bold=bold, italic=italic)
+        replacement = _style_text(
+            match.group(0), bold=bold, italic=italic, script=script
+        )
         return markdown[: match.start()] + replacement + markdown[match.end() :]
     return markdown

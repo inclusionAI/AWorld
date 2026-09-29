@@ -86,6 +86,19 @@ def _index(value: object, field: str) -> int:
     return value
 
 
+def _orientation(value: object) -> int:
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ParseOutputExportError(
+            "original_orientation_angle must be 0, 90, 180, or 270"
+        )
+    normalized = value % 360
+    if normalized not in {0, 90, 180, 270}:
+        raise ParseOutputExportError(
+            "original_orientation_angle must be 0, 90, 180, or 270"
+        )
+    return normalized
+
+
 def _text(value: object, field: str) -> str:
     if not isinstance(value, str):
         raise ParseOutputExportError(f"{field} must be a string")
@@ -210,6 +223,9 @@ def document_ir_to_parse_output(
             if len(raw_pages) == 1
             else _text(raw_page.get("markdown", page_text), "page markdown")
         )
+        orientation = raw_page.get("original_orientation_angle")
+        if orientation is not None:
+            orientation = _orientation(orientation)
         pages.append({"page_index": page_index, "markdown": page_markdown})
         layout_pages.append(
             {
@@ -219,6 +235,11 @@ def document_ir_to_parse_output(
                 "md": page_markdown,
                 "text": page_text,
                 "items": items,
+                **(
+                    {"original_orientation_angle": orientation}
+                    if orientation is not None
+                    else {}
+                ),
             }
         )
     pages.sort(key=lambda page: page["page_index"])

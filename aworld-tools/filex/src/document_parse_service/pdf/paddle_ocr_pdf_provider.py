@@ -6,6 +6,7 @@ import asyncio
 import importlib.metadata
 import json
 import logging
+import math
 import os
 import re
 import threading
@@ -20,6 +21,7 @@ from ..paths import DOCUMENT_PARSE_WORKSPACE
 from .text_layer_formatting import (
     document_ir_spans,
     extract_text_layer_spans,
+    overlay_document_ir_semantics,
     overlay_text_layer_formatting,
 )
 
@@ -137,9 +139,13 @@ class PaddleOcrPdfProvider:
         markdown_text = self._concatenate_markdown(pipeline, markdown_parts)
         text_layer_pages = (
             extract_text_layer_spans(file_path)
-            if self._bool_option("text_layer_formatting", False)
+            if self._bool_option("text_layer_formatting", True)
             else []
         )
+        document_ir = self._build_document_ir(
+            raw_results, text_layer_pages=text_layer_pages
+        )
+        markdown_text = overlay_document_ir_semantics(markdown_text, document_ir)
         if text_layer_pages:
             markdown_text = overlay_text_layer_formatting(
                 markdown_text, text_layer_pages
@@ -149,10 +155,6 @@ class PaddleOcrPdfProvider:
             task_id=task_id,
             source_file_name=source_file_name,
         )
-        document_ir = self._build_document_ir(
-            raw_results, text_layer_pages=text_layer_pages
-        )
-
         return PaddleOcrPdfResult(
             provider="paddle_ocr",
             tool="paddleocr_vl",
@@ -222,6 +224,8 @@ class PaddleOcrPdfProvider:
         for fallback_index, result in enumerate(raw_results):
             payload = cls._json_payload(result)
             elements: list[dict[str, Any]] = []
+            detections = cls._layout_detections(payload)
+            matched_detections: set[int] = set()
             blocks = payload.get("parsing_res_list")
             if not isinstance(blocks, list):
                 blocks = []
@@ -235,9 +239,21 @@ class PaddleOcrPdfProvider:
                     normalized_bbox = [float(value) for value in bbox]
                 except (TypeError, ValueError):
                     continue
+                detection_index = cls._best_layout_detection(
+                    block,
+                    normalized_bbox,
+                    detections,
+                    excluded=matched_detections,
+                )
+                detection = (
+                    detections[detection_index]
+                    if detection_index is not None
+                    else None
+                )
+                if detection_index is not None:
+                    matched_detections.add(detection_index)
                 order = block.get("block_order")
-                elements.append(
-                    {
+                element = {
                         "id": str(
                             block.get("global_block_id")
                             or block.get("block_id")
@@ -251,15 +267,43 @@ class PaddleOcrPdfProvider:
                             block.get("block_content") or block.get("content") or ""
                         ),
                         "reading_order": (
-                            int(order) if isinstance(order, (int, float)) else None
+                            int(order)
+                            if isinstance(order, (int, float))
+                            else (
+                                int(detection["order"])
+                                if detection is not None
+                                and isinstance(detection.get("order"), (int, float))
+                                else None
+                            )
                         ),
                         "group_id": block.get("global_group_id")
                         or block.get("group_id"),
                     }
-                )
+                confidence = cls._block_confidence(block, detection)
+                if confidence is not None:
+                    element["confidence"] = confidence
+                elements.append(element)
+            for detection_index, detection in enumerate(detections):
+                if detection_index in matched_detections:
+                    continue
+                label = str(detection.get("label") or "").strip()
+                if not cls._exportable_layout_label(label):
+                    continue
+                order = detection.get("order")
+                element = {
+                    "id": str(detection.get("id") or f"p{fallback_index}-d{detection_index + 1}"),
+                    "type": label,
+                    "bbox": list(detection["bbox"]),
+                    "text": "",
+                    "reading_order": int(order) if isinstance(order, (int, float)) else None,
+                    "group_id": None,
+                }
+                confidence = cls._block_confidence({}, detection)
+                if confidence is not None:
+                    element["confidence"] = confidence
+                elements.append(element)
             page_index = payload.get("page_index")
-            pages.append(
-                {
+            page = {
                     "page_index": (
                         int(page_index)
                         if isinstance(page_index, (int, float))
@@ -270,12 +314,146 @@ class PaddleOcrPdfProvider:
                     "elements": elements,
                     "spans": document_ir_spans(text_layer_pages or [], fallback_index),
                 }
-            )
+            orientation = cls._original_orientation_angle(payload)
+            if orientation is not None:
+                page["original_orientation_angle"] = orientation
+            pages.append(page)
         return {
             "schema_version": "filex-document-ir-v2",
             "coordinate_system": "pixel_top_left_xyxy",
             "pages": pages,
         }
+
+    @staticmethod
+    def _layout_detections(payload: dict[str, Any]) -> list[dict[str, Any]]:
+        layout = payload.get("layout_det_res")
+        boxes = layout.get("boxes") if isinstance(layout, dict) else None
+        if not isinstance(boxes, list):
+            return []
+        detections: list[dict[str, Any]] = []
+        for index, box in enumerate(boxes):
+            if not isinstance(box, dict):
+                continue
+            coordinates = box.get("coordinate") or box.get("bbox") or box.get("box")
+            if not isinstance(coordinates, (list, tuple)) or len(coordinates) != 4:
+                continue
+            try:
+                bbox = [float(value) for value in coordinates]
+            except (TypeError, ValueError):
+                continue
+            if (
+                not all(math.isfinite(value) for value in bbox)
+                or bbox[2] <= bbox[0]
+                or bbox[3] <= bbox[1]
+            ):
+                continue
+            detections.append(
+                {
+                    "id": box.get("id") or box.get("block_id") or f"layout-{index + 1}",
+                    "label": str(box.get("label") or ""),
+                    "bbox": bbox,
+                    "score": box.get("score"),
+                    "order": box.get("order"),
+                }
+            )
+        return detections
+
+    @classmethod
+    def _best_layout_detection(
+        cls,
+        block: dict[str, Any],
+        bbox: list[float],
+        detections: list[dict[str, Any]],
+        *,
+        excluded: set[int],
+    ) -> int | None:
+        block_label = cls._normalized_layout_label(
+            str(block.get("block_label") or block.get("label") or "")
+        )
+        best_index: int | None = None
+        best_score = 0.0
+        for index, detection in enumerate(detections):
+            if index in excluded:
+                continue
+            detection_label = cls._normalized_layout_label(
+                str(detection.get("label") or "")
+            )
+            if block_label and detection_label and block_label != detection_label:
+                continue
+            overlap = cls._bbox_iou(bbox, detection["bbox"])
+            if overlap > best_score:
+                best_index = index
+                best_score = overlap
+        return best_index if best_score >= 0.5 else None
+
+    @staticmethod
+    def _bbox_iou(left: list[float], right: list[float]) -> float:
+        intersection_width = max(0.0, min(left[2], right[2]) - max(left[0], right[0]))
+        intersection_height = max(0.0, min(left[3], right[3]) - max(left[1], right[1]))
+        intersection = intersection_width * intersection_height
+        if intersection <= 0:
+            return 0.0
+        left_area = (left[2] - left[0]) * (left[3] - left[1])
+        right_area = (right[2] - right[0]) * (right[3] - right[1])
+        union = left_area + right_area - intersection
+        return intersection / union if union > 0 else 0.0
+
+    @staticmethod
+    def _normalized_layout_label(label: str) -> str:
+        normalized = "-".join(label.strip().lower().replace("_", " ").split())
+        aliases = {
+            "doc-title": "title",
+            "paragraph-title": "section-header",
+            "heading": "section-header",
+            "image": "picture",
+            "chart": "picture",
+            "header-image": "page-header",
+            "footer-image": "page-footer",
+        }
+        return aliases.get(normalized, normalized)
+
+    @classmethod
+    def _exportable_layout_label(cls, label: str) -> bool:
+        return cls._normalized_layout_label(label) in {
+            "caption", "footnote", "formula", "list-item", "page-footer",
+            "page-header", "picture", "section-header", "table", "text",
+            "title", "document-index", "code", "checkbox-selected",
+            "checkbox-unselected", "form", "key-value-region", "seal",
+            "ocr", "content", "abstract", "reference", "reference-content",
+            "aside-text", "vertical-text", "number", "formula-number",
+        }
+
+    @staticmethod
+    def _block_confidence(
+        block: dict[str, Any], detection: dict[str, Any] | None
+    ) -> float | None:
+        values = (
+            block.get("confidence"),
+            block.get("score"),
+            block.get("block_score"),
+            detection.get("score") if detection is not None else None,
+        )
+        for value in values:
+            if isinstance(value, (int, float)) and not isinstance(value, bool):
+                confidence = float(value)
+                if 0.0 <= confidence <= 1.0:
+                    return confidence
+        return None
+
+    @staticmethod
+    def _original_orientation_angle(payload: dict[str, Any]) -> int | None:
+        preprocessing = payload.get("doc_preprocessor_res")
+        if not isinstance(preprocessing, dict):
+            return None
+        angle = preprocessing.get("angle")
+        if isinstance(angle, (int, float)) and not isinstance(angle, bool):
+            numeric = float(angle)
+            if not math.isfinite(numeric) or not numeric.is_integer():
+                return None
+            normalized = int(numeric) % 360
+            if normalized in {0, 90, 180, 270}:
+                return normalized
+        return None
 
     @staticmethod
     def _json_payload(result: Any) -> dict[str, Any]:
@@ -465,6 +643,9 @@ class PaddleOcrPdfProvider:
             # Match the service path: recognize chart data instead of emitting
             # only a cropped image under PaddleOCR-VL's disabled default.
             "use_chart_recognition": True,
+            "use_layout_detection": True,
+            "use_ocr_for_image_block": True,
+            "format_block_content": True,
         }
         for key in (
             "pipeline_version",
@@ -756,7 +937,12 @@ class PaddleOcrPdfProvider:
         return min(max_ms, base_ms * (2 ** max(0, retry_count - 1)))
 
     def _predict_kwargs(self) -> dict[str, Any]:
-        kwargs: dict[str, Any] = {"use_chart_recognition": True}
+        kwargs: dict[str, Any] = {
+            "use_chart_recognition": True,
+            "use_layout_detection": True,
+            "use_ocr_for_image_block": True,
+            "format_block_content": True,
+        }
         for key in (
             "use_doc_orientation_classify",
             "use_doc_unwarping",

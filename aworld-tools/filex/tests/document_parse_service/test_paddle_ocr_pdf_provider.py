@@ -216,6 +216,80 @@ def test_paddle_ocr_preserves_page_element_geometry() -> None:
     }
 
 
+def test_paddle_ocr_preserves_layout_detection_confidence_and_unrecognized_regions() -> None:
+    module = _load_provider_module()
+    document_ir = module.PaddleOcrPdfProvider._build_document_ir(
+        [
+            {
+                "page_index": 0,
+                "width": 800,
+                "height": 600,
+                "parsing_res_list": [
+                    {
+                        "block_label": "title",
+                        "block_content": "Quarterly report",
+                        "block_bbox": [40, 30, 500, 90],
+                    }
+                ],
+                "layout_det_res": {
+                    "boxes": [
+                        {
+                            "label": "doc_title",
+                            "score": 0.94,
+                            "coordinate": [40, 30, 500, 90],
+                            "order": 1,
+                        },
+                        {
+                            "label": "image",
+                            "score": 0.88,
+                            "coordinate": [520, 120, 760, 420],
+                            "order": 2,
+                        },
+                    ]
+                },
+                "doc_preprocessor_res": {"angle": 90},
+            }
+        ]
+    )
+
+    page = document_ir["pages"][0]
+    assert page["original_orientation_angle"] == 90
+    assert page["elements"][0]["confidence"] == pytest.approx(0.94)
+    assert page["elements"][0]["reading_order"] == 1
+    assert page["elements"][1] == {
+        "id": "layout-2",
+        "type": "image",
+        "bbox": [520.0, 120.0, 760.0, 420.0],
+        "text": "",
+        "reading_order": 2,
+        "group_id": None,
+        "confidence": pytest.approx(0.88),
+    }
+
+
+def test_layout_metadata_rejects_nonfinite_boxes_and_fractional_orientation() -> None:
+    provider = _load_provider_module().PaddleOcrPdfProvider
+
+    assert provider._layout_detections(
+        {
+            "layout_det_res": {
+                "boxes": [
+                    {
+                        "label": "text",
+                        "coordinate": [0, 0, float("nan"), 20],
+                    }
+                ]
+            }
+        }
+    ) == []
+    assert provider._original_orientation_angle(
+        {"doc_preprocessor_res": {"angle": 90.5}}
+    ) is None
+    assert provider._original_orientation_angle(
+        {"doc_preprocessor_res": {"angle": float("inf")}}
+    ) is None
+
+
 @pytest.mark.parametrize(
     ("env_content", "runtime_value", "expected"),
     [
@@ -446,6 +520,107 @@ def test_text_layer_formatting_keeps_scanned_markdown_unchanged() -> None:
     formatting = sys.modules[f"{module.__package__}.pdf.text_layer_formatting"]
 
     assert formatting.overlay_text_layer_formatting("OCR only", [[]]) == "OCR only"
+
+
+def test_layout_semantics_restore_titles_and_lists_without_rewriting_text() -> None:
+    module = _load_provider_module()
+    formatting = sys.modules[f"{module.__package__}.pdf.text_layer_formatting"]
+    document_ir = {
+        "pages": [
+            {
+                "elements": [
+                    {"type": "doc_title", "text": "Quarterly report"},
+                    {"type": "paragraph_title", "text": "Risk factors"},
+                    {"type": "list_item", "text": "Supply constraints"},
+                    {
+                        "type": "section_header",
+                        "text": "Based on the image\nVerbose hallucinated description",
+                    },
+                ]
+            }
+        ]
+    }
+
+    updated = formatting.overlay_document_ir_semantics(
+        "Quarterly report\n\nRisk factors\n\n• Supply constraints\n\nBody text",
+        document_ir,
+    )
+
+    assert updated == (
+        "# Quarterly report\n\n## Risk factors\n\n- Supply constraints\n\nBody text"
+    )
+    assert "Based on the image" not in updated
+
+
+def test_text_layer_formatting_recovers_unique_superscript() -> None:
+    module = _load_provider_module()
+    formatting = sys.modules[f"{module.__package__}.pdf.text_layer_formatting"]
+    spans = formatting._assign_heading_levels(
+        [
+            formatting.TextLayerSpan(
+                page_index=0,
+                text="Revenue",
+                x=20,
+                y=100,
+                font_size=12,
+                font_name="Helvetica",
+                bold=False,
+                italic=False,
+            ),
+            formatting.TextLayerSpan(
+                page_index=0,
+                text="1",
+                x=71,
+                y=104,
+                font_size=8,
+                font_name="Helvetica",
+                bold=False,
+                italic=False,
+            ),
+            formatting.TextLayerSpan(
+                page_index=0,
+                text="was recognized",
+                x=80,
+                y=100,
+                font_size=12,
+                font_name="Helvetica",
+                bold=False,
+                italic=False,
+            ),
+        ]
+    )
+
+    updated = formatting.overlay_text_layer_formatting(
+        "Revenue1 was recognized",
+        [spans],
+    )
+
+    assert spans[1].script == "superscript"
+    assert updated == "Revenue<sup>1</sup> was recognized"
+
+
+def test_paddle_ocr_quality_defaults_can_be_explicitly_disabled() -> None:
+    module = _load_provider_module()
+    provider = module.PaddleOcrPdfProvider(env_content={}, pipeline=object())
+
+    assert provider._pipeline_kwargs()["use_layout_detection"] is True
+    assert provider._pipeline_kwargs()["use_ocr_for_image_block"] is True
+    assert provider._pipeline_kwargs()["format_block_content"] is True
+    assert provider._predict_kwargs()["use_layout_detection"] is True
+    assert provider._predict_kwargs()["use_ocr_for_image_block"] is True
+    assert provider._predict_kwargs()["format_block_content"] is True
+
+    disabled = module.PaddleOcrPdfProvider(
+        env_content={
+            "paddle_ocr_use_layout_detection": False,
+            "paddle_ocr_use_ocr_for_image_block": False,
+            "paddle_ocr_format_block_content": False,
+        },
+        pipeline=object(),
+    )
+    assert disabled._pipeline_kwargs()["use_layout_detection"] is False
+    assert disabled._pipeline_kwargs()["use_ocr_for_image_block"] is False
+    assert disabled._pipeline_kwargs()["format_block_content"] is False
 
 
 def test_paddle_ocr_metrics_count_vlm_blocks() -> None:
