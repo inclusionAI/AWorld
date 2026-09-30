@@ -52,7 +52,10 @@ produced.
 
 Models known to handle a detailed chart-to-table instruction can opt in with
 `FILEX_PADDLE_OCR_CHART_PROMPT_MODE=structured`. Deployments that also require
-an enforced chart contract can independently set
+quality diagnostics without rejecting otherwise useful output can set
+`FILEX_PADDLE_OCR_CHART_OUTPUT_CONTRACT=warn`; warn mode preserves the first
+completed document and performs no contract replay. Deployments requiring an
+enforced chart contract can instead set
 `FILEX_PADDLE_OCR_CHART_OUTPUT_CONTRACT=strict`. Strict mode requires every
 detected chart block to contain a multi-column Markdown or HTML table with an
 independent numeric cell and otherwise raises `PaddleOcrChartContractError`.

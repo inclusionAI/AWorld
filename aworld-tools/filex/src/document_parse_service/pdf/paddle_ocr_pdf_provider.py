@@ -700,6 +700,7 @@ class PaddleOcrPdfProvider:
         started_at: float,
     ) -> tuple[list[Any], int, float]:
         max_retries = self._vlm_max_retries()
+        chart_contract_mode = self._chart_output_contract_mode()
         chart_contract_retries = self._chart_contract_retries()
         retry_count = 0
         transport_retry_count = 0
@@ -736,6 +737,13 @@ class PaddleOcrPdfProvider:
                         _CHART_PROMPT_CONTEXT.prompt = previous_prompt
                 chart_failures = self._chart_contract_failures(raw_results)
                 if chart_failures:
+                    if chart_contract_mode == "warn":
+                        logger.warning(
+                            "paddle_ocr accepting non-tabular chart output as a "
+                            "quality warning | failures=%s",
+                            "; ".join(chart_failures[:5]),
+                        )
+                        return raw_results, retry_count, first_batch_elapsed_ms
                     if chart_retry_count >= chart_contract_retries:
                         raise PaddleOcrChartContractError(
                             "PaddleOCR chart output contract failed after "
@@ -846,9 +854,9 @@ class PaddleOcrPdfProvider:
             # surprising for callers that only selected an external VLM.
             return "off"
         mode = str(configured).strip().lower()
-        if mode not in {"strict", "off"}:
+        if mode not in {"strict", "warn", "off"}:
             raise ValueError(
-                "paddle_ocr chart_output_contract must be 'strict' or 'off'"
+                "paddle_ocr chart_output_contract must be 'strict', 'warn', or 'off'"
             )
         return mode
 

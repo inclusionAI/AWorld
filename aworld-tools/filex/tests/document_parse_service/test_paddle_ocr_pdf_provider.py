@@ -1158,6 +1158,54 @@ def test_strict_chart_contract_does_not_replay_without_explicit_retry_budget() -
     assert pipeline.calls == 1
 
 
+def test_warn_chart_contract_preserves_document_without_replay() -> None:
+    module = _load_provider_module()
+    narrative = "Chart summary: USA was approximately 38 in November 2025."
+
+    class _Pipeline:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def predict(self, _input_path, **_kwargs):
+            self.calls += 1
+            return [
+                {
+                    "page_index": 0,
+                    "page_count": 1,
+                    "markdown_texts": narrative,
+                    "parsing_res_list": [
+                        {
+                            "label": "chart",
+                            "block_id": "panel-a",
+                            "content": narrative,
+                        }
+                    ],
+                }
+            ]
+
+    pipeline = _Pipeline()
+    provider = module.PaddleOcrPdfProvider(
+        env_content={
+            "paddle_ocr_chart_output_contract": "warn",
+            "paddle_ocr_chart_contract_retries": 1,
+        },
+        pipeline=pipeline,
+    )
+
+    result = asyncio.run(
+        provider.understand_pdf(
+            file_path=Path("/tmp/chart.pdf"),
+            task_id="task-chart-warn",
+            source_file_name="chart",
+        )
+    )
+
+    assert provider._chart_output_contract_mode() == "warn"
+    assert pipeline.calls == 1
+    assert result.retry_count == 0
+    assert result.markdown_text == narrative
+
+
 def test_chart_contract_rejects_persistent_narrative_table() -> None:
     module = _load_provider_module()
     narrative = """<table><tr><th>Chart summary</th></tr>
