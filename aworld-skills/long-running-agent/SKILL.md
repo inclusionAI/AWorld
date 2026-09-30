@@ -117,13 +117,16 @@ When preparing a candidate final result:
 1. Reconcile every public requirement in the charter with current evidence.
 2. Check whether later changes made earlier evidence stale.
 3. Identify direct contradictions and material evidence gaps.
-4. If a concrete gap can be resolved by one bounded action within the remaining
-   budget, perform it and reassess.
+4. If a concrete gap can be resolved within the remaining budget, resume the
+   normal bounded-step workflow, use the Tools needed to finish it, and
+   reassess before producing a new candidate final result.
 5. Otherwise return the best current result and describe material uncertainty
    accurately.
 
-Keep review bounded. Do not restart open-ended exploration from the completion
-boundary, and do not manufacture evidence to make the result appear complete.
+Keep the review itself bounded. A model decision that work is incomplete may
+resume normal execution under the original task deadline and step budget; it
+does not grant a new budget or permission for open-ended exploration. Do not
+manufacture evidence to make the result appear complete.
 
 ## Fail open
 

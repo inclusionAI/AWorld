@@ -111,6 +111,21 @@ def test_short_model_profile_cannot_suppress_framework_tool_fallback():
     assert state.long_horizon_armed is True
 
 
+def test_runtime_can_request_model_review_for_an_unarmed_candidate():
+    transition = transition_execution_protocol(
+        _state(),
+        ExecutionProtocolEvent(kind=EventKind.CANDIDATE_FINAL),
+        ExecutionProtocolPolicy(
+            mode="guide", review_unarmed_candidates=True
+        ),
+    )
+
+    assert transition.decision.action is ControllerAction.REQUEST_FINAL_REVIEW
+    assert transition.decision.reason is DecisionReason.FINAL_REVIEW_REQUIRED
+    assert transition.state.review_pending is True
+    assert transition.state.long_horizon_armed is False
+
+
 def test_observe_reports_would_replan_without_issuing_guidance():
     transition = transition_execution_protocol(
         _state(),

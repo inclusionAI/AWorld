@@ -505,21 +505,20 @@ def clear_candidate_fallback(context, agent_id: str) -> None:
 def execution_protocol_requires_tool_free_finalization(
     context, agent_id: str
 ) -> bool:
-    """Return true when the protocol has reserved a tool-free final turn."""
+    """Return true when the deadline/stagnation protocol reserved finalization.
+
+    A model-requested repair is deliberately not a finalization state.  After
+    the review model uses a Tool to signal that work is incomplete, normal
+    execution continues under the original task budget until the model emits a
+    new candidate final response.
+    """
     from aworld.core.execution_protocol import ProtocolPhase
 
     policy = execution_protocol_policy(context, agent_id)
     if policy.mode is not ProtocolMode.GUIDE:
         return False
     state = ExecutionProtocolStore(context, agent_id, policy).load()
-    return bool(
-        state.phase is ProtocolPhase.FINALIZE
-        or (
-            state.phase is ProtocolPhase.REPAIR
-            and state.repair_count > 0
-            and not state.review_pending
-        )
-    )
+    return state.phase is ProtocolPhase.FINALIZE
 
 
 def final_review_guidance(transition: ProtocolTransition | None) -> str | None:
@@ -529,14 +528,14 @@ def final_review_guidance(transition: ProtocolTransition | None) -> str | None:
     ):
         return None
     return (
-        "AWorld long-horizon final review: before ending, reconcile the public "
-        "request and current completion claims with observations from this run. "
-        "Check whether later state-changing actions made earlier evidence stale. "
-        "If a specific observed contradiction or material evidence gap can be "
-        "addressed by one bounded Tool action, take that action now. Otherwise, "
-        "return the best current final response and state material uncertainty "
-        "accurately. Do not invent evidence, start broad exploration, or assume "
-        "that lack of proof is itself a failure."
+        "AWorld model-owned completion review: decide whether the public request "
+        "is actually complete using the observations and current environment "
+        "state from this run. Check whether later changes made earlier evidence "
+        "stale. If the task is complete, return the final response without "
+        "redoing verified work. If it is incomplete, use the available Tools and "
+        "continue working until you can make a new evidence-backed completion "
+        "decision within the remaining task budget. Do not invent evidence or "
+        "treat a plan, intent, or partial result as completion."
     )
 
 

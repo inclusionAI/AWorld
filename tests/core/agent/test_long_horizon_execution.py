@@ -155,6 +155,48 @@ def test_agent_uses_existing_skill_activation_as_protocol_switch() -> None:
     assert agent._resolve_execution_protocol_policy().mode is ProtocolMode.OFF
 
 
+def test_runtime_can_enable_model_review_for_every_candidate(monkeypatch) -> None:
+    monkeypatch.setenv(
+        "AWORLD_EXECUTION_PROTOCOL_REVIEW_UNARMED_CANDIDATES", "true"
+    )
+    agent = Agent(
+        name="Aworld",
+        conf=AgentConfig(
+            llm_provider="openai",
+            llm_model_name="offline",
+            llm_api_key="offline",
+        ),
+    )
+    agent.skill_configs = {"long-running-agent": {"active": True}}
+
+    policy = agent._resolve_execution_protocol_policy()
+
+    assert policy.mode is ProtocolMode.GUIDE
+    assert policy.review_unarmed_candidates is True
+
+
+def test_review_every_candidate_env_does_not_activate_disabled_skill(
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv(
+        "AWORLD_EXECUTION_PROTOCOL_REVIEW_UNARMED_CANDIDATES", "true"
+    )
+    agent = Agent(
+        name="Aworld",
+        conf=AgentConfig(
+            llm_provider="openai",
+            llm_model_name="offline",
+            llm_api_key="offline",
+        ),
+    )
+    agent.skill_configs = {"long-running-agent": {"active": False}}
+
+    policy = agent._resolve_execution_protocol_policy()
+
+    assert policy.mode is ProtocolMode.OFF
+    assert policy.review_unarmed_candidates is False
+
+
 def test_agent_offers_optional_model_profile_on_existing_tool_call() -> None:
     context = Context(task_id="profile-schema")
     context.set_task(Task(id="profile-schema", timeout=600))
@@ -505,11 +547,11 @@ async def test_final_review_guidance_reaches_the_second_model_request() -> None:
 
     assert result[0].policy_info == "reviewed final"
     assert len(captured_messages) == 2
-    assert "long-horizon final review" in captured_messages[1][-1]["content"]
+    assert "model-owned completion review" in captured_messages[1][-1]["content"]
 
 
 @pytest.mark.asyncio
-async def test_final_review_rejects_multi_tool_repair_and_keeps_candidate() -> None:
+async def test_final_review_accepts_multi_tool_repair_selected_by_model() -> None:
     calls = 0
 
     class MultiToolReviewAgent(Agent):
@@ -578,13 +620,13 @@ async def test_final_review_rejects_multi_tool_repair_and_keeps_candidate() -> N
     result = await agent.async_policy(Observation(content="start"), message=message)
 
     assert calls == 2
-    assert len(result) == 1
-    assert result[0].policy_info == "best candidate"
-    assert agent.finished is True
+    assert len(result) == 2
+    assert [action.tool_name for action in result] == ["run_code", "run_code"]
+    assert agent.finished is False
 
 
 @pytest.mark.asyncio
-async def test_single_review_repair_forces_next_turn_to_finalize_without_tools() -> None:
+async def test_single_review_repair_returns_to_normal_tool_execution() -> None:
     calls = 0
     prepared_tools = []
 
@@ -686,11 +728,11 @@ async def test_single_review_repair_forces_next_turn_to_finalize_without_tools()
     assert repair[0].tool_name == "run_code"
     assert final[0].policy_info == "final after bounded repair"
     assert calls == 3
-    assert prepared_tools[-1] is None
+    assert prepared_tools[-1] is not None
 
 
 @pytest.mark.asyncio
-async def test_tool_only_repair_finalization_preserves_candidate_fallback() -> None:
+async def test_model_can_continue_tool_work_after_review_repair() -> None:
     calls = 0
 
     class ToolOnlyFinalizationAgent(Agent):
@@ -779,5 +821,6 @@ async def test_tool_only_repair_finalization_preserves_candidate_fallback() -> N
     )
 
     assert repair[0].tool_name == "run_code"
-    assert final[0].policy_info == "safe original candidate"
+    assert final[0].tool_name == "run_code"
+    assert agent.finished is False
     assert calls == 3

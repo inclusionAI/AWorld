@@ -40,19 +40,21 @@ semantic outcomes:
 
 - **ready**: current evidence supports the material completion claims;
 - **repairable**: a specific observed contradiction or material evidence gap
-  can be addressed by a bounded action;
+  can be addressed within the remaining task budget;
 - **uncertain**: evidence is incomplete, ambiguous, unavailable, or the review
   itself could not complete.
 
-For `repairable`, identify the supporting observation, the affected claim, and
-one bounded next action. Do not request broad reimplementation or indefinite
-investigation at the final boundary. For `uncertain`, preserve the candidate
-result and describe the uncertainty; absence of proof is not automatically a
-contradiction.
+For `repairable`, identify the supporting observation and affected claim, then
+resume the normal bounded-step workflow. Use only the Tool actions needed to
+finish and verify the missing work within the original task budget; the review
+does not create a second budget. Do not request broad reimplementation or
+indefinite investigation at the final boundary. For `uncertain`, preserve the
+candidate result and describe the uncertainty; absence of proof is not
+automatically a contradiction.
 
-After a repair action, reassess only the affected claims plus anything the
-repair may have invalidated. Reuse still-current evidence rather than restarting
-the task.
+After repair work, reassess only the affected claims plus anything the repair
+may have invalidated. Reuse still-current evidence rather than restarting the
+task.
 
 ## Fail-open contract
 

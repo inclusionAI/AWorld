@@ -181,6 +181,9 @@ def _configured_pending_generation_capacity() -> int | None:
 
 
 DEFAULT_LLM_EXECUTION_TIMEOUT_SECONDS = 360.0
+EXECUTION_PROTOCOL_REVIEW_UNARMED_ENV = (
+    "AWORLD_EXECUTION_PROTOCOL_REVIEW_UNARMED_CANDIDATES"
+)
 
 
 @dataclass(frozen=True)
@@ -776,8 +779,14 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             return self._explicit_execution_protocol_policy
         skill = (self.skill_configs or {}).get("long-running-agent")
         active = isinstance(skill, dict) and skill.get("active") is True
+        review_unarmed_candidates = os.environ.get(
+            EXECUTION_PROTOCOL_REVIEW_UNARMED_ENV, ""
+        ).strip().lower() in {"1", "true", "yes", "on"}
         policy = ExecutionProtocolPolicy(
-            mode=ProtocolMode.GUIDE if active else ProtocolMode.OFF
+            mode=ProtocolMode.GUIDE if active else ProtocolMode.OFF,
+            review_unarmed_candidates=(
+                review_unarmed_candidates if active else False
+            ),
         )
         if not active or context is None:
             return policy
@@ -3738,27 +3747,11 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                         from aworld.runners.execution_protocol import (
                             clear_candidate_fallback,
                             load_candidate_fallback,
-                            record_review_error,
                             record_review_tool_action,
                         )
 
                         fallback = load_candidate_fallback(message.context, self.id())
-                        if fallback is not None and len(agent_result.actions) != 1:
-                            record_review_error(message.context, self.id())
-                            clear_candidate_fallback(message.context, self.id())
-                            fallback_text = str(fallback[0].policy_info or "")
-                            llm_response.content = fallback_text
-                            if isinstance(llm_response.message, dict):
-                                llm_response.message = dict(llm_response.message)
-                                llm_response.message["content"] = fallback_text
-                                llm_response.message["tool_calls"] = None
-                            agent_result = AgentResult(
-                                actions=list(fallback),
-                                current_state=agent_result.current_state,
-                                is_call_tool=False,
-                            )
-                            candidate_finished = True
-                        else:
+                        if fallback is not None:
                             record_review_tool_action(message.context, self.id())
                     response_incomplete = bool(
                         isinstance(llm_response.message, dict)

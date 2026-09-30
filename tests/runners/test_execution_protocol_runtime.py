@@ -283,7 +283,22 @@ def test_short_task_candidate_final_bypasses_review() -> None:
     assert final_review_guidance(transition) is None
 
 
-def test_review_tool_action_opens_only_one_bounded_repair() -> None:
+def test_runtime_policy_can_send_short_candidate_to_model_review() -> None:
+    context = _context("review-all")
+    policy = ExecutionProtocolPolicy(
+        mode=ProtocolMode.GUIDE,
+        review_unarmed_candidates=True,
+    )
+    configure_execution_protocol(context, "agent", policy)
+
+    transition = record_candidate_final(context, "agent")
+
+    assert transition is not None
+    assert transition.decision.action is ControllerAction.REQUEST_FINAL_REVIEW
+    assert "model-owned completion review" in final_review_guidance(transition)
+
+
+def test_review_tool_action_opens_one_normal_execution_repair() -> None:
     context = _context("repair")
     policy = ExecutionProtocolPolicy(
         mode=ProtocolMode.GUIDE, activation_event_threshold=1
@@ -301,7 +316,7 @@ def test_review_tool_action_opens_only_one_bounded_repair() -> None:
     assert transition is not None
     assert transition.decision.action is ControllerAction.REQUEST_REPAIR
     assert transition.state.repair_count == 1
-    assert execution_protocol_requires_tool_free_finalization(context, "agent")
+    assert not execution_protocol_requires_tool_free_finalization(context, "agent")
     assert record_review_tool_action(context, "agent") is None
 
 

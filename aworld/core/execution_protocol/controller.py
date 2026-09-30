@@ -246,7 +246,10 @@ def transition_execution_protocol(
                     DecisionReason.FINALIZATION_RESERVE,
                 ),
             )
-        if not next_state.long_horizon_armed:
+        if (
+            not next_state.long_horizon_armed
+            and not policy.review_unarmed_candidates
+        ):
             next_state = replace(
                 next_state,
                 phase=ProtocolPhase.COMPLETE,

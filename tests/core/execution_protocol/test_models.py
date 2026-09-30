@@ -90,6 +90,7 @@ def test_model_execution_profile_rejects_unknown_fields():
         ("finalization_reserve_seconds", -0.1),
         ("final_review_timeout_seconds", 0),
         ("final_review_timeout_seconds", 3601),
+        ("review_unarmed_candidates", "yes"),
     ],
 )
 def test_policy_rejects_invalid_bounds(field, value):
@@ -110,6 +111,7 @@ def test_policy_has_a_stable_serialized_round_trip():
         mode="guide",
         history_limit=9,
         activation_event_threshold=15,
+        review_unarmed_candidates=True,
         max_replans=1,
         finalization_reserve_seconds=42.5,
         final_review_timeout_seconds=30,
@@ -126,11 +128,13 @@ def test_policy_restores_pre_activation_v1_with_safe_default():
     payload = ExecutionProtocolPolicy(mode="guide").to_dict()
     payload.pop("activation_event_threshold")
     payload.pop("final_review_timeout_seconds")
+    payload.pop("review_unarmed_candidates")
 
     restored = ExecutionProtocolPolicy.from_dict(payload)
 
     assert restored.activation_event_threshold == 6
     assert restored.final_review_timeout_seconds == 45.0
+    assert restored.review_unarmed_candidates is False
 
 
 def test_event_validates_generic_measurements_and_review_shape():

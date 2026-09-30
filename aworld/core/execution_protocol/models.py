@@ -165,6 +165,12 @@ class ExecutionProtocolPolicy:
     SCHEMA_VERSION: ClassVar[str] = "aworld.execution-protocol-policy/v1"
 
     mode: ProtocolMode = ProtocolMode.OFF
+    # Some supervised runtimes want every candidate completion to receive one
+    # model-owned review, even when the task did not emit enough Tool events to
+    # satisfy the generic long-horizon activation heuristic.  The controller
+    # still makes no semantic judgement: the review model accepts by returning
+    # a final response or requests repair by using Tools.
+    review_unarmed_candidates: bool = False
     history_limit: int = 32
     activation_event_threshold: int = 6
     model_activation_confidence_threshold: float = 0.7
@@ -186,6 +192,8 @@ class ExecutionProtocolPolicy:
                 object.__setattr__(self, "mode", ProtocolMode(self.mode))
             except (TypeError, ValueError) as exc:
                 raise ValueError("mode must be off, observe, or guide") from exc
+        if not isinstance(self.review_unarmed_candidates, bool):
+            raise ValueError("review_unarmed_candidates must be a boolean")
         for name in (
             "history_limit",
             "activation_event_threshold",
@@ -248,6 +256,7 @@ class ExecutionProtocolPolicy:
         return {
             "schema_version": self.SCHEMA_VERSION,
             "mode": self.mode.value,
+            "review_unarmed_candidates": self.review_unarmed_candidates,
             "history_limit": self.history_limit,
             "activation_event_threshold": self.activation_event_threshold,
             "model_activation_confidence_threshold": (
@@ -276,6 +285,10 @@ class ExecutionProtocolPolicy:
             raise ValueError("unsupported execution protocol policy schema")
         return cls(
             mode=value.get("mode"),
+            # Additive v1 field.  Older policies retain the short-task bypass.
+            review_unarmed_candidates=value.get(
+                "review_unarmed_candidates", False
+            ),
             history_limit=value.get("history_limit"),
             # Additive v1 field: older serialized v1 policies use the safe
             # short-task bypass default when restored.
