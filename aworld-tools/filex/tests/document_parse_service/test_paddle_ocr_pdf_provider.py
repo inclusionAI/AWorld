@@ -552,6 +552,62 @@ def test_layout_semantics_restore_titles_and_lists_without_rewriting_text() -> N
     assert "Based on the image" not in updated
 
 
+def test_layout_semantics_restore_formula_and_code_blocks() -> None:
+    module = _load_provider_module()
+    formatting = sys.modules[f"{module.__package__}.pdf.text_layer_formatting"]
+    document_ir = {
+        "pages": [
+            {
+                "elements": [
+                    {"type": "formula", "text": r"E = mc^2"},
+                    {"type": "code", "text": "SELECT amount FROM revenue"},
+                ]
+            }
+        ]
+    }
+
+    updated = formatting.overlay_document_ir_semantics(
+        "Equation\n\nE = mc^2\n\nSELECT amount FROM revenue",
+        document_ir,
+    )
+
+    assert updated == (
+        "Equation\n\n$E = mc^2$\n\n"
+        "```sql\nSELECT amount FROM revenue\n```"
+    )
+
+
+def test_text_layer_formatting_styles_the_matching_repeated_occurrence() -> None:
+    module = _load_provider_module()
+    formatting = sys.modules[f"{module.__package__}.pdf.text_layer_formatting"]
+    spans = [
+        formatting.TextLayerSpan(
+            page_index=0,
+            text="Total",
+            x=10,
+            y=100,
+            font_size=12,
+            font_name="Helvetica",
+            bold=False,
+            italic=False,
+        ),
+        formatting.TextLayerSpan(
+            page_index=0,
+            text="Total",
+            x=10,
+            y=80,
+            font_size=12,
+            font_name="Helvetica-Bold",
+            bold=True,
+            italic=False,
+        ),
+    ]
+
+    updated = formatting.overlay_text_layer_formatting("Total\n\nTotal", [spans])
+
+    assert updated == "Total\n\n**Total**"
+
+
 def test_text_layer_formatting_recovers_unique_superscript() -> None:
     module = _load_provider_module()
     formatting = sys.modules[f"{module.__package__}.pdf.text_layer_formatting"]

@@ -9,6 +9,7 @@ only high-confidence formatting onto Paddle's Markdown.
 
 from __future__ import annotations
 
+import json
 import math
 import re
 from dataclasses import asdict, dataclass
@@ -122,16 +123,24 @@ def overlay_text_layer_formatting(
         return rendered or markdown
 
     updated = markdown
+    occurrence_counts: dict[str, int] = {}
+    indexed_spans: list[tuple[TextLayerSpan, int]] = []
+    for span in spans:
+        key = _clean_text(span.text).casefold()
+        occurrence = occurrence_counts.get(key, 0)
+        occurrence_counts[key] = occurrence + 1
+        indexed_spans.append((span, occurrence))
     ordered = sorted(
-        spans,
-        key=lambda span: (
-            span.heading_level is None,
-            not span.bold,
-            not span.italic,
-            -len(_clean_text(span.text)),
+        indexed_spans,
+        key=lambda entry: (
+            entry[0].heading_level is None,
+            not entry[0].bold,
+            not entry[0].italic,
+            -len(_clean_text(entry[0].text)),
+            entry[1],
         ),
     )
-    for span in ordered:
+    for span, occurrence in ordered:
         text = _clean_text(span.text)
         if len(text) < 2 and span.script is None:
             continue
@@ -143,6 +152,7 @@ def overlay_text_layer_formatting(
             bold=span.bold,
             italic=span.italic,
             script=span.script,
+            occurrence_index=occurrence,
         )
     return updated
 
@@ -170,12 +180,21 @@ def overlay_document_ir_semantics(markdown: str, document_ir: dict[str, Any]) ->
         for element in elements:
             if not isinstance(element, dict):
                 continue
-            text = _clean_text(str(element.get("text") or ""))
-            if not text or len(text) > 240 or "\n" in str(element.get("text") or ""):
-                continue
+            raw_text = str(element.get("text") or "").strip()
             label = "-".join(
                 str(element.get("type") or "").strip().lower().replace("_", " ").split()
             )
+            if label == "formula":
+                if raw_text and len(raw_text) <= 2000:
+                    updated = _promote_matching_formula(updated, raw_text)
+                continue
+            if label == "code":
+                if raw_text and len(raw_text) <= 8000:
+                    updated = _promote_matching_code_block(updated, raw_text)
+                continue
+            text = _clean_text(raw_text)
+            if not text or len(text) > 240 or "\n" in raw_text:
+                continue
             if label in {"title", "doc-title"}:
                 updated = _promote_matching_line(updated, text, 1)
             elif label in {"section-header", "paragraph-title", "heading"}:
@@ -390,6 +409,44 @@ def _promote_matching_list_item(markdown: str, text: str) -> str:
     return markdown
 
 
+def _promote_matching_formula(markdown: str, text: str) -> str:
+    if not text or text not in markdown:
+        return markdown
+    for marker in (f"${text}$", f"$$\n{text}\n$$", f"\\({text}\\)", f"\\[{text}\\]"):
+        if marker in markdown:
+            return markdown
+    return markdown.replace(text, f"${text}$", 1)
+
+
+def _code_language(text: str) -> str:
+    normalized = text.strip()
+    lowered = normalized.casefold()
+    if re.search(r"\b(select|insert|update|delete|create)\b", lowered) and re.search(
+        r"\b(from|into|table|set|values)\b", lowered
+    ):
+        return "sql"
+    if re.search(r"(?m)^\s*(?:def|class|from|import)\b", normalized):
+        return "python"
+    if re.search(r"\b(?:const|let|var|function)\b|=>", normalized):
+        return "javascript"
+    if normalized.startswith(("{", "[")):
+        try:
+            json.loads(normalized)
+            return "json"
+        except (json.JSONDecodeError, ValueError):
+            pass
+    return "text"
+
+
+def _promote_matching_code_block(markdown: str, text: str) -> str:
+    if not text or text not in markdown:
+        return markdown
+    if any(text in body for body in re.findall(r"(?ms)^```[^\n]*\n(.*?)\n```$", markdown)):
+        return markdown
+    language = _code_language(text)
+    return markdown.replace(text, f"```{language}\n{text}\n```", 1)
+
+
 def _wrap_first_plain_occurrence(
     markdown: str,
     text: str,
@@ -397,6 +454,7 @@ def _wrap_first_plain_occurrence(
     bold: bool,
     italic: bool,
     script: str | None = None,
+    occurrence_index: int = 0,
 ) -> str:
     if not bold and not italic and script is None:
         return markdown
@@ -411,7 +469,9 @@ def _wrap_first_plain_occurrence(
     matches = list(pattern.finditer(markdown))
     if script is not None and alnum_count < 3 and len(matches) != 1:
         return markdown
-    for match in matches:
+    for match_index, match in enumerate(matches):
+        if match_index != occurrence_index:
+            continue
         line_start = markdown.rfind("\n", 0, match.start()) + 1
         line_end = markdown.find("\n", match.end())
         if line_end < 0:
