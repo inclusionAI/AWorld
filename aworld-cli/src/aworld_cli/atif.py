@@ -20,6 +20,15 @@ def _as_dict(value: Any) -> dict[str, Any]:
     return value if isinstance(value, dict) else {}
 
 
+def _execution_protocol_telemetry(value: Any) -> dict[str, Any] | None:
+    """Use the core allowlist before telemetry enters any export surface."""
+    from aworld.runners.execution_protocol import (
+        project_execution_protocol_telemetry,
+    )
+
+    return project_execution_protocol_telemetry(value)
+
+
 def _parse_arguments(value: Any) -> dict[str, Any]:
     if isinstance(value, dict):
         return value
@@ -355,6 +364,11 @@ def build_atif_trajectory(
             "action_count": action_count,
         },
     }
+    execution_protocol = _execution_protocol_telemetry(
+        trajectory_payload.get("execution_protocol")
+    )
+    if execution_protocol is not None:
+        final_metrics["extra"]["execution_protocol"] = execution_protocol
     aworld_projection: dict[str, Any] = {
         "completion_state": "complete" if completed else "incomplete",
         "trajectory_fidelity": trajectory_fidelity,

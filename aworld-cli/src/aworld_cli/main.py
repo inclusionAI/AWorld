@@ -312,6 +312,7 @@ def _trajectory_payload_from_direct_run_summary(
         saw_task_response_capture = False
         capture_modes: list[str] = []
         fidelities: list[str] = []
+        execution_protocol: dict | None = None
         raw_summary_activation_evidence = summary.get(
             "skill_activation_evidence"
         )
@@ -355,6 +356,15 @@ def _trajectory_payload_from_direct_run_summary(
                     trajectory_build_results.append(serialized_build_result)
                     if serialized_build_result.get("fidelity"):
                         fidelities.append(str(serialized_build_result["fidelity"]))
+            raw_build_results = result.get("trajectory_build_results")
+            if isinstance(raw_build_results, list):
+                for item in raw_build_results:
+                    if not isinstance(item, dict):
+                        continue
+                    saw_task_response_capture = True
+                    trajectory_build_results.append(item)
+                    if item.get("fidelity"):
+                        fidelities.append(str(item["fidelity"]))
             raw_activation_evidence = result.get("skill_activation_evidence")
             if isinstance(raw_activation_evidence, list):
                 skill_activation_evidence.extend(
@@ -362,6 +372,15 @@ def _trajectory_payload_from_direct_run_summary(
                     for item in raw_activation_evidence
                     if isinstance(item, dict)
                 )
+            from aworld.runners.execution_protocol import (
+                project_execution_protocol_telemetry,
+            )
+
+            projected_protocol = project_execution_protocol_telemetry(
+                result.get("execution_protocol")
+            )
+            if projected_protocol is not None:
+                execution_protocol = projected_protocol
 
         if saw_task_response_capture:
             payload = {
@@ -390,6 +409,8 @@ def _trajectory_payload_from_direct_run_summary(
                     if item not in unique_activation_evidence:
                         unique_activation_evidence.append(item)
                 payload["skill_activation_evidence"] = unique_activation_evidence
+            if execution_protocol is not None:
+                payload["execution_protocol"] = execution_protocol
             return payload
 
     return {
@@ -981,7 +1002,15 @@ def build_parser(zh: bool = False) -> argparse.ArgumentParser:
     parser.add_argument("--task", type=str, help="发送给 agent 的任务（非交互模式）" if zh else "Task to send to agent (non-interactive mode)")
     parser.add_argument("--agent", type=str, help="要使用的 agent 名称（直接运行模式必需）" if zh else "Agent name (default: Aworld in interactive mode; required for direct run mode)")
     parser.add_argument("--skill", dest="skill", action="append", help="显式请求一个已安装的 skill 名称。可重复传入。" if zh else "Explicitly request an installed skill by name. Can be passed multiple times.")
-    parser.add_argument("--max-runs", type=int, help="最大运行次数（直接运行模式）" if zh else "Maximum number of runs (for direct run mode)")
+    parser.add_argument(
+        "--max-runs",
+        type=int,
+        help=(
+            "原始任务提示的最大外层重放次数（直接运行模式；默认 1）"
+            if zh
+            else "Maximum outer replays of the original task prompt (direct mode; default: 1)"
+        ),
+    )
     parser.add_argument("--max-cost", type=float, help="最大成本（美元）（直接运行模式）" if zh else "Maximum cost in USD (for direct run mode)")
     parser.add_argument("--max-duration", type=str, help='最大时长（例如："1h", "30m", "2h30m"）（直接运行模式）' if zh else 'Maximum duration (e.g., "1h", "30m", "2h30m") (for direct run mode)')
     parser.add_argument("--completion-signal", type=str, help="查找的完成信号字符串（直接运行模式）" if zh else "Completion signal string to look for (for direct run mode)")
@@ -1604,6 +1633,36 @@ def _build_partial_summary_from_agent_executor(
         ContinuousExecutor._attach_task_response_evidence(result, task_response)
 
     context = getattr(agent_executor, "context", None)
+    try:
+        from aworld.runners.execution_protocol import (
+            build_execution_protocol_telemetry,
+            project_execution_protocol_telemetry,
+        )
+
+        telemetry = project_execution_protocol_telemetry(
+            getattr(agent_executor, "last_execution_protocol", None)
+        )
+        if telemetry is None and context is not None:
+            root = getattr(
+                getattr(agent_executor, "swarm", None),
+                "communicate_agent",
+                None,
+            )
+            if isinstance(root, list):
+                root = root[0] if len(root) == 1 else None
+            root_id = getattr(root, "id", None)
+            root_id = root_id() if callable(root_id) else root_id
+            if isinstance(root_id, str) and root_id:
+                telemetry = build_execution_protocol_telemetry(
+                    context, root_id
+                )
+        if telemetry is not None:
+            result["execution_protocol"] = telemetry
+    except Exception as exc:
+        _LOGGER.warning(
+            "Direct-run protocol telemetry recovery failed open; error_type=%s",
+            type(exc).__name__,
+        )
     live_calls = _live_provider_call_records(context)
     captured_calls = result.get("llm_calls")
     if live_calls and (

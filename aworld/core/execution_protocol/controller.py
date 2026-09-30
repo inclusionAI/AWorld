@@ -172,11 +172,28 @@ def transition_execution_protocol(
 
         if stagnant:
             if next_state.replan_count >= policy.max_replans:
+                if next_state.finalization_entered:
+                    return ProtocolTransition(
+                        next_state,
+                        _decision(
+                            ControllerAction.CONTINUE,
+                            DecisionReason.REPLAN_LIMIT_REACHED,
+                        ),
+                    )
+                next_state = replace(
+                    next_state,
+                    phase=ProtocolPhase.FINALIZE,
+                    finalization_entered=True,
+                    long_horizon_armed=True,
+                )
+                action = _observed_action(
+                    policy.mode,
+                    guide=ControllerAction.ENTER_FINALIZATION,
+                    observe=ControllerAction.WOULD_ENTER_FINALIZATION,
+                )
                 return ProtocolTransition(
                     next_state,
-                    _decision(
-                        ControllerAction.CONTINUE, DecisionReason.REPLAN_LIMIT_REACHED
-                    ),
+                    _decision(action, DecisionReason.REPLAN_LIMIT_REACHED),
                 )
             if next_state.last_replan_attempt_epoch != next_state.attempt_epoch:
                 next_state = replace(

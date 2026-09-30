@@ -63,14 +63,64 @@ class ContinuousExecutor:
         if isinstance(trajectory, list):
             result["trajectory"] = to_serializable(trajectory)
 
+        execution_segments = getattr(task_response, "execution_segments", None)
+        if isinstance(execution_segments, list) and execution_segments:
+            segment_records = [
+                segment for segment in execution_segments if isinstance(segment, dict)
+            ]
+            current_segment = {
+                "task_id": getattr(task_response, "id", None),
+                "trajectory": trajectory if isinstance(trajectory, list) else [],
+                "trajectory_build_result": getattr(
+                    task_response, "trajectory_build_result", None
+                ),
+                "trajectory_delivery_receipt": getattr(
+                    task_response, "trajectory_delivery_receipt", None
+                ),
+            }
+            all_segments = [*segment_records, current_segment]
+            result["trajectory_segments"] = to_serializable(all_segments)
+            result["trajectory"] = to_serializable(
+                [
+                    item
+                    for segment in all_segments
+                    for item in (segment.get("trajectory") or [])
+                    if isinstance(item, dict)
+                ]
+            )
+            result["trajectory_build_results"] = to_serializable(
+                [
+                    segment.get("trajectory_build_result")
+                    for segment in all_segments
+                    if segment.get("trajectory_build_result") is not None
+                ]
+            )
+            result["trajectory_delivery_receipts"] = to_serializable(
+                [
+                    segment.get("trajectory_delivery_receipt")
+                    for segment in all_segments
+                    if segment.get("trajectory_delivery_receipt") is not None
+                ]
+            )
+
         llm_calls = getattr(task_response, "llm_calls", None)
         if isinstance(llm_calls, list):
             result["llm_calls"] = to_serializable(llm_calls)
 
-        for attribute in (
+        from aworld.runners.execution_protocol import (
+            project_execution_protocol_telemetry,
+        )
+
+        execution_protocol = project_execution_protocol_telemetry(
+            getattr(task_response, "execution_protocol", None)
+        )
+        if execution_protocol is not None:
+            result["execution_protocol"] = to_serializable(execution_protocol)
+
+        for attribute in (() if execution_segments else (
             "trajectory_build_result",
             "trajectory_delivery_receipt",
-        ):
+        )):
             record = getattr(task_response, attribute, None)
             if record is None:
                 continue
@@ -462,7 +512,9 @@ class ContinuousExecutor:
         Args:
             prompt: Task prompt for the agent (string or tuple of (text, image_urls) for multimodal)
             agent_name: Name of the agent
-            max_runs: Maximum number of iterations (0 for infinite)
+            max_runs: Maximum outer replays of the original prompt (0 for infinite).
+                Internal Goal/acceptance continuation is owned by ``chat()``
+                and does not consume this counter.
             max_cost: Maximum cost in USD
             max_duration: Maximum duration (e.g., "2h", "30m", "1h30m")
             completion_signal: Signal phrase that indicates completion

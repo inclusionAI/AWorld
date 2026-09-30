@@ -9,6 +9,69 @@ from aworld_cli.executors.continuous import ContinuousExecutor
 from aworld_cli.executors.local import LocalAgentExecutor
 
 
+def test_task_response_segments_keep_receipts_scoped_while_flattening_data_plane():
+    response = SimpleNamespace(
+        id="segment-2",
+        trajectory=[{"meta": {"task_id": "segment-2"}, "action": {}}],
+        llm_calls=[],
+        execution_segments=[
+            {
+                "task_id": "segment-1",
+                "trajectory": [
+                    {"meta": {"task_id": "segment-1"}, "action": {}}
+                ],
+                "trajectory_build_result": {
+                    "task_id": "segment-1",
+                    "trajectory_checksum": "checksum-1",
+                },
+                "trajectory_delivery_receipt": {"task_id": "segment-1"},
+            }
+        ],
+        trajectory_build_result=SimpleNamespace(
+            to_dict=lambda: {
+                "task_id": "segment-2",
+                "trajectory_checksum": "checksum-2",
+            }
+        ),
+        trajectory_delivery_receipt=SimpleNamespace(
+            to_dict=lambda: {"task_id": "segment-2"}
+        ),
+        execution_protocol=None,
+    )
+    result = ContinuousExecutor._attach_task_response_evidence({}, response)
+
+    assert [item["meta"]["task_id"] for item in result["trajectory"]] == [
+        "segment-1",
+        "segment-2",
+    ]
+    assert "trajectory_build_result" not in result
+    assert [item["task_id"] for item in result["trajectory_build_results"]] == [
+        "segment-1",
+        "segment-2",
+    ]
+
+
+def test_task_response_rejects_unbounded_protocol_payload_before_summary():
+    response = SimpleNamespace(
+        trajectory=[],
+        llm_calls=[],
+        execution_segments=[],
+        trajectory_build_result=None,
+        trajectory_delivery_receipt=None,
+        execution_protocol={
+            "schema_version": "aworld.execution-protocol-telemetry/v1",
+            "mode": "guide",
+            "phase": "complete",
+            "armed": True,
+            "prompt": "must not escape",
+        },
+    )
+
+    result = ContinuousExecutor._attach_task_response_evidence({}, response)
+
+    assert "execution_protocol" not in result
+
+
 @pytest.mark.asyncio
 async def test_run_iteration_uses_active_steering_in_terminal_mode(
     monkeypatch: pytest.MonkeyPatch,

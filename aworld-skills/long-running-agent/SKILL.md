@@ -30,12 +30,13 @@ actually needs a recoverable rolling plan.
 
 ## Declare a long horizon without a separate turn
 
-When an actual Tool call exposes the optional
-`__aworld_execution_profile` parameter, use it only when you can make a
-high-confidence estimate from the task and current plan. Include the profile in
-the same real tool call that you already need; the runtime removes it before
-the Tool executes. Do not make a separate Tool call merely to classify the
-task, and do not delay useful work to produce the profile.
+When the first actual Tool call exposes the optional
+`__aworld_execution_profile` parameter, include it when the current plan
+credibly needs multiple dependent milestones or at least six Tool actions.
+Include the profile in the same real Tool call that you already need; the
+runtime removes it before the Tool executes. Omit it when the work is direct or
+the horizon is genuinely uncertain. Do not make a separate Tool call merely to
+classify the task, and do not delay useful work to produce the profile.
 
 Set `horizon` to `long` only for sustained dependent work, such as multiple
 milestones or an expected sequence of at least several Tool actions. Report a

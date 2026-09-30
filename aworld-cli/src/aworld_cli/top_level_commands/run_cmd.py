@@ -355,7 +355,11 @@ def _register_run_options(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--task", type=str, required=True)
     parser.add_argument("--agent", type=str)
     parser.add_argument("--skill", dest="skill", action="append")
-    parser.add_argument("--max-runs", type=int)
+    parser.add_argument(
+        "--max-runs",
+        type=int,
+        help="Maximum outer replays of the original task prompt (default: 1)",
+    )
     parser.add_argument("--max-cost", type=float)
     parser.add_argument("--max-duration", type=str)
     parser.add_argument("--completion-signal", type=str)

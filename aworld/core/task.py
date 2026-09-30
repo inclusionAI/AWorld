@@ -226,6 +226,13 @@ class TaskResponse:
     semantic_status: str | None = field(default=None)
     completion_reason: str | None = field(default=None)
     recoverable: bool | None = field(default=None)
+    # Bounded, content-free control telemetry. Appended for positional
+    # compatibility; prompts, answers and Tool payloads are never stored here.
+    execution_protocol: Dict[str, Any] | None = field(default=None)
+    # Prior internal execution segments. Each entry keeps its own canonical
+    # trajectory build/delivery receipts instead of pretending multiple task
+    # IDs share one checksum.
+    execution_segments: List[Dict[str, Any]] = field(default_factory=list)
 
     @property
     def trajectory_status(self) -> str | None:
@@ -282,6 +289,20 @@ class TaskResponse:
             value = getattr(self, key)
             if value is not None:
                 payload[key] = value
+        if self.execution_protocol is not None:
+            from aworld.runners.execution_protocol import (
+                project_execution_protocol_telemetry,
+            )
+
+            telemetry = project_execution_protocol_telemetry(
+                self.execution_protocol
+            )
+            if telemetry is not None:
+                payload["execution_protocol"] = to_serializable(telemetry)
+        if self.execution_segments:
+            payload["execution_segments"] = to_serializable(
+                self.execution_segments
+            )
         return payload
 
 

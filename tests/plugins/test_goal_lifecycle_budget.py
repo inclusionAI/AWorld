@@ -170,7 +170,7 @@ async def test_cli_continues_thousands_of_goal_turns_without_recursion_or_time_l
     executor._base_runtime=None
     seen=[]
 
-    async def turn(message, requested_skill_names=None, _previous_goal_context=None):
+    async def turn(message, requested_skill_names=None, _previous_goal_context=None, **_kwargs):
         seen.append(message)
         return _GoalContinuation("continue") if len(seen)<1500 else "done"
 
@@ -178,6 +178,504 @@ async def test_cli_continues_thousands_of_goal_turns_without_recursion_or_time_l
     monkeypatch.setenv("AWORLD_TASK_DEADLINE_EPOCH_SECONDS", "1")
     assert await executor.chat("work") == "done"
     assert len(seen) == 1500
+
+
+@pytest.mark.asyncio
+async def test_internal_continuation_keeps_original_request_and_logical_scope():
+    executor = object.__new__(LocalAgentExecutor)
+    executor._base_runtime = None
+    executor._session_mode = "direct"
+    calls = []
+
+    async def turn(message, **kwargs):
+        calls.append((message, kwargs))
+        if len(calls) == 1:
+            return _GoalContinuation(
+                "structured repair prompt",
+                None,
+                kwargs["_origin_user_input"],
+                kwargs["_logical_task_state"],
+                {"attempt": 1},
+                "direct_acceptance",
+            )
+        return "done"
+
+    executor._chat_turn = turn
+
+    assert await executor.chat("original public request") == "done"
+    assert [message for message, _ in calls] == [
+        "original public request",
+        "structured repair prompt",
+    ]
+    assert calls[1][1]["_origin_user_input"] == "original public request"
+    assert (
+        calls[0][1]["_logical_task_state"]["workspace_id"]
+        == calls[1][1]["_logical_task_state"]["workspace_id"]
+    )
+    assert calls[1][1]["_direct_acceptance_state"] == {"attempt": 1}
+
+
+def test_direct_long_horizon_acceptance_continues_without_replaying_prompt():
+    from aworld.core.context.base import Context
+    from aworld.core.execution_protocol import ExecutionProtocolPolicy
+    from aworld.core.task import Task, TaskResponse
+    from aworld.runners.execution_protocol import (
+        configure_execution_protocol,
+        record_tool_protocol_event,
+    )
+
+    context = Context(task_id="segment-1")
+    task = Task(
+        id="segment-1",
+        input="build the requested project",
+        context=context,
+        timeout=600,
+        completion_reserve_seconds=30,
+    )
+    context.set_task(task)
+    configure_execution_protocol(
+        context,
+        "root-agent",
+        ExecutionProtocolPolicy(mode="guide", activation_event_threshold=1),
+    )
+    record_tool_protocol_event(
+        context,
+        "root-agent",
+        {
+            "current_agent_step": 1,
+            "completion_advanced": True,
+            "goal_progress": True,
+        },
+    )
+
+    executor = object.__new__(LocalAgentExecutor)
+    executor._session_mode = "direct"
+    executor._base_runtime = None
+    executor.swarm = SimpleNamespace(
+        communicate_agent=SimpleNamespace(id=lambda: "root-agent")
+    )
+    logical_state = new_goal_contract_state(
+        "build the requested project", source="direct_invocation"
+    )
+    response = TaskResponse(
+        success=True,
+        answer="",
+        semantic_status="succeeded",
+    )
+    event = {
+        "task_id": task.id,
+        "semantic_status": "succeeded",
+        "recoverable": None,
+        "final_answer": "",
+        "completion_assessment": None,
+    }
+
+    continuation = executor._direct_acceptance_continuation(
+        task=task,
+        response=response,
+        answer="",
+        event=event,
+        origin_user_input="build the requested project",
+        logical_task_state=logical_state,
+        acceptance_state=None,
+    )
+
+    assert isinstance(continuation, _GoalContinuation)
+    assert continuation.source == "direct_acceptance"
+    assert continuation.prompt != "build the requested project"
+    assert "Last attempt receipt:" in continuation.prompt
+    assert continuation.acceptance_state["workspace_id"] == logical_state["workspace_id"]
+    assert response.execution_protocol["armed"] is True
+    assert response.execution_protocol["acceptance_continuation_count"] == 1
+
+
+def test_direct_acceptance_records_repair_success_without_another_segment():
+    from aworld.core.context.base import Context
+    from aworld.core.execution_protocol import ExecutionProtocolPolicy
+    from aworld.core.task import Task, TaskResponse
+    from aworld.runners.execution_protocol import configure_execution_protocol
+
+    context = Context(task_id="segment-2")
+    task = Task(id="segment-2", input="continue", context=context, timeout=600)
+    context.set_task(task)
+    configure_execution_protocol(
+        context,
+        "root-agent",
+        ExecutionProtocolPolicy(mode="guide"),
+    )
+    executor = object.__new__(LocalAgentExecutor)
+    executor._session_mode = "direct"
+    executor._base_runtime = None
+    executor.swarm = SimpleNamespace(
+        communicate_agent=SimpleNamespace(id=lambda: "root-agent")
+    )
+    state = new_goal_contract_state(
+        "build the requested project",
+        max_turns=2,
+        source="direct_long_horizon",
+    )
+    state["turn_count"] = 2
+    state["protocol_telemetry"] = {
+        "schema_version": "aworld.execution-protocol-telemetry/v1",
+        "armed": True,
+    }
+    response = TaskResponse(
+        success=True,
+        answer="verified result",
+        semantic_status="succeeded",
+    )
+
+    continuation = executor._direct_acceptance_continuation(
+        task=task,
+        response=response,
+        answer="verified result",
+        event={
+            "task_id": task.id,
+            "semantic_status": "succeeded",
+            "final_answer": "verified result",
+        },
+        origin_user_input="build the requested project",
+        logical_task_state=state,
+        acceptance_state=state,
+    )
+
+    assert continuation is None
+    assert response.execution_protocol["acceptance_disposition"] == "complete"
+    assert response.execution_protocol["acceptance_satisfied"] is True
+
+
+def test_direct_acceptance_bypasses_unarmed_short_task():
+    from aworld.core.context.base import Context
+    from aworld.core.execution_protocol import ExecutionProtocolPolicy
+    from aworld.core.task import Task, TaskResponse
+    from aworld.runners.execution_protocol import configure_execution_protocol
+
+    context = Context(task_id="short")
+    task = Task(id="short", input="answer directly", context=context)
+    context.set_task(task)
+    configure_execution_protocol(
+        context,
+        "root-agent",
+        ExecutionProtocolPolicy(mode="guide"),
+    )
+    executor = object.__new__(LocalAgentExecutor)
+    executor._session_mode = "direct"
+    executor._base_runtime = None
+    executor.swarm = SimpleNamespace(
+        communicate_agent=SimpleNamespace(id=lambda: "root-agent")
+    )
+    response = TaskResponse(
+        success=True,
+        answer="",
+        semantic_status="succeeded",
+    )
+
+    assert executor._direct_acceptance_continuation(
+        task=task,
+        response=response,
+        answer="",
+        event={"task_id": task.id, "semantic_status": "succeeded"},
+        origin_user_input="answer directly",
+        logical_task_state=new_goal_contract_state("answer directly"),
+        acceptance_state=None,
+    ) is None
+    assert response.execution_protocol["armed"] is False
+    assert "implicit_acceptance_created" not in response.execution_protocol
+
+
+def test_direct_acceptance_respects_deadline_reserve():
+    from aworld.core.context.base import Context
+    from aworld.core.execution_protocol import ExecutionProtocolPolicy
+    from aworld.core.task import Task, TaskResponse
+    from aworld.runners.execution_protocol import (
+        configure_execution_protocol,
+        record_tool_protocol_event,
+    )
+
+    context = Context(task_id="deadline")
+    task = Task(
+        id="deadline",
+        input="long work",
+        context=context,
+        timeout=120,
+        completion_reserve_seconds=120,
+    )
+    context.set_task(task)
+    configure_execution_protocol(
+        context,
+        "root-agent",
+        ExecutionProtocolPolicy(mode="guide", activation_event_threshold=1),
+    )
+    record_tool_protocol_event(
+        context,
+        "root-agent",
+        {"current_agent_step": 1, "completion_advanced": True},
+    )
+    executor = object.__new__(LocalAgentExecutor)
+    executor._session_mode = "direct"
+    executor._base_runtime = None
+    executor.swarm = SimpleNamespace(
+        communicate_agent=SimpleNamespace(id=lambda: "root-agent")
+    )
+    response = TaskResponse(
+        success=False,
+        answer="partial",
+        semantic_status="incomplete",
+        recoverable=True,
+    )
+
+    continuation = executor._direct_acceptance_continuation(
+        task=task,
+        response=response,
+        answer="partial",
+        event={
+            "task_id": task.id,
+            "semantic_status": "incomplete",
+            "recoverable": True,
+            "final_answer": "partial",
+        },
+        origin_user_input="long work",
+        logical_task_state=new_goal_contract_state("long work"),
+        acceptance_state=None,
+    )
+
+    assert continuation is None
+    assert response.execution_protocol["acceptance_continuation_suppressed"] == (
+        "deadline_reserve"
+    )
+    assert response.success is False
+    assert response.semantic_status == "budget_exhausted"
+    assert response.failure_origin == "task"
+
+
+def test_explicit_goal_owned_segment_cannot_start_implicit_acceptance():
+    from aworld.core.context.base import Context
+    from aworld.core.execution_protocol import ExecutionProtocolPolicy
+    from aworld.core.task import Task, TaskResponse
+    from aworld.runners.execution_protocol import (
+        configure_execution_protocol,
+        record_tool_protocol_event,
+    )
+
+    context = Context(task_id="explicit-limit")
+    task = Task(id="explicit-limit", input="work", context=context)
+    context.set_task(task)
+    configure_execution_protocol(
+        context,
+        "root-agent",
+        ExecutionProtocolPolicy(mode="guide", activation_event_threshold=1),
+    )
+    record_tool_protocol_event(
+        context,
+        "root-agent",
+        {"current_agent_step": 1, "completion_advanced": True},
+    )
+    executor = object.__new__(LocalAgentExecutor)
+    executor._session_mode = "direct"
+    executor._base_runtime = None
+    executor.swarm = SimpleNamespace(
+        communicate_agent=SimpleNamespace(id=lambda: "root-agent")
+    )
+
+    assert executor._direct_acceptance_continuation(
+        task=task,
+        response=TaskResponse(
+            success=False,
+            answer="partial",
+            semantic_status="incomplete",
+            recoverable=True,
+        ),
+        answer="partial",
+        event={"semantic_status": "incomplete", "recoverable": True},
+        origin_user_input="work",
+        logical_task_state=new_goal_contract_state("work"),
+        acceptance_state=None,
+        explicit_goal_owned_segment=True,
+    ) is None
+
+
+def test_direct_acceptance_limit_is_exported_as_unsatisfied():
+    from aworld.core.context.base import Context
+    from aworld.core.execution_protocol import ExecutionProtocolPolicy
+    from aworld.core.task import Task, TaskResponse
+    from aworld.runners.execution_protocol import configure_execution_protocol
+
+    context = Context(task_id="repair-limit")
+    task = Task(id="repair-limit", input="continue", context=context)
+    context.set_task(task)
+    configure_execution_protocol(
+        context,
+        "root-agent",
+        ExecutionProtocolPolicy(mode="guide"),
+    )
+    executor = object.__new__(LocalAgentExecutor)
+    executor._session_mode = "direct"
+    executor._base_runtime = None
+    executor.swarm = SimpleNamespace(
+        communicate_agent=SimpleNamespace(id=lambda: "root-agent")
+    )
+    state = new_goal_contract_state("work", max_turns=2)
+    state["turn_count"] = 2
+    state["protocol_telemetry"] = {
+        "schema_version": "aworld.execution-protocol-telemetry/v1",
+        "mode": "guide",
+        "phase": "execute",
+        "armed": True,
+    }
+    response = TaskResponse(
+        success=False,
+        answer="still partial",
+        semantic_status="incomplete",
+        recoverable=True,
+    )
+
+    assert executor._direct_acceptance_continuation(
+        task=task,
+        response=response,
+        answer="still partial",
+        event={"semantic_status": "incomplete", "recoverable": True},
+        origin_user_input="work",
+        logical_task_state=state,
+        acceptance_state=state,
+    ) is None
+    assert response.success is False
+    assert response.semantic_status == "budget_exhausted"
+    assert response.execution_protocol["acceptance_disposition"] == "limit_reached"
+
+
+@pytest.mark.asyncio
+async def test_later_segment_error_retains_prior_evidence_without_receipt_mismatch():
+    from aworld.core.task import TaskResponse
+
+    executor = object.__new__(LocalAgentExecutor)
+    executor._base_runtime = None
+    executor._session_mode = "direct"
+    executor._run_plugin_task_hook = AsyncMock(return_value=[])
+    calls = 0
+    final_response = TaskResponse(
+        id="segment-2",
+        success=False,
+        semantic_status="incomplete",
+        llm_calls=[{"request_id": "call-2"}],
+        trajectory=[{"meta": {"task_id": "segment-2"}, "action": {}}],
+    )
+
+    async def turn(_message, **kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            executor.last_task_response = TaskResponse(
+                id="segment-1",
+                success=False,
+                semantic_status="incomplete",
+                llm_calls=[{"request_id": "call-1"}],
+                trajectory=[
+                    {"meta": {"task_id": "segment-1"}, "action": {}}
+                ],
+            )
+            return _GoalContinuation(
+                "repair",
+                None,
+                kwargs["_origin_user_input"],
+                kwargs["_logical_task_state"],
+                {"attempt": 1},
+                "direct_acceptance",
+            )
+        executor.last_task_response = final_response
+        raise RuntimeError("second segment failed")
+
+    executor._chat_turn = turn
+    with pytest.raises(RuntimeError, match="second segment failed"):
+        await executor.chat("work")
+
+    assert [call["request_id"] for call in final_response.llm_calls] == [
+        "call-1",
+        "call-2",
+    ]
+    assert [item["meta"]["task_id"] for item in final_response.trajectory] == [
+        "segment-2"
+    ]
+    assert final_response.execution_segments[0]["task_id"] == "segment-1"
+
+
+@pytest.mark.asyncio
+async def test_pre_run_failure_creates_typed_envelope_for_prior_evidence():
+    from aworld.core.task import TaskResponse
+
+    executor = object.__new__(LocalAgentExecutor)
+    executor._base_runtime = None
+    executor._session_mode = "direct"
+    executor._run_plugin_task_hook = AsyncMock(return_value=[])
+    calls = 0
+
+    async def turn(_message, **kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            executor.last_task_response = TaskResponse(
+                id="segment-1",
+                success=False,
+                semantic_status="incomplete",
+                llm_calls=[{"request_id": "call-1"}],
+                trajectory=[
+                    {"meta": {"task_id": "segment-1"}, "action": {}}
+                ],
+            )
+            return _GoalContinuation(
+                "repair",
+                None,
+                kwargs["_origin_user_input"],
+                kwargs["_logical_task_state"],
+                {"attempt": 1},
+                "direct_acceptance",
+            )
+        executor.last_task_response = None
+        raise RuntimeError("context setup failed")
+
+    executor._chat_turn = turn
+    with pytest.raises(RuntimeError, match="context setup failed"):
+        await executor.chat("work")
+
+    response = executor.last_task_response
+    assert response.failure_origin == "infrastructure"
+    assert response.failure_code == "internal_segment_setup_error"
+    assert response.llm_calls == [{"request_id": "call-1"}]
+    assert response.execution_segments[0]["task_id"] == "segment-1"
+
+
+@pytest.mark.asyncio
+async def test_explicit_goal_continuations_do_not_build_unbounded_run_envelope():
+    from aworld.core.task import TaskResponse
+
+    executor = object.__new__(LocalAgentExecutor)
+    executor._base_runtime = None
+    executor._session_mode = "direct"
+    calls = 0
+
+    async def turn(_message, **kwargs):
+        nonlocal calls
+        calls += 1
+        executor.last_task_response = TaskResponse(
+            id=f"goal-{calls}",
+            success=calls == 3,
+            llm_calls=[{"request_id": f"call-{calls}"}],
+            trajectory=[{"meta": {"task_id": f"goal-{calls}"}, "action": {}}],
+        )
+        if calls < 3:
+            return _GoalContinuation(
+                "continue goal",
+                None,
+                kwargs["_origin_user_input"],
+                kwargs["_logical_task_state"],
+                None,
+                "goal_hook",
+            )
+        return "done"
+
+    executor._chat_turn = turn
+    assert await executor.chat("goal") == "done"
+    assert executor.last_task_response.llm_calls == [{"request_id": "call-3"}]
+    assert executor.last_task_response.execution_segments == []
 
 
 @pytest.mark.asyncio

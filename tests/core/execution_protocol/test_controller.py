@@ -151,8 +151,17 @@ def test_guide_requests_one_replan_per_attempt_and_honors_limit():
     assert first.decision.action is ControllerAction.REQUEST_REPLAN
     assert duplicate.decision.action is ControllerAction.CONTINUE
     assert second.decision.action is ControllerAction.REQUEST_REPLAN
+    assert exhausted.decision.action is ControllerAction.ENTER_FINALIZATION
     assert exhausted.decision.reason is DecisionReason.REPLAN_LIMIT_REACHED
     assert exhausted.state.replan_count == 2
+    assert exhausted.state.phase is ProtocolPhase.FINALIZE
+    assert exhausted.state.finalization_entered is True
+
+    repeated = transition_execution_protocol(
+        exhausted.state, _tool(repetition_count=3), policy
+    )
+    assert repeated.decision.action is ControllerAction.CONTINUE
+    assert repeated.decision.reason is DecisionReason.REPLAN_LIMIT_REACHED
 
 
 def test_observed_progress_resets_stagnation_counter():

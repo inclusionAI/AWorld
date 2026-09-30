@@ -35,6 +35,72 @@ def test_typed_outcome_preserves_legacy_truth_value_contract() -> None:
     assert bool(failed_with_partial_summary) is False
 
 
+def test_typed_outcome_exports_bounded_execution_protocol_telemetry() -> None:
+    telemetry = {
+        "schema_version": "aworld.execution-protocol-telemetry/v1",
+        "mode": "guide",
+        "phase": "complete",
+        "armed": True,
+        "event_count": 4,
+    }
+    outcome = DirectRunOutcome.from_summary(
+        {"results": [{"success": True, "execution_protocol": telemetry}]},
+        status=DirectRunStatus.SUCCEEDED,
+    )
+
+    assert outcome.to_dict()["execution_protocol"] == telemetry
+
+
+def test_multi_segment_partial_fidelity_is_not_promoted_to_complete() -> None:
+    outcome = DirectRunOutcome.from_summary(
+        {
+            "results": [
+                {
+                    "success": True,
+                    "trajectory": [{"action": {"content": "done"}}],
+                    "trajectory_build_results": [
+                        {"fidelity": "partial", "llm_call_count": 1},
+                        {"fidelity": "complete", "llm_call_count": 1},
+                    ],
+                }
+            ]
+        },
+        status=DirectRunStatus.SUCCEEDED,
+    )
+
+    assert outcome.trajectory_fidelity == "partial"
+
+
+def test_multi_segment_failure_keeps_prior_successful_checkpoint() -> None:
+    outcome = DirectRunOutcome.from_summary(
+        {
+            "results": [
+                {
+                    "success": False,
+                    "trajectory_build_results": [
+                        {
+                            "task_id": "segment-1",
+                            "completed_updates": 2,
+                            "persisted_items": 1,
+                            "trajectory_checksum": "checksum-1",
+                        },
+                        {
+                            "task_id": "segment-2",
+                            "completed_updates": 0,
+                            "persisted_items": 0,
+                            "trajectory_checksum": "checksum-2",
+                        },
+                    ],
+                }
+            ]
+        },
+        status=DirectRunStatus.INFRASTRUCTURE_FAILED,
+    )
+
+    assert outcome.last_successful_checkpoint["task_id"] == "segment-1"
+    assert outcome.last_successful_checkpoint["trajectory_checksum"] == "checksum-1"
+
+
 def test_task_failure_exit_code_is_opt_in_for_supervised_runtimes(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

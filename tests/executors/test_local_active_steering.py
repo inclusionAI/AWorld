@@ -144,6 +144,37 @@ async def test_local_executor_task_completed_hook_can_continue_with_follow_up_pr
 
 
 @pytest.mark.asyncio
+async def test_direct_acceptance_controller_error_fails_open_to_task_result(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    executor, _output_buffer = _build_executor(session_id="sess-1")
+    executor._session_mode = "direct"
+    response = TaskResponse(
+        success=True,
+        answer="useful result",
+        semantic_status="succeeded",
+    )
+    _stub_chat_dependencies(
+        executor,
+        monkeypatch,
+        _FakeStreamingOutputs(response=response),
+    )
+
+    def fail_acceptance(**_kwargs):
+        raise ValueError("controller bug")
+
+    monkeypatch.setattr(
+        executor,
+        "_direct_acceptance_continuation",
+        fail_acceptance,
+    )
+
+    assert await executor.chat("hello") == "useful result"
+    assert response.success is True
+    assert response.failure_origin is None
+
+
+@pytest.mark.asyncio
 async def test_local_executor_active_steering_stream_error_skips_console_panel(
     monkeypatch: pytest.MonkeyPatch,
 ):

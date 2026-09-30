@@ -12,12 +12,14 @@ from aworld.core.execution_protocol import (
 )
 from aworld.core.task import Task
 from aworld.runners.execution_protocol import (
+    build_execution_protocol_telemetry,
     configure_execution_protocol,
     consume_execution_protocol_guidance,
     execution_protocol_accepts_model_profile,
     execution_protocol_requires_tool_free_finalization,
     final_review_guidance,
     load_candidate_fallback,
+    load_execution_protocol_state,
     record_candidate_final,
     record_model_execution_profile,
     record_review_tool_action,
@@ -93,6 +95,53 @@ def test_observe_mode_records_without_changing_the_prompt() -> None:
     assert transition is not None
     assert transition.decision.action is ControllerAction.WOULD_REQUEST_REPLAN
     assert consume_execution_protocol_guidance(context, "agent") is None
+    assert not execution_protocol_requires_tool_free_finalization(context, "agent")
+
+
+def test_replan_exhaustion_reserves_a_tool_free_final_turn() -> None:
+    context = _context("replan-finalize")
+    policy = ExecutionProtocolPolicy(
+        mode=ProtocolMode.GUIDE,
+        activation_event_threshold=1,
+        stagnation_event_threshold=1,
+        repetition_threshold=1,
+        max_replans=0,
+    )
+    configure_execution_protocol(context, "agent", policy)
+
+    transition = record_tool_protocol_event(
+        context,
+        "agent",
+        _semantic_state(repetition_count=1),
+    )
+
+    assert transition is not None
+    assert transition.decision.action is ControllerAction.ENTER_FINALIZATION
+    assert transition.state.phase is ProtocolPhase.FINALIZE
+    assert execution_protocol_requires_tool_free_finalization(context, "agent")
+
+
+def test_observe_finalization_never_changes_tool_availability() -> None:
+    context = _context("observe-finalize")
+    policy = ExecutionProtocolPolicy(
+        mode=ProtocolMode.OBSERVE,
+        activation_event_threshold=1,
+        stagnation_event_threshold=1,
+        repetition_threshold=1,
+        max_replans=0,
+    )
+    configure_execution_protocol(context, "agent", policy)
+
+    transition = record_tool_protocol_event(
+        context,
+        "agent",
+        _semantic_state(repetition_count=1),
+    )
+
+    assert transition is not None
+    assert transition.decision.action is ControllerAction.WOULD_ENTER_FINALIZATION
+    assert transition.state.phase is ProtocolPhase.FINALIZE
+    assert not execution_protocol_requires_tool_free_finalization(context, "agent")
 
 
 def test_model_profile_arms_early_and_is_accepted_only_once() -> None:
@@ -120,6 +169,66 @@ def test_model_profile_arms_early_and_is_accepted_only_once() -> None:
     assert transition.state.long_horizon_armed is True
     assert execution_protocol_accepts_model_profile(context, "agent") is False
     assert record_model_execution_profile(context, "agent", {}) is None
+
+
+def test_scoped_state_and_bounded_telemetry_are_public_read_only_views() -> None:
+    context = _context("telemetry")
+    policy = ExecutionProtocolPolicy(
+        mode=ProtocolMode.GUIDE,
+        activation_event_threshold=1,
+    )
+    configure_execution_protocol(context, "agent", policy)
+    record_tool_protocol_event(
+        context,
+        "agent",
+        _semantic_state(completion_advanced=True, goal_progress=True),
+    )
+
+    state = load_execution_protocol_state(context, "agent")
+    telemetry = build_execution_protocol_telemetry(context, "agent")
+
+    assert state.scope.task_id == "telemetry"
+    assert state.long_horizon_armed is True
+    assert telemetry == {
+        "schema_version": "aworld.execution-protocol-telemetry/v1",
+        "mode": "guide",
+        "phase": "execute",
+        "armed": True,
+        "event_count": 1,
+        "tool_observation_count": 1,
+        "stagnant_observations": 0,
+        "replan_count": 0,
+        "candidate_final_count": 0,
+        "final_review_count": 0,
+        "repair_count": 0,
+        "finalization_entered": False,
+    }
+
+
+def test_evidence_fingerprint_change_alone_does_not_reset_stagnation() -> None:
+    context = _context("evidence-change")
+    policy = ExecutionProtocolPolicy(
+        mode=ProtocolMode.GUIDE,
+        activation_event_threshold=20,
+        stagnation_event_threshold=1,
+        repetition_threshold=1,
+    )
+    configure_execution_protocol(context, "agent", policy)
+
+    transition = record_tool_protocol_event(
+        context,
+        "agent",
+        _semantic_state(
+            repetition_count=1,
+            validation_evidence_advanced=True,
+            completion_advanced=False,
+            goal_progress=False,
+        ),
+    )
+
+    assert transition is not None
+    assert transition.decision.action is ControllerAction.REQUEST_REPLAN
+    assert transition.state.stagnant_observations == 1
 
 
 def test_invalid_model_profile_fails_open_and_does_not_repeat() -> None:

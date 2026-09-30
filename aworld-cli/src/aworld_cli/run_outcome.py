@@ -130,9 +130,19 @@ def _tool_call_count(trajectory: list[dict[str, Any]]) -> int:
 
 def _result_counts(result: Mapping[str, Any]) -> tuple[int, int, int]:
     trajectory = _native_trajectory(result)
+    raw_builds = result.get("trajectory_build_results")
+    builds = (
+        [_serialize_control_record(item) for item in raw_builds]
+        if isinstance(raw_builds, list)
+        else []
+    )
     build = _serialize_control_record(result.get("trajectory_build_result"))
 
-    llm_count = _as_nonnegative_int(build.get("llm_call_count"))
+    llm_count = (
+        sum(_as_nonnegative_int(item.get("llm_call_count")) or 0 for item in builds)
+        if builds
+        else _as_nonnegative_int(build.get("llm_call_count"))
+    )
     if llm_count is None:
         llm_calls = result.get("llm_calls")
         if isinstance(llm_calls, list):
@@ -142,11 +152,22 @@ def _result_counts(result: Mapping[str, Any]) -> tuple[int, int, int]:
         else:
             llm_count = 0
 
-    tool_count = _as_nonnegative_int(build.get("tool_call_count"))
+    tool_count = (
+        sum(_as_nonnegative_int(item.get("tool_call_count")) or 0 for item in builds)
+        if builds
+        else _as_nonnegative_int(build.get("tool_call_count"))
+    )
     if tool_count is None:
         tool_count = _tool_call_count(trajectory)
 
-    action_count = _as_nonnegative_int(build.get("source_agent_messages"))
+    action_count = (
+        sum(
+            _as_nonnegative_int(item.get("source_agent_messages")) or 0
+            for item in builds
+        )
+        if builds
+        else _as_nonnegative_int(build.get("source_agent_messages"))
+    )
     if action_count is None:
         action_count = _agent_action_count(trajectory)
 
@@ -159,6 +180,28 @@ def _checkpoint_for_result(
     result_index: int,
 ) -> dict[str, Any] | None:
     build = _serialize_control_record(result.get("trajectory_build_result"))
+    if not build:
+        raw_builds = result.get("trajectory_build_results")
+        if isinstance(raw_builds, list):
+            candidates = [
+                candidate
+                for item in raw_builds
+                for candidate in (_serialize_control_record(item),)
+                if candidate
+            ]
+            build = next(
+                (
+                    candidate
+                    for candidate in reversed(candidates)
+                    if (
+                        (_as_nonnegative_int(candidate.get("completed_updates")) or 0)
+                        > 0
+                        or (_as_nonnegative_int(candidate.get("persisted_items")) or 0)
+                        > 0
+                    )
+                ),
+                candidates[-1] if candidates else {},
+            )
     completed_updates = _as_nonnegative_int(build.get("completed_updates")) or 0
     persisted_items = _as_nonnegative_int(build.get("persisted_items")) or 0
     if build and (completed_updates > 0 or persisted_items > 0):
@@ -205,6 +248,7 @@ def _summary_metrics(summary: dict[str, Any] | None) -> dict[str, Any]:
     trajectory_item_count = 0
     last_successful_checkpoint = None
     fidelities: list[str] = []
+    execution_protocol = None
 
     if isinstance(summary, dict):
         for index, result in enumerate(summary.get("results") or [], start=1):
@@ -222,6 +266,23 @@ def _summary_metrics(summary: dict[str, Any] | None) -> dict[str, Any]:
             fidelity = build.get("fidelity") or result.get("trajectory_fidelity")
             if fidelity:
                 fidelities.append(str(fidelity))
+            raw_builds = result.get("trajectory_build_results")
+            if isinstance(raw_builds, list):
+                fidelities.extend(
+                    str(candidate["fidelity"])
+                    for item in raw_builds
+                    for candidate in (_serialize_control_record(item),)
+                    if candidate.get("fidelity")
+                )
+            from aworld.runners.execution_protocol import (
+                project_execution_protocol_telemetry,
+            )
+
+            projected = project_execution_protocol_telemetry(
+                result.get("execution_protocol")
+            )
+            if projected is not None:
+                execution_protocol = projected
 
     return {
         "llm_call_count": llm_call_count,
@@ -230,6 +291,7 @@ def _summary_metrics(summary: dict[str, Any] | None) -> dict[str, Any]:
         "trajectory_item_count": trajectory_item_count,
         "last_successful_checkpoint": last_successful_checkpoint,
         "fidelities": fidelities,
+        "execution_protocol": execution_protocol,
     }
 
 
@@ -273,6 +335,7 @@ class DirectRunOutcome(Mapping[str, Any]):
     action_count: int
     last_successful_checkpoint: dict[str, Any] | None = None
     failure_record: dict[str, Any] | None = None
+    execution_protocol: dict[str, Any] | None = None
 
     SCHEMA_VERSION = "aworld.run.outcome.v1"
 
@@ -316,6 +379,7 @@ class DirectRunOutcome(Mapping[str, Any]):
             llm_call_count=metrics["llm_call_count"],
             tool_call_count=metrics["tool_call_count"],
             action_count=metrics["action_count"],
+            execution_protocol=metrics["execution_protocol"],
             last_successful_checkpoint=metrics["last_successful_checkpoint"],
             failure_record=dict(failure_record) if failure_record is not None else None,
         )
@@ -344,6 +408,8 @@ class DirectRunOutcome(Mapping[str, Any]):
                     if isinstance(value, str) and _CONTROL_IDENTIFIER.fullmatch(value):
                         failure[key] = value
             payload["failure"] = failure
+        if self.execution_protocol is not None:
+            payload["execution_protocol"] = dict(self.execution_protocol)
         if atif_export is not None:
             payload["atif_export"] = dict(atif_export)
         return payload

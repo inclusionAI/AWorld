@@ -82,6 +82,10 @@ class _PauseForQueuedSteeringCheckpoint(Exception):
 class _GoalContinuation:
     prompt: str
     context: Any = None
+    origin_user_input: Any = None
+    logical_task_state: dict[str, Any] | None = None
+    acceptance_state: dict[str, Any] | None = None
+    source: str = "goal"
 
 
 class LocalAgentExecutor(BaseAgentExecutor):
@@ -895,6 +899,7 @@ class LocalAgentExecutor(BaseAgentExecutor):
         image_urls: Optional[List[str]] = None,
         requested_skill_names: Optional[List[str]] = None,
         origin_user_input: Any = None,
+        logical_task_state: dict[str, Any] | None = None,
     ) -> Task:
         """
         Build task from task content.
@@ -999,7 +1004,9 @@ class LocalAgentExecutor(BaseAgentExecutor):
 
         # Set workspace_path for hook system (CLI working directory)
         context.execution_scope = "cli_interactive"
-        if not isinstance(getattr(context, "context_info", None), dict):
+        # ContextState is a dict-like runtime registry but intentionally is not
+        # a ``dict`` subclass. Replacing it here discards restored checkpoints.
+        if getattr(context, "context_info", None) is None:
             context.context_info = {}
         context.context_info["execution_scope"] = "cli_interactive"
         context.workspace_path = os.getcwd()
@@ -1041,9 +1048,18 @@ class LocalAgentExecutor(BaseAgentExecutor):
         # Bind native filesystem authority before preparing originals. Goal
         # segments share a durable identity; ordinary requests never do.
         goal_state = self._goal_session_state()
+        logical_state = (
+            goal_state
+            if goal_state.get("active")
+            else logical_task_state
+            if isinstance(logical_task_state, dict)
+            else {}
+        )
         workspace_request = str(original_task_content or "")
         if goal_state.get("active"):
             workspace_request = str(goal_state.get("objective") or workspace_request)
+        elif logical_state:
+            workspace_request = str(logical_state.get("objective") or workspace_request)
         root_agent = getattr(self.swarm, "communicate_agent", None)
         if isinstance(root_agent, list):
             root_agent = root_agent[0] if len(root_agent) == 1 else None
@@ -1054,8 +1070,11 @@ class LocalAgentExecutor(BaseAgentExecutor):
         if os.path.realpath(context.workspace_path) == local_path:
             from aworld.core.task_workspace.session import bind_task_workspace, goal_workspace_identity
             scope = {"session_id": str(session_id), "task_id": str(task_id)}
-            if goal_state.get("active"):
-                scope = {"session_id": str(session_id), "goal_id": goal_workspace_identity(goal_state)}
+            if logical_state:
+                scope = {
+                    "session_id": str(session_id),
+                    "goal_id": goal_workspace_identity(logical_state),
+                }
             bind_task_workspace(context, context.workspace_path, scope)
         configure_runtime_completion(
             context, request=workspace_request,
@@ -1147,24 +1166,141 @@ class LocalAgentExecutor(BaseAgentExecutor):
     ) -> str:
         """Run until completion, user stop, or an optional goal attempt limit."""
         previous_context = None
+        objective = message[0] if isinstance(message, tuple) else message
+        origin_user_input = str(objective or "")
+        # One public invocation owns one stable logical workspace identity. It
+        # is deliberately invocation-local: short tasks gain no extra loop and
+        # a later chat cannot inherit this task's evidence.
+        from aworld_cli.builtin_plugins.goal_session.hooks.task_completed import (
+            new_goal_contract_state,
+        )
+        logical_task_state = (
+            new_goal_contract_state(
+                str(objective or ""),
+                source="direct_invocation",
+            )
+            if getattr(self, "_session_mode", "interactive") == "direct"
+            else None
+        )
+        acceptance_state = None
+        prior_llm_calls: list[dict[str, Any]] = []
+        prior_segments: list[dict[str, Any]] = []
+        self.last_execution_protocol = None
+
+        def retain_segment(response: TaskResponse | None) -> None:
+            if not isinstance(response, TaskResponse):
+                return
+            if isinstance(response.llm_calls, list):
+                prior_llm_calls.extend(copy.deepcopy(response.llm_calls))
+            build = response.trajectory_build_result
+            delivery = response.trajectory_delivery_receipt
+            prior_segments.append(
+                {
+                    "task_id": response.id,
+                    "trajectory": copy.deepcopy(
+                        response.trajectory
+                        if isinstance(response.trajectory, list)
+                        else []
+                    ),
+                    "trajectory_build_result": (
+                        build.to_dict()
+                        if build is not None and callable(getattr(build, "to_dict", None))
+                        else copy.deepcopy(build)
+                    ),
+                    "trajectory_delivery_receipt": (
+                        delivery.to_dict()
+                        if delivery is not None
+                        and callable(getattr(delivery, "to_dict", None))
+                        else copy.deepcopy(delivery)
+                    ),
+                }
+            )
+
+        def attach_prior_evidence(response: TaskResponse | None) -> None:
+            if not isinstance(response, TaskResponse):
+                return
+            if prior_llm_calls:
+                current_calls = (
+                    response.llm_calls
+                    if isinstance(response.llm_calls, list)
+                    else []
+                )
+                response.llm_calls = [*prior_llm_calls, *current_calls]
+                self.last_llm_usage = build_complete_llm_usage_summary(
+                    response.llm_calls
+                )
+            if prior_segments:
+                response.execution_segments = copy.deepcopy(prior_segments)
+
+        def ensure_failure_response(
+            *,
+            failure_origin: str,
+            failure_code: str,
+            error_type: str,
+        ) -> TaskResponse | None:
+            response = getattr(self, "last_task_response", None)
+            if not isinstance(response, TaskResponse) and (
+                prior_llm_calls or prior_segments
+            ):
+                response = TaskResponse(
+                    success=False,
+                    answer="",
+                    status="failed",
+                    failure_origin=failure_origin,
+                    failure_code=failure_code,
+                    error_type=error_type,
+                    semantic_status="incomplete",
+                    completion_reason=failure_code,
+                    recoverable=False,
+                )
+                self.last_task_response = response
+            return response
+
         self._active_chat_task = asyncio.current_task()
         try:
             while True:
                 result = await self._chat_turn(
                     message, requested_skill_names=requested_skill_names,
                     _previous_goal_context=previous_context,
+                    _origin_user_input=origin_user_input,
+                    _logical_task_state=logical_task_state,
+                    _direct_acceptance_state=acceptance_state,
                 )
                 if not isinstance(result, _GoalContinuation):
+                    final_response = getattr(self, "last_task_response", None)
+                    attach_prior_evidence(final_response)
                     return result
+                segment_response = getattr(self, "last_task_response", None)
+                if result.source == "direct_acceptance":
+                    retain_segment(segment_response)
                 message = result.prompt
                 previous_context = result.context
+                origin_user_input = result.origin_user_input or origin_user_input
+                logical_task_state = result.logical_task_state or logical_task_state
+                acceptance_state = result.acceptance_state
                 # Give cancellation/queued controls a scheduling point between turns.
                 await asyncio.sleep(0)
         except asyncio.CancelledError:
+            attach_prior_evidence(
+                ensure_failure_response(
+                    failure_origin="cancelled",
+                    failure_code="internal_segment_cancelled",
+                    error_type="CancelledError",
+                )
+            )
             await self._run_plugin_task_hook("task_interrupted", {
                 "session_id": self.session_id, "task_status": "interrupted",
                 "partial_answer": "",
             })
+            raise
+        except Exception as exc:
+            attach_prior_evidence(
+                ensure_failure_response(
+                    failure_origin="infrastructure",
+                    failure_code="internal_segment_setup_error",
+                    error_type=type(exc).__name__,
+                )
+            )
             raise
         finally:
             self._active_goal_task = None
@@ -1175,6 +1311,199 @@ class LocalAgentExecutor(BaseAgentExecutor):
         if runtime is None or not hasattr(runtime, "build_plugin_hook_state"):
             return {}
         return runtime.build_plugin_hook_state("goal-session", "session", self)
+
+    def _root_agent(self):
+        root = getattr(self.swarm, "communicate_agent", None)
+        if isinstance(root, list):
+            return root[0] if len(root) == 1 else None
+        return root
+
+    def _direct_acceptance_continuation(
+        self,
+        *,
+        task: Task,
+        response: TaskResponse | None,
+        answer: str,
+        event: dict[str, Any],
+        origin_user_input: Any,
+        logical_task_state: dict[str, Any],
+        acceptance_state: dict[str, Any] | None,
+        explicit_goal_owned_segment: bool = False,
+    ) -> _GoalContinuation | None:
+        """Continue one armed direct task without replaying its public prompt."""
+        if getattr(self, "_session_mode", "interactive") != "direct":
+            return None
+        if explicit_goal_owned_segment or self._goal_session_state().get("active"):
+            return None
+        root = self._root_agent()
+        root_id = getattr(root, "id", None)
+        root_id = root_id() if callable(root_id) else root_id
+        if not isinstance(root_id, str) or not root_id:
+            return None
+
+        from aworld.runners.execution_protocol import (
+            build_execution_protocol_telemetry,
+            execution_protocol_policy,
+            load_execution_protocol_state,
+        )
+
+        policy = execution_protocol_policy(task.context, root_id)
+        protocol_state = load_execution_protocol_state(task.context, root_id)
+        current_telemetry = build_execution_protocol_telemetry(task.context, root_id)
+        if response is not None and (
+            response.failure_origin in {"infrastructure", "cancelled"}
+            or response.recoverable is False
+        ):
+            preserved = (
+                dict(acceptance_state.get("protocol_telemetry") or {})
+                if isinstance(acceptance_state, dict)
+                else current_telemetry
+            )
+            self.last_execution_protocol = preserved
+            response.execution_protocol = preserved
+            return None
+        self.last_execution_protocol = current_telemetry
+        if response is not None:
+            response.execution_protocol = current_telemetry
+        semantic_status = str(event.get("semantic_status") or "").strip().lower()
+        if not semantic_status:
+            semantic_status = (
+                "succeeded"
+                if response is not None and response.success is True
+                else "incomplete"
+            )
+        completion_assessment = event.get("completion_assessment")
+        if not isinstance(completion_assessment, dict):
+            completion_assessment = {}
+        assessment_mode = str(completion_assessment.get("mode") or "").lower()
+        assessment_status = str(completion_assessment.get("status") or "").lower()
+        structured_gap = (
+            semantic_status in {"incomplete", "budget_exhausted"}
+            or not str(answer or "").strip()
+            or (
+                assessment_mode == "enforce"
+                and assessment_status not in {"", "satisfied"}
+            )
+        )
+
+        if acceptance_state is None:
+            if (
+                not protocol_state.long_horizon_armed
+                or policy.max_repairs < 1
+                or not structured_gap
+            ):
+                return None
+            from aworld_cli.builtin_plugins.goal_session.hooks.task_completed import (
+                new_goal_contract_state,
+            )
+
+            acceptance_state = new_goal_contract_state(
+                str(logical_task_state.get("objective") or ""),
+                max_turns=1 + policy.max_repairs,
+                source="direct_long_horizon",
+            )
+            # Reuse the invocation identity so every internal segment observes
+            # the same workspace originals and evidence scope.
+            acceptance_state["workspace_id"] = logical_task_state.get("workspace_id")
+            acceptance_state["protocol_telemetry"] = current_telemetry
+        acceptance_event = dict(event)
+        acceptance_event["semantic_status"] = semantic_status
+        if not str(answer or "").strip() and semantic_status == "succeeded":
+            acceptance_event.update(
+                {
+                    "semantic_status": "incomplete",
+                    "completion_reason": "final_answer_missing",
+                    "recoverable": True,
+                }
+            )
+
+        from aworld_cli.builtin_plugins.goal_session.hooks.task_completed import (
+            apply_turn_outcome,
+            build_goal_context_prompt,
+        )
+
+        updated, should_continue = apply_turn_outcome(
+            acceptance_state,
+            acceptance_event,
+        )
+        receipt = updated.get("last_attempt_receipt")
+        telemetry = dict(updated.get("protocol_telemetry") or {})
+        if acceptance_state.get("turn_count", 1) > 1:
+            for key in (
+                "event_count",
+                "tool_observation_count",
+                "stagnant_observations",
+                "replan_count",
+                "candidate_final_count",
+                "final_review_count",
+                "repair_count",
+            ):
+                telemetry[key] = min(
+                    1_000_000,
+                    int(telemetry.get(key, 0) or 0)
+                    + int(current_telemetry.get(key, 0) or 0),
+                )
+            telemetry["armed"] = bool(
+                telemetry.get("armed") or current_telemetry.get("armed")
+            )
+            telemetry["finalization_entered"] = bool(
+                telemetry.get("finalization_entered")
+                or current_telemetry.get("finalization_entered")
+            )
+            telemetry["phase"] = current_telemetry.get(
+                "phase", telemetry.get("phase")
+            )
+        telemetry.update(
+            {
+                "implicit_acceptance_created": True,
+                "acceptance_attempt": receipt.get("attempt") if isinstance(receipt, dict) else None,
+                "acceptance_continuation_count": max(
+                    0, int(updated.get("turn_count", 1) or 1) - 1
+                ),
+                "acceptance_disposition": receipt.get("disposition") if isinstance(receipt, dict) else None,
+                "acceptance_reason": receipt.get("decision_reason") if isinstance(receipt, dict) else None,
+                "acceptance_satisfied": receipt.get("acceptance_satisfied") if isinstance(receipt, dict) else None,
+            }
+        )
+        updated["protocol_telemetry"] = telemetry
+        self.last_execution_protocol = telemetry
+        if response is not None:
+            response.execution_protocol = telemetry
+
+        if not should_continue:
+            if (
+                response is not None
+                and isinstance(receipt, dict)
+                and receipt.get("acceptance_satisfied") is False
+            ):
+                response.success = False
+                response.failure_origin = "task"
+                response.semantic_status = "budget_exhausted"
+                response.completion_reason = "implicit_acceptance_limit_reached"
+                response.recoverable = False
+            return None
+        remaining = task.remaining_seconds()
+        reserve = max(
+            float(task.completion_reserve_seconds or 0.0),
+            float(policy.finalization_reserve_seconds or 0.0),
+        )
+        if remaining is not None and remaining <= reserve:
+            telemetry["acceptance_continuation_suppressed"] = "deadline_reserve"
+            if response is not None:
+                response.success = False
+                response.failure_origin = "task"
+                response.semantic_status = "budget_exhausted"
+                response.completion_reason = "implicit_acceptance_deadline_reserve"
+                response.recoverable = False
+            return None
+        return _GoalContinuation(
+            build_goal_context_prompt(updated),
+            task.context,
+            origin_user_input,
+            logical_task_state,
+            updated,
+            "direct_acceptance",
+        )
 
     def _goal_agent_ids(self) -> dict[str, str]:
         """Stable configured names bridge UUID agent IDs after process restart.
@@ -1201,6 +1530,9 @@ class LocalAgentExecutor(BaseAgentExecutor):
         requested_skill_names: Optional[List[str]] = None,
         *,
         _previous_goal_context: Any = None,
+        _origin_user_input: Any = None,
+        _logical_task_state: dict[str, Any] | None = None,
+        _direct_acceptance_state: dict[str, Any] | None = None,
     ) -> str | _GoalContinuation:
             """
             Execute chat with local agent using Task/Runners pattern.
@@ -1235,6 +1567,9 @@ class LocalAgentExecutor(BaseAgentExecutor):
                 image_urls = None
 
             # 3. Build task (will use current session_id)
+            explicit_goal_owned_segment = bool(
+                self._goal_session_state().get("active")
+            )
             # Update session last used time
             self._update_session_last_used(self.session_id)
             task = await self._build_task(
@@ -1242,7 +1577,10 @@ class LocalAgentExecutor(BaseAgentExecutor):
                 session_id=self.session_id,
                 image_urls=image_urls,
                 requested_skill_names=requested_skill_names,
+                origin_user_input=_origin_user_input,
+                logical_task_state=_logical_task_state,
             )
+            internal_acceptance_segment = _direct_acceptance_state is not None
             if _previous_goal_context is not None:
                 from aworld.core.context.work_progress import carry_goal_work_state
                 carry_goal_work_state(_previous_goal_context, task.context)
@@ -1255,26 +1593,30 @@ class LocalAgentExecutor(BaseAgentExecutor):
                 resume_goal_work_state(task.context, **resume_scope, agent_id_mapping=mapping)
                 self._resume_goal_work_scope_once = None
                 self._resume_goal_agent_ids_once = None
-            task_skill_activation_evidence = tuple(
-                getattr(
-                    task,
-                    "_aworld_cli_skill_activation_evidence",
-                    self.last_skill_activation_evidence,
-                )
+            raw_skill_activation_evidence = getattr(
+                task,
+                "_aworld_cli_skill_activation_evidence",
+                self.last_skill_activation_evidence,
+            )
+            task_skill_activation_evidence = (
+                tuple(raw_skill_activation_evidence)
+                if isinstance(raw_skill_activation_evidence, (list, tuple))
+                else ()
             )
             try:
                 from aworld_cli.core.session_store import CliSessionStore
 
-                CliSessionStore().record_turn(
-                    session_id=self.session_id,
-                    cwd=os.getcwd(),
-                    agent_name=getattr(getattr(self.swarm, "conf", None), "name", None) or "Aworld",
-                    mode=getattr(self, "_session_mode", "interactive"),
-                    prompt=task_content,
-                    task_id=getattr(task, "id", None),
-                    source_type=getattr(self, "_session_source_type", None),
-                    source_location=getattr(self, "_session_source_location", None),
-                )
+                if not internal_acceptance_segment:
+                    CliSessionStore().record_turn(
+                        session_id=self.session_id,
+                        cwd=os.getcwd(),
+                        agent_name=getattr(getattr(self.swarm, "conf", None), "name", None) or "Aworld",
+                        mode=getattr(self, "_session_mode", "interactive"),
+                        prompt=task_content,
+                        task_id=getattr(task, "id", None),
+                        source_type=getattr(self, "_session_source_type", None),
+                        source_location=getattr(self, "_session_source_location", None),
+                    )
             except Exception as exc:
                 logger.debug(f"Failed to record CLI session turn: {exc}")
             self.context = getattr(task, "context", None)
@@ -1334,7 +1676,7 @@ class LocalAgentExecutor(BaseAgentExecutor):
                 last_message_output = None
                 stream_token_stats = None  # Set by consume_stream, used for history
                 
-                saved_any_round = False
+                saved_any_round = internal_acceptance_segment
 
                 async def consume_stream():
                     """Consume stream events and collect outputs with beautiful formatting."""
@@ -1392,7 +1734,7 @@ class LocalAgentExecutor(BaseAgentExecutor):
                                         current_tool_name = getattr(function, "name", None)
                                     # 💾 Save to history at end of each streaming round (before clear)
                                     stats = stream_token_stats.get_current_stats()
-                                    if stats and task_content:
+                                    if stats and task_content and not internal_acceptance_segment:
                                         try:
                                             from ..history import JSONLHistory
                                             history_path = Path.home() / ".aworld" / "cli_history.jsonl"
@@ -2213,9 +2555,7 @@ class LocalAgentExecutor(BaseAgentExecutor):
                                 )[:8],
                             }
 
-                task_completed_results = await self._run_plugin_task_hook(
-                    "task_completed",
-                    {
+                task_completed_event = {
                         "task_id": task.id,
                         "session_id": self.session_id,
                         "task_status": "idle",
@@ -2227,15 +2567,19 @@ class LocalAgentExecutor(BaseAgentExecutor):
                         "final_answer": answer,
                         "usage": final_usage,
                         "llm_calls": final_llm_calls,
-                    },
+                    }
+                task_completed_results = await self._run_plugin_task_hook(
+                    "task_completed",
+                    task_completed_event,
                 )
                 self._publish_hud_task_finished(task.id, task_status="idle")
                 self._reset_active_steering_buffer()
-                self._record_cli_session_transcript_turn(
-                    task_content=task_content,
-                    answer=answer,
-                    task_id=task.id,
-                )
+                if not internal_acceptance_segment:
+                    self._record_cli_session_transcript_turn(
+                        task_content=task_content,
+                        answer=answer,
+                        task_id=task.id,
+                    )
                 for _, result in task_completed_results:
                     system_message = getattr(result, "system_message", None)
                     if system_message:
@@ -2258,7 +2602,56 @@ class LocalAgentExecutor(BaseAgentExecutor):
                         return _GoalContinuation(
                             follow_up_prompt,
                             task.context if isinstance(task, Task) else None,
+                            _origin_user_input,
+                            _logical_task_state,
+                            _direct_acceptance_state,
+                            "goal_hook",
                         )
+                direct_response = (
+                    final_task_response
+                    if isinstance(final_task_response, TaskResponse)
+                    else None
+                )
+                try:
+                    direct_continuation = self._direct_acceptance_continuation(
+                        task=task,
+                        response=direct_response,
+                        answer=answer,
+                        event=task_completed_event,
+                        origin_user_input=_origin_user_input,
+                        logical_task_state=_logical_task_state or {},
+                        acceptance_state=_direct_acceptance_state,
+                        explicit_goal_owned_segment=explicit_goal_owned_segment,
+                    )
+                except Exception as exc:
+                    # Acceptance supervision is advisory. A controller or
+                    # telemetry bug must never replace useful task output with
+                    # a new infrastructure failure.
+                    direct_continuation = None
+                    telemetry = (
+                        dict(getattr(direct_response, "execution_protocol", None) or {})
+                        if direct_response is not None
+                        else {}
+                    )
+                    if telemetry:
+                        telemetry["acceptance_controller_error_count"] = min(
+                            1_000_000,
+                            int(
+                                telemetry.get(
+                                    "acceptance_controller_error_count", 0
+                                )
+                                or 0
+                            )
+                            + 1,
+                        )
+                        direct_response.execution_protocol = telemetry
+                        self.last_execution_protocol = telemetry
+                    logger.warning(
+                        "Direct acceptance failed open; error_type=%s",
+                        type(exc).__name__,
+                    )
+                if direct_continuation is not None:
+                    return direct_continuation
                 self.last_skill_activation_evidence = (
                     task_skill_activation_evidence
                 )
@@ -2307,7 +2700,14 @@ class LocalAgentExecutor(BaseAgentExecutor):
                     if getattr(result, "action", None) == "block_and_continue":
                         prompt = self._resolve_hook_text(getattr(result, "follow_up_prompt", None))
                         if prompt:
-                            return _GoalContinuation(prompt, task.context)
+                            return _GoalContinuation(
+                                prompt,
+                                task.context,
+                                _origin_user_input,
+                                _logical_task_state,
+                                _direct_acceptance_state,
+                                "goal_error_hook",
+                            )
                 raise
     
     # Note: _format_tool_call, _format_tool_calls, _render_message_output,

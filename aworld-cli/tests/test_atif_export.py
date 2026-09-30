@@ -84,6 +84,55 @@ def test_atif_keeps_explicit_zero_usage_distinct_from_unknown():
     assert trajectory["final_metrics"]["total_completion_tokens"] == 0
 
 
+def test_atif_exports_bounded_execution_protocol_telemetry():
+    telemetry = {
+        "schema_version": "aworld.execution-protocol-telemetry/v1",
+        "mode": "guide",
+        "phase": "complete",
+        "armed": True,
+        "event_count": 9,
+        "tool_observation_count": 7,
+        "stagnant_observations": 0,
+        "replan_count": 1,
+        "candidate_final_count": 2,
+        "final_review_count": 1,
+        "repair_count": 1,
+        "finalization_entered": True,
+        "model_horizon": "long",
+        "implicit_acceptance_created": True,
+        "acceptance_attempt": 2,
+        "acceptance_continuation_count": 1,
+        "acceptance_disposition": "complete",
+        "acceptance_reason": "acceptance_satisfied",
+        "acceptance_satisfied": True,
+    }
+    trajectory = build_atif_trajectory(
+        {"execution_protocol": telemetry},
+        prompt="work",
+        agent_name="Aworld",
+        agent_version="dev",
+    )
+
+    assert trajectory["final_metrics"]["extra"]["execution_protocol"] == telemetry
+
+
+def test_atif_drops_malformed_execution_protocol_telemetry():
+    trajectory = build_atif_trajectory(
+        {
+            "execution_protocol": {
+                "schema_version": "aworld.execution-protocol-telemetry/v1",
+                "mode": "guide",
+                "prompt": "must not escape into metrics",
+            }
+        },
+        prompt="work",
+        agent_name="Aworld",
+        agent_version="dev",
+    )
+
+    assert "execution_protocol" not in trajectory["final_metrics"]["extra"]
+
+
 def test_build_atif_trajectory_preserves_tools_and_observations():
     payload = {
         "trajectory_capture_mode": "task_response",

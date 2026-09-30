@@ -834,10 +834,12 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         return {
             "type": "object",
             "description": (
-                "Optional one-time AWorld control-plane assessment. Include it "
-                "only with the same real Tool call you already need when the "
-                "task credibly requires sustained dependent work. It is removed "
-                "before Tool execution. Omit it for short or uncertain work."
+                "One-time optional AWorld control-plane assessment. On the first "
+                "real Tool call, include it when your current plan credibly needs "
+                "multiple dependent milestones or at least 6 Tool actions. It is "
+                "removed before Tool execution. Omit it only when the work is "
+                "direct or the horizon is genuinely uncertain; never add a Tool "
+                "call solely to classify the task."
             ),
             "additionalProperties": False,
             "properties": {
@@ -3133,14 +3135,14 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             execution_protocol_requires_tool_free_finalization,
         )
 
-        protocol_repair_finalization = (
+        protocol_tool_free_finalization = (
             not loop_budget_finalization
             and execution_protocol_requires_tool_free_finalization(
                 message.context, self.id()
             )
         )
         tool_free_finalization = (
-            loop_budget_finalization or protocol_repair_finalization
+            loop_budget_finalization or protocol_tool_free_finalization
         )
         execution_profile_offered = False
         if tool_free_finalization:
@@ -3219,15 +3221,15 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                 }
             )
             tools = None
-        elif protocol_repair_finalization:
+        elif protocol_tool_free_finalization:
             raw_messages = list(raw_messages)
             raw_messages.append(
                 {
                     "role": "user",
                     "content": (
-                        "AWorld long-horizon repair finalization: the one bounded "
-                        "repair Tool action has completed. No more tools are "
-                        "available in this turn. Reconcile the resulting observation "
+                        "AWorld long-horizon finalization: the execution protocol "
+                        "has reserved this bounded final turn. No more tools are "
+                        "available. Reconcile the current observations "
                         "with the original public request and return the best current "
                         "final response. State material uncertainty accurately."
                     ),
@@ -3709,7 +3711,7 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                         )
                     candidate_finished = not agent_result.is_call_tool
                     if (
-                        protocol_repair_finalization
+                        protocol_tool_free_finalization
                         and candidate_finished
                         and not any(
                             str(getattr(action, "policy_info", "") or "").strip()
