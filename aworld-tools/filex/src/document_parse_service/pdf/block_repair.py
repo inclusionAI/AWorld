@@ -216,21 +216,46 @@ def _replace_once(content: str, candidates: list[str], replacement: str) -> tupl
     return content, False
 
 
-def _target_item(layout: dict[str, Any], issue: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
+def _target_page(layout: dict[str, Any], issue: dict[str, Any]) -> dict[str, Any]:
     page_number = issue.get("page_number")
-    item_index = issue.get("item_index")
     for page in layout.get("layout_pages", []):
-        if not isinstance(page, dict) or page.get("page_number", page.get("page")) != page_number:
-            continue
-        items = page.get("items")
-        if (
-            isinstance(items, list)
-            and isinstance(item_index, int)
-            and not isinstance(item_index, bool)
-            and 0 <= item_index < len(items)
-            and isinstance(items[item_index], dict)
-        ):
-            return page, items[item_index]
+        if isinstance(page, dict) and page.get("page_number", page.get("page")) == page_number:
+            return page
+    raise BlockRepairError("filex_block_repair_target_page_missing")
+
+
+def _target_item(layout: dict[str, Any], issue: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
+    page = _target_page(layout, issue)
+    item_index = issue.get("item_index")
+    items = page.get("items")
+    if (
+        isinstance(items, list)
+        and isinstance(item_index, int)
+        and not isinstance(item_index, bool)
+        and 0 <= item_index < len(items)
+        and isinstance(items[item_index], dict)
+    ):
+        return page, items[item_index]
+    if issue.get("reason") == "filex_chart_content_unusable" and isinstance(
+        issue.get("bbox"), dict
+    ):
+        if not isinstance(items, list):
+            items = []
+            page["items"] = items
+        bbox = {**issue["bbox"], "label": "picture"}
+        item = {
+            "id": issue.get("block_id") or f"chart-repair-{len(items) + 1}",
+            "type": "text",
+            "md": "",
+            "html": "",
+            "value": "",
+            "bbox": bbox,
+            "layout_segments": [dict(bbox)],
+            "reading_order": len(items),
+        }
+        items.append(item)
+        issue["item_index"] = len(items) - 1
+        return page, item
     raise BlockRepairError("filex_block_repair_target_missing")
 
 
@@ -347,7 +372,7 @@ async def repair_parse_output(
             try:
                 page_number = int(issue["page_number"])
                 bbox = issue["bbox"]
-                page, _item = _target_item(layout, issue)
+                page = _target_page(layout, issue)
                 crop_path = crop_renderer(
                     source_path,
                     page_number=page_number,

@@ -119,3 +119,66 @@ async def test_repair_parse_output_updates_only_targeted_table_block(tmp_path: P
     assert "<td>Q1</td><td>42</td>" in html
     assert prose not in result["document"]
     assert result["layout"]["markdown"] == result["document"]
+
+
+@pytest.mark.asyncio
+async def test_chart_repair_creates_missing_picture_item_after_model_success(
+    tmp_path: Path,
+) -> None:
+    @dataclass
+    class _Response:
+        text: str
+
+    class _Backend:
+        async def transcribe(self, *_args, **_kwargs):
+            return _Response(
+                '{"columns":["Series","Value"],"rows":[["Revenue","42"]]}'
+            )
+
+    def render(_source_path, **kwargs):
+        output = kwargs["output_path"]
+        output.write_bytes(b"png")
+        return output
+
+    layout = {
+        "task_type": "parse",
+        "layout_pages": [
+            {
+                "page_number": 1,
+                "width": 100,
+                "height": 100,
+                "md": "Chart placeholder",
+                "items": [],
+            }
+        ],
+        "markdown": "Chart placeholder",
+    }
+    report = {
+        "tables": {"issues": []},
+        "charts": {
+            "issues": [
+                {
+                    "reason": "filex_chart_content_unusable",
+                    "page_number": 1,
+                    "element_index": 0,
+                    "block_id": "chart-1",
+                    "bbox": {"x": 10, "y": 20, "w": 70, "h": 40},
+                }
+            ]
+        },
+    }
+
+    result = await repair_parse_output(
+        source_path=tmp_path / "source.pdf",
+        document=layout["markdown"],
+        layout=layout,
+        quality_report=report,
+        backend=_Backend(),
+        crop_renderer=render,
+    )
+
+    assert result["failures"] == []
+    item = result["layout"]["layout_pages"][0]["items"][0]
+    assert item["id"] == "chart-1"
+    assert item["bbox"]["label"] == "picture"
+    assert "<td>Revenue</td><td>42</td>" in item["html"]
