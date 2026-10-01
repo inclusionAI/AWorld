@@ -994,8 +994,28 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                     "type": "string",
                     "maxLength": 1024,
                 },
+                "assertion": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "properties": {
+                        "kind": {
+                            "type": "string",
+                            "enum": ["exit_code_zero_and_output_contains"],
+                        },
+                        "expected_output": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 256,
+                        },
+                    },
+                    "required": ["kind", "expected_output"],
+                },
             },
-            "required": ["hypothesis_id", "highest_risk_counterexample"],
+            "required": [
+                "hypothesis_id",
+                "highest_risk_counterexample",
+                "assertion",
+            ],
             "description": (
                 "Required only during AWorld independent acceptance review. "
                 "Describe the single highest-risk counterexample tested by this "
@@ -1060,7 +1080,11 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         value = params.pop(_ACCEPTANCE_PROBE_PARAM, None)
         if not isinstance(value, dict):
             return False
-        if set(value) != {"hypothesis_id", "highest_risk_counterexample"}:
+        if set(value) != {
+            "hypothesis_id",
+            "highest_risk_counterexample",
+            "assertion",
+        }:
             return False
         return record_acceptance_probe_plan(
             context,
@@ -1068,6 +1092,9 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             tool_call_id=str(action.tool_call_id or ""),
             hypothesis_id=value.get("hypothesis_id"),
             highest_risk_counterexample=value.get("highest_risk_counterexample"),
+            tool_identity=f"{action.tool_name or ''}:{action.action_name or ''}",
+            arguments_projection=params,
+            assertion=value.get("assertion"),
         )
 
     def _fresh_acceptance_messages(self, context: Context) -> list[dict[str, str]]:

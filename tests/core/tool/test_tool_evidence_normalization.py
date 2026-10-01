@@ -53,14 +53,23 @@ def test_python_traceback_with_exit_zero_is_semantic_failure(monkeypatch):
     monkeypatch.delenv("AWORLD_TOOL_EVIDENCE_NORMALIZATION", raising=False)
     result = ActionResult(
         success=True,
-        content=(
-            "Traceback (most recent call last):\n"
-            '  File "check.py", line 1, in <module>\n'
-            "AssertionError: wrong value\n"
-        ),
+        content="wrapper completed",
+        metadata={
+            "stderr": (
+                "Traceback (most recent call last):\n"
+                '  File "check.py", line 1, in <module>\n'
+                "AssertionError: wrong value\n"
+            )
+        },
     )
 
-    assert normalize_action_result_evidence(result) == "python_traceback"
+    assert (
+        normalize_action_result_evidence(
+            result,
+            action=ActionModel(tool_name="terminal", action_name="execute"),
+        )
+        == "python_traceback"
+    )
     assert result.success is False
 
 
@@ -98,3 +107,57 @@ def test_normalization_opt_out_preserves_transport_status(monkeypatch):
 
     assert normalize_action_result_evidence(result) is None
     assert result.success is True
+
+
+def test_traceback_text_from_non_shell_tool_is_not_reclassified(monkeypatch):
+    monkeypatch.delenv("AWORLD_TOOL_EVIDENCE_NORMALIZATION", raising=False)
+    result = ActionResult(
+        success=True,
+        content="Traceback (most recent call last):\nValueError: quoted documentation",
+    )
+
+    assert (
+        normalize_action_result_evidence(
+            result,
+            action=ActionModel(tool_name="http", action_name="fetch"),
+        )
+        is None
+    )
+    assert result.success is True
+
+
+def test_shell_failure_words_in_stdout_are_not_reclassified(monkeypatch):
+    monkeypatch.delenv("AWORLD_TOOL_EVIDENCE_NORMALIZATION", raising=False)
+    result = ActionResult(success=True, content="example: command not found")
+
+    assert normalize_action_result_evidence(
+        result,
+        action=ActionModel(tool_name="terminal", action_name="execute"),
+    ) is None
+    assert result.success is True
+
+
+def test_explicit_dash_executor_is_not_given_pipefail(monkeypatch):
+    monkeypatch.delenv("AWORLD_TOOL_EVIDENCE_NORMALIZATION", raising=False)
+    action = ActionModel(
+        tool_name="terminal",
+        action_name="execute",
+        params={"command": "false | true", "shell": "/bin/sh"},
+    )
+
+    enforce_pipeline_failure_semantics([action])
+
+    assert action.params["command"] == "false | true"
+
+
+def test_explicit_bash_executor_gets_pipefail(monkeypatch):
+    monkeypatch.delenv("AWORLD_TOOL_EVIDENCE_NORMALIZATION", raising=False)
+    action = ActionModel(
+        tool_name="shell",
+        action_name="execute",
+        params={"command": "false | true", "shell": "/bin/bash"},
+    )
+
+    enforce_pipeline_failure_semantics([action])
+
+    assert action.params["command"].startswith("set -o pipefail; ")

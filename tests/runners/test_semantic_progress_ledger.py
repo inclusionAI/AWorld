@@ -88,6 +88,53 @@ def test_changed_failure_signature_is_meaningful_progress():
     assert changed["last_meaningful_progress_at"] is not None
 
 
+def test_alternating_known_failure_signatures_do_not_reset_progress():
+    context = Context(task_id="semantic-failure-abab")
+    configure_execution_protocol(
+        context,
+        "agent",
+        ExecutionProtocolPolicy(
+            mode=ProtocolMode.GUIDE,
+            semantic_progress_enabled=True,
+        ),
+    )
+
+    states = []
+    for index, error in enumerate(
+        (
+            "AssertionError: alpha",
+            "PermissionError: beta",
+            "AssertionError: alpha",
+            "PermissionError: beta",
+            "AssertionError: alpha",
+            "PermissionError: beta",
+        )
+    ):
+        states.append(
+            record_semantic_tool_progress(
+                context,
+                tool_name="terminal",
+                agent_id="agent",
+                actions=[
+                    ActionModel(
+                        tool_name="terminal",
+                        action_name="execute",
+                        params={"command": f"attempt-{index}"},
+                    )
+                ],
+                observation=Observation(
+                    action_result=[ActionResult(success=False, error=error)]
+                ),
+            )
+        )
+
+    assert states[0]["goal_progress"] is True
+    assert states[1]["goal_progress"] is True
+    assert all(state["goal_progress"] is False for state in states[2:])
+    assert states[-1]["no_goal_progress_count"] == 4
+    assert len(states[-1]["recent_failure_signatures"]) == 6
+
+
 def test_semantic_progress_ledger_env_opt_out(monkeypatch):
     monkeypatch.setenv("AWORLD_SEMANTIC_PROGRESS_LEDGER", "false")
     context = Context(task_id="semantic-ledger-off")

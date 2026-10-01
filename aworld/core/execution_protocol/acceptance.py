@@ -79,21 +79,63 @@ class AcceptanceProbeReceipt:
     schema_version: str
     hypothesis_hash: str
     counterexample_hash: str
+    tool_identity: str
+    tool_identity_hash: str
+    arguments_hash: str
+    candidate_hash: str
+    evidence_hash: str
+    artifact_before_hash: str
+    artifact_after_hash: str
+    assertion_hash: str
+    assertion_satisfied: bool
     result_hash: str
+    arguments_projection: Mapping[str, Any]
+    assertion: Mapping[str, Any]
+    result_projection: Mapping[str, Any]
     success: bool
     failure_code: str | None = None
 
-    SCHEMA_VERSION = "aworld.acceptance-probe-receipt/v1"
+    SCHEMA_VERSION = "aworld.acceptance-probe-receipt/v2"
 
     def __post_init__(self) -> None:
         if self.schema_version != self.SCHEMA_VERSION:
             raise ValueError("unsupported acceptance probe receipt schema")
-        for name in ("hypothesis_hash", "counterexample_hash", "result_hash"):
+        for name in (
+            "hypothesis_hash",
+            "counterexample_hash",
+            "tool_identity_hash",
+            "arguments_hash",
+            "candidate_hash",
+            "evidence_hash",
+            "artifact_before_hash",
+            "artifact_after_hash",
+            "assertion_hash",
+            "result_hash",
+        ):
             value = getattr(self, name)
             if not isinstance(value, str) or not value.startswith("sha256:"):
                 raise ValueError(f"{name} must be a semantic hash")
-        if not isinstance(self.success, bool):
-            raise ValueError("success must be a boolean")
+        if not isinstance(self.tool_identity, str) or not self.tool_identity:
+            raise ValueError("tool_identity must be a non-empty string")
+        if not isinstance(self.success, bool) or not isinstance(
+            self.assertion_satisfied, bool
+        ):
+            raise ValueError("receipt status fields must be booleans")
+        for name in ("arguments_projection", "assertion", "result_projection"):
+            if not isinstance(getattr(self, name), Mapping):
+                raise ValueError(f"{name} must be a mapping")
+            if (
+                len(
+                    json.dumps(
+                        getattr(self, name),
+                        ensure_ascii=False,
+                        sort_keys=True,
+                        default=str,
+                    )
+                )
+                > 16_384
+            ):
+                raise ValueError(f"{name} exceeds bounded receipt size")
         if self.failure_code is not None and (
             not isinstance(self.failure_code, str) or len(self.failure_code) > 128
         ):
@@ -105,7 +147,15 @@ class AcceptanceProbeReceipt:
         *,
         hypothesis_id: str,
         highest_risk_counterexample: str,
-        result: Any,
+        tool_identity: str,
+        arguments_projection: Mapping[str, Any],
+        candidate: Any,
+        evidence: Any,
+        artifact_before: Any,
+        artifact_after: Any,
+        assertion: Mapping[str, Any],
+        assertion_satisfied: bool,
+        result_projection: Mapping[str, Any],
         success: bool,
         failure_code: str | None = None,
     ) -> "AcceptanceProbeReceipt":
@@ -113,8 +163,20 @@ class AcceptanceProbeReceipt:
             schema_version=cls.SCHEMA_VERSION,
             hypothesis_hash=semantic_fingerprint(hypothesis_id),
             counterexample_hash=semantic_fingerprint(highest_risk_counterexample),
-            result_hash=semantic_fingerprint(result),
-            success=success,
+            tool_identity=tool_identity[:256],
+            tool_identity_hash=semantic_fingerprint(tool_identity),
+            arguments_hash=semantic_fingerprint(arguments_projection),
+            candidate_hash=semantic_fingerprint(candidate),
+            evidence_hash=semantic_fingerprint(evidence),
+            artifact_before_hash=semantic_fingerprint(artifact_before),
+            artifact_after_hash=semantic_fingerprint(artifact_after),
+            assertion_hash=semantic_fingerprint(assertion),
+            assertion_satisfied=assertion_satisfied,
+            result_hash=semantic_fingerprint(result_projection),
+            arguments_projection=dict(arguments_projection),
+            assertion=dict(assertion),
+            result_projection=dict(result_projection),
+            success=bool(success and assertion_satisfied),
             failure_code=failure_code,
         )
 
@@ -123,7 +185,19 @@ class AcceptanceProbeReceipt:
             "schema_version": self.schema_version,
             "hypothesis_hash": self.hypothesis_hash,
             "counterexample_hash": self.counterexample_hash,
+            "tool_identity": self.tool_identity,
+            "tool_identity_hash": self.tool_identity_hash,
+            "arguments_hash": self.arguments_hash,
+            "candidate_hash": self.candidate_hash,
+            "evidence_hash": self.evidence_hash,
+            "artifact_before_hash": self.artifact_before_hash,
+            "artifact_after_hash": self.artifact_after_hash,
+            "assertion_hash": self.assertion_hash,
+            "assertion_satisfied": self.assertion_satisfied,
             "result_hash": self.result_hash,
+            "arguments_projection": dict(self.arguments_projection),
+            "assertion": dict(self.assertion),
+            "result_projection": dict(self.result_projection),
             "success": self.success,
             "failure_code": self.failure_code,
         }
@@ -136,7 +210,19 @@ class AcceptanceProbeReceipt:
             schema_version=value.get("schema_version"),
             hypothesis_hash=value.get("hypothesis_hash"),
             counterexample_hash=value.get("counterexample_hash"),
+            tool_identity=value.get("tool_identity"),
+            tool_identity_hash=value.get("tool_identity_hash"),
+            arguments_hash=value.get("arguments_hash"),
+            candidate_hash=value.get("candidate_hash"),
+            evidence_hash=value.get("evidence_hash"),
+            artifact_before_hash=value.get("artifact_before_hash"),
+            artifact_after_hash=value.get("artifact_after_hash"),
+            assertion_hash=value.get("assertion_hash"),
+            assertion_satisfied=value.get("assertion_satisfied"),
             result_hash=value.get("result_hash"),
+            arguments_projection=value.get("arguments_projection"),
+            assertion=value.get("assertion"),
+            result_projection=value.get("result_projection"),
             success=value.get("success"),
             failure_code=value.get("failure_code"),
         )
@@ -144,9 +230,14 @@ class AcceptanceProbeReceipt:
     def supports(self, decision: AcceptanceCriticDecision) -> bool:
         return bool(
             self.success
+            and self.assertion_satisfied
             and self.hypothesis_hash == semantic_fingerprint(decision.hypothesis_id)
             and self.counterexample_hash
             == semantic_fingerprint(decision.highest_risk_counterexample)
+            and self.tool_identity_hash == semantic_fingerprint(self.tool_identity)
+            and self.arguments_hash == semantic_fingerprint(self.arguments_projection)
+            and self.assertion_hash == semantic_fingerprint(self.assertion)
+            and self.result_hash == semantic_fingerprint(self.result_projection)
         )
 
 
@@ -192,8 +283,9 @@ def fresh_acceptance_critic_messages(
             "Identify the single highest-risk counterexample to this candidate. "
             "Execute exactly one fresh equivalent probe with an available Tool. "
             "The Tool call must include __aworld_acceptance_probe containing the "
-            "same hypothesis_id and highest_risk_counterexample. Solver-authored "
-            "self-tests and claims are not sufficient for acceptance."
+            "same hypothesis_id and highest_risk_counterexample plus an executable "
+            "assertion contract. Solver-authored self-tests and claims are not "
+            "sufficient for acceptance."
         )
     else:
         instruction = (
@@ -201,6 +293,8 @@ def fresh_acceptance_critic_messages(
             "or uncertain), highest_risk_counterexample, hypothesis_id, and reason. "
             "accept is allowed only when the separate framework probe receipt is "
             "successful and matches both identifiers."
+            " Judge the bounded tool arguments and captured result projection; "
+            "transport success alone is not evidence."
         )
     return [
         {

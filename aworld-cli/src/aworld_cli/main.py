@@ -2181,7 +2181,11 @@ async def _run_direct_mode(
         )
         return DirectRunOutcome.from_summary(
             summary,
-            status=DirectRunStatus.SUCCEEDED,
+            status=(
+                DirectRunStatus.BUDGET_EXHAUSTED
+                if semantic == "budget_exhausted"
+                else DirectRunStatus.INCOMPLETE
+            ),
         )
     if not _direct_run_succeeded(summary):
         if require_explicit_failure_origin and not _direct_run_has_explicit_task_failure(

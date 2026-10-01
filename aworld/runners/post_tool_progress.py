@@ -1,3 +1,4 @@
+import json
 import os
 import re
 import time
@@ -386,9 +387,21 @@ def record_semantic_tool_progress(
         and artifact_fingerprint != previous.get("artifact_fingerprint")
         and artifact_fingerprint not in recent_artifact_fingerprints
     )
-    failure_changed = failure_signature != previous.get("failure_signature") and (
-        failure_signature is not None or previous.get("failure_signature") is not None
+    recent_failure_signatures = [
+        value
+        for value in (previous.get("recent_failure_signatures") or [])
+        if isinstance(value, str)
+    ][-7:]
+    failure_resolved = bool(
+        previous.get("failure_signature") is not None and failure_signature is None
     )
+    failure_novel = bool(
+        failure_signature is not None
+        and failure_signature not in recent_failure_signatures
+    )
+    failure_changed = failure_resolved or failure_novel
+    if failure_signature is not None:
+        recent_failure_signatures.append(failure_signature)
     semantic_progress = bool(
         artifact_advanced
         or validation_evidence_advanced
@@ -462,6 +475,7 @@ def record_semantic_tool_progress(
         "artifact_fingerprint": artifact_fingerprint,
         "artifact_advanced": artifact_advanced,
         "failure_signature": failure_signature,
+        "recent_failure_signatures": recent_failure_signatures[-8:],
         "hypothesis_id": hypothesis_id,
         "semantic_progress_enabled": semantic_ledger_enabled,
         "semantic_no_progress_threshold": _SEMANTIC_NO_PROGRESS_THRESHOLD,
@@ -597,18 +611,79 @@ def record_semantic_tool_progress(
             and not result.get("error")
             for result in action_results
         )
+        probe_result = action_results[0] if action_results else {}
+        probe_metadata = (
+            probe_result.get("metadata")
+            if isinstance(probe_result, dict)
+            and isinstance(probe_result.get("metadata"), dict)
+            else {}
+        )
+        probe_content = (
+            probe_result.get("content") if isinstance(probe_result, dict) else None
+        )
+        content_mapping = probe_content if isinstance(probe_content, dict) else {}
+        if isinstance(probe_content, str) and probe_content.lstrip().startswith("{"):
+            try:
+                parsed_probe_content = json.loads(probe_content)
+            except (TypeError, ValueError):
+                parsed_probe_content = None
+            if isinstance(parsed_probe_content, dict):
+                content_mapping = parsed_probe_content
+        raw_return_code = next(
+            (
+                source.get(key)
+                for source in (probe_metadata, content_mapping)
+                for key in ("return_code", "exit_code")
+                if source.get(key) is not None
+            ),
+            None,
+        )
+        return_code = (
+            int(raw_return_code)
+            if isinstance(raw_return_code, str)
+            and raw_return_code.strip().lstrip("-").isdigit()
+            else raw_return_code
+            if isinstance(raw_return_code, int)
+            and not isinstance(raw_return_code, bool)
+            else None
+        )
+
+        def bounded_tail(value: Any) -> str:
+            return value[-2048:] if isinstance(value, str) else ""
+
+        result_projection = {
+            "tool_call_id": probe_result.get("tool_call_id")
+            if isinstance(probe_result, dict)
+            else None,
+            "success": probe_result.get("success")
+            if isinstance(probe_result, dict)
+            else False,
+            "return_code": return_code,
+            "failure_code": semantic_failure_codes[0]
+            if semantic_failure_codes
+            else None,
+            "stdout_tail": bounded_tail(
+                probe_metadata.get("stdout") or content_mapping.get("stdout")
+            ),
+            "stderr_tail": bounded_tail(
+                probe_metadata.get("stderr") or content_mapping.get("stderr")
+            ),
+            "content_tail": bounded_tail(
+                probe_content
+                if isinstance(probe_content, str)
+                else content_mapping.get("output") or content_mapping.get("message")
+            ),
+        }
         record_acceptance_probe_observation(
             runtime_context,
             agent_id,
             actions=actions,
-            result_projection={
-                "result_hash": result_hash,
-                "failure_signature": failure_signature,
-            },
+            result_projection=result_projection,
             success=probe_success,
             failure_code=(
                 semantic_failure_codes[0] if semantic_failure_codes else None
             ),
+            artifact_after=artifact_fingerprint,
         )
 
         record_tool_protocol_event(runtime_context, agent_id, state)

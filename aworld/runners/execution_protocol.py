@@ -9,7 +9,9 @@ from __future__ import annotations
 
 from copy import deepcopy
 from dataclasses import replace
+import json
 import os
+import re
 from typing import Any, Mapping
 
 from aworld.core.context.execution_state import state_context
@@ -143,6 +145,63 @@ def acceptance_critic_active(context, agent_id: str) -> bool:
     return ExecutionProtocolStore(context, agent_id, policy).load().review_pending
 
 
+def _bounded_probe_value(value: Any, *, depth: int = 0) -> Any:
+    if depth >= 3:
+        from aworld.core.context.compiler import semantic_fingerprint
+
+        return {"value_hash": semantic_fingerprint(value)}
+    if isinstance(value, Mapping):
+        return {
+            str(key): (
+                "<redacted>"
+                if any(
+                    token in str(key).lower()
+                    for token in ("secret", "token", "password", "api_key")
+                )
+                else _bounded_probe_value(item, depth=depth + 1)
+            )
+            for key, item in list(value.items())[:24]
+        }
+    if isinstance(value, (list, tuple)):
+        return [_bounded_probe_value(item, depth=depth + 1) for item in value[:16]]
+    if isinstance(value, str):
+        bounded = value[:2048]
+        bounded = re.sub(
+            r"(?i)\b(api[_-]?key|token|password|secret)\s*=\s*[^\s;&|]+",
+            r"\1=<redacted>",
+            bounded,
+        )
+        return re.sub(r"(?i)\bBearer\s+[^\s]+", "Bearer <redacted>", bounded)
+    if value is None or isinstance(value, (bool, int, float)):
+        return value
+    return str(value)[:512]
+
+
+def _acceptance_candidate_and_evidence(
+    context, agent_id: str
+) -> tuple[str, dict[str, Any]]:
+    fallback = load_candidate_fallback(context, agent_id) or ()
+    candidate = str(getattr(fallback[0], "policy_info", "") or "") if fallback else ""
+    try:
+        from aworld.runners.post_tool_progress import semantic_progress_for_agent
+
+        state = semantic_progress_for_agent(context, agent_id=agent_id)
+    except Exception:
+        state = {}
+    evidence = {
+        key: state.get(key)
+        for key in (
+            "artifact_fingerprint",
+            "failure_signature",
+            "completion_evidence_fingerprint",
+            "goal_progress_count",
+            "last_meaningful_progress_agent_step",
+        )
+        if state.get(key) is not None
+    }
+    return candidate, evidence
+
+
 def record_acceptance_probe_plan(
     context,
     agent_id: str,
@@ -150,6 +209,9 @@ def record_acceptance_probe_plan(
     tool_call_id: str,
     hypothesis_id: str,
     highest_risk_counterexample: str,
+    tool_identity: str,
+    arguments_projection: Mapping[str, Any],
+    assertion: Mapping[str, Any],
 ) -> bool:
     """Bind exactly one critic-selected probe to the pending review."""
     if not acceptance_critic_active(context, agent_id):
@@ -159,12 +221,40 @@ def record_acceptance_probe_plan(
         for value in (tool_call_id, hypothesis_id, highest_risk_counterexample)
     ):
         return False
+    if not isinstance(tool_identity, str) or not tool_identity.strip():
+        return False
+    if not isinstance(arguments_projection, Mapping) or not isinstance(
+        assertion, Mapping
+    ):
+        return False
+    if set(assertion) != {"kind", "expected_output"} or assertion.get("kind") != (
+        "exit_code_zero_and_output_contains"
+    ):
+        return False
+    expected_output = assertion.get("expected_output")
+    if not isinstance(expected_output, str) or not 1 <= len(expected_output) <= 256:
+        return False
+    try:
+        serialized_arguments = json.dumps(
+            arguments_projection, ensure_ascii=False, sort_keys=True, default=str
+        )
+    except (TypeError, ValueError):
+        return False
+    # A command that merely prints its own expected marker is not an
+    # independent assertion. The marker must arise from the exercised target.
+    if expected_output in serialized_arguments:
+        return False
     current = _read_runtime_value(context, agent_id, EXECUTION_PROTOCOL_CRITIC_KEY)
     if isinstance(current, Mapping) and current.get("status") in {
         "planned",
         "observed",
     }:
         return False
+    candidate, evidence = _acceptance_candidate_and_evidence(context, agent_id)
+    bounded_arguments = _bounded_probe_value(arguments_projection)
+    normalized_tool_identity = ":".join(
+        part.strip().casefold() for part in tool_identity.split(":", 1)
+    )
     _write_runtime_value(
         context,
         agent_id,
@@ -175,6 +265,12 @@ def record_acceptance_probe_plan(
             "tool_call_id": tool_call_id[:256],
             "hypothesis_id": hypothesis_id.strip()[:128],
             "highest_risk_counterexample": highest_risk_counterexample.strip()[:1024],
+            "tool_identity": normalized_tool_identity[:256],
+            "arguments_projection": bounded_arguments,
+            "candidate": candidate[:64_000],
+            "evidence": evidence,
+            "artifact_before": evidence.get("artifact_fingerprint"),
+            "assertion": dict(assertion),
         },
     )
     return True
@@ -188,6 +284,7 @@ def record_acceptance_probe_observation(
     result_projection: Any,
     success: bool,
     failure_code: str | None,
+    artifact_after: Any = None,
 ) -> bool:
     """Create a typed receipt from the separately observed Tool boundary."""
     from aworld.core.execution_protocol import AcceptanceProbeReceipt
@@ -202,10 +299,41 @@ def record_acceptance_probe_observation(
     }
     if current.get("tool_call_id") not in call_ids:
         return False
+    if not isinstance(result_projection, Mapping) or result_projection.get(
+        "tool_call_id"
+    ) != current.get("tool_call_id"):
+        return False
+    assertion = current.get("assertion")
+    expected_output = (
+        assertion.get("expected_output") if isinstance(assertion, Mapping) else None
+    )
+    captured_text = (
+        "\n".join(
+            str(result_projection.get(key) or "")
+            for key in ("stdout_tail", "stderr_tail", "content_tail")
+        )
+        if isinstance(result_projection, Mapping)
+        else ""
+    )
+    assertion_satisfied = bool(
+        isinstance(assertion, Mapping)
+        and assertion.get("kind") == "exit_code_zero_and_output_contains"
+        and result_projection.get("return_code") == 0
+        and isinstance(expected_output, str)
+        and expected_output in captured_text
+    )
     receipt = AcceptanceProbeReceipt.build(
         hypothesis_id=current["hypothesis_id"],
         highest_risk_counterexample=current["highest_risk_counterexample"],
-        result=result_projection,
+        tool_identity=current["tool_identity"],
+        arguments_projection=current["arguments_projection"],
+        candidate=current["candidate"],
+        evidence=current["evidence"],
+        artifact_before=current.get("artifact_before"),
+        artifact_after=artifact_after,
+        assertion=assertion,
+        assertion_satisfied=assertion_satisfied,
+        result_projection=result_projection,
         success=success,
         failure_code=failure_code,
     )
@@ -256,6 +384,19 @@ def record_acceptance_critic_decision(
         and receipt is not None
         and receipt.supports(decision)
     )
+    if independently_supported:
+        candidate, _ = _acceptance_candidate_and_evidence(context, agent_id)
+        from aworld.core.context.compiler import semantic_fingerprint
+
+        independently_supported = bool(
+            receipt.candidate_hash == semantic_fingerprint(candidate)
+            and receipt.candidate_hash
+            == semantic_fingerprint(critic_state.get("candidate"))
+            and receipt.evidence_hash
+            == semantic_fingerprint(critic_state.get("evidence"))
+            and receipt.artifact_before_hash
+            == semantic_fingerprint(critic_state.get("artifact_before"))
+        )
     if independently_supported:
         outcome = ReviewOutcome.ACCEPT
     elif decision is not None and decision.decision is AcceptanceDecision.REPAIR:

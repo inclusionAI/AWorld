@@ -151,7 +151,7 @@ async def test_direct_cli_returns_incomplete_attempt_to_verifier(
     result = await main_module._run_direct_mode(prompt="work", agent_name="Aworld", non_interactive=True)
     payload = result.to_dict()
     assert result.summary["results"][0]["semantic_status"] == semantic
-    assert payload["semantic_status"] == "succeeded"
+    assert payload["semantic_status"] == semantic
     assert payload["process_exit_code"] == 0
     assert "failure" not in payload
     assert 'AWORLD_AGENT_TERMINATION=' in capsys.readouterr().err

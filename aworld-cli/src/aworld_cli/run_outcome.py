@@ -23,6 +23,8 @@ class DirectRunStatus(str, Enum):
     """Semantic result of one direct CLI invocation."""
 
     SUCCEEDED = "succeeded"
+    INCOMPLETE = "incomplete"
+    BUDGET_EXHAUSTED = "budget_exhausted"
     TASK_FAILED = "task_failed"
     INFRASTRUCTURE_FAILED = "infrastructure_failed"
     CANCELLED = "cancelled"
@@ -369,7 +371,16 @@ class DirectRunOutcome(Mapping[str, Any]):
             process_exit_code=(
                 process_exit_code
                 if process_exit_code is not None
-                else (0 if normalized_status is DirectRunStatus.SUCCEEDED else 1)
+                else (
+                    0
+                    if normalized_status
+                    in {
+                        DirectRunStatus.SUCCEEDED,
+                        DirectRunStatus.INCOMPLETE,
+                        DirectRunStatus.BUDGET_EXHAUSTED,
+                    }
+                    else 1
+                )
             ),
             trajectory_fidelity=_derive_fidelity(
                 summary,
@@ -384,7 +395,9 @@ class DirectRunOutcome(Mapping[str, Any]):
             failure_record=dict(failure_record) if failure_record is not None else None,
         )
 
-    def to_dict(self, *, atif_export: Mapping[str, Any] | None = None) -> dict[str, Any]:
+    def to_dict(
+        self, *, atif_export: Mapping[str, Any] | None = None
+    ) -> dict[str, Any]:
         payload: dict[str, Any] = {
             "schema_version": self.SCHEMA_VERSION,
             "semantic_status": self.status.value,
@@ -439,9 +452,21 @@ def coerce_direct_run_outcome(value: Any) -> DirectRunOutcome:
     if isinstance(value, DirectRunOutcome):
         return value
     if isinstance(value, dict):
+        semantic_status = next(
+            (
+                result.get("semantic_status")
+                for result in reversed(value.get("results") or [])
+                if isinstance(result, Mapping)
+                and result.get("semantic_status") in {"incomplete", "budget_exhausted"}
+            ),
+            None,
+        )
         # Before the typed contract, any summary dict meant the command reached
-        # its normal return path; retain that behavior for plugin monkeypatches.
-        return DirectRunOutcome.from_summary(value, status=DirectRunStatus.SUCCEEDED)
+        # its normal return path. Preserve typed non-success terminal states.
+        return DirectRunOutcome.from_summary(
+            value,
+            status=semantic_status or DirectRunStatus.SUCCEEDED,
+        )
     return DirectRunOutcome.from_summary(
         None,
         status=DirectRunStatus.INFRASTRUCTURE_FAILED,

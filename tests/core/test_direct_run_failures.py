@@ -45,6 +45,78 @@ def test_acceptance_stop_emits_typed_incomplete_termination_marker(capsys) -> No
     assert payload["reason"] == "acceptance_evidence_missing"
 
 
+@pytest.mark.parametrize("semantic", ["incomplete", "budget_exhausted"])
+def test_direct_run_preserves_non_success_in_sidecar_and_atif(
+    monkeypatch, capsys, tmp_path, semantic
+) -> None:
+    summary = {
+        "results": [
+            {
+                "success": False,
+                "completed": False,
+                "semantic_status": semantic,
+                "completion_reason": "acceptance_evidence_missing",
+                "trajectory": [
+                    {
+                        "meta": {"session_id": "incomplete-session", "step": 1},
+                        "action": {"content": "unverified candidate", "tool_calls": []},
+                    }
+                ],
+            }
+        ]
+    }
+    status = (
+        DirectRunStatus.BUDGET_EXHAUSTED
+        if semantic == "budget_exhausted"
+        else DirectRunStatus.INCOMPLETE
+    )
+    outcome = DirectRunOutcome.from_summary(summary, status=status)
+
+    async def incomplete_direct_run(**_kwargs):
+        return outcome
+
+    monkeypatch.setattr(main_module, "_run_direct_mode", incomplete_direct_run)
+    monkeypatch.setattr(
+        "aworld_cli.top_level_commands.run_cmd.bootstrap_runtime",
+        lambda **_kwargs: None,
+    )
+    trajectory_path = tmp_path / "trajectory.json"
+    outcome_path = tmp_path / "outcome.json"
+    args = SimpleNamespace(
+        task="test acceptance",
+        agent="Aworld",
+        skill=None,
+        max_runs=None,
+        max_cost=None,
+        max_duration=None,
+        completion_signal=None,
+        completion_threshold=3,
+        non_interactive=True,
+        session_id=None,
+        env_file=".env",
+        remote_backend=None,
+        agent_dir=None,
+        agent_file=None,
+        skill_path=None,
+        emit_trajectory=False,
+        trajectory_output=str(trajectory_path),
+        outcome_output=str(outcome_path),
+    )
+
+    assert RunTopLevelCommand().run(
+        args, SimpleNamespace(argv=("aworld-cli", "run"))
+    ) == 0
+    persisted = json.loads(outcome_path.read_text(encoding="utf-8"))
+    trajectory = json.loads(trajectory_path.read_text(encoding="utf-8"))
+    aworld = trajectory["extra"]["aworld"]
+    marker = _marker_payload(capsys.readouterr().err, "AWORLD_RUN_OUTCOME=")
+
+    assert persisted["semantic_status"] == semantic
+    assert marker["semantic_status"] == semantic
+    assert aworld["completion_state"] == "incomplete"
+    assert aworld["run_outcome"]["semantic_status"] == semantic
+
+
 def test_typed_outcome_preserves_legacy_truth_value_contract() -> None:
     successful = DirectRunOutcome.from_summary(
         {},
@@ -506,8 +578,8 @@ def test_run_command_returns_caller_deadline_attempt_to_verifier(
     trajectory = json.loads(trajectory_path.read_text(encoding="utf-8"))
     assert trajectory["agent"]["version"] != "unknown"
     aworld = trajectory["extra"]["aworld"]
-    assert aworld["completion_state"] == "complete"
-    assert aworld["run_outcome"]["semantic_status"] == "succeeded"
+    assert aworld["completion_state"] == "incomplete"
+    assert aworld["run_outcome"]["semantic_status"] == "budget_exhausted"
     assert aworld["run_outcome"]["process_exit_code"] == 0
     assert aworld["trajectory_fidelity"] == "partial"
     assert aworld["llm_call_count"] == 2

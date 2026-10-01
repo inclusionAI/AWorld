@@ -29,6 +29,8 @@ _SHELL_FAILURE_RE = re.compile(
 )
 _SHELL_TOOL_MARKERS = ("shell", "terminal", "bash")
 _SHELL_ACTIONS = frozenset({"exec", "execute", "execute_command", "run", "run_command"})
+_DEFAULT_BASH_TOOL_NAMES = frozenset({"terminal", "terminal_tool"})
+_PIPEFAIL_SHELLS = frozenset({"bash", "zsh", "ksh"})
 
 
 def tool_evidence_normalization_enabled() -> bool:
@@ -47,6 +49,14 @@ def _shell_action(action: ActionModel) -> bool:
     )
 
 
+def _pipefail_compatible(action: ActionModel) -> bool:
+    params = action.params if isinstance(action.params, Mapping) else {}
+    configured_shell = params.get("shell") or params.get("executable")
+    if isinstance(configured_shell, str) and configured_shell.strip():
+        return os.path.basename(configured_shell.strip()) in _PIPEFAIL_SHELLS
+    return str(action.tool_name or "").lower() in _DEFAULT_BASH_TOOL_NAMES
+
+
 def enforce_pipeline_failure_semantics(actions: Sequence[ActionModel]) -> None:
     """Enable ``pipefail`` for recognizable shell pipelines in place.
 
@@ -58,7 +68,11 @@ def enforce_pipeline_failure_semantics(actions: Sequence[ActionModel]) -> None:
         return
     for action in actions:
         params = action.params
-        if not isinstance(params, dict) or not _shell_action(action):
+        if (
+            not isinstance(params, dict)
+            or not _shell_action(action)
+            or not _pipefail_compatible(action)
+        ):
             continue
         command = params.get("command")
         if (
@@ -127,24 +141,27 @@ def _structured_failure(result: ActionResult) -> str | None:
     return None
 
 
-def semantic_failure_code(result: ActionResult) -> str | None:
+def semantic_failure_code(
+    result: ActionResult, *, allow_text_signatures: bool = False
+) -> str | None:
     """Return a stable failure code, avoiding generic stderr heuristics."""
     if result.error or result.success is False:
         return _structured_failure(result) or "action_result_failed"
     structured = _structured_failure(result)
     if structured:
         return structured
+    if not allow_text_signatures:
+        return None
     metadata = result.metadata if isinstance(result.metadata, Mapping) else {}
     content = _mapping(result.content)
     text = "\n".join(
         part
         for part in (
-            _bounded_text(result.content),
             _bounded_text(metadata.get("stderr")),
-            _bounded_text(content),
+            _bounded_text(content.get("stderr")) if content else "",
         )
         if part
-    )
+    )[-8192:]
     if _TRACEBACK_RE.search(text):
         return "python_traceback"
     if _SHELL_FAILURE_RE.search(text):
@@ -152,11 +169,16 @@ def semantic_failure_code(result: ActionResult) -> str | None:
     return None
 
 
-def normalize_action_result_evidence(result: ActionResult) -> str | None:
+def normalize_action_result_evidence(
+    result: ActionResult, *, action: ActionModel | None = None
+) -> str | None:
     """Project recognized semantic failure onto the authoritative result."""
     if not tool_evidence_normalization_enabled():
         return None
-    code = semantic_failure_code(result)
+    code = semantic_failure_code(
+        result,
+        allow_text_signatures=bool(action is not None and _shell_action(action)),
+    )
     if code is None:
         return None
     metadata = dict(result.metadata or {})
@@ -178,9 +200,9 @@ def normalize_observation_tool_evidence(
     if not isinstance(results, list):
         return ()
     codes = []
-    for result in results[: len(actions)]:
+    for action, result in zip(actions, results):
         if isinstance(result, ActionResult):
-            code = normalize_action_result_evidence(result)
+            code = normalize_action_result_evidence(result, action=action)
             if code:
                 codes.append(code)
     return tuple(codes)
