@@ -1,3 +1,5 @@
+import os
+import re
 import time
 from typing import Any
 
@@ -11,7 +13,12 @@ _SEMANTIC_RUNTIME_KEY = "semantic_progress"
 _POST_TOOL_TURNS_RUNTIME_KEY = "post_tool_turns"
 _RECENT_SEMANTIC_PAIR_WINDOW = 8
 _PROGRESS_GUARD_REPEAT_THRESHOLD = 3
-
+_SEMANTIC_NO_PROGRESS_THRESHOLD = 6
+SEMANTIC_PROGRESS_LEDGER_ENV = "AWORLD_SEMANTIC_PROGRESS_LEDGER"
+_VOLATILE_FAILURE_TEXT = re.compile(
+    r"(?:0x[0-9a-f]+|sha256:[0-9a-f]+|/[^\s:'\"]+|\b\d+\b)",
+    re.IGNORECASE,
+)
 
 
 def _select_semantic_state(shared: Any, local: Any) -> dict[str, Any] | None:
@@ -177,6 +184,55 @@ def record_semantic_tool_progress(
         None,
     )
 
+    raw_feature = os.environ.get(SEMANTIC_PROGRESS_LEDGER_ENV)
+    semantic_ledger_enabled = not (
+        raw_feature is not None
+        and raw_feature.strip().lower() in {"0", "false", "no", "off"}
+    )
+    if semantic_ledger_enabled:
+        try:
+            from aworld.runners.execution_protocol import execution_protocol_policy
+
+            semantic_ledger_enabled = execution_protocol_policy(
+                runtime_context, agent_id
+            ).semantic_progress_enabled
+        except Exception:
+            semantic_ledger_enabled = True
+
+    failure_items: list[dict[str, Any]] = []
+    for result in action_results:
+        if not isinstance(result, dict):
+            continue
+        metadata = result.get("metadata")
+        semantic_failure = (
+            metadata.get("semantic_failure") if isinstance(metadata, dict) else None
+        )
+        code = (
+            semantic_failure.get("code") if isinstance(semantic_failure, dict) else None
+        )
+        if isinstance(code, str):
+            failure_items.append({"code": code})
+        elif result.get("success") is False or result.get("error"):
+            error_shape = _VOLATILE_FAILURE_TEXT.sub(
+                "<volatile>",
+                str(result.get("error") or "action_result_failed").lower(),
+            )[:512]
+            failure_items.append({"code": "action_result_failed", "shape": error_shape})
+    failure_signature = semantic_fingerprint(failure_items) if failure_items else None
+    hypothesis_map = runtime_context.context_info.get(
+        f"execution_protocol_hypotheses:{agent_id}"
+    )
+    hypothesis_ids = []
+    if isinstance(hypothesis_map, dict):
+        for action in actions:
+            call_id = getattr(action, "tool_call_id", None)
+            value = hypothesis_map.get(call_id) if isinstance(call_id, str) else None
+            if isinstance(value, str):
+                hypothesis_ids.append(value)
+    hypothesis_id = (
+        hypothesis_ids[0] if hypothesis_ids else previous.get("hypothesis_id")
+    )
+
     operation_hash = semantic_fingerprint(
         {
             "tool_name": tool_name,
@@ -262,14 +318,10 @@ def record_semantic_tool_progress(
                         "exit_code": item.exit_code,
                         "output_hash": item.output_hash,
                     }
-                    for item in getattr(
-                        runtime_context, "_completion_self_checks", ()
-                    )
+                    for item in getattr(runtime_context, "_completion_self_checks", ())
                 },
                 "final_evidence_codes": sorted(
-                    getattr(
-                        runtime_context, "_completion_final_evidence_codes", ()
-                    )
+                    getattr(runtime_context, "_completion_final_evidence_codes", ())
                 ),
                 "external_verifier_passed": bool(
                     getattr(runtime_context, "_completion_external_verifier", None)
@@ -285,7 +337,9 @@ def record_semantic_tool_progress(
         and completion_evidence_fingerprint
         != previous.get("completion_evidence_fingerprint")
     )
-    goal_progress_observable = completion_projection is not None
+    goal_progress_observable = (
+        True if semantic_ledger_enabled else completion_projection is not None
+    )
     completion_positive_evidence = (
         sum(
             int(completion_projection[key])
@@ -332,13 +386,21 @@ def record_semantic_tool_progress(
         and artifact_fingerprint != previous.get("artifact_fingerprint")
         and artifact_fingerprint not in recent_artifact_fingerprints
     )
-    # A novel filesystem fingerprint is evidence of work, not evidence that the
-    # task objective advanced. Treating every scratch file, partial download, or
-    # rewritten script as goal progress lets unproductive exploration reset the
-    # stagnation window indefinitely. Only explicit Completion Contract evidence
-    # may reset goal-level stagnation; artifact novelty still prevents false
-    # repeated-operation and low-information classifications below.
-    goal_progress = completion_advanced
+    failure_changed = failure_signature != previous.get("failure_signature") and (
+        failure_signature is not None or previous.get("failure_signature") is not None
+    )
+    semantic_progress = bool(
+        artifact_advanced
+        or validation_evidence_advanced
+        or completion_advanced
+        or failure_changed
+    )
+    # The semantic ledger treats a changed artifact or normalized failure class
+    # as new evidence.  Syntactically novel commands with the same evidence do
+    # not reset the bounded no-progress window.
+    goal_progress = (
+        semantic_progress if semantic_ledger_enabled else completion_advanced
+    )
     goal_progress_count = int(previous.get("goal_progress_count", 0) or 0) + int(
         goal_progress
     )
@@ -351,11 +413,6 @@ def record_semantic_tool_progress(
         if goal_progress
         else previous.get("last_goal_progress_agent_step")
     )
-    # Absence of a Completion Contract means goal progress is unknown, not
-    # negative.  Counting every Tool boundary as no progress in that state makes
-    # adaptive policy compact and inject recovery advice at a fixed cadence even
-    # while the agent is doing useful, novel work.  Repetition, low-information
-    # gain, and budget pressure remain observable without a goal contract.
     no_goal_progress_count = (
         0
         if goal_progress or not goal_progress_observable
@@ -367,22 +424,18 @@ def record_semantic_tool_progress(
     progress_guard_reset = artifact_advanced or validation_evidence_advanced
     previous_pairs = previous.get("recent_operation_result_hashes")
     recent_pairs = (
-        [
-            value
-            for value in previous_pairs
-            if isinstance(value, str)
-        ][-(_RECENT_SEMANTIC_PAIR_WINDOW - 1) :]
+        [value for value in previous_pairs if isinstance(value, str)][
+            -(_RECENT_SEMANTIC_PAIR_WINDOW - 1) :
+        ]
         if isinstance(previous_pairs, list) and not progress_guard_reset
         else []
     )
     recent_pairs.append(semantic_pair_hash)
     previous_results = previous.get("recent_result_hashes")
     history = (
-        [
-            value
-            for value in previous_results
-            if isinstance(value, str)
-        ][-(_RECENT_SEMANTIC_PAIR_WINDOW - 1) :]
+        [value for value in previous_results if isinstance(value, str)][
+            -(_RECENT_SEMANTIC_PAIR_WINDOW - 1) :
+        ]
         if isinstance(previous_results, list) and not progress_guard_reset
         else []
     )
@@ -408,6 +461,10 @@ def record_semantic_tool_progress(
         "artifact_changed": artifact_changed,
         "artifact_fingerprint": artifact_fingerprint,
         "artifact_advanced": artifact_advanced,
+        "failure_signature": failure_signature,
+        "hypothesis_id": hypothesis_id,
+        "semantic_progress_enabled": semantic_ledger_enabled,
+        "semantic_no_progress_threshold": _SEMANTIC_NO_PROGRESS_THRESHOLD,
         "rollback_performed": rollback_performed,
         "implicit_artifact_loss": implicit_artifact_loss,
         "completion_fingerprint": completion_fingerprint,
@@ -423,6 +480,16 @@ def record_semantic_tool_progress(
         "goal_progress": goal_progress,
         "goal_progress_count": goal_progress_count,
         "last_goal_progress_agent_step": last_goal_progress_agent_step,
+        "last_meaningful_progress_agent_step": (
+            current_agent_step
+            if semantic_progress
+            else previous.get("last_meaningful_progress_agent_step")
+        ),
+        "last_meaningful_progress_at": (
+            time.time()
+            if semantic_progress
+            else previous.get("last_meaningful_progress_at")
+        ),
         "current_agent_step": current_agent_step,
         "no_goal_progress_count": no_goal_progress_count,
         "updated_at": time.time(),
@@ -514,15 +581,42 @@ def record_semantic_tool_progress(
     runtime_context.context_info[WATCHDOG_METRICS_KEY] = metrics
     metrics["adaptive_work_state_revision"] = int(work_state.get("revision", 0) or 0)
     try:
-        from aworld.runners.execution_protocol import record_tool_protocol_event
+        from aworld.runners.execution_protocol import (
+            record_acceptance_probe_observation,
+            record_tool_protocol_event,
+        )
+
+        semantic_failure_codes = [
+            failure.get("code")
+            for failure in failure_items
+            if isinstance(failure.get("code"), str)
+        ]
+        probe_success = bool(action_results) and all(
+            isinstance(result, dict)
+            and result.get("success") is True
+            and not result.get("error")
+            for result in action_results
+        )
+        record_acceptance_probe_observation(
+            runtime_context,
+            agent_id,
+            actions=actions,
+            result_projection={
+                "result_hash": result_hash,
+                "failure_signature": failure_signature,
+            },
+            success=probe_success,
+            failure_code=(
+                semantic_failure_codes[0] if semantic_failure_codes else None
+            ),
+        )
 
         record_tool_protocol_event(runtime_context, agent_id, state)
     except Exception:
         # The long-horizon controller is advisory.  Its observation path must
         # never turn a successful Tool call into a task execution failure.
         metrics["execution_protocol_observation_error_count"] = (
-            int(metrics.get("execution_protocol_observation_error_count", 0) or 0)
-            + 1
+            int(metrics.get("execution_protocol_observation_error_count", 0) or 0) + 1
         )
     return state
 

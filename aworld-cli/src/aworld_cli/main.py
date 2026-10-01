@@ -1553,6 +1553,8 @@ def _emit_direct_run_agent_termination(
             value = terminal.get(source_key)
             if isinstance(value, str) and _CONTROL_DETAIL_IDENTIFIER.fullmatch(value):
                 payload[target_key] = value
+        if terminal.get("semantic_status") in {"incomplete", "budget_exhausted"}:
+            payload["status"] = terminal["semantic_status"]
     print(
         "AWORLD_AGENT_TERMINATION="
         + json.dumps(payload, ensure_ascii=False, sort_keys=True),

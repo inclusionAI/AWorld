@@ -56,6 +56,7 @@ from aworld.core.context.compiler.frozen_json import canonical_json_hash
 from aworld.core.context.compiler import CandidateRequestNotEnforceable
 from aworld.core.context.compiler.turn_economics import TurnCauseCode
 from aworld.core.execution_protocol import (
+    ControllerAction,
     ExecutionProtocolPolicy,
     ExecutionProtocolStore,
     ProtocolMode,
@@ -162,6 +163,15 @@ _DETACHED_GENERATION_TASKS: set[asyncio.Task] = set()
 _ACTIVE_GENERATION_TASKS: set[asyncio.Task] = set()
 _GENERATION_TASKS_LOCK = threading.Lock()
 _LONG_HORIZON_EXECUTION_PROFILE_PARAM = "__aworld_execution_profile"
+_LONG_HORIZON_HYPOTHESIS_PARAM = "__aworld_hypothesis_id"
+_ACCEPTANCE_PROBE_PARAM = "__aworld_acceptance_probe"
+INDEPENDENT_ACCEPTANCE_CRITIC_ENV = "AWORLD_INDEPENDENT_ACCEPTANCE_CRITIC"
+SEMANTIC_PROGRESS_LEDGER_ENV = "AWORLD_SEMANTIC_PROGRESS_LEDGER"
+
+
+def _default_on_env(name: str) -> bool:
+    raw = os.environ.get(name)
+    return raw is None or raw.strip().lower() not in {"0", "false", "no", "off"}
 
 
 def _one_shot_process_cleanup_enabled() -> bool:
@@ -787,6 +797,16 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             review_unarmed_candidates=(
                 review_unarmed_candidates if active else False
             ),
+            independent_acceptance_enabled=(
+                _default_on_env(INDEPENDENT_ACCEPTANCE_CRITIC_ENV)
+                if active
+                else False
+            ),
+            semantic_progress_enabled=(
+                _default_on_env(SEMANTIC_PROGRESS_LEDGER_ENV)
+                if active
+                else False
+            ),
         )
         if not active or context is None:
             return policy
@@ -887,8 +907,9 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             execution_protocol_accepts_model_profile,
         )
 
-        if not execution_protocol_accepts_model_profile(context, self.id()):
-            return tools, False
+        offer_profile = execution_protocol_accepts_model_profile(
+            context, self.id()
+        )
 
         augmented: list[dict[str, Any]] = []
         offered = False
@@ -904,13 +925,26 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                 else None
             )
             if (
-                isinstance(properties, dict)
+                offer_profile
+                and isinstance(properties, dict)
                 and _LONG_HORIZON_EXECUTION_PROFILE_PARAM not in properties
             ):
                 properties[_LONG_HORIZON_EXECUTION_PROFILE_PARAM] = (
                     self._long_horizon_execution_profile_schema()
                 )
                 offered = True
+            if (
+                isinstance(properties, dict)
+                and _LONG_HORIZON_HYPOTHESIS_PARAM not in properties
+            ):
+                properties[_LONG_HORIZON_HYPOTHESIS_PARAM] = {
+                    "type": "string",
+                    "maxLength": 128,
+                    "description": (
+                        "Optional stable id for the hypothesis this Tool call tests. "
+                        "AWorld removes it before Tool execution."
+                    ),
+                }
             augmented.append(candidate)
         return augmented, offered
 
@@ -925,17 +959,149 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         if not self._long_horizon_skill_active():
             return
         profiles: list[Any] = []
+        hypotheses: dict[str, str] = {}
         for action in result.actions or ():
             params = getattr(action, "params", None)
             if not isinstance(params, dict):
                 continue
             if _LONG_HORIZON_EXECUTION_PROFILE_PARAM in params:
                 profiles.append(params.pop(_LONG_HORIZON_EXECUTION_PROFILE_PARAM))
+            hypothesis = params.pop(_LONG_HORIZON_HYPOTHESIS_PARAM, None)
+            if (
+                isinstance(hypothesis, str)
+                and hypothesis.strip()
+                and isinstance(action.tool_call_id, str)
+            ):
+                hypotheses[action.tool_call_id] = hypothesis.strip()[:128]
+        if hypotheses:
+            from aworld.runners.execution_protocol import record_tool_hypotheses
+
+            record_tool_hypotheses(context, self.id(), hypotheses)
         if not profiles or not offered:
             return
         from aworld.runners.execution_protocol import record_model_execution_profile
 
         record_model_execution_profile(context, self.id(), profiles[0])
+
+    @staticmethod
+    def _acceptance_probe_schema() -> dict[str, Any]:
+        return {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "hypothesis_id": {"type": "string", "maxLength": 128},
+                "highest_risk_counterexample": {
+                    "type": "string",
+                    "maxLength": 1024,
+                },
+            },
+            "required": ["hypothesis_id", "highest_risk_counterexample"],
+            "description": (
+                "Required only during AWorld independent acceptance review. "
+                "Describe the single highest-risk counterexample tested by this "
+                "fresh probe. The framework removes this object before execution."
+            ),
+        }
+
+    def _with_acceptance_probe_control(
+        self,
+        tools: List[Dict[str, Any]] | None,
+        context: Context,
+    ) -> List[Dict[str, Any]] | None:
+        from aworld.runners.execution_protocol import (
+            acceptance_critic_active,
+            load_acceptance_critic_state,
+        )
+
+        if (
+            not tools
+            or not acceptance_critic_active(context, self.id())
+            or load_acceptance_critic_state(context, self.id()).get("status")
+            == "observed"
+        ):
+            return tools
+        augmented = []
+        for schema in tools:
+            candidate = copy.deepcopy(schema)
+            function = (
+                candidate.get("function") if isinstance(candidate, dict) else None
+            )
+            parameters = (
+                function.get("parameters") if isinstance(function, dict) else None
+            )
+            properties = (
+                parameters.get("properties")
+                if isinstance(parameters, dict)
+                else None
+            )
+            if isinstance(properties, dict):
+                properties[_ACCEPTANCE_PROBE_PARAM] = self._acceptance_probe_schema()
+                required = parameters.get("required")
+                required = list(required) if isinstance(required, list) else []
+                if _ACCEPTANCE_PROBE_PARAM not in required:
+                    required.append(_ACCEPTANCE_PROBE_PARAM)
+                parameters["required"] = required
+            augmented.append(candidate)
+        return augmented
+
+    def _consume_acceptance_probe_control(
+        self, result: AgentResult, context: Context
+    ) -> bool:
+        """Strip and bind one independently identified critic probe."""
+        from aworld.runners.execution_protocol import record_acceptance_probe_plan
+
+        actions = tuple(result.actions or ())
+        if len(actions) != 1:
+            return False
+        action = actions[0]
+        params = getattr(action, "params", None)
+        if not isinstance(params, dict):
+            return False
+        value = params.pop(_ACCEPTANCE_PROBE_PARAM, None)
+        if not isinstance(value, dict):
+            return False
+        if set(value) != {"hypothesis_id", "highest_risk_counterexample"}:
+            return False
+        return record_acceptance_probe_plan(
+            context,
+            self.id(),
+            tool_call_id=str(action.tool_call_id or ""),
+            hypothesis_id=value.get("hypothesis_id"),
+            highest_risk_counterexample=value.get("highest_risk_counterexample"),
+        )
+
+    def _fresh_acceptance_messages(self, context: Context) -> list[dict[str, str]]:
+        from aworld.core.execution_protocol import (
+            AcceptanceProbeReceipt,
+            fresh_acceptance_critic_messages,
+        )
+        from aworld.runners.execution_protocol import (
+            load_acceptance_critic_state,
+            load_candidate_fallback,
+        )
+        from aworld.runners.post_tool_progress import semantic_progress_for_agent
+
+        fallback = load_candidate_fallback(context, self.id()) or ()
+        candidate = (
+            str(getattr(fallback[0], "policy_info", "") or "")
+            if fallback
+            else ""
+        )
+        critic_state = load_acceptance_critic_state(context, self.id())
+        receipt = None
+        if isinstance(critic_state.get("receipt"), dict):
+            try:
+                receipt = AcceptanceProbeReceipt.from_dict(critic_state["receipt"])
+            except (TypeError, ValueError):
+                receipt = None
+        return fresh_acceptance_critic_messages(
+            public_request=self._authoritative_request_from_context(context),
+            candidate=candidate,
+            evidence=semantic_progress_for_agent(context, agent_id=self.id()),
+            probe_receipt=receipt,
+            probe_hypothesis_id=critic_state.get("hypothesis_id"),
+            probe_counterexample=critic_state.get("highest_risk_counterexample"),
+        )
 
     async def _completion_feedback_if_unsatisfied(
         self, *, context: Context, final_response_text: str
@@ -2902,6 +3068,22 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
 
                     record_review_error(message.context, self.id())
                     clear_candidate_fallback(message.context, self.id())
+                    policy = self._resolve_execution_protocol_policy(message.context)
+                    if policy.independent_acceptance_enabled:
+                        text = (
+                            "Independent acceptance review failed before a typed, "
+                            "probe-backed decision was available. Completion is "
+                            "unverified."
+                        )
+                        record_execution_state(
+                            message.context,
+                            self.id(),
+                            "incomplete",
+                            "independent_acceptance_review_error",
+                            recoverable=True,
+                        )
+                        self._finished = True
+                        return [ActionModel(agent_name=self.id(), policy_info=text)]
                     record_execution_state(
                         message.context,
                         self.id(),
@@ -2938,6 +3120,21 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
 
                     record_review_error(message.context, self.id())
                     clear_candidate_fallback(message.context, self.id())
+                    policy = self._resolve_execution_protocol_policy(message.context)
+                    if policy.independent_acceptance_enabled:
+                        text = (
+                            "The bounded independent acceptance review did not "
+                            "finish. Completion is unverified."
+                        )
+                        record_execution_state(
+                            message.context,
+                            self.id(),
+                            "incomplete",
+                            "independent_acceptance_review_budget_stop",
+                            recoverable=True,
+                        )
+                        self._finished = True
+                        return [ActionModel(agent_name=self.id(), policy_info=text)]
                     record_execution_state(
                         message.context,
                         self.id(),
@@ -3141,7 +3338,12 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             self._resolve_execution_protocol_policy(message.context),
         )
         from aworld.runners.execution_protocol import (
+            acceptance_critic_active,
             execution_protocol_requires_tool_free_finalization,
+        )
+
+        independent_acceptance_review = acceptance_critic_active(
+            message.context, self.id()
         )
 
         protocol_tool_free_finalization = (
@@ -3202,6 +3404,11 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             messages=raw_messages,
             context_compiler_mode=context_compiler_mode,
         )
+        if independent_acceptance_review:
+            # This is a full replacement, not appended guidance.  Solver
+            # reasoning, self-claims, and prior assistant/tool transcript do
+            # not enter the critic provider request.
+            raw_messages = self._fresh_acceptance_messages(message.context)
         if not tool_free_finalization:
             from aworld.runners.execution_protocol import (
                 consume_execution_protocol_guidance,
@@ -3253,6 +3460,16 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                     message.context,
                 )
             )
+            tools = self._with_acceptance_probe_control(tools, message.context)
+            if independent_acceptance_review:
+                from aworld.runners.execution_protocol import (
+                    load_acceptance_critic_state,
+                )
+
+                if load_acceptance_critic_state(
+                    message.context, self.id()
+                ).get("status") == "observed":
+                    tools = None
         progressive_tool_base_tools = getattr(
             self.llm, "_context_progressive_tool_base_tools", None
         )
@@ -3505,6 +3722,8 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         agent_result = None
         validation_feedback = None
         long_horizon_review_feedback = None
+        critic_probe_planned = False
+        critic_decision_handled = False
         if source_span:
             source_span.set_attribute(
                 "messages", json.dumps(serializable_messages, ensure_ascii=False)
@@ -3702,6 +3921,31 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                         message.context,
                         offered=execution_profile_offered,
                     )
+                    if independent_acceptance_review and agent_result.is_call_tool:
+                        critic_probe_planned = self._consume_acceptance_probe_control(
+                            agent_result, message.context
+                        )
+                        if not critic_probe_planned:
+                            # A malformed/multiple probe is an uncertain critic
+                            # result, never ordinary solver tool work.
+                            agent_result = AgentResult(
+                                actions=[
+                                    ActionModel(
+                                        agent_name=self.id(),
+                                        policy_info=json.dumps(
+                                            {
+                                                "decision": "uncertain",
+                                                "highest_risk_counterexample": "probe_contract_invalid",
+                                                "hypothesis_id": "probe_contract_invalid",
+                                                "reason": "The independent probe call was missing or malformed.",
+                                            }
+                                        ),
+                                    )
+                                ],
+                                current_state=agent_result.current_state,
+                                is_call_tool=False,
+                            )
+                            llm_response.content = agent_result.actions[0].policy_info
                     if tool_free_finalization and agent_result.is_call_tool:
                         logger.warning(
                             "Agent %s attempted tool work during its bounded "
@@ -3751,15 +3995,93 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                         )
 
                         fallback = load_candidate_fallback(message.context, self.id())
-                        if fallback is not None:
+                        if fallback is not None and not critic_probe_planned:
                             record_review_tool_action(message.context, self.id())
                     response_incomplete = bool(
                         isinstance(llm_response.message, dict)
                         and llm_response.message.get("aworld_incomplete_reason")
                     )
                     if (
+                        independent_acceptance_review
+                        and candidate_finished
+                        and not response_incomplete
+                    ):
+                        from aworld.runners.execution_protocol import (
+                            clear_candidate_fallback,
+                            load_candidate_fallback,
+                            record_acceptance_critic_decision,
+                        )
+
+                        fallback = load_candidate_fallback(message.context, self.id())
+                        transition, _decision, accepted = (
+                            record_acceptance_critic_decision(
+                                message.context,
+                                self.id(),
+                                llm_response.content or "",
+                            )
+                        )
+                        critic_decision_handled = True
+                        if accepted and fallback is not None:
+                            fallback_text = str(fallback[0].policy_info or "")
+                            llm_response.content = fallback_text
+                            if isinstance(llm_response.message, dict):
+                                llm_response.message = dict(llm_response.message)
+                                llm_response.message["content"] = fallback_text
+                            agent_result = AgentResult(
+                                actions=list(fallback),
+                                current_state=agent_result.current_state,
+                                is_call_tool=False,
+                            )
+                        elif (
+                            transition is not None
+                            and transition.decision.action
+                            is ControllerAction.REQUEST_REPAIR
+                        ):
+                            validation_feedback = (
+                                "The independent acceptance critic did not produce "
+                                "a probe-backed accept decision. Repair the highest-"
+                                "risk gap, then produce a new evidence-backed candidate."
+                            )
+                        else:
+                            from aworld.core.context.execution_state import (
+                                record_execution_state,
+                            )
+
+                            incomplete_text = (
+                                "Independent acceptance could not be established "
+                                "within the bounded review/repair budget. Preserved "
+                                "work may be useful, but completion is unverified."
+                            )
+                            llm_response.content = incomplete_text
+                            if isinstance(llm_response.message, dict):
+                                llm_response.message = dict(llm_response.message)
+                                llm_response.message["content"] = incomplete_text
+                                llm_response.message[
+                                    "aworld_incomplete_reason"
+                                ] = "acceptance_evidence_missing"
+                            agent_result = AgentResult(
+                                actions=[
+                                    ActionModel(
+                                        agent_name=self.id(),
+                                        policy_info=incomplete_text,
+                                    )
+                                ],
+                                current_state=agent_result.current_state,
+                                is_call_tool=False,
+                            )
+                            response_incomplete = True
+                            record_execution_state(
+                                message.context,
+                                self.id(),
+                                "incomplete",
+                                "independent_acceptance_evidence_missing",
+                                recoverable=False,
+                            )
+                        clear_candidate_fallback(message.context, self.id())
+                    if (
                         candidate_finished
                         and not loop_budget_finalization
+                        and not critic_decision_handled
                         and not validation_feedback
                         and not response_incomplete
                     ):
@@ -3773,6 +4095,45 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                         protocol_transition = record_candidate_final(
                             message.context, self.id()
                         )
+                        if (
+                            protocol_transition is not None
+                            and protocol_transition.decision.action
+                            is ControllerAction.STOP_INCOMPLETE
+                        ):
+                            from aworld.core.context.execution_state import (
+                                record_execution_state,
+                            )
+
+                            incomplete_text = (
+                                "Independent acceptance evidence is missing and "
+                                "the bounded review budget is exhausted. Completion "
+                                "is unverified."
+                            )
+                            llm_response.content = incomplete_text
+                            if isinstance(llm_response.message, dict):
+                                llm_response.message = dict(llm_response.message)
+                                llm_response.message["content"] = incomplete_text
+                                llm_response.message[
+                                    "aworld_incomplete_reason"
+                                ] = "acceptance_evidence_missing"
+                            agent_result = AgentResult(
+                                actions=[
+                                    ActionModel(
+                                        agent_name=self.id(),
+                                        policy_info=incomplete_text,
+                                    )
+                                ],
+                                current_state=agent_result.current_state,
+                                is_call_tool=False,
+                            )
+                            response_incomplete = True
+                            record_execution_state(
+                                message.context,
+                                self.id(),
+                                "incomplete",
+                                "independent_acceptance_evidence_missing",
+                                recoverable=False,
+                            )
                         long_horizon_review_feedback = final_review_guidance(
                             protocol_transition
                         )

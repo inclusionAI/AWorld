@@ -43,6 +43,9 @@ class EventKind(str, Enum):
 class ReviewOutcome(str, Enum):
     ACCEPT = "accept"
     REPAIR = "repair"
+    UNCERTAIN = "uncertain"
+    # Compatibility with v1 snapshots written before the public critic used
+    # the precise ``uncertain`` spelling.
     UNKNOWN = "unknown"
     ERROR = "error"
 
@@ -58,6 +61,7 @@ class ControllerAction(str, Enum):
     WOULD_REQUEST_REPAIR = "would_request_repair"
     REQUEST_REPAIR = "request_repair"
     SUBMIT_CURRENT_RESULT = "submit_current_result"
+    STOP_INCOMPLETE = "stop_incomplete"
 
 
 class DecisionReason(str, Enum):
@@ -80,6 +84,7 @@ class DecisionReason(str, Enum):
     REVIEW_UNCERTAIN = "review_uncertain"
     REVIEW_ERROR = "review_error"
     REPAIR_LIMIT_REACHED = "repair_limit_reached"
+    ACCEPTANCE_EVIDENCE_MISSING = "acceptance_evidence_missing"
     CONTROLLER_ERROR = "controller_error"
     INVALID_EVENT = "invalid_event"
 
@@ -171,6 +176,8 @@ class ExecutionProtocolPolicy:
     # still makes no semantic judgement: the review model accepts by returning
     # a final response or requests repair by using Tools.
     review_unarmed_candidates: bool = False
+    independent_acceptance_enabled: bool = False
+    semantic_progress_enabled: bool = False
     history_limit: int = 32
     activation_event_threshold: int = 6
     model_activation_confidence_threshold: float = 0.7
@@ -192,8 +199,13 @@ class ExecutionProtocolPolicy:
                 object.__setattr__(self, "mode", ProtocolMode(self.mode))
             except (TypeError, ValueError) as exc:
                 raise ValueError("mode must be off, observe, or guide") from exc
-        if not isinstance(self.review_unarmed_candidates, bool):
-            raise ValueError("review_unarmed_candidates must be a boolean")
+        for name in (
+            "review_unarmed_candidates",
+            "independent_acceptance_enabled",
+            "semantic_progress_enabled",
+        ):
+            if not isinstance(getattr(self, name), bool):
+                raise ValueError(f"{name} must be a boolean")
         for name in (
             "history_limit",
             "activation_event_threshold",
@@ -257,6 +269,8 @@ class ExecutionProtocolPolicy:
             "schema_version": self.SCHEMA_VERSION,
             "mode": self.mode.value,
             "review_unarmed_candidates": self.review_unarmed_candidates,
+            "independent_acceptance_enabled": self.independent_acceptance_enabled,
+            "semantic_progress_enabled": self.semantic_progress_enabled,
             "history_limit": self.history_limit,
             "activation_event_threshold": self.activation_event_threshold,
             "model_activation_confidence_threshold": (
@@ -286,9 +300,11 @@ class ExecutionProtocolPolicy:
         return cls(
             mode=value.get("mode"),
             # Additive v1 field.  Older policies retain the short-task bypass.
-            review_unarmed_candidates=value.get(
-                "review_unarmed_candidates", False
+            review_unarmed_candidates=value.get("review_unarmed_candidates", False),
+            independent_acceptance_enabled=value.get(
+                "independent_acceptance_enabled", False
             ),
+            semantic_progress_enabled=value.get("semantic_progress_enabled", False),
             history_limit=value.get("history_limit"),
             # Additive v1 field: older serialized v1 policies use the safe
             # short-task bypass default when restored.
@@ -611,6 +627,7 @@ class ExecutionProtocolState:
     review_pending: bool = False
     finalization_entered: bool = False
     long_horizon_armed: bool = False
+    acceptance_confirmed: bool = False
     model_execution_profile: ModelExecutionProfile | None = None
     history: tuple[ProtocolEventRecord, ...] = field(default_factory=tuple)
 
@@ -642,6 +659,7 @@ class ExecutionProtocolState:
             not isinstance(self.review_pending, bool)
             or not isinstance(self.finalization_entered, bool)
             or not isinstance(self.long_horizon_armed, bool)
+            or not isinstance(self.acceptance_confirmed, bool)
         ):
             raise ValueError("state flags must be booleans")
         if not isinstance(self.history, tuple) or not all(
@@ -702,6 +720,7 @@ class ExecutionProtocolState:
             "review_pending": self.review_pending,
             "finalization_entered": self.finalization_entered,
             "long_horizon_armed": self.long_horizon_armed,
+            "acceptance_confirmed": self.acceptance_confirmed,
             "model_execution_profile": (
                 self.model_execution_profile.to_dict()
                 if self.model_execution_profile is not None
@@ -750,6 +769,7 @@ class ExecutionProtocolState:
             review_pending=value.get("review_pending", False),
             finalization_entered=value.get("finalization_entered", False),
             long_horizon_armed=value.get("long_horizon_armed", False),
+            acceptance_confirmed=value.get("acceptance_confirmed", False),
             model_execution_profile=(
                 ModelExecutionProfile.from_mapping(profile)
                 if profile is not None

@@ -173,6 +173,27 @@ def test_runtime_can_enable_model_review_for_every_candidate(monkeypatch) -> Non
 
     assert policy.mode is ProtocolMode.GUIDE
     assert policy.review_unarmed_candidates is True
+    assert policy.independent_acceptance_enabled is True
+    assert policy.semantic_progress_enabled is True
+
+
+def test_runtime_canary_flags_can_disable_new_protocol_features(monkeypatch) -> None:
+    monkeypatch.setenv("AWORLD_INDEPENDENT_ACCEPTANCE_CRITIC", "false")
+    monkeypatch.setenv("AWORLD_SEMANTIC_PROGRESS_LEDGER", "0")
+    agent = Agent(
+        name="Aworld",
+        conf=AgentConfig(
+            llm_provider="openai",
+            llm_model_name="offline",
+            llm_api_key="offline",
+        ),
+    )
+    agent.skill_configs = {"long-running-agent": {"active": True}}
+
+    policy = agent._resolve_execution_protocol_policy()
+
+    assert policy.independent_acceptance_enabled is False
+    assert policy.semantic_progress_enabled is False
 
 
 def test_review_every_candidate_env_does_not_activate_disabled_skill(
@@ -824,3 +845,86 @@ async def test_model_can_continue_tool_work_after_review_repair() -> None:
     assert final[0].tool_name == "run_code"
     assert agent.finished is False
     assert calls == 3
+
+
+@pytest.mark.asyncio
+async def test_independent_uncertain_review_returns_typed_incomplete_outcome() -> None:
+    calls = 0
+    requests = []
+
+    class UncertainCriticAgent(Agent):
+        async def _add_message_to_memory(self, *args, **kwargs):
+            return None
+
+        async def build_llm_input(self, observation, info=None, message=None, **kwargs):
+            return [
+                {"role": "system", "content": "solver rules"},
+                {"role": "assistant", "content": "private solver reasoning"},
+                {"role": "user", "content": str(observation.content or "")},
+            ]
+
+        async def _filter_tools(self, context=None):
+            return None
+
+        async def invoke_model(self, messages=None, message=None, **kwargs):
+            nonlocal calls
+            calls += 1
+            requests.append(messages)
+            if calls in {1, 3}:
+                content = f"candidate-{calls}"
+            else:
+                content = json.dumps(
+                    {
+                        "decision": "uncertain",
+                        "highest_risk_counterexample": "unverified edge case",
+                        "hypothesis_id": "edge-case",
+                        "reason": "no independent probe tool was available",
+                    }
+                )
+            return ModelResponse(
+                id=f"response-{calls}",
+                model="offline",
+                content=content,
+                message={"role": "assistant", "content": content},
+                finish_reason="stop",
+                usage={"prompt_tokens": 1, "completion_tokens": 1},
+            )
+
+    context = Context(task_id="independent-uncertain")
+    context.origin_user_input = "complete the public task"
+    context.set_task(
+        Task(id="independent-uncertain", input="complete the public task", timeout=600)
+    )
+    policy = ExecutionProtocolPolicy(
+        mode=ProtocolMode.GUIDE,
+        review_unarmed_candidates=True,
+        independent_acceptance_enabled=True,
+        max_repairs=1,
+        max_final_reviews=1,
+    )
+    agent = UncertainCriticAgent(
+        name="Aworld",
+        conf=AgentConfig(
+            llm_provider="openai",
+            llm_model_name="offline",
+            llm_api_key="offline",
+        ),
+        execution_protocol_policy=policy,
+        max_loop_steps=0,
+    )
+    message = Message(category=Constants.AGENT, headers={"context": context})
+
+    result = await agent.async_policy(
+        Observation(content="start"), message=message
+    )
+
+    assert calls == 4
+    assert "completion is unverified" in result[0].policy_info.lower()
+    state = get_execution_state(context)
+    assert state["status"] == "incomplete"
+    assert state["reason"] == "acceptance_evidence_missing"
+    assert state["recoverable"] is False
+    for critic_request in (requests[1], requests[3]):
+        serialized = json.dumps(critic_request)
+        assert "private solver reasoning" not in serialized
+        assert [item["role"] for item in critic_request] == ["system", "user"]

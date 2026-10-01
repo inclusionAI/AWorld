@@ -35,6 +35,10 @@ from aworld.core.tool.replay_policy import (
     enforce_replay_evidence_runtime_policy,
     record_replay_runtime_tool_result,
 )
+from aworld.core.tool.evidence import (
+    enforce_pipeline_failure_semantics,
+    normalize_observation_tool_evidence,
+)
 from aworld.events import eventbus
 from aworld.events.util import send_message, send_message_with_future
 from aworld.logs.util import logger
@@ -683,6 +687,7 @@ class Tool(BaseTool[Observation, List[ActionModel]]):
 
             _enforce_replay_evidence_runtime_policy(self.name(), action, message)
             _enforce_runtime_tool_call_budget(self.name(), action, message)
+            enforce_pipeline_failure_semantics(action)
 
             self.pre_step(action, **kwargs)
             tool_output_plans = prepare_tool_output_plans(message.context, action)
@@ -705,6 +710,7 @@ class Tool(BaseTool[Observation, List[ActionModel]]):
                 default_content=res[0].content,
                 error=info.get("error"),
             )
+            normalize_observation_tool_evidence(action, res[0])
             res = enforce_tool_output_boundary(
                 res, action, message.context, tool_output_plans
             )
@@ -994,6 +1000,7 @@ class AsyncTool(AsyncBaseTool[Observation, List[ActionModel]]):
 
             _enforce_replay_evidence_runtime_policy(self.name(), action, message)
             _enforce_runtime_tool_call_budget(self.name(), action, message)
+            enforce_pipeline_failure_semantics(action)
 
             await self.pre_step(action, message=message,**kwargs)
             tool_output_plans = prepare_tool_output_plans(message.context, action)
@@ -1017,6 +1024,7 @@ class AsyncTool(AsyncBaseTool[Observation, List[ActionModel]]):
                 default_content=res[0].content,
                 error=info.get("error"),
             )
+            normalize_observation_tool_evidence(action, res[0])
             res = enforce_tool_output_boundary(
                 res, action, message.context, tool_output_plans
             )

@@ -75,7 +75,8 @@ def transition_execution_protocol(
     """Apply one event without side effects.
 
     Controller decisions never declare the user's task correct or failed.
-    Uncertain/error review results submit the current candidate (fail open).
+    Uncertain/error review results consume the bounded repair opportunity and
+    never become acceptance.
     """
     if not isinstance(state, ExecutionProtocolState):
         raise TypeError("state must be ExecutionProtocolState")
@@ -105,11 +106,9 @@ def transition_execution_protocol(
         credible_long = (
             profile is not None
             and profile.horizon is ExecutionHorizon.LONG
-            and profile.confidence
-            >= policy.model_activation_confidence_threshold
+            and profile.confidence >= policy.model_activation_confidence_threshold
             and (
-                profile.milestone_count
-                >= policy.model_activation_min_milestones
+                profile.milestone_count >= policy.model_activation_min_milestones
                 or profile.expected_tool_actions
                 >= policy.model_activation_min_tool_actions
             )
@@ -141,8 +140,7 @@ def transition_execution_protocol(
 
         stagnant = _is_stagnant(next_state, event, policy)
         should_arm = (
-            next_state.tool_observation_count
-            >= policy.activation_event_threshold
+            next_state.tool_observation_count >= policy.activation_event_threshold
             or stagnant
         )
         if should_arm and not next_state.long_horizon_armed:
@@ -234,6 +232,19 @@ def transition_execution_protocol(
             finalization_entered=True,
         )
         if next_state.phase is ProtocolPhase.FINALIZE:
+            if policy.independent_acceptance_enabled:
+                next_state = replace(
+                    next_state,
+                    phase=ProtocolPhase.COMPLETE,
+                    review_pending=False,
+                )
+                return ProtocolTransition(
+                    next_state,
+                    _decision(
+                        ControllerAction.STOP_INCOMPLETE,
+                        DecisionReason.ACCEPTANCE_EVIDENCE_MISSING,
+                    ),
+                )
             next_state = replace(
                 next_state,
                 phase=ProtocolPhase.COMPLETE,
@@ -249,6 +260,7 @@ def transition_execution_protocol(
         if (
             not next_state.long_horizon_armed
             and not policy.review_unarmed_candidates
+            and not policy.independent_acceptance_enabled
         ):
             next_state = replace(
                 next_state,
@@ -262,9 +274,13 @@ def transition_execution_protocol(
                     DecisionReason.SHORT_TASK_BYPASS,
                 ),
             )
-        if (
-            next_state.final_review_count < policy.max_final_reviews
-            and next_state.repair_count == 0
+        review_budget = (
+            max(policy.max_final_reviews, policy.max_repairs + 1)
+            if policy.independent_acceptance_enabled
+            else policy.max_final_reviews
+        )
+        if next_state.final_review_count < review_budget and (
+            policy.independent_acceptance_enabled or next_state.repair_count == 0
         ):
             next_state = replace(
                 next_state,
@@ -286,6 +302,14 @@ def transition_execution_protocol(
             phase=ProtocolPhase.COMPLETE,
             review_pending=False,
         )
+        if policy.independent_acceptance_enabled:
+            return ProtocolTransition(
+                next_state,
+                _decision(
+                    ControllerAction.STOP_INCOMPLETE,
+                    DecisionReason.ACCEPTANCE_EVIDENCE_MISSING,
+                ),
+            )
         return ProtocolTransition(
             next_state,
             _decision(
@@ -297,15 +321,28 @@ def transition_execution_protocol(
     if event.kind is EventKind.REVIEW_RESULT:
         if not next_state.review_pending:
             next_state = replace(next_state, phase=ProtocolPhase.COMPLETE)
+            action = (
+                ControllerAction.STOP_INCOMPLETE
+                if policy.independent_acceptance_enabled
+                else ControllerAction.SUBMIT_CURRENT_RESULT
+            )
             return ProtocolTransition(
                 next_state,
                 _decision(
-                    ControllerAction.SUBMIT_CURRENT_RESULT,
+                    action,
                     DecisionReason.INVALID_EVENT,
                 ),
             )
         next_state = replace(next_state, review_pending=False)
-        if event.review_outcome is ReviewOutcome.REPAIR:
+        if event.review_outcome is ReviewOutcome.REPAIR or (
+            policy.independent_acceptance_enabled
+            and event.review_outcome
+            in {
+                ReviewOutcome.UNCERTAIN,
+                ReviewOutcome.UNKNOWN,
+                ReviewOutcome.ERROR,
+            }
+        ):
             if next_state.repair_count < policy.max_repairs:
                 next_state = replace(
                     next_state,
@@ -317,22 +354,30 @@ def transition_execution_protocol(
                     guide=ControllerAction.REQUEST_REPAIR,
                     observe=ControllerAction.WOULD_REQUEST_REPAIR,
                 )
-                return ProtocolTransition(
-                    next_state,
-                    _decision(action, DecisionReason.REVIEW_REPAIR_REQUESTED),
+                reason = (
+                    DecisionReason.REVIEW_REPAIR_REQUESTED
+                    if event.review_outcome is ReviewOutcome.REPAIR
+                    else DecisionReason.REVIEW_ERROR
+                    if event.review_outcome is ReviewOutcome.ERROR
+                    else DecisionReason.REVIEW_UNCERTAIN
                 )
+                return ProtocolTransition(next_state, _decision(action, reason))
             reason = DecisionReason.REPAIR_LIMIT_REACHED
         elif event.review_outcome is ReviewOutcome.ACCEPT:
+            next_state = replace(next_state, acceptance_confirmed=True)
             reason = DecisionReason.REVIEW_ACCEPTED
         elif event.review_outcome is ReviewOutcome.ERROR:
             reason = DecisionReason.REVIEW_ERROR
         else:
             reason = DecisionReason.REVIEW_UNCERTAIN
         next_state = replace(next_state, phase=ProtocolPhase.COMPLETE)
-        return ProtocolTransition(
-            next_state,
-            _decision(ControllerAction.SUBMIT_CURRENT_RESULT, reason),
+        action = (
+            ControllerAction.SUBMIT_CURRENT_RESULT
+            if event.review_outcome is ReviewOutcome.ACCEPT
+            or not policy.independent_acceptance_enabled
+            else ControllerAction.STOP_INCOMPLETE
         )
+        return ProtocolTransition(next_state, _decision(action, reason))
 
     raise ValueError("unsupported execution protocol event")
 
@@ -350,11 +395,14 @@ def safe_transition_execution_protocol(
             EventKind.CANDIDATE_FINAL,
             EventKind.REVIEW_RESULT,
         }
-        action = (
-            ControllerAction.SUBMIT_CURRENT_RESULT
-            if final_boundary
-            else ControllerAction.CONTINUE
-        )
+        action = ControllerAction.CONTINUE
+        if final_boundary:
+            action = (
+                ControllerAction.STOP_INCOMPLETE
+                if isinstance(policy, ExecutionProtocolPolicy)
+                and policy.independent_acceptance_enabled
+                else ControllerAction.SUBMIT_CURRENT_RESULT
+            )
         return ProtocolTransition(
             state=state,
             decision=_decision(action, DecisionReason.CONTROLLER_ERROR),

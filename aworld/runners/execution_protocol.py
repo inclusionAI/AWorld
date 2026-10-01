@@ -8,6 +8,8 @@ writes control state into the user's workspace.
 from __future__ import annotations
 
 from copy import deepcopy
+from dataclasses import replace
+import os
 from typing import Any, Mapping
 
 from aworld.core.context.execution_state import state_context
@@ -29,6 +31,10 @@ EXECUTION_PROTOCOL_PENDING_KEY = "execution_protocol_pending_guidance"
 EXECUTION_PROTOCOL_METRICS_KEY = "execution_protocol_metrics"
 EXECUTION_PROTOCOL_FALLBACK_KEY = "execution_protocol_candidate_fallback"
 EXECUTION_PROTOCOL_MODEL_PROFILE_KEY = "execution_protocol_model_profile_attempt"
+EXECUTION_PROTOCOL_HYPOTHESES_KEY = "execution_protocol_hypotheses"
+EXECUTION_PROTOCOL_CRITIC_KEY = "execution_protocol_acceptance_critic"
+INDEPENDENT_ACCEPTANCE_CRITIC_ENV = "AWORLD_INDEPENDENT_ACCEPTANCE_CRITIC"
+SEMANTIC_PROGRESS_LEDGER_ENV = "AWORLD_SEMANTIC_PROGRESS_LEDGER"
 _MAX_FALLBACK_CHARS = 64_000
 _MAX_TELEMETRY_COUNTER = 1_000_000
 
@@ -82,7 +88,189 @@ def configure_execution_protocol(
     """Publish a validated policy for Tool-boundary transport copies."""
     if not isinstance(policy, ExecutionProtocolPolicy):
         raise TypeError("policy must be ExecutionProtocolPolicy")
-    _write_runtime_value(context, agent_id, EXECUTION_PROTOCOL_POLICY_KEY, policy.to_dict())
+    acceptance_flag = os.environ.get(INDEPENDENT_ACCEPTANCE_CRITIC_ENV)
+    semantic_flag = os.environ.get(SEMANTIC_PROGRESS_LEDGER_ENV)
+    policy = replace(
+        policy,
+        independent_acceptance_enabled=(
+            policy.independent_acceptance_enabled
+            and not (
+                acceptance_flag is not None
+                and acceptance_flag.strip().lower() in {"0", "false", "no", "off"}
+            )
+        ),
+        semantic_progress_enabled=(
+            policy.semantic_progress_enabled
+            and not (
+                semantic_flag is not None
+                and semantic_flag.strip().lower() in {"0", "false", "no", "off"}
+            )
+        ),
+    )
+    _write_runtime_value(
+        context, agent_id, EXECUTION_PROTOCOL_POLICY_KEY, policy.to_dict()
+    )
+
+
+def record_tool_hypotheses(
+    context, agent_id: str, hypotheses: Mapping[str, str]
+) -> None:
+    """Retain bounded, hashed hypothesis identities by tool call id."""
+    from aworld.core.context.compiler import semantic_fingerprint
+
+    bounded = {
+        call_id: semantic_fingerprint(hypothesis)
+        for call_id, hypothesis in hypotheses.items()
+        if isinstance(call_id, str)
+        and 0 < len(call_id) <= 256
+        and isinstance(hypothesis, str)
+        and hypothesis.strip()
+    }
+    bounded = dict(list(bounded.items())[-32:])
+    _write_runtime_value(context, agent_id, EXECUTION_PROTOCOL_HYPOTHESES_KEY, bounded)
+    owner = state_context(context)
+    if owner is not None:
+        owner.context_info[f"execution_protocol_hypotheses:{agent_id}"] = bounded
+
+
+def acceptance_critic_active(context, agent_id: str) -> bool:
+    raw = os.environ.get(INDEPENDENT_ACCEPTANCE_CRITIC_ENV)
+    if raw is not None and raw.strip().lower() in {"0", "false", "no", "off"}:
+        return False
+    policy = execution_protocol_policy(context, agent_id)
+    if not policy.independent_acceptance_enabled or policy.mode is ProtocolMode.OFF:
+        return False
+    return ExecutionProtocolStore(context, agent_id, policy).load().review_pending
+
+
+def record_acceptance_probe_plan(
+    context,
+    agent_id: str,
+    *,
+    tool_call_id: str,
+    hypothesis_id: str,
+    highest_risk_counterexample: str,
+) -> bool:
+    """Bind exactly one critic-selected probe to the pending review."""
+    if not acceptance_critic_active(context, agent_id):
+        return False
+    if not all(
+        isinstance(value, str) and value.strip()
+        for value in (tool_call_id, hypothesis_id, highest_risk_counterexample)
+    ):
+        return False
+    current = _read_runtime_value(context, agent_id, EXECUTION_PROTOCOL_CRITIC_KEY)
+    if isinstance(current, Mapping) and current.get("status") in {
+        "planned",
+        "observed",
+    }:
+        return False
+    _write_runtime_value(
+        context,
+        agent_id,
+        EXECUTION_PROTOCOL_CRITIC_KEY,
+        {
+            "schema_version": "aworld.acceptance-critic-state/v1",
+            "status": "planned",
+            "tool_call_id": tool_call_id[:256],
+            "hypothesis_id": hypothesis_id.strip()[:128],
+            "highest_risk_counterexample": highest_risk_counterexample.strip()[:1024],
+        },
+    )
+    return True
+
+
+def record_acceptance_probe_observation(
+    context,
+    agent_id: str,
+    *,
+    actions: Any,
+    result_projection: Any,
+    success: bool,
+    failure_code: str | None,
+) -> bool:
+    """Create a typed receipt from the separately observed Tool boundary."""
+    from aworld.core.execution_protocol import AcceptanceProbeReceipt
+
+    current = _read_runtime_value(context, agent_id, EXECUTION_PROTOCOL_CRITIC_KEY)
+    if not isinstance(current, Mapping) or current.get("status") != "planned":
+        return False
+    call_ids = {
+        getattr(action, "tool_call_id", None)
+        for action in actions or ()
+        if isinstance(getattr(action, "tool_call_id", None), str)
+    }
+    if current.get("tool_call_id") not in call_ids:
+        return False
+    receipt = AcceptanceProbeReceipt.build(
+        hypothesis_id=current["hypothesis_id"],
+        highest_risk_counterexample=current["highest_risk_counterexample"],
+        result=result_projection,
+        success=success,
+        failure_code=failure_code,
+    )
+    _write_runtime_value(
+        context,
+        agent_id,
+        EXECUTION_PROTOCOL_CRITIC_KEY,
+        {**dict(current), "status": "observed", "receipt": receipt.to_dict()},
+    )
+    return True
+
+
+def load_acceptance_critic_state(context, agent_id: str) -> dict[str, Any]:
+    value = _read_runtime_value(context, agent_id, EXECUTION_PROTOCOL_CRITIC_KEY)
+    return dict(value) if isinstance(value, Mapping) else {}
+
+
+def clear_acceptance_critic_state(context, agent_id: str) -> None:
+    _write_runtime_value(context, agent_id, EXECUTION_PROTOCOL_CRITIC_KEY, None)
+
+
+def record_acceptance_critic_decision(
+    context, agent_id: str, value: Any
+) -> tuple[ProtocolTransition | None, Any, bool]:
+    """Validate the typed decision and enforce independent probe evidence."""
+    from aworld.core.execution_protocol import (
+        AcceptanceCriticDecision,
+        AcceptanceDecision,
+        AcceptanceProbeReceipt,
+    )
+
+    policy = execution_protocol_policy(context, agent_id)
+    if policy.mode is ProtocolMode.OFF:
+        return None, None, False
+    try:
+        decision = AcceptanceCriticDecision.from_value(value)
+    except (TypeError, ValueError):
+        decision = None
+    critic_state = load_acceptance_critic_state(context, agent_id)
+    receipt_value = critic_state.get("receipt")
+    try:
+        receipt = AcceptanceProbeReceipt.from_dict(receipt_value)
+    except (TypeError, ValueError):
+        receipt = None
+    independently_supported = bool(
+        decision is not None
+        and decision.decision is AcceptanceDecision.ACCEPT
+        and receipt is not None
+        and receipt.supports(decision)
+    )
+    if independently_supported:
+        outcome = ReviewOutcome.ACCEPT
+    elif decision is not None and decision.decision is AcceptanceDecision.REPAIR:
+        outcome = ReviewOutcome.REPAIR
+    else:
+        outcome = ReviewOutcome.UNCERTAIN
+    transition = ExecutionProtocolStore(context, agent_id, policy).apply(
+        ExecutionProtocolEvent(
+            kind=EventKind.REVIEW_RESULT,
+            review_outcome=outcome,
+        )
+    )
+    _record_transition_metrics(context, transition)
+    clear_acceptance_critic_state(context, agent_id)
+    return transition, decision, independently_supported
 
 
 def execution_protocol_policy(context, agent_id: str) -> ExecutionProtocolPolicy:
@@ -376,6 +564,14 @@ def consume_execution_protocol_guidance(context, agent_id: str) -> str | None:
             agent_id,
             ExecutionProtocolEvent(kind=EventKind.REPLAN_APPLIED),
         )
+        try:
+            from aworld.runners.post_tool_progress import (
+                acknowledge_semantic_checkpoint,
+            )
+
+            acknowledge_semantic_checkpoint(context, agent_id=agent_id)
+        except Exception:
+            pass
         return (
             "AWorld long-horizon checkpoint: recent observed actions have not "
             "produced enough new evidence. Reconcile the rolling plan with the "
@@ -502,9 +698,7 @@ def clear_candidate_fallback(context, agent_id: str) -> None:
     _write_runtime_value(context, agent_id, EXECUTION_PROTOCOL_FALLBACK_KEY, None)
 
 
-def execution_protocol_requires_tool_free_finalization(
-    context, agent_id: str
-) -> bool:
+def execution_protocol_requires_tool_free_finalization(context, agent_id: str) -> bool:
     """Return true when the deadline/stagnation protocol reserved finalization.
 
     A model-requested repair is deliberately not a finalization state.  After
@@ -528,14 +722,14 @@ def final_review_guidance(transition: ProtocolTransition | None) -> str | None:
     ):
         return None
     return (
-        "AWorld model-owned completion review: decide whether the public request "
-        "is actually complete using the observations and current environment "
-        "state from this run. Check whether later changes made earlier evidence "
-        "stale. If the task is complete, return the final response without "
-        "redoing verified work. If it is incomplete, use the available Tools and "
-        "continue working until you can make a new evidence-backed completion "
-        "decision within the remaining task budget. Do not invent evidence or "
-        "treat a plan, intent, or partial result as completion."
+        "AWorld model-owned completion review with independent acceptance: "
+        "the next provider request is "
+        "rebuilt from bounded public task, candidate, and framework evidence; "
+        "solver reasoning is excluded. Identify the highest-risk counterexample "
+        "and execute one fresh equivalent probe. A later terminal decision must "
+        "be exactly accept, repair, or uncertain, and accept requires the matching "
+        "successful framework probe receipt. Solver self-tests alone are not "
+        "acceptance evidence."
     )
 
 
@@ -543,9 +737,13 @@ __all__ = [
     "EXECUTION_PROTOCOL_METRICS_KEY",
     "EXECUTION_PROTOCOL_FALLBACK_KEY",
     "EXECUTION_PROTOCOL_MODEL_PROFILE_KEY",
+    "EXECUTION_PROTOCOL_HYPOTHESES_KEY",
+    "EXECUTION_PROTOCOL_CRITIC_KEY",
     "EXECUTION_PROTOCOL_PENDING_KEY",
     "EXECUTION_PROTOCOL_POLICY_KEY",
     "configure_execution_protocol",
+    "acceptance_critic_active",
+    "clear_acceptance_critic_state",
     "clear_candidate_fallback",
     "consume_execution_protocol_guidance",
     "build_execution_protocol_telemetry",
@@ -555,11 +753,16 @@ __all__ = [
     "final_review_guidance",
     "record_candidate_final",
     "record_model_execution_profile",
+    "record_tool_hypotheses",
+    "record_acceptance_probe_plan",
+    "record_acceptance_probe_observation",
+    "record_acceptance_critic_decision",
     "record_review_error",
     "record_review_tool_action",
     "record_tool_protocol_event",
     "load_candidate_fallback",
     "load_execution_protocol_state",
+    "load_acceptance_critic_state",
     "project_execution_protocol_telemetry",
     "store_candidate_fallback",
 ]

@@ -21,6 +21,30 @@ def _marker_payload(stderr: str, marker: str) -> dict:
     return json.loads(line.removeprefix(marker))
 
 
+def test_acceptance_stop_emits_typed_incomplete_termination_marker(capsys) -> None:
+    main_module._emit_direct_run_agent_termination(
+        agent_name="Aworld",
+        summary={
+            "results": [
+                {
+                    "success": False,
+                    "semantic_status": "incomplete",
+                    "completion_reason": "acceptance_evidence_missing",
+                    "failure_origin": "task",
+                }
+            ]
+        },
+        reason="acceptance_evidence_missing",
+    )
+
+    payload = _marker_payload(
+        capsys.readouterr().err, "AWORLD_AGENT_TERMINATION="
+    )
+    assert payload["status"] == "incomplete"
+    assert payload["semantic_status"] == "incomplete"
+    assert payload["reason"] == "acceptance_evidence_missing"
+
+
 def test_typed_outcome_preserves_legacy_truth_value_contract() -> None:
     successful = DirectRunOutcome.from_summary(
         {},

@@ -4,6 +4,12 @@ from .controller import (
     safe_transition_execution_protocol,
     transition_execution_protocol,
 )
+from .acceptance import (
+    AcceptanceCriticDecision,
+    AcceptanceDecision,
+    AcceptanceProbeReceipt,
+    fresh_acceptance_critic_messages,
+)
 from .models import (
     ControllerAction,
     ControllerDecision,
@@ -28,6 +34,9 @@ from .store import (
 )
 
 __all__ = [
+    "AcceptanceCriticDecision",
+    "AcceptanceDecision",
+    "AcceptanceProbeReceipt",
     "ControllerAction",
     "ControllerDecision",
     "DecisionReason",
@@ -46,6 +55,7 @@ __all__ = [
     "ProtocolScope",
     "ProtocolTransition",
     "ReviewOutcome",
+    "fresh_acceptance_critic_messages",
     "safe_transition_execution_protocol",
     "transition_execution_protocol",
 ]
