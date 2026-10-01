@@ -994,27 +994,21 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                     "type": "string",
                     "maxLength": 1024,
                 },
-                "assertion": {
-                    "type": "object",
-                    "additionalProperties": False,
-                    "properties": {
-                        "kind": {
-                            "type": "string",
-                            "enum": ["exit_code_zero_and_output_contains"],
-                        },
-                        "expected_output": {
-                            "type": "string",
-                            "minLength": 1,
-                            "maxLength": 256,
-                        },
-                    },
-                    "required": ["kind", "expected_output"],
+                "probe_kind": {
+                    "type": "string",
+                    "enum": [
+                        "artifact_readback",
+                        "spec_roundtrip",
+                        "performance_comparison",
+                        "real_signal_delivery",
+                        "independent_cross_check",
+                    ],
                 },
             },
             "required": [
                 "hypothesis_id",
                 "highest_risk_counterexample",
-                "assertion",
+                "probe_kind",
             ],
             "description": (
                 "Required only during AWorld independent acceptance review. "
@@ -1083,7 +1077,7 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         if set(value) != {
             "hypothesis_id",
             "highest_risk_counterexample",
-            "assertion",
+            "probe_kind",
         }:
             return False
         return record_acceptance_probe_plan(
@@ -1094,7 +1088,7 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             highest_risk_counterexample=value.get("highest_risk_counterexample"),
             tool_identity=f"{action.tool_name or ''}:{action.action_name or ''}",
             arguments_projection=params,
-            assertion=value.get("assertion"),
+            probe_kind=value.get("probe_kind"),
         )
 
     def _fresh_acceptance_messages(self, context: Context) -> list[dict[str, str]]:

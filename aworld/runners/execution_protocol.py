@@ -9,9 +9,9 @@ from __future__ import annotations
 
 from copy import deepcopy
 from dataclasses import replace
-import json
 import os
 import re
+import secrets
 from typing import Any, Mapping
 
 from aworld.core.context.execution_state import state_context
@@ -211,7 +211,7 @@ def record_acceptance_probe_plan(
     highest_risk_counterexample: str,
     tool_identity: str,
     arguments_projection: Mapping[str, Any],
-    assertion: Mapping[str, Any],
+    probe_kind: str,
 ) -> bool:
     """Bind exactly one critic-selected probe to the pending review."""
     if not acceptance_critic_active(context, agent_id):
@@ -223,26 +223,16 @@ def record_acceptance_probe_plan(
         return False
     if not isinstance(tool_identity, str) or not tool_identity.strip():
         return False
-    if not isinstance(arguments_projection, Mapping) or not isinstance(
-        assertion, Mapping
+    if not isinstance(arguments_projection, Mapping):
+        return False
+    from aworld.core.execution_protocol.acceptance import (
+        PROBE_KINDS,
+        probe_arguments_are_executable,
+    )
+
+    if probe_kind not in PROBE_KINDS or not probe_arguments_are_executable(
+        arguments_projection
     ):
-        return False
-    if set(assertion) != {"kind", "expected_output"} or assertion.get("kind") != (
-        "exit_code_zero_and_output_contains"
-    ):
-        return False
-    expected_output = assertion.get("expected_output")
-    if not isinstance(expected_output, str) or not 1 <= len(expected_output) <= 256:
-        return False
-    try:
-        serialized_arguments = json.dumps(
-            arguments_projection, ensure_ascii=False, sort_keys=True, default=str
-        )
-    except (TypeError, ValueError):
-        return False
-    # A command that merely prints its own expected marker is not an
-    # independent assertion. The marker must arise from the exercised target.
-    if expected_output in serialized_arguments:
         return False
     current = _read_runtime_value(context, agent_id, EXECUTION_PROTOCOL_CRITIC_KEY)
     if isinstance(current, Mapping) and current.get("status") in {
@@ -270,7 +260,8 @@ def record_acceptance_probe_plan(
             "candidate": candidate[:64_000],
             "evidence": evidence,
             "artifact_before": evidence.get("artifact_fingerprint"),
-            "assertion": dict(assertion),
+            "probe_kind": probe_kind,
+            "challenge": secrets.token_hex(16),
         },
     )
     return True
@@ -303,24 +294,15 @@ def record_acceptance_probe_observation(
         "tool_call_id"
     ) != current.get("tool_call_id"):
         return False
-    assertion = current.get("assertion")
-    expected_output = (
-        assertion.get("expected_output") if isinstance(assertion, Mapping) else None
-    )
-    captured_text = (
-        "\n".join(
-            str(result_projection.get(key) or "")
-            for key in ("stdout_tail", "stderr_tail", "content_tail")
-        )
-        if isinstance(result_projection, Mapping)
-        else ""
-    )
-    assertion_satisfied = bool(
-        isinstance(assertion, Mapping)
-        and assertion.get("kind") == "exit_code_zero_and_output_contains"
-        and result_projection.get("return_code") == 0
-        and isinstance(expected_output, str)
-        and expected_output in captured_text
+    from aworld.core.execution_protocol.acceptance import validate_probe_result
+
+    validated, validation_code = validate_probe_result(
+        probe_kind=current["probe_kind"],
+        tool_identity=current["tool_identity"],
+        arguments=current["arguments_projection"],
+        result=result_projection,
+        artifact_after=artifact_after,
+        evidence=current["evidence"],
     )
     receipt = AcceptanceProbeReceipt.build(
         hypothesis_id=current["hypothesis_id"],
@@ -331,8 +313,10 @@ def record_acceptance_probe_observation(
         evidence=current["evidence"],
         artifact_before=current.get("artifact_before"),
         artifact_after=artifact_after,
-        assertion=assertion,
-        assertion_satisfied=assertion_satisfied,
+        probe_kind=current["probe_kind"],
+        challenge=current["challenge"],
+        validation_code=validation_code,
+        validated=validated,
         result_projection=result_projection,
         success=success,
         failure_code=failure_code,
@@ -383,6 +367,7 @@ def record_acceptance_critic_decision(
         and decision.decision is AcceptanceDecision.ACCEPT
         and receipt is not None
         and receipt.supports(decision)
+        and receipt.has_valid_framework_attestation(critic_state.get("challenge", ""))
     )
     if independently_supported:
         candidate, _ = _acceptance_candidate_and_evidence(context, agent_id)

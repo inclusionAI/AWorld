@@ -651,6 +651,29 @@ def record_semantic_tool_progress(
         def bounded_tail(value: Any) -> str:
             return value[-2048:] if isinstance(value, str) else ""
 
+        raw_structured_payload = content_mapping.get(
+            "probe_attestation", content_mapping
+        )
+        structured_payload = {
+            key: raw_structured_payload.get(key)
+            for key in (
+                "readback_matches",
+                "content_hash",
+                "roundtrip_equal",
+                "input_hash",
+                "output_hash",
+                "baseline_duration",
+                "candidate_duration",
+                "signal_delivered",
+                "signal",
+                "matches",
+                "primary_hash",
+                "check_hash",
+            )
+            if isinstance(raw_structured_payload, dict)
+            and raw_structured_payload.get(key) is not None
+        }
+
         result_projection = {
             "tool_call_id": probe_result.get("tool_call_id")
             if isinstance(probe_result, dict)
@@ -662,6 +685,7 @@ def record_semantic_tool_progress(
             "failure_code": semantic_failure_codes[0]
             if semantic_failure_codes
             else None,
+            "structured_payload": structured_payload,
             "stdout_tail": bounded_tail(
                 probe_metadata.get("stdout") or content_mapping.get("stdout")
             ),
