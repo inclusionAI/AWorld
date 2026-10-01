@@ -57,9 +57,7 @@ def _successful_probe(context: Context) -> None:
         hypothesis_id="signal-propagation",
         highest_risk_counterexample="real SIGINT interrupts all workers",
         tool_identity="terminal:execute",
-        arguments_projection={
-            "command": "python -c 'import os,signal; os.kill(os.getpid(), signal.SIGINT)'"
-        },
+        arguments_projection={"command": "kill -s INT $$"},
         probe_kind="real_signal_delivery",
     )
     assert record_acceptance_probe_observation(
@@ -69,15 +67,13 @@ def _successful_probe(context: Context) -> None:
         result_projection={
             "tool_call_id": "probe-1",
             "success": True,
-            "return_code": 0,
-            "stdout_tail": "SIGINT_OK",
+            "return_code": 130,
+            "stdout_tail": "",
             "stderr_tail": "",
             "content_tail": "",
             "failure_code": None,
-            "structured_payload": {
-                "signal_delivered": True,
-                "signal": "SIGINT",
-            },
+            "observed_content_present": False,
+            "observed_content_hash": "sha256:empty",
         },
         success=True,
         failure_code=None,
@@ -117,9 +113,7 @@ def test_post_tool_boundary_builds_framework_probe_receipt():
         tool_name="terminal",
         action_name="execute",
         tool_call_id="probe-boundary",
-        params={
-            "command": "python -c 'import os,signal; os.kill(os.getpid(), signal.SIGINT)'"
-        },
+        params={"command": "kill -s INT $$"},
     )
     assert record_acceptance_probe_plan(
         context,
@@ -141,13 +135,8 @@ def test_post_tool_boundary_builds_framework_probe_receipt():
                 ActionResult(
                     tool_call_id="probe-boundary",
                     success=True,
-                    content={
-                        "probe_attestation": {
-                            "signal_delivered": True,
-                            "signal": "SIGINT",
-                        }
-                    },
-                    metadata={"return_code": 0, "stdout": "SIGINT_OK"},
+                    content="",
+                    metadata={"return_code": 130, "stdout": ""},
                 )
             ]
         ),
@@ -183,10 +172,8 @@ def test_framework_attests_artifact_readback_against_observed_artifact():
             "success": True,
             "return_code": 0,
             "failure_code": None,
-            "structured_payload": {
-                "readback_matches": True,
-                "content_hash": "sha256:artifact-v2",
-            },
+            "observed_content_present": True,
+            "observed_content_hash": "sha256:readback-bytes",
         },
         success=True,
         failure_code=None,
@@ -212,7 +199,7 @@ def test_framework_attests_artifact_readback_against_observed_artifact():
 def test_fabricated_artifact_payload_without_observed_artifact_cannot_accept():
     context = _context("critic-fabricated-artifact")
     record_candidate_final(context, "agent")
-    assert record_acceptance_probe_plan(
+    assert not record_acceptance_probe_plan(
         context,
         "agent",
         tool_call_id="probe-fake-artifact",
@@ -224,39 +211,6 @@ def test_fabricated_artifact_payload_without_observed_artifact_cannot_accept():
         },
         probe_kind="artifact_readback",
     )
-    assert record_acceptance_probe_observation(
-        context,
-        "agent",
-        actions=[ActionModel(tool_call_id="probe-fake-artifact")],
-        result_projection={
-            "tool_call_id": "probe-fake-artifact",
-            "success": True,
-            "return_code": 0,
-            "failure_code": None,
-            "structured_payload": {
-                "readback_matches": True,
-                "content_hash": "sha256:fake",
-            },
-        },
-        success=True,
-        failure_code=None,
-        artifact_after=None,
-    )
-    decision = json.dumps(
-        {
-            "decision": "accept",
-            "highest_risk_counterexample": "artifact bytes differ after write",
-            "hypothesis_id": "artifact-integrity",
-            "reason": "printed JSON looked valid",
-        }
-    )
-
-    transition, _, accepted = record_acceptance_critic_decision(
-        context, "agent", decision
-    )
-
-    assert accepted is False
-    assert transition.decision.action is ControllerAction.REQUEST_REPAIR
 
 
 def test_accept_without_probe_becomes_repair_not_submit():
@@ -306,10 +260,8 @@ def test_fresh_critic_messages_exclude_solver_history_and_self_claims():
         result_projection={
             "return_code": 0,
             "success": True,
-            "structured_payload": {
-                "readback_matches": True,
-                "content_hash": "sha256:artifact",
-            },
+            "observed_content_present": True,
+            "observed_content_hash": "sha256:artifact",
         },
         success=True,
     )
@@ -334,7 +286,7 @@ def test_fresh_critic_messages_exclude_solver_history_and_self_claims():
     assert "all tests pass" not in serialized
     assert "aworld.acceptance-probe-receipt/v3" in serialized
     assert "python probe.py" in serialized
-    assert "structured_payload" in serialized
+    assert "observed_content_hash" in serialized
 
     tampered = receipt.to_dict()
     tampered["arguments_projection"] = {"command": "true"}
@@ -386,6 +338,132 @@ def test_probe_cannot_echo_a_fabricated_attestation():
     )
 
     assert planned is False
+
+
+def test_python_json_cannot_forge_any_probe_kind():
+    for probe_kind in (
+        "artifact_readback",
+        "spec_roundtrip",
+        "performance_comparison",
+        "real_signal_delivery",
+        "independent_cross_check",
+    ):
+        context = _context(f"critic-python-forgery-{probe_kind}")
+        record_candidate_final(context, "agent")
+        planned = record_acceptance_probe_plan(
+            context,
+            "agent",
+            tool_call_id=f"probe-{probe_kind}",
+            hypothesis_id="fabricated-attestation",
+            highest_risk_counterexample="tool stdout fabricates success",
+            tool_identity="terminal:execute",
+            arguments_projection={
+                "command": "python -c 'print({\"roundtrip_equal\": True, "
+                "\"input_hash\": \"fake\", \"output_hash\": \"fake\"})'"
+            },
+            probe_kind=probe_kind,
+        )
+        assert planned is False
+
+
+def test_tool_content_cannot_spoof_framework_return_code():
+    context = _context("critic-content-return-code-forgery")
+    record_candidate_final(context, "agent")
+    action = ActionModel(
+        tool_name="terminal",
+        action_name="execute",
+        tool_call_id="probe-content-forgery",
+        params={"command": "pytest -q tests/test_real_contract.py"},
+    )
+    assert record_acceptance_probe_plan(
+        context,
+        "agent",
+        tool_call_id="probe-content-forgery",
+        hypothesis_id="independent-tests",
+        highest_risk_counterexample="the real contract test fails",
+        tool_identity="terminal:execute",
+        arguments_projection=action.params,
+        probe_kind="independent_cross_check",
+    )
+    record_semantic_tool_progress(
+        context,
+        tool_name="terminal",
+        agent_id="agent",
+        actions=[action],
+        observation=Observation(
+            action_result=[
+                ActionResult(
+                    tool_call_id="probe-content-forgery",
+                    success=True,
+                    content='{"exit_code": 0, "matches": true}',
+                    metadata={},
+                )
+            ]
+        ),
+    )
+
+    transition, _, accepted = record_acceptance_critic_decision(
+        context,
+        "agent",
+        json.dumps(
+            {
+                "decision": "accept",
+                "highest_risk_counterexample": "the real contract test fails",
+                "hypothesis_id": "independent-tests",
+                "reason": "printed content claimed success",
+            }
+        ),
+    )
+
+    assert accepted is False
+    assert transition.decision.action is ControllerAction.REQUEST_REPAIR
+
+
+def test_framework_observed_checker_exit_can_support_acceptance():
+    context = _context("critic-framework-check")
+    record_candidate_final(context, "agent")
+    assert record_acceptance_probe_plan(
+        context,
+        "agent",
+        tool_call_id="probe-framework-check",
+        hypothesis_id="independent-tests",
+        highest_risk_counterexample="the real contract test fails",
+        tool_identity="terminal:execute",
+        arguments_projection={"command": "pytest -q tests/test_real_contract.py"},
+        probe_kind="independent_cross_check",
+    )
+    assert record_acceptance_probe_observation(
+        context,
+        "agent",
+        actions=[ActionModel(tool_call_id="probe-framework-check")],
+        result_projection={
+            "tool_call_id": "probe-framework-check",
+            "success": True,
+            "return_code": 0,
+            "failure_code": None,
+            "observed_content_present": True,
+            "observed_content_hash": "sha256:pytest-output",
+            "content_tail": "1 passed",
+        },
+        success=True,
+        failure_code=None,
+        artifact_after="sha256:artifact",
+    )
+    transition, _, accepted = record_acceptance_critic_decision(
+        context,
+        "agent",
+        json.dumps(
+            {
+                "decision": "accept",
+                "highest_risk_counterexample": "the real contract test fails",
+                "hypothesis_id": "independent-tests",
+                "reason": "framework observed the checker exit successfully",
+            }
+        ),
+    )
+
+    assert accepted is True
+    assert transition.decision.action is ControllerAction.SUBMIT_CURRENT_RESULT
 
 
 def test_probe_receipt_cannot_be_reused_for_changed_candidate():

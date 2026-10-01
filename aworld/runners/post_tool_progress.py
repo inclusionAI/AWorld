@@ -621,20 +621,11 @@ def record_semantic_tool_progress(
         probe_content = (
             probe_result.get("content") if isinstance(probe_result, dict) else None
         )
-        content_mapping = probe_content if isinstance(probe_content, dict) else {}
-        if isinstance(probe_content, str) and probe_content.lstrip().startswith("{"):
-            try:
-                parsed_probe_content = json.loads(probe_content)
-            except (TypeError, ValueError):
-                parsed_probe_content = None
-            if isinstance(parsed_probe_content, dict):
-                content_mapping = parsed_probe_content
         raw_return_code = next(
             (
-                source.get(key)
-                for source in (probe_metadata, content_mapping)
+                probe_metadata.get(key)
                 for key in ("return_code", "exit_code")
-                if source.get(key) is not None
+                if probe_metadata.get(key) is not None
             ),
             None,
         )
@@ -651,28 +642,15 @@ def record_semantic_tool_progress(
         def bounded_tail(value: Any) -> str:
             return value[-2048:] if isinstance(value, str) else ""
 
-        raw_structured_payload = content_mapping.get(
-            "probe_attestation", content_mapping
-        )
-        structured_payload = {
-            key: raw_structured_payload.get(key)
-            for key in (
-                "readback_matches",
-                "content_hash",
-                "roundtrip_equal",
-                "input_hash",
-                "output_hash",
-                "baseline_duration",
-                "candidate_duration",
-                "signal_delivered",
-                "signal",
-                "matches",
-                "primary_hash",
-                "check_hash",
+        serialized_probe_content = (
+            probe_content
+            if isinstance(probe_content, str)
+            else json.dumps(
+                probe_content, ensure_ascii=False, sort_keys=True, default=str
             )
-            if isinstance(raw_structured_payload, dict)
-            and raw_structured_payload.get(key) is not None
-        }
+            if probe_content is not None
+            else ""
+        )
 
         result_projection = {
             "tool_call_id": probe_result.get("tool_call_id")
@@ -685,18 +663,15 @@ def record_semantic_tool_progress(
             "failure_code": semantic_failure_codes[0]
             if semantic_failure_codes
             else None,
-            "structured_payload": structured_payload,
+            "observed_content_present": bool(serialized_probe_content),
+            "observed_content_hash": semantic_fingerprint(serialized_probe_content),
             "stdout_tail": bounded_tail(
-                probe_metadata.get("stdout") or content_mapping.get("stdout")
+                probe_metadata.get("stdout")
             ),
             "stderr_tail": bounded_tail(
-                probe_metadata.get("stderr") or content_mapping.get("stderr")
+                probe_metadata.get("stderr")
             ),
-            "content_tail": bounded_tail(
-                probe_content
-                if isinstance(probe_content, str)
-                else content_mapping.get("output") or content_mapping.get("message")
-            ),
+            "content_tail": bounded_tail(serialized_probe_content),
         }
         record_acceptance_probe_observation(
             runtime_context,

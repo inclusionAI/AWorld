@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import re
+import shlex
 from dataclasses import dataclass
 from enum import Enum
 from typing import Any, Mapping
@@ -25,8 +26,6 @@ class AcceptanceDecision(str, Enum):
 PROBE_KINDS = frozenset(
     {
         "artifact_readback",
-        "spec_roundtrip",
-        "performance_comparison",
         "real_signal_delivery",
         "independent_cross_check",
     }
@@ -34,6 +33,33 @@ PROBE_KINDS = frozenset(
 _FORBIDDEN_PROBE_COMMAND = re.compile(
     r"(?:^|[;&|\s])(?:echo|printf|base64|true|false|sleep|:)(?:\s|$)",
     re.IGNORECASE,
+)
+_INLINE_INTERPRETER = re.compile(
+    r"(?:^|[;&|\s])(?:python(?:\d+(?:\.\d+)*)?|node|ruby|perl)\s+(?:-[^\s]*[ce]|--eval)(?:\s|$)",
+    re.IGNORECASE,
+)
+_CHECK_EXECUTABLES = frozenset(
+    {
+        "pytest",
+        "ruff",
+        "mypy",
+        "pyright",
+        "npm",
+        "pnpm",
+        "yarn",
+        "cargo",
+        "go",
+        "make",
+        "cmake",
+        "ctest",
+        "gradle",
+        "gradlew",
+        "mvn",
+        "bazel",
+        "jq",
+        "xmllint",
+        "yamllint",
+    }
 )
 
 
@@ -45,9 +71,41 @@ def probe_arguments_are_executable(arguments: Mapping[str, Any]) -> bool:
         folded = command.casefold()
         if not command.strip() or _FORBIDDEN_PROBE_COMMAND.search(command):
             return False
-        if any(token in folded for token in ("b64decode", "decode64")):
+        if _INLINE_INTERPRETER.search(command) or any(
+            token in folded for token in ("b64decode", "decode64")
+        ):
             return False
     return True
+
+
+def _command_words(arguments: Mapping[str, Any]) -> tuple[str, ...]:
+    command = arguments.get("command") or arguments.get("code")
+    if not isinstance(command, str):
+        return ()
+    try:
+        return tuple(shlex.split(command))
+    except ValueError:
+        return ()
+
+
+def _is_framework_observable_check(
+    tool_identity: str, arguments: Mapping[str, Any]
+) -> bool:
+    identity = tool_identity.casefold()
+    if any(token in identity for token in ("check", "test", "verify", "validate")):
+        return True
+    words = _command_words(arguments)
+    if not words:
+        return False
+    executable = words[0].rsplit("/", 1)[-1].casefold()
+    if executable in _CHECK_EXECUTABLES:
+        return True
+    return bool(
+        executable.startswith("python")
+        and len(words) >= 3
+        and words[1] == "-m"
+        and words[2].casefold() in {"pytest", "mypy", "ruff", "pyright"}
+    )
 
 
 def validate_probe_result(
@@ -63,66 +121,45 @@ def validate_probe_result(
         return False, "unsupported_probe_kind"
     if not probe_arguments_are_executable(arguments):
         return False, "non_executable_probe"
-    if result.get("return_code") != 0 or result.get("success") is not True:
+    if result.get("success") is not True:
         return False, "probe_process_failed"
     if result.get("failure_code"):
         return False, "probe_semantic_failure"
-    payload = result.get("structured_payload")
-    if not isinstance(payload, Mapping):
-        return False, "structured_attestation_missing"
+    return_code = result.get("return_code")
 
     if probe_kind == "artifact_readback":
-        content_hash = payload.get("content_hash")
+        content_hash = result.get("observed_content_hash")
+        identity = tool_identity.casefold()
+        command_words = _command_words(arguments)
+        read_operation = any(
+            token in identity for token in ("read", "file", "fetch", "get")
+        ) or bool(
+            command_words
+            and command_words[0].rsplit("/", 1)[-1].casefold()
+            in {"cat", "sed", "head", "tail", "jq"}
+        )
         valid = bool(
-            payload.get("readback_matches") is True
+            return_code in {None, 0}
+            and read_operation
+            and result.get("observed_content_present") is True
             and isinstance(content_hash, str)
             and content_hash.startswith("sha256:")
             and isinstance(artifact_after, str)
-            and content_hash == artifact_after
             and any(
                 key in arguments
                 for key in ("path", "file", "artifact", "command", "code")
             )
         )
-    elif probe_kind == "spec_roundtrip":
-        valid = bool(
-            payload.get("roundtrip_equal") is True
-            and isinstance(payload.get("input_hash"), str)
-            and payload.get("input_hash") == payload.get("output_hash")
-        )
-    elif probe_kind == "performance_comparison":
-        baseline = payload.get("baseline_duration")
-        candidate = payload.get("candidate_duration")
-        valid = bool(
-            isinstance(baseline, (int, float))
-            and not isinstance(baseline, bool)
-            and isinstance(candidate, (int, float))
-            and not isinstance(candidate, bool)
-            and baseline > 0
-            and 0 <= candidate <= baseline
-        )
     elif probe_kind == "real_signal_delivery":
         command = str(arguments.get("command") or arguments.get("code") or "")
         valid = bool(
-            payload.get("signal_delivered") is True
-            and payload.get("signal") in {"SIGINT", "SIGTERM", "SIGHUP"}
+            return_code in {-1, -2, -15, 129, 130, 143}
             and re.search(r"(?:\bkill\b|os\.kill\s*\(|raise_signal\s*\()", command)
         )
     else:
-        framework_hashes = {
-            value
-            for value in (
-                evidence.get("artifact_fingerprint"),
-                evidence.get("completion_evidence_fingerprint"),
-            )
-            if isinstance(value, str)
-        }
         valid = bool(
-            payload.get("matches") is True
-            and isinstance(payload.get("primary_hash"), str)
-            and payload.get("primary_hash") == payload.get("check_hash")
-            and payload.get("primary_hash") in framework_hashes
-            and "check" in tool_identity.casefold()
+            return_code == 0
+            and _is_framework_observable_check(tool_identity, arguments)
         )
     return valid, "probe_attested" if valid else f"{probe_kind}_not_attested"
 

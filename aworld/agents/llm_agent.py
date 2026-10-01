@@ -998,8 +998,6 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                     "type": "string",
                     "enum": [
                         "artifact_readback",
-                        "spec_roundtrip",
-                        "performance_comparison",
                         "real_signal_delivery",
                         "independent_cross_check",
                     ],
@@ -1013,7 +1011,9 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             "description": (
                 "Required only during AWorld independent acceptance review. "
                 "Describe the single highest-risk counterexample tested by this "
-                "fresh probe. The framework removes this object before execution."
+                "fresh probe. Only framework-observable readback, process-signal, "
+                "and independent checker outcomes are supported. The framework "
+                "removes this object before execution."
             ),
         }
 
