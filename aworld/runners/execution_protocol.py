@@ -93,10 +93,16 @@ def configure_execution_protocol(
         raise TypeError("policy must be ExecutionProtocolPolicy")
     acceptance_flag = os.environ.get(INDEPENDENT_ACCEPTANCE_CRITIC_ENV)
     semantic_flag = os.environ.get(SEMANTIC_PROGRESS_LEDGER_ENV)
+    owner = state_context(context)
+    contract = getattr(owner, "completion_contract", None) if owner is not None else None
+    trusted_validation_available = bool(
+        getattr(contract, "validation_commands", ()) or ()
+    )
     policy = replace(
         policy,
         independent_acceptance_enabled=(
             policy.independent_acceptance_enabled
+            and trusted_validation_available
             and not (
                 acceptance_flag is not None
                 and acceptance_flag.strip().lower() in {"0", "false", "no", "off"}
@@ -313,12 +319,30 @@ def record_acceptance_probe_observation(
     current = _read_runtime_value(context, agent_id, EXECUTION_PROTOCOL_CRITIC_KEY)
     if not isinstance(current, Mapping) or current.get("status") != "planned":
         return False
-    call_ids = {
-        getattr(action, "tool_call_id", None)
-        for action in actions or ()
-        if isinstance(getattr(action, "tool_call_id", None), str)
-    }
-    if current.get("tool_call_id") not in call_ids:
+    actual_action = next(
+        (
+            action
+            for action in actions or ()
+            if getattr(action, "tool_call_id", None) == current.get("tool_call_id")
+        ),
+        None,
+    )
+    if actual_action is None:
+        return False
+    actual_identity = ":".join(
+        part.strip().casefold()
+        for part in (
+            str(getattr(actual_action, "tool_name", "") or ""),
+            str(getattr(actual_action, "action_name", "") or ""),
+        )
+    )
+    actual_arguments = getattr(actual_action, "params", None)
+    if (
+        actual_identity != current.get("tool_identity")
+        or not isinstance(actual_arguments, Mapping)
+        or _bounded_probe_value(actual_arguments)
+        != current.get("arguments_projection")
+    ):
         return False
     if not isinstance(result_projection, Mapping) or result_projection.get(
         "tool_call_id"

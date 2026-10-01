@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import json
 import re
-import shlex
 from dataclasses import dataclass
 from enum import Enum
 from typing import Any, Mapping
@@ -28,15 +27,6 @@ _FORBIDDEN_PROBE_COMMAND = re.compile(
     r"(?:^|[;&|\s])(?:echo|printf|base64|true|false|sleep|:)(?:\s|$)",
     re.IGNORECASE,
 )
-_INLINE_INTERPRETER = re.compile(
-    r"(?:^|[;&|\s])(?:python(?:\d+(?:\.\d+)*)?|node|ruby|perl)\s+(?:-[^\s]*[ce]|--eval)(?:\s|$)",
-    re.IGNORECASE,
-)
-_SHELL_CONTROL = re.compile(r"(?:\|\||&&|[;|&<>`\n\r]|\$\(|\$\{|<\(|>\()")
-_PYTEST_NON_EXECUTION_FLAGS = frozenset(
-    {"-h", "--help", "--version", "--collect-only", "--collectonly", "--co"}
-)
-_PYTEST_RESULT = re.compile(r"(?<!\d)([1-9]\d*)\s+passed\b", re.IGNORECASE)
 
 
 def probe_arguments_are_executable(arguments: Mapping[str, Any]) -> bool:
@@ -47,21 +37,9 @@ def probe_arguments_are_executable(arguments: Mapping[str, Any]) -> bool:
         folded = command.casefold()
         if not command.strip() or _FORBIDDEN_PROBE_COMMAND.search(command):
             return False
-        if _SHELL_CONTROL.search(command) or _INLINE_INTERPRETER.search(command) or any(
-            token in folded for token in ("b64decode", "decode64")
-        ):
+        if any(token in folded for token in ("b64decode", "decode64")):
             return False
     return True
-
-
-def _command_words(arguments: Mapping[str, Any]) -> tuple[str, ...]:
-    command = arguments.get("command") or arguments.get("code")
-    if not isinstance(command, str):
-        return ()
-    try:
-        return tuple(shlex.split(command))
-    except ValueError:
-        return ()
 
 
 def _is_framework_observable_check(
@@ -70,31 +48,7 @@ def _is_framework_observable_check(
     *,
     trusted_validation_id: str | None = None,
 ) -> bool:
-    if isinstance(trusted_validation_id, str) and trusted_validation_id:
-        return True
-    words = _command_words(arguments)
-    if not words:
-        return False
-    executable = words[0].rsplit("/", 1)[-1].casefold()
-    argument_start = 1
-    is_pytest = executable == "pytest"
-    if (
-        executable.startswith("python")
-        and len(words) >= 3
-        and words[1] == "-m"
-        and words[2].casefold() == "pytest"
-    ):
-        is_pytest = True
-        argument_start = 3
-    if not is_pytest:
-        return False
-    arguments_after_pytest = words[argument_start:]
-    if not arguments_after_pytest or any(
-        item.casefold() in _PYTEST_NON_EXECUTION_FLAGS
-        for item in arguments_after_pytest
-    ):
-        return False
-    return any(not item.startswith("-") for item in arguments_after_pytest)
+    return isinstance(trusted_validation_id, str) and bool(trusted_validation_id)
 
 
 def probe_plan_is_framework_observable(
@@ -106,7 +60,6 @@ def probe_plan_is_framework_observable(
 ) -> bool:
     return bool(
         probe_kind in PROBE_KINDS
-        and probe_arguments_are_executable(arguments)
         and _is_framework_observable_check(
             tool_identity,
             arguments,
@@ -136,10 +89,7 @@ def validate_probe_result(
     if result.get("failure_code"):
         return False, "probe_semantic_failure"
     trusted_validation_id = result.get("framework_validation_id")
-    valid = result.get("return_code") == 0 and (
-        bool(trusted_validation_id)
-        or bool(_PYTEST_RESULT.search(str(result.get("stdout_tail") or "")))
-    )
+    valid = result.get("return_code") == 0 and bool(trusted_validation_id)
     return valid, "probe_attested" if valid else f"{probe_kind}_not_attested"
 
 

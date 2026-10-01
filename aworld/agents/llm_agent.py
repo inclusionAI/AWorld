@@ -1007,10 +1007,9 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             "description": (
                 "Required only during AWorld independent acceptance review. "
                 "Describe the single highest-risk counterexample tested by this "
-                "fresh probe. Only a pre-registered framework validation command "
-                "or a single targeted pytest command with observed executed-test "
-                "evidence is supported. The framework removes this object before "
-                "execution."
+                "fresh probe. Only a framework/caller pre-registered completion "
+                "validation command can produce acceptance evidence. The "
+                "framework removes this object before execution."
             ),
         }
 

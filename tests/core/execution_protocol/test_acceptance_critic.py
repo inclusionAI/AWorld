@@ -31,6 +31,21 @@ from aworld.runners.post_tool_progress import record_semantic_tool_progress
 def _context(name: str) -> Context:
     context = Context(task_id=name)
     context.set_task(Task(id=name, input="public task", timeout=600))
+    context.configure_completion_contract(
+        CompletionContract(
+            required_artifacts=(),
+            immutable_inputs=(),
+            validation_commands=(
+                ValidationCommand(
+                    command_id="default-test",
+                    argv=("pytest", "-q", "tests/test_contract.py"),
+                ),
+            ),
+            max_evidence_age_seconds=None,
+            required_final_evidence=(),
+        ),
+        mode=CompletionMode.ENFORCE,
+    )
     configure_execution_protocol(
         context,
         "agent",
@@ -68,7 +83,14 @@ def _successful_probe(context: Context) -> None:
     assert record_acceptance_probe_observation(
         context,
         "agent",
-        actions=[ActionModel(tool_call_id="probe-1")],
+        actions=[
+            ActionModel(
+                tool_name="terminal",
+                action_name="execute",
+                tool_call_id="probe-1",
+                params={"command": "pytest -q tests/test_contract.py"},
+            )
+        ],
         result_projection={
             "tool_call_id": "probe-1",
             "success": True,
@@ -91,6 +113,28 @@ def test_new_protocol_features_are_default_on_in_config():
 
     assert policy.independent_acceptance_enabled is True
     assert policy.semantic_progress_enabled is True
+
+
+def test_independent_acceptance_disables_without_registered_validation():
+    from aworld.runners.execution_protocol import execution_protocol_policy
+
+    context = Context(task_id="critic-no-framework-validation")
+    context.set_task(
+        Task(id="critic-no-framework-validation", input="public task", timeout=600)
+    )
+    configure_execution_protocol(
+        context,
+        "agent",
+        ExecutionProtocolPolicy(
+            mode=ProtocolMode.GUIDE,
+            review_unarmed_candidates=True,
+            independent_acceptance_enabled=True,
+        ),
+    )
+
+    assert execution_protocol_policy(
+        context, "agent"
+    ).independent_acceptance_enabled is False
 
 
 def test_typed_accept_requires_matching_successful_probe_receipt():
@@ -347,7 +391,7 @@ def test_tool_content_cannot_spoof_framework_return_code():
         tool_name="terminal",
         action_name="execute",
         tool_call_id="probe-content-forgery",
-        params={"command": "pytest -q tests/test_real_contract.py"},
+        params={"command": "pytest -q tests/test_contract.py"},
     )
     assert record_acceptance_probe_plan(
         context,
@@ -481,7 +525,14 @@ def test_pre_registered_validation_command_is_framework_bound():
     assert record_acceptance_probe_observation(
         context,
         "agent",
-        actions=[ActionModel(tool_call_id="probe-registered-validation")],
+        actions=[
+            ActionModel(
+                tool_name="terminal",
+                action_name="execute",
+                tool_call_id="probe-registered-validation",
+                params={"command": "npm test"},
+            )
+        ],
         result_projection={
             "tool_call_id": "probe-registered-validation",
             "success": True,
@@ -509,6 +560,41 @@ def test_pre_registered_validation_command_is_framework_bound():
     assert transition.decision.action is ControllerAction.SUBMIT_CURRENT_RESULT
 
 
+def test_observation_must_match_the_planned_action():
+    context = _context("critic-action-binding")
+    record_candidate_final(context, "agent")
+    assert record_acceptance_probe_plan(
+        context,
+        "agent",
+        tool_call_id="probe-action-binding",
+        hypothesis_id="independent-tests",
+        highest_risk_counterexample="the independent contract test fails",
+        tool_identity="terminal:execute",
+        arguments_projection={"command": "pytest -q tests/test_contract.py"},
+        probe_kind="independent_cross_check",
+    )
+    assert not record_acceptance_probe_observation(
+        context,
+        "agent",
+        actions=[
+            ActionModel(
+                tool_name="terminal",
+                action_name="execute",
+                tool_call_id="probe-action-binding",
+                params={"command": "true"},
+            )
+        ],
+        result_projection={
+            "tool_call_id": "probe-action-binding",
+            "success": True,
+            "return_code": 0,
+            "failure_code": None,
+        },
+        success=True,
+        failure_code=None,
+    )
+
+
 def test_signal_probe_is_unavailable_without_trusted_adapter():
     context = _context("critic-signal-unavailable")
     record_candidate_final(context, "agent")
@@ -534,13 +620,20 @@ def test_framework_observed_checker_exit_can_support_acceptance():
         hypothesis_id="independent-tests",
         highest_risk_counterexample="the real contract test fails",
         tool_identity="terminal:execute",
-        arguments_projection={"command": "pytest -q tests/test_real_contract.py"},
+        arguments_projection={"command": "pytest -q tests/test_contract.py"},
         probe_kind="independent_cross_check",
     )
     assert record_acceptance_probe_observation(
         context,
         "agent",
-        actions=[ActionModel(tool_call_id="probe-framework-check")],
+        actions=[
+            ActionModel(
+                tool_name="terminal",
+                action_name="execute",
+                tool_call_id="probe-framework-check",
+                params={"command": "pytest -q tests/test_contract.py"},
+            )
+        ],
         result_projection={
             "tool_call_id": "probe-framework-check",
             "success": True,
