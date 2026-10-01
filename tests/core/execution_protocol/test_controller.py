@@ -138,7 +138,7 @@ def test_observe_reports_would_replan_without_issuing_guidance():
     assert transition.state.long_horizon_armed is True
 
 
-def test_guide_requests_one_replan_per_attempt_and_honors_limit():
+def test_guide_stops_requesting_replans_at_limit_without_revoking_tools():
     policy = ExecutionProtocolPolicy(
         mode="guide", repetition_threshold=2, max_replans=2
     )
@@ -166,17 +166,27 @@ def test_guide_requests_one_replan_per_attempt_and_honors_limit():
     assert first.decision.action is ControllerAction.REQUEST_REPLAN
     assert duplicate.decision.action is ControllerAction.CONTINUE
     assert second.decision.action is ControllerAction.REQUEST_REPLAN
-    assert exhausted.decision.action is ControllerAction.ENTER_FINALIZATION
+    assert exhausted.decision.action is ControllerAction.CONTINUE
     assert exhausted.decision.reason is DecisionReason.REPLAN_LIMIT_REACHED
     assert exhausted.state.replan_count == 2
-    assert exhausted.state.phase is ProtocolPhase.FINALIZE
-    assert exhausted.state.finalization_entered is True
+    assert exhausted.state.phase is ProtocolPhase.EXECUTE
+    assert exhausted.state.finalization_entered is False
 
     repeated = transition_execution_protocol(
         exhausted.state, _tool(repetition_count=3), policy
     )
     assert repeated.decision.action is ControllerAction.CONTINUE
     assert repeated.decision.reason is DecisionReason.REPLAN_LIMIT_REACHED
+
+    reserve = transition_execution_protocol(
+        repeated.state,
+        _tool(repetition_count=4, remaining_seconds=59.5),
+        policy,
+    )
+    assert reserve.decision.action is ControllerAction.ENTER_FINALIZATION
+    assert reserve.decision.reason is DecisionReason.FINALIZATION_RESERVE
+    assert reserve.state.phase is ProtocolPhase.FINALIZE
+    assert reserve.state.finalization_entered is True
 
 
 def test_observed_progress_resets_stagnation_counter():

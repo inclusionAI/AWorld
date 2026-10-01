@@ -79,6 +79,8 @@ def test_guide_mode_delivers_each_replan_checkpoint_once() -> None:
     guidance = consume_execution_protocol_guidance(context, "agent")
     assert guidance is not None
     assert "long-horizon checkpoint" in guidance
+    assert "Continue it when warranted" in guidance
+    assert "checkpoint is advisory" in guidance
     assert consume_execution_protocol_guidance(context, "agent") is None
     state = ExecutionProtocolStore(context, "agent", policy).load()
     assert state.replan_count == 1
@@ -106,7 +108,7 @@ def test_observe_mode_records_without_changing_the_prompt() -> None:
     assert not execution_protocol_requires_tool_free_finalization(context, "agent")
 
 
-def test_replan_exhaustion_reserves_a_tool_free_final_turn() -> None:
+def test_replan_exhaustion_keeps_tools_available_for_model_judgment() -> None:
     context = _context("replan-finalize")
     policy = ExecutionProtocolPolicy(
         mode=ProtocolMode.GUIDE,
@@ -124,12 +126,12 @@ def test_replan_exhaustion_reserves_a_tool_free_final_turn() -> None:
     )
 
     assert transition is not None
-    assert transition.decision.action is ControllerAction.ENTER_FINALIZATION
-    assert transition.state.phase is ProtocolPhase.FINALIZE
-    assert execution_protocol_requires_tool_free_finalization(context, "agent")
+    assert transition.decision.action is ControllerAction.CONTINUE
+    assert transition.state.phase is ProtocolPhase.EXECUTE
+    assert not execution_protocol_requires_tool_free_finalization(context, "agent")
 
 
-def test_observe_finalization_never_changes_tool_availability() -> None:
+def test_observe_replan_exhaustion_never_changes_tool_availability() -> None:
     context = _context("observe-finalize")
     policy = ExecutionProtocolPolicy(
         mode=ProtocolMode.OBSERVE,
@@ -147,8 +149,8 @@ def test_observe_finalization_never_changes_tool_availability() -> None:
     )
 
     assert transition is not None
-    assert transition.decision.action is ControllerAction.WOULD_ENTER_FINALIZATION
-    assert transition.state.phase is ProtocolPhase.FINALIZE
+    assert transition.decision.action is ControllerAction.CONTINUE
+    assert transition.state.phase is ProtocolPhase.EXECUTE
     assert not execution_protocol_requires_tool_free_finalization(context, "agent")
 
 

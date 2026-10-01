@@ -10,6 +10,11 @@ from aworld.config.conf import AgentConfig
 from aworld.core.agent.base import AgentResult
 from aworld.core.common import ActionModel, Observation
 from aworld.core.context.base import Context
+from aworld.core.context.compiler import (
+    CompletionContract,
+    CompletionMode,
+    ValidationCommand,
+)
 from aworld.core.context.execution_state import get_execution_state
 from aworld.core.event.base import Constants, Message
 from aworld.core.execution_protocol import (
@@ -908,6 +913,21 @@ async def test_independent_uncertain_review_returns_typed_incomplete_outcome(
     context.origin_user_input = "complete the public task"
     context.set_task(
         Task(id="independent-uncertain", input="complete the public task", timeout=600)
+    )
+    context.configure_completion_contract(
+        CompletionContract(
+            required_artifacts=(),
+            immutable_inputs=(),
+            validation_commands=(
+                ValidationCommand(
+                    command_id="registered-check",
+                    argv=("pytest", "-q", "tests/test_contract.py"),
+                ),
+            ),
+            max_evidence_age_seconds=None,
+            required_final_evidence=(),
+        ),
+        mode=CompletionMode.ENFORCE,
     )
     policy = ExecutionProtocolPolicy(
         mode=ProtocolMode.GUIDE,

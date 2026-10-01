@@ -170,28 +170,18 @@ def transition_execution_protocol(
 
         if stagnant:
             if next_state.replan_count >= policy.max_replans:
-                if next_state.finalization_entered:
-                    return ProtocolTransition(
-                        next_state,
-                        _decision(
-                            ControllerAction.CONTINUE,
-                            DecisionReason.REPLAN_LIMIT_REACHED,
-                        ),
-                    )
-                next_state = replace(
-                    next_state,
-                    phase=ProtocolPhase.FINALIZE,
-                    finalization_entered=True,
-                    long_horizon_armed=True,
-                )
-                action = _observed_action(
-                    policy.mode,
-                    guide=ControllerAction.ENTER_FINALIZATION,
-                    observe=ControllerAction.WOULD_ENTER_FINALIZATION,
-                )
+                # Exhausting the bounded advisory budget only suppresses more
+                # checkpoint injection.  The model retains authority to decide
+                # whether to continue or change approach.  This signal is not
+                # evidence that the task is complete and cannot revoke tools;
+                # tool-free finalization is reserved for the caller-owned
+                # deadline window handled above.
                 return ProtocolTransition(
                     next_state,
-                    _decision(action, DecisionReason.REPLAN_LIMIT_REACHED),
+                    _decision(
+                        ControllerAction.CONTINUE,
+                        DecisionReason.REPLAN_LIMIT_REACHED,
+                    ),
                 )
             if next_state.last_replan_attempt_epoch != next_state.attempt_epoch:
                 next_state = replace(

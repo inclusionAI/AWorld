@@ -759,12 +759,12 @@ def consume_execution_protocol_guidance(context, agent_id: str) -> str | None:
         except Exception:
             pass
         return (
-            "AWorld long-horizon checkpoint: recent observed actions have not "
-            "produced enough new evidence. Reconcile the rolling plan with the "
-            "actual observations, retire assumptions or approaches contradicted "
-            "by evidence, and choose one bounded next action that can materially "
-            "change the decision. Do not treat this checkpoint or a revised plan "
-            "as evidence of task completion."
+            "AWorld long-horizon checkpoint: the framework observed a bounded "
+            "repetition or low-evidence signal. Judge from the actual task and "
+            "observations whether the current approach is still making useful "
+            "progress. Continue it when warranted, or revise it when the evidence "
+            "supports doing so. This checkpoint is advisory and is not evidence "
+            "of task completion."
         )
     if action == ControllerAction.ENTER_FINALIZATION.value:
         return (
@@ -885,7 +885,7 @@ def clear_candidate_fallback(context, agent_id: str) -> None:
 
 
 def execution_protocol_requires_tool_free_finalization(context, agent_id: str) -> bool:
-    """Return true when the deadline/stagnation protocol reserved finalization.
+    """Return true when the caller deadline reserved finalization.
 
     A model-requested repair is deliberately not a finalization state.  After
     the review model uses a Tool to signal that work is incomplete, normal

@@ -192,11 +192,14 @@ def record_semantic_tool_progress(
     )
     if semantic_ledger_enabled:
         try:
+            from aworld.core.execution_protocol import ProtocolMode
             from aworld.runners.execution_protocol import execution_protocol_policy
 
-            semantic_ledger_enabled = execution_protocol_policy(
-                runtime_context, agent_id
-            ).semantic_progress_enabled
+            protocol_policy = execution_protocol_policy(runtime_context, agent_id)
+            semantic_ledger_enabled = bool(
+                protocol_policy.semantic_progress_enabled
+                and protocol_policy.mode is not ProtocolMode.OFF
+            )
         except Exception:
             semantic_ledger_enabled = True
 
@@ -338,9 +341,27 @@ def record_semantic_tool_progress(
         and completion_evidence_fingerprint
         != previous.get("completion_evidence_fingerprint")
     )
-    goal_progress_observable = (
-        True if semantic_ledger_enabled else completion_projection is not None
+    # Absence of evidence is only evidence of no progress when this Tool
+    # boundary actually exposes a durable progress channel.  Many valid tasks
+    # make progress through investigation, compilation, downloads, or remote
+    # state without emitting Context artifact receipts or a completion
+    # contract.  Treat those observations as unknown.  Repetition and failure
+    # signatures remain bounded advisory signals; they do not let the framework
+    # decide that the task should stop.
+    failure_progress_observable = bool(
+        failure_signature is not None or previous.get("failure_signature") is not None
     )
+    durable_progress_observable = bool(
+        artifact_receipts
+        or completion_projection is not None
+        or failure_progress_observable
+    )
+    if not semantic_ledger_enabled:
+        goal_progress_observable = completion_projection is not None
+    elif durable_progress_observable:
+        goal_progress_observable = True
+    else:
+        goal_progress_observable = None
     completion_positive_evidence = (
         sum(
             int(completion_projection[key])
