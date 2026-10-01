@@ -33,29 +33,10 @@ _INLINE_INTERPRETER = re.compile(
     re.IGNORECASE,
 )
 _SHELL_CONTROL = re.compile(r"(?:\|\||&&|[;|&<>`\n\r]|\$\(|\$\{|<\(|>\()")
-_CHECK_EXECUTABLES = frozenset(
-    {
-        "pytest",
-        "ruff",
-        "mypy",
-        "pyright",
-        "npm",
-        "pnpm",
-        "yarn",
-        "cargo",
-        "go",
-        "make",
-        "cmake",
-        "ctest",
-        "gradle",
-        "gradlew",
-        "mvn",
-        "bazel",
-        "jq",
-        "xmllint",
-        "yamllint",
-    }
+_PYTEST_NON_EXECUTION_FLAGS = frozenset(
+    {"-h", "--help", "--version", "--collect-only", "--collectonly", "--co"}
 )
+_PYTEST_RESULT = re.compile(r"(?<!\d)([1-9]\d*)\s+passed\b", re.IGNORECASE)
 
 
 def probe_arguments_are_executable(arguments: Mapping[str, Any]) -> bool:
@@ -84,32 +65,53 @@ def _command_words(arguments: Mapping[str, Any]) -> tuple[str, ...]:
 
 
 def _is_framework_observable_check(
-    tool_identity: str, arguments: Mapping[str, Any]
+    tool_identity: str,
+    arguments: Mapping[str, Any],
+    *,
+    trusted_validation_id: str | None = None,
 ) -> bool:
+    if isinstance(trusted_validation_id, str) and trusted_validation_id:
+        return True
     words = _command_words(arguments)
     if not words:
-        identity = tool_identity.casefold()
-        return any(
-            token in identity for token in ("check", "test", "verify", "validate")
-        )
+        return False
     executable = words[0].rsplit("/", 1)[-1].casefold()
-    if executable in _CHECK_EXECUTABLES:
-        return True
-    return bool(
+    argument_start = 1
+    is_pytest = executable == "pytest"
+    if (
         executable.startswith("python")
         and len(words) >= 3
         and words[1] == "-m"
-        and words[2].casefold() in {"pytest", "mypy", "ruff", "pyright"}
-    )
+        and words[2].casefold() == "pytest"
+    ):
+        is_pytest = True
+        argument_start = 3
+    if not is_pytest:
+        return False
+    arguments_after_pytest = words[argument_start:]
+    if not arguments_after_pytest or any(
+        item.casefold() in _PYTEST_NON_EXECUTION_FLAGS
+        for item in arguments_after_pytest
+    ):
+        return False
+    return any(not item.startswith("-") for item in arguments_after_pytest)
 
 
 def probe_plan_is_framework_observable(
-    *, probe_kind: str, tool_identity: str, arguments: Mapping[str, Any]
+    *,
+    probe_kind: str,
+    tool_identity: str,
+    arguments: Mapping[str, Any],
+    trusted_validation_id: str | None = None,
 ) -> bool:
     return bool(
         probe_kind in PROBE_KINDS
         and probe_arguments_are_executable(arguments)
-        and _is_framework_observable_check(tool_identity, arguments)
+        and _is_framework_observable_check(
+            tool_identity,
+            arguments,
+            trusted_validation_id=trusted_validation_id,
+        )
     )
 
 
@@ -126,17 +128,17 @@ def validate_probe_result(
         probe_kind=probe_kind,
         tool_identity=tool_identity,
         arguments=arguments,
+        trusted_validation_id=result.get("framework_validation_id"),
     ):
         return False, "probe_not_framework_observable"
     if result.get("success") is not True:
         return False, "probe_process_failed"
     if result.get("failure_code"):
         return False, "probe_semantic_failure"
-    return_code = result.get("return_code")
-    valid = (
-        return_code == 0
-        if _command_words(arguments)
-        else return_code in {None, 0}
+    trusted_validation_id = result.get("framework_validation_id")
+    valid = result.get("return_code") == 0 and (
+        bool(trusted_validation_id)
+        or bool(_PYTEST_RESULT.search(str(result.get("stdout_tail") or "")))
     )
     return valid, "probe_attested" if valid else f"{probe_kind}_not_attested"
 

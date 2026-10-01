@@ -12,6 +12,7 @@ from dataclasses import replace
 import os
 import re
 import secrets
+import shlex
 from typing import Any, Mapping
 
 from aworld.core.context.execution_state import state_context
@@ -202,6 +203,29 @@ def _acceptance_candidate_and_evidence(
     return candidate, evidence
 
 
+def _matching_completion_validation_id(
+    context, arguments: Mapping[str, Any]
+) -> str | None:
+    command_text = arguments.get("command") or arguments.get("code")
+    if not isinstance(command_text, str) or not command_text.strip():
+        return None
+    owner = state_context(context)
+    contract = getattr(owner, "completion_contract", None) if owner is not None else None
+    for validation in getattr(contract, "validation_commands", ()) or ():
+        argv = tuple(getattr(validation, "argv", ()) or ())
+        if not argv:
+            continue
+        registered = (
+            str(argv[-1])
+            if len(argv) >= 2 and argv[-2] == "-c"
+            else shlex.join(str(item) for item in argv)
+        )
+        command_id = getattr(validation, "command_id", None)
+        if command_text.strip() == registered.strip() and isinstance(command_id, str):
+            return command_id
+    return None
+
+
 def record_acceptance_probe_plan(
     context,
     agent_id: str,
@@ -229,10 +253,14 @@ def record_acceptance_probe_plan(
         probe_plan_is_framework_observable,
     )
 
+    framework_validation_id = _matching_completion_validation_id(
+        context, arguments_projection
+    )
     if not probe_plan_is_framework_observable(
         probe_kind=probe_kind,
         tool_identity=tool_identity,
         arguments=arguments_projection,
+        trusted_validation_id=framework_validation_id,
     ):
         return False
     current = _read_runtime_value(context, agent_id, EXECUTION_PROTOCOL_CRITIC_KEY)
@@ -263,6 +291,7 @@ def record_acceptance_probe_plan(
             "artifact_before": evidence.get("artifact_fingerprint"),
             "probe_kind": probe_kind,
             "challenge": secrets.token_hex(16),
+            "framework_validation_id": framework_validation_id,
         },
     )
     return True
@@ -297,11 +326,17 @@ def record_acceptance_probe_observation(
         return False
     from aworld.core.execution_protocol.acceptance import validate_probe_result
 
+    framework_result_projection = dict(result_projection)
+    framework_validation_id = current.get("framework_validation_id")
+    if isinstance(framework_validation_id, str) and framework_validation_id:
+        framework_result_projection["framework_validation_id"] = (
+            framework_validation_id
+        )
     validated, validation_code = validate_probe_result(
         probe_kind=current["probe_kind"],
         tool_identity=current["tool_identity"],
         arguments=current["arguments_projection"],
-        result=result_projection,
+        result=framework_result_projection,
         artifact_after=artifact_after,
         evidence=current["evidence"],
     )
@@ -318,7 +353,7 @@ def record_acceptance_probe_observation(
         challenge=current["challenge"],
         validation_code=validation_code,
         validated=validated,
-        result_projection=result_projection,
+        result_projection=framework_result_projection,
         success=success,
         failure_code=failure_code,
     )

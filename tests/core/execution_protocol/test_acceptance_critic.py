@@ -2,6 +2,11 @@ import json
 
 from aworld.core.common import ActionModel, ActionResult, Observation
 from aworld.core.context.base import Context
+from aworld.core.context.compiler import (
+    CompletionContract,
+    CompletionMode,
+    ValidationCommand,
+)
 from aworld.core.execution_protocol import (
     AcceptanceCriticDecision,
     AcceptanceDecision,
@@ -411,6 +416,99 @@ def test_shell_composition_cannot_mask_checker_failure():
         )
 
 
+def test_nonexecuting_pytest_modes_and_name_only_tools_cannot_plan_probe():
+    for command in (
+        "pytest --help tests/test_contract.py",
+        "pytest --version tests/test_contract.py",
+        "pytest --collect-only tests/test_contract.py",
+        "pytest -q",
+    ):
+        context = _context("critic-nonexecuting-pytest")
+        record_candidate_final(context, "agent")
+        assert not record_acceptance_probe_plan(
+            context,
+            "agent",
+            tool_call_id="probe-nonexecuting-pytest",
+            hypothesis_id="independent-tests",
+            highest_risk_counterexample="the independent contract test fails",
+            tool_identity="terminal:execute",
+            arguments_projection={"command": command},
+            probe_kind="independent_cross_check",
+        )
+
+    context = _context("critic-name-only-tool")
+    record_candidate_final(context, "agent")
+    assert not record_acceptance_probe_plan(
+        context,
+        "agent",
+        tool_call_id="probe-name-only-tool",
+        hypothesis_id="independent-tests",
+        highest_risk_counterexample="the independent contract test fails",
+        tool_identity="weather_checker:check",
+        arguments_projection={"location": "Hangzhou"},
+        probe_kind="independent_cross_check",
+    )
+
+
+def test_pre_registered_validation_command_is_framework_bound():
+    context = _context("critic-registered-validation")
+    context.configure_completion_contract(
+        CompletionContract(
+            required_artifacts=(),
+            immutable_inputs=(),
+            validation_commands=(
+                ValidationCommand(
+                    command_id="registered-check",
+                    argv=("npm", "test"),
+                ),
+            ),
+            max_evidence_age_seconds=None,
+            required_final_evidence=(),
+        ),
+        mode=CompletionMode.ENFORCE,
+    )
+    record_candidate_final(context, "agent")
+    assert record_acceptance_probe_plan(
+        context,
+        "agent",
+        tool_call_id="probe-registered-validation",
+        hypothesis_id="registered-validation",
+        highest_risk_counterexample="the registered validation fails",
+        tool_identity="terminal:execute",
+        arguments_projection={"command": "npm test"},
+        probe_kind="independent_cross_check",
+    )
+    assert record_acceptance_probe_observation(
+        context,
+        "agent",
+        actions=[ActionModel(tool_call_id="probe-registered-validation")],
+        result_projection={
+            "tool_call_id": "probe-registered-validation",
+            "success": True,
+            "return_code": 0,
+            "failure_code": None,
+            "stdout_tail": "",
+        },
+        success=True,
+        failure_code=None,
+    )
+    transition, _, accepted = record_acceptance_critic_decision(
+        context,
+        "agent",
+        json.dumps(
+            {
+                "decision": "accept",
+                "highest_risk_counterexample": "the registered validation fails",
+                "hypothesis_id": "registered-validation",
+                "reason": "the registered validation returned zero",
+            }
+        ),
+    )
+
+    assert accepted is True
+    assert transition.decision.action is ControllerAction.SUBMIT_CURRENT_RESULT
+
+
 def test_signal_probe_is_unavailable_without_trusted_adapter():
     context = _context("critic-signal-unavailable")
     record_candidate_final(context, "agent")
@@ -450,6 +548,7 @@ def test_framework_observed_checker_exit_can_support_acceptance():
             "failure_code": None,
             "observed_content_present": True,
             "observed_content_hash": "sha256:pytest-output",
+            "stdout_tail": "1 passed",
             "content_tail": "1 passed",
         },
         success=True,
