@@ -11,8 +11,10 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import re
 import sys
 from collections.abc import Mapping
+from html import escape
 from typing import Any
 
 
@@ -21,6 +23,9 @@ class ParseOutputExportError(ValueError):
 
 
 _SCHEMAS = {"filex-document-ir-v1", "filex-document-ir-v2"}
+_MARKDOWN_SEPARATOR_CELL = re.compile(r"^:?-{3,}:?$")
+_MARKDOWN_FENCE = re.compile(r"^[ \t]{0,3}(`{3,}|~{3,})(.*)$")
+_INLINE_MARKDOWN = re.compile(r"(?<!\\)(?:`|\*\*|__|~~|!\[|\[[^\]]*\]\([^)]*\))")
 _LABELS = {
     "caption": "caption",
     "figure-title": "caption",
@@ -66,6 +71,178 @@ _LABELS = {
     "form": "form",
     "key-value-region": "key-value-region",
 }
+
+
+def _line_body(line: str) -> str:
+    if line.endswith("\r\n"):
+        return line[:-2]
+    if line.endswith(("\r", "\n")):
+        return line[:-1]
+    return line
+
+
+def _line_ending(line: str) -> str:
+    if line.endswith("\r\n"):
+        return "\r\n"
+    if line.endswith("\r"):
+        return "\r"
+    if line.endswith("\n"):
+        return "\n"
+    return ""
+
+
+def _markdown_cells(line: str) -> list[str] | None:
+    """Split one GFM pipe row without splitting escaped or code-span pipes."""
+
+    value = line.strip()
+    if "|" not in value:
+        return None
+    cells: list[str] = []
+    cell: list[str] = []
+    delimiter_count = 0
+    code_ticks = 0
+    index = 0
+    while index < len(value):
+        character = value[index]
+        if character == "\\" and index + 1 < len(value):
+            following = value[index + 1]
+            if following == "|":
+                cell.append("|")
+                index += 2
+                continue
+            cell.extend((character, following))
+            index += 2
+            continue
+        if character == "`":
+            end = index + 1
+            while end < len(value) and value[end] == "`":
+                end += 1
+            ticks = end - index
+            if code_ticks == 0:
+                code_ticks = ticks
+            elif ticks == code_ticks:
+                code_ticks = 0
+            cell.append(value[index:end])
+            index = end
+            continue
+        if character == "|" and code_ticks == 0:
+            cells.append("".join(cell).strip())
+            cell = []
+            delimiter_count += 1
+        else:
+            cell.append(character)
+        index += 1
+    cells.append("".join(cell).strip())
+    if not delimiter_count:
+        return None
+    if cells and not cells[0]:
+        cells.pop(0)
+    if cells and not cells[-1]:
+        cells.pop()
+    return cells or None
+
+
+def _fence_marker(line: str) -> tuple[str, int, str] | None:
+    match = _MARKDOWN_FENCE.match(line)
+    if match is None:
+        return None
+    marker = match.group(1)
+    return marker[0], len(marker), match.group(2)
+
+
+def _has_inline_markdown(value: str) -> bool:
+    if _INLINE_MARKDOWN.search(value):
+        return True
+    return bool(
+        re.search(r"(?<![\\*])\*[^*\n]+\*(?!\*)", value)
+        or re.search(r"(?<![\\_])_[^_\n]+_(?!_)", value)
+    )
+
+
+def _pipe_table_html(headers: list[str], rows: list[list[str]]) -> str:
+    header = "".join(f"<th>{escape(cell)}</th>" for cell in headers)
+    body = "".join(
+        "<tr>" + "".join(f"<td>{escape(cell)}</td>" for cell in row) + "</tr>"
+        for row in rows
+    )
+    return (
+        "<table><thead><tr>"
+        + header
+        + "</tr></thead><tbody>"
+        + body
+        + "</tbody></table>"
+    )
+
+
+def normalize_structured_tables(markdown: str) -> str:
+    """Canonicalize valid GFM pipe tables consistently in every ParseOutput view."""
+
+    if not markdown or "|" not in markdown:
+        return markdown
+    lines = markdown.splitlines(keepends=True)
+    output: list[str] = []
+    index = 0
+    fence: tuple[str, int] | None = None
+    while index < len(lines):
+        body = _line_body(lines[index])
+        marker = _fence_marker(body)
+        if marker is not None:
+            if fence is None:
+                fence = marker[:2]
+            elif (
+                marker[0] == fence[0]
+                and marker[1] >= fence[1]
+                and not marker[2].strip()
+            ):
+                fence = None
+            output.append(lines[index])
+            index += 1
+            continue
+        if fence is not None or index + 2 >= len(lines):
+            output.append(lines[index])
+            index += 1
+            continue
+
+        separator_line = _line_body(lines[index + 1])
+        headers = _markdown_cells(body)
+        separators = _markdown_cells(separator_line)
+        if (
+            body.startswith(("    ", "\t"))
+            or separator_line.startswith(("    ", "\t"))
+            or not headers
+            or separators is None
+            or len(separators) != len(headers)
+            or not all(_MARKDOWN_SEPARATOR_CELL.fullmatch(cell) for cell in separators)
+        ):
+            output.append(lines[index])
+            index += 1
+            continue
+
+        rows: list[list[str]] = []
+        end = index + 2
+        malformed = False
+        while end < len(lines):
+            row_line = _line_body(lines[end])
+            cells = _markdown_cells(row_line)
+            if cells is None:
+                break
+            if row_line.startswith(("    ", "\t")) or len(cells) != len(headers):
+                malformed = True
+                break
+            rows.append(cells)
+            end += 1
+        if not rows or malformed:
+            output.append(lines[index])
+            index += 1
+            continue
+        if any(_has_inline_markdown(cell) for row in (headers, *rows) for cell in row):
+            output.extend(lines[index:end])
+            index = end
+            continue
+
+        output.append(_pipe_table_html(headers, rows) + _line_ending(lines[end - 1]))
+        index = end
+    return "".join(output)
 
 
 def _number(value: object, field: str) -> float:
@@ -146,11 +323,13 @@ def document_ir_to_parse_output(
 ) -> dict[str, Any]:
     """Convert real pixel xyxy elements into ParseOutput layout_pages/xywh.
 
-    The full Markdown is preserved exactly. Original zero-based page indexes
-    become one-based page_number values, including noncontiguous selections.
-    Declared reading_order sorts elements; ties and unspecified orders retain
-    source order. No boxes, page dimensions, model identity, or model-call
-    evidence are synthesized. An actual empty pages list stays empty.
+    Non-table Markdown is preserved exactly; valid GFM pipe tables are converted
+    once to deterministic HTML in the document, page, and item views so later
+    targeted repair always sees the same anchor. Original zero-based page
+    indexes become one-based page_number values, including noncontiguous
+    selections. Declared reading_order sorts elements; ties and unspecified
+    orders retain source order. No boxes, page dimensions, model identity, or
+    model-call evidence are synthesized. An actual empty pages list stays empty.
     """
 
     if (
@@ -163,7 +342,7 @@ def document_ir_to_parse_output(
         raise ParseOutputExportError(
             "Document IR requires pixel_top_left_xyxy coordinates"
         )
-    _text(markdown, "markdown")
+    markdown = normalize_structured_tables(_text(markdown, "markdown"))
     if (
         not _text(example_id, "example_id").strip()
         or not _text(pipeline_name, "pipeline_name").strip()
@@ -196,17 +375,24 @@ def document_ir_to_parse_output(
         for position, element in enumerate(raw_elements):
             if not isinstance(element, Mapping):
                 raise ParseOutputExportError("Document IR element must be an object")
-            text = _text(element.get("text"), "element text")
-            html = _text(element.get("html", ""), "element html")
+            raw_text = _text(element.get("text"), "element text")
+            raw_html = _text(element.get("html", ""), "element html")
+            text = normalize_structured_tables(raw_text)
+            html = normalize_structured_tables(raw_html)
             segment = _segment(element, width=width, height=height)
             order = element.get("reading_order")
             if order is not None:
                 order = _index(order, "reading_order")
+            raw_label = _text(element.get("type"), "element type")
+            label_key = "-".join(raw_label.strip().lower().replace("_", " ").split())
             is_table = segment["label"] == "table"
+            is_chart = label_key == "chart"
             if is_table and not html and "<table" in text.lower():
                 html = text
+            if is_chart and not html and "<table" in text.lower():
+                html = text
             item = {
-                "type": "table" if is_table else "text",
+                "type": "table" if is_table else ("chart" if is_chart else "text"),
                 "md": text or html,
                 "html": html,
                 "value": text or html,
@@ -224,7 +410,9 @@ def document_ir_to_parse_output(
         page_markdown = (
             markdown
             if len(raw_pages) == 1
-            else _text(raw_page.get("markdown", page_text), "page markdown")
+            else normalize_structured_tables(
+                _text(raw_page.get("markdown", page_text), "page markdown")
+            )
         )
         orientation = raw_page.get("original_orientation_angle")
         if orientation is not None:
@@ -257,7 +445,11 @@ def document_ir_to_parse_output(
     }
 
 
-__all__ = ["ParseOutputExportError", "document_ir_to_parse_output"]
+__all__ = [
+    "ParseOutputExportError",
+    "document_ir_to_parse_output",
+    "normalize_structured_tables",
+]
 
 
 def _strict_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:

@@ -34,22 +34,39 @@ _STRUCTURED_CHART_PROMPT = """Chart Recognition:
 Extract all visible chart data into one or more Markdown tables.
 Return Markdown tables only. Do not return prose, bullets, commentary, or a chart summary.
 Put every label, series name, category, date or year, and numeric value in its own cell.
-Use one data point per row. For approximate points, emit one best numeric estimate rather
-than a range. Preserve panel titles as a table column or a short heading immediately before
-the corresponding table. Never wrap a narrative sentence in a one-column table."""
+Use one data point per row. Transcribe only numeric values printed in the source; do not
+visually estimate an unprinted point. Preserve exact printed footnote markers. Preserve panel
+titles as a table column or a short heading immediately before the corresponding table. Never
+wrap a narrative sentence in a one-column table."""
 _CHART_CORRECTION_PROMPT = """Chart Recognition:
 CORRECTION ATTEMPT {attempt}: the previous response violated the chart table contract.
 Read the chart image again; do not reformat or summarize the previous answer.
 Return one or more Markdown tables and nothing else. Every table must have at least two
 columns. Put labels/categories/series in separate cells and every visible numeric value in
 its own numeric cell. Use one observation per row. Do not emit prose, bullets, JSON,
-one-column tables, ranges, or commentary. If a value is approximate, emit one best numeric
-estimate with an optional ~ prefix. Never invent a value that is not visible in the chart.
+one-column tables, ranges, commentary, or visual estimates of unprinted values. Preserve
+exact printed footnote markers. Never invent a value that is not visible in the chart.
 The rejected output failed these checks: {failures}"""
 _MARKDOWN_SEPARATOR_CELL = re.compile(r"^:?-{3,}:?$")
 _NUMERIC_CHART_CELL = re.compile(
     r"^[~≈]?\s*[$€£¥]?\s*[-+]?(?:\d[\d, ]*|\d*\.\d+)"
-    r"(?:\.\d+)?\s*(?:%|[kKmMbBtT]|million|billion|trillion)?$",
+    r"(?:\.\d+)?\s*(?:%|[kKmMbBtT]|million|billion|trillion)?"
+    r"(?:\*{1,3}|[⁰¹²³⁴⁵⁶⁷⁸⁹]+|[†‡])?$",
+    re.IGNORECASE,
+)
+_CHART_CATEGORY_HEADER = re.compile(
+    r"^(?:category|country|date|day|label|month|name|panel|period|quarter|"
+    r"region|series|time|week|year|x(?:[- ]?axis)?)$",
+    re.IGNORECASE,
+)
+_CHART_PERIOD_HEADER = re.compile(
+    r"^(?:(?:19|20)\d{2}|q[1-4]|(?:jan|feb|mar|apr|may|jun|jul|aug|sep|"
+    r"oct|nov|dec)(?:uary|ruary|ch|il|e|y|ust|tember|ober|ember)?)$",
+    re.IGNORECASE,
+)
+_CHART_MEASURE_HEADER = re.compile(
+    r".*(?:amount|change|count|index|percent|profit|rate|revenue|sales|score|"
+    r"share|total|value|volume|%|[$€£¥]).*",
     re.IGNORECASE,
 )
 _HTML_TABLE = re.compile(r"<table\b[^>]*>(.*?)</table>", re.IGNORECASE | re.DOTALL)
@@ -64,7 +81,7 @@ class PaddleOcrModelAssetsError(RuntimeError):
 
 
 class PaddleOcrChartContractError(RuntimeError):
-    """Chart recognition returned content that official chart scorers cannot use."""
+    """Chart recognition returned content that is not a structured chart table."""
 
 
 @dataclass(slots=True)
@@ -832,7 +849,7 @@ class PaddleOcrPdfProvider:
                 content = str(
                     block.get("block_content") or block.get("content") or ""
                 ).strip()
-                if not self._has_scorer_compatible_chart_table(content):
+                if not self._has_structured_chart_table(content):
                     block_id = str(
                         block.get("global_block_id")
                         or block.get("block_id")
@@ -861,7 +878,7 @@ class PaddleOcrPdfProvider:
         return mode
 
     @classmethod
-    def _has_scorer_compatible_chart_table(cls, content: str) -> bool:
+    def _has_structured_chart_table(cls, content: str) -> bool:
         return cls._has_markdown_chart_table(content) or cls._has_html_chart_table(
             content
         )
@@ -876,12 +893,30 @@ class PaddleOcrPdfProvider:
                 continue
             if not all(_MARKDOWN_SEPARATOR_CELL.fullmatch(cell) for cell in separator):
                 continue
+            value_columns = cls._chart_value_column_indexes(header)
+            data_rows: list[list[str]] = []
+            malformed = False
             for data_line in lines[index + 2 :]:
                 cells = cls._markdown_cells(data_line)
-                if len(cells) != len(header):
+                if not cells:
                     break
-                if any(cls._is_numeric_chart_cell(cell) for cell in cells):
-                    return True
+                if len(cells) != len(header):
+                    malformed = True
+                    break
+                data_rows.append(cells)
+            if (
+                value_columns
+                and data_rows
+                and not malformed
+                and all(
+                    all(
+                        cls._is_numeric_chart_cell(row[column])
+                        for column in value_columns
+                    )
+                    for row in data_rows
+                )
+            ):
+                return True
         return False
 
     @staticmethod
@@ -906,18 +941,54 @@ class PaddleOcrPdfProvider:
                 ]
                 if cells:
                     rows.append(cells)
-            if not rows or max(len(row) for row in rows) < 2:
+            if len(rows) < 2 or max(len(row) for row in rows) < 2:
                 continue
-            for row in rows[1:] if len(rows) > 1 else rows:
-                if len(row) >= 2 and any(
-                    cls._is_numeric_chart_cell(cell) for cell in row
-                ):
-                    return True
+            value_columns = cls._chart_value_column_indexes(rows[0])
+            data_rows = rows[1:]
+            if value_columns and all(
+                len(row) >= 2
+                and all(
+                    column < len(row) and cls._is_numeric_chart_cell(row[column])
+                    for column in value_columns
+                )
+                for row in data_rows
+            ):
+                return True
         return False
+
+    @staticmethod
+    def _chart_value_column_indexes(headers: list[str]) -> tuple[int, ...]:
+        """Infer measure columns conservatively from visible table headers."""
+
+        normalized = [re.sub(r"\s+", " ", header).strip() for header in headers]
+        if len(normalized) < 2:
+            return ()
+        # Wide charts commonly use one category/series column followed by year
+        # columns. Those period headers identify separate measure series rather
+        # than numeric category cells in the body.
+        if (
+            _CHART_CATEGORY_HEADER.fullmatch(normalized[0])
+            or _CHART_PERIOD_HEADER.fullmatch(normalized[0])
+        ) and all(_CHART_PERIOD_HEADER.fullmatch(header) for header in normalized[1:]):
+            return tuple(range(1, len(normalized)))
+        candidates = tuple(
+            index
+            for index, header in enumerate(normalized)
+            if _CHART_CATEGORY_HEADER.fullmatch(header) is None
+            and _CHART_PERIOD_HEADER.fullmatch(header) is None
+            and (
+                index > 0 or _CHART_MEASURE_HEADER.fullmatch(header) is not None
+            )
+        )
+        # Unknown schemas fail closed unless at least one non-category header
+        # identifies where numeric measures belong.
+        return candidates
 
     @staticmethod
     def _is_numeric_chart_cell(value: str) -> bool:
         normalized = re.sub(r"\s+", " ", value).strip()
+        if normalized.startswith(("~", "≈")):
+            return False
         return bool(_NUMERIC_CHART_CELL.fullmatch(normalized))
 
     @staticmethod

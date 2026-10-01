@@ -1317,6 +1317,34 @@ def test_chart_contract_rejects_persistent_narrative_table() -> None:
     [
         (
             "| Country | Value |\n| --- | ---: |\n| USA | ~38 |",
+            False,
+        ),
+        (
+            "| Year | Value |\n| --- | --- |\n| 2021 | garbage |",
+            False,
+        ),
+        (
+            "| Foo | Bar |\n| --- | --- |\n| 2021 | garbage |",
+            False,
+        ),
+        (
+            "| Country | Year | Value |\n| --- | --- | --- |\n| USA | 2021 | garbage |",
+            False,
+        ),
+        (
+            "| Year | Revenue | Profit |\n| --- | --- | --- |\n| 2021 | 42 | garbage |",
+            False,
+        ),
+        (
+            "| Year | Revenue |\n| --- | --- |\n| 2021 | 42 |\n| 2022 | garbage |",
+            False,
+        ),
+        (
+            "| Year | Change |\n| --- | --- |\n| 2021 | +15.2%* |",
+            True,
+        ),
+        (
+            "| Year | Change |\n| --- | --- |\n| 2021 | 15.2%¹ |",
             True,
         ),
         (
@@ -1325,6 +1353,14 @@ def test_chart_contract_rejects_persistent_narrative_table() -> None:
                 "<tr><td>USA</td><td>38</td></tr></table>"
             ),
             True,
+        ),
+        (
+            (
+                "<table><tr><th>Year</th><th>Revenue</th></tr>"
+                "<tr><td>2021</td><td>42</td></tr>"
+                "<tr><td>2022</td><td>garbage</td></tr></table>"
+            ),
+            False,
         ),
         (
             (
@@ -1345,6 +1381,6 @@ def test_chart_contract_requires_independent_numeric_cells(
     module = _load_provider_module()
 
     assert (
-        module.PaddleOcrPdfProvider._has_scorer_compatible_chart_table(content)
+        module.PaddleOcrPdfProvider._has_structured_chart_table(content)
         is expected
     )

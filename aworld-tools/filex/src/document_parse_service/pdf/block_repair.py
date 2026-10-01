@@ -1,4 +1,4 @@
-"""Targeted structured repair for scorer-facing table and chart blocks."""
+"""Targeted structured repair for public table and chart blocks."""
 
 from __future__ import annotations
 
@@ -10,11 +10,12 @@ import os
 import re
 import sys
 import tempfile
-from dataclasses import dataclass
-from html import escape
+from dataclasses import dataclass, replace
+from html import escape, unescape
 from pathlib import Path
 from typing import Any, Callable, Protocol
 
+from ..parse_output_export import normalize_structured_tables
 from ..media_transcription.openai_compatible_backend import (
     OpenAICompatibleMediaTranscriptionBackend,
 )
@@ -28,8 +29,9 @@ MAX_MODEL_OUTPUT_CHARS = 2 * 1024 * 1024
 
 _FENCE = re.compile(r"^```(?:json)?\s*|\s*```$", re.IGNORECASE)
 _NUMERIC = re.compile(
-    r"^~?\s*[$€£¥]?\s*[-+]?(?:\d[\d, ]*|\d*\.\d+)"
-    r"(?:\.\d+)?\s*(?:%|[kKmMbBtT]|million|billion|trillion)?$",
+    r"^[~≈]?\s*[$€£¥]?\s*[-+]?(?:\d[\d, ]*|\d*\.\d+)"
+    r"(?:\.\d+)?\s*(?:%|[kKmMbBtT]|million|billion|trillion)?"
+    r"(?:\*{1,3}|[⁰¹²³⁴⁵⁶⁷⁸⁹]+|[†‡])?$",
     re.IGNORECASE,
 )
 _NUMERIC_RANGE = re.compile(
@@ -42,24 +44,31 @@ _NARRATIVE_ESTIMATE = re.compile(
     re.IGNORECASE,
 )
 _SEMANTIC_HEADER = re.compile(r"[^\W\d_]", re.UNICODE)
+_HTML_TABLE_BLOCK = re.compile(r"<table\b[^>]*>.*?</table>", re.IGNORECASE | re.DOTALL)
 
 _TABLE_PROMPT = """Extract the visible table into strict JSON only.
-Return exactly {"columns":["..."],"rows":[["...", "..."]]}.
-Use at least two columns and one row. Preserve every visible header and cell.
-Repeat merged header values where needed to form a rectangular grid. Do not
-return Markdown, HTML, prose, commentary, or invented values."""
+Return {"caption":"visible caption or empty string","notes":["exact visible
+footnote/source/unit note"],"columns":[...],"rows":[...]} with at least two
+logical columns and one body row. A simple cell may be a string. A merged/header cell must be
+{"text":"...","rowspan":1,"colspan":1,"header":true}. Preserve every visible
+cell and the exact rowspan/colspan structure; do not flatten or repeat merged
+headers. Omit no visible caption. Do not return Markdown, prose, commentary, or
+invented values."""
 
-_CHART_PROMPT = """Extract the visible chart semantics into one flat rectangular
-two-dimensional table in strict JSON only. Return exactly
-{"columns":["..."],"rows":[["...", "..."]]}. Use the actual visible axis,
-legend, category, or series labels as column headers (for example Year,
-Revenue, Profit); do not replace them with a fixed generic schema. Preserve the
-labels associated with each numeric value in the same row or column. A
-single-series or single-label chart may use two columns. Every row must contain
-at least one numeric value. Transcribe printed values exactly. When a value is
-not printed, a bounded visual read from a clear axis scale and unambiguous bar
-or point position is allowed; prefix that value with ~. Never estimate without
-a visible axis basis, invent values, emit ranges, or return prose/commentary."""
+_CHART_PROMPT = """Extract the visible chart semantics into strict JSON only.
+Return {"caption":"exact visible title/caption or empty string","labels":[...],
+"notes":["exact visible footnote/source/unit note"],"estimated":false,
+"value_columns":[1],"columns":[...],"rows":[...]}. The
+zero-based value_columns must identify numeric measure columns, never category,
+date, year, or label columns. List every visible axis, legend, category, date,
+and series label in labels and also place each label in the caption, a header,
+or the associated row/column. A simple cell may be a string; a structured cell
+may use text,rowspan,colspan,header. Use at least two logical columns and one
+row, with every declared measure cell containing a printed numeric value.
+Transcribe printed values exactly. Never invent a value or emit a range. If a
+numeric value is not printed and can only be visually estimated, set estimated
+to true and prefix it with ~; such output is diagnostic and will not be accepted
+as structured repair. Return JSON only, without prose/commentary."""
 
 
 class BlockRepairError(ValueError):
@@ -79,12 +88,27 @@ class BlockRepairBackend(Protocol):
 
 
 @dataclass(frozen=True, slots=True)
+class StructuredCell:
+    text: str
+    rowspan: int = 1
+    colspan: int = 1
+    header: bool = False
+
+
+@dataclass(frozen=True, slots=True)
 class StructuredTable:
-    columns: tuple[str, ...]
-    rows: tuple[tuple[str, ...], ...]
+    columns: tuple[StructuredCell | str, ...]
+    rows: tuple[tuple[StructuredCell | str, ...], ...]
+    caption: str | None = None
+    labels: tuple[str, ...] = ()
+    estimated: bool = False
+    value_columns: tuple[int, ...] = ()
+    notes: tuple[str, ...] = ()
 
     @classmethod
-    def from_model_output(cls, content: str, *, require_numeric: bool) -> "StructuredTable":
+    def from_model_output(
+        cls, content: str, *, require_numeric: bool
+    ) -> "StructuredTable":
         if not isinstance(content, str) or not content.strip():
             raise BlockRepairError("filex_block_repair_empty_output")
         if len(content) > MAX_MODEL_OUTPUT_CHARS:
@@ -96,36 +120,120 @@ class StructuredTable:
             payload = json.loads(value)
         except (json.JSONDecodeError, ValueError, RecursionError):
             raise BlockRepairError("filex_block_repair_invalid_json") from None
-        if not isinstance(payload, dict) or set(payload) != {"columns", "rows"}:
+        allowed = {"columns", "rows", "caption", "notes"}
+        required = {"columns", "rows"}
+        if require_numeric:
+            allowed.update({"labels", "estimated", "value_columns"})
+            required.update({"labels", "estimated", "value_columns"})
+        if (
+            not isinstance(payload, dict)
+            or not required.issubset(payload)
+            or set(payload) - allowed
+        ):
             raise BlockRepairError("filex_block_repair_schema_invalid")
         columns = payload["columns"]
         rows = payload["rows"]
         if (
             not isinstance(columns, list)
-            or not 2 <= len(columns) <= MAX_COLUMNS
+            or not 1 <= len(columns) <= MAX_COLUMNS
             or not isinstance(rows, list)
             or not 1 <= len(rows) <= MAX_ROWS
         ):
             raise BlockRepairError("filex_block_repair_shape_invalid")
-        normalized_columns = tuple(_cell_text(cell) for cell in columns)
-        if any(not column for column in normalized_columns):
+        normalized_columns = tuple(
+            _structured_cell(cell, default_header=True) for cell in columns
+        )
+        if any(not column.text for column in normalized_columns):
             raise BlockRepairError("filex_block_repair_header_invalid")
-        normalized_rows: list[tuple[str, ...]] = []
+        normalized_rows: list[tuple[StructuredCell, ...]] = []
         for row in rows:
-            if not isinstance(row, list) or len(row) != len(normalized_columns):
+            if not isinstance(row, list):
                 raise BlockRepairError("filex_block_repair_row_invalid")
-            normalized_rows.append(tuple(_cell_text(cell) for cell in row))
+            normalized_rows.append(
+                tuple(_structured_cell(cell, default_header=False) for cell in row)
+            )
+        _validate_table_grid(normalized_columns, normalized_rows)
+
+        raw_caption = payload.get("caption")
+        caption = None if raw_caption in (None, "") else _cell_text(raw_caption)
+        raw_notes = payload.get("notes", [])
+        if not isinstance(raw_notes, list) or len(raw_notes) > 32:
+            raise BlockRepairError("filex_block_repair_notes_invalid")
+        notes = tuple(_cell_text(note) for note in raw_notes)
+        if any(not note for note in notes) or len(set(notes)) != len(notes):
+            raise BlockRepairError("filex_block_repair_notes_invalid")
+        labels: tuple[str, ...] = ()
+        estimated = False
+        value_columns: tuple[int, ...] = ()
         if require_numeric:
-            _validate_chart_table(normalized_columns, normalized_rows)
-        return cls(columns=normalized_columns, rows=tuple(normalized_rows))
+            raw_labels = payload["labels"]
+            if not isinstance(raw_labels, list) or not raw_labels:
+                raise BlockRepairError("filex_block_repair_schema_invalid")
+            labels = tuple(_cell_text(label) for label in raw_labels)
+            if any(not label for label in labels) or len(set(labels)) != len(labels):
+                raise BlockRepairError("filex_chart_repair_labels_invalid")
+            raw_estimated = payload["estimated"]
+            if not isinstance(raw_estimated, bool):
+                raise BlockRepairError("filex_block_repair_schema_invalid")
+            estimated = raw_estimated
+            raw_value_columns = payload["value_columns"]
+            if (
+                not isinstance(raw_value_columns, list)
+                or not raw_value_columns
+                or any(
+                    isinstance(index, bool) or not isinstance(index, int)
+                    for index in raw_value_columns
+                )
+                or len(set(raw_value_columns)) != len(raw_value_columns)
+            ):
+                raise BlockRepairError("filex_chart_repair_value_columns_invalid")
+            value_columns = tuple(raw_value_columns)
+            _validate_chart_table(
+                normalized_columns,
+                normalized_rows,
+                caption=caption,
+                labels=labels,
+                estimated=estimated,
+                value_columns=value_columns,
+            )
+        return cls(
+            columns=normalized_columns,
+            rows=tuple(normalized_rows),
+            caption=caption,
+            labels=labels,
+            estimated=estimated,
+            value_columns=value_columns,
+            notes=notes,
+        )
 
     def to_html(self) -> str:
-        header = "".join(f"<th>{escape(cell)}</th>" for cell in self.columns)
-        body = "".join(
-            "<tr>" + "".join(f"<td>{escape(cell)}</td>" for cell in row) + "</tr>"
-            for row in self.rows
+        columns = tuple(
+            _structured_cell(cell, default_header=True) for cell in self.columns
         )
-        return f"<table><thead><tr>{header}</tr></thead><tbody>{body}</tbody></table>"
+        rows = [
+            tuple(_structured_cell(cell, default_header=False) for cell in row)
+            for row in self.rows
+        ]
+        _validate_table_grid(columns, rows)
+        caption = (
+            f"<caption>{escape(_cell_text(self.caption))}</caption>"
+            if self.caption
+            else ""
+        )
+        header = "".join(_cell_html(cell) for cell in columns)
+        body = "".join(
+            "<tr>" + "".join(_cell_html(cell) for cell in row) + "</tr>" for row in rows
+        )
+        table = (
+            f"<table>{caption}<thead><tr>{header}</tr></thead>"
+            f"<tbody>{body}</tbody></table>"
+        )
+        notes = "".join(f"<p>{escape(_cell_text(note))}</p>" for note in self.notes)
+        return (
+            f'{table}<div class="filex-structured-notes">{notes}</div>'
+            if notes
+            else table
+        )
 
 
 def _cell_text(value: Any) -> str:
@@ -141,12 +249,101 @@ def _cell_text(value: Any) -> str:
     return text
 
 
-def _validate_chart_table(
-    columns: tuple[str, ...], rows: list[tuple[str, ...]]
-) -> None:
-    normalized = tuple(
-        re.sub(r"\s+", " ", value).strip().casefold() for value in columns
+def _cell_span(value: Any, *, field: str, maximum: int) -> int:
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, int)
+        or not 1 <= value <= maximum
+    ):
+        raise BlockRepairError(f"filex_block_repair_{field}_invalid")
+    return value
+
+
+def _structured_cell(value: Any, *, default_header: bool) -> StructuredCell:
+    if isinstance(value, StructuredCell):
+        return value
+    if not isinstance(value, dict):
+        return StructuredCell(text=_cell_text(value), header=default_header)
+    if "text" not in value or set(value) - {"text", "rowspan", "colspan", "header"}:
+        raise BlockRepairError("filex_block_repair_cell_invalid")
+    header = value.get("header", default_header)
+    if not isinstance(header, bool):
+        raise BlockRepairError("filex_block_repair_cell_header_invalid")
+    return StructuredCell(
+        text=_cell_text(value["text"]),
+        rowspan=_cell_span(
+            value.get("rowspan", 1), field="rowspan", maximum=MAX_ROWS + 1
+        ),
+        colspan=_cell_span(
+            value.get("colspan", 1), field="colspan", maximum=MAX_COLUMNS
+        ),
+        header=header,
     )
+
+
+def _validate_table_grid(
+    columns: tuple[StructuredCell, ...], rows: list[tuple[StructuredCell, ...]]
+) -> None:
+    _table_grid(columns, rows)
+
+
+def _table_grid(
+    columns: tuple[StructuredCell, ...], rows: list[tuple[StructuredCell, ...]]
+) -> tuple[int, dict[tuple[int, int], StructuredCell]]:
+    width = sum(cell.colspan for cell in columns)
+    if not 2 <= width <= MAX_COLUMNS:
+        raise BlockRepairError("filex_block_repair_shape_invalid")
+    all_rows = [columns, *rows]
+    occupied: dict[tuple[int, int], StructuredCell] = {}
+    for row_index, row in enumerate(all_rows):
+        column_index = 0
+        for cell in row:
+            while (row_index, column_index) in occupied:
+                column_index += 1
+            if column_index + cell.colspan > width or row_index + cell.rowspan > len(
+                all_rows
+            ):
+                raise BlockRepairError("filex_block_repair_span_invalid")
+            positions = {
+                (covered_row, column)
+                for covered_row in range(row_index, row_index + cell.rowspan)
+                for column in range(column_index, column_index + cell.colspan)
+            }
+            if set(occupied) & positions:
+                raise BlockRepairError("filex_block_repair_span_invalid")
+            occupied.update((position, cell) for position in positions)
+            column_index += cell.colspan
+        while (row_index, column_index) in occupied:
+            column_index += 1
+        if column_index != width:
+            raise BlockRepairError("filex_block_repair_row_invalid")
+    return width, occupied
+
+
+def _cell_html(cell: StructuredCell) -> str:
+    tag = "th" if cell.header else "td"
+    attributes = ""
+    if cell.rowspan > 1:
+        attributes += f' rowspan="{cell.rowspan}"'
+    if cell.colspan > 1:
+        attributes += f' colspan="{cell.colspan}"'
+    return f"<{tag}{attributes}>{escape(cell.text)}</{tag}>"
+
+
+def _normalized_label(value: str) -> str:
+    return re.sub(r"\s+", " ", value).strip().casefold()
+
+
+def _validate_chart_table(
+    columns: tuple[StructuredCell, ...],
+    rows: list[tuple[StructuredCell, ...]],
+    *,
+    caption: str | None,
+    labels: tuple[str, ...],
+    estimated: bool,
+    value_columns: tuple[int, ...],
+) -> None:
+    normalized = tuple(_normalized_label(cell.text) for cell in columns)
     if len(set(normalized)) != len(normalized):
         raise BlockRepairError("filex_chart_repair_header_ambiguous")
     header_has_label = any(
@@ -154,35 +351,72 @@ def _validate_chart_table(
         for column in normalized
     )
     row_has_label = any(
-        cell.strip() and _NUMERIC.fullmatch(cell.strip()) is None
+        cell.text.strip() and _NUMERIC.fullmatch(cell.text.strip()) is None
         for row in rows
         for cell in row
     )
     if not header_has_label and not row_has_label:
         raise BlockRepairError("filex_chart_repair_labels_missing")
-    for row in rows:
-        numeric_count = 0
-        label_count = 0
+    if estimated:
+        raise BlockRepairError("filex_chart_repair_estimated_value_unverified")
+    width, grid = _table_grid(columns, rows)
+    if any(index < 0 or index >= width for index in value_columns):
+        raise BlockRepairError("filex_chart_repair_value_columns_invalid")
+    for row_index, row in enumerate(rows, start=1):
         for cell in row:
-            value = re.sub(r"\s+", " ", cell).strip()
+            value = re.sub(r"\s+", " ", cell.text).strip()
             if _NUMERIC_RANGE.fullmatch(value):
                 raise BlockRepairError("filex_chart_repair_range_invalid")
             if _NARRATIVE_ESTIMATE.search(value):
                 raise BlockRepairError("filex_chart_repair_narrative_value_invalid")
-            if _NUMERIC.fullmatch(value):
-                numeric_count += 1
-            elif value:
-                label_count += 1
-        if numeric_count == 0:
-            raise BlockRepairError("filex_chart_repair_numeric_value_missing")
-        if label_count == 0 and numeric_count < 2:
+        for column_index in value_columns:
+            value = re.sub(r"\s+", " ", grid[(row_index, column_index)].text).strip()
+            if _NUMERIC_RANGE.fullmatch(value):
+                raise BlockRepairError("filex_chart_repair_range_invalid")
+            if _NARRATIVE_ESTIMATE.search(value):
+                raise BlockRepairError("filex_chart_repair_narrative_value_invalid")
+            if _NUMERIC.fullmatch(value) is None:
+                raise BlockRepairError("filex_chart_repair_numeric_value_missing")
+            if value.lstrip().startswith(("~", "≈")):
+                raise BlockRepairError("filex_chart_repair_estimated_value_unverified")
+        category_count = sum(
+            bool(grid[(row_index, column_index)].text.strip())
+            for column_index in range(width)
+            if column_index not in value_columns
+        )
+        if category_count == 0 and len(value_columns) < 2:
             raise BlockRepairError("filex_chart_repair_row_labels_missing")
 
+    if labels:
+        visible = [
+            _normalized_label(value)
+            for value in (
+                *((caption,) if caption else ()),
+                *(cell.text for cell in columns),
+                *(cell.text for row in rows for cell in row),
+            )
+            if value
+        ]
+        for label in labels:
+            normalized_label = _normalized_label(label)
+            if not any(
+                normalized_label in candidate or candidate in normalized_label
+                for candidate in visible
+                if candidate
+            ):
+                raise BlockRepairError("filex_chart_repair_label_missing")
 
-def _gateway_options(*, prompt: str, kind: str) -> dict[str, Any]:
+
+def _gateway_options(
+    *, prompt: str, kind: str, timeout_seconds: int | None = None
+) -> dict[str, Any]:
     options: dict[str, Any] = {
         "prompt": prompt,
-        "timeout_seconds": int(os.getenv("FILEX_BLOCK_REPAIR_TIMEOUT_SECONDS", "180")),
+        "timeout_seconds": (
+            timeout_seconds
+            if timeout_seconds is not None
+            else int(os.getenv("FILEX_BLOCK_REPAIR_TIMEOUT_SECONDS", "180"))
+        ),
         "max_tokens": int(os.getenv("FILEX_BLOCK_REPAIR_MAX_TOKENS", "4096")),
         "temperature": 0,
     }
@@ -302,9 +536,7 @@ def _anchored_insert(
     before: bool,
     scope: str,
 ) -> str:
-    values = {
-        value for value in candidates if isinstance(value, str) and value.strip()
-    }
+    values = {value for value in candidates if isinstance(value, str) and value.strip()}
     for length in sorted({len(value) for value in values}, reverse=True):
         matches: list[tuple[int, int, str]] = []
         for candidate in (value for value in values if len(value) == length):
@@ -350,11 +582,59 @@ def _target_page(layout: dict[str, Any], issue: dict[str, Any]) -> dict[str, Any
 
 
 def _item_candidates(item: dict[str, Any]) -> list[str]:
-    return [
-        value
-        for value in (item.get("md"), item.get("html"), item.get("value"))
-        if isinstance(value, str)
-    ]
+    candidates: list[str] = []
+    for value in (item.get("md"), item.get("html"), item.get("value")):
+        if not isinstance(value, str):
+            continue
+        candidates.append(value)
+        canonical = normalize_structured_tables(value)
+        if canonical != value:
+            candidates.append(canonical)
+    return candidates
+
+
+def _visible_context(value: str) -> str:
+    visible = unescape(re.sub(r"<[^>]+>", " ", value))
+    visible = re.sub(r"(?:^|\s)[#>*_`~]+", " ", visible)
+    return re.sub(r"\s+", " ", visible).strip().casefold()
+
+
+def _represented_by_adjacent_item(
+    page: dict[str, Any], item_index: int, value: str
+) -> bool:
+    items = page.get("items")
+    if not isinstance(items, list):
+        return False
+    expected = _visible_context(value)
+    if not expected:
+        return False
+    for candidate_index in (item_index - 1, item_index + 1):
+        if not 0 <= candidate_index < len(items):
+            continue
+        candidate = items[candidate_index]
+        if not isinstance(candidate, dict):
+            continue
+        for content in _item_candidates(candidate):
+            actual = _visible_context(content)
+            if actual and (expected in actual or actual in expected):
+                return True
+    return False
+
+
+def _deduplicate_structured_context(
+    table: StructuredTable, *, page: dict[str, Any], item_index: int
+) -> StructuredTable:
+    caption = table.caption
+    if caption and _represented_by_adjacent_item(page, item_index, caption):
+        caption = None
+    notes = tuple(
+        note
+        for note in table.notes
+        if not _represented_by_adjacent_item(page, item_index, note)
+    )
+    if caption == table.caption and notes == table.notes:
+        return table
+    return replace(table, caption=caption, notes=notes)
 
 
 def _bbox_key(item: dict[str, Any]) -> tuple[float, float]:
@@ -386,9 +666,25 @@ def _normalized_chart_bbox(value: Any) -> dict[str, Any]:
     return {**numbers, "label": "picture"}
 
 
+def _neighbor_anchor(items: list[Any], item_index: int) -> tuple[dict[str, Any], bool]:
+    """Find a nearby non-empty item without changing established item order."""
+
+    for distance in range(1, len(items) + 1):
+        for candidate_index in (item_index + distance, item_index - distance):
+            if not 0 <= candidate_index < len(items):
+                continue
+            candidate = items[candidate_index]
+            if not isinstance(candidate, dict):
+                continue
+            if not any(value.strip() for value in _item_candidates(candidate)):
+                continue
+            return candidate, candidate_index > item_index
+    raise BlockRepairError("filex_block_repair_anchor_missing")
+
+
 def _new_chart_item(
     page: dict[str, Any], issue: dict[str, Any]
-) -> tuple[dict[str, Any], int, dict[str, Any], bool]:
+) -> tuple[dict[str, Any], int, dict[str, Any] | None, bool]:
     items = page.get("items")
     block_id = issue.get("block_id")
     if not isinstance(items, list):
@@ -410,60 +706,54 @@ def _new_chart_item(
         "bbox": normalized_bbox,
         "layout_segments": [dict(normalized_bbox)],
     }
-    ordered = sorted(
-        [*enumerate(items), (len(items), item)],
-        key=lambda entry: (
-            _bbox_key(entry[1]) if isinstance(entry[1], dict) else (math.inf, math.inf),
-            entry[0],
-        ),
-    )
-    items[:] = [existing for _original_index, existing in ordered]
-    insertion_index = next(
-        index for index, existing in enumerate(items) if existing is item
-    )
+    target_key = _bbox_key(item)
+    insertion_index = len(items)
     for index, existing in enumerate(items):
-        if isinstance(existing, dict):
-            existing["reading_order"] = index
-    neighbor_index = (
-        insertion_index + 1
-        if insertion_index + 1 < len(items)
-        else insertion_index - 1
-    )
-    if neighbor_index < 0 or not isinstance(items[neighbor_index], dict):
-        raise BlockRepairError("filex_block_repair_anchor_missing")
+        if isinstance(existing, dict) and _bbox_key(existing) > target_key:
+            insertion_index = index
+            break
+    items.insert(insertion_index, item)
+    try:
+        neighbor, insert_before = _neighbor_anchor(items, insertion_index)
+    except BlockRepairError as exc:
+        if str(exc) != "filex_block_repair_anchor_missing":
+            raise
+        neighbor, insert_before = None, False
     issue["item_index"] = insertion_index
-    return item, insertion_index, items[neighbor_index], neighbor_index > insertion_index
+    return item, insertion_index, neighbor, insert_before
 
 
-def _target_item(layout: dict[str, Any], issue: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
+def _target_item(
+    layout: dict[str, Any], issue: dict[str, Any]
+) -> tuple[dict[str, Any], dict[str, Any]]:
     page = _target_page(layout, issue)
     item_index = issue.get("item_index")
     items = page.get("items")
     block_id = issue.get("block_id")
-    if (
-        isinstance(items, list)
-        and isinstance(item_index, int)
-        and not isinstance(item_index, bool)
-        and 0 <= item_index < len(items)
-        and isinstance(items[item_index], dict)
-    ):
-        if not isinstance(block_id, str) or not block_id.strip():
-            raise BlockRepairError("filex_block_repair_target_identity_missing")
-        if items[item_index].get("id") != block_id:
-            raise BlockRepairError("filex_block_repair_target_identity_mismatch")
-        if (
-            sum(
-                1
-                for candidate in items
-                if isinstance(candidate, dict) and candidate.get("id") == block_id
-            )
-            != 1
-        ):
-            raise BlockRepairError("filex_block_repair_target_identity_ambiguous")
-        return page, items[item_index]
+    if not isinstance(items, list):
+        raise BlockRepairError("filex_block_repair_target_items_invalid")
+    if not isinstance(block_id, str) or not block_id.strip():
+        raise BlockRepairError("filex_block_repair_target_identity_missing")
+    matches = [
+        (index, candidate)
+        for index, candidate in enumerate(items)
+        if isinstance(candidate, dict) and candidate.get("id") == block_id
+    ]
+    if len(matches) > 1:
+        raise BlockRepairError("filex_block_repair_target_identity_ambiguous")
+    if len(matches) == 1:
+        current_index, item = matches[0]
+        issue["item_index"] = current_index
+        return page, item
     if item_index is None and issue.get("reason") == "filex_chart_content_unusable":
         item, _index, _neighbor, _before = _new_chart_item(page, issue)
         return page, item
+    if (
+        isinstance(item_index, int)
+        and not isinstance(item_index, bool)
+        and 0 <= item_index < len(items)
+    ):
+        raise BlockRepairError("filex_block_repair_target_identity_mismatch")
     raise BlockRepairError("filex_block_repair_target_missing")
 
 
@@ -481,6 +771,244 @@ def _matching_parsed_page(
     if len(matches) > 1:
         raise BlockRepairError("filex_block_repair_parsed_page_ambiguous")
     return matches[0] if matches else None
+
+
+def _parsed_page_neighbor_anchor(
+    layout: dict[str, Any], page_number: int
+) -> tuple[list[str], bool]:
+    pages = layout.get("pages")
+    if not isinstance(pages, list):
+        raise BlockRepairError("filex_block_repair_anchor_missing")
+    ordered = sorted(
+        (
+            page
+            for page in pages
+            if isinstance(page, dict)
+            and isinstance(page.get("page_index"), int)
+            and not isinstance(page.get("page_index"), bool)
+        ),
+        key=lambda page: page["page_index"],
+    )
+    target_index = next(
+        (
+            index
+            for index, page in enumerate(ordered)
+            if page["page_index"] == page_number - 1
+        ),
+        None,
+    )
+    if target_index is None:
+        raise BlockRepairError("filex_block_repair_anchor_missing")
+    for distance in range(1, len(ordered) + 1):
+        for candidate_index in (target_index + distance, target_index - distance):
+            if not 0 <= candidate_index < len(ordered):
+                continue
+            markdown = ordered[candidate_index].get("markdown")
+            if not isinstance(markdown, str) or not markdown.strip():
+                continue
+            candidates = [markdown]
+            canonical = normalize_structured_tables(markdown)
+            if canonical != markdown:
+                candidates.append(canonical)
+            return candidates, candidate_index > target_index
+    raise BlockRepairError("filex_block_repair_anchor_missing")
+
+
+def _item_table_candidates(item: dict[str, Any]) -> list[str]:
+    candidates: list[str] = []
+    for value in (item.get("html"), item.get("md"), item.get("value")):
+        if not isinstance(value, str) or not value.strip():
+            continue
+        canonical = normalize_structured_tables(value)
+        if _HTML_TABLE_BLOCK.search(canonical) is None:
+            continue
+        for candidate in (value, canonical):
+            if candidate.strip() and candidate not in candidates:
+                candidates.append(candidate)
+    return candidates
+
+
+def _item_table_content(item: dict[str, Any]) -> str:
+    for candidate in _item_table_candidates(item):
+        canonical = normalize_structured_tables(candidate).strip()
+        if _HTML_TABLE_BLOCK.search(canonical) is not None:
+            return canonical
+    raise BlockRepairError("filex_block_repair_document_source_missing")
+
+
+def _candidate_occurrence_count(content: str, candidates: list[str]) -> int:
+    spans: list[tuple[int, int]] = []
+    for candidate in {
+        value for value in candidates if isinstance(value, str) and value.strip()
+    }:
+        start = 0
+        while True:
+            index = content.find(candidate, start)
+            if index < 0:
+                break
+            spans.append((index, index + len(candidate)))
+            start = index + 1
+    if not spans:
+        return 0
+    groups = 0
+    group_end = -1
+    for start, end in sorted(spans):
+        if start >= group_end:
+            groups += 1
+            group_end = end
+        else:
+            group_end = max(group_end, end)
+    return groups
+
+
+def _matching_table_item_count(items: Any, table_content: str) -> int:
+    if not isinstance(items, list):
+        raise BlockRepairError("filex_block_repair_target_items_invalid")
+    count = 0
+    for candidate in items:
+        if not isinstance(candidate, dict):
+            continue
+        try:
+            candidate_content = _item_table_content(candidate)
+        except BlockRepairError as exc:
+            if str(exc) != "filex_block_repair_document_source_missing":
+                raise
+            continue
+        if candidate_content == table_content:
+            count += 1
+    return count
+
+
+def _coverage_scope_insert(
+    content: str,
+    *,
+    target_candidates: list[str],
+    insertion: str,
+    expected_count: int,
+    neighbor_candidates: list[str] | None,
+    insert_before: bool,
+    scope: str,
+) -> str:
+    if _candidate_occurrence_count(content, target_candidates) >= expected_count:
+        return content
+    if neighbor_candidates:
+        return _anchored_insert(
+            content,
+            neighbor_candidates,
+            insertion,
+            before=insert_before,
+            scope=scope,
+        )
+    if not content.strip():
+        return insertion
+    raise BlockRepairError("filex_block_repair_anchor_missing")
+
+
+def apply_document_coverage_repair(
+    *, document: str, layout: dict[str, Any], issue: dict[str, Any]
+) -> tuple[str, dict[str, Any]]:
+    """Project one validated item table into every missing ParseOutput view."""
+
+    if issue.get("reason") != "filex_document_table_coverage_incomplete":
+        raise BlockRepairError("filex_block_repair_document_anchor_required")
+    updated_layout = copy.deepcopy(layout)
+    updated_issue = dict(issue)
+    page, item = _target_item(updated_layout, updated_issue)
+    item_index = updated_issue.get("item_index")
+    if not isinstance(item_index, int) or isinstance(item_index, bool):
+        raise BlockRepairError("filex_block_repair_target_missing")
+    if item.get("type") not in {"table", "chart"}:
+        raise BlockRepairError("filex_block_repair_document_source_missing")
+
+    insertion = _item_table_content(item)
+    target_candidates = _item_table_candidates(item)
+    if insertion not in target_candidates:
+        target_candidates.append(insertion)
+    items = page.get("items")
+    page_expected = _matching_table_item_count(items, insertion)
+    all_items = [
+        candidate
+        for layout_page in updated_layout.get("layout_pages", [])
+        if isinstance(layout_page, dict)
+        for candidate in (
+            layout_page.get("items")
+            if isinstance(layout_page.get("items"), list)
+            else []
+        )
+    ]
+    document_expected = _matching_table_item_count(all_items, insertion)
+    if page_expected < 1 or document_expected < 1:
+        raise BlockRepairError("filex_block_repair_document_source_missing")
+
+    neighbor: dict[str, Any] | None
+    insert_before: bool
+    try:
+        neighbor, insert_before = _neighbor_anchor(items, item_index)
+    except BlockRepairError as exc:
+        if str(exc) != "filex_block_repair_anchor_missing":
+            raise
+        neighbor, insert_before = None, False
+    neighbor_candidates = _item_candidates(neighbor) if neighbor is not None else None
+
+    page_markdown = page.get("md")
+    if not isinstance(page_markdown, str):
+        raise BlockRepairError("filex_block_repair_page_markdown_missing")
+    page_number = page.get("page_number", page.get("page"))
+    if not isinstance(page_number, int) or isinstance(page_number, bool):
+        raise BlockRepairError("filex_block_repair_target_page_invalid")
+    parsed_page = _matching_parsed_page(updated_layout, page_number)
+    parsed_markdown: str | None = None
+    if parsed_page is not None:
+        parsed_markdown = parsed_page.get("markdown")
+        if not isinstance(parsed_markdown, str):
+            raise BlockRepairError("filex_block_repair_parsed_markdown_missing")
+
+    page["md"] = _coverage_scope_insert(
+        page_markdown,
+        target_candidates=target_candidates,
+        insertion=insertion,
+        expected_count=page_expected,
+        neighbor_candidates=neighbor_candidates,
+        insert_before=insert_before,
+        scope="page",
+    )
+    if parsed_page is not None and parsed_markdown is not None:
+        parsed_page["markdown"] = _coverage_scope_insert(
+            parsed_markdown,
+            target_candidates=target_candidates,
+            insertion=insertion,
+            expected_count=page_expected,
+            neighbor_candidates=neighbor_candidates,
+            insert_before=insert_before,
+            scope="parsed_page",
+        )
+
+    if _candidate_occurrence_count(document, target_candidates) < document_expected:
+        if neighbor_candidates is not None:
+            document = _anchored_insert(
+                document,
+                neighbor_candidates,
+                insertion,
+                before=insert_before,
+                scope="document",
+            )
+        elif not document.strip():
+            document = insertion
+        else:
+            page_anchor, before_page = _parsed_page_neighbor_anchor(
+                updated_layout, page_number
+            )
+            document = _anchored_insert(
+                document,
+                page_anchor,
+                insertion,
+                before=before_page,
+                scope="document_page",
+            )
+
+    updated_layout["markdown"] = document
+    issue["item_index"] = item_index
+    return document, updated_layout
 
 
 def apply_structured_repair(
@@ -504,34 +1032,76 @@ def apply_structured_repair(
         item, item_index, neighbor, insert_before = _new_chart_item(page, updated_issue)
     else:
         _page, item = _target_item(updated_layout, updated_issue)
-    html = table.to_html()
+        item_index = updated_issue.get("item_index")
+    if not isinstance(item_index, int) or isinstance(item_index, bool):
+        raise BlockRepairError("filex_block_repair_target_missing")
+    render_table = _deduplicate_structured_context(
+        table, page=page, item_index=item_index
+    )
+    html = render_table.to_html()
     old_candidates = _item_candidates(item)
-    anchor_candidates = _item_candidates(neighbor) if neighbor is not None else old_candidates
-    rewrite = _anchored_insert if created else _anchored_rewrite
-    if created:
-        document = rewrite(
-            document, anchor_candidates, html, before=insert_before, scope="document"
-        )
-    else:
-        document = rewrite(document, anchor_candidates, html, scope="document")
+    insertion_required = created or not any(
+        candidate.strip() for candidate in old_candidates
+    )
+    whole_empty_scope = False
+    if insertion_required and neighbor is None:
+        items = page.get("items")
+        if not isinstance(items, list) or not isinstance(item_index, int):
+            raise BlockRepairError("filex_block_repair_target_items_invalid")
+        try:
+            neighbor, insert_before = _neighbor_anchor(items, item_index)
+        except BlockRepairError as exc:
+            if str(exc) != "filex_block_repair_anchor_missing":
+                raise
+            whole_empty_scope = True
+    anchor_candidates = (
+        _item_candidates(neighbor)
+        if insertion_required and neighbor is not None
+        else old_candidates
+    )
+    rewrite = _anchored_insert if insertion_required else _anchored_rewrite
     page_markdown = page.get("md")
     if not isinstance(page_markdown, str):
         raise BlockRepairError("filex_block_repair_page_markdown_missing")
-    if created:
-        page["md"] = rewrite(
-            page_markdown, anchor_candidates, html, before=insert_before, scope="page"
-        )
-    else:
-        page["md"] = rewrite(page_markdown, anchor_candidates, html, scope="page")
     page_number = page.get("page_number", page.get("page"))
     if not isinstance(page_number, int) or isinstance(page_number, bool):
         raise BlockRepairError("filex_block_repair_target_page_invalid")
     parsed_page = _matching_parsed_page(updated_layout, page_number)
+    parsed_markdown: str | None = None
     if parsed_page is not None:
         parsed_markdown = parsed_page.get("markdown")
         if not isinstance(parsed_markdown, str):
             raise BlockRepairError("filex_block_repair_parsed_markdown_missing")
-        if created:
+
+    if whole_empty_scope:
+        if page_markdown.strip() or (
+            parsed_markdown is not None and parsed_markdown.strip()
+        ):
+            raise BlockRepairError("filex_block_repair_anchor_missing")
+        if document.strip():
+            page_anchor, before_page = _parsed_page_neighbor_anchor(
+                updated_layout, page_number
+            )
+            document = _anchored_insert(
+                document,
+                page_anchor,
+                html,
+                before=before_page,
+                scope="document_page",
+            )
+        else:
+            document = html
+        page["md"] = html
+        if parsed_page is not None:
+            parsed_page["markdown"] = html
+    elif insertion_required:
+        document = rewrite(
+            document, anchor_candidates, html, before=insert_before, scope="document"
+        )
+        page["md"] = rewrite(
+            page_markdown, anchor_candidates, html, before=insert_before, scope="page"
+        )
+        if parsed_page is not None and parsed_markdown is not None:
             parsed_page["markdown"] = rewrite(
                 parsed_markdown,
                 anchor_candidates,
@@ -539,13 +1109,26 @@ def apply_structured_repair(
                 before=insert_before,
                 scope="parsed_page",
             )
-        else:
+    else:
+        document = rewrite(document, anchor_candidates, html, scope="document")
+        page["md"] = rewrite(page_markdown, anchor_candidates, html, scope="page")
+        if parsed_page is not None and parsed_markdown is not None:
             parsed_page["markdown"] = rewrite(
                 parsed_markdown, anchor_candidates, html, scope="parsed_page"
             )
     item["md"] = html
     item["html"] = html
     item["value"] = html
+    items = page.get("items")
+    if not isinstance(items, list):
+        raise BlockRepairError("filex_block_repair_target_items_invalid")
+    page["text"] = "\n\n".join(
+        value
+        for candidate in items
+        if isinstance(candidate, dict)
+        for value in (candidate.get("value"),)
+        if isinstance(value, str) and value
+    )
     updated_layout["markdown"] = document
     issue["item_index"] = item_index
     return document, updated_layout
@@ -560,6 +1143,7 @@ async def repair_parse_output(
     backend: BlockRepairBackend | None = None,
     crop_renderer: Callable[..., Path] = _render_crop,
     max_blocks: int = MAX_REPAIR_BLOCKS,
+    total_timeout_seconds: int | None = None,
 ) -> dict[str, Any]:
     backend = backend or OpenAICompatibleMediaTranscriptionBackend()
     issues: list[tuple[str, dict[str, Any]]] = []
@@ -570,13 +1154,37 @@ async def repair_parse_output(
         issues.extend(
             (kind, issue) for issue in section["issues"] if isinstance(issue, dict)
         )
-    if not isinstance(max_blocks, int) or isinstance(max_blocks, bool) or not 1 <= max_blocks <= MAX_REPAIR_BLOCKS:
+    if (
+        not isinstance(max_blocks, int)
+        or isinstance(max_blocks, bool)
+        or not 1 <= max_blocks <= MAX_REPAIR_BLOCKS
+    ):
         raise BlockRepairError("filex_block_repair_limit_invalid")
+    if total_timeout_seconds is not None and (
+        isinstance(total_timeout_seconds, bool)
+        or not isinstance(total_timeout_seconds, int)
+        or not 1 <= total_timeout_seconds <= 900
+    ):
+        raise BlockRepairError("filex_block_repair_timeout_invalid")
+    loop = asyncio.get_running_loop()
+    deadline = (
+        loop.time() + total_timeout_seconds
+        if total_timeout_seconds is not None
+        else None
+    )
     repaired: list[dict[str, Any]] = []
     failures: list[dict[str, Any]] = []
+    block_attempted = 0
     with tempfile.TemporaryDirectory(prefix="filex-block-repair-") as temporary:
         temporary_root = Path(temporary)
-        for repair_index, (kind, issue) in enumerate(issues[:max_blocks]):
+        selected_issues = issues[:max_blocks]
+        for repair_index, (kind, issue) in enumerate(selected_issues):
+            remaining_seconds = (
+                deadline - loop.time() if deadline is not None else None
+            )
+            if remaining_seconds is not None and remaining_seconds <= 1:
+                break
+            block_attempted += 1
             try:
                 page_number = int(issue["page_number"])
                 bbox = issue["bbox"]
@@ -594,6 +1202,27 @@ async def repair_parse_output(
                 table = None
                 last_reason = "filex_block_repair_failed"
                 for attempt in range(MAX_REPAIR_ATTEMPTS):
+                    remaining_seconds = (
+                        deadline - loop.time() if deadline is not None else None
+                    )
+                    if remaining_seconds is not None and remaining_seconds <= 1:
+                        if attempt == 0:
+                            last_reason = "filex_block_repair_deadline_exhausted"
+                        break
+                    remaining_blocks = max(1, len(selected_issues) - repair_index)
+                    configured_timeout = int(
+                        os.getenv("FILEX_BLOCK_REPAIR_TIMEOUT_SECONDS", "180")
+                    )
+                    call_timeout = configured_timeout
+                    if remaining_seconds is not None:
+                        call_timeout = max(
+                            1,
+                            min(
+                                configured_timeout,
+                                int(max(1.0, remaining_seconds - 0.5))
+                                // remaining_blocks,
+                            ),
+                        )
                     attempt_prompt = prompt
                     if attempt:
                         attempt_prompt += (
@@ -601,12 +1230,19 @@ async def repair_parse_output(
                             "table contract. Read the image again and return only valid JSON."
                         )
                     try:
-                        response = await backend.transcribe(
-                            crop_path,
-                            media_type="image",
-                            file_type="png",
-                            source_file_name=crop_path.name,
-                            options=_gateway_options(prompt=attempt_prompt, kind=kind),
+                        response = await asyncio.wait_for(
+                            backend.transcribe(
+                                crop_path,
+                                media_type="image",
+                                file_type="png",
+                                source_file_name=crop_path.name,
+                                options=_gateway_options(
+                                    prompt=attempt_prompt,
+                                    kind=kind,
+                                    timeout_seconds=call_timeout,
+                                ),
+                            ),
+                            timeout=call_timeout,
                         )
                         table = StructuredTable.from_model_output(
                             str(getattr(response, "text", "") or ""),
@@ -615,6 +1251,16 @@ async def repair_parse_output(
                         break
                     except BlockRepairError as exc:
                         last_reason = str(exc)
+                        if last_reason == (
+                            "filex_chart_repair_estimated_value_unverified"
+                        ):
+                            # A second pass over the same pixels cannot turn an
+                            # unprinted estimate into independently printed
+                            # source evidence. Do not let a retry launder it by
+                            # merely dropping the estimate marker.
+                            break
+                    except TimeoutError:
+                        last_reason = "filex_block_repair_backend_timeout"
                     except Exception:
                         last_reason = "filex_block_repair_backend_failed"
                 if table is None:
@@ -644,8 +1290,69 @@ async def repair_parse_output(
                         "reason": str(exc)[:128] or type(exc).__name__,
                     }
                 )
-    document_issues = quality_report.get("document")
-    if isinstance(document_issues, dict) and document_issues.get("issues"):
+    document_section = quality_report.get("document")
+    raw_document_issues = (
+        document_section.get("issues") if isinstance(document_section, dict) else []
+    )
+    document_issues = (
+        raw_document_issues if isinstance(raw_document_issues, list) else []
+    )
+    document_budget = max(0, max_blocks - block_attempted)
+    document_attempted = 0
+    for raw_issue in document_issues[:document_budget]:
+        if deadline is not None and deadline - loop.time() <= 0:
+            break
+        document_attempted += 1
+        issue = raw_issue if isinstance(raw_issue, dict) else {}
+        working_issue = dict(issue)
+        try:
+            if not isinstance(raw_issue, dict):
+                raise BlockRepairError("filex_block_repair_document_anchor_required")
+            page_number = working_issue.get("page_number")
+            block_id = working_issue.get("block_id")
+            if (
+                working_issue.get("reason")
+                != "filex_document_table_coverage_incomplete"
+                or not isinstance(page_number, int)
+                or isinstance(page_number, bool)
+                or not isinstance(block_id, str)
+                or not block_id.strip()
+            ):
+                raise BlockRepairError("filex_block_repair_document_anchor_required")
+            document, layout = apply_document_coverage_repair(
+                document=document,
+                layout=layout,
+                issue=working_issue,
+            )
+            repaired.append(
+                {
+                    "kind": "document",
+                    "page_number": page_number,
+                    "item_index": working_issue.get("item_index"),
+                    "block_id": block_id,
+                }
+            )
+        except (BlockRepairError, KeyError, TypeError, ValueError) as exc:
+            failures.append(
+                {
+                    "kind": "document",
+                    "page_number": issue.get("page_number"),
+                    "item_index": issue.get("item_index"),
+                    "block_id": issue.get("block_id"),
+                    "reason": str(exc)[:128] or type(exc).__name__,
+                }
+            )
+    if raw_document_issues and not isinstance(raw_document_issues, list):
+        failures.append(
+            {
+                "kind": "document",
+                "page_number": None,
+                "item_index": None,
+                "block_id": None,
+                "reason": "filex_block_repair_document_anchor_required",
+            }
+        )
+    if isinstance(document_section, dict) and document_section.get("issues_truncated"):
         failures.append(
             {
                 "kind": "document",
@@ -660,25 +1367,41 @@ async def repair_parse_output(
         "layout": layout,
         "repaired": repaired,
         "failures": failures,
-        "attempted": min(len(issues), max_blocks),
-        "remaining": max(0, len(issues) - max_blocks),
+        "attempted": block_attempted + document_attempted,
+        "remaining": max(0, len(issues) - block_attempted)
+        + max(0, len(document_issues) - document_attempted),
     }
 
 
 async def _main() -> int:
     try:
         request = json.load(sys.stdin)
+        raw_total_timeout = request.get("total_timeout_seconds")
         result = await repair_parse_output(
             source_path=Path(request["source_path"]),
             document=str(request["document"]),
             layout=request["layout"],
             quality_report=request["quality_report"],
             max_blocks=int(request.get("max_blocks") or MAX_REPAIR_BLOCKS),
+            total_timeout_seconds=(
+                int(raw_total_timeout) if raw_total_timeout is not None else None
+            ),
         )
         json.dump({"success": True, **result}, sys.stdout, ensure_ascii=False)
         return 0
-    except (BlockRepairError, KeyError, OSError, RuntimeError, TypeError, ValueError) as exc:
-        reason = str(exc) if isinstance(exc, BlockRepairError) else "filex_block_repair_failed"
+    except (
+        BlockRepairError,
+        KeyError,
+        OSError,
+        RuntimeError,
+        TypeError,
+        ValueError,
+    ) as exc:
+        reason = (
+            str(exc)
+            if isinstance(exc, BlockRepairError)
+            else "filex_block_repair_failed"
+        )
         json.dump(
             {
                 "success": False,

@@ -98,9 +98,46 @@ def test_paddle_ocr_label_exports_text_without_changing_parser_geometry() -> Non
     assert ir == original
     assert item["type"] == "text"
     assert item["md"] == "Heading"
-    assert item["bbox"] == {
-        "x": 10.0, "y": 10.0, "w": 80.0, "h": 30.0, "label": "text"
+    assert item["bbox"] == {"x": 10.0, "y": 10.0, "w": 80.0, "h": 30.0, "label": "text"}
+
+
+def test_chart_pipe_table_is_canonicalized_in_document_page_and_item_views() -> None:
+    pipe_table = "# Annual results\n\n| Year | Revenue |\n| --- | --- |\n| 2024 | 42 |"
+    ir = {
+        "schema_version": "filex-document-ir-v2",
+        "coordinate_system": "pixel_top_left_xyxy",
+        "pages": [
+            {
+                "page_index": 0,
+                "width": 100,
+                "height": 100,
+                "elements": [
+                    {
+                        "id": "chart-1",
+                        "type": "chart",
+                        "bbox": [10, 10, 90, 90],
+                        "text": pipe_table,
+                        "reading_order": 1,
+                    }
+                ],
+            }
+        ],
     }
+
+    output = _export(ir, markdown=pipe_table)
+
+    expected = (
+        "# Annual results\n\n"
+        "<table><thead><tr><th>Year</th><th>Revenue</th></tr></thead>"
+        "<tbody><tr><td>2024</td><td>42</td></tr></tbody></table>"
+    )
+    item = output["layout_pages"][0]["items"][0]
+    assert output["markdown"] == expected
+    assert output["pages"][0]["markdown"] == expected
+    assert output["layout_pages"][0]["md"] == expected
+    assert item["type"] == "chart"
+    assert item["md"] == item["html"] == item["value"] == expected
+    assert item["bbox"]["label"] == "picture"
 
 
 def test_exports_orientation_and_provider_confidence() -> None:
