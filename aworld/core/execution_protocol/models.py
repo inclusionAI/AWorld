@@ -176,8 +176,8 @@ class ExecutionProtocolPolicy:
     # still makes no semantic judgement: the review model accepts by returning
     # a final response or requests repair by using Tools.
     review_unarmed_candidates: bool = False
-    independent_acceptance_enabled: bool = False
-    semantic_progress_enabled: bool = False
+    independent_acceptance_enabled: bool = True
+    semantic_progress_enabled: bool = True
     history_limit: int = 32
     activation_event_threshold: int = 6
     model_activation_confidence_threshold: float = 0.7
@@ -302,9 +302,9 @@ class ExecutionProtocolPolicy:
             # Additive v1 field.  Older policies retain the short-task bypass.
             review_unarmed_candidates=value.get("review_unarmed_candidates", False),
             independent_acceptance_enabled=value.get(
-                "independent_acceptance_enabled", False
+                "independent_acceptance_enabled", True
             ),
-            semantic_progress_enabled=value.get("semantic_progress_enabled", False),
+            semantic_progress_enabled=value.get("semantic_progress_enabled", True),
             history_limit=value.get("history_limit"),
             # Additive v1 field: older serialized v1 policies use the safe
             # short-task bypass default when restored.

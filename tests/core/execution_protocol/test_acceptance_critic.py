@@ -65,6 +65,13 @@ def _successful_probe(context: Context) -> None:
     )
 
 
+def test_new_protocol_features_are_default_on_in_config():
+    policy = ExecutionProtocolPolicy()
+
+    assert policy.independent_acceptance_enabled is True
+    assert policy.semantic_progress_enabled is True
+
+
 def test_typed_accept_requires_matching_successful_probe_receipt():
     context = _context("critic-accept")
     assert record_candidate_final(context, "agent").decision.action is (

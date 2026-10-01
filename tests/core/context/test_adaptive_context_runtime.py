@@ -34,6 +34,12 @@ from aworld.runners.post_tool_progress import (
 )
 
 
+@pytest.fixture(autouse=True)
+def _legacy_semantic_progress_mode(monkeypatch):
+    """Legacy assertions below explicitly exercise the pre-ledger behavior."""
+    monkeypatch.setenv("AWORLD_SEMANTIC_PROGRESS_LEDGER", "false")
+
+
 @pytest.mark.asyncio
 async def test_completion_evidence_resolver_survives_context_deep_copy():
     calls = []

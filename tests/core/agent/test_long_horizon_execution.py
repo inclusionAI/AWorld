@@ -26,6 +26,12 @@ from aworld.runners.execution_protocol import (
 )
 
 
+@pytest.fixture(autouse=True)
+def _legacy_protocol_features(monkeypatch):
+    monkeypatch.setenv("AWORLD_INDEPENDENT_ACCEPTANCE_CRITIC", "false")
+    monkeypatch.setenv("AWORLD_SEMANTIC_PROGRESS_LEDGER", "false")
+
+
 def _agent(context: Context, policy: ExecutionProtocolPolicy) -> Agent:
     agent = Agent(
         name="Aworld",
@@ -47,7 +53,9 @@ async def test_review_model_error_returns_original_candidate_as_successful_execu
     context = Context(task_id="review-error")
     context.set_task(Task(id="review-error", input="finish the task"))
     policy = ExecutionProtocolPolicy(
-        mode=ProtocolMode.GUIDE, activation_event_threshold=1
+        mode=ProtocolMode.GUIDE,
+        activation_event_threshold=1,
+        independent_acceptance_enabled=False,
     )
     agent = _agent(context, policy)
     configure_execution_protocol(context, agent.id(), policy)
@@ -96,6 +104,7 @@ async def test_review_timeout_returns_original_candidate() -> None:
         mode=ProtocolMode.GUIDE,
         activation_event_threshold=1,
         final_review_timeout_seconds=0.01,
+        independent_acceptance_enabled=False,
     )
     agent = _agent(context, policy)
     fallback = ActionModel(agent_name=agent.id(), policy_info="safe candidate")
@@ -156,6 +165,8 @@ def test_agent_uses_existing_skill_activation_as_protocol_switch() -> None:
 
 
 def test_runtime_can_enable_model_review_for_every_candidate(monkeypatch) -> None:
+    monkeypatch.delenv("AWORLD_INDEPENDENT_ACCEPTANCE_CRITIC", raising=False)
+    monkeypatch.delenv("AWORLD_SEMANTIC_PROGRESS_LEDGER", raising=False)
     monkeypatch.setenv(
         "AWORLD_EXECUTION_PROTOCOL_REVIEW_UNARMED_CANDIDATES", "true"
     )
@@ -848,7 +859,10 @@ async def test_model_can_continue_tool_work_after_review_repair() -> None:
 
 
 @pytest.mark.asyncio
-async def test_independent_uncertain_review_returns_typed_incomplete_outcome() -> None:
+async def test_independent_uncertain_review_returns_typed_incomplete_outcome(
+    monkeypatch,
+) -> None:
+    monkeypatch.delenv("AWORLD_INDEPENDENT_ACCEPTANCE_CRITIC", raising=False)
     calls = 0
     requests = []
 

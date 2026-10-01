@@ -259,7 +259,11 @@ def test_finalization_reserve_is_generic_and_emitted_once():
 
 
 def test_candidate_final_in_finalization_reserve_bypasses_review():
-    policy = ExecutionProtocolPolicy(mode="guide", finalization_reserve_seconds=60)
+    policy = ExecutionProtocolPolicy(
+        mode="guide",
+        finalization_reserve_seconds=60,
+        independent_acceptance_enabled=False,
+    )
     finalizing = transition_execution_protocol(
         _state(), _tool(remaining_seconds=59.5), policy
     )
@@ -314,7 +318,11 @@ def test_default_threshold_arms_after_six_tool_observations() -> None:
 
 
 def test_candidate_final_before_arming_bypasses_review_without_consuming_it():
-    policy = ExecutionProtocolPolicy(mode="guide", activation_event_threshold=12)
+    policy = ExecutionProtocolPolicy(
+        mode="guide",
+        activation_event_threshold=12,
+        independent_acceptance_enabled=False,
+    )
     state = _state()
     for step in range(1, 12):
         state = transition_execution_protocol(
@@ -371,7 +379,9 @@ def test_history_is_bounded_independently_of_total_event_count():
 
 
 def test_first_candidate_final_gets_one_bounded_review_and_repair():
-    policy = ExecutionProtocolPolicy(mode="guide")
+    policy = ExecutionProtocolPolicy(
+        mode="guide", independent_acceptance_enabled=False
+    )
     review = transition_execution_protocol(
         _armed_state(), ExecutionProtocolEvent(kind=EventKind.CANDIDATE_FINAL), policy
     )
@@ -397,7 +407,9 @@ def test_first_candidate_final_gets_one_bounded_review_and_repair():
 
 
 def test_uncertain_and_error_reviews_fail_open_to_current_result():
-    policy = ExecutionProtocolPolicy(mode="guide")
+    policy = ExecutionProtocolPolicy(
+        mode="guide", independent_acceptance_enabled=False
+    )
     for outcome, reason in (
         (ReviewOutcome.UNKNOWN, DecisionReason.REVIEW_UNCERTAIN),
         (ReviewOutcome.ERROR, DecisionReason.REVIEW_ERROR),
@@ -426,7 +438,9 @@ def test_unsolicited_review_result_cannot_force_a_repair():
             kind=EventKind.REVIEW_RESULT,
             review_outcome=ReviewOutcome.REPAIR,
         ),
-        ExecutionProtocolPolicy(mode="guide"),
+        ExecutionProtocolPolicy(
+            mode="guide", independent_acceptance_enabled=False
+        ),
     )
 
     assert transition.decision.action is ControllerAction.SUBMIT_CURRENT_RESULT

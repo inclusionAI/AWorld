@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 from aworld.core.context.base import Context
 from aworld.core.common import ActionModel
 from aworld.core.context.compiler import LifecycleAction
@@ -26,6 +28,12 @@ from aworld.runners.execution_protocol import (
     record_tool_protocol_event,
     store_candidate_fallback,
 )
+
+
+@pytest.fixture(autouse=True)
+def _legacy_protocol_features(monkeypatch):
+    monkeypatch.setenv("AWORLD_INDEPENDENT_ACCEPTANCE_CRITIC", "false")
+    monkeypatch.setenv("AWORLD_SEMANTIC_PROGRESS_LEDGER", "false")
 
 
 def _context(task_id: str = "long") -> Context:
