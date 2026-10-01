@@ -42,9 +42,9 @@ def _decision(value: str = "accept") -> str:
     return json.dumps(
         {
             "decision": value,
-            "highest_risk_counterexample": "real SIGINT interrupts all workers",
-            "hypothesis_id": "signal-propagation",
-            "reason": "fresh process probe completed",
+            "highest_risk_counterexample": "the independent contract test fails",
+            "hypothesis_id": "independent-tests",
+            "reason": "framework observed the independent checker exit",
         }
     )
 
@@ -54,11 +54,11 @@ def _successful_probe(context: Context) -> None:
         context,
         "agent",
         tool_call_id="probe-1",
-        hypothesis_id="signal-propagation",
-        highest_risk_counterexample="real SIGINT interrupts all workers",
+        hypothesis_id="independent-tests",
+        highest_risk_counterexample="the independent contract test fails",
         tool_identity="terminal:execute",
-        arguments_projection={"command": "kill -s INT $$"},
-        probe_kind="real_signal_delivery",
+        arguments_projection={"command": "pytest -q tests/test_contract.py"},
+        probe_kind="independent_cross_check",
     )
     assert record_acceptance_probe_observation(
         context,
@@ -67,8 +67,8 @@ def _successful_probe(context: Context) -> None:
         result_projection={
             "tool_call_id": "probe-1",
             "success": True,
-            "return_code": 130,
-            "stdout_tail": "",
+            "return_code": 0,
+            "stdout_tail": "1 passed",
             "stderr_tail": "",
             "content_tail": "",
             "failure_code": None,
@@ -113,17 +113,17 @@ def test_post_tool_boundary_builds_framework_probe_receipt():
         tool_name="terminal",
         action_name="execute",
         tool_call_id="probe-boundary",
-        params={"command": "kill -s INT $$"},
+        params={"command": "pytest -q tests/test_contract.py"},
     )
     assert record_acceptance_probe_plan(
         context,
         "agent",
         tool_call_id="probe-boundary",
-        hypothesis_id="signal-propagation",
-        highest_risk_counterexample="real SIGINT interrupts all workers",
+        hypothesis_id="independent-tests",
+        highest_risk_counterexample="the independent contract test fails",
         tool_identity="terminal:execute",
         arguments_projection=action.params,
-        probe_kind="real_signal_delivery",
+        probe_kind="independent_cross_check",
     )
     record_semantic_tool_progress(
         context,
@@ -135,8 +135,8 @@ def test_post_tool_boundary_builds_framework_probe_receipt():
                 ActionResult(
                     tool_call_id="probe-boundary",
                     success=True,
-                    content="",
-                    metadata={"return_code": 130, "stdout": ""},
+                    content="1 passed",
+                    metadata={"return_code": 0, "stdout": "1 passed"},
                 )
             ]
         ),
@@ -150,10 +150,10 @@ def test_post_tool_boundary_builds_framework_probe_receipt():
     assert transition.decision.action is ControllerAction.SUBMIT_CURRENT_RESULT
 
 
-def test_framework_attests_artifact_readback_against_observed_artifact():
+def test_artifact_readback_is_unavailable_without_trusted_adapter():
     context = _context("critic-artifact-readback")
     record_candidate_final(context, "agent")
-    assert record_acceptance_probe_plan(
+    assert not record_acceptance_probe_plan(
         context,
         "agent",
         tool_call_id="probe-artifact",
@@ -163,37 +163,6 @@ def test_framework_attests_artifact_readback_against_observed_artifact():
         arguments_projection={"path": "/tmp/result.json"},
         probe_kind="artifact_readback",
     )
-    assert record_acceptance_probe_observation(
-        context,
-        "agent",
-        actions=[ActionModel(tool_call_id="probe-artifact")],
-        result_projection={
-            "tool_call_id": "probe-artifact",
-            "success": True,
-            "return_code": 0,
-            "failure_code": None,
-            "observed_content_present": True,
-            "observed_content_hash": "sha256:readback-bytes",
-        },
-        success=True,
-        failure_code=None,
-        artifact_after="sha256:artifact-v2",
-    )
-    decision = json.dumps(
-        {
-            "decision": "accept",
-            "highest_risk_counterexample": "artifact bytes differ after write",
-            "hypothesis_id": "artifact-integrity",
-            "reason": "framework readback attestation passed",
-        }
-    )
-
-    transition, _, accepted = record_acceptance_critic_decision(
-        context, "agent", decision
-    )
-
-    assert accepted is True
-    assert transition.decision.action is ControllerAction.SUBMIT_CURRENT_RESULT
 
 
 def test_fabricated_artifact_payload_without_observed_artifact_cannot_accept():
@@ -248,12 +217,12 @@ def test_fresh_critic_messages_exclude_solver_history_and_self_claims():
         hypothesis_id="h1",
         highest_risk_counterexample="counterexample",
         tool_identity="terminal:execute",
-        arguments_projection={"command": "python probe.py"},
+        arguments_projection={"command": "pytest -q tests/test_contract.py"},
         candidate="artifact saved",
         evidence={"artifact_fingerprint": "sha256:artifact"},
         artifact_before="sha256:artifact",
         artifact_after="sha256:artifact",
-        probe_kind="artifact_readback",
+        probe_kind="independent_cross_check",
         challenge="framework-secret",
         validation_code="probe_attested",
         validated=True,
@@ -285,7 +254,7 @@ def test_fresh_critic_messages_exclude_solver_history_and_self_claims():
     assert "private chain" not in serialized
     assert "all tests pass" not in serialized
     assert "aworld.acceptance-probe-receipt/v3" in serialized
-    assert "python probe.py" in serialized
+    assert "pytest -q tests/test_contract.py" in serialized
     assert "observed_content_hash" in serialized
 
     tampered = receipt.to_dict()
@@ -318,7 +287,7 @@ def test_encoded_printf_transport_success_cannot_plan_probe():
         arguments_projection={
             "command": "printf '\\123\\111\\107\\111\\116\\124\\137\\117\\113'"
         },
-        probe_kind="real_signal_delivery",
+        probe_kind="independent_cross_check",
     )
 
 
@@ -334,7 +303,7 @@ def test_probe_cannot_echo_a_fabricated_attestation():
         highest_risk_counterexample="real SIGINT interrupts all workers",
         tool_identity="terminal:execute",
         arguments_projection={"command": "echo '{\"signal_delivered\":true}'"},
-        probe_kind="real_signal_delivery",
+        probe_kind="independent_cross_check",
     )
 
     assert planned is False
@@ -417,6 +386,44 @@ def test_tool_content_cannot_spoof_framework_return_code():
 
     assert accepted is False
     assert transition.decision.action is ControllerAction.REQUEST_REPAIR
+
+
+def test_shell_composition_cannot_mask_checker_failure():
+    for command in (
+        "pytest -q /definitely-missing || exit 0",
+        "pytest -q /definitely-missing && exit 0",
+        "pytest -q /definitely-missing; exit 0",
+        "pytest -q /definitely-missing | cat",
+        "pytest -q $(printf fake)",
+        "sh -c 'pytest -q /definitely-missing'",
+    ):
+        context = _context("critic-shell-composition")
+        record_candidate_final(context, "agent")
+        assert not record_acceptance_probe_plan(
+            context,
+            "agent",
+            tool_call_id="probe-shell-composition",
+            hypothesis_id="independent-tests",
+            highest_risk_counterexample="the independent contract test fails",
+            tool_identity="terminal:execute",
+            arguments_projection={"command": command},
+            probe_kind="independent_cross_check",
+        )
+
+
+def test_signal_probe_is_unavailable_without_trusted_adapter():
+    context = _context("critic-signal-unavailable")
+    record_candidate_final(context, "agent")
+    assert not record_acceptance_probe_plan(
+        context,
+        "agent",
+        tool_call_id="probe-signal",
+        hypothesis_id="signal-propagation",
+        highest_risk_counterexample="real SIGINT interrupts all workers",
+        tool_identity="terminal:execute",
+        arguments_projection={"command": "kill -s INT 1234"},
+        probe_kind="real_signal_delivery",
+    )
 
 
 def test_framework_observed_checker_exit_can_support_acceptance():

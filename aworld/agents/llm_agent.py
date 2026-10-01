@@ -996,11 +996,7 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                 },
                 "probe_kind": {
                     "type": "string",
-                    "enum": [
-                        "artifact_readback",
-                        "real_signal_delivery",
-                        "independent_cross_check",
-                    ],
+                    "enum": ["independent_cross_check"],
                 },
             },
             "required": [
@@ -1011,8 +1007,8 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             "description": (
                 "Required only during AWorld independent acceptance review. "
                 "Describe the single highest-risk counterexample tested by this "
-                "fresh probe. Only framework-observable readback, process-signal, "
-                "and independent checker outcomes are supported. The framework "
+                "fresh probe. Only a single framework-observed checker/test "
+                "command without shell composition is supported. The framework "
                 "removes this object before execution."
             ),
         }

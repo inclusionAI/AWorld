@@ -23,13 +23,7 @@ class AcceptanceDecision(str, Enum):
     UNCERTAIN = "uncertain"
 
 
-PROBE_KINDS = frozenset(
-    {
-        "artifact_readback",
-        "real_signal_delivery",
-        "independent_cross_check",
-    }
-)
+PROBE_KINDS = frozenset({"independent_cross_check"})
 _FORBIDDEN_PROBE_COMMAND = re.compile(
     r"(?:^|[;&|\s])(?:echo|printf|base64|true|false|sleep|:)(?:\s|$)",
     re.IGNORECASE,
@@ -38,6 +32,7 @@ _INLINE_INTERPRETER = re.compile(
     r"(?:^|[;&|\s])(?:python(?:\d+(?:\.\d+)*)?|node|ruby|perl)\s+(?:-[^\s]*[ce]|--eval)(?:\s|$)",
     re.IGNORECASE,
 )
+_SHELL_CONTROL = re.compile(r"(?:\|\||&&|[;|&<>`\n\r]|\$\(|\$\{|<\(|>\()")
 _CHECK_EXECUTABLES = frozenset(
     {
         "pytest",
@@ -71,7 +66,7 @@ def probe_arguments_are_executable(arguments: Mapping[str, Any]) -> bool:
         folded = command.casefold()
         if not command.strip() or _FORBIDDEN_PROBE_COMMAND.search(command):
             return False
-        if _INLINE_INTERPRETER.search(command) or any(
+        if _SHELL_CONTROL.search(command) or _INLINE_INTERPRETER.search(command) or any(
             token in folded for token in ("b64decode", "decode64")
         ):
             return False
@@ -91,12 +86,12 @@ def _command_words(arguments: Mapping[str, Any]) -> tuple[str, ...]:
 def _is_framework_observable_check(
     tool_identity: str, arguments: Mapping[str, Any]
 ) -> bool:
-    identity = tool_identity.casefold()
-    if any(token in identity for token in ("check", "test", "verify", "validate")):
-        return True
     words = _command_words(arguments)
     if not words:
-        return False
+        identity = tool_identity.casefold()
+        return any(
+            token in identity for token in ("check", "test", "verify", "validate")
+        )
     executable = words[0].rsplit("/", 1)[-1].casefold()
     if executable in _CHECK_EXECUTABLES:
         return True
@@ -105,6 +100,16 @@ def _is_framework_observable_check(
         and len(words) >= 3
         and words[1] == "-m"
         and words[2].casefold() in {"pytest", "mypy", "ruff", "pyright"}
+    )
+
+
+def probe_plan_is_framework_observable(
+    *, probe_kind: str, tool_identity: str, arguments: Mapping[str, Any]
+) -> bool:
+    return bool(
+        probe_kind in PROBE_KINDS
+        and probe_arguments_are_executable(arguments)
+        and _is_framework_observable_check(tool_identity, arguments)
     )
 
 
@@ -117,50 +122,22 @@ def validate_probe_result(
     artifact_after: Any,
     evidence: Mapping[str, Any],
 ) -> tuple[bool, str]:
-    if probe_kind not in PROBE_KINDS:
-        return False, "unsupported_probe_kind"
-    if not probe_arguments_are_executable(arguments):
-        return False, "non_executable_probe"
+    if not probe_plan_is_framework_observable(
+        probe_kind=probe_kind,
+        tool_identity=tool_identity,
+        arguments=arguments,
+    ):
+        return False, "probe_not_framework_observable"
     if result.get("success") is not True:
         return False, "probe_process_failed"
     if result.get("failure_code"):
         return False, "probe_semantic_failure"
     return_code = result.get("return_code")
-
-    if probe_kind == "artifact_readback":
-        content_hash = result.get("observed_content_hash")
-        identity = tool_identity.casefold()
-        command_words = _command_words(arguments)
-        read_operation = any(
-            token in identity for token in ("read", "file", "fetch", "get")
-        ) or bool(
-            command_words
-            and command_words[0].rsplit("/", 1)[-1].casefold()
-            in {"cat", "sed", "head", "tail", "jq"}
-        )
-        valid = bool(
-            return_code in {None, 0}
-            and read_operation
-            and result.get("observed_content_present") is True
-            and isinstance(content_hash, str)
-            and content_hash.startswith("sha256:")
-            and isinstance(artifact_after, str)
-            and any(
-                key in arguments
-                for key in ("path", "file", "artifact", "command", "code")
-            )
-        )
-    elif probe_kind == "real_signal_delivery":
-        command = str(arguments.get("command") or arguments.get("code") or "")
-        valid = bool(
-            return_code in {-1, -2, -15, 129, 130, 143}
-            and re.search(r"(?:\bkill\b|os\.kill\s*\(|raise_signal\s*\()", command)
-        )
-    else:
-        valid = bool(
-            return_code == 0
-            and _is_framework_observable_check(tool_identity, arguments)
-        )
+    valid = (
+        return_code == 0
+        if _command_words(arguments)
+        else return_code in {None, 0}
+    )
     return valid, "probe_attested" if valid else f"{probe_kind}_not_attested"
 
 
@@ -512,5 +489,6 @@ __all__ = [
     "framework_probe_attestation",
     "fresh_acceptance_critic_messages",
     "probe_arguments_are_executable",
+    "probe_plan_is_framework_observable",
     "validate_probe_result",
 ]

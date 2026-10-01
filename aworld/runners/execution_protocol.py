@@ -226,12 +226,13 @@ def record_acceptance_probe_plan(
     if not isinstance(arguments_projection, Mapping):
         return False
     from aworld.core.execution_protocol.acceptance import (
-        PROBE_KINDS,
-        probe_arguments_are_executable,
+        probe_plan_is_framework_observable,
     )
 
-    if probe_kind not in PROBE_KINDS or not probe_arguments_are_executable(
-        arguments_projection
+    if not probe_plan_is_framework_observable(
+        probe_kind=probe_kind,
+        tool_identity=tool_identity,
+        arguments=arguments_projection,
     ):
         return False
     current = _read_runtime_value(context, agent_id, EXECUTION_PROTOCOL_CRITIC_KEY)
