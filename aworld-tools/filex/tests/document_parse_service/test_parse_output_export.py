@@ -75,6 +75,7 @@ def test_exports_real_provider_ir_with_original_page_order_and_html() -> None:
     page = output["layout_pages"][0]
     assert page["page_number"] == 3
     assert [item["reading_order"] for item in page["items"]] == [1, 2]
+    assert [item["id"] for item in page["items"]] == ["p0-b2", "p0-b1"]
     assert [item["bbox"]["label"] for item in page["items"]] == ["title", "table"]
     table = page["items"][1]
     assert table["html"] == table["md"] == "<table><tr><td>Value</td></tr></table>"

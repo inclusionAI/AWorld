@@ -214,6 +214,9 @@ def document_ir_to_parse_output(
                 "layout_segments": [segment],
                 "reading_order": order,
             }
+            element_id = element.get("id")
+            if isinstance(element_id, str) and element_id.strip():
+                item["id"] = element_id.strip()[:128]
             ordered.append(((math.inf if order is None else order, position), item))
         ordered.sort(key=lambda entry: entry[0])
         items = [item for _, item in ordered]
