@@ -6,7 +6,7 @@ from pathlib import Path
 
 from pydantic import BaseModel
 
-from aworld.core.memory import MemoryStore
+from aworld.memory.store import MemoryStore
 from aworld.memory.models import (
     MemoryItem, MemoryAIMessage, MemoryHumanMessage, MemorySummary,
     MemorySystemMessage, MemoryToolMessage, MessageMetadata,

@@ -1,3 +1,15 @@
+# aworld-cli
+
+An optional thin wrapper: `aworld-cli` delegates to `aworld.cli.main`.
+Install the root AWorld package for the kernel and the `aworld` command.
+This distribution declares its dependency on `aworld` and does not bundle a second kernel or install dependencies during its build.
+
+---
+
+## Historical documentation / 历史说明（源码保留，迁移待稳定后分步进行）
+
+以下是之前版本的原始说明；新版构建与入口以本文开头和新版打包文档为准。
+
 # AWorld CLI
 
 AWorld CLI is a command-line tool for interacting with AWorld agents.
@@ -90,7 +102,7 @@ aworld-cli list
 # Example output:
 # 📦 Loading built-in agents from: .../builtin_agents/smllc/agents
 # 📚 Loaded 2 global skill(s): text2agent, optimizer
-# 
+#
 #                                                                   Available Agents
 #╭────────┬─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┬─────────╮
 #│ Name   │ Description                                                                                                                     │ Address │

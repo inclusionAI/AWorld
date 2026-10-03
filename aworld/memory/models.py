@@ -6,7 +6,6 @@ from datetime import datetime
 from pydantic import BaseModel, ConfigDict, Field
 from typing import Any, Dict, List, Optional, Literal
 
-from aworld.memory.tool_call_compaction import normalize_tool_calls_for_replay
 from aworld.models.model_response import ToolCall
 
 class MemoryItem(BaseModel):
@@ -19,7 +18,7 @@ class MemoryItem(BaseModel):
     tags: list[str] = Field(description="tags")
     histories: list["MemoryItem"] = Field(default_factory=list)
     deleted: bool = Field(default=False)
-    memory_type: Literal["init", "message", "summary", "agent_experience", "user_profile", "fact", "conversation_summary", "pending"] = Field(default="message")
+    memory_type: Literal["init", "message", "summary", "agent_experience", "user_profile", "fact", "conversation_summary", "pending", "session_entry"] = Field(default="message")
     version: int = Field(description="version")
 
     def __init__(self, **data):
@@ -120,9 +119,8 @@ class MemoryItem(BaseModel):
         self.metadata['end_time'] = end_time
         self.updated_at = datetime.now().isoformat()
 
-    @abstractmethod
     def to_openai_message(self) -> dict:
-        pass
+        raise TypeError("A storage record is not a model message; use a message subclass")
 
 
 class MessageMetadata(BaseModel):
@@ -532,6 +530,7 @@ class MemoryAIMessage(MemoryMessage):
         tool_calls = [tool_call.to_dict() for tool_call in self.tool_calls or []] or None
         if tool_calls:
             content = self._to_openai_assistant_content(content)
+            from aworld.memory.tool_call_compaction import normalize_tool_calls_for_replay
             tool_calls = normalize_tool_calls_for_replay(tool_calls, compact=False)
         return {
             "role": self.role,

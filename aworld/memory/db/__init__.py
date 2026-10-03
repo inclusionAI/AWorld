@@ -1,23 +1,21 @@
-"""
-Database implementations for memory storage.
-"""
+"""Memory stores, loaded only when a specific backend is requested."""
 
-from .sqlite import SQLiteMemoryStore
-from .filesystem import FileSystemMemoryStore
+from importlib import import_module
 
-# PostgresMemoryStore and MySQLMemoryStore are optional and require SQLAlchemy
-__all__ = ["SQLiteMemoryStore", "FileSystemMemoryStore"]
+_BACKENDS = {
+    "InMemoryMemoryStore": ".inmemory",
+    "SQLiteMemoryStore": ".sqlite",
+    "FileSystemMemoryStore": ".filesystem",
+    "PostgresMemoryStore": ".postgres",
+    "MySQLMemoryStore": ".mysql",
+}
 
-try:
-    from .postgres import PostgresMemoryStore
-    __all__.append("PostgresMemoryStore")
-except ImportError:
-    # SQLAlchemy not installed, PostgresMemoryStore will not be available
-    pass
+__all__ = ["InMemoryMemoryStore", "SQLiteMemoryStore", "FileSystemMemoryStore"]
 
-try:
-    from .mysql import MySQLMemoryStore
-    __all__.append("MySQLMemoryStore")
-except ImportError:
-    # SQLAlchemy not installed, MySQLMemoryStore will not be available
-    pass
+
+def __getattr__(name):
+    if name not in _BACKENDS:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    backend = getattr(import_module(_BACKENDS[name], __name__), name)
+    globals()[name] = backend
+    return backend

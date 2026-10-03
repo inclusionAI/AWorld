@@ -4,9 +4,13 @@ from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel
 
-from aworld.logs.util import logger
 from aworld.models.usage import normalize_usage
-from aworld.utils.serialized_util import to_serializable
+
+
+def _to_serializable(value):
+    # Importing storage models must not load numeric/model execution dependencies.
+    from aworld.utils.serialized_util import to_serializable
+    return to_serializable(value)
 
 
 class LLMResponseError(Exception):
@@ -259,13 +263,13 @@ class ModelResponse:
             else usage is not None or raw_usage is not None
         )
         if raw_usage is None and usage is not None:
-            raw_usage = to_serializable(usage)
+            raw_usage = _to_serializable(usage)
         self.usage = normalize_usage(usage) if usage is not None else {
             "completion_tokens": 0,
             "prompt_tokens": 0,
             "total_tokens": 0
         }
-        self.raw_usage = to_serializable(raw_usage) if raw_usage is not None else None
+        self.raw_usage = _to_serializable(raw_usage) if raw_usage is not None else None
         self.provider_request_id = provider_request_id
         self.error = error
         self.raw_response = raw_response
@@ -315,9 +319,9 @@ class ModelResponse:
         if usage is None:
             return {}
         if isinstance(usage, dict):
-            return to_serializable(usage)
+            return _to_serializable(usage)
 
-        serialized = to_serializable(usage)
+        serialized = _to_serializable(usage)
         return serialized if isinstance(serialized, dict) else {}
 
     @classmethod
@@ -441,6 +445,7 @@ class ModelResponse:
 
         message_content = cls._get_item_from_openai_message(message, 'content', "")
         if not message_content and not raw_tool_calls:
+            from aworld.logs.util import logger
             logger.warning(f"No content or tool calls found in response: {response}")
 
         if raw_tool_calls:

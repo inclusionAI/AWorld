@@ -1,58 +1,18 @@
+from __future__ import annotations
+
 from abc import ABC, abstractmethod
 from datetime import datetime
-from typing import Optional, Any, Literal, Union, List, Dict
+from typing import Optional, Any, Literal, Union, List, Dict, TYPE_CHECKING
 
 from pydantic import BaseModel, Field
 
 from aworld.config import ConfigDict, AgentMemoryConfig, ModelConfig
 from aworld.memory.models import AgentExperience, LongTermMemoryTriggerParams, UserProfile, MemoryItem, Fact
-from aworld.models.llm import LLMModel, get_llm_model
+from aworld.memory.store import MemoryStore
 
+if TYPE_CHECKING:
+    from aworld.models.llm import LLMModel
 
-class MemoryStore(ABC):
-    """
-    Memory store interface for messages history
-    """
-
-    @abstractmethod
-    def add(self, memory_item: MemoryItem):
-        pass
-
-    @abstractmethod
-    def get(self, memory_id) -> Optional[MemoryItem]:
-        pass
-
-    @abstractmethod
-    def get_first(self, filters: dict = None) -> Optional[MemoryItem]:
-        pass
-
-    @abstractmethod
-    def total_rounds(self, filters: dict = None) -> int:
-        pass
-
-    @abstractmethod
-    def get_all(self, filters: dict = None) -> list[MemoryItem]:
-        pass
-
-    @abstractmethod
-    def get_last_n(self, last_rounds, filters: dict = None) -> list[MemoryItem]:
-        pass
-
-    @abstractmethod
-    def update(self, memory_item: MemoryItem):
-        pass
-
-    @abstractmethod
-    def delete(self, memory_id):
-        pass
-
-    @abstractmethod
-    def delete_items(self, message_types: list[str], session_id: str, task_id: str, filters: dict = None):
-        pass
-
-    @abstractmethod
-    def history(self, memory_id) -> list[MemoryItem] | None:
-        pass
 
 SUMMARY_PROMPT = """
 You are a helpful assistant that summarizes the conversation history.
@@ -468,6 +428,7 @@ class MemoryConfig(BaseModel):
 
     def get_llm_instance(self) -> Union[LLMModel, 'ChatOpenAI']:
         if self.llm_config:
+            from aworld.models.llm import get_llm_model
             return get_llm_model(self.llm_config)
         return None
 

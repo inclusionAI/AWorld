@@ -1,0 +1,194 @@
+[build-system]
+requires = ["hatchling>=1.27,<2", "editables>=0.5,<1"]
+build-backend = "hatchling.build"
+
+[project]
+name = "aworld"
+dynamic = ["version"]
+description = "AWorld: a minimal Session/Run agent kernel"
+readme = "README.md"
+requires-python = ">=3.10"
+license = "MIT"
+authors = [{name = "Ant AI"}]
+dependencies = []
+
+[project.scripts]
+aworld = "aworld.cli.main:main"
+
+[project.optional-dependencies]
+llm = [
+    "openai>=1.66.3,<3", "httpx[socks]>=0.27,<1", "pydantic>=2.9.2,<3",
+    "PyYAML>=6,<7", "loguru>=0.7.3,<1", "numpy>=1.26,<3",
+    "tiktoken>=0.9,<1", "requests>=2.32,<3", "wrapt>=1.16,<3",
+    "executing>=2.2,<3", "packaging>=24", "fastapi>=0.115,<1",
+    "importlib-metadata>=8,<9", "opentelemetry-api>=1.32,<2",
+    "opentelemetry-sdk>=1.32,<2",
+]
+skills = ["PyYAML>=6,<7"]
+dev = ["pytest>=8", "build>=1.2,<2", "hatchling>=1.27,<2", "editables>=0.5,<1"]
+
+[tool.hatch.version]
+path = "aworld/_version.py"
+
+[tool.hatch.build.targets.wheel]
+ignore-vcs = true
+only-include = [
+    "aworld/LICENSE",
+    "aworld/README.md",
+    "aworld/__init__.py",
+    "aworld/__main__.py",
+    "aworld/_version.py",
+    "aworld/checkpoint/__init__.py",
+    "aworld/checkpoint/inmemory.py",
+    "aworld/cli/__init__.py",
+    "aworld/cli/main.py",
+    "aworld/cli/prompt.py",
+    "aworld/cli/trajectory.py",
+    "aworld/config/__init__.py",
+    "aworld/config/cl100k_base.tiktoken",
+    "aworld/config/conf.py",
+    "aworld/config/qwen.tiktoken",
+    "aworld/core/__init__.py",
+    "aworld/core/agent/__init__.py",
+    "aworld/core/agent/loop.py",
+    "aworld/core/agent/messages.py",
+    "aworld/core/agent/usage.py",
+    "aworld/core/agent/skill.py",
+    "aworld/core/context/__init__.py",
+    "aworld/core/context/base.py",
+    "aworld/core/context/compiler/__init__.py",
+    "aworld/core/context/compiler/adapters.py",
+    "aworld/core/context/compiler/adaptive.py",
+    "aworld/core/context/compiler/attribution.py",
+    "aworld/core/context/compiler/budget.py",
+    "aworld/core/context/compiler/cache.py",
+    "aworld/core/context/compiler/canary.py",
+    "aworld/core/context/compiler/completion.py",
+    "aworld/core/context/compiler/delegation.py",
+    "aworld/core/context/compiler/final.py",
+    "aworld/core/context/compiler/frozen_json.py",
+    "aworld/core/context/compiler/inspector.py",
+    "aworld/core/context/compiler/lifecycle.py",
+    "aworld/core/context/compiler/models.py",
+    "aworld/core/context/compiler/observe.py",
+    "aworld/core/context/compiler/parity.py",
+    "aworld/core/context/compiler/progressive.py",
+    "aworld/core/context/compiler/provider_registry.py",
+    "aworld/core/context/compiler/reducers.py",
+    "aworld/core/context/compiler/resolver.py",
+    "aworld/core/context/compiler/rollout.py",
+    "aworld/core/context/compiler/runtime.py",
+    "aworld/core/context/compiler/scope.py",
+    "aworld/core/context/compiler/sidecar.py",
+    "aworld/core/context/compiler/tool_output.py",
+    "aworld/core/context/compiler/trace.py",
+    "aworld/core/context/compiler/trust.py",
+    "aworld/core/context/compiler/turn_economics.py",
+    "aworld/core/context/compiler/work_state.py",
+    "aworld/core/context/context_state.py",
+    "aworld/core/context/runtime_state.py",
+    "aworld/core/context/session.py",
+    "aworld/core/context/simple.py",
+    "aworld/core/context/budget.py",
+    "aworld/cli/model_config.py",
+    "aworld/core/context/step_budget.py",
+    "aworld/core/context/storage.py",
+    "aworld/core/llm_call_journal.py",
+    "aworld/core/llm_provider.py",
+    "aworld/core/sandbox/__init__.py",
+    "aworld/core/sandbox/local.py",
+    "aworld/core/session/__init__.py",
+    "aworld/core/session/errors.py",
+    "aworld/core/session/memory.py",
+    "aworld/core/session/models.py",
+    "aworld/core/session/protocols.py",
+    "aworld/core/tool/__init__.py",
+    "aworld/core/tool/function.py",
+    "aworld/core/tool/local.py",
+    "aworld/core/tool/registry.py",
+    "aworld/core/tool/sessions.py",
+    "aworld/core/tool/subagent.py",
+    "aworld/core/trajectory.py",
+    "aworld/core/trajectory_update_registry.py",
+    "aworld/docs/aworld-1.0-packaging-cli.md",
+    "aworld/docs/aworld-1.0-provider-reuse-debt.md",
+    "aworld/docs/aworld-1.0-session-run-contract.md",
+    "aworld/logs/__init__.py",
+    "aworld/logs/instrument/__init__.py",
+    "aworld/logs/instrument/loguru_instrument.py",
+    "aworld/logs/log_provider.py",
+    "aworld/logs/util.py",
+    "aworld/memory/__init__.py",
+    "aworld/memory/tool_call_compaction.py",
+    "aworld/metrics/__init__.py",
+    "aworld/metrics/context_manager.py",
+    "aworld/metrics/metric.py",
+    "aworld/metrics/template.py",
+    "aworld/models/__init__.py",
+    "aworld/models/chat_completions.py",
+    "aworld/models/token_accounting.py",
+    "aworld/models/context_window.py",
+    "aworld/models/llm_http_handler.py",
+    "aworld/models/model_response.py",
+    "aworld/models/openai_message_sanitizer.py",
+    "aworld/models/openai_provider.py",
+    "aworld/models/openai_tokenizer.py",
+    "aworld/models/prompt_cache.py",
+    "aworld/models/qwen_tokenizer.py",
+    "aworld/models/usage.py",
+    "aworld/models/utils.py",
+    "aworld/trace/__init__.py",
+    "aworld/trace/auto_trace.py",
+    "aworld/trace/baggage/__init__.py",
+    "aworld/trace/baggage/sofa_tracer.py",
+    "aworld/trace/baggage/w3c.py",
+    "aworld/trace/base.py",
+    "aworld/trace/config.py",
+    "aworld/trace/constants.py",
+    "aworld/trace/context_manager.py",
+    "aworld/trace/function_trace.py",
+    "aworld/trace/instrumentation/__init__.py",
+    "aworld/trace/instrumentation/agent/__init__.py",
+    "aworld/trace/instrumentation/eventbus.py",
+    "aworld/trace/instrumentation/llm_metrics.py",
+    "aworld/trace/instrumentation/openai/__init__.py",
+    "aworld/trace/instrumentation/openai/inout_parse.py",
+    "aworld/trace/instrumentation/semconv.py",
+    "aworld/trace/instrumentation/threading.py",
+    "aworld/trace/instrumentation/tool/__init__.py",
+    "aworld/trace/instrumentation/uni_llmmodel/__init__.py",
+    "aworld/trace/instrumentation/uni_llmmodel/model_response_parse.py",
+    "aworld/trace/instrumentation/utils.py",
+    "aworld/trace/msg_format.py",
+    "aworld/trace/opentelemetry/__init__.py",
+    "aworld/trace/opentelemetry/export/__init__.py",
+    "aworld/trace/opentelemetry/memory_storage.py",
+    "aworld/trace/opentelemetry/opentelemetry_adapter.py",
+    "aworld/trace/propagator/__init__.py",
+    "aworld/trace/propagator/carrier.py",
+    "aworld/trace/propagator/w3c.py",
+    "aworld/trace/rewrite_ast.py",
+    "aworld/trace/server/__init__.py",
+    "aworld/trace/server/routes.py",
+    "aworld/trace/server/util.py",
+    "aworld/trace/span_cosumer.py",
+    "aworld/trace/stack_info.py",
+    "aworld/utils/__init__.py",
+    "aworld/utils/common.py",
+    "aworld/utils/import_package.py",
+    "aworld/utils/serialized_util.py",
+    "aworld/version_gen.py"
+]
+
+[tool.hatch.build.targets.sdist]
+include = ["/aworld", "/aworld-cli", "/examples/core_session", "/tests", "/conftest.py", "/pytest.ini", "/pytest.legacy.ini", "/setup.py", "/scripts/build_packages.py", "/pyproject.toml", "/README.md", "/README_zh.md", "/LICENSE"]
+
+[tool.hatch.build.targets.sdist.force-include]
+"aworld/logs/__init__.py" = "aworld/logs/__init__.py"
+"aworld/logs/instrument/__init__.py" = "aworld/logs/instrument/__init__.py"
+"aworld/logs/instrument/loguru_instrument.py" = "aworld/logs/instrument/loguru_instrument.py"
+"aworld/logs/log_provider.py" = "aworld/logs/log_provider.py"
+"aworld/logs/util.py" = "aworld/logs/util.py"
+
+[tool.hatch.build]
+exclude = ["**/__pycache__/**", "**/*.pyc", "**/.env", "**/.venv/**", "/dist/**", "/aworld-cli/dist/**", "**/.pytest_cache/**"]

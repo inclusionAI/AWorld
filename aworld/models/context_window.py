@@ -13,6 +13,10 @@ DEFAULT_CONTEXT_WINDOW_TOKENS = 1_000_000
 # use decimal 128000; GPT-4.1 uses the provider's documented 1,047,576 tokens:
 # https://developers.openai.com/api/docs/models/gpt-4.1
 MODEL_CONTEXT_WINDOWS: dict[str, int] = {
+    # DSV41 deployment window declared by the operator; exact route IDs only.
+    "dsv41": 1_000_000,
+    "aisearch_dsv41flash": 1_000_000,
+    "matrixllm.aisearch_dsv41flash": 1_000_000,
     # OpenAI models
     "gpt-4o": 128000,
     "gpt-4o-mini": 128000,

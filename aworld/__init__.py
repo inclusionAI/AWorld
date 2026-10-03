@@ -1,74 +1,10 @@
-# coding: utf-8
-# Copyright (c) 2025 inclusionAI.
-import atexit
-import os
-
-debug_mode = os.environ.get('AWORLD_DEBUG_MODE', 'false').lower() in ('true', '1', 't')
-log_level = os.environ.get('AWORLD_LOG_LEVEL', 'INFO')
-PROJECT_CONFIG = {"debug_mode": debug_mode, "log_level": log_level,
-                  "use_trace": os.environ.get('AWORLD_USE_TRACE', 'false').lower() in ('true', '1', 't')}
-
-_disable_auto_dotenv = os.environ.get("AWORLD_DISABLE_AUTO_DOTENV", "").strip().lower()
-if _disable_auto_dotenv not in {"1", "true", "yes", "on"}:
-    # Preserve historical library behavior unless an embedding runtime opts
-    # into explicit configuration ownership before importing AWorld.
-    try:
-        from dotenv import load_dotenv
-
-        success = load_dotenv()
-        if not success:
-            load_dotenv(os.path.join(os.getcwd(), ".env"))
-    except Exception as e:
-        # Loading project convenience configuration must never break imports.
-        print(f"Warning: Failed to load .env file: {e}")
+"""AWorld v1: independent Agent + Context + Tool kernel."""
+from ._version import __version__
 
 
-def configure(logger_level: str = "INFO", use_trace: bool = None, debug: bool = None):
-    from aworld import trace
-    from aworld.config import ConfigDict
-    from aworld.logs.util import update_logger_level, LOGGER_COLOR
-
-    global PROJECT_CONFIG
-    PROJECT_CONFIG = ConfigDict(PROJECT_CONFIG)
-
-    # update all loggers level in console
-    if logger_level not in LOGGER_COLOR:
-        logger_level = "INFO"
-    update_logger_level(logger_level)
-    global log_level
-    log_level = logger_level
-    PROJECT_CONFIG["log_level"] = log_level
-
-    if use_trace:
-        # default trace configure, can customize call
-        trace.configure()
-    if use_trace is not None:
-        PROJECT_CONFIG["use_trace"] = use_trace
-
-    if debug is not None:
-        PROJECT_CONFIG["debug_mode"] = debug
-        global debug_mode
-        debug_mode = debug
-
-
-def cleanup():
-    try:
-        from aworld.tools import LOCAL_TOOLS_ENV_VAR, parse_local_tool_entries
-
-        value = os.environ.get(LOCAL_TOOLS_ENV_VAR, '')
-        if value:
-            for action_file, tool_file in parse_local_tool_entries(value):
-                try:
-                    os.remove(action_file)
-                except:
-                    pass
-                try:
-                    os.remove(tool_file)
-                except:
-                    pass
-    except:
-        pass
-    os.environ["LOCAL_TOOLS_ENV_VAR"] = ''
-
-
-atexit.register(cleanup, )
+def __getattr__(name):
+    # Historical APIs are loaded only when callers explicitly request them.
+    if name in {"PROJECT_CONFIG", "configure", "cleanup", "debug_mode", "log_level"}:
+        from . import _legacy_init
+        return getattr(_legacy_init, name)
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

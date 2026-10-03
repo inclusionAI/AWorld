@@ -1,5 +1,21 @@
 # Memory
 
+## Storage without model orchestration
+
+For the Session / Run kernel, import a backend directly:
+
+```python
+from aworld.memory.db import InMemoryMemoryStore, SQLiteMemoryStore, FileSystemMemoryStore
+```
+
+These three storage paths require Pydantic 2. They do not load model clients,
+tokenizers, tracing, vector databases or automatic dependency installers.
+`MemoryStore` lives in `aworld.memory.store`; `MemoryItem` is a concrete storage
+record. Model-message conversion belongs to its message subclasses.
+See [the core session example](../../examples/core_session/README.md) for reuse
+through the internal Context storage adapter. Import `aworld.memory.main` only when the
+model-backed summary and long-term memory orchestration described below is needed.
+
 ![](../../readme_assets/arch_memory.png)
 
 ## Introduction

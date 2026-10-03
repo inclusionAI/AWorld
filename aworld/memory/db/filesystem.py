@@ -19,6 +19,7 @@ Design principles:
 """
 
 import json
+import logging
 import time
 import os
 from datetime import datetime
@@ -27,14 +28,14 @@ from typing import Optional, List, Dict, Any, Set
 
 from pydantic import BaseModel
 
-from aworld.core.memory import MemoryStore
+from aworld.memory.store import MemoryStore
 from aworld.memory.models import (
     MemoryItem, MemoryAIMessage, MemoryHumanMessage, MemorySummary,
     MemorySystemMessage, MemoryToolMessage, MessageMetadata,
     UserProfile, AgentExperience, ConversationSummary, Fact
 )
 from aworld.models.model_response import ToolCall
-from aworld.logs.util import digest_logger
+digest_logger = logging.getLogger(__name__)
 
 
 class FileSystemMemoryStore(MemoryStore):
