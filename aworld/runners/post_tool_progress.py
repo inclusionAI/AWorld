@@ -20,6 +20,49 @@ _VOLATILE_FAILURE_TEXT = re.compile(
     r"(?:0x[0-9a-f]+|sha256:[0-9a-f]+|/[^\s:'\"]+|\b\d+\b)",
     re.IGNORECASE,
 )
+_PUBLIC_DELIVERABLE_SCHEMA = "aworld.public-deliverables/v1"
+_PUBLIC_DELIVERABLE_AUTHORITY = "public_task_advisory"
+
+
+def _public_deliverable_projection(context) -> dict[str, Any] | None:
+    """Observe explicit public file milestones without granting acceptance."""
+
+    value = context.context_info.get("public_deliverable_contract")
+    if (
+        not isinstance(value, dict)
+        or value.get("schema_version") != _PUBLIC_DELIVERABLE_SCHEMA
+        or value.get("authority") != _PUBLIC_DELIVERABLE_AUTHORITY
+        or value.get("source") != "public_task_text"
+    ):
+        return None
+    artifacts = value.get("artifacts")
+    if not isinstance(artifacts, list) or not artifacts or len(artifacts) > 16:
+        return None
+    projection = []
+    for item in artifacts:
+        if (
+            not isinstance(item, dict)
+            or item.get("kind") != "file"
+            or item.get("authority") != _PUBLIC_DELIVERABLE_AUTHORITY
+            or not isinstance(item.get("deliverable_id"), str)
+            or not isinstance(item.get("path"), str)
+        ):
+            return None
+        try:
+            exists = os.path.isfile(item["path"])
+        except OSError:
+            exists = False
+        projection.append(
+            {
+                "deliverable_id": item["deliverable_id"],
+                "exists": exists,
+            }
+        )
+    return {
+        "declared_count": len(projection),
+        "existing_count": sum(item["exists"] for item in projection),
+        "artifacts": projection,
+    }
 
 
 def _select_semantic_state(shared: Any, local: Any) -> dict[str, Any] | None:
@@ -406,6 +449,28 @@ def record_semantic_tool_progress(
         and completion_evidence_fingerprint
         != previous.get("completion_evidence_fingerprint")
     )
+    public_delivery_projection = _public_deliverable_projection(runtime_context)
+    public_delivery_fingerprint = (
+        semantic_fingerprint(public_delivery_projection)
+        if public_delivery_projection is not None
+        else None
+    )
+    public_delivery_count = (
+        int(public_delivery_projection["existing_count"])
+        if public_delivery_projection is not None
+        else 0
+    )
+    previous_public_delivery_high_water = int(
+        previous.get("public_delivery_high_water_count", 0) or 0
+    )
+    public_delivery_advanced = bool(
+        public_delivery_projection is not None
+        and public_delivery_count > previous_public_delivery_high_water
+    )
+    public_delivery_high_water_count = max(
+        previous_public_delivery_high_water,
+        public_delivery_count,
+    )
     # Workspace receipts and failure signatures make diagnostic change
     # observable, but neither proves that a declared task requirement advanced.
     # Keep contractless work unknown at the goal layer; a separate bounded
@@ -417,8 +482,11 @@ def record_semantic_tool_progress(
         or previous.get("failure_signature") is not None
     )
     if not semantic_ledger_enabled:
-        goal_progress_observable = completion_projection is not None
-    elif completion_projection is not None:
+        goal_progress_observable = (
+            completion_projection is not None
+            or public_delivery_projection is not None
+        )
+    elif completion_projection is not None or public_delivery_projection is not None:
         goal_progress_observable = True
     else:
         goal_progress_observable = None
@@ -503,6 +571,7 @@ def record_semantic_tool_progress(
         artifact_advanced
         or validation_evidence_advanced
         or completion_advanced
+        or public_delivery_advanced
         or failure_changed
     )
     # New failures and opaque workspace changes are useful evidence, but they
@@ -510,8 +579,8 @@ def record_semantic_tool_progress(
     # Reserve ``goal_progress`` for monotonic, inspectable milestone evidence;
     # the controller uses it only to reset an advisory no-progress window and
     # never to declare success.
-    durable_milestone_advanced = completion_advanced
-    goal_progress = completion_advanced
+    durable_milestone_advanced = completion_advanced or public_delivery_advanced
+    goal_progress = durable_milestone_advanced
     goal_progress_count = int(previous.get("goal_progress_count", 0) or 0) + int(
         goal_progress
     )
@@ -611,6 +680,10 @@ def record_semantic_tool_progress(
         "completion_score": completion_score,
         "completion_high_water_score": completion_high_water_score,
         "completion_advanced": completion_advanced,
+        "public_delivery_fingerprint": public_delivery_fingerprint,
+        "public_delivery_count": public_delivery_count,
+        "public_delivery_high_water_count": public_delivery_high_water_count,
+        "public_delivery_advanced": public_delivery_advanced,
         "validation_evidence_advanced": validation_evidence_advanced,
         "durable_milestone_advanced": durable_milestone_advanced,
         "progress_guard_reset": progress_guard_reset,

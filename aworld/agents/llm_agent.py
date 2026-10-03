@@ -232,6 +232,10 @@ _RECOVERABLE_MODEL_RESPONSE_REASONS = frozenset(
 _MODEL_RESPONSE_RECOVERY_CONTEXT_KEY = "model_response_recovery_context"
 _LONG_HORIZON_REVIEW_DEADLINE_KEY = "long_horizon_review_deadline"
 _LONG_HORIZON_REVIEW_DEADLINE_SCHEMA = "aworld.review-deadline/v1"
+_PUBLIC_DELIVERABLE_SCHEMA = "aworld.public-deliverables/v1"
+_PUBLIC_CAPABILITY_SCHEMA = "aworld.public-capabilities/v1"
+_PUBLIC_DELIVERABLE_AUTHORITY = "public_task_advisory"
+_PUBLIC_DELIVERABLE_PROMPT_MARKER = "AWorld public deliverable milestones"
 
 
 def _default_on_env(name: str) -> bool:
@@ -1308,6 +1312,113 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             "The runtime completion contract rejected the completion claim "
             f"({reasons}). Continue working, gather new evidence, and rerun focused checks."
         )
+
+    @staticmethod
+    def _public_deliverable_artifacts(context: Context) -> tuple[dict[str, str], ...]:
+        """Return validated advisory output declarations from public task text."""
+
+        value = context.context_info.get("public_deliverable_contract")
+        if not isinstance(value, dict) or value.get("schema_version") != _PUBLIC_DELIVERABLE_SCHEMA:
+            return ()
+        if (
+            value.get("authority") != _PUBLIC_DELIVERABLE_AUTHORITY
+            or value.get("source") != "public_task_text"
+        ):
+            return ()
+        artifacts = value.get("artifacts")
+        if not isinstance(artifacts, list) or len(artifacts) > 16:
+            return ()
+        validated = []
+        for item in artifacts:
+            if not isinstance(item, dict) or item.get("kind") != "file":
+                return ()
+            if item.get("authority") != _PUBLIC_DELIVERABLE_AUTHORITY:
+                return ()
+            path = item.get("path")
+            display_path = item.get("display_path")
+            deliverable_id = item.get("deliverable_id")
+            if not all(
+                isinstance(field, str) and 0 < len(field) <= 4096
+                for field in (path, display_path, deliverable_id)
+            ):
+                return ()
+            validated.append(
+                {
+                    "deliverable_id": deliverable_id,
+                    "path": path,
+                    "display_path": display_path,
+                }
+            )
+        return tuple(validated)
+
+    def _public_deliverable_feedback_if_unsatisfied(
+        self, context: Context
+    ) -> str | None:
+        """Block a success claim when an explicit public output is still absent.
+
+        This is an existence milestone, not content validation or verifier
+        acceptance. It cannot turn a file into canonical task success.
+        """
+
+        artifacts = self._public_deliverable_artifacts(context)
+        if not artifacts:
+            return None
+        observations = []
+        missing = []
+        for item in artifacts:
+            try:
+                exists = os.path.isfile(item["path"])
+            except OSError:
+                exists = False
+            observations.append(
+                {
+                    "deliverable_id": item["deliverable_id"],
+                    "path": item["path"],
+                    "exists": exists,
+                }
+            )
+            if not exists:
+                missing.append(item)
+        context.context_info["public_deliverable_observations"] = {
+            "schema_version": _PUBLIC_DELIVERABLE_SCHEMA,
+            "artifacts": observations,
+        }
+        if not missing:
+            return None
+        names = ", ".join(item["display_path"] for item in missing)
+        return (
+            "The public task explicitly names deliverable file(s) that do not "
+            f"exist yet: {names}. Treat the task as unfinished. Create the "
+            "inspectable file(s), then verify their existence and contents "
+            "before proposing another final response. This advisory milestone "
+            "does not replace any content validator or canonical verifier."
+        )
+
+    @staticmethod
+    def _public_executable_hints(context: Context) -> tuple[str, ...]:
+        value = context.context_info.get("public_capability_hints")
+        if (
+            not isinstance(value, dict)
+            or value.get("schema_version") != _PUBLIC_CAPABILITY_SCHEMA
+            or value.get("authority") != _PUBLIC_DELIVERABLE_AUTHORITY
+            or value.get("source") != "public_task_text"
+        ):
+            return ()
+        rows = value.get("executables")
+        if not isinstance(rows, list) or len(rows) > 16:
+            return ()
+        result = []
+        for row in rows:
+            executable = row.get("executable") if isinstance(row, dict) else None
+            if (
+                not isinstance(executable, str)
+                or not executable
+                or len(executable) > 64
+                or row.get("authority") != _PUBLIC_DELIVERABLE_AUTHORITY
+            ):
+                return ()
+            result.append(executable)
+        return tuple(result)
 
     def _record_llm_call_request(
         self,
@@ -3678,6 +3789,82 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             return ""
         return self._bounded_partial_for_repair("\n\n".join(sections), limit=limit)
 
+    @staticmethod
+    def _bounded_action_recovery_messages(
+        messages: Sequence[Dict[str, Any]],
+        *,
+        recovery_context: str,
+        limit: int,
+    ) -> List[Dict[str, str]]:
+        """Build a history-independent action capsule after an incomplete turn."""
+
+        budget = max(2048, min(int(limit), 32_768))
+
+        def bounded(value: Any, allowance: int) -> str:
+            text = str(value or "").strip()
+            if len(text) <= allowance:
+                return text
+            head = max(1, allowance * 2 // 3)
+            tail = max(1, allowance - head - 32)
+            return f"{text[:head]}\n...[bounded capsule]...\n{text[-tail:]}"
+
+        system = next(
+            (
+                item.get("content", "")
+                for item in messages
+                if item.get("role") == "system" and item.get("content")
+            ),
+            "",
+        )
+        task = next(
+            (
+                item.get("content", "")
+                for item in messages
+                if item.get("role") == "user" and item.get("content")
+            ),
+            "",
+        )
+        latest_observation = next(
+            (
+                item.get("content", "")
+                for item in reversed(messages)
+                if item.get("role") in {"tool", "user"}
+                and item.get("content")
+                and item.get("content") != task
+            ),
+            "",
+        )
+        allocations = {
+            "system": budget * 20 // 100,
+            "task": budget * 32 // 100,
+            "observation": budget * 22 // 100,
+            "recovery": budget * 20 // 100,
+        }
+        capsule: List[Dict[str, str]] = []
+        if system:
+            capsule.append({"role": "system", "content": bounded(system, allocations["system"])})
+        if task:
+            capsule.append({"role": "user", "content": bounded(task, allocations["task"])})
+        if latest_observation:
+            capsule.append(
+                {
+                    "role": "user",
+                    "content": "Latest accepted observation:\n" + bounded(
+                        latest_observation, allocations["observation"]
+                    ),
+                }
+            )
+        if recovery_context:
+            capsule.append(
+                {
+                    "role": "assistant",
+                    "content": "Non-executable incomplete action context:\n" + bounded(
+                        recovery_context, allocations["recovery"]
+                    ),
+                }
+            )
+        return capsule
+
     def _store_model_response_recovery_context(
         self,
         context: Context | None,
@@ -4367,8 +4554,11 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
 
         protocol_tool_free_finalization = (
             not loop_budget_finalization
-            and execution_protocol_requires_tool_free_finalization(
-                message.context, self.id()
+            and (
+                execution_protocol_requires_tool_free_finalization(
+                    message.context, self.id()
+                )
+                or self._pre_generation_caller_reserve_reached(message.context)
             )
         )
         tool_free_finalization = (
@@ -5207,6 +5397,17 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                         and not response_incomplete
                     ):
                         validation_feedback = (
+                            self._public_deliverable_feedback_if_unsatisfied(
+                                message.context
+                            )
+                        )
+                    if (
+                        candidate_finished
+                        and not long_horizon_review_feedback
+                        and not validation_feedback
+                        and not response_incomplete
+                    ):
+                        validation_feedback = (
                             self._build_result_validation_feedback_from_context(
                                 context=message.context,
                                 final_response_text=llm_response.content or "",
@@ -5223,6 +5424,10 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                         if isinstance(llm_response.message, dict):
                             llm_response.message = dict(llm_response.message)
                             llm_response.message["content"] = final_text
+                            llm_response.message[
+                                "aworld_incomplete_reason"
+                            ] = "delivery_validation_unsatisfied"
+                            llm_response.message["aworld_recoverable"] = False
                         agent_result = AgentResult(
                             actions=[
                                 ActionModel(
@@ -6007,7 +6212,82 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
     def _process_messages(
         self, messages: List[Dict[str, Any]], context: Context = None
     ) -> Optional[List[Dict[str, Any]]]:
-        return messages
+        if context is None:
+            return messages
+        artifacts = self._public_deliverable_artifacts(context)
+        executables = self._public_executable_hints(context)
+        if not artifacts and not executables:
+            return messages
+        if any(
+            item.get("role") == "system"
+            and _PUBLIC_DELIVERABLE_PROMPT_MARKER in str(item.get("content", ""))
+            for item in messages
+        ):
+            return messages
+        paths = "\n".join(
+            f"- {item['display_path']} (resolved: {item['path']})"
+            for item in artifacts
+        )
+        deliverable_guidance = (
+            "The public task text explicitly names the following output file(s):\n"
+            f"{paths}\n"
+            "Treat creation of these files as early, inspectable delivery "
+            "milestones. Verify that each exists before claiming completion. "
+            if artifacts
+            else ""
+        )
+        capability_guidance = (
+            "The public task text explicitly names required executable(s): "
+            + ", ".join(executables)
+            + ". Check availability once near the start; if unavailable, "
+            "prepare it through the environment's supported mechanism before "
+            "deep exploration. Do not repeatedly probe or install it. "
+            if executables
+            else ""
+        )
+        guidance = {
+            "role": "system",
+            "content": (
+                f"{_PUBLIC_DELIVERABLE_PROMPT_MARKER}: "
+                f"{deliverable_guidance}{capability_guidance}"
+                "These hints are advisory task grounding only; they do not "
+                "validate file contents, authorize arbitrary commands, or replace "
+                "a canonical verifier."
+            ),
+        }
+        return [guidance, *messages]
+
+    def _pre_generation_caller_reserve_reached(self, context: Context) -> bool:
+        """Avoid starting ordinary long generation inside caller reserve."""
+
+        if not self._long_horizon_skill_active():
+            return False
+        try:
+            policy = self._resolve_execution_protocol_policy(context)
+            state = ExecutionProtocolStore(context, self.id(), policy).load()
+            task = context.get_task()
+            remaining = task.remaining_seconds() if task is not None else None
+        except Exception:
+            return False
+        if (
+            not state.long_horizon_armed
+            or state.phase not in {ProtocolPhase.EXECUTE, ProtocolPhase.REPAIR}
+            or isinstance(remaining, bool)
+            or not isinstance(remaining, (int, float))
+            or not math.isfinite(float(remaining))
+            or float(remaining) > float(policy.finalization_reserve_seconds)
+        ):
+            return False
+        metrics = context.context_info.get("pre_generation_reserve_metrics")
+        if not isinstance(metrics, dict):
+            metrics = {}
+        metrics["entry_count"] = int(metrics.get("entry_count", 0) or 0) + 1
+        metrics["last_remaining_seconds"] = max(0.0, float(remaining))
+        metrics["finalization_reserve_seconds"] = float(
+            policy.finalization_reserve_seconds
+        )
+        context.context_info["pre_generation_reserve_metrics"] = metrics
+        return True
 
     def _automatic_generation_budget_policy(
         self,
@@ -7066,18 +7346,19 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                         ):
                             incomplete_action_recovery_attempted = True
                             attempt += 1
-                            messages = list(messages)
-                            if recovery_context:
-                                retained = self._bounded_working_context_for_repair(
-                                    recovery_context,
-                                    limit=controller.policy.partial_response_context_chars,
-                                )
-                                messages.append(
-                                    {
-                                        "role": "assistant",
-                                        "content": retained,
-                                    }
-                                )
+                            capsule_limit = min(
+                                32_768,
+                                max(
+                                    8_192,
+                                    controller.policy.partial_response_context_chars
+                                    * 3,
+                                ),
+                            )
+                            messages = self._bounded_action_recovery_messages(
+                                messages,
+                                recovery_context=recovery_context,
+                                limit=capsule_limit,
+                            )
                             messages.append({
                                 "role": "user",
                                 "content": (

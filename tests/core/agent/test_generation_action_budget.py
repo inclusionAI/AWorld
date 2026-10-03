@@ -172,6 +172,38 @@ def test_armed_long_running_skill_enables_liveness_only_watchdog_defaults() -> N
     assert policy.action_repair_enabled is False
 
 
+def test_pre_generation_check_enters_existing_reserve_before_long_call(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    agent = _long_running_generation_agent(armed=True)
+    context = agent.context
+    policy = agent._resolve_execution_protocol_policy(context)
+    monkeypatch.setattr(
+        context.get_task(),
+        "remaining_seconds",
+        lambda: policy.finalization_reserve_seconds - 0.01,
+    )
+
+    assert agent._pre_generation_caller_reserve_reached(context) is True
+    assert context.context_info["pre_generation_reserve_metrics"]["entry_count"] == 1
+
+
+def test_pre_generation_check_keeps_solve_window_open_before_reserve(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    agent = _long_running_generation_agent(armed=True)
+    context = agent.context
+    policy = agent._resolve_execution_protocol_policy(context)
+    monkeypatch.setattr(
+        context.get_task(),
+        "remaining_seconds",
+        lambda: policy.finalization_reserve_seconds + 1,
+    )
+
+    assert agent._pre_generation_caller_reserve_reached(context) is False
+    assert "pre_generation_reserve_metrics" not in context.context_info
+
+
 def test_explicit_generation_compiler_configuration_wins_after_arming() -> None:
     policy = _long_running_generation_agent(
         armed=True,

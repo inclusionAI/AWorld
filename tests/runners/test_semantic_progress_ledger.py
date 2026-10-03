@@ -103,6 +103,51 @@ def test_changed_failure_signature_is_meaningful_progress():
     assert changed["last_meaningful_progress_at"] is not None
 
 
+def test_public_deliverable_creation_is_one_durable_milestone(tmp_path):
+    output = tmp_path / "result.json"
+    context = Context(task_id="public-delivery-progress")
+    context.context_info["public_deliverable_contract"] = {
+        "schema_version": "aworld.public-deliverables/v1",
+        "authority": "public_task_advisory",
+        "source": "public_task_text",
+        "artifacts": [
+            {
+                "deliverable_id": "public-output-1",
+                "path": str(output),
+                "display_path": "result.json",
+                "kind": "file",
+                "authority": "public_task_advisory",
+            }
+        ],
+    }
+    configure_execution_protocol(
+        context,
+        "agent",
+        ExecutionProtocolPolicy(
+            mode=ProtocolMode.GUIDE,
+            semantic_progress_enabled=True,
+        ),
+    )
+
+    missing = _record_failure(context, 0)
+    assert missing["goal_progress_observable"] is True
+    assert missing["public_delivery_count"] == 0
+    assert missing["public_delivery_advanced"] is False
+
+    output.write_text("{}")
+    created = _record_failure(context, 1)
+    assert created["completion_advanced"] is False
+    assert created["public_delivery_count"] == 1
+    assert created["public_delivery_advanced"] is True
+    assert created["durable_milestone_advanced"] is True
+    assert created["goal_progress"] is True
+    assert context.completion_contract is None
+
+    repeated = _record_failure(context, 2)
+    assert repeated["public_delivery_advanced"] is False
+    assert repeated["durable_milestone_advanced"] is False
+
+
 def test_alternating_known_failure_signatures_do_not_reset_progress():
     context = Context(task_id="semantic-failure-abab")
     configure_execution_protocol(

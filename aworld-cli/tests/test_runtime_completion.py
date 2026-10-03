@@ -1,18 +1,21 @@
-from pathlib import Path
 import json
 import sys
+from pathlib import Path
 
 import pytest
 
-from aworld.core.context.base import Context
-from aworld.core.context.compiler import CompletionMode, CompletionStatus
 from aworld_cli.core.runtime_completion import (
     build_runtime_completion_contract,
     configure_goal_completion,
     configure_runtime_completion,
+    infer_public_deliverable_hints,
+    infer_public_executable_hints,
     resolve_completion_max_repairs,
     resolve_completion_mode,
 )
+
+from aworld.core.context.base import Context
+from aworld.core.context.compiler import CompletionMode, CompletionStatus
 
 
 def test_completion_checks_are_off_by_default(
@@ -120,6 +123,98 @@ def test_non_off_mode_without_explicit_contract_remains_model_owned(
         "required_artifacts": [],
         "max_repairs": None,
     }
+
+
+def test_explicit_public_output_filename_becomes_advisory_deliverable(
+    tmp_path: Path,
+) -> None:
+    hints = infer_public_deliverable_hints(
+        "The input file sequences.fasta contains templates.\n"
+        "The output fasta file should be titled primers.fasta.",
+        workspace_path=tmp_path,
+    )
+    assert [item.path for item in hints] == [
+        str((tmp_path / "primers.fasta").resolve())
+    ]
+    assert hints[0].authority == "public_task_advisory"
+
+
+@pytest.mark.parametrize(
+    "request_text",
+    (
+        "The file sequences.fasta contains the input sequences.",
+        "Read https://example.test/result.json for background.",
+        "Compare input.csv with old-output.csv before deciding what to do.",
+        "The output file should be titled ../outside.json.",
+    ),
+)
+def test_incidental_or_unsafe_paths_are_not_public_deliverables(
+    request_text: str,
+    tmp_path: Path,
+) -> None:
+    assert infer_public_deliverable_hints(request_text, workspace_path=tmp_path) == ()
+
+
+def test_default_completion_publishes_advisory_deliverable_without_authority(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.delenv("AWORLD_COMPLETION_MODE", raising=False)
+    context = Context(task_id="public-delivery-hint")
+    assert configure_runtime_completion(
+        context,
+        request="Create the report and save it as result.json.",
+        workspace_path=tmp_path,
+    ) is None
+    assert context.completion_contract is None
+    assert context.context_info["public_deliverable_contract"] == {
+        "schema_version": "aworld.public-deliverables/v1",
+        "authority": "public_task_advisory",
+        "source": "public_task_text",
+        "artifacts": [
+            {
+                "deliverable_id": "public-output-1",
+                "path": str((tmp_path / "result.json").resolve()),
+                "display_path": "result.json",
+                "kind": "file",
+                "authority": "public_task_advisory",
+            }
+        ],
+    }
+
+
+def test_explicit_public_tool_becomes_non_executable_capability_hint() -> None:
+    hints = infer_public_executable_hints(
+        "The output of primer3's oligotm tool should be considered ground truth."
+    )
+    assert [item.executable for item in hints] == ["oligotm"]
+    assert hints[0].authority == "public_task_advisory"
+
+
+def test_capability_hint_is_published_but_never_executed(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.delenv("AWORLD_COMPLETION_MODE", raising=False)
+    context = Context(task_id="public-capability-hint")
+    configure_runtime_completion(
+        context,
+        request="Use the jq tool to inspect the input.",
+        workspace_path=tmp_path,
+    )
+    assert context.context_info["public_capability_hints"] == {
+        "schema_version": "aworld.public-capabilities/v1",
+        "authority": "public_task_advisory",
+        "source": "public_task_text",
+        "executables": [
+            {
+                "capability_id": "public-executable-1",
+                "executable": "jq",
+                "authority": "public_task_advisory",
+            }
+        ],
+    }
+    assert context.completion_contract is None
 
 
 def test_legacy_inference_env_does_not_create_a_contract(

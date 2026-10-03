@@ -9,14 +9,14 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
-import signal
-import shutil
 import os
 import re
+import shutil
+import signal
+from collections.abc import Iterable, Sequence
+from dataclasses import asdict, dataclass, replace
 from datetime import datetime, timezone
-from dataclasses import replace
 from pathlib import Path
-from typing import Iterable, Sequence
 
 from aworld.core.context.compiler import (
     ArtifactEvidence,
@@ -33,6 +33,178 @@ COMPLETION_MODE_ENV = "AWORLD_COMPLETION_MODE"
 COMPLETION_MAX_REPAIRS_ENV = "AWORLD_COMPLETION_MAX_REPAIRS"
 REQUIRED_ARTIFACTS_ENV = "AWORLD_REQUIRED_ARTIFACTS_JSON"
 VALIDATION_COMMANDS_ENV = "AWORLD_VALIDATION_COMMANDS_JSON"
+PUBLIC_DELIVERABLE_SCHEMA = "aworld.public-deliverables/v1"
+PUBLIC_CAPABILITY_SCHEMA = "aworld.public-capabilities/v1"
+PUBLIC_DELIVERABLE_AUTHORITY = "public_task_advisory"
+_MAX_PUBLIC_DELIVERABLES = 16
+_DELIVERABLE_TOKEN = r"(?:`([^`\r\n]+)`|'([^'\r\n]+)'|\"([^\"\r\n]+)\"|([^\s,;:!?]+))"
+_PUBLIC_DELIVERABLE_PATTERNS = (
+    re.compile(
+        r"(?i)\b(?:output|result|artifact|report|deliverable)(?:\s+[a-z0-9_-]+){0,3}\s+"
+        r"(?:file\s+)?(?:should|must|shall|needs?\s+to|is\s+to)?\s*(?:be\s+)?"
+        r"(?:named|called|titled|saved|written|created|generated|exported|stored)"
+        r"(?:\s+(?:as|to|at))?\s*[:=]?\s*" + _DELIVERABLE_TOKEN
+    ),
+    re.compile(
+        r"(?i)\b(?:save|write|create|generate|export|store|produce)\b"
+        r"[^\r\n.!?]{0,80}?\b(?:to|as|at|named|called|titled)\s+"
+        + _DELIVERABLE_TOKEN
+    ),
+)
+_PUBLIC_EXECUTABLE_PATTERN = re.compile(
+    r"(?i)\b([a-z0-9][a-z0-9._+-]{0,63})\s+(?:command[- ]line\s+)?tool\b"
+)
+_GENERIC_TOOL_WORDS = frozenset(
+    {"a", "an", "available", "command", "external", "some", "the", "validation"}
+)
+
+
+@dataclass(frozen=True)
+class PublicDeliverableHint:
+    """A task-text output hint, never caller or verifier authority."""
+
+    deliverable_id: str
+    path: str
+    display_path: str
+    kind: str = "file"
+    authority: str = PUBLIC_DELIVERABLE_AUTHORITY
+
+
+@dataclass(frozen=True)
+class PublicExecutableHint:
+    """A named executable to check early, never an instruction to run it."""
+
+    capability_id: str
+    executable: str
+    authority: str = PUBLIC_DELIVERABLE_AUTHORITY
+
+
+def _matched_deliverable_token(match: re.Match[str]) -> str:
+    return next(
+        (
+            value.strip()
+            for value in match.groups()[-4:]
+            if isinstance(value, str) and value.strip()
+        ),
+        "",
+    )
+
+
+def _resolve_public_deliverable(
+    value: str, *, workspace_path: str | os.PathLike[str]
+) -> tuple[str, str] | None:
+    display = value.strip().strip("`'\"").rstrip(").]}")
+    if not display or len(display) > 512 or "://" in display or "\x00" in display:
+        return None
+    candidate = Path(display).expanduser()
+    # A bare natural-language word is not a file declaration. Extensionless
+    # absolute/relative paths remain valid when the task explicitly names one.
+    if not candidate.is_absolute() and "/" not in display and "." not in candidate.name:
+        return None
+    workspace = Path(workspace_path).expanduser().resolve()
+    if candidate.is_absolute():
+        resolved = candidate.resolve(strict=False)
+    else:
+        resolved = (workspace / candidate).resolve(strict=False)
+        try:
+            resolved.relative_to(workspace)
+        except ValueError:
+            return None
+    return str(resolved), display
+
+
+def infer_public_deliverable_hints(
+    request: str | None, *, workspace_path: str | os.PathLike[str]
+) -> tuple[PublicDeliverableHint, ...]:
+    """Conservatively extract explicitly named public output files.
+
+    These hints are deliberately weaker than ``CompletionContract``: they do
+    not run commands, validate contents, or stand in for a benchmark verifier.
+    They only make an unambiguous public delivery obligation observable.
+    """
+
+    if not isinstance(request, str) or not request.strip():
+        return ()
+    discovered: list[tuple[str, str]] = []
+    seen: set[str] = set()
+    for pattern in _PUBLIC_DELIVERABLE_PATTERNS:
+        for match in pattern.finditer(request[:256_000]):
+            resolved = _resolve_public_deliverable(
+                _matched_deliverable_token(match), workspace_path=workspace_path
+            )
+            if resolved is None:
+                continue
+            path, display = resolved
+            key = os.path.normcase(path)
+            if key in seen:
+                continue
+            seen.add(key)
+            discovered.append((path, display))
+            if len(discovered) >= _MAX_PUBLIC_DELIVERABLES:
+                break
+        if len(discovered) >= _MAX_PUBLIC_DELIVERABLES:
+            break
+    return tuple(
+        PublicDeliverableHint(
+            deliverable_id=f"public-output-{index}",
+            path=path,
+            display_path=display,
+        )
+        for index, (path, display) in enumerate(discovered, start=1)
+    )
+
+
+def infer_public_executable_hints(
+    request: str | None,
+) -> tuple[PublicExecutableHint, ...]:
+    """Extract bounded executable names from explicit ``X tool`` wording."""
+
+    if not isinstance(request, str) or not request.strip():
+        return ()
+    values: list[str] = []
+    seen: set[str] = set()
+    for match in _PUBLIC_EXECUTABLE_PATTERN.finditer(request[:256_000]):
+        executable = match.group(1)
+        key = executable.casefold()
+        if key in _GENERIC_TOOL_WORDS or key in seen:
+            continue
+        seen.add(key)
+        values.append(executable)
+        if len(values) >= 16:
+            break
+    return tuple(
+        PublicExecutableHint(
+            capability_id=f"public-executable-{index}",
+            executable=executable,
+        )
+        for index, executable in enumerate(values, start=1)
+    )
+
+
+def _publish_public_deliverable_contract(
+    context, *, request: str | None, workspace_path: str | os.PathLike[str]
+) -> tuple[PublicDeliverableHint, ...]:
+    hints = infer_public_deliverable_hints(request, workspace_path=workspace_path)
+    if hints:
+        context.context_info["public_deliverable_contract"] = {
+            "schema_version": PUBLIC_DELIVERABLE_SCHEMA,
+            "authority": PUBLIC_DELIVERABLE_AUTHORITY,
+            "source": "public_task_text",
+            "artifacts": [asdict(item) for item in hints],
+        }
+    else:
+        context.context_info.pop("public_deliverable_contract", None)
+    executables = infer_public_executable_hints(request)
+    if executables:
+        context.context_info["public_capability_hints"] = {
+            "schema_version": PUBLIC_CAPABILITY_SCHEMA,
+            "authority": PUBLIC_DELIVERABLE_AUTHORITY,
+            "source": "public_task_text",
+            "executables": [asdict(item) for item in executables],
+        }
+    else:
+        context.context_info.pop("public_capability_hints", None)
+    return hints
 
 
 def resolve_completion_mode(value: str | None = None) -> CompletionMode:
@@ -236,6 +408,9 @@ def configure_runtime_completion(
     workspace_path: str | os.PathLike[str],
 ) -> CompletionContract | None:
     """Bind only caller-selected artifact and validation requirements."""
+    _publish_public_deliverable_contract(
+        context, request=request, workspace_path=workspace_path
+    )
     mode = resolve_completion_mode()
     existing = getattr(context, "completion_contract", None)
     explicit_mode = (os.environ.get(COMPLETION_MODE_ENV) or "").strip().lower()
@@ -379,14 +554,20 @@ def configure_goal_completion(context, *, verification_commands: Sequence[str], 
 
 
 __all__ = [
-    "COMPLETION_MODE_ENV",
     "COMPLETION_MAX_REPAIRS_ENV",
+    "COMPLETION_MODE_ENV",
+    "PUBLIC_CAPABILITY_SCHEMA",
+    "PUBLIC_DELIVERABLE_SCHEMA",
     "REQUIRED_ARTIFACTS_ENV",
     "VALIDATION_COMMANDS_ENV",
+    "PublicDeliverableHint",
+    "PublicExecutableHint",
     "build_runtime_completion_contract",
-    "configure_runtime_completion",
     "configure_goal_completion",
-    "resolve_completion_mode",
+    "configure_runtime_completion",
+    "infer_public_deliverable_hints",
+    "infer_public_executable_hints",
     "resolve_completion_max_repairs",
+    "resolve_completion_mode",
     "resolve_runtime_completion_evidence",
 ]
