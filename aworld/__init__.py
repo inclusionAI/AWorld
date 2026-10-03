@@ -1,5 +1,14 @@
 """AWorld v1: independent Agent + Context + Tool kernel."""
-from ._version import __version__
+
+from importlib.metadata import PackageNotFoundError, version
+
+try:
+    # The repository can also produce the full legacy Runtime distribution.
+    # Report the version of the artifact that was actually installed instead
+    # of leaking the minimal v1 source version into that compatibility wheel.
+    __version__ = version("aworld")
+except PackageNotFoundError:
+    from ._version import __version__
 
 
 def __getattr__(name):

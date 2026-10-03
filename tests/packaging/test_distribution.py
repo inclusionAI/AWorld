@@ -83,7 +83,17 @@ def test_pep660_editable_install_uses_canonical_namespace(artifacts):
     run("uv", "venv", "--python", sys.executable, str(environment))
     python = environment / "bin/python"
     run("uv", "pip", "install", "--offline", "--python", str(python), "-e", str(ROOT), "-e", str(ROOT / "aworld-cli"))
-    run(str(python), "-I", "-c", "import aworld; from aworld.cli.main import main; assert aworld.__version__ == '1.0.0a4'", cwd=work)
+    run(
+        str(python),
+        "-I",
+        "-c",
+        (
+            "import aworld; import importlib.metadata; "
+            "from aworld.cli.main import main; "
+            "assert aworld.__version__ == importlib.metadata.version('aworld') == '1.0.0a4'"
+        ),
+        cwd=work,
+    )
     assert json.loads(run(str(environment / "bin/aworld-cli"), "run", "--demo", "--no-skills", "--task", "editable", "--json", cwd=work))["status"] == "completed"
 
 
