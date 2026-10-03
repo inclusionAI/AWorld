@@ -2,8 +2,15 @@ import asyncio
 import hashlib
 import os
 import sys
+from pathlib import Path
 import pytest
-from aworld.core.task_workspace.validation import (
+
+SKILL_SCRIPTS = (
+    Path(__file__).resolve().parents[2] / "aworld-skills" / "workbench" / "scripts"
+)
+sys.path.insert(0, str(SKILL_SCRIPTS))
+
+from workbench_runtime.validation import (
     ValidationLimits,
     validate_candidate,
     definition_hash,
@@ -346,7 +353,7 @@ def test_model_results_and_duplicate_check_ids_are_rejected(tmp_path):
 def test_command_uses_host_bound_task_env_without_inheriting_runtime_env(
     tmp_path, monkeypatch
 ):
-    from aworld.core.task_workspace.validation import canonical
+    from workbench_runtime.validation import canonical
 
     monkeypatch.setenv("PRIVATE_RUNTIME_TEST_TOKEN", "must-not-inherit")
     modules = tmp_path / "modules"
@@ -451,7 +458,7 @@ def test_large_binary_streams_complete_hash_without_retaining_parsing_bytes(tmp_
 
 def test_large_binary_receipt_can_be_validated_and_promoted_by_real_store(tmp_path):
     store_module = pytest.importorskip(
-        "aworld.core.task_workspace.store",
+        "workbench_runtime.store",
         reason="A2 store required for integrated regression",
     )
     workspace = tmp_path / "task"

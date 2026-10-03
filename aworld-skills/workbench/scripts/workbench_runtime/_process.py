@@ -1,4 +1,4 @@
-"""Bounded, cancellable process execution without shell interpolation."""
+"""Bounded, cancellable Workbench check execution without shell interpolation."""
 
 from __future__ import annotations
 

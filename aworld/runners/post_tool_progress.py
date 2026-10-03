@@ -52,6 +52,29 @@ def _runtime_context(context):
     return root_context or context
 
 
+def _semantic_state_scope(context) -> dict[str, Any]:
+    return {
+        "task_id": getattr(context, "task_id", None),
+        "task_epoch": getattr(context, "task_epoch", None),
+    }
+
+
+def _semantic_state_in_scope(
+    state: dict[str, Any] | None,
+    scope: dict[str, Any],
+) -> dict[str, Any] | None:
+    if not isinstance(state, dict):
+        return None
+    stored_scope = state.get("scope")
+    # Unscoped values remain a supported direct ContextState configuration
+    # boundary. States emitted by this runtime are always scoped, so they are
+    # rejected after a task/epoch transition instead of contaminating the next
+    # task's high-water mark and stagnation counters.
+    if stored_scope is not None and stored_scope != scope:
+        return None
+    return state
+
+
 def _metrics_dict(context) -> dict[str, Any]:
     runtime_context = _runtime_context(context)
     if runtime_context is None:
@@ -149,8 +172,8 @@ def record_semantic_tool_progress(
     if not isinstance(state_by_agent, dict):
         state_by_agent = {}
     previous = _select_semantic_state(previous, state_by_agent.get(agent_id))
-    if not isinstance(previous, dict):
-        previous = {}
+    semantic_scope = _semantic_state_scope(runtime_context)
+    previous = _semantic_state_in_scope(previous, semantic_scope) or {}
 
     serialized_observation = to_serializable(observation)
     action_results = (
@@ -184,7 +207,6 @@ def record_semantic_tool_progress(
         ),
         None,
     )
-
     raw_feature = os.environ.get(SEMANTIC_PROGRESS_LEDGER_ENV)
     semantic_ledger_enabled = not (
         raw_feature is not None
@@ -251,34 +273,85 @@ def record_semantic_tool_progress(
         )
     except Exception:
         completion_assessment = None
+    all_artifact_evidence_by_id = {
+        str(item.requirement_id): item
+        for item in getattr(runtime_context, "_completion_artifact_evidence", ())
+    }
+    all_self_check_evidence_by_id = {
+        str(item.command_id): item
+        for item in getattr(runtime_context, "_completion_self_checks", ())
+    }
+    all_immutable_input_evidence_by_id = {
+        str(item.input_id): item
+        for item in getattr(
+            runtime_context, "_completion_immutable_input_evidence", ()
+        )
+    }
+    all_final_evidence_codes = sorted(
+        set(getattr(runtime_context, "_completion_final_evidence_codes", ()))
+    )
+    completion_contract = getattr(runtime_context, "completion_contract", None)
+    required_artifact_ids = {
+        str(item.requirement_id)
+        for item in getattr(completion_contract, "required_artifacts", ())
+        if item.required
+    }
+    required_self_check_ids = {
+        str(item.command_id)
+        for item in getattr(completion_contract, "validation_commands", ())
+    }
+    required_self_check_ids.update(
+        str(value)
+        for value in getattr(completion_contract, "required_self_check_ids", ())
+    )
+    required_immutable_input_ids = {
+        str(value)
+        for value in getattr(completion_contract, "immutable_inputs", ())
+    }
+    required_final_evidence_codes = {
+        str(value)
+        for value in getattr(completion_contract, "required_final_evidence", ())
+    }
+    artifact_evidence_by_id = {
+        key: value
+        for key, value in all_artifact_evidence_by_id.items()
+        if key in required_artifact_ids
+    }
+    self_check_evidence_by_id = {
+        key: value
+        for key, value in all_self_check_evidence_by_id.items()
+        if key in required_self_check_ids
+    }
+    immutable_input_evidence_by_id = {
+        key: value
+        for key, value in all_immutable_input_evidence_by_id.items()
+        if key in required_immutable_input_ids
+    }
+    final_evidence_codes = sorted(
+        required_final_evidence_codes.intersection(all_final_evidence_codes)
+    )
     completion_projection = (
         {
             "status": completion_assessment.status.value,
             "reason_codes": list(completion_assessment.reason_codes),
-            "artifact_evidence_count": len(
-                getattr(runtime_context, "_completion_artifact_evidence", ())
-            ),
-            "self_check_count": len(
-                getattr(runtime_context, "_completion_self_checks", ())
-            ),
-            "final_evidence_count": len(
-                getattr(runtime_context, "_completion_final_evidence_codes", ())
-            ),
+            # Completion evidence is an identity-keyed latest-state view, just
+            # like ``assess_completion``.  Append-only retries of an unchanged
+            # check must not manufacture a new durable milestone merely by
+            # increasing a raw list length.
+            "artifact_evidence_count": len(artifact_evidence_by_id),
+            "self_check_count": len(self_check_evidence_by_id),
+            "final_evidence_count": len(final_evidence_codes),
             "satisfied_artifact_count": sum(
                 evidence.exists is True
-                for evidence in getattr(
-                    runtime_context, "_completion_artifact_evidence", ()
-                )
+                for evidence in artifact_evidence_by_id.values()
             ),
             "successful_self_check_count": sum(
                 evidence.exit_code == 0
-                for evidence in getattr(runtime_context, "_completion_self_checks", ())
+                for evidence in self_check_evidence_by_id.values()
             ),
             "valid_immutable_input_count": sum(
                 evidence.expected_hash == evidence.observed_hash
-                for evidence in getattr(
-                    runtime_context, "_completion_immutable_input_evidence", ()
-                )
+                for evidence in immutable_input_evidence_by_id.values()
             ),
             "external_verifier_passed": bool(
                 getattr(runtime_context, "_completion_external_verifier", None)
@@ -302,31 +375,23 @@ def record_semantic_tool_progress(
                         "content_hash": item.content_hash,
                         "media_type": item.media_type,
                     }
-                    for item in getattr(
-                        runtime_context, "_completion_artifact_evidence", ()
-                    )
+                    for item in all_artifact_evidence_by_id.values()
                 },
                 "immutable_inputs": {
                     str(item.input_id): {
                         "expected_hash": item.expected_hash,
                         "observed_hash": item.observed_hash,
                     }
-                    for item in getattr(
-                        runtime_context,
-                        "_completion_immutable_input_evidence",
-                        (),
-                    )
+                    for item in all_immutable_input_evidence_by_id.values()
                 },
                 "self_checks": {
                     str(item.command_id): {
                         "exit_code": item.exit_code,
                         "output_hash": item.output_hash,
                     }
-                    for item in getattr(runtime_context, "_completion_self_checks", ())
+                    for item in all_self_check_evidence_by_id.values()
                 },
-                "final_evidence_codes": sorted(
-                    getattr(runtime_context, "_completion_final_evidence_codes", ())
-                ),
+                "final_evidence_codes": all_final_evidence_codes,
                 "external_verifier_passed": bool(
                     getattr(runtime_context, "_completion_external_verifier", None)
                     and runtime_context._completion_external_verifier.passed
@@ -341,24 +406,19 @@ def record_semantic_tool_progress(
         and completion_evidence_fingerprint
         != previous.get("completion_evidence_fingerprint")
     )
-    # Absence of evidence is only evidence of no progress when this Tool
-    # boundary actually exposes a durable progress channel.  Many valid tasks
-    # make progress through investigation, compilation, downloads, or remote
-    # state without emitting Context artifact receipts or a completion
-    # contract.  Treat those observations as unknown.  Repetition and failure
-    # signatures remain bounded advisory signals; they do not let the framework
-    # decide that the task should stop.
-    failure_progress_observable = bool(
-        failure_signature is not None or previous.get("failure_signature") is not None
-    )
-    durable_progress_observable = bool(
+    # Workspace receipts and failure signatures make diagnostic change
+    # observable, but neither proves that a declared task requirement advanced.
+    # Keep contractless work unknown at the goal layer; a separate bounded
+    # advisory clock below can still ask the model to checkpoint without
+    # deciding that the task should stop.
+    diagnostic_progress_observable = bool(
         artifact_receipts
-        or completion_projection is not None
-        or failure_progress_observable
+        or failure_signature is not None
+        or previous.get("failure_signature") is not None
     )
     if not semantic_ledger_enabled:
         goal_progress_observable = completion_projection is not None
-    elif durable_progress_observable:
+    elif completion_projection is not None:
         goal_progress_observable = True
     else:
         goal_progress_observable = None
@@ -385,19 +445,35 @@ def record_semantic_tool_progress(
         else None
     )
     previous_completion_score = previous.get("completion_score")
+    previous_completion_high_water_score = previous.get(
+        "completion_high_water_score"
+    )
+    if not isinstance(previous_completion_high_water_score, list):
+        previous_completion_high_water_score = (
+            previous_completion_score
+            if isinstance(previous_completion_score, list)
+            else None
+        )
     completion_advanced = bool(
         completion_score is not None
         and (
             (
-                isinstance(previous_completion_score, list)
-                and tuple(completion_score) > tuple(previous_completion_score)
+                isinstance(previous_completion_high_water_score, list)
+                and tuple(completion_score)
+                > tuple(previous_completion_high_water_score)
             )
             or (
-                not isinstance(previous_completion_score, list)
+                not isinstance(previous_completion_high_water_score, list)
                 and completion_positive_evidence > 0
             )
         )
     )
+    completion_high_water_score = previous_completion_high_water_score
+    if completion_score is not None and (
+        not isinstance(completion_high_water_score, list)
+        or tuple(completion_score) > tuple(completion_high_water_score)
+    ):
+        completion_high_water_score = list(completion_score)
     recent_artifact_fingerprints = list(
         previous.get("recent_artifact_fingerprints") or []
     )[-7:]
@@ -429,12 +505,13 @@ def record_semantic_tool_progress(
         or completion_advanced
         or failure_changed
     )
-    # The semantic ledger treats a changed artifact or normalized failure class
-    # as new evidence.  Syntactically novel commands with the same evidence do
-    # not reset the bounded no-progress window.
-    goal_progress = (
-        semantic_progress if semantic_ledger_enabled else completion_advanced
-    )
+    # New failures and opaque workspace changes are useful evidence, but they
+    # are not proof that the requested outcome moved closer to completion.
+    # Reserve ``goal_progress`` for monotonic, inspectable milestone evidence;
+    # the controller uses it only to reset an advisory no-progress window and
+    # never to declare success.
+    durable_milestone_advanced = completion_advanced
+    goal_progress = completion_advanced
     goal_progress_count = int(previous.get("goal_progress_count", 0) or 0) + int(
         goal_progress
     )
@@ -455,7 +532,7 @@ def record_semantic_tool_progress(
     semantic_pair_hash = semantic_fingerprint(
         {"operation_hash": operation_hash, "result_hash": result_hash}
     )
-    progress_guard_reset = artifact_advanced or validation_evidence_advanced
+    progress_guard_reset = durable_milestone_advanced
     previous_pairs = previous.get("recent_operation_result_hashes")
     recent_pairs = (
         [value for value in previous_pairs if isinstance(value, str)][
@@ -475,7 +552,29 @@ def record_semantic_tool_progress(
     )
     history.append(result_hash)
     repetition_count = recent_pairs.count(semantic_pair_hash)
-    low_information_gain_count = history.count(result_hash)
+    result_repetition_count = history.count(result_hash)
+    # Successful investigation can produce useful observations without
+    # advancing a durable, inspectable milestone.  Keep that evidence in
+    # ``semantic_progress`` while allowing the advisory clock to continue.
+    # This prevents changing network errors, package installs, downloaded
+    # pages, and other opaque workspace churn from suppressing replanning.
+    # The signal never stops the task, revokes Tools, or imposes a cost limit.
+    durable_stagnation_count = (
+        0
+        if (
+            not semantic_ledger_enabled
+            or durable_milestone_advanced
+        )
+        else int(previous.get("durable_stagnation_count", 0) or 0) + 1
+    )
+    low_information_gain_count = max(
+        result_repetition_count,
+        (
+            durable_stagnation_count
+            if durable_stagnation_count >= _SEMANTIC_NO_PROGRESS_THRESHOLD
+            else 0
+        ),
+    )
     progress_guard_required = (
         repetition_count >= _PROGRESS_GUARD_REPEAT_THRESHOLD
         and not progress_guard_reset
@@ -484,29 +583,36 @@ def record_semantic_tool_progress(
         recent_artifact_fingerprints.append(artifact_fingerprint)
     state = {
         "agent_id": agent_id,
+        "scope": semantic_scope,
         "operation_hash": operation_hash,
         "result_hash": result_hash,
         "operation_result_hash": semantic_pair_hash,
         "repetition_count": repetition_count,
+        "result_repetition_count": result_repetition_count,
         "low_information_gain_count": low_information_gain_count,
+        "durable_stagnation_count": durable_stagnation_count,
         "recent_operation_result_hashes": recent_pairs,
         "recent_result_hashes": history,
         "recent_artifact_fingerprints": recent_artifact_fingerprints[-8:],
         "artifact_changed": artifact_changed,
         "artifact_fingerprint": artifact_fingerprint,
         "artifact_advanced": artifact_advanced,
+        "diagnostic_progress_observable": diagnostic_progress_observable,
         "failure_signature": failure_signature,
         "recent_failure_signatures": recent_failure_signatures[-8:],
         "hypothesis_id": hypothesis_id,
         "semantic_progress_enabled": semantic_ledger_enabled,
+        "semantic_progress": semantic_progress,
         "semantic_no_progress_threshold": _SEMANTIC_NO_PROGRESS_THRESHOLD,
         "rollback_performed": rollback_performed,
         "implicit_artifact_loss": implicit_artifact_loss,
         "completion_fingerprint": completion_fingerprint,
         "completion_evidence_fingerprint": completion_evidence_fingerprint,
         "completion_score": completion_score,
+        "completion_high_water_score": completion_high_water_score,
         "completion_advanced": completion_advanced,
         "validation_evidence_advanced": validation_evidence_advanced,
+        "durable_milestone_advanced": durable_milestone_advanced,
         "progress_guard_reset": progress_guard_reset,
         "progress_guard_required": progress_guard_required,
         "progress_guard_repeat_threshold": _PROGRESS_GUARD_REPEAT_THRESHOLD,
@@ -588,6 +694,10 @@ def record_semantic_tool_progress(
     if low_information_gain_count > 1 and not progress_guard_reset:
         metrics["low_information_gain_count"] = (
             int(metrics.get("low_information_gain_count", 0) or 0) + 1
+        )
+    if durable_stagnation_count > 0:
+        metrics["durable_stagnation_observation_count"] = (
+            int(metrics.get("durable_stagnation_observation_count", 0) or 0) + 1
         )
     if progress_guard_reset:
         metrics["semantic_recent_window_reset_count"] = (
@@ -730,6 +840,7 @@ def semantic_progress_for_agent(context, *, agent_id: str) -> dict[str, Any]:
     if not isinstance(state_by_agent, dict):
         state_by_agent = {}
     state = _select_semantic_state(state, state_by_agent.get(agent_id))
+    state = _semantic_state_in_scope(state, _semantic_state_scope(runtime_context))
     return dict(state) if isinstance(state, dict) else {}
 
 
@@ -747,10 +858,13 @@ def acknowledge_semantic_checkpoint(context, *, agent_id: str) -> None:
     if not isinstance(state_by_agent, dict):
         state_by_agent = {}
     state = _select_semantic_state(shared_state, state_by_agent.get(agent_id))
+    state = _semantic_state_in_scope(state, _semantic_state_scope(runtime_context))
     if not isinstance(state, dict):
         return
     state["repetition_count"] = 0
+    state["result_repetition_count"] = 0
     state["low_information_gain_count"] = 0
+    state["durable_stagnation_count"] = 0
     state["no_goal_progress_count"] = 0
     state["recent_operation_result_hashes"] = []
     state["recent_result_hashes"] = []

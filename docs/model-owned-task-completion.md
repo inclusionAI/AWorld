@@ -6,8 +6,9 @@ evaluator. Response wording, length, repetition, artifact checks, and inferred
 goal progress do not override the model's completion decision.
 
 The default CLI completion mode is `off`. Callers that deliberately need the
-legacy contract API can select `observe` or `enforce`. WORKBENCH remains an
-optional tool; its operations are not mandatory steps in the agent prompt.
+generic contract API can select `observe` or `enforce` and supply explicit
+artifact paths or validation commands. Workbench is a separately selected
+standalone Skill/CLI; it is not a core Tool or completion requirement.
 
 Agent and built-in swarm step limits are disabled by default. Explicit step
 limits and generation watchdogs remain available to callers. Transport errors,

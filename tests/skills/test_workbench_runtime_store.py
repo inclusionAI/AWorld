@@ -13,10 +13,15 @@ import sys
 
 import pytest
 
-from aworld.core.task_workspace.store import (
+SKILL_SCRIPTS = (
+    Path(__file__).resolve().parents[2] / "aworld-skills" / "workbench" / "scripts"
+)
+sys.path.insert(0, str(SKILL_SCRIPTS))
+
+from workbench_runtime.store import (
     StoreConflictError, StoreIntegrityError, StorePolicyError, TaskWorkspaceStore, assess_policy,
 )
-from aworld.core.task_workspace.store_io import canonical, fingerprint
+from workbench_runtime.store_io import canonical, fingerprint
 
 CHECKS = [{"id": "measure", "kind": "synthetic-distance"}]
 POLICY = {"mandatory_checks": ["measure"],
@@ -174,13 +179,15 @@ async def test_process_crash_multi_file_publication_recovers_last_consistent_can
     store.promote(old["candidate_id"], proof["receipt_id"], policy)
     new, proof = await candidate([42, 42])
     child = """import json,os,sys
-from aworld.core.task_workspace.store import TaskWorkspaceStore
+sys.path.insert(0,sys.argv[6])
+from workbench_runtime.store import TaskWorkspaceStore
 s=TaskWorkspaceStore.open_existing(sys.argv[1],policy=json.loads(sys.argv[2]))
 s._fault_injector=lambda event,index: os._exit(79) if event==sys.argv[5] and index==0 else None
 s.promote(sys.argv[3],sys.argv[4])
 """
     result = subprocess.run([sys.executable, "-c", child, str(store.store_path), json.dumps(policy),
-                             new["candidate_id"], proof["receipt_id"], crash_event], check=False)
+                             new["candidate_id"], proof["receipt_id"], crash_event,
+                             str(SKILL_SCRIPTS)], check=False)
     assert result.returncode == 79
     reopened = TaskWorkspaceStore.open_existing(store.store_path)
     assert [int((store.workspace / name).read_text()) for name in ("a.txt", "b.txt")] == expected
@@ -257,7 +264,7 @@ def test_sqlite_wal_group_preserves_latest_committed_rows_after_raw_deletion(sto
 
 
 def test_active_input_group_change_is_refused(store, monkeypatch):
-    from aworld.core.task_workspace import store_inputs
+    from workbench_runtime import store_inputs
     source = store.workspace / "source.txt"
     source.write_text("first")
     real = store_inputs.capture
@@ -382,7 +389,7 @@ async def test_incumbent_rebinds_accumulated_inputs_and_candidate_ids_remain_dis
 
 @pytest.mark.asyncio
 async def test_real_semantic_validator_rejects_invalid_candidate_and_measures_improvement(store):
-    validation = pytest.importorskip("aworld.core.task_workspace.validation")
+    validation = pytest.importorskip("workbench_runtime.validation")
     store.validator = validation.validate_candidate
     source = store.workspace / "source.json"
     source.write_text('[{"id": 1}]')
@@ -462,7 +469,7 @@ def test_checksum_corruption_in_wal_is_not_silently_dropped_by_sqlite(store):
 
 
 def test_regular_file_replaced_by_fifo_during_open_cannot_block_snapshot(store, monkeypatch):
-    from aworld.core.task_workspace import store_io
+    from workbench_runtime import store_io
     source = store.workspace / "source"
     source.write_text("value")
     original = store_io.identity

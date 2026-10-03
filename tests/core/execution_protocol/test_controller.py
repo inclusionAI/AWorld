@@ -416,6 +416,26 @@ def test_first_candidate_final_gets_one_bounded_review_and_repair():
     assert final.state.repair_count == 1
 
 
+def test_ordinary_tool_observation_during_review_does_not_enter_repair():
+    policy = ExecutionProtocolPolicy(
+        mode="guide", independent_acceptance_enabled=False
+    )
+    review = transition_execution_protocol(
+        _armed_state(), ExecutionProtocolEvent(kind=EventKind.CANDIDATE_FINAL), policy
+    )
+
+    observed = transition_execution_protocol(
+        review.state,
+        _tool(current_step=9, evidence_advanced=True),
+        policy,
+    )
+
+    assert observed.decision.action is ControllerAction.CONTINUE
+    assert observed.state.phase is ProtocolPhase.REVIEW
+    assert observed.state.review_pending is True
+    assert observed.state.repair_count == 0
+
+
 def test_uncertain_and_error_reviews_fail_open_to_current_result():
     policy = ExecutionProtocolPolicy(
         mode="guide", independent_acceptance_enabled=False

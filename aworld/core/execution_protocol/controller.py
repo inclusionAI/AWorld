@@ -75,8 +75,9 @@ def transition_execution_protocol(
     """Apply one event without side effects.
 
     Controller decisions never declare the user's task correct or failed.
-    Uncertain/error review results consume the bounded repair opportunity and
-    never become acceptance.
+    A Tool observation during review remains an observation; only an explicit
+    REVIEW_RESULT event can enter repair. Uncertain/error critic results never
+    become acceptance.
     """
     if not isinstance(state, ExecutionProtocolState):
         raise TypeError("state must be ExecutionProtocolState")

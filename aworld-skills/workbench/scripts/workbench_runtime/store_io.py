@@ -1,4 +1,4 @@
-"""Bounded, durable filesystem primitives for the scoped task workspace store."""
+"""Bounded, durable filesystem primitives for standalone Workbench state."""
 from __future__ import annotations
 
 from contextlib import contextmanager

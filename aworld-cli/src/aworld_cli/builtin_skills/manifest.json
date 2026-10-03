@@ -13,6 +13,21 @@
         "long-running-agent/references/execution-semantics.md",
         "long-running-agent/references/checkpoints-and-review.md"
       ]
+    },
+    "workbench": {
+      "source": "aworld-skills/workbench",
+      "skill_file": "workbench/SKILL.md",
+      "execution_assets": [
+        "workbench/scripts/workbench.py",
+        "workbench/scripts/workbench_runtime/__init__.py",
+        "workbench/scripts/workbench_runtime/_process.py",
+        "workbench/scripts/workbench_runtime/_process_child.py",
+        "workbench/scripts/workbench_runtime/session.py",
+        "workbench/scripts/workbench_runtime/store.py",
+        "workbench/scripts/workbench_runtime/store_inputs.py",
+        "workbench/scripts/workbench_runtime/store_io.py",
+        "workbench/scripts/workbench_runtime/validation.py"
+      ]
     }
   }
 }

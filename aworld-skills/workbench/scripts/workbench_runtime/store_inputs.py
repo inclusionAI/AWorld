@@ -1,4 +1,4 @@
-"""Pluggable format-based input groups, including SQLite's committed WAL view."""
+"""Workbench input groups, including SQLite's committed WAL view."""
 from __future__ import annotations
 
 from dataclasses import dataclass

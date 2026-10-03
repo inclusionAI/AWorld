@@ -490,6 +490,30 @@ class DefaultAgentHandler(AgentHandler):
                 headers=message.headers
             )
         else:
+            # A tool-free root response can be a typed, honest task outcome
+            # rather than an invalid team self-call. In particular, model
+            # response recovery records ``incomplete`` before returning its
+            # bounded fallback. Preserve that task-owned state so TaskHandler
+            # can publish a scoreable incomplete result; never relabel it as a
+            # generic infrastructure exception.
+            from aworld.core.context.execution_state import get_execution_state
+
+            execution_state = get_execution_state(message.context)
+            if (
+                isinstance(execution_state, dict)
+                and execution_state.get("agent_id") == agent.id()
+                and execution_state.get("status")
+                in {"incomplete", "budget_exhausted"}
+            ):
+                yield Message(
+                    category=Constants.TASK,
+                    payload=action.policy_info,
+                    sender=agent.id(),
+                    session_id=session_id,
+                    topic=TopicType.FINISHED,
+                    headers=message.headers,
+                )
+                return
             # Team mode does not recommend leader to directly call itself without tools
             text = "self to self" if len(self.agent_calls) > self.swarm.min_call_num else "at the first"
             yield Message(

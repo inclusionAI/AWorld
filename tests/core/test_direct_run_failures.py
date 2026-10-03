@@ -1107,7 +1107,7 @@ def test_live_partial_summary_uses_reconciled_calls_and_projects_atif_steps() ->
                         {
                             "id": "tool-1",
                             "function": {
-                                "name": "WORKBENCH",
+                                "name": "CONTEXT_TOOL",
                                 "arguments": "{}",
                             },
                         }
@@ -1176,7 +1176,7 @@ def test_live_partial_summary_uses_reconciled_calls_and_projects_atif_steps() ->
     assert [
         step["tool_calls"][0]["function_name"]
         for step in trajectory["steps"][1:]
-    ] == ["WORKBENCH", "terminal"]
+    ] == ["CONTEXT_TOOL", "terminal"]
 
 
 def test_live_atif_checkpoint_replaces_startup_checkpoint(tmp_path) -> None:

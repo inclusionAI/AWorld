@@ -1,15 +1,23 @@
 import hashlib
 import json
 import sys
+import time
+from types import SimpleNamespace
 
 import pytest
 
+from aworld.core.common import ActionModel
 from aworld.core.context.base import Context
+from aworld.core.context.execution_state import record_execution_state
 from aworld.core.context.compiler import ArtifactRequirement, CompletionContract, CompletionMode, ValidationCommand
+from aworld.core.event.base import Constants, Message, TopicType
+from aworld.core.task import Task, TaskResponse
+from aworld.runners.handler.agent import DefaultAgentHandler
+from aworld.runners.handler.task import DefaultTaskHandler
+from aworld_cli import main as main_module
 from aworld_cli.core.runtime_completion import configure_runtime_completion, resolve_runtime_completion_evidence
 from aworld_cli.executors.continuous import ContinuousExecutor
-from aworld_cli.run_outcome import DirectRunOutcome
-from types import SimpleNamespace
+from aworld_cli.run_outcome import DirectRunOutcome, DirectRunStatus
 
 
 def test_explicit_outputs_can_be_observed_without_enforcement(monkeypatch, tmp_path):
@@ -80,6 +88,172 @@ def test_task_response_status_survives_cli_projection(status):
     assert outcome.to_dict()["semantic_status"] == "task_failed"
     assert outcome.to_dict()["failure"]["error_code"] == "agent_" + status
     assert result["recoverable"] is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "semantic_status,completion_reason,expected_outcome",
+    [
+        (
+            "incomplete",
+            "model_output_truncated",
+            DirectRunStatus.INCOMPLETE,
+        ),
+        (
+            "budget_exhausted",
+            "long_horizon_generation_budget_exhausted",
+            DirectRunStatus.BUDGET_EXHAUSTED,
+        ),
+    ],
+)
+async def test_team_handler_preserves_recoverable_stop_through_direct_outcome(
+    monkeypatch,
+    semantic_status,
+    completion_reason,
+    expected_outcome,
+):
+    task = Task(id="recoverable", name="recoverable", input="finish work")
+    context = Context(task_id=task.id)
+    context.set_task(task)
+
+    class RootAgent:
+        finished = False
+
+        @staticmethod
+        def id():
+            return "root-agent"
+
+    root = RootAgent()
+    swarm = SimpleNamespace(
+        agents={root.id(): root},
+        agent_graph=SimpleNamespace(root_agent=root),
+        communicate_agent=root,
+        min_call_num=0,
+        max_steps=100,
+        cur_step=1,
+        finished=False,
+    )
+    agent_runner = SimpleNamespace(
+        swarm=swarm,
+        endless_threshold=3,
+        task=task,
+    )
+
+    class TaskRunner:
+        def __init__(self):
+            self.task = task
+            self.context = context
+            self.start_time = time.time()
+            self._task_response = None
+            self.stopped = False
+
+        async def stop(self):
+            self.stopped = True
+
+    async def route_through_handlers() -> TaskResponse:
+        agent_handler = DefaultAgentHandler(agent_runner)
+        agent_handler.agent_calls.append(root.id())
+        record_execution_state(
+            context,
+            root.id(),
+            semantic_status,
+            completion_reason,
+            recoverable=True,
+        )
+        source = Message(
+            category=Constants.AGENT,
+            sender=root.id(),
+            receiver=root.id(),
+            headers={"context": context},
+        )
+        routed = [
+            event
+            async for event in agent_handler._team_stop_check(
+                ActionModel(
+                    agent_name=root.id(),
+                    policy_info="Work remains incomplete.",
+                ),
+                source,
+            )
+        ]
+        assert len(routed) == 1
+        assert routed[0].topic == TopicType.FINISHED
+
+        task_runner = TaskRunner()
+        task_handler = DefaultTaskHandler(task_runner)
+        task_events = [
+            event async for event in task_handler._do_handle(routed[0])
+        ]
+        response = task_events[-1].payload
+        assert isinstance(response, TaskResponse)
+        assert task_runner.stopped is True
+        return response
+
+    class BridgeExecutor:
+        def __init__(self):
+            self.session_id = "recoverable-session"
+            self.context = context
+            self.last_task_response = None
+            self.last_task_interrupted = False
+            self.last_skill_activation_evidence = ()
+            self.last_llm_usage = None
+            self.chat_count = 0
+
+        async def chat(self, *args, **kwargs):
+            self.chat_count += 1
+            response = await route_through_handlers()
+            response.llm_calls = [{"request_id": "provider-1"}]
+            self.last_task_response = response
+            return response.answer
+
+    bridge = BridgeExecutor()
+
+    class Runtime:
+        def __init__(self, *args, **kwargs):
+            self._scheduler = None
+
+        async def _load_agents(self):
+            return [SimpleNamespace(name="Aworld")]
+
+        async def _create_executor(self, agent):
+            return bridge
+
+        def _bind_scheduler_default_agent(self, name):
+            return None
+
+        def _restore_executor_session(self, *args, **kwargs):
+            return None
+
+    monkeypatch.setattr(main_module, "CliRuntime", Runtime)
+    monkeypatch.setattr("aworld.core.scheduler.get_scheduler", lambda: object())
+
+    outcome = await main_module._run_direct_mode(
+        prompt="finish work",
+        agent_name="Aworld",
+        non_interactive=True,
+    )
+
+    response = bridge.last_task_response
+    assert isinstance(response, TaskResponse)
+    assert response.success is False
+    assert response.status == semantic_status
+    assert response.semantic_status == semantic_status
+    assert response.failure_origin == "task"
+    assert response.failure_code == completion_reason
+    assert response.recoverable is True
+    assert bridge.chat_count == 1
+    assert outcome.status is expected_outcome
+    assert outcome.succeeded is False
+    assert outcome.process_exit_code == 0
+    assert outcome.failure_record is None
+    assert "failure" not in outcome.to_dict()
+    projected = outcome.summary["results"][-1]
+    assert projected["semantic_status"] == semantic_status
+    assert projected["completion_reason"] == completion_reason
+    assert projected["recoverable"] is True
+    serialized_summary = json.dumps(outcome.summary, default=str)
+    assert "runtime_exception" not in serialized_summary
+    assert "infrastructure_failed" not in serialized_summary
 
 
 @pytest.mark.asyncio

@@ -1,4 +1,4 @@
-"""Executed, hash-bound checks for task artifacts; no reward inference.
+"""Executed, hash-bound Workbench checks; no reward inference.
 
 The caller supplies candidate/input mappings from its own task scope. Returned
 receipts are plain data: a trusted session/store must register them itself,

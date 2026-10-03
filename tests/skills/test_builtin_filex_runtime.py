@@ -25,11 +25,13 @@ def test_runtime_registry_includes_builtin_filex_without_configured_sources(
     view = build_runtime_skill_registry_view(cwd=tmp_path)
     skills = view.get_all_skills()
 
-    assert set(skills) == {"filex", "long-running-agent"}
+    assert set(skills) == {"filex", "long-running-agent", "workbench"}
     assert skills["filex"]["default_enabled"] is False
     assert skills["filex"]["active"] is False
     assert Path(skills["filex"]["asset_root"]) == get_builtin_skills_path() / "filex"
     assert "scripts/filex.py" in skills["filex"]["execution_assets"]["relative_paths"]
+    assert skills["workbench"]["default_enabled"] is False
+    assert skills["workbench"]["active"] is False
     assert str(get_builtin_skills_path()) in view.source_paths
 
 

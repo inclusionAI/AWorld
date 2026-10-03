@@ -1066,16 +1066,6 @@ class LocalAgentExecutor(BaseAgentExecutor):
         install_contract = getattr(root_agent, "_install_runtime_completion_contract", None)
         if callable(install_contract):
             install_contract(context)
-        local_path = getattr(root_agent, "_task_workspace_local_path", None)
-        if os.path.realpath(context.workspace_path) == local_path:
-            from aworld.core.task_workspace.session import bind_task_workspace, goal_workspace_identity
-            scope = {"session_id": str(session_id), "task_id": str(task_id)}
-            if logical_state:
-                scope = {
-                    "session_id": str(session_id),
-                    "goal_id": goal_workspace_identity(logical_state),
-                }
-            bind_task_workspace(context, context.workspace_path, scope)
         configure_runtime_completion(
             context, request=workspace_request,
             workspace_path=context.workspace_path,

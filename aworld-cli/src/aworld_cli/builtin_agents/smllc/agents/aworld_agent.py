@@ -19,7 +19,6 @@ from aworld.core.tool.surface import (
 from aworld.logs.util import logger
 from aworld_cli.core.context_tool import CONTEXT_TOOL
 from aworld_cli.core.model_profiles import resolve_context_compiler_env, resolve_context_window_env
-from aworld.tools.workbench_tool import WORKBENCH, WORKBENCH_SCHEMA_IDS
 from aworld_cli.core.builtin_skills import AWORLD_DEFAULT_SKILL_NAMES
 from aworld_cli.core.skill_registry import build_skill_resolver_inputs
 from .mac_ui_automation import (
@@ -323,7 +322,6 @@ def _aworld_root_tool_policy(
 
     tool_names = [
         CONTEXT_TOOL,
-        WORKBENCH,
         *(
             [CAST_SEARCH]
             if _CAST_TOOLS_AVAILABLE and profile.profile_id == "general"
@@ -635,9 +633,15 @@ def build_aworld_agent(include_skills: Optional[str] = None):
         tool_surface_profile,
         has_subagents=bool(sub_agents),
     )
-    # Advertise only capabilities the root agent is allowed to use. The
-    # Sandbox may host additional providers for specialized subagents.
-    prompt_capabilities = [*root_tool_names, *aworld_mcp_servers]
+    # Advertise every provider the root agent can actually use. The schemas
+    # remain authoritative for callable names, but omitting filesystem here
+    # biases the model toward analysis through the terminal instead of direct
+    # read/write/edit actions.
+    prompt_capabilities = [
+        *builtin_tools,
+        *root_tool_names,
+        *aworld_mcp_servers,
+    ]
 
     # Create the root as a direct executor. Delegation is an optional capability,
     # not its identity, and is exposed only when collaborators were initialized.
@@ -661,12 +665,6 @@ def build_aworld_agent(include_skills: Optional[str] = None):
         black_tool_actions=black_tool_actions,
         tool_surface_specs=(
             ToolCapabilitySpec(
-                capability_id="workbench",
-                schema_ids=WORKBENCH_SCHEMA_IDS,
-                lifecycle=ToolLifecycle.IMMEDIATE,
-                required=enforce_tool_surface,
-            ),
-            ToolCapabilitySpec(
                 capability_id="terminal",
                 schema_ids=("run_code",),
                 lifecycle=ToolLifecycle.IMMEDIATE,
@@ -683,9 +681,6 @@ def build_aworld_agent(include_skills: Optional[str] = None):
         **budgeted_agent_kwargs,
     )
     aworld_agent.tool_surface_profile = tool_surface_profile
-    # Native workbench operations share only this locally created Sandbox.
-    aworld_agent._task_workspace_local_path = os.path.realpath(os.getcwd())
-
     if sub_agents:
         logger.info(
             f"Adding {len(sub_agents)} initialized sub-agent(s) to Aworld TeamSwarm"

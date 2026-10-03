@@ -6,6 +6,7 @@ import asyncio
 import copy
 import inspect
 import json
+import math
 import os
 import re
 import threading
@@ -59,6 +60,7 @@ from aworld.core.execution_protocol import (
     ControllerAction,
     ExecutionProtocolPolicy,
     ExecutionProtocolStore,
+    ProtocolPhase,
     ProtocolMode,
 )
 from aworld.core.context.compiler.parity import (
@@ -79,7 +81,7 @@ from aworld.core.event.base import (
     MemoryEventMessage,
     ChunkMessage,
 )
-from aworld.core.exceptions import AWorldRuntimeException
+from aworld.core.exceptions import AWorldRuntimeException, AWorldTransientModelError
 from aworld.core.model_output_parser import ModelOutputParser
 from aworld.core.tool.tool_desc import get_tool_desc
 from aworld.core.tool.surface import (
@@ -165,8 +167,71 @@ _GENERATION_TASKS_LOCK = threading.Lock()
 _LONG_HORIZON_EXECUTION_PROFILE_PARAM = "__aworld_execution_profile"
 _LONG_HORIZON_HYPOTHESIS_PARAM = "__aworld_hypothesis_id"
 _ACCEPTANCE_PROBE_PARAM = "__aworld_acceptance_probe"
+_REVIEW_DECISION_PARAM = "__aworld_review_decision"
 INDEPENDENT_ACCEPTANCE_CRITIC_ENV = "AWORLD_INDEPENDENT_ACCEPTANCE_CRITIC"
 SEMANTIC_PROGRESS_LEDGER_ENV = "AWORLD_SEMANTIC_PROGRESS_LEDGER"
+
+# Only stable provider signals may enter task-level model recovery.  Human
+# error text is intentionally excluded: it is provider-specific, mutable, and
+# can turn deterministic request failures into unsafe retry loops.
+_TRANSIENT_MODEL_STATUS_CODES = frozenset({408, 425, 429, 500, 502, 503, 504})
+_TRANSIENT_MODEL_ERROR_CODES = frozenset(
+    {
+        "api_connection_error",
+        "connection_error",
+        "gateway_timeout",
+        "rate_limit_exceeded",
+        "server_error",
+        "service_unavailable",
+        "timeout",
+        "upstream_connection_error",
+        "upstream_disconnect",
+    }
+)
+_TRANSIENT_MODEL_EXCEPTION_TYPES = frozenset(
+    {
+        "APIConnectionError",
+        "APITimeoutError",
+        "ClientConnectionError",
+        "ClientConnectorError",
+        "ClientOSError",
+        "ClientPayloadError",
+        "ConnectError",
+        "ConnectTimeout",
+        "ConnectionResetError",
+        "IncompleteRead",
+        "InternalServerError",
+        "PoolTimeout",
+        "ReadError",
+        "ReadTimeout",
+        "RemoteProtocolError",
+        "ServerDisconnectedError",
+        "TimeoutError",
+        "WriteError",
+        "WriteTimeout",
+    }
+)
+
+# Provider transport success does not make a length-stopped or malformed model
+# action executable.  These reasons are produced only by
+# ``_incomplete_model_response_reason`` and remain task/model-owned: a normal
+# tool-capable turn may repair them while caller time and Agent step budget
+# remain.  There is intentionally no count/cost ceiling here; the Task deadline
+# and the existing Agent step policy are the liveness boundaries.
+_RECOVERABLE_MODEL_RESPONSE_REASONS = frozenset(
+    {
+        "incomplete_tool_arguments",
+        "invalid_tool_arguments",
+        "malformed_tool_call_batch",
+        "model_output_interrupted",
+        "model_output_truncated",
+        "model_stream_ended_without_finish_reason",
+        "reasoning_only_response",
+    }
+)
+_MODEL_RESPONSE_RECOVERY_CONTEXT_KEY = "model_response_recovery_context"
+_LONG_HORIZON_REVIEW_DEADLINE_KEY = "long_horizon_review_deadline"
+_LONG_HORIZON_REVIEW_DEADLINE_SCHEMA = "aworld.review-deadline/v1"
 
 
 def _default_on_env(name: str) -> bool:
@@ -194,6 +259,12 @@ DEFAULT_LLM_EXECUTION_TIMEOUT_SECONDS = 360.0
 EXECUTION_PROTOCOL_REVIEW_UNARMED_ENV = (
     "AWORLD_EXECUTION_PROTOCOL_REVIEW_UNARMED_CANDIDATES"
 )
+
+
+def _monotonic_now() -> float:
+    """Return the process-local clock used by bounded review windows."""
+
+    return time.monotonic()
 
 
 @dataclass(frozen=True)
@@ -757,14 +828,15 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             self.llm, "_context_completion_mode", "off"
         )
         existing = context.completion_contract
-        owned_extension = any(existing is getattr(context, attribute, None)
-                              for attribute in ("_workspace_completion_owned_contract", "_goal_completion_owned_contract"))
+        owned_extension = existing is getattr(
+            context, "_goal_completion_owned_contract", None
+        )
         if existing is not None and owned_extension and any(
             contract is getattr(context, attribute, None)
-            for attribute in ("_workspace_completion_caller_contract", "_goal_completion_base_contract")
+            for attribute in ("_goal_completion_base_contract",)
         ):
-            # The local executor appended actual delivery/goal evidence to this
-            # same caller contract. Reinstalling it would silently drop checks.
+            # The local executor appended explicit goal verification to this
+            # caller contract. Reinstalling it would silently drop those checks.
             return
         if existing is not None and existing != contract:
             raise ValueError("the Context and primary Agent supply conflicting completion contracts")
@@ -1054,6 +1126,78 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             augmented.append(candidate)
         return augmented
 
+    @staticmethod
+    def _review_decision_schema() -> dict[str, Any]:
+        return {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "decision": {"type": "string", "enum": ["repair"]},
+                "reason": {"type": "string", "maxLength": 1024},
+            },
+            "required": ["decision", "reason"],
+            "description": (
+                "Optional only during model-owned completion reflection. Set "
+                "this object on the concrete Tool call that begins a necessary "
+                "repair after observing a material gap. Omit it for inspection "
+                "or verification. AWorld removes it before Tool execution."
+            ),
+        }
+
+    def _with_model_review_control(
+        self,
+        tools: List[Dict[str, Any]] | None,
+        context: Context,
+    ) -> List[Dict[str, Any]] | None:
+        from aworld.runners.execution_protocol import model_owned_review_active
+
+        if not tools or not model_owned_review_active(context, self.id()):
+            return tools
+        augmented = []
+        for schema in tools:
+            candidate = copy.deepcopy(schema)
+            function = (
+                candidate.get("function") if isinstance(candidate, dict) else None
+            )
+            parameters = (
+                function.get("parameters") if isinstance(function, dict) else None
+            )
+            if isinstance(parameters, dict):
+                properties = parameters.get("properties")
+                if not isinstance(properties, dict):
+                    properties = {}
+                    parameters["properties"] = properties
+                properties[_REVIEW_DECISION_PARAM] = (
+                    self._review_decision_schema()
+                )
+            augmented.append(candidate)
+        return augmented
+
+    def _consume_model_review_control(
+        self, result: AgentResult, context: Context
+    ) -> bool:
+        """Strip review controls and apply only one strict repair marker."""
+        values = []
+        for action in result.actions or ():
+            params = getattr(action, "params", None)
+            if not isinstance(params, dict):
+                continue
+            if _REVIEW_DECISION_PARAM in params:
+                values.append(params.pop(_REVIEW_DECISION_PARAM))
+        if len(values) != 1:
+            return False
+        from aworld.runners.execution_protocol import (
+            record_review_repair_decision,
+        )
+
+        transition = record_review_repair_decision(
+            context, self.id(), values[0]
+        )
+        return bool(
+            transition is not None
+            and transition.decision.action is ControllerAction.REQUEST_REPAIR
+        )
+
     def _consume_acceptance_probe_control(
         self, result: AgentResult, context: Context
     ) -> bool:
@@ -1163,36 +1307,7 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         return (
             "The runtime completion contract rejected the completion claim "
             f"({reasons}). Continue working, gather new evidence, and rerun focused checks."
-            + self._completion_delivery_feedback(context)
         )
-
-    @staticmethod
-    def _completion_delivery_feedback(context) -> str:
-        """Expose bounded checker metadata without replaying checker output."""
-        validation = context.context_info.get("delivery_validation")
-        if not isinstance(validation, dict):
-            return (" Use WORKBENCH inspect to review the delivery requirements and latest checks."
-                    if context.context_info.get("task_workspace_binding") else "")
-        receipt = validation.get("receipt", validation)
-        receipt = receipt if isinstance(receipt, dict) else {}
-        failed = [check for check in receipt.get("checks", [])
-                  if isinstance(check, dict) and check.get("success") is not True]
-        details = []
-        for check in failed[:5]:
-            summary = {key: check[key][:180] for key in ("id", "kind", "path", "status", "error_type")
-                       if isinstance(check.get(key), str)}
-            details.append(summary)
-        message = ""
-        if details:
-            message = " Executed delivery check failures: " + json.dumps(details, ensure_ascii=False, separators=(",", ":"))
-            if len(failed) > len(details):
-                message += f" ({len(failed) - len(details)} more failed checks)."
-        readback = validation.get("readback")
-        if isinstance(readback, dict) and readback.get("valid") is False:
-            message += " Published artifact readback is invalid."
-        if receipt.get("unchanged") is False:
-            message += " Artifact or input bytes changed during validation."
-        return message + " Use WORKBENCH inspect to review the latest validation details, repair the affected output, then validate again."
 
     def _record_llm_call_request(
         self,
@@ -3046,6 +3161,590 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             )
             return None
 
+    @staticmethod
+    def _transient_model_failure_details(
+        exc: BaseException,
+    ) -> dict[str, Any] | None:
+        """Classify provider liveness failures from types and stable codes only."""
+
+        if isinstance(exc, AWorldTransientModelError):
+            return {
+                "status_code": exc.status_code,
+                "error_code": exc.error_code,
+                "source_error_type": exc.source_error_type
+                or type(exc).__name__,
+            }
+
+        status_codes: list[int] = []
+        error_codes: list[str] = []
+        exception_types: list[str] = []
+        seen_mappings: set[int] = set()
+        current: BaseException | None = exc
+        seen: set[int] = set()
+
+        def collect_mapping(value: Any) -> None:
+            if not isinstance(value, dict) or id(value) in seen_mappings:
+                return
+            seen_mappings.add(id(value))
+            status = value.get("status_code", value.get("status"))
+            if isinstance(status, str) and status.isdigit():
+                status = int(status)
+            if isinstance(status, int) and not isinstance(status, bool):
+                status_codes.append(status)
+            code = value.get("code", value.get("type"))
+            if isinstance(code, str) and code.strip():
+                error_codes.append(code.strip().lower())
+            nested = value.get("error")
+            if isinstance(nested, dict) and nested is not value:
+                collect_mapping(nested)
+
+        while current is not None and id(current) not in seen:
+            seen.add(id(current))
+            exception_types.append(type(current).__name__)
+            status = getattr(current, "status_code", None)
+            if isinstance(status, str) and status.isdigit():
+                status = int(status)
+            if isinstance(status, int) and not isinstance(status, bool):
+                status_codes.append(status)
+            code = getattr(current, "code", None)
+            if isinstance(code, str) and code.strip():
+                error_codes.append(code.strip().lower())
+            collect_mapping(getattr(current, "error_details", None))
+            collect_mapping(getattr(current, "body", None))
+            response = getattr(current, "response", None)
+            if isinstance(response, dict):
+                collect_mapping(response)
+            elif response is not None:
+                response_status = getattr(response, "status_code", None)
+                if isinstance(response_status, int) and not isinstance(
+                    response_status, bool
+                ):
+                    status_codes.append(response_status)
+            current = current.__cause__ or current.__context__
+
+        transient_status = next(
+            (
+                status
+                for status in status_codes
+                if status in _TRANSIENT_MODEL_STATUS_CODES
+            ),
+            None,
+        )
+        transient_code = next(
+            (
+                code
+                for code in error_codes
+                if code in _TRANSIENT_MODEL_ERROR_CODES
+            ),
+            None,
+        )
+        transient_type = next(
+            (
+                name
+                for name in exception_types
+                if name in _TRANSIENT_MODEL_EXCEPTION_TYPES
+            ),
+            None,
+        )
+        if transient_status is None and transient_code is None and transient_type is None:
+            return None
+        # An explicit deterministic status wins over a generic transport class.
+        if status_codes and transient_status is None:
+            return None
+        return {
+            "status_code": transient_status,
+            "error_code": transient_code,
+            "source_error_type": transient_type or exception_types[-1],
+        }
+
+    def _long_horizon_transient_recovery_window(
+        self,
+        context: Context,
+    ) -> float | None:
+        """Return solve time left before the protocol/caller finalization reserve."""
+
+        if not self._long_horizon_skill_active():
+            return None
+        try:
+            policy = self._resolve_execution_protocol_policy(context)
+            state = ExecutionProtocolStore(context, self.id(), policy).load()
+        except Exception:
+            return None
+        if not state.long_horizon_armed or state.phase not in {
+            ProtocolPhase.EXECUTE,
+            ProtocolPhase.REPAIR,
+        }:
+            return None
+        get_task = getattr(context, "get_task", None)
+        try:
+            task = get_task() if callable(get_task) else None
+            remaining = task.remaining_seconds() if task is not None else None
+        except Exception:
+            return None
+        if (
+            isinstance(remaining, bool)
+            or not isinstance(remaining, (int, float))
+            or not math.isfinite(float(remaining))
+        ):
+            # Recovery without a caller deadline could retry forever.
+            return None
+        return max(
+            0.0,
+            float(remaining) - float(policy.finalization_reserve_seconds),
+        )
+
+    @staticmethod
+    def _transient_model_recovery_backoff_seconds(
+        consecutive_failures: int,
+    ) -> float:
+        """Use bounded backoff while leaving the task deadline as the hard cap."""
+
+        if consecutive_failures <= 0:
+            return 0.0
+        return min(30.0, float(2 ** min(consecutive_failures - 1, 5)))
+
+    def _record_transient_model_recovery(
+        self,
+        context: Context,
+        *,
+        outcome: str,
+        reason: str,
+        details: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        key = "transient_model_recovery_metrics"
+        metrics = context.context_info.get(key)
+        if not isinstance(metrics, dict):
+            metrics = {}
+        metrics["last_outcome"] = outcome
+        metrics["last_reason"] = reason
+        metrics[f"outcome:{outcome}"] = int(
+            metrics.get(f"outcome:{outcome}", 0) or 0
+        ) + 1
+        if outcome == "scheduled":
+            metrics["attempt_count"] = int(metrics.get("attempt_count", 0) or 0) + 1
+            metrics["consecutive_failure_count"] = int(
+                metrics.get("consecutive_failure_count", 0) or 0
+            ) + 1
+        elif outcome == "recovered":
+            metrics["consecutive_failure_count"] = 0
+        if isinstance(details, dict):
+            for field in ("status_code", "error_code", "source_error_type"):
+                value = details.get(field)
+                if isinstance(value, (str, int)) and not isinstance(value, bool):
+                    metrics[f"last_{field}"] = value
+        context.context_info[key] = metrics
+        return metrics
+
+    async def _schedule_transient_model_recovery(
+        self,
+        context: Context,
+        *,
+        reason: str,
+        details: dict[str, Any] | None = None,
+    ) -> bool:
+        """Wait within solve time and schedule one ordinary model/tool turn."""
+
+        available = self._long_horizon_transient_recovery_window(context)
+        if available is None or available <= 0.1:
+            return False
+        current = context.context_info.get("transient_model_recovery_metrics")
+        consecutive = (
+            int(current.get("consecutive_failure_count", 0) or 0)
+            if isinstance(current, dict)
+            else 0
+        )
+        delay = self._transient_model_recovery_backoff_seconds(consecutive)
+        if delay + 0.1 >= available:
+            return False
+        if delay:
+            await asyncio.sleep(delay)
+            available = self._long_horizon_transient_recovery_window(context)
+            if available is None or available <= 0.1:
+                return False
+        metrics = self._record_transient_model_recovery(
+            context,
+            outcome="scheduled",
+            reason=reason,
+            details=details,
+        )
+        schedule_turn_cause = getattr(context, "schedule_turn_cause", None)
+        if callable(schedule_turn_cause):
+            try:
+                schedule_turn_cause(
+                    TurnCauseCode.FRAMEWORK_RETRY,
+                    evidence_hash=canonical_json_hash(
+                        {
+                            "reason": reason,
+                            "recovery_attempt": metrics["attempt_count"],
+                        }
+                    ),
+                )
+            except Exception as exc:
+                logger.warning(
+                    "Failed to type transient model recovery turn; "
+                    f"error_type={type(exc).__name__}"
+                )
+        from aworld.core.context.execution_state import record_execution_state
+
+        record_execution_state(
+            context,
+            self.id(),
+            "running",
+            "transient_model_recovery_scheduled",
+            recoverable=True,
+        )
+        return True
+
+    def _transient_model_recovery_exhausted(
+        self,
+        context: Context,
+        *,
+        details: dict[str, Any] | None = None,
+    ) -> List[ActionModel]:
+        from aworld.core.context.execution_state import record_execution_state
+
+        record_execution_state(
+            context,
+            self.id(),
+            "incomplete",
+            "transient_model_recovery_deadline_exhausted",
+            recoverable=True,
+        )
+        self._record_transient_model_recovery(
+            context,
+            outcome="deadline_exhausted",
+            reason="transient_provider_failure",
+            details=details,
+        )
+        self._finished = True
+        return [
+            ActionModel(
+                agent_name=self.id(),
+                policy_info=(
+                    "A transient model-provider failure persisted until the "
+                    "task's reserved finalization boundary. Work already "
+                    "completed in the environment is preserved, but the task "
+                    "could not continue. This response does not claim "
+                    "successful completion."
+                ),
+            )
+        ]
+
+    def _recoverable_model_response_state(
+        self, context: Context | None
+    ) -> dict[str, Any] | None:
+        """Return this Agent's scoped, retryable model-action state."""
+
+        if context is None:
+            return None
+        from aworld.core.context.execution_state import get_execution_state
+
+        state = get_execution_state(context)
+        if not isinstance(state, dict):
+            return None
+        if (
+            state.get("agent_id") != self.id()
+            or state.get("status") != "incomplete"
+            or state.get("recoverable") is not True
+            or state.get("reason") not in _RECOVERABLE_MODEL_RESPONSE_REASONS
+        ):
+            return None
+        return state
+
+    @staticmethod
+    def _model_response_recovery_deadline_open(context: Context | None) -> bool:
+        """Keep caller persistence time outside model-response recovery."""
+
+        if context is None:
+            return True
+        get_task = getattr(context, "get_task", None)
+        try:
+            task = get_task() if callable(get_task) else None
+            remaining = task.remaining_seconds() if task is not None else None
+            reserve = (
+                getattr(task, "completion_reserve_seconds", 0.0)
+                if task is not None
+                else 0.0
+            )
+        except Exception:
+            return True
+        if (
+            isinstance(remaining, bool)
+            or not isinstance(remaining, (int, float))
+            or not math.isfinite(float(remaining))
+        ):
+            return True
+        if (
+            isinstance(reserve, bool)
+            or not isinstance(reserve, (int, float))
+            or not math.isfinite(float(reserve))
+            or reserve < 0
+        ):
+            reserve = 0.0
+        return float(remaining) > float(reserve)
+
+    def _record_model_response_recovery(
+        self,
+        context: Context,
+        *,
+        outcome: str,
+        reason: str,
+    ) -> None:
+        """Publish bounded counters without making them a recovery budget."""
+
+        key = "model_response_recovery_metrics"
+        metrics = context.context_info.get(key)
+        if not isinstance(metrics, dict):
+            metrics = {}
+        metrics["last_outcome"] = outcome
+        metrics["last_reason"] = reason
+        metrics[f"outcome:{outcome}"] = min(
+            1_000_000,
+            int(metrics.get(f"outcome:{outcome}", 0) or 0) + 1,
+        )
+        if outcome == "scheduled":
+            metrics["continuation_count"] = min(
+                1_000_000,
+                int(metrics.get("continuation_count", 0) or 0) + 1,
+            )
+        context.context_info[key] = metrics
+
+    @staticmethod
+    def _model_response_recovery_kwargs(kwargs: dict[str, Any]) -> dict[str, Any]:
+        """Drop request-local compiler products before the next normal turn."""
+
+        return {
+            key: value
+            for key, value in kwargs.items()
+            if key
+            not in {
+                "prepared_tools",
+                "prompt_assembly_plan",
+                "provider_native_prompt_cache",
+                "response_parse_args",
+            }
+        }
+
+    def _model_response_recovery_context_key(self) -> str:
+        return f"{_MODEL_RESPONSE_RECOVERY_CONTEXT_KEY}:{self.id()}"
+
+    def _long_horizon_review_deadline_context_key(self) -> str:
+        return f"{_LONG_HORIZON_REVIEW_DEADLINE_KEY}:{self.id()}"
+
+    def _long_horizon_review_deadline_scope(
+        self, context: Context
+    ) -> dict[str, Any]:
+        from aworld.core.context.execution_state import state_context
+
+        owner = state_context(context) or context
+        return {
+            "task_id": getattr(owner, "task_id", None),
+            "task_epoch": getattr(owner, "task_epoch", None),
+            "agent_id": self.id(),
+            # ``time.monotonic`` values are meaningful only in this process.
+            # A restored task starts a fresh bounded review episode rather than
+            # comparing clocks from unrelated interpreter lifetimes.
+            "process_id": os.getpid(),
+        }
+
+    def _clear_long_horizon_review_deadline(
+        self, context: Context | None
+    ) -> None:
+        if context is None:
+            return
+        from aworld.core.context.execution_state import state_context
+
+        owner = state_context(context) or context
+        writer = getattr(owner, "write_task_runtime_state", None)
+        if callable(writer):
+            writer(self.id(), _LONG_HORIZON_REVIEW_DEADLINE_KEY, None)
+        key = self._long_horizon_review_deadline_context_key()
+        owner.context_info.pop(key, None)
+        if owner is not context:
+            context.context_info.pop(key, None)
+
+    def _load_long_horizon_review_deadline(
+        self, context: Context | None
+    ) -> float | None:
+        if context is None:
+            return None
+        from aworld.core.context.execution_state import state_context
+
+        owner = state_context(context) or context
+        reader = getattr(owner, "read_task_runtime_state", None)
+        value = (
+            reader(self.id(), _LONG_HORIZON_REVIEW_DEADLINE_KEY)
+            if callable(reader)
+            else None
+        )
+        if not isinstance(value, dict):
+            value = owner.context_info.get(
+                self._long_horizon_review_deadline_context_key()
+            )
+        deadline = value.get("deadline") if isinstance(value, dict) else None
+        valid = bool(
+            isinstance(value, dict)
+            and value.get("schema_version")
+            == _LONG_HORIZON_REVIEW_DEADLINE_SCHEMA
+            and value.get("scope")
+            == self._long_horizon_review_deadline_scope(context)
+            and isinstance(deadline, (int, float))
+            and not isinstance(deadline, bool)
+            and math.isfinite(float(deadline))
+        )
+        if not valid:
+            if value is not None:
+                self._clear_long_horizon_review_deadline(context)
+            return None
+        return float(deadline)
+
+    def _ensure_long_horizon_review_deadline(
+        self,
+        context: Context,
+        *,
+        timeout_seconds: float,
+    ) -> float:
+        deadline = self._load_long_horizon_review_deadline(context)
+        if deadline is not None:
+            return deadline
+        deadline = _monotonic_now() + max(0.0, float(timeout_seconds))
+        value = {
+            "schema_version": _LONG_HORIZON_REVIEW_DEADLINE_SCHEMA,
+            "scope": self._long_horizon_review_deadline_scope(context),
+            "deadline": deadline,
+        }
+        from aworld.core.context.execution_state import state_context
+
+        owner = state_context(context) or context
+        writer = getattr(owner, "write_task_runtime_state", None)
+        if callable(writer):
+            writer(self.id(), _LONG_HORIZON_REVIEW_DEADLINE_KEY, value)
+        key = self._long_horizon_review_deadline_context_key()
+        owner.context_info[key] = copy.deepcopy(value)
+        if owner is not context:
+            context.context_info[key] = copy.deepcopy(value)
+        return deadline
+
+    def _bounded_model_response_recovery_context(
+        self,
+        response: ModelResponse | None,
+        *,
+        limit: int,
+    ) -> str:
+        """Retain bounded, non-executable context from an incomplete action."""
+
+        if response is None or limit <= 0:
+            return ""
+        partial = next(
+            (
+                value.strip()
+                for value in (
+                    getattr(response, "reasoning_content", None),
+                    getattr(response, "content", None),
+                )
+                if isinstance(value, str) and value.strip()
+            ),
+            "",
+        )
+        sections = [partial] if partial else []
+        projections = []
+        argument_limit = max(64, min(2048, limit // 2))
+        for index, call in enumerate((getattr(response, "tool_calls", None) or ())[:4]):
+            function = getattr(call, "function", None)
+            name = getattr(function, "name", None)
+            arguments = getattr(function, "arguments", None)
+            if not isinstance(name, str) and not isinstance(arguments, str):
+                continue
+            projections.append(
+                {
+                    "call_index": index,
+                    "tool_name": str(name or "")[:256],
+                    "arguments_fragment": str(arguments or "")[-argument_limit:],
+                    "complete": False,
+                    "executable": False,
+                }
+            )
+        if projections:
+            sections.append(
+                "Non-executable partial tool-call reference; reconstruct and "
+                "validate a fresh call before use:\n"
+                + json.dumps(
+                    projections,
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                )
+            )
+        if not sections:
+            return ""
+        return self._bounded_partial_for_repair("\n\n".join(sections), limit=limit)
+
+    def _store_model_response_recovery_context(
+        self,
+        context: Context | None,
+        *,
+        reason: str,
+        content: str,
+    ) -> None:
+        if context is None or not content:
+            return
+        from aworld.core.context.execution_state import state_context
+
+        owner = state_context(context) or context
+        value = {
+            "agent_id": self.id(),
+            "task_id": getattr(context, "task_id", None),
+            "task_epoch": getattr(context, "task_epoch", None),
+            "reason": reason,
+            "content": content,
+        }
+        key = self._model_response_recovery_context_key()
+        owner.context_info[key] = value
+        if owner is not context:
+            context.context_info[key] = dict(value)
+
+    def _load_model_response_recovery_context(
+        self,
+        context: Context | None,
+        *,
+        reason: str,
+    ) -> str:
+        if context is None:
+            return ""
+        from aworld.core.context.execution_state import state_context
+
+        owner = state_context(context) or context
+        value = owner.context_info.get(self._model_response_recovery_context_key())
+        if not isinstance(value, dict):
+            return ""
+        expected_scope = (
+            self.id(),
+            getattr(context, "task_id", None),
+            getattr(context, "task_epoch", None),
+            reason,
+        )
+        observed_scope = (
+            value.get("agent_id"),
+            value.get("task_id"),
+            value.get("task_epoch"),
+            value.get("reason"),
+        )
+        content = value.get("content")
+        return content if observed_scope == expected_scope and isinstance(content, str) else ""
+
+    def _clear_model_response_recovery_context(
+        self,
+        context: Context | None,
+    ) -> None:
+        if context is None:
+            return
+        from aworld.core.context.execution_state import state_context
+
+        owner = state_context(context) or context
+        key = self._model_response_recovery_context_key()
+        owner.context_info.pop(key, None)
+        if owner is not context:
+            context.context_info.pop(key, None)
+
     async def async_policy(
         self,
         observation: Observation,
@@ -3055,27 +3754,76 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
     ) -> List[ActionModel]:
         """Continue completion repairs without recursive stack growth."""
         repair_feedback = None
-        from aworld.runners.execution_protocol import load_candidate_fallback
+        transient_recovery_turn = False
+        model_response_recovery_turn = False
+        long_horizon_review_deadline = None
+        loop_budget_finalization = bool(kwargs.get("_loop_budget_finalization", False))
+        from aworld.runners.execution_protocol import (
+            clear_candidate_fallback,
+            execution_protocol_policy,
+            load_candidate_fallback,
+        )
 
         long_horizon_fallback = load_candidate_fallback(message.context, self.id())
+        if long_horizon_fallback is not None:
+            policy = execution_protocol_policy(message.context, self.id())
+            review_pending = ExecutionProtocolStore(
+                message.context, self.id(), policy
+            ).load().review_pending
+            if not review_pending:
+                # A fallback is meaningful only while its exact review episode
+                # is pending.  Never let a stale candidate wrap a later repair
+                # or normal task turn in the review deadline.
+                clear_candidate_fallback(message.context, self.id())
+                long_horizon_fallback = None
+        if long_horizon_fallback is None:
+            self._clear_long_horizon_review_deadline(message.context)
+        else:
+            long_horizon_review_deadline = (
+                self._load_long_horizon_review_deadline(message.context)
+            )
         while True:
             try:
-                attempt = self._async_policy_once(observation, info=info, message=message, **kwargs)
                 if long_horizon_fallback is None:
-                    result = await attempt
-                else:
-                    policy = self._resolve_execution_protocol_policy(message.context)
-                    timeout = float(
-                        getattr(policy, "final_review_timeout_seconds", 45.0)
+                    result = await self._async_policy_once(
+                        observation, info=info, message=message, **kwargs
                     )
+                else:
+                    policy = execution_protocol_policy(message.context, self.id())
+                    if long_horizon_review_deadline is None:
+                        long_horizon_review_deadline = (
+                            self._ensure_long_horizon_review_deadline(
+                                message.context,
+                                timeout_seconds=float(
+                                    getattr(
+                                        policy,
+                                        "final_review_timeout_seconds",
+                                        45.0,
+                                    )
+                                ),
+                            )
+                        )
+                    review_remaining = (
+                        long_horizon_review_deadline - _monotonic_now()
+                    )
+                    if review_remaining <= 0:
+                        raise asyncio.TimeoutError(
+                            "long-horizon final review deadline exhausted"
+                        )
                     timeout = self._remaining_before_completion_reserve(
                         message.context,
-                        cap_seconds=timeout,
+                        cap_seconds=review_remaining,
                     )
-                    result = await asyncio.wait_for(attempt, timeout=timeout)
+                    result = await asyncio.wait_for(
+                        self._async_policy_once(
+                            observation, info=info, message=message, **kwargs
+                        ),
+                        timeout=timeout,
+                    )
             except Exception as exc:
                 if long_horizon_fallback is not None:
                     from aworld.runners.execution_protocol import (
+                        clear_acceptance_critic_state,
                         clear_candidate_fallback,
                         record_review_error,
                     )
@@ -3083,10 +3831,78 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                         record_execution_state,
                     )
 
-                    record_review_error(message.context, self.id())
+                    review_fallback = long_horizon_fallback
+                    policy = execution_protocol_policy(message.context, self.id())
+                    protocol_state = ExecutionProtocolStore(
+                        message.context, self.id(), policy
+                    ).load()
+                    repair_already_requested = bool(
+                        protocol_state.phase is ProtocolPhase.REPAIR
+                        and not protocol_state.review_pending
+                    )
+                    # A typed critic/model decision is authoritative as soon as
+                    # the controller enters REPAIR.  A later memory or hook
+                    # failure must not be reclassified as an uncertain review
+                    # (nor accept the stale candidate).
+                    transition = (
+                        None
+                        if repair_already_requested
+                        else record_review_error(message.context, self.id())
+                    )
                     clear_candidate_fallback(message.context, self.id())
-                    policy = self._resolve_execution_protocol_policy(message.context)
-                    if policy.independent_acceptance_enabled:
+                    clear_acceptance_critic_state(message.context, self.id())
+                    self._clear_long_horizon_review_deadline(message.context)
+                    long_horizon_fallback = None
+                    long_horizon_review_deadline = None
+                    if (
+                        repair_already_requested
+                        or policy.independent_acceptance_enabled
+                    ):
+                        if repair_already_requested or (
+                            transition is not None
+                            and transition.decision.action
+                            is ControllerAction.REQUEST_REPAIR
+                        ):
+                            text = (
+                                (
+                                    "The review already requested repair before "
+                                    "follow-up processing was interrupted. "
+                                )
+                                if repair_already_requested
+                                else (
+                                    "Independent acceptance review could not produce "
+                                    "a typed, probe-backed decision within its bounded "
+                                    "review window. The candidate is not accepted. "
+                                )
+                            ) + (
+                                "Resume normal tool-enabled execution, inspect the "
+                                "actual deliverable state, and repair the highest-"
+                                "risk evidence gap before proposing another final "
+                                "result."
+                            )
+                            record_execution_state(
+                                message.context,
+                                self.id(),
+                                "running",
+                                (
+                                    "review_repair_continuation_scheduled"
+                                    if repair_already_requested
+                                    else "independent_acceptance_review_repair_scheduled"
+                                ),
+                                recoverable=False,
+                            )
+                            self._finished = False
+                            observation = Observation(
+                                observer=self.id(),
+                                from_agent_name=self.id(),
+                                to_agent_name=self.id(),
+                                content=text,
+                            )
+                            kwargs = self._model_response_recovery_kwargs(kwargs)
+                            message.context.update_agent_step(self.id())
+                            self.loop_step += 1
+                            await asyncio.sleep(0)
+                            continue
                         text = (
                             "Independent acceptance review failed before a typed, "
                             "probe-backed decision was available. Completion is "
@@ -3109,8 +3925,41 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                         recoverable=False,
                     )
                     self._finished = True
-                    return list(long_horizon_fallback)
-                if self._is_long_horizon_auto_generation_timeout(exc, message.context):
+                    return list(review_fallback)
+                transient_details = self._transient_model_failure_details(exc)
+                automatic_timeout = self._is_long_horizon_auto_generation_timeout(
+                    exc, message.context
+                )
+                if (
+                    not loop_budget_finalization
+                    and (transient_details is not None or automatic_timeout)
+                ):
+                    recovery_reason = (
+                        "transient_provider_failure"
+                        if transient_details is not None
+                        else exc.reason.value
+                    )
+                    if await self._schedule_transient_model_recovery(
+                        message.context,
+                        reason=recovery_reason,
+                        details=transient_details,
+                    ):
+                        transient_recovery_turn = True
+                        kwargs = dict(kwargs)
+                        kwargs["_transient_model_recovery_turn"] = True
+                        kwargs["_transient_model_recovery_reason"] = recovery_reason
+                        await asyncio.sleep(0)
+                        continue
+                    if transient_details is not None:
+                        window = self._long_horizon_transient_recovery_window(
+                            message.context
+                        )
+                        if window is not None:
+                            return self._transient_model_recovery_exhausted(
+                                message.context,
+                                details=transient_details,
+                            )
+                if automatic_timeout:
                     return await self._recover_long_horizon_generation_timeout(
                         exc=exc,
                         observation=observation,
@@ -3121,6 +3970,139 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                 if repair_feedback is None or not self._should_degrade_result_validation_retry_error(exc):
                     raise
                 return await self._degrade_result_validation_retry(message, repair_feedback, exc)
+            if (
+                long_horizon_fallback is not None
+                and not isinstance(result, _LongHorizonReviewContinuation)
+            ):
+                policy = execution_protocol_policy(message.context, self.id())
+                review_pending = ExecutionProtocolStore(
+                    message.context, self.id(), policy
+                ).load().review_pending
+                if not review_pending:
+                    # A typed review decision may return a validation-repair
+                    # continuation.  Synchronize the outer loop immediately so
+                    # that repair is a normal Tool-enabled task turn, not part
+                    # of the completed review episode.
+                    clear_candidate_fallback(message.context, self.id())
+                    self._clear_long_horizon_review_deadline(message.context)
+                    long_horizon_fallback = None
+                    long_horizon_review_deadline = None
+            if transient_recovery_turn:
+                self._record_transient_model_recovery(
+                    message.context,
+                    outcome="recovered",
+                    reason="normal_tool_turn_available",
+                )
+                transient_recovery_turn = False
+                kwargs = dict(kwargs)
+                kwargs.pop("_transient_model_recovery_turn", None)
+                kwargs.pop("_transient_model_recovery_reason", None)
+            recoverable_model_state = self._recoverable_model_response_state(
+                message.context
+            )
+            if (
+                recoverable_model_state is not None
+                and not loop_budget_finalization
+                and not isinstance(
+                    result,
+                    (_LongHorizonReviewContinuation, _ValidationRepairContinuation),
+                )
+            ):
+                reason = str(recoverable_model_state["reason"])
+                step_budget_exhausted = await self.should_terminate_loop(message)
+                deadline_open = self._model_response_recovery_deadline_open(
+                    message.context
+                )
+                if step_budget_exhausted or not deadline_open:
+                    self._record_model_response_recovery(
+                        message.context,
+                        outcome=(
+                            "step_budget_exhausted"
+                            if step_budget_exhausted
+                            else "deadline_exhausted"
+                        ),
+                        reason=reason,
+                    )
+                    # The typed incomplete state remains authoritative. Mark the
+                    # Agent finished only so the event runner publishes that
+                    # task-owned state instead of trying to synthesize success.
+                    self._finished = True
+                    return result
+
+                schedule_turn_cause = getattr(
+                    message.context, "schedule_turn_cause", None
+                )
+                if callable(schedule_turn_cause):
+                    try:
+                        schedule_turn_cause(
+                            TurnCauseCode.FRAMEWORK_RETRY,
+                            evidence_hash=canonical_json_hash(
+                                {"reason": reason, "recovery": "model_response"}
+                            ),
+                        )
+                    except Exception as exc:
+                        logger.warning(
+                            "Failed to type model-response recovery turn; "
+                            f"error_type={type(exc).__name__}"
+                        )
+                from aworld.core.context.execution_state import (
+                    record_execution_state,
+                )
+
+                record_execution_state(
+                    message.context,
+                    self.id(),
+                    "running",
+                    "model_response_recovery_scheduled",
+                    recoverable=True,
+                )
+                self._record_model_response_recovery(
+                    message.context,
+                    outcome="scheduled",
+                    reason=reason,
+                )
+                message.context.update_agent_step(self.id())
+                self.loop_step += 1
+                retained_context = self._load_model_response_recovery_context(
+                    message.context,
+                    reason=reason,
+                )
+                retained_guidance = (
+                    "\n\nRetained bounded tail from the previous incomplete "
+                    "model action (working context only, not completion "
+                    "evidence):\n<retained-incomplete-context>\n"
+                    f"{retained_context}\n"
+                    "</retained-incomplete-context>"
+                    if retained_context
+                    else ""
+                )
+                observation = Observation(
+                    observer=self.id(),
+                    from_agent_name=self.id(),
+                    to_agent_name=self.id(),
+                    content=(
+                        "Runtime response recovery: the previous model action "
+                        f"ended incomplete ({reason}). Continue from retained "
+                        "task and tool evidence. Do not restart or recompute the "
+                        "discarded analysis. Produce one complete, minimal Tool "
+                        "call that advances the task. When the request names a "
+                        "concrete deliverable and its core format is known, "
+                        "create or update an inspectable candidate now, then "
+                        "validate and refine it."
+                        + retained_guidance
+                    ),
+                )
+                kwargs = self._model_response_recovery_kwargs(kwargs)
+                model_response_recovery_turn = True
+                await asyncio.sleep(0)
+                continue
+            if model_response_recovery_turn:
+                self._record_model_response_recovery(
+                    message.context,
+                    outcome="recovered",
+                    reason="normal_tool_turn_available",
+                )
+                model_response_recovery_turn = False
             if isinstance(result, _LongHorizonReviewContinuation):
                 long_horizon_fallback = result.fallback_actions
                 await self._raise_if_task_interrupted(
@@ -3128,6 +4110,7 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                 )
                 if await self.should_terminate_loop(message):
                     from aworld.runners.execution_protocol import (
+                        clear_acceptance_critic_state,
                         clear_candidate_fallback,
                         record_review_error,
                     )
@@ -3135,9 +4118,14 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                         record_execution_state,
                     )
 
+                    review_fallback = long_horizon_fallback
                     record_review_error(message.context, self.id())
                     clear_candidate_fallback(message.context, self.id())
-                    policy = self._resolve_execution_protocol_policy(message.context)
+                    clear_acceptance_critic_state(message.context, self.id())
+                    self._clear_long_horizon_review_deadline(message.context)
+                    long_horizon_fallback = None
+                    long_horizon_review_deadline = None
+                    policy = execution_protocol_policy(message.context, self.id())
                     if policy.independent_acceptance_enabled:
                         text = (
                             "The bounded independent acceptance review did not "
@@ -3160,7 +4148,7 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                         recoverable=False,
                     )
                     self._finished = True
-                    return list(long_horizon_fallback)
+                    return list(review_fallback)
                 message.context.update_agent_step(self.id())
                 self.loop_step += 1
                 observation, kwargs = result.observation, result.kwargs
@@ -3261,7 +4249,7 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         message: Message,
         kwargs: Dict[str, Any],
     ) -> List[ActionModel]:
-        """Fail open through one bounded Tool-free synthesis attempt."""
+        """Produce one bounded handoff without promoting a timed-out task."""
         from aworld.core.context.execution_state import record_execution_state
 
         context = message.context
@@ -3286,16 +4274,24 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                     ),
                     timeout=timeout,
                 )
-                if isinstance(result, list) and any(
-                    str(getattr(action, "policy_info", "") or "").strip()
-                    for action in result
+                if (
+                    isinstance(result, list)
+                    and any(
+                        str(getattr(action, "policy_info", "") or "").strip()
+                        for action in result
+                    )
+                    and not any(
+                        getattr(action, "tool_name", None)
+                        or getattr(action, "action_name", None)
+                        for action in result
+                    )
                 ):
                     record_execution_state(
                         context,
                         self.id(),
-                        "succeeded",
-                        "long_horizon_generation_budget_finalized",
-                        recoverable=False,
+                        "budget_exhausted",
+                        "long_horizon_generation_budget_exhausted",
+                        recoverable=True,
                     )
                     self._record_long_horizon_generation_recovery(
                         context, reason=reason, outcome="finalized"
@@ -3316,9 +4312,9 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         record_execution_state(
             context,
             self.id(),
-            "succeeded",
-            "long_horizon_generation_budget_fail_open",
-            recoverable=False,
+            "budget_exhausted",
+            "long_horizon_generation_budget_exhausted",
+            recoverable=True,
         )
         self._record_long_horizon_generation_recovery(
             context, reason=reason, outcome="honest_fallback"
@@ -3344,6 +4340,12 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         """
         logger.info(f"Agent{type(self)}#{self.id()}: async_policy start")
         loop_budget_finalization = bool(kwargs.pop("_loop_budget_finalization", False))
+        transient_model_recovery_turn = bool(
+            kwargs.pop("_transient_model_recovery_turn", False)
+        )
+        transient_model_recovery_reason = str(
+            kwargs.pop("_transient_model_recovery_reason", "") or ""
+        )
         # temporary state context
         self.context = message.context
         self._install_runtime_completion_contract(message.context)
@@ -3437,6 +4439,21 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             if execution_guidance:
                 raw_messages = list(raw_messages)
                 raw_messages.append({"role": "user", "content": execution_guidance})
+        if transient_model_recovery_turn and not tool_free_finalization:
+            raw_messages = list(raw_messages)
+            raw_messages.append(
+                {
+                    "role": "user",
+                    "content": (
+                        "A transient model-provider interruption ended the previous "
+                        "turn before any new action from that turn was accepted "
+                        f"({transient_model_recovery_reason}). Continue from the "
+                        "observed task state with the normal tools available. Do "
+                        "not treat the transport interruption as task completion; "
+                        "use a tool now when material work remains."
+                    ),
+                }
+            )
         if loop_budget_finalization:
             raw_messages = list(raw_messages)
             raw_messages.append(
@@ -3477,6 +4494,7 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                     message.context,
                 )
             )
+            tools = self._with_model_review_control(tools, message.context)
             tools = self._with_acceptance_probe_control(tools, message.context)
             if independent_acceptance_review:
                 from aworld.runners.execution_protocol import (
@@ -3741,6 +4759,7 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         long_horizon_review_feedback = None
         critic_probe_planned = False
         critic_decision_handled = False
+        review_repair_requested = False
         if source_span:
             source_span.set_attribute(
                 "messages", json.dumps(serializable_messages, ensure_ascii=False)
@@ -3938,6 +4957,12 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                         message.context,
                         offered=execution_profile_offered,
                     )
+                    if agent_result.is_call_tool:
+                        review_repair_requested = (
+                            self._consume_model_review_control(
+                                agent_result, message.context
+                            )
+                        )
                     if independent_acceptance_review and agent_result.is_call_tool:
                         critic_probe_planned = self._consume_acceptance_probe_control(
                             agent_result, message.context
@@ -4007,13 +5032,10 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                     if agent_result.is_call_tool:
                         from aworld.runners.execution_protocol import (
                             clear_candidate_fallback,
-                            load_candidate_fallback,
-                            record_review_tool_action,
                         )
 
-                        fallback = load_candidate_fallback(message.context, self.id())
-                        if fallback is not None and not critic_probe_planned:
-                            record_review_tool_action(message.context, self.id())
+                        if review_repair_requested:
+                            clear_candidate_fallback(message.context, self.id())
                     response_incomplete = bool(
                         isinstance(llm_response.message, dict)
                         and llm_response.message.get("aworld_incomplete_reason")
@@ -4104,6 +5126,7 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                     ):
                         from aworld.runners.execution_protocol import (
                             clear_candidate_fallback,
+                            execution_protocol_policy,
                             final_review_guidance,
                             record_candidate_final,
                             store_candidate_fallback,
@@ -4152,7 +5175,12 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                                 recoverable=False,
                             )
                         long_horizon_review_feedback = final_review_guidance(
-                            protocol_transition
+                            protocol_transition,
+                            independent_acceptance_enabled=(
+                                execution_protocol_policy(
+                                    message.context, self.id()
+                                ).independent_acceptance_enabled
+                            ),
                         )
                         if long_horizon_review_feedback:
                             store_candidate_fallback(
@@ -5709,6 +6737,28 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             return content[-limit:]
         return marker + content[-(limit - len(marker)) :]
 
+    @classmethod
+    def _bounded_working_context_for_repair(
+        cls,
+        content: str,
+        *,
+        limit: int,
+    ) -> str:
+        """Bound the complete retained-context message, including its label."""
+
+        if limit <= 0:
+            return ""
+        label = (
+            "[Retained incomplete model working context; not a final answer "
+            "or executable action.]\n"
+        )
+        if limit <= len(label):
+            return content[-limit:]
+        return label + cls._bounded_partial_for_repair(
+            content,
+            limit=limit - len(label),
+        )
+
     def _build_action_repair_messages(
         self,
         *,
@@ -5717,15 +6767,26 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         policy: GenerationBudgetPolicy,
     ) -> List[Dict[str, Any]]:
         continuation = copy.deepcopy(messages)
-        partial_content = getattr(partial_response, "content", None)
+        partial_content = next(
+            (
+                value
+                for value in (
+                    getattr(partial_response, "reasoning_content", None),
+                    getattr(partial_response, "content", None),
+                )
+                if isinstance(value, str) and value
+            ),
+            None,
+        )
         if isinstance(partial_content, str) and partial_content:
+            retained = self._bounded_working_context_for_repair(
+                partial_content,
+                limit=policy.partial_response_context_chars,
+            )
             continuation.append(
                 {
                     "role": "assistant",
-                    "content": self._bounded_partial_for_repair(
-                        partial_content,
-                        limit=policy.partial_response_context_chars,
-                    ),
+                    "content": retained,
                 }
             )
         continuation.append(
@@ -5904,6 +6965,7 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             # Retry loop for LLM call
             attempt = 1
             last_exception = None
+            incomplete_action_recovery_attempted = False
             # Track if stream_mode failed and we need to fallback to non_stream_mode
             stream_failed_fallback = False
 
@@ -5994,18 +7056,51 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                             usage_process(llm_response.usage, message.context)
                         from aworld.core.context.execution_state import record_execution_state
                         record_execution_state(context, self.id(), "incomplete", incomplete_reason)
-                        if attempt < self.llm_max_attempts:
+                        recovery_context = self._bounded_model_response_recovery_context(
+                            llm_response,
+                            limit=controller.policy.partial_response_context_chars,
+                        )
+                        if (
+                            attempt < self.llm_max_attempts
+                            and not incomplete_action_recovery_attempted
+                        ):
+                            incomplete_action_recovery_attempted = True
                             attempt += 1
-                            messages = list(messages) + [{
+                            messages = list(messages)
+                            if recovery_context:
+                                retained = self._bounded_working_context_for_repair(
+                                    recovery_context,
+                                    limit=controller.policy.partial_response_context_chars,
+                                )
+                                messages.append(
+                                    {
+                                        "role": "assistant",
+                                        "content": retained,
+                                    }
+                                )
+                            messages.append({
                                 "role": "user",
                                 "content": (
                                     "Runtime response recovery: the previous model response was "
                                     + incomplete_reason
                                     + ". No tool calls from that response were executed. "
-                                    "Continue from observed work. Use a smaller complete JSON tool "
-                                    "call, or provide a final answer only when the task is complete."
+                                    "Continue from the retained working context without recomputing "
+                                    "it. Return one complete, minimal Tool call that advances the "
+                                    "task. If a concrete deliverable and its core format are already "
+                                    "known, create or update an inspectable candidate now. Provide a "
+                                    "final answer only when the task is actually complete."
                                 ),
-                            }]
+                            })
+                            if tools:
+                                # This retry is an action projection of reasoning
+                                # the model already performed, not another open-
+                                # ended planning turn. Requiring one declared Tool
+                                # call prevents max-reasoning models from spending
+                                # the entire continuation on a second prose-only
+                                # analysis. It does not cap task turns, tokens, or
+                                # the caller-owned deadline.
+                                kwargs = dict(kwargs)
+                                kwargs["tool_choice"] = "required"
                             continue
                         record_execution_state(
                             context,
@@ -6013,6 +7108,11 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                             "incomplete",
                             incomplete_reason,
                             recoverable=True,
+                        )
+                        self._store_model_response_recovery_context(
+                            context,
+                            reason=incomplete_reason,
+                            content=recovery_context,
                         )
                         return self._incomplete_model_response(llm_response, incomplete_reason)
                     from aworld.core.context.execution_state import record_execution_state
@@ -6028,6 +7128,7 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                         )
                         if llm_response:
                             usage_process(llm_response.usage, message.context)
+                        self._clear_model_response_recovery_context(context)
                         return llm_response
                     else:
                         await self._raise_if_task_interrupted(
@@ -6231,6 +7332,21 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                             )
                         )
                         failure_output_sent = True
+                        if isinstance(e, GenerationBudgetExceeded):
+                            # The typed generation controller already carries
+                            # the precise provider/deadline reason. Preserve it
+                            # for the outer long-horizon recovery policy.
+                            raise e
+                        transient_details = self._transient_model_failure_details(e)
+                        if transient_details is not None:
+                            raise AWorldTransientModelError(
+                                "transient model provider failure after request retries were exhausted",
+                                status_code=transient_details.get("status_code"),
+                                error_code=transient_details.get("error_code"),
+                                source_error_type=transient_details.get(
+                                    "source_error_type"
+                                ),
+                            ) from e
                         raise e
 
             # This should not be reached, but just in case

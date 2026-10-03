@@ -5,6 +5,7 @@ import json
 
 import pytest
 
+import aworld.agents.llm_agent as llm_agent_module
 from aworld.agents.llm_agent import Agent, _LongHorizonReviewContinuation
 from aworld.config.conf import AgentConfig
 from aworld.core.agent.base import AgentResult
@@ -26,8 +27,13 @@ from aworld.core.task import Task
 from aworld.models.model_response import Function, ModelResponse, ToolCall
 from aworld.runners.execution_protocol import (
     configure_execution_protocol,
+    execution_protocol_policy,
+    load_acceptance_critic_state,
+    record_acceptance_probe_observation,
+    record_acceptance_probe_plan,
     record_candidate_final,
     record_tool_protocol_event,
+    store_candidate_fallback,
 )
 
 
@@ -112,6 +118,7 @@ async def test_review_timeout_returns_original_candidate() -> None:
         independent_acceptance_enabled=False,
     )
     agent = _agent(context, policy)
+    configure_execution_protocol(context, agent.id(), policy)
     fallback = ActionModel(agent_name=agent.id(), policy_info="safe candidate")
     calls = 0
 
@@ -135,6 +142,533 @@ async def test_review_timeout_returns_original_candidate() -> None:
     assert result == [fallback]
     assert calls == 2
     assert get_execution_state(context)["reason"] == "long_horizon_review_fail_open"
+
+
+@pytest.mark.asyncio
+async def test_review_deadline_is_shared_across_continuation_calls(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    context = Context(task_id="review-shared-deadline")
+    context.set_task(
+        Task(id="review-shared-deadline", input="finish the task", timeout=600)
+    )
+    policy = ExecutionProtocolPolicy(
+        mode=ProtocolMode.GUIDE,
+        activation_event_threshold=1,
+        final_review_timeout_seconds=10,
+        independent_acceptance_enabled=False,
+    )
+    agent = _agent(context, policy)
+    configure_execution_protocol(context, agent.id(), policy)
+    fallback = ActionModel(agent_name=agent.id(), policy_info="bounded candidate")
+    calls = 0
+    clock = 0.0
+
+    def monotonic_now() -> float:
+        return clock
+
+    async def attempt(observation, **kwargs):
+        nonlocal calls, clock
+        calls += 1
+        if calls > 1:
+            clock += 6.0
+        return _LongHorizonReviewContinuation(
+            observation=Observation(content=f"review pass {calls}"),
+            kwargs={},
+            fallback_actions=(fallback,),
+        )
+
+    monkeypatch.setattr(llm_agent_module, "_monotonic_now", monotonic_now)
+    agent._async_policy_once = attempt
+    message = Message(category=Constants.AGENT, headers={"context": context})
+
+    result = await agent.async_policy(Observation(content="candidate"), message=message)
+
+    assert result == [fallback]
+    assert calls == 3
+    assert agent.finished is True
+    assert get_execution_state(context)["reason"] == "long_horizon_review_fail_open"
+
+
+@pytest.mark.asyncio
+async def test_effectively_disabled_independent_review_budget_stop_keeps_candidate(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("AWORLD_INDEPENDENT_ACCEPTANCE_CRITIC", raising=False)
+    context = Context(task_id="review-budget-fail-open")
+    context.set_task(
+        Task(id="review-budget-fail-open", input="finish the task", timeout=600)
+    )
+    requested_policy = ExecutionProtocolPolicy(
+        mode=ProtocolMode.GUIDE,
+        review_unarmed_candidates=True,
+        independent_acceptance_enabled=True,
+    )
+    agent = _agent(context, requested_policy)
+    configure_execution_protocol(context, agent.id(), requested_policy)
+    effective_policy = execution_protocol_policy(context, agent.id())
+    assert effective_policy.independent_acceptance_enabled is False
+    record_candidate_final(context, agent.id())
+    fallback = ActionModel(agent_name=agent.id(), policy_info="bounded candidate")
+
+    async def attempt(observation, **kwargs):
+        return _LongHorizonReviewContinuation(
+            observation=Observation(content="review current evidence"),
+            kwargs={},
+            fallback_actions=(fallback,),
+        )
+
+    async def terminate(message):
+        return True
+
+    agent._async_policy_once = attempt
+    agent.should_terminate_loop = terminate
+    message = Message(category=Constants.AGENT, headers={"context": context})
+
+    result = await agent.async_policy(Observation(content="candidate"), message=message)
+
+    assert result == [fallback]
+    assert agent.finished is True
+    assert get_execution_state(context)["reason"] == (
+        "long_horizon_review_budget_fail_open"
+    )
+    assert agent._load_long_horizon_review_deadline(context) is None
+
+
+@pytest.mark.asyncio
+async def test_review_deadline_survives_probe_tool_round_trip(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("AWORLD_INDEPENDENT_ACCEPTANCE_CRITIC", raising=False)
+    clock = 0.0
+    calls = 0
+    prepared_tools = []
+    registered_command = "pytest -q tests/test_contract.py"
+
+    def monotonic_now() -> float:
+        return clock
+
+    class ProbeRoundTripAgent(Agent):
+        async def _add_message_to_memory(self, *args, **kwargs):
+            return None
+
+        async def build_llm_input(self, observation, info=None, message=None, **kwargs):
+            return [{"role": "user", "content": str(observation.content or "")}]
+
+        async def _filter_tools(self, context=None):
+            return [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "terminal__execute",
+                        "parameters": {
+                            "type": "object",
+                            "properties": {"command": {"type": "string"}},
+                            "required": ["command"],
+                        },
+                    },
+                }
+            ]
+
+        async def invoke_model(self, messages=None, message=None, **kwargs):
+            nonlocal calls
+            calls += 1
+            prepared_tools.append(kwargs.get("prepared_tools"))
+            if calls == 1:
+                return ModelResponse(
+                    id="candidate",
+                    model="offline",
+                    content="candidate requiring an independent check",
+                    message={
+                        "role": "assistant",
+                        "content": "candidate requiring an independent check",
+                    },
+                    finish_reason="stop",
+                    usage={"prompt_tokens": 1, "completion_tokens": 1},
+                )
+            if calls == 2:
+                arguments = {
+                    "command": registered_command,
+                    "__aworld_acceptance_probe": {
+                        "hypothesis_id": "registered-check",
+                        "highest_risk_counterexample": "the registered check fails",
+                        "probe_kind": "independent_cross_check",
+                    },
+                }
+                tool_calls = [
+                    ToolCall(
+                        id="probe-1",
+                        function=Function(
+                            name="terminal__execute",
+                            arguments=json.dumps(arguments),
+                        ),
+                    )
+                ]
+                return ModelResponse(
+                    id="probe",
+                    model="offline",
+                    content="",
+                    message={
+                        "role": "assistant",
+                        "content": "",
+                        "tool_calls": tool_calls,
+                    },
+                    tool_calls=tool_calls,
+                    finish_reason="tool_calls",
+                    usage={"prompt_tokens": 1, "completion_tokens": 1},
+                )
+            tool_calls = [
+                ToolCall(
+                    id="repair-1",
+                    function=Function(
+                        name="terminal__execute",
+                        arguments='{"command":"inspect and repair"}',
+                    ),
+                )
+            ]
+            return ModelResponse(
+                id="repair",
+                model="offline",
+                content="",
+                message={
+                    "role": "assistant",
+                    "content": "",
+                    "tool_calls": tool_calls,
+                },
+                tool_calls=tool_calls,
+                finish_reason="tool_calls",
+                usage={"prompt_tokens": 1, "completion_tokens": 1},
+            )
+
+    context = Context(task_id="review-probe-round-trip")
+    context.set_task(
+        Task(id="review-probe-round-trip", input="finish the task", timeout=600)
+    )
+    context.configure_completion_contract(
+        CompletionContract(
+            required_artifacts=(),
+            immutable_inputs=(),
+            validation_commands=(
+                ValidationCommand(
+                    command_id="registered-check",
+                    argv=("pytest", "-q", "tests/test_contract.py"),
+                ),
+            ),
+            max_evidence_age_seconds=None,
+            required_final_evidence=(),
+        ),
+        mode=CompletionMode.ENFORCE,
+    )
+    policy = ExecutionProtocolPolicy(
+        mode=ProtocolMode.GUIDE,
+        review_unarmed_candidates=True,
+        independent_acceptance_enabled=True,
+        final_review_timeout_seconds=10,
+        max_repairs=1,
+        max_final_reviews=1,
+    )
+    agent = ProbeRoundTripAgent(
+        name="Aworld",
+        conf=AgentConfig(
+            llm_provider="openai",
+            llm_model_name="offline",
+            llm_api_key="offline",
+        ),
+        execution_protocol_policy=policy,
+        max_loop_steps=0,
+    )
+    monkeypatch.setattr(llm_agent_module, "_monotonic_now", monotonic_now)
+    message = Message(category=Constants.AGENT, headers={"context": context})
+
+    probe = await agent.async_policy(Observation(content="start"), message=message)
+
+    assert calls == 2
+    assert probe[0].tool_call_id == "probe-1"
+    assert record_acceptance_probe_observation(
+        context,
+        agent.id(),
+        actions=probe,
+        result_projection={
+            "tool_call_id": "probe-1",
+            "success": True,
+            "return_code": 0,
+            "stdout_tail": "1 passed",
+            "stderr_tail": "",
+            "content_tail": "",
+            "failure_code": None,
+            "observed_content_present": False,
+            "observed_content_hash": "sha256:empty",
+        },
+        success=True,
+        failure_code=None,
+        artifact_after="sha256:after",
+    )
+    clock = 11.0
+
+    repair = await agent.async_policy(
+        Observation(content="1 passed"), message=message
+    )
+
+    assert calls == 3
+    assert repair[0].tool_call_id == "repair-1"
+    assert repair[0].params == {"command": "inspect and repair"}
+    assert prepared_tools[2] is not None
+    properties = prepared_tools[2][0]["function"]["parameters"]["properties"]
+    assert "__aworld_acceptance_probe" not in properties
+    assert load_acceptance_critic_state(context, agent.id()) == {}
+    assert agent._load_long_horizon_review_deadline(context) is None
+    state = ExecutionProtocolStore(context, agent.id(), policy).load()
+    assert state.phase.value == "repair"
+    assert state.review_pending is False
+
+
+@pytest.mark.asyncio
+async def test_independent_review_error_resumes_tool_enabled_repair(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("AWORLD_INDEPENDENT_ACCEPTANCE_CRITIC", raising=False)
+    context = Context(task_id="review-error-repair")
+    context.set_task(
+        Task(id="review-error-repair", input="finish the task", timeout=600)
+    )
+    context.configure_completion_contract(
+        CompletionContract(
+            required_artifacts=(),
+            immutable_inputs=(),
+            validation_commands=(
+                ValidationCommand(
+                    command_id="registered-check",
+                    argv=("true",),
+                ),
+            ),
+            max_evidence_age_seconds=None,
+            required_final_evidence=(),
+        ),
+        mode=CompletionMode.ENFORCE,
+    )
+    policy = ExecutionProtocolPolicy(
+        mode=ProtocolMode.GUIDE,
+        review_unarmed_candidates=True,
+        independent_acceptance_enabled=True,
+        max_repairs=1,
+        max_final_reviews=1,
+    )
+    agent = _agent(context, policy)
+    configure_execution_protocol(context, agent.id(), policy)
+    record_candidate_final(context, agent.id())
+    fallback = ActionModel(agent_name=agent.id(), policy_info="unverified candidate")
+    store_candidate_fallback(context, agent.id(), (fallback,))
+    registered_command = "true"
+    assert record_acceptance_probe_plan(
+        context,
+        agent.id(),
+        tool_call_id="stale-probe",
+        hypothesis_id="stale-hypothesis",
+        highest_risk_counterexample="the old candidate fails validation",
+        tool_identity="terminal:execute",
+        arguments_projection={"command": registered_command},
+        probe_kind="independent_cross_check",
+    )
+    calls = 0
+
+    async def attempt(observation, **kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise RuntimeError("critic provider unavailable")
+        return [
+            ActionModel(
+                agent_name=agent.id(),
+                tool_name="terminal",
+                action_name="run_code",
+                params={"code": "inspect-and-repair"},
+            )
+        ]
+
+    agent._async_policy_once = attempt
+    message = Message(category=Constants.AGENT, headers={"context": context})
+
+    result = await agent.async_policy(Observation(content="candidate"), message=message)
+
+    assert calls == 2
+    assert result[0].action_name == "run_code"
+    assert agent.finished is False
+    state = ExecutionProtocolStore(context, agent.id(), policy).load()
+    assert state.phase.value == "repair"
+    assert state.repair_count == 1
+    assert state.review_pending is False
+    execution_state = get_execution_state(context)
+    assert execution_state["status"] == "running"
+    assert (
+        execution_state["reason"]
+        == "independent_acceptance_review_repair_scheduled"
+    )
+    assert execution_state["recoverable"] is False
+    assert load_acceptance_critic_state(context, agent.id()) == {}
+
+    # The next candidate owns a fresh critic episode. A stale planned probe
+    # from the failed review must not reject its new probe plan.
+    transition = record_candidate_final(context, agent.id())
+    assert transition is not None
+    assert transition.state.review_pending is True
+    assert record_acceptance_probe_plan(
+        context,
+        agent.id(),
+        tool_call_id="fresh-probe",
+        hypothesis_id="fresh-hypothesis",
+        highest_risk_counterexample="the repaired candidate fails validation",
+        tool_identity="terminal:execute",
+        arguments_projection={"command": registered_command},
+        probe_kind="independent_cross_check",
+    )
+
+
+@pytest.mark.asyncio
+async def test_typed_critic_repair_survives_post_llm_hook_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("AWORLD_INDEPENDENT_ACCEPTANCE_CRITIC", raising=False)
+    calls = 0
+    prepared_tools = []
+
+    async def failing_post_critic_hook(context, hook_point, **kwargs):
+        payload = kwargs.get("payload")
+        if (
+            hook_point is llm_agent_module.HookPoint.POST_LLM_CALL
+            and getattr(payload, "id", None) == "critic-repair"
+        ):
+            raise RuntimeError("post-critic hook failed")
+        if False:
+            yield None
+
+    class HookFailureAfterDecisionAgent(Agent):
+        async def _add_message_to_memory(self, *args, **kwargs):
+            return None
+
+        async def build_llm_input(self, observation, info=None, message=None, **kwargs):
+            return [{"role": "user", "content": str(observation.content or "")}]
+
+        async def _filter_tools(self, context=None):
+            return [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "terminal__execute",
+                        "parameters": {
+                            "type": "object",
+                            "properties": {"command": {"type": "string"}},
+                            "required": ["command"],
+                        },
+                    },
+                }
+            ]
+
+        async def invoke_model(self, messages=None, message=None, **kwargs):
+            nonlocal calls
+            calls += 1
+            prepared_tools.append(kwargs.get("prepared_tools"))
+            if calls == 1:
+                return ModelResponse(
+                    id="candidate",
+                    model="offline",
+                    content="candidate before critic repair",
+                    message={
+                        "role": "assistant",
+                        "content": "candidate before critic repair",
+                    },
+                    finish_reason="stop",
+                    usage={"prompt_tokens": 1, "completion_tokens": 1},
+                )
+            if calls == 2:
+                content = json.dumps(
+                    {
+                        "decision": "repair",
+                        "highest_risk_counterexample": "the registered check fails",
+                        "hypothesis_id": "registered-check",
+                        "reason": "repair the independently identified gap",
+                    }
+                )
+                return ModelResponse(
+                    id="critic-repair",
+                    model="offline",
+                    content=content,
+                    message={"role": "assistant", "content": content},
+                    finish_reason="stop",
+                    usage={"prompt_tokens": 1, "completion_tokens": 1},
+                )
+            tool_calls = [
+                ToolCall(
+                    id="repair-after-hook",
+                    function=Function(
+                        name="terminal__execute",
+                        arguments='{"command":"repair the gap"}',
+                    ),
+                )
+            ]
+            return ModelResponse(
+                id="repair-tool",
+                model="offline",
+                content="",
+                message={
+                    "role": "assistant",
+                    "content": "",
+                    "tool_calls": tool_calls,
+                },
+                tool_calls=tool_calls,
+                finish_reason="tool_calls",
+                usage={"prompt_tokens": 1, "completion_tokens": 1},
+            )
+
+    context = Context(task_id="critic-repair-hook-error")
+    context.set_task(
+        Task(id="critic-repair-hook-error", input="finish the task", timeout=600)
+    )
+    context.configure_completion_contract(
+        CompletionContract(
+            required_artifacts=(),
+            immutable_inputs=(),
+            validation_commands=(
+                ValidationCommand(command_id="registered-check", argv=("true",)),
+            ),
+            max_evidence_age_seconds=None,
+            required_final_evidence=(),
+        ),
+        mode=CompletionMode.ENFORCE,
+    )
+    policy = ExecutionProtocolPolicy(
+        mode=ProtocolMode.GUIDE,
+        review_unarmed_candidates=True,
+        independent_acceptance_enabled=True,
+        max_repairs=1,
+        max_final_reviews=1,
+    )
+    agent = HookFailureAfterDecisionAgent(
+        name="Aworld",
+        conf=AgentConfig(
+            llm_provider="openai",
+            llm_model_name="offline",
+            llm_api_key="offline",
+        ),
+        execution_protocol_policy=policy,
+        max_loop_steps=0,
+    )
+    monkeypatch.setattr(llm_agent_module, "run_hooks", failing_post_critic_hook)
+    message = Message(category=Constants.AGENT, headers={"context": context})
+
+    result = await agent.async_policy(Observation(content="start"), message=message)
+
+    assert calls == 3
+    assert result[0].tool_call_id == "repair-after-hook"
+    assert result[0].params == {"command": "repair the gap"}
+    assert prepared_tools[2] is not None
+    properties = prepared_tools[2][0]["function"]["parameters"]["properties"]
+    assert "__aworld_acceptance_probe" not in properties
+    state = ExecutionProtocolStore(context, agent.id(), policy).load()
+    assert state.phase.value == "repair"
+    assert state.review_pending is False
+    execution_state = get_execution_state(context)
+    assert execution_state["status"] == "running"
+    assert agent._load_long_horizon_review_deadline(context) is None
 
 
 def test_agent_rejects_untyped_execution_protocol_policy() -> None:
@@ -362,6 +896,58 @@ def test_disabled_skill_does_not_offer_model_profile() -> None:
     assert augmented == tools
 
 
+def test_strict_critic_uses_required_probe_control_not_review_marker(
+    monkeypatch,
+) -> None:
+    monkeypatch.delenv("AWORLD_INDEPENDENT_ACCEPTANCE_CRITIC", raising=False)
+    context = Context(task_id="strict-review-schema")
+    context.set_task(Task(id="strict-review-schema", input="finish the task"))
+    context.configure_completion_contract(
+        CompletionContract(
+            required_artifacts=(),
+            immutable_inputs=(),
+            validation_commands=(
+                ValidationCommand(
+                    command_id="registered-check",
+                    argv=("pytest", "-q", "tests/test_contract.py"),
+                ),
+            ),
+            max_evidence_age_seconds=None,
+            required_final_evidence=(),
+        ),
+        mode=CompletionMode.ENFORCE,
+    )
+    policy = ExecutionProtocolPolicy(
+        mode=ProtocolMode.GUIDE,
+        review_unarmed_candidates=True,
+        independent_acceptance_enabled=True,
+    )
+    agent = _agent(context, policy)
+    configure_execution_protocol(context, agent.id(), policy)
+    record_candidate_final(context, agent.id())
+    tools = [
+        {
+            "type": "function",
+            "function": {
+                "name": "terminal__execute",
+                "parameters": {
+                    "type": "object",
+                    "properties": {"command": {"type": "string"}},
+                    "required": ["command"],
+                },
+            },
+        }
+    ]
+
+    reflected = agent._with_model_review_control(tools, context)
+    augmented = agent._with_acceptance_probe_control(reflected, context)
+    parameters = augmented[0]["function"]["parameters"]
+
+    assert "__aworld_review_decision" not in parameters["properties"]
+    assert "__aworld_acceptance_probe" in parameters["properties"]
+    assert "__aworld_acceptance_probe" in parameters["required"]
+
+
 @pytest.mark.asyncio
 async def test_production_policy_path_arms_and_strips_profile_in_same_tool_turn() -> None:
     captured_tools = None
@@ -584,11 +1170,16 @@ async def test_final_review_guidance_reaches_the_second_model_request() -> None:
 
     assert result[0].policy_info == "reviewed final"
     assert len(captured_messages) == 2
-    assert "model-owned completion review" in captured_messages[1][-1]["content"]
+    guidance = captured_messages[1][-1]["content"]
+    assert "model-owned completion reflection" in guidance
+    assert "solver self-review" in guidance
+    assert "No trusted independent validation contract is active" in guidance
+    assert "framework probe receipt" not in guidance
+    assert "accept requires" not in guidance
 
 
 @pytest.mark.asyncio
-async def test_final_review_accepts_multi_tool_repair_selected_by_model() -> None:
+async def test_final_review_keeps_ordinary_multi_tool_work_in_review() -> None:
     calls = 0
 
     class MultiToolReviewAgent(Agent):
@@ -660,6 +1251,10 @@ async def test_final_review_accepts_multi_tool_repair_selected_by_model() -> Non
     assert len(result) == 2
     assert [action.tool_name for action in result] == ["run_code", "run_code"]
     assert agent.finished is False
+    state = ExecutionProtocolStore(context, agent.id(), policy).load()
+    assert state.phase.value == "review"
+    assert state.review_pending is True
+    assert state.repair_count == 0
 
 
 @pytest.mark.asyncio
@@ -705,7 +1300,16 @@ async def test_single_review_repair_returns_to_normal_tool_execution() -> None:
                     ToolCall(
                         id="repair-call",
                         function=Function(
-                            name="run_code", arguments='{"code":"true"}'
+                            name="run_code",
+                            arguments=json.dumps(
+                                {
+                                    "code": "true",
+                                    "__aworld_review_decision": {
+                                        "decision": "repair",
+                                        "reason": "the observed output is stale",
+                                    },
+                                }
+                            ),
                         ),
                     )
                 ]
@@ -763,13 +1367,26 @@ async def test_single_review_repair_returns_to_normal_tool_execution() -> None:
 
     assert len(repair) == 1
     assert repair[0].tool_name == "run_code"
+    assert repair[0].params == {"code": "true"}
+    repair_state = ExecutionProtocolStore(context, agent.id(), policy).load()
+    assert repair_state.repair_count == 1
     assert final[0].policy_info == "final after bounded repair"
     assert calls == 3
     assert prepared_tools[-1] is not None
+    review_control = "__aworld_review_decision"
+    assert review_control in prepared_tools[1][0]["function"]["parameters"][
+        "properties"
+    ]
+    assert review_control not in prepared_tools[1][0]["function"]["parameters"].get(
+        "required", []
+    )
+    assert review_control not in prepared_tools[2][0]["function"][
+        "parameters"
+    ].get("properties", {})
 
 
 @pytest.mark.asyncio
-async def test_model_can_continue_tool_work_after_review_repair() -> None:
+async def test_model_can_continue_ordinary_tool_work_while_review_is_pending() -> None:
     calls = 0
 
     class ToolOnlyFinalizationAgent(Agent):
@@ -861,6 +1478,10 @@ async def test_model_can_continue_tool_work_after_review_repair() -> None:
     assert final[0].tool_name == "run_code"
     assert agent.finished is False
     assert calls == 3
+    state = ExecutionProtocolStore(context, agent.id(), policy).load()
+    assert state.phase.value == "review"
+    assert state.review_pending is True
+    assert state.repair_count == 0
 
 
 @pytest.mark.asyncio
@@ -869,7 +1490,11 @@ async def test_independent_uncertain_review_returns_typed_incomplete_outcome(
 ) -> None:
     monkeypatch.delenv("AWORLD_INDEPENDENT_ACCEPTANCE_CRITIC", raising=False)
     calls = 0
+    clock = 0.0
     requests = []
+
+    def monotonic_now() -> float:
+        return clock
 
     class UncertainCriticAgent(Agent):
         async def _add_message_to_memory(self, *args, **kwargs):
@@ -886,12 +1511,18 @@ async def test_independent_uncertain_review_returns_typed_incomplete_outcome(
             return None
 
         async def invoke_model(self, messages=None, message=None, **kwargs):
-            nonlocal calls
+            nonlocal calls, clock
             calls += 1
             requests.append(messages)
             if calls in {1, 3}:
                 content = f"candidate-{calls}"
             else:
+                if calls == 2:
+                    # The first review episode has expired by the time its
+                    # typed uncertain decision requests repair. That completed
+                    # episode must not bound the normal repair turn or the next
+                    # candidate's independent review.
+                    clock = 11.0
                 content = json.dumps(
                     {
                         "decision": "uncertain",
@@ -933,6 +1564,7 @@ async def test_independent_uncertain_review_returns_typed_incomplete_outcome(
         mode=ProtocolMode.GUIDE,
         review_unarmed_candidates=True,
         independent_acceptance_enabled=True,
+        final_review_timeout_seconds=10,
         max_repairs=1,
         max_final_reviews=1,
     )
@@ -946,6 +1578,7 @@ async def test_independent_uncertain_review_returns_typed_incomplete_outcome(
         execution_protocol_policy=policy,
         max_loop_steps=0,
     )
+    monkeypatch.setattr(llm_agent_module, "_monotonic_now", monotonic_now)
     message = Message(category=Constants.AGENT, headers={"context": context})
 
     result = await agent.async_policy(
@@ -958,6 +1591,7 @@ async def test_independent_uncertain_review_returns_typed_incomplete_outcome(
     assert state["status"] == "incomplete"
     assert state["reason"] == "acceptance_evidence_missing"
     assert state["recoverable"] is False
+    assert agent._load_long_horizon_review_deadline(context) is None
     for critic_request in (requests[1], requests[3]):
         serialized = json.dumps(critic_request)
         assert "private solver reasoning" not in serialized

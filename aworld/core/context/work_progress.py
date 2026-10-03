@@ -1,9 +1,8 @@
 """Retain task intent and observed delivery state alongside the Tool ledger.
 
-Agent plans are claims, never verification. Compiled public/caller completion
-contracts and runtime evidence declare required or verified artifacts. This
-module retains a progress summary; durable candidate snapshots, measured ranking
-and atomic publication are owned by core.task_workspace.store.TaskWorkspaceStore.
+Agent plans are claims, never verification. Explicit caller completion contracts
+and runtime evidence declare required or verified artifacts. This module retains
+only a generic progress summary.
 """
 from __future__ import annotations
 
@@ -53,8 +52,7 @@ def retain_work_progress(context, agent_id: str, *, plan: str | None = None):
         source = context.context_info.get("runtime_completion_contract", {}).get("source", "caller_contract")
         evidence = {e.requirement_id: e for e in getattr(context, "_completion_artifact_evidence", ())}
         # Compatibility summary of observed final paths, not a candidate store
-        # or a promotion receipt. WORKBENCH exposes the authoritative snapshots,
-        # metrics and accepted candidate from TaskWorkspaceStore.
+        # or a publication receipt.
         state["candidate_submission"] = [
             {"path": r.path, "requirement_id": r.requirement_id, "source": source,
              "required": r.required and mode == "enforce", "exists": evidence[r.requirement_id].exists if r.requirement_id in evidence else None,

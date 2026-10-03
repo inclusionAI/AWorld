@@ -177,7 +177,7 @@ def test_semantic_progress_detects_abab_operation_result_loop():
     assert "stable-range" not in repr(state)
 
 
-def test_semantic_progress_artifact_advance_resets_recent_pair_window():
+def test_unverified_artifact_advance_does_not_reset_recent_pair_window():
     context = Context(task_id="semantic-progress-artifact-reset")
     action = ActionModel(
         tool_name="terminal",
@@ -219,10 +219,12 @@ def test_semantic_progress_artifact_advance_resets_recent_pair_window():
     )
 
     assert advanced["artifact_advanced"] is True
-    assert advanced["progress_guard_reset"] is True
+    assert advanced["diagnostic_progress_observable"] is True
+    assert advanced["durable_milestone_advanced"] is False
+    assert advanced["progress_guard_reset"] is False
     assert advanced["repetition_count"] == 1
     assert advanced["low_information_gain_count"] == 1
-    assert len(advanced["recent_operation_result_hashes"]) == 1
+    assert len(advanced["recent_operation_result_hashes"]) == 4
     assert advanced["progress_guard_required"] is False
 
 

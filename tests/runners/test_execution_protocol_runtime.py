@@ -4,7 +4,12 @@ import pytest
 
 from aworld.core.context.base import Context
 from aworld.core.common import ActionModel
-from aworld.core.context.compiler import LifecycleAction
+from aworld.core.context.compiler import (
+    CompletionContract,
+    CompletionMode,
+    LifecycleAction,
+    ValidationCommand,
+)
 from aworld.core.execution_protocol import (
     ControllerAction,
     ExecutionProtocolPolicy,
@@ -18,12 +23,15 @@ from aworld.runners.execution_protocol import (
     configure_execution_protocol,
     consume_execution_protocol_guidance,
     execution_protocol_accepts_model_profile,
+    execution_protocol_policy,
     execution_protocol_requires_tool_free_finalization,
     final_review_guidance,
     load_candidate_fallback,
     load_execution_protocol_state,
+    model_owned_review_active,
     record_candidate_final,
     record_model_execution_profile,
+    record_review_repair_decision,
     record_review_tool_action,
     record_tool_protocol_event,
     store_candidate_fallback,
@@ -80,6 +88,9 @@ def test_guide_mode_delivers_each_replan_checkpoint_once() -> None:
     assert guidance is not None
     assert "long-horizon checkpoint" in guidance
     assert "Continue it when warranted" in guidance
+    assert "bounded next action" in guidance
+    assert "inspectable milestone evidence" in guidance
+    assert "keeps all normal Tools available" in guidance
     assert "checkpoint is advisory" in guidance
     assert consume_execution_protocol_guidance(context, "agent") is None
     state = ExecutionProtocolStore(context, "agent", policy).load()
@@ -269,7 +280,12 @@ def test_final_review_is_requested_once_and_unknown_submits_current_result() -> 
     )
 
     first = record_candidate_final(context, "agent")
-    assert final_review_guidance(first) is not None
+    assert (
+        final_review_guidance(
+            first, independent_acceptance_enabled=False
+        )
+        is not None
+    )
     assert first is not None
     assert first.decision.action is ControllerAction.REQUEST_FINAL_REVIEW
 
@@ -290,10 +306,18 @@ def test_short_task_candidate_final_bypasses_review() -> None:
     assert transition is not None
     assert transition.decision.action is ControllerAction.SUBMIT_CURRENT_RESULT
     assert transition.state.final_review_count == 0
-    assert final_review_guidance(transition) is None
+    assert (
+        final_review_guidance(
+            transition, independent_acceptance_enabled=False
+        )
+        is None
+    )
 
 
-def test_runtime_policy_can_send_short_candidate_to_model_review() -> None:
+def test_missing_validation_contract_uses_model_owned_reflection(
+    monkeypatch,
+) -> None:
+    monkeypatch.delenv("AWORLD_INDEPENDENT_ACCEPTANCE_CRITIC", raising=False)
     context = _context("review-all")
     policy = ExecutionProtocolPolicy(
         mode=ProtocolMode.GUIDE,
@@ -302,13 +326,26 @@ def test_runtime_policy_can_send_short_candidate_to_model_review() -> None:
     configure_execution_protocol(context, "agent", policy)
 
     transition = record_candidate_final(context, "agent")
+    effective_policy = execution_protocol_policy(context, "agent")
 
     assert transition is not None
     assert transition.decision.action is ControllerAction.REQUEST_FINAL_REVIEW
-    assert "model-owned completion review" in final_review_guidance(transition)
+    guidance = final_review_guidance(
+        transition,
+        independent_acceptance_enabled=(
+            effective_policy.independent_acceptance_enabled
+        ),
+    )
+    assert effective_policy.independent_acceptance_enabled is False
+    assert "model-owned completion reflection" in guidance
+    assert "solver self-review" in guidance
+    assert "No trusted independent validation contract is active" in guidance
+    assert "framework probe receipt" not in guidance
+    assert "accept requires" not in guidance
+    assert model_owned_review_active(context, "agent") is True
 
 
-def test_review_tool_action_opens_one_normal_execution_repair() -> None:
+def test_ordinary_review_tool_action_stays_in_review() -> None:
     context = _context("repair")
     policy = ExecutionProtocolPolicy(
         mode=ProtocolMode.GUIDE, activation_event_threshold=1
@@ -323,11 +360,100 @@ def test_review_tool_action_opens_one_normal_execution_repair() -> None:
 
     transition = record_review_tool_action(context, "agent")
 
+    assert transition is None
+    state = load_execution_protocol_state(context, "agent")
+    assert state.phase is ProtocolPhase.REVIEW
+    assert state.review_pending is True
+    assert state.repair_count == 0
+    assert not execution_protocol_requires_tool_free_finalization(context, "agent")
+
+
+def test_only_strict_structured_review_decision_enters_repair() -> None:
+    context = _context("structured-repair")
+    policy = ExecutionProtocolPolicy(
+        mode=ProtocolMode.GUIDE,
+        activation_event_threshold=1,
+        independent_acceptance_enabled=False,
+    )
+    configure_execution_protocol(context, "agent", policy)
+    record_tool_protocol_event(
+        context,
+        "agent",
+        _semantic_state(validation_evidence_advanced=True),
+    )
+    record_candidate_final(context, "agent")
+
+    for invalid in (
+        {"decision": "repair"},
+        {"decision": "repair", "reason": ""},
+        {"decision": "repair", "reason": "gap", "extra": True},
+        {"decision": "accept", "reason": "looks good"},
+        "repair",
+    ):
+        assert record_review_repair_decision(context, "agent", invalid) is None
+        assert load_execution_protocol_state(context, "agent").review_pending is True
+
+    transition = record_review_repair_decision(
+        context,
+        "agent",
+        {"decision": "repair", "reason": "observed output is stale"},
+    )
+
     assert transition is not None
     assert transition.decision.action is ControllerAction.REQUEST_REPAIR
+    assert transition.state.phase is ProtocolPhase.REPAIR
+    assert transition.state.review_pending is False
     assert transition.state.repair_count == 1
-    assert not execution_protocol_requires_tool_free_finalization(context, "agent")
-    assert record_review_tool_action(context, "agent") is None
+    assert model_owned_review_active(context, "agent") is False
+
+
+def test_independent_review_rejects_noncritic_repair_marker(
+    monkeypatch,
+) -> None:
+    monkeypatch.delenv("AWORLD_INDEPENDENT_ACCEPTANCE_CRITIC", raising=False)
+    context = _context("critic-marker")
+    context.configure_completion_contract(
+        CompletionContract(
+            required_artifacts=(),
+            immutable_inputs=(),
+            validation_commands=(
+                ValidationCommand(
+                    command_id="registered-check",
+                    argv=("pytest", "-q", "tests/test_contract.py"),
+                ),
+            ),
+            max_evidence_age_seconds=None,
+            required_final_evidence=(),
+        ),
+        mode=CompletionMode.ENFORCE,
+    )
+    policy = ExecutionProtocolPolicy(
+        mode=ProtocolMode.GUIDE,
+        review_unarmed_candidates=True,
+        independent_acceptance_enabled=True,
+    )
+    configure_execution_protocol(context, "agent", policy)
+    review = record_candidate_final(context, "agent")
+
+    assert (
+        record_review_repair_decision(
+            context,
+            "agent",
+            {"decision": "repair", "reason": "unverified gap"},
+        )
+        is None
+    )
+    guidance = final_review_guidance(
+        review,
+        independent_acceptance_enabled=True,
+    )
+    assert "independent acceptance" in guidance
+    assert "successful framework probe receipt" in guidance
+    assert "solver self-review" not in guidance
+    state = load_execution_protocol_state(context, "agent")
+    assert state.phase is ProtocolPhase.REVIEW
+    assert state.review_pending is True
+    assert state.repair_count == 0
 
 
 def test_candidate_fallback_survives_context_transport_copy() -> None:

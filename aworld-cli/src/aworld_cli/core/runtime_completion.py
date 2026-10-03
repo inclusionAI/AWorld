@@ -27,17 +27,12 @@ from aworld.core.context.compiler import (
     ValidationCommand,
 )
 from aworld.logs.util import logger
-from aworld.core.task_workspace.contracts import derive_delivery_contract, infer_declared_output_paths
 
 
 COMPLETION_MODE_ENV = "AWORLD_COMPLETION_MODE"
 COMPLETION_MAX_REPAIRS_ENV = "AWORLD_COMPLETION_MAX_REPAIRS"
-INFER_ARTIFACTS_ENV = "AWORLD_INFER_REQUIRED_ARTIFACTS"
 REQUIRED_ARTIFACTS_ENV = "AWORLD_REQUIRED_ARTIFACTS_JSON"
 VALIDATION_COMMANDS_ENV = "AWORLD_VALIDATION_COMMANDS_JSON"
-
-def _truthy_env(value: str | None) -> bool:
-    return (value or "").strip().lower() in {"1", "true", "yes", "on"}
 
 
 def resolve_completion_mode(value: str | None = None) -> CompletionMode:
@@ -165,14 +160,11 @@ def build_runtime_completion_contract(
     *,
     workspace_path: str | os.PathLike[str],
     explicit_paths: Sequence[str] = (),
-    infer_paths: bool = False,
     validation_commands: Sequence[ValidationCommand] = (),
 ) -> CompletionContract | None:
-    """Build an artifact-existence contract, or ``None`` if no target exists."""
+    """Build an explicit artifact/command contract, or ``None`` if empty."""
 
     candidates = list(explicit_paths)
-    if infer_paths:
-        candidates.extend(infer_declared_output_paths(request))
     paths = _resolve_artifact_paths(candidates, workspace_path=workspace_path)
     if not paths and not validation_commands:
         return None
@@ -209,8 +201,6 @@ async def resolve_runtime_completion_evidence(
             command_id=command.command_id, exit_code=exit_code,
             output_hash=output_hash, observed_at=datetime.now(timezone.utc),
         ))
-    if context.context_info.get("task_workspace_binding") is not None:
-        await _evaluate_workspace_completion(context, contract)
     _record_runtime_artifacts(context, contract)
 
 
@@ -239,84 +229,13 @@ def _record_runtime_artifacts(context, contract):
         )
 
 
-async def _evaluate_workspace_completion(context, contract):
-    from aworld.core.task_workspace.session import evaluate_delivery
-    delivery_ids = set(context.context_info.get("runtime_completion_contract", {}).get("delivery_check_ids", ()))
-    if "workbench.delivery" in contract.required_self_check_ids:
-        delivery_ids.add("workbench.delivery")
-    for check_id in delivery_ids:
-        # A resolver error must not leave an earlier successful receipt current.
-        context.record_completion_self_check(SelfCheckEvidence(
-            command_id=check_id, exit_code=1, output_hash=None,
-            observed_at=datetime.now(timezone.utc),
-        ))
-    await evaluate_delivery(context, contract)
-
-
-def _attach_workspace_completion(context, existing):
-    delivery = context.context_info.get("delivery_contract", {})
-    if any(command.command_id == "workbench.delivery" for command in existing.validation_commands):
-        raise ValueError("workbench.delivery is reserved for executed workspace evidence")
-    if any(existing is getattr(context, key, None) for key in (
-        "_workspace_completion_owned_contract", "_goal_completion_owned_contract",
-        "_runtime_completion_derived_contract",
-    )):
-        return existing
-    requirements = list(existing.required_artifacts)
-    known_paths = {item.path for item in requirements}
-    requirements.extend(ArtifactRequirement(item["id"], item["path"])
-                        for item in delivery.get("outputs", []) if item["path"] not in known_paths)
-    input_ids = tuple(item["id"] for item in delivery.get("inputs", []) if item.get("immutable") is True)
-    check_ids = tuple(check["id"] for item in delivery.get("outputs", []) for check in item["checks"])
-    check_ids += tuple(check["id"] for check in delivery.get("checks", []))
-    if not delivery.get("outputs") and not input_ids and not check_ids:
-        # A mutable input-only task has no runtime-owned delivery requirement.
-        # Do not turn optional agent-authored WORKBENCH checks into a global
-        # completion gate for unrelated benchmarks.
-        return existing
-    caller_ids = {command.command_id for command in existing.validation_commands}
-    caller_ids.update(existing.required_self_check_ids)
-    if caller_ids.intersection((*check_ids, "workbench.delivery")):
-        raise ValueError("caller check IDs conflict with native workspace check IDs")
-    extended = replace(
-        existing, required_artifacts=tuple(requirements),
-        immutable_inputs=tuple(dict.fromkeys((*existing.immutable_inputs, *input_ids))),
-        required_self_check_ids=tuple(dict.fromkeys(
-            (*existing.required_self_check_ids, *check_ids, "workbench.delivery")
-        )),
-    )
-    previous_resolver = getattr(context, "_completion_evidence_resolver", None)
-    resolver = previous_resolver
-    if previous_resolver is not resolve_runtime_completion_evidence:
-        async def resolver(target, configured):
-            if previous_resolver is not None:
-                await previous_resolver(target, existing)
-            await _evaluate_workspace_completion(target, configured)
-            previous_ids = {item.requirement_id for item in existing.required_artifacts}
-            local_contract = configured if previous_resolver is None else replace(
-                configured, required_artifacts=tuple(item for item in configured.required_artifacts
-                                                     if item.requirement_id not in previous_ids),
-            )
-            _record_runtime_artifacts(target, local_contract)
-    # Extending a caller contract must retain its evidence, mode and checks.
-    context._completion_contract = extended
-    context._completion_evidence_resolver = resolver
-    context._workspace_completion_caller_contract = existing
-    context._workspace_completion_owned_contract = extended
-    return extended
-
-
 def configure_runtime_completion(
     context,
     *,
     request: str | None,
     workspace_path: str | os.PathLike[str],
 ) -> CompletionContract | None:
-    """Bind actual caller or high-confidence public delivery requirements.
-
-    The native workspace binding is issued by the local executor. An arbitrary
-    remote sandbox cannot make derived checks inspect the host filesystem.
-    """
+    """Bind only caller-selected artifact and validation requirements."""
     mode = resolve_completion_mode()
     existing = getattr(context, "completion_contract", None)
     explicit_mode = (os.environ.get(COMPLETION_MODE_ENV) or "").strip().lower()
@@ -336,9 +255,6 @@ def configure_runtime_completion(
         )
     )
     if mode is CompletionMode.OFF and existing is None:
-        if context.context_info.get("task_workspace_binding") is not None:
-            from aworld.core.task_workspace.session import prepare_task_workspace
-            prepare_task_workspace(context, request=request or "", workspace_path=workspace_path)
         context.context_info["runtime_completion_contract"] = {
             "mode": "off", "requested_mode": "off", "source": "model_final_response",
         }
@@ -346,17 +262,11 @@ def configure_runtime_completion(
     explicit_paths = _configured_artifact_paths()
     artifact_field_provided = bool((os.environ.get(REQUIRED_ARTIFACTS_ENV) or "").strip())
     validation_commands = _configured_validation_commands()
-    binding = context.context_info.get("task_workspace_binding")
     if existing is not None:
-        if binding is not None:
-            from aworld.core.task_workspace.session import prepare_task_workspace
-            prepare_task_workspace(context, request=request or "", workspace_path=workspace_path)
-            existing = _attach_workspace_completion(context, existing)
         logger.info("Keeping the completion contract already installed by the caller")
         return existing
 
-    # Install caller structure before preparing workspace state, so the facade
-    # can recognize its authority and never replace it with inferred paths.
+    # Only caller-supplied structure can activate this generic contract path.
     if artifact_field_provided or validation_commands:
         contract = build_runtime_completion_contract(
             request, workspace_path=workspace_path, explicit_paths=explicit_paths,
@@ -379,60 +289,16 @@ def configure_runtime_completion(
             "provided_fields": ["outputs"] if artifact_field_provided else [],
             "max_repairs": contract.max_repairs,
         }
-        if binding is not None:
-            from aworld.core.task_workspace.session import prepare_task_workspace
-            prepare_task_workspace(context, request=request or "", workspace_path=workspace_path)
-            contract = _attach_workspace_completion(context, contract)
         return contract
 
-    if binding is not None:
-        from aworld.core.task_workspace.session import prepare_task_workspace
-        delivery = prepare_task_workspace(context, request=request or "", workspace_path=workspace_path)
-    else:
-        delivery = derive_delivery_contract(request or "", workspace_path=workspace_path)
-        context.context_info["delivery_contract"] = delivery
-        context.context_info["delivery_evaluation_unavailable"] = "local_workspace_not_bound"
-        return None
-    context.context_info["delivery_contract"] = delivery
-    if mode is CompletionMode.OFF:
-        return None
-    requirements = tuple(ArtifactRequirement(item["id"], item["path"]) for item in delivery["outputs"])
-    inputs = tuple(item["id"] for item in delivery["inputs"] if item.get("immutable") is True)
-    check_ids = tuple(dict.fromkeys(
-        [check["id"] for item in delivery["outputs"] for check in item["checks"]]
-        + [check["id"] for check in delivery.get("checks", [])]
-    ))
-    if not requirements and not inputs and not check_ids:
-        context.context_info["runtime_completion_contract"] = {
-            "mode": "off",
-            "requested_mode": mode.value,
-            "source": "no_enforceable_delivery",
-            "source_hash": delivery["source_hash"],
-            "coverage_status": delivery["coverage_status"],
-            "required_artifacts": [],
-            "delivery_check_ids": [],
-            "max_repairs": resolve_completion_max_repairs(),
-        }
-        return None
-    check_ids = (*check_ids, "workbench.delivery")
-    contract = CompletionContract(
-        required_artifacts=requirements, immutable_inputs=inputs,
-        validation_commands=(), required_self_check_ids=check_ids,
-        max_evidence_age_seconds=None, required_final_evidence=("agent_final_response",),
-        max_repairs=resolve_completion_max_repairs(),
-    )
-    context.configure_completion_contract(contract, mode=mode,
-                                          evidence_resolver=resolve_runtime_completion_evidence)
-    context._runtime_completion_derived_contract = contract
     context.context_info["runtime_completion_contract"] = {
-        "mode": mode.value, "requested_mode": mode.value,
-        "source": "explicit_structured" if delivery["coverage_status"] == "explicit" else "public_literal",
-        "source_hash": delivery["source_hash"], "coverage_status": delivery["coverage_status"],
-        "required_artifacts": [item.path for item in requirements],
-        "delivery_check_ids": list(check_ids),
-        "max_repairs": contract.max_repairs,
+        "mode": "off",
+        "requested_mode": mode.value,
+        "source": "no_explicit_contract",
+        "required_artifacts": [],
+        "max_repairs": resolve_completion_max_repairs(),
     }
-    return contract
+    return None
 
 
 def configure_goal_completion(context, *, verification_commands: Sequence[str], workspace_path) -> CompletionContract | None:
@@ -504,7 +370,6 @@ def configure_goal_completion(context, *, verification_commands: Sequence[str], 
         "mode": "enforce", "requested_mode": "enforce", "source": "explicit_goal_verification",
         "required_artifacts": [item.path for item in contract.required_artifacts],
         "validation_command_ids": [item.command_id for item in checks],
-        "delivery_check_ids": metadata.get("delivery_check_ids", []),
         "max_repairs": contract.max_repairs,
     }
     context._goal_completion_owned_contract = contract
@@ -516,13 +381,11 @@ def configure_goal_completion(context, *, verification_commands: Sequence[str], 
 __all__ = [
     "COMPLETION_MODE_ENV",
     "COMPLETION_MAX_REPAIRS_ENV",
-    "INFER_ARTIFACTS_ENV",
     "REQUIRED_ARTIFACTS_ENV",
     "VALIDATION_COMMANDS_ENV",
     "build_runtime_completion_contract",
     "configure_runtime_completion",
     "configure_goal_completion",
-    "infer_declared_output_paths",
     "resolve_completion_mode",
     "resolve_completion_max_repairs",
     "resolve_runtime_completion_evidence",

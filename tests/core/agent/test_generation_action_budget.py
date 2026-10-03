@@ -20,6 +20,7 @@ from aworld.core.context.generation_budget import (
 )
 from aworld.core.context.session import Session
 from aworld.core.event.base import Constants, Message
+from aworld.core.exceptions import AWorldTransientModelError
 from aworld.core.execution_protocol import ExecutionProtocolStore
 from aworld.core.task import Task
 from aworld.models.model_response import Function, ModelResponse, ToolCall
@@ -291,7 +292,428 @@ def _generation_timeout(
 
 
 @pytest.mark.asyncio
-async def test_automatic_timeout_runs_one_tool_free_finalization() -> None:
+async def test_exhausted_transient_provider_retries_resume_with_normal_tools(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Regression for the DNA canary: transport failure is not finalization."""
+
+    class ProviderStatusError(Exception):
+        status_code = 502
+
+    agent = _long_running_generation_agent(armed=True)
+    agent._llm = object()
+    agent.llm_max_attempts = 3
+    agent.llm_retry_delay = 0
+    agent.context._session = Session(session_id="transient-recovery-s")
+    task = Task(
+        id="long-running-generation-budget",
+        name="long-running-generation-budget",
+        input="create /app/primers.fasta",
+        timeout=600,
+    )
+    agent.context.set_task(task)
+    provider_calls: list[dict] = []
+
+    async def provider(*args, **kwargs):
+        provider_calls.append(kwargs)
+        if len(provider_calls) <= agent.llm_max_attempts:
+            raise ProviderStatusError("provider response body was interrupted")
+        return ModelResponse(
+            id="recovered-tool-turn",
+            model="fake-model",
+            content="continue material work",
+            finish_reason="tool_calls",
+            tool_calls=[
+                ToolCall(
+                    id="write-primers",
+                    function=Function(
+                        name="workspace__write",
+                        arguments=(
+                            '{"path":"/app/primers.fasta",'
+                            '"content":">input_fwd\\nACGT"}'
+                        ),
+                    ),
+                )
+            ],
+        )
+
+    async def no_memory(*args, **kwargs):
+        return None
+
+    async def no_output(*args, **kwargs):
+        return None
+
+    async def simple_input(observation, info=None, message=None, **kwargs):
+        return [{"role": "user", "content": str(observation.content or "")}]
+
+    monkeypatch.setattr(llm_agent_module, "acall_llm_model", provider)
+    monkeypatch.setattr(agent, "build_llm_input", simple_input)
+    monkeypatch.setattr(agent, "_add_message_to_memory", no_memory)
+    monkeypatch.setattr(agent, "send_agent_response_output", no_output)
+    message = Message(
+        category=Constants.AGENT,
+        payload=Observation(
+            content="prior tool work inspected all input sequences",
+            observer="terminal",
+            from_agent_name="terminal",
+            to_agent_name=agent.id(),
+        ),
+        receiver=agent.id(),
+        headers={"context": agent.context},
+    )
+
+    actions = await agent.async_policy(message.payload, message=message, stream=False)
+
+    assert len(provider_calls) == 4
+    assert all(call.get("tools") for call in provider_calls)
+    assert any(
+        "transient model-provider interruption" in str(item.get("content", ""))
+        for item in provider_calls[-1]["messages"]
+    )
+    assert len(actions) == 1
+    assert actions[0].tool_name == "workspace"
+    assert actions[0].action_name == "write"
+    assert actions[0].params["path"] == "/app/primers.fasta"
+    metrics = agent.context.context_info["transient_model_recovery_metrics"]
+    assert metrics["attempt_count"] == 1
+    assert metrics["outcome:recovered"] == 1
+    assert metrics["consecutive_failure_count"] == 0
+
+
+@pytest.mark.asyncio
+async def test_truncated_model_actions_continue_with_tools_until_task_boundary(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A clean length stop is task progress, not a terminal retry budget."""
+
+    agent = _long_running_generation_agent(armed=False)
+    agent._llm = object()
+    agent.llm_max_attempts = 2
+    agent.llm_retry_delay = 0
+    agent.context._session = Session(session_id="model-response-recovery-s")
+    agent.context.set_task(
+        Task(
+            id="long-running-generation-budget",
+            name="long-running-generation-budget",
+            input="create /app/primers.fasta",
+            timeout=600,
+            completion_reserve_seconds=60,
+        )
+    )
+    provider_calls: list[dict] = []
+
+    async def provider(*args, **kwargs):
+        provider_calls.append(kwargs)
+        if len(provider_calls) <= 6:
+            return ModelResponse(
+                id=f"truncated-{len(provider_calls)}",
+                model="fake-model",
+                content="unfinished model action",
+                finish_reason="length",
+            )
+        return ModelResponse(
+            id="recovered-tool-turn",
+            model="fake-model",
+            content="continue material work",
+            finish_reason="tool_calls",
+            tool_calls=[
+                ToolCall(
+                    id="write-primers",
+                    function=Function(
+                        name="workspace__write",
+                        arguments=(
+                            '{"path":"/app/primers.fasta",'
+                            '"content":">input_fwd\\nACGT"}'
+                        ),
+                    ),
+                )
+            ],
+        )
+
+    async def no_memory(*args, **kwargs):
+        return None
+
+    async def no_output(*args, **kwargs):
+        return None
+
+    async def simple_input(observation, info=None, message=None, **kwargs):
+        return [{"role": "user", "content": str(observation.content or "")}]
+
+    monkeypatch.setattr(llm_agent_module, "acall_llm_model", provider)
+    monkeypatch.setattr(agent, "build_llm_input", simple_input)
+    monkeypatch.setattr(agent, "_add_message_to_memory", no_memory)
+    monkeypatch.setattr(agent, "send_agent_response_output", no_output)
+    message = Message(
+        category=Constants.AGENT,
+        payload=Observation(content="continue retained work"),
+        receiver=agent.id(),
+        headers={"context": agent.context},
+    )
+
+    actions = await agent.async_policy(message.payload, message=message, stream=False)
+
+    # Three exhausted two-attempt response batches do not impose an overall
+    # retry limit. The next normal turn still receives the full Tool catalog.
+    assert len(provider_calls) == 7
+    assert all(call.get("tools") for call in provider_calls)
+    assert all(
+        provider_calls[index].get("tool_choice") == "required"
+        for index in (1, 3, 5)
+    )
+    assert all(
+        "tool_choice" not in provider_calls[index]
+        for index in (0, 2, 4, 6)
+    )
+    assert any(
+        "Runtime response recovery" in str(item.get("content", ""))
+        for item in provider_calls[-1]["messages"]
+    )
+    assert any(
+        "retained-incomplete-context" in str(item.get("content", ""))
+        and "unfinished model action" in str(item.get("content", ""))
+        for item in provider_calls[-1]["messages"]
+    )
+    assert actions[0].tool_name == "workspace"
+    assert actions[0].action_name == "write"
+    assert actions[0].params["path"] == "/app/primers.fasta"
+    policy = agent._resolve_execution_protocol_policy(agent.context)
+    assert not ExecutionProtocolStore(
+        agent.context, agent.id(), policy
+    ).load().long_horizon_armed
+    metrics = agent.context.context_info["model_response_recovery_metrics"]
+    assert metrics["continuation_count"] == 3
+    assert metrics["outcome:recovered"] == 1
+    assert (
+        agent._model_response_recovery_context_key()
+        not in agent.context.context_info
+    )
+
+
+@pytest.mark.asyncio
+async def test_incomplete_tool_arguments_are_retained_as_non_executable_reference(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    agent = _agent(
+        policy=GenerationBudgetPolicy(
+            total_timeout_seconds=None,
+            stream_idle_timeout_seconds=None,
+            active_tool_free_timeout_seconds=None,
+            action_repair_timeout_seconds=None,
+            action_repair_enabled=False,
+            partial_response_context_chars=512,
+        ),
+        attempts=2,
+    )
+    message = _message("incomplete-tool-reference")
+    provider_calls: list[dict] = []
+
+    async def provider(*args, **kwargs):
+        provider_calls.append(kwargs)
+        if len(provider_calls) == 1:
+            return ModelResponse(
+                id="partial-tool",
+                model="fake-model",
+                content="",
+                finish_reason="tool_calls",
+                tool_calls=[
+                    ToolCall(
+                        id="write-partial",
+                        function=Function(
+                            name="workspace__write",
+                            arguments=(
+                                '{"path":"/app/result.json",'
+                                '"content":"retained fragment'
+                            ),
+                        ),
+                    )
+                ],
+            )
+        return ModelResponse(
+            id="repaired-tool",
+            model="fake-model",
+            content="",
+            finish_reason="tool_calls",
+            tool_calls=[
+                ToolCall(
+                    id="write-complete",
+                    function=Function(
+                        name="workspace__write",
+                        arguments='{"path":"/app/result.json","content":"done"}',
+                    ),
+                )
+            ],
+        )
+
+    monkeypatch.setattr(llm_agent_module, "acall_llm_model", provider)
+
+    response = await agent.invoke_model(
+        messages=[{"role": "user", "content": "write the artifact"}],
+        message=message,
+        stream=False,
+    )
+
+    assert len(provider_calls) == 2
+    retained = provider_calls[1]["messages"][-2]
+    assert retained["role"] == "assistant"
+    assert "tool_calls" not in retained
+    assert "Non-executable partial tool-call reference" in retained["content"]
+    assert "workspace__write" in retained["content"]
+    assert "/app/result.json" in retained["content"]
+    assert '"executable":false' in retained["content"]
+    assert len(retained["content"]) <= 512
+    assert provider_calls[1]["tool_choice"] == "required"
+    assert response.tool_calls[0].id == "write-complete"
+
+
+@pytest.mark.asyncio
+async def test_truncated_model_action_stops_honestly_at_caller_reserve() -> None:
+    agent = _long_running_generation_agent(armed=False)
+    task = Task(
+        id="long-running-generation-budget",
+        name="long-running-generation-budget",
+        input="continue",
+        timeout=600,
+        completion_reserve_seconds=60,
+    )
+    task.remaining_seconds = lambda: 60.0
+    agent.context.set_task(task)
+    calls = 0
+
+    async def attempt(observation, **kwargs):
+        nonlocal calls
+        calls += 1
+        from aworld.core.context.execution_state import record_execution_state
+
+        record_execution_state(
+            agent.context,
+            agent.id(),
+            "incomplete",
+            "model_output_truncated",
+            recoverable=True,
+        )
+        return [
+            ActionModel(
+                agent_name=agent.id(),
+                policy_info="Work remains incomplete.",
+            )
+        ]
+
+    agent._async_policy_once = attempt
+    message = Message(category=Constants.AGENT, headers={"context": agent.context})
+
+    result = await agent.async_policy(Observation(content="continue"), message=message)
+
+    assert calls == 1
+    assert result[0].policy_info == "Work remains incomplete."
+    assert agent.finished is True
+    state = get_execution_state(agent.context)
+    assert state["status"] == "incomplete"
+    assert state["reason"] == "model_output_truncated"
+    assert state["recoverable"] is True
+    metrics = agent.context.context_info["model_response_recovery_metrics"]
+    assert metrics["last_outcome"] == "deadline_exhausted"
+
+
+@pytest.mark.asyncio
+async def test_truncated_model_action_respects_agent_step_budget() -> None:
+    agent = _long_running_generation_agent(armed=False)
+    agent.max_loop_steps = 1
+    agent.context.update_agent_step(agent.id())
+    calls = 0
+
+    async def attempt(observation, **kwargs):
+        nonlocal calls
+        calls += 1
+        from aworld.core.context.execution_state import record_execution_state
+
+        record_execution_state(
+            agent.context,
+            agent.id(),
+            "incomplete",
+            "model_output_truncated",
+            recoverable=True,
+        )
+        return [ActionModel(agent_name=agent.id(), policy_info="Incomplete.")]
+
+    agent._async_policy_once = attempt
+    message = Message(category=Constants.AGENT, headers={"context": agent.context})
+
+    result = await agent.async_policy(Observation(content="continue"), message=message)
+
+    assert calls == 1
+    assert result[0].policy_info == "Incomplete."
+    assert agent.finished is True
+    assert get_execution_state(agent.context)["status"] == "incomplete"
+    metrics = agent.context.context_info["model_response_recovery_metrics"]
+    assert metrics["last_outcome"] == "step_budget_exhausted"
+
+
+@pytest.mark.asyncio
+async def test_transient_provider_recovery_stops_at_finalization_reserve() -> None:
+    agent = _long_running_generation_agent(armed=True)
+    task = Task(
+        id="long-running-generation-budget",
+        name="long-running-generation-budget",
+        input="continue",
+        timeout=600,
+    )
+    task.remaining_seconds = lambda: 45.0
+    agent.context.set_task(task)
+    calls = 0
+
+    async def attempt(observation, **kwargs):
+        nonlocal calls
+        calls += 1
+        raise AWorldTransientModelError(
+            status_code=502,
+            source_error_type="InternalServerError",
+        )
+
+    agent._async_policy_once = attempt
+    message = Message(category=Constants.AGENT, headers={"context": agent.context})
+
+    result = await agent.async_policy(Observation(content="continue"), message=message)
+
+    assert calls == 1
+    assert "does not claim successful completion" in result[0].policy_info
+    state = get_execution_state(agent.context)
+    assert state["status"] == "incomplete"
+    assert state["reason"] == "transient_model_recovery_deadline_exhausted"
+
+
+@pytest.mark.asyncio
+async def test_deterministic_provider_error_does_not_enter_recovery() -> None:
+    class BadRequestError(Exception):
+        status_code = 400
+
+    agent = _long_running_generation_agent(armed=True)
+    agent.context.set_task(
+        Task(
+            id="long-running-generation-budget",
+            name="long-running-generation-budget",
+            input="continue",
+            timeout=600,
+        )
+    )
+    calls = 0
+
+    async def attempt(observation, **kwargs):
+        nonlocal calls
+        calls += 1
+        raise BadRequestError("invalid request")
+
+    agent._async_policy_once = attempt
+    message = Message(category=Constants.AGENT, headers={"context": agent.context})
+
+    with pytest.raises(BadRequestError):
+        await agent.async_policy(Observation(content="continue"), message=message)
+
+    assert calls == 1
+    assert "transient_model_recovery_metrics" not in agent.context.context_info
+
+
+@pytest.mark.asyncio
+async def test_automatic_timeout_nonempty_handoff_remains_budget_exhausted() -> None:
     agent = _long_running_generation_agent(armed=True)
     calls: list[dict] = []
 
@@ -300,18 +722,29 @@ async def test_automatic_timeout_runs_one_tool_free_finalization() -> None:
         if len(calls) == 1:
             raise _generation_timeout()
         assert kwargs["_loop_budget_finalization"] is True
-        return [ActionModel(agent_name=agent.id(), policy_info="bounded summary")]
+        return [
+            ActionModel(
+                agent_name=agent.id(),
+                policy_info=(
+                    "Work remains incomplete; the requested deliverable was not "
+                    "produced."
+                ),
+            )
+        ]
 
     agent._async_policy_once = attempt
     message = Message(category=Constants.AGENT, headers={"context": agent.context})
 
     result = await agent.async_policy(Observation(content="continue"), message=message)
 
-    assert result[0].policy_info == "bounded summary"
+    assert result[0].policy_info == (
+        "Work remains incomplete; the requested deliverable was not produced."
+    )
     assert len(calls) == 2
     state = get_execution_state(agent.context)
-    assert state["status"] == "succeeded"
-    assert state["reason"] == "long_horizon_generation_budget_finalized"
+    assert state["status"] == "budget_exhausted"
+    assert state["reason"] == "long_horizon_generation_budget_exhausted"
+    assert state["recoverable"] is True
     metrics = agent.context.context_info["long_horizon_generation_budget_metrics"]
     assert metrics["policy_source"] == "long_horizon_auto"
     assert metrics["last_outcome"] == "finalized"
@@ -337,8 +770,35 @@ async def test_automatic_timeout_finalization_failure_returns_honest_result() ->
     assert calls == 2
     assert "does not claim successful completion" in result[0].policy_info
     state = get_execution_state(agent.context)
-    assert state["status"] == "succeeded"
-    assert state["reason"] == "long_horizon_generation_budget_fail_open"
+    assert state["status"] == "budget_exhausted"
+    assert state["reason"] == "long_horizon_generation_budget_exhausted"
+    assert state["recoverable"] is True
+
+
+@pytest.mark.asyncio
+async def test_automatic_timeout_empty_finalization_is_budget_exhausted() -> None:
+    agent = _long_running_generation_agent(armed=True)
+    calls = 0
+
+    async def attempt(observation, **kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise _generation_timeout(GenerationStopReason.PROVIDER_TIMEOUT)
+        assert kwargs["_loop_budget_finalization"] is True
+        return []
+
+    agent._async_policy_once = attempt
+    message = Message(category=Constants.AGENT, headers={"context": agent.context})
+
+    result = await agent.async_policy(Observation(content="continue"), message=message)
+
+    assert calls == 2
+    assert "does not claim successful completion" in result[0].policy_info
+    state = get_execution_state(agent.context)
+    assert state["status"] == "budget_exhausted"
+    assert state["reason"] == "long_horizon_generation_budget_exhausted"
+    assert state["recoverable"] is True
 
 
 @pytest.mark.asyncio
@@ -453,15 +913,14 @@ async def test_production_invoke_timeout_reaches_auto_fail_open_boundary() -> No
     agent, context = _production_boundary_timeout_agent(fail_once=True)
     message = Message(category=Constants.AGENT, headers={"context": context})
 
-    result = await agent.async_policy(
-        Observation(content="continue"), message=message
-    )
+    result = await agent.async_policy(Observation(content="continue"), message=message)
 
     assert agent.invoke_count == 2
     assert result[0].policy_info == "bounded production-path summary"
-    assert get_execution_state(context)["reason"] == (
-        "long_horizon_generation_budget_finalized"
-    )
+    state = get_execution_state(context)
+    assert state["status"] == "budget_exhausted"
+    assert state["reason"] == "long_horizon_generation_budget_exhausted"
+    assert state["recoverable"] is True
 
 
 @pytest.mark.asyncio
@@ -480,9 +939,7 @@ async def test_production_invoke_timeout_with_explicit_policy_stays_typed() -> N
     message = Message(category=Constants.AGENT, headers={"context": context})
 
     with pytest.raises(GenerationBudgetExceeded):
-        await agent.async_policy(
-            Observation(content="continue"), message=message
-        )
+        await agent.async_policy(Observation(content="continue"), message=message)
 
     assert agent.invoke_count == 1
 

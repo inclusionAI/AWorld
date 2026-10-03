@@ -1,4 +1,4 @@
-"""Scoped candidate transactions and recoverable public-input provenance.
+"""Scoped Workbench candidate transactions and recoverable input provenance.
 
 The caller binds scope, roots, policy and the validator. Tools must not expose
 those authority choices to model arguments. The store protects against ordinary
@@ -25,7 +25,7 @@ from .store_io import (StoreConflictError, StoreError, StoreIntegrityError, atom
                        atomic_json, canonical, capture, fingerprint, identity, locked,
                        read_json, sync_directory, verify_blob)
 
-SCHEMA = "aworld.task-workspace/v1"
+SCHEMA = "workbench.store/v1"
 _ID = re.compile(r"[a-f0-9]{64}")
 
 
@@ -121,7 +121,7 @@ class TaskWorkspaceStore:
                 roots.append({"path": str(path), "kind": kind})
         self.declared_roots = roots
         self._related_paths = set()
-        selected_root = root or os.environ.get("AWORLD_TASK_WORKSPACE_ROOT")
+        selected_root = root or os.environ.get("WORKBENCH_STATE_ROOT")
         if selected_root is None:
             selected_root = Path.home() / ".local/state/aworld/task-workspaces"
             if Path(selected_root).resolve().is_relative_to(self.workspace):

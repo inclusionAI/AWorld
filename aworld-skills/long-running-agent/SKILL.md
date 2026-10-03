@@ -33,7 +33,7 @@ actually needs a recoverable rolling plan.
 When the first actual Tool call exposes the optional
 `__aworld_execution_profile` parameter, include it when the current plan
 credibly needs multiple dependent milestones or at least six Tool actions.
-Include the profile in the same real Tool call that you already need; the
+Include the profile in the same real tool call that you already need; the
 runtime removes it before the Tool executes. Omit it when the work is direct or
 the horizon is genuinely uncertain. Do not make a separate Tool call merely to
 classify the task, and do not delay useful work to produce the profile.
@@ -65,6 +65,13 @@ Maintain only the next one to three useful actions. For each action, know what
 new observation would justify continuing, revising the plan, or abandoning the
 approach. Prefer actions that reduce uncertainty or produce inspectable progress
 over broad exploration.
+
+When the request names a concrete deliverable or observable state change,
+do not reserve all writes for the end of the investigation. Once the core format
+and safety constraints are known, create the smallest inspectable candidate and
+persist useful calculations or scripts. Refine that candidate as later evidence
+arrives. A draft is not completion evidence, but it prevents repeated analysis
+from consuming the task without producing anything that can be checked.
 
 At a meaningful milestone boundary or a framework-requested checkpoint:
 

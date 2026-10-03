@@ -11,7 +11,7 @@ from __future__ import annotations
 import os
 import re
 from collections.abc import Iterator, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import Enum
 from typing import Any
 
@@ -57,6 +57,29 @@ class DirectRunErrorCode(str, Enum):
     DIRECT_RUN_CANCELLED = "direct_run_cancelled"
     DIRECT_RUN_INTERRUPTED = "direct_run_interrupted"
     ATIF_EXPORT_FAILED = "atif_export_failed"
+
+
+def _unfinished_status_from_summary(
+    summary: Mapping[str, Any] | None,
+) -> DirectRunStatus | None:
+    """Return the latest typed unfinished state carried by executor evidence."""
+
+    if not isinstance(summary, Mapping):
+        return None
+    results = summary.get("results")
+    if not isinstance(results, (list, tuple)):
+        return None
+    for result in reversed(results):
+        if not isinstance(result, Mapping):
+            continue
+        value = result.get("semantic_status")
+        if value is None:
+            value = result.get("task_status")
+        if value == DirectRunStatus.INCOMPLETE.value:
+            return DirectRunStatus.INCOMPLETE
+        if value == DirectRunStatus.BUDGET_EXHAUSTED.value:
+            return DirectRunStatus.BUDGET_EXHAUSTED
+    return None
 
 
 def task_failure_exit_code() -> int:
@@ -363,7 +386,17 @@ class DirectRunOutcome(Mapping[str, Any]):
         failure_record: Mapping[str, Any] | None = None,
         process_exit_code: int | None = None,
     ) -> "DirectRunOutcome":
-        normalized_status = DirectRunStatus(status)
+        requested_status = DirectRunStatus(status)
+        unfinished_status = _unfinished_status_from_summary(summary)
+        # Executor evidence is authoritative for unfinished work. A legacy or
+        # wrapper caller may strengthen an unfinished state to another failure,
+        # but it must never promote that state to success.
+        normalized_status = (
+            unfinished_status
+            if requested_status is DirectRunStatus.SUCCEEDED
+            and unfinished_status is not None
+            else requested_status
+        )
         metrics = _summary_metrics(summary)
         return cls(
             status=normalized_status,
@@ -450,17 +483,41 @@ def coerce_direct_run_outcome(value: Any) -> DirectRunOutcome:
     """Normalize legacy private-helper return values at the CLI boundary."""
 
     if isinstance(value, DirectRunOutcome):
+        unfinished_status = _unfinished_status_from_summary(value.summary)
+        if (
+            value.status is DirectRunStatus.SUCCEEDED
+            and unfinished_status is not None
+        ):
+            metrics = _summary_metrics(value.summary)
+            metrics.update(
+                {
+                    "llm_call_count": max(
+                        metrics["llm_call_count"], value.llm_call_count
+                    ),
+                    "tool_call_count": max(
+                        metrics["tool_call_count"], value.tool_call_count
+                    ),
+                    "action_count": max(
+                        metrics["action_count"], value.action_count
+                    ),
+                    "last_successful_checkpoint": (
+                        value.last_successful_checkpoint
+                        or metrics["last_successful_checkpoint"]
+                    ),
+                }
+            )
+            return replace(
+                value,
+                status=unfinished_status,
+                trajectory_fidelity=_derive_fidelity(
+                    value.summary,
+                    status=unfinished_status,
+                    metrics=metrics,
+                ),
+            )
         return value
     if isinstance(value, dict):
-        semantic_status = next(
-            (
-                result.get("semantic_status")
-                for result in reversed(value.get("results") or [])
-                if isinstance(result, Mapping)
-                and result.get("semantic_status") in {"incomplete", "budget_exhausted"}
-            ),
-            None,
-        )
+        semantic_status = _unfinished_status_from_summary(value)
         # Before the typed contract, any summary dict meant the command reached
         # its normal return path. Preserve typed non-success terminal states.
         return DirectRunOutcome.from_summary(

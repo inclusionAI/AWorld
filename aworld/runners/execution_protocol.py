@@ -152,6 +152,17 @@ def acceptance_critic_active(context, agent_id: str) -> bool:
     return ExecutionProtocolStore(context, agent_id, policy).load().review_pending
 
 
+def model_owned_review_active(context, agent_id: str) -> bool:
+    """Return whether a non-critic model-owned review is currently pending."""
+    policy = execution_protocol_policy(context, agent_id)
+    if (
+        policy.mode is ProtocolMode.OFF
+        or policy.independent_acceptance_enabled
+    ):
+        return False
+    return ExecutionProtocolStore(context, agent_id, policy).load().review_pending
+
+
 def _bounded_probe_value(value: Any, *, depth: int = 0) -> Any:
     if depth >= 3:
         from aworld.core.context.compiler import semantic_fingerprint
@@ -762,9 +773,11 @@ def consume_execution_protocol_guidance(context, agent_id: str) -> str | None:
             "AWorld long-horizon checkpoint: the framework observed a bounded "
             "repetition or low-evidence signal. Judge from the actual task and "
             "observations whether the current approach is still making useful "
-            "progress. Continue it when warranted, or revise it when the evidence "
-            "supports doing so. This checkpoint is advisory and is not evidence "
-            "of task completion."
+            "progress. Continue it when warranted only with a bounded next action "
+            "that is expected to change a concrete decision. Otherwise revise the "
+            "approach and prioritize creating, updating, or validating inspectable "
+            "milestone evidence. This checkpoint is advisory, keeps all normal "
+            "Tools available, and is not evidence of task completion."
         )
     if action == ControllerAction.ENTER_FINALIZATION.value:
         return (
@@ -797,10 +810,25 @@ def record_candidate_final(context, agent_id: str) -> ProtocolTransition | None:
     return transition
 
 
-def record_review_tool_action(context, agent_id: str) -> ProtocolTransition | None:
-    """A concrete Tool action is the only repair signal accepted from review."""
+def record_review_repair_decision(
+    context, agent_id: str, value: Any
+) -> ProtocolTransition | None:
+    """Apply one explicit, strictly structured non-critic repair decision.
+
+    Ordinary Tool use during model-owned reflection is not a repair decision.
+    The caller must strip this control object before dispatching the Tool.
+    """
     policy = execution_protocol_policy(context, agent_id)
-    if policy.mode is ProtocolMode.OFF:
+    if (
+        policy.mode is ProtocolMode.OFF
+        or policy.independent_acceptance_enabled
+        or not isinstance(value, Mapping)
+        or set(value) != {"decision", "reason"}
+        or value.get("decision") != ReviewOutcome.REPAIR.value
+        or not isinstance(value.get("reason"), str)
+        or not value["reason"].strip()
+        or len(value["reason"].strip()) > 1024
+    ):
         return None
     store = ExecutionProtocolStore(context, agent_id, policy)
     if not store.load().review_pending:
@@ -813,6 +841,15 @@ def record_review_tool_action(context, agent_id: str) -> ProtocolTransition | No
     )
     _record_transition_metrics(context, transition)
     return transition
+
+
+def record_review_tool_action(context, agent_id: str) -> ProtocolTransition | None:
+    """Compatibility hook for ordinary review Tool calls.
+
+    Tool use is evidence gathering or concrete work, not an implicit repair
+    decision.  Only :func:`record_review_repair_decision` may enter REPAIR.
+    """
+    return None
 
 
 def record_review_error(context, agent_id: str) -> ProtocolTransition | None:
@@ -888,9 +925,9 @@ def execution_protocol_requires_tool_free_finalization(context, agent_id: str) -
     """Return true when the caller deadline reserved finalization.
 
     A model-requested repair is deliberately not a finalization state.  After
-    the review model uses a Tool to signal that work is incomplete, normal
-    execution continues under the original task budget until the model emits a
-    new candidate final response.
+    the review model attaches an explicit structured repair decision to a
+    concrete Tool call, normal execution continues under the original task
+    budget until the model emits a new candidate final response.
     """
     from aworld.core.execution_protocol import ProtocolPhase
 
@@ -901,12 +938,31 @@ def execution_protocol_requires_tool_free_finalization(context, agent_id: str) -
     return state.phase is ProtocolPhase.FINALIZE
 
 
-def final_review_guidance(transition: ProtocolTransition | None) -> str | None:
+def final_review_guidance(
+    transition: ProtocolTransition | None,
+    *,
+    independent_acceptance_enabled: bool = True,
+) -> str | None:
     if (
         transition is None
         or transition.decision.action is not ControllerAction.REQUEST_FINAL_REVIEW
     ):
         return None
+    if not independent_acceptance_enabled:
+        return (
+            "AWorld model-owned completion reflection: autonomously reassess "
+            "the public request, the candidate response, and observations from "
+            "this run. This is solver self-review, not independent framework "
+            "acceptance. No trusted independent validation contract is active, "
+            "so do not request or invent framework-owned acceptance evidence. "
+            "Ordinary Tool calls may inspect or verify concrete state and remain "
+            "part of this review. If a concrete Tool call begins a necessary "
+            "repair, mark only that call with the structured "
+            "__aworld_review_decision object whose decision is repair and whose "
+            "reason identifies the observed material gap; otherwise omit that "
+            "control object. When the candidate is adequate, return the best "
+            "current final response and state material uncertainty accurately."
+        )
     return (
         "AWorld model-owned completion review with independent acceptance: "
         "the next provider request is "
@@ -937,6 +993,7 @@ __all__ = [
     "execution_protocol_accepts_model_profile",
     "execution_protocol_requires_tool_free_finalization",
     "final_review_guidance",
+    "model_owned_review_active",
     "record_candidate_final",
     "record_model_execution_profile",
     "record_tool_hypotheses",
@@ -944,6 +1001,7 @@ __all__ = [
     "record_acceptance_probe_observation",
     "record_acceptance_critic_decision",
     "record_review_error",
+    "record_review_repair_decision",
     "record_review_tool_action",
     "record_tool_protocol_event",
     "load_candidate_fallback",

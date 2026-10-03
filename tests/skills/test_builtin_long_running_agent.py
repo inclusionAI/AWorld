@@ -62,6 +62,9 @@ def test_long_running_agent_skill_is_domain_and_benchmark_independent() -> None:
     assert "replace the only copy of" in text
     assert "important input or evidence" in text
     assert "described as a read may still trigger" in text
+    assert "smallest inspectable candidate" in text
+    assert "do not reserve all writes for the end" in text
+    assert "prevents repeated analysis" in text
     assert Path(skill_root / "references" / "execution-semantics.md").is_file()
 
 

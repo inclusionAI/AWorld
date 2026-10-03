@@ -1,8 +1,7 @@
-"""Bind delivery evidence and workbench operations to a framework-owned task.
+"""Private candidate runtime for the explicitly selected Workbench skill.
 
-Neither model arguments nor a tool's process environment choose the session,
-filesystem roots, mandatory checks, or selection policy. Persisted snapshots are
-recovery aids, not a security boundary against a task running as the same user.
+Configuration is agent-mutable and provides no authority beyond the calling
+process's operating-system permissions.
 """
 
 from __future__ import annotations
@@ -14,14 +13,7 @@ from functools import partial
 import hashlib
 import json
 import os
-import shutil
-import tempfile
 from pathlib import Path
-
-from aworld.core.context.compiler.completion import (
-    ImmutableInputEvidence,
-    SelfCheckEvidence,
-)
 
 
 def _digest(value):
@@ -34,20 +26,6 @@ def _digest(value):
             allow_nan=False,
         ).encode()
     ).hexdigest()
-
-
-def goal_workspace_identity(state):
-    """Keep old persisted goals stable too; a new goal receives a fresh UUID."""
-    return str(
-        state.get("workspace_id")
-        or _digest(
-            {
-                "objective": state.get("objective"),
-                "started_at": state.get("started_at"),
-                "source": state.get("source"),
-            }
-        )
-    )
 
 
 _TASK_ENV_NAMES = {
@@ -82,121 +60,13 @@ def _task_environment():
         if key in _TASK_ENV_NAMES or key.startswith("LC_")
     }
 
-
-def bind_task_workspace(context, workspace_path, scope, *, task_env=None):
-    """Trusted local executor entry point. Never expose this as a tool action."""
-    if not isinstance(scope, dict) or not scope:
-        raise ValueError("a framework-owned task scope is required")
-    workspace = str(Path(workspace_path).resolve())
-    context.context_info["task_workspace_binding"] = {
-        "workspace": workspace,
-        "scope": deepcopy(scope),
-        "authority": "local",
-    }
-    context._task_workspace_environment = deepcopy(
-        _task_environment() if task_env is None else task_env
-    )
-    context._task_workspace_session = None
-
-
-def prepare_task_workspace(context, request, workspace_path, delivery=None):
-    from .contracts import derive_delivery_contract
-
-    if delivery is None:
-        explicit = context.context_info.get("task_workspace_contract")
-        existing = getattr(context, "completion_contract", None)
-        session = getattr(context, "_task_workspace_session", None)
-        owned = any(existing is getattr(context, key, None) for key in (
-            "_workspace_completion_owned_contract", "_goal_completion_owned_contract",
-            "_runtime_completion_derived_contract",
-        ))
-        if (session is not None and existing is not None and owned
-                and getattr(context, "_task_workspace_prepared_request", None) == request
-                and getattr(context, "_task_workspace_prepared_explicit", None) == explicit
-                and getattr(context, "_task_workspace_prepared_binding", None)
-                    == context.context_info.get("task_workspace_binding")):
-            # Framework extensions are not new caller declarations. In
-            # particular, re-entry after goal wiring cannot rebase originals.
-            return deepcopy(session.delivery)
-        context._task_workspace_caller_check_ids = (
-            tuple(existing.required_self_check_ids) + tuple(command.command_id for command in existing.validation_commands)
-            if existing else ()
-        )
-        if explicit is None and existing is not None:
-            metadata = context.context_info.get("runtime_completion_contract", {})
-            provided_fields = metadata.get("provided_fields")
-            # The legacy CompletionContract has an authoritative artifact list.
-            # CLI env shortcuts only declare the fields actually supplied.
-            explicit = {}
-            if provided_fields is None or "outputs" in provided_fields:
-                explicit["outputs"] = [
-                    {
-                        "id": item.requirement_id,
-                        "path": item.path,
-                        **({"checks": [
-                            {
-                                "id": "caller-" + _digest(item.requirement_id)[:32],
-                                "kind": "regular_file",
-                            }
-                        ]} if provided_fields is None else {}),
-                    }
-                    for item in existing.required_artifacts
-                    if item.required
-                ]
-            explicit["inputs"] = [
-                {"id": path, "path": path, "immutable": True}
-                for path in existing.immutable_inputs
-                if "/" in path or "\\" in path
-            ]
-        delivery = derive_delivery_contract(
-            request, workspace_path=workspace_path, explicit=explicit
-        )
-    delivery = deepcopy(delivery)
-    binding = context.context_info.get("task_workspace_binding")
-    context.context_info["delivery_contract"] = delivery
-    if not binding:
-        return delivery
-    session = TaskWorkspaceSession(
-        binding,
-        delivery,
-        task_env=getattr(context, "_task_workspace_environment", None),
-    )
-    context._task_workspace_session = session
-    context._task_workspace_prepared_request = request
-    context._task_workspace_prepared_explicit = deepcopy(context.context_info.get("task_workspace_contract"))
-    context._task_workspace_prepared_binding = deepcopy(binding)
-    context.context_info["delivery_contract"] = session.delivery
-    context.context_info["task_workspace_summary"] = session.summary()
-    return deepcopy(session.delivery)
-
-
-def get_task_workspace(context):
-    if context is None:
-        raise ValueError("workbench requires a task context")
-    binding = context.context_info.get("task_workspace_binding")
-    if not isinstance(binding, dict) or binding.get("authority") != "local":
-        raise ValueError("workbench has no local filesystem authority in this context")
-    session = getattr(context, "_task_workspace_session", None)
-    if session is None:
-        delivery = context.context_info.get("delivery_contract")
-        if not delivery:
-            raise ValueError("delivery workspace has not been prepared by the executor")
-        session = TaskWorkspaceSession(
-            binding,
-            delivery,
-            task_env=getattr(context, "_task_workspace_environment", None),
-        )
-        context._task_workspace_session = session
-    return session
-
-
 class TaskWorkspaceSession:
-    def __init__(self, binding, delivery, *, task_env=None):
+    def __init__(self, binding, delivery, *, task_env=None, state_root=None):
         from .store import TaskWorkspaceStore
         from .store_io import atomic_json, locked, read_json
 
         if binding.get("authority") != "local":
-            raise ValueError("native workbench requires local execution authority")
+            raise ValueError("standalone Workbench requires local workspace authority")
         self.workspace = Path(binding["workspace"]).resolve()
         self.scope = deepcopy(binding["scope"])
         self.task_env = deepcopy(_task_environment() if task_env is None else task_env)
@@ -212,6 +82,7 @@ class TaskWorkspaceSession:
             self.scope,
             declared_roots=declarations,
             validator=partial(validate_candidate, env=self.task_env),
+            root=state_root,
         )
         self.path = self.store.store_path / "delivery-session.json"
         self.lock = self.store.store_path / "delivery-session.lock"
@@ -224,7 +95,7 @@ class TaskWorkspaceSession:
                     )
             else:
                 state = {
-                    "schema_version": "aworld.delivery-session/v1",
+                    "schema_version": "workbench.session/v1",
                     "delivery": deepcopy(delivery),
                     "self_checks": [],
                     "self_check_history": [],
@@ -344,12 +215,8 @@ class TaskWorkspaceSession:
                 raise ValueError(
                     "unsupported check kind; inspect the validation schema"
                 )
-            if check["id"] == "workbench.delivery" or any(
-                key in check for key in ("passed", "success", "metrics")
-            ):
-                raise ValueError(
-                    "a check cannot supply its result or use a framework-reserved ID"
-                )
+            if any(key in check for key in ("passed", "success", "metrics")):
+                raise ValueError("a check cannot supply its result")
             for key in ("path", "input", "same_rows_as"):
                 if check.get(key):
                     check[key] = str(self._authorize(check[key]))
@@ -490,146 +357,3 @@ class TaskWorkspaceSession:
         if action == "readback":
             return await asyncio.to_thread(self.store.readback)
         raise ValueError(f"unknown workbench action: {action}")
-
-
-async def evaluate_delivery(context, contract):
-    """Re-execute checks against final files; never accept model-supplied pass data."""
-    from .validation import validate_candidate, snapshot_bindings
-    from .store import assess_policy
-
-    now = datetime.now(timezone.utc)
-    success = False
-    receipt = {}
-    session = None
-    context.context_info.pop("completion_infrastructure_failure", None)
-    try:
-        session = get_task_workspace(context)
-        checks = session._checks()
-        caller_ids = {command.command_id for command in contract.validation_commands}
-        caller_ids.update(getattr(context, "_task_workspace_caller_check_ids", ()))
-        current_contract = getattr(context, "completion_contract", None)
-        if current_contract is not None:
-            caller_ids.update(command.command_id for command in current_contract.validation_commands)
-        if caller_ids.intersection(check["id"] for check in checks):
-            raise ValueError("caller check IDs conflict with native workspace check IDs")
-        paths = {item["path"] for item in session.delivery.get("outputs", [])}
-        paths.update(c["path"] for c in checks if c.get("path"))
-        paths.update(
-            c["artifact"]
-            for c in session._policy().get("hard_constraints", [])
-            if c.get("artifact")
-        )
-        files = {p: session._authorize(p) for p in paths}
-        inputs = await asyncio.to_thread(session.store.protected_input_files)
-        # Checkers receive expendable input copies, never the only protected
-        # blobs. A failing or destructive checker must not destroy recovery.
-        with tempfile.TemporaryDirectory(
-            prefix="final-check-", dir=session.store.store_path / "validation"
-        ) as directory:
-            input_copies = {}
-            for index, (key, source) in enumerate(inputs.items()):
-                target = Path(directory) / str(index) / Path(key).name
-                target.parent.mkdir(parents=True)
-                shutil.copyfile(source, target)
-                input_copies[key] = target
-            receipt = (
-                await validate_candidate(
-                    files,
-                    input_copies,
-                    checks,
-                    scope=_digest(session.scope),
-                    working_dir=session.workspace,
-                    env=session.task_env,
-                )
-                if checks
-                else {
-                    "success": True,
-                    "checks": [],
-                    "metrics": {},
-                    "execution_environment_sha256": _digest(session.task_env),
-                    "bindings": {
-                        "artifacts": snapshot_bindings(files),
-                        "check_definitions_sha256": _digest([]),
-                    },
-                }
-            )
-        violations = assess_policy(
-            (receipt.get("bindings") or {}).get("artifacts", {}),
-            receipt,
-            session._policy(),
-        )
-        receipt["policy_violations"] = violations
-        now = datetime.now(timezone.utc)
-        success = receipt.get("success") is True and not violations
-        error_checks = [
-            check
-            for check in receipt.get("checks", [])
-            if check.get("status") == "error"
-        ]
-        if error_checks:
-            first_error = error_checks[0]
-            context.context_info["completion_infrastructure_failure"] = {
-                "failure_code": "delivery_validator_error",
-                "error_type": str(
-                    first_error.get("error_type") or "ValidationError"
-                ),
-            }
-        for check in receipt.get("checks", []):
-            context.record_completion_self_check(
-                SelfCheckEvidence(
-                    check["id"],
-                    0 if check.get("success") else 1,
-                    "sha256:" + _digest(check),
-                    now,
-                )
-            )
-        declarations = {
-            item["path"]: item["id"] for item in session.delivery.get("inputs", [])
-        }
-        for item in await asyncio.to_thread(session.store.immutable_input_evidence):
-            success = success and item["unchanged"]
-            # Missing or changed bytes cannot be represented as an invented
-            # observed hash. The aggregate fails and the expected evidence is absent.
-            if item["unchanged"]:
-                context.record_completion_immutable_input(
-                    ImmutableInputEvidence(
-                        input_id=declarations.get(item["path"], item["path"]),
-                        expected_hash="sha256:" + item["sha256"],
-                        observed_hash="sha256:" + item["sha256"],
-                        observed_at=now,
-                    )
-                )
-        if any(e.get("immutable") for e in session._state()["protection_errors"]):
-            success = False
-        # If an accepted candidate exists, the final paths must still contain
-        # those exact accepted bytes. Users can explicitly choose new candidates.
-        readback = await asyncio.to_thread(session.store.readback)
-        if readback.get("candidate_id") is not None:
-            success = success and readback.get("valid") is True
-        context.context_info["task_workspace_summary"] = session.summary()
-        context.context_info["delivery_validation"] = {
-            "receipt": receipt,
-            "readback": readback,
-            "success": success,
-        }
-        session.record_final_validation(context.context_info["delivery_validation"])
-    except (OSError, ValueError, RuntimeError, KeyError, TypeError) as exc:
-        receipt = {"success": False, "error": f"{type(exc).__name__}: {exc}"}
-        context.context_info["delivery_validation"] = receipt
-        context.context_info["completion_infrastructure_failure"] = {
-            "failure_code": "delivery_validator_exception",
-            "error_type": type(exc).__name__,
-        }
-        if session is not None:
-            try:
-                session.record_final_validation(receipt)
-            except (OSError, ValueError, RuntimeError):
-                pass  # The failing aggregate is still emitted below.
-    context.record_completion_self_check(
-        SelfCheckEvidence(
-            "workbench.delivery",
-            0 if success else 1,
-            "sha256:" + _digest(receipt),
-            datetime.now(timezone.utc),
-        )
-    )

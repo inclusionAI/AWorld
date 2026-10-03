@@ -1,4 +1,4 @@
-"""Small stdlib-only resource boundary, executed in a fresh child interpreter."""
+"""Small stdlib-only resource boundary for standalone Workbench checks."""
 
 import json
 import os

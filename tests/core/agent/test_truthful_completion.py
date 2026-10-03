@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-from types import SimpleNamespace
 
 import pytest
 
@@ -115,8 +114,51 @@ async def test_stream_length_response_is_recovered_before_tool_execution(monkeyp
     assert len(calls) == 2
     assert result.finish_reason == "tool_calls"
     assert json.loads(result.tool_calls[0].function.arguments)["text"] == "done"
+    assert calls[1][-2]["role"] == "assistant"
+    assert "I will write" in calls[1][-2]["content"]
+    assert "not a final answer or executable action" in calls[1][-2]["content"]
     assert "No tool calls" in calls[1][-1]["content"]
     assert get_execution_state(message.context)["status"] == "running"
+
+
+@pytest.mark.asyncio
+async def test_reasoning_only_recovery_retains_a_bounded_working_tail(monkeypatch):
+    calls = []
+    reasoning = "discarded-prefix-" + "R" * 9000
+
+    async def response(*args, **kwargs):
+        calls.append(kwargs["messages"])
+        if len(calls) == 1:
+            return ModelResponse(
+                id="reasoning",
+                model="fake",
+                reasoning_content=reasoning,
+                finish_reason="stop",
+            )
+        return ModelResponse(
+            id="complete",
+            model="fake",
+            tool_calls=[tool('{"path":"out.txt","text":"done"}')],
+            finish_reason="tool_calls",
+        )
+
+    monkeypatch.setattr(module, "acall_llm_model", response)
+    agent = _agent(policy=GenerationBudgetPolicy(total_timeout_seconds=5), attempts=2)
+    message = _message("reasoning-tail-recovery")
+
+    result = await agent.invoke_model(
+        [{"role": "user", "content": "write"}],
+        message=message,
+        stream=False,
+    )
+
+    retained = calls[1][-2]
+    assert retained["role"] == "assistant"
+    assert "discarded-prefix" not in retained["content"]
+    assert retained["content"].endswith("R" * 128)
+    assert len(retained["content"]) < len(reasoning)
+    assert "Return one complete, minimal Tool call" in calls[1][-1]["content"]
+    assert result.finish_reason == "tool_calls"
 
 
 @pytest.mark.asyncio
@@ -161,15 +203,22 @@ async def test_required_stream_terminal_reason_retries_implicit_eof(monkeypatch)
 ])
 async def test_unusable_response_exhausts_bounded_recovery_truthfully(monkeypatch, bad, reason):
     calls = 0
+    provider_calls = []
     async def response(*args, **kwargs):
         nonlocal calls
         calls += 1
+        provider_calls.append(kwargs)
         return bad
     monkeypatch.setattr(module, "acall_llm_model", response)
-    agent = _agent(policy=GenerationBudgetPolicy(total_timeout_seconds=5), attempts=2)
+    agent = _agent(policy=GenerationBudgetPolicy(total_timeout_seconds=5), attempts=3)
     message = _message(reason)
     result = await agent.invoke_model([{"role": "user", "content": "work"}], message=message)
+    # One bounded action-projection continuation is enough for this logical
+    # turn. Higher provider retry settings do not repeat the same long analysis;
+    # the outer task loop retains authority to continue with a fresh Tool turn.
     assert calls == 2
+    assert "tool_choice" not in provider_calls[0]
+    assert provider_calls[1]["tool_choice"] == "required"
     assert result.tool_calls == []
     assert result.message["aworld_incomplete_reason"] == reason
     assert get_execution_state(message.context)["status"] == "incomplete"

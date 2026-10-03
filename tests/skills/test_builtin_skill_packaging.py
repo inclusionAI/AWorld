@@ -34,7 +34,7 @@ def _build_distribution(project_root: Path, output: Path, target: str) -> Path:
     return output / result.stdout.strip().splitlines()[-1]
 
 
-def _assert_bundled_filex(wheel: Path) -> None:
+def _assert_bundled_skills(wheel: Path) -> None:
     with zipfile.ZipFile(wheel) as archive:
         root = "aworld_cli/builtin_skills/"
         manifest = json.loads(archive.read(root + "manifest.json"))
@@ -56,11 +56,22 @@ def _assert_bundled_filex(wheel: Path) -> None:
                     archive.read(root + "long-running-agent/" + relative)
                     == source.read_bytes()
                 )
+        assert manifest["skills"]["workbench"]["source"] == (
+            "aworld-skills/workbench"
+        )
+        workbench_root = REPO_ROOT / "aworld-skills" / "workbench"
+        for source in workbench_root.rglob("*"):
+            if source.is_file() and "__pycache__" not in source.parts:
+                relative = source.relative_to(workbench_root).as_posix()
+                assert (
+                    archive.read(root + "workbench/" + relative)
+                    == source.read_bytes()
+                )
 
 
-def test_cli_wheel_bundles_filex_and_loads_it_outside_the_checkout(tmp_path: Path) -> None:
+def test_cli_wheel_bundles_builtin_skills_and_loads_them_outside_the_checkout(tmp_path: Path) -> None:
     wheel = _build_distribution(CLI_ROOT, tmp_path / "wheel", "wheel")
-    _assert_bundled_filex(wheel)
+    _assert_bundled_skills(wheel)
     installed = tmp_path / "installed"
     with zipfile.ZipFile(wheel) as archive:
         archive.extractall(installed)
@@ -81,6 +92,13 @@ result = SkillActivationResolver().resolve(SkillResolverRequest(
 assert result.active_skill_names == ('filex',), result
 assert Path(result.skill_configs['filex']['asset_root']) == root / 'filex'
 assert (root / 'filex/scripts/filex.py').is_file()
+workbench = SkillActivationResolver().resolve(SkillResolverRequest(
+    plugin_roots=(), runtime_scope='session', task_text='',
+    requested_skill_names=('workbench',),
+    default_skill_names=AWORLD_DEFAULT_SKILL_NAMES))
+assert workbench.active_skill_names == ('long-running-agent', 'workbench'), workbench
+assert Path(workbench.skill_configs['workbench']['asset_root']) == root / 'workbench'
+assert (root / 'workbench/scripts/workbench.py').is_file()
 default_result = SkillActivationResolver().resolve(SkillResolverRequest(
     plugin_roots=(), runtime_scope='session', task_text='',
     default_skill_names=AWORLD_DEFAULT_SKILL_NAMES))
@@ -104,4 +122,4 @@ def test_cli_sdist_can_build_a_wheel_without_repository_skill_sources(tmp_path: 
     assert (project_root / "hatch_build.py").is_file()
     assert not (project_root.parent / "aworld-skills").exists()
     wheel = _build_distribution(project_root, tmp_path / "rebuilt-wheel", "wheel")
-    _assert_bundled_filex(wheel)
+    _assert_bundled_skills(wheel)

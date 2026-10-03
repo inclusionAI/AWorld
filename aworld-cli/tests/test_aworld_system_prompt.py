@@ -72,6 +72,15 @@ def test_render_aworld_system_prompt_uses_actual_workspace(monkeypatch, tmp_path
     assert "read_output_artifact" in prompt
 
 
+def test_render_aworld_system_prompt_prioritizes_inspectable_deliverables() -> None:
+    prompt = render_aworld_system_prompt(available_tools=["terminal"])
+
+    assert "create a minimal inspectable candidate" in prompt
+    assert "Do not postpone every write" in prompt
+    assert "Persist useful calculations or scripts" in prompt
+    assert "An early candidate is progress, not proof of completion" in prompt
+
+
 def test_aworld_max_loop_steps_defaults_to_no_step_limit(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -307,6 +316,8 @@ def test_builtin_subagents_can_be_disabled_for_one_shot_runners(
 
 
 def test_default_agent_executes_without_loading_specialists(monkeypatch, tmp_path) -> None:
+    from aworld.agents.llm_agent import get_tool_desc, tool_desc_transform
+
     monkeypatch.delenv("AWORLD_BUILTIN_SUBAGENTS", raising=False)
     monkeypatch.setenv("LLM_MODEL_NAME", "gpt-4")
     monkeypatch.setenv("LLM_API_KEY", "offline")
@@ -322,6 +333,19 @@ def test_default_agent_executes_without_loading_specialists(monkeypatch, tmp_pat
     root = next(iter(swarm.agents.values()))
     assert root.name() == "Aworld"
     assert root.enable_subagent is False
+    assert "WORKBENCH" not in root.tool_names
+    root_schema_names = {
+        item["function"]["name"]
+        for item in tool_desc_transform(get_tool_desc(), tools=root.tool_names)
+    }
+    assert all(not name.startswith("WORKBENCH__") for name in root_schema_names)
+    assert {spec.capability_id for spec in root._tool_surface_specs} == {"terminal"}
+    assert not hasattr(root, "_task_workspace_local_path")
+    assert not hasattr(root, "_completion_workspace_local_path")
+    assert "WORKBENCH" not in root.system_prompt
+    assert "Configured tool capabilities:" in root.system_prompt
+    assert "filesystem" in root.system_prompt
+    assert "terminal" in root.system_prompt
     tools, _ = _aworld_root_tool_policy(
         resolve_aworld_tool_surface_profile(), has_subagents=False,
     )
