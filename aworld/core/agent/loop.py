@@ -108,6 +108,7 @@ class Agent:
                 usage = getattr(exc, "usage", None) or getattr(response, "usage", None)
                 context.append("model.error", {"turn": turn, "error_type": type(exc).__name__,
                                                "usage": usage.to_dict() if usage is not None else None})
+                context.emit("model.failed", {"turn": turn, "error_type": type(exc).__name__})
                 raise
             seen_calls.update(ids)
             context.append("assistant", {

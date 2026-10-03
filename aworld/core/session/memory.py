@@ -219,6 +219,7 @@ class _MemoryRun:
         self._session = session
         self._input = input
         self._options = options
+        self._admitted_at = session._store._bind().time()
         self._status = RunStatus.PENDING
         self._events: list[RunEvent] = []
         self._changed = asyncio.Event()
@@ -276,6 +277,7 @@ class _MemoryRun:
     def _append_event(self, type: str, data: object = None) -> None:
         self._events.append(RunEvent(
             self.id, self.session_id, len(self._events) + 1, type, deepcopy(data),
+            elapsed_ms=round((self._session._store._bind().time() - self._admitted_at) * 1000, 3),
         ))
         self._changed.set()
 
@@ -336,7 +338,8 @@ class _MemoryRun:
         owned_output = deepcopy(output)
         result = RunResult(self.id, self.session_id, status, reason, owned_output, error)
         # Prepare potentially fallible copies before committing state.
-        event = RunEvent(self.id, self.session_id, len(self._events) + 1, "run.finished", deepcopy(result))
+        event = RunEvent(self.id, self.session_id, len(self._events) + 1, "run.finished", deepcopy(result),
+            elapsed_ms=round((self._session._store._bind().time() - self._admitted_at) * 1000, 3))
         entry = SessionEntry(self.id, "output", deepcopy(owned_output)) if status == RunStatus.COMPLETED else None
         if self._deadline is not None:
             self._deadline.cancel()

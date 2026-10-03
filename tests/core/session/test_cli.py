@@ -26,7 +26,7 @@ class CliTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("Agent + Context + Tool", result.stdout)
         self.assertEqual(result.stderr, "")
-        self.assertIn("1.0.0a4", command("--version").stdout)
+        self.assertIn("1.0.0a5", command("--version").stdout)
         tools = json.loads(command("tools", "--json").stdout)
         self.assertEqual([tool["name"] for tool in tools], ["read", "write", "bash", "read_session", "search_sessions", "session_query"])
 
@@ -72,6 +72,12 @@ class CliTests(unittest.TestCase):
             self.assertEqual(observation["source_call_id"], step["tool_calls"][0]["tool_call_id"])
             self.assertIn("observed data", observation["content"])
             self.assertEqual(trajectory["extra"]["status"], "completed")
+            self.assertEqual(trajectory["final_metrics"]["extra"]["llm_request_count"], 3)
+            self.assertEqual(trajectory["final_metrics"]["extra"]["tool_call_count"], 1)
+            self.assertEqual(trajectory["extra"]["run_metrics"]["llm_request_count"], 1)
+            self.assertEqual(trajectory["extra"]["run_metrics"]["tool_call_count"], 0)
+            self.assertEqual(step["tool_calls"][0]["extra"]["timing_source"], "aworld.run_events")
+            self.assertGreaterEqual(step["tool_calls"][0]["extra"]["duration_ms"], 0)
 
     def test_explicit_tool_selection_and_configuration_errors(self):
         self.assertEqual([tool["name"] for tool in json.loads(command("tools", "--tools", "read", "--json").stdout)], ["read"])

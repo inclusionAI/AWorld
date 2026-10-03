@@ -133,7 +133,12 @@ async def _execute(session, input, args, agent):
             if args.result_output:
                 write_json(args.result_output, result, default=_serialize)
             if args.trajectory_output:
-                write_json(args.trajectory_output, build_trajectory(await session.history(),
+                history = await session.history()
+                events = []
+                for run_id in dict.fromkeys([entry.run_id for entry in history] + [result.run_id]):
+                    handle = await session.get_run(run_id)
+                    events.extend([event async for event in handle.events()])
+                write_json(args.trajectory_output, build_trajectory(history, events=events,
                     result=result, agent=agent, model_name="demo" if args.demo else args.model))
     if args.json:
         print(_json(result), flush=True)
