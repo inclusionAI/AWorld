@@ -40,6 +40,39 @@ INDEPENDENT_ACCEPTANCE_CRITIC_ENV = "AWORLD_INDEPENDENT_ACCEPTANCE_CRITIC"
 SEMANTIC_PROGRESS_LEDGER_ENV = "AWORLD_SEMANTIC_PROGRESS_LEDGER"
 _MAX_FALLBACK_CHARS = 64_000
 _MAX_TELEMETRY_COUNTER = 1_000_000
+_PUBLIC_DELIVERABLE_SCHEMA = "aworld.public-deliverables/v1"
+_PUBLIC_DELIVERABLE_AUTHORITY = "public_task_advisory"
+
+
+def _missing_public_deliverable_names(context) -> tuple[str, ...]:
+    value = getattr(context, "context_info", {}).get("public_deliverable_contract")
+    if (
+        not isinstance(value, Mapping)
+        or value.get("schema_version") != _PUBLIC_DELIVERABLE_SCHEMA
+        or value.get("authority") != _PUBLIC_DELIVERABLE_AUTHORITY
+        or value.get("source") != "public_task_text"
+    ):
+        return ()
+    artifacts = value.get("artifacts")
+    if not isinstance(artifacts, list) or len(artifacts) > 16:
+        return ()
+    missing = []
+    for item in artifacts:
+        if (
+            not isinstance(item, Mapping)
+            or item.get("kind") != "file"
+            or item.get("authority") != _PUBLIC_DELIVERABLE_AUTHORITY
+            or not isinstance(item.get("path"), str)
+            or not isinstance(item.get("display_path"), str)
+        ):
+            return ()
+        try:
+            exists = os.path.isfile(item["path"])
+        except OSError:
+            exists = False
+        if not exists:
+            missing.append(item["display_path"])
+    return tuple(missing)
 
 
 def _context_key(base: str, agent_id: str) -> str:
@@ -769,6 +802,18 @@ def consume_execution_protocol_guidance(context, agent_id: str) -> str | None:
             acknowledge_semantic_checkpoint(context, agent_id=agent_id)
         except Exception:
             pass
+        missing_delivery_guidance = ""
+        missing = _missing_public_deliverable_names(context)
+        if missing:
+            missing_delivery_guidance = (
+                " The public task still has missing named output file(s): "
+                + ", ".join(missing)
+                + ". Stop open-ended analysis: the next Tool action must "
+                "create or update the smallest inspectable candidate for "
+                "those outputs, then use later actions to validate and refine "
+                "it. If no honest candidate can be written, record the concrete "
+                "blocker instead of repeating discovery."
+            )
         return (
             "AWorld long-horizon checkpoint: the framework observed a bounded "
             "repetition or low-evidence signal. Judge from the actual task and "
@@ -778,6 +823,7 @@ def consume_execution_protocol_guidance(context, agent_id: str) -> str | None:
             "approach and prioritize creating, updating, or validating inspectable "
             "milestone evidence. This checkpoint is advisory, keeps all normal "
             "Tools available, and is not evidence of task completion."
+            + missing_delivery_guidance
         )
     if action == ControllerAction.ENTER_FINALIZATION.value:
         return (

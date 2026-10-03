@@ -204,6 +204,44 @@ def test_pre_generation_check_keeps_solve_window_open_before_reserve(
     assert "pre_generation_reserve_metrics" not in context.context_info
 
 
+def test_public_delivery_reserve_forces_tool_action_for_missing_output(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    agent = _long_running_generation_agent(armed=True)
+    context = agent.context
+    context.get_task().timeout = 1800
+    output = tmp_path / "result.json"
+    context.context_info["public_deliverable_contract"] = {
+        "schema_version": "aworld.public-deliverables/v1",
+        "authority": "public_task_advisory",
+        "source": "public_task_text",
+        "artifacts": [
+            {
+                "deliverable_id": "public-output-1",
+                "path": str(output),
+                "display_path": "result.json",
+                "kind": "file",
+                "authority": "public_task_advisory",
+            }
+        ],
+    }
+    policy = agent._resolve_execution_protocol_policy(context)
+    monkeypatch.setattr(
+        context.get_task(),
+        "remaining_seconds",
+        lambda: policy.finalization_reserve_seconds + 179,
+    )
+
+    guidance = agent._public_delivery_reserve_guidance(context)
+    assert guidance is not None
+    assert "result.json" in guidance
+    assert "must be one complete Tool call" in guidance
+
+    output.write_text("{}")
+    assert agent._public_delivery_reserve_guidance(context) is None
+
+
 def test_explicit_generation_compiler_configuration_wins_after_arming() -> None:
     policy = _long_running_generation_agent(
         armed=True,

@@ -4618,6 +4618,11 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             # reasoning, self-claims, and prior assistant/tool transcript do
             # not enter the critic provider request.
             raw_messages = self._fresh_acceptance_messages(message.context)
+        public_delivery_reserve_guidance = None
+        if not tool_free_finalization and not independent_acceptance_review:
+            public_delivery_reserve_guidance = (
+                self._public_delivery_reserve_guidance(message.context)
+            )
         if not tool_free_finalization:
             from aworld.runners.execution_protocol import (
                 consume_execution_protocol_guidance,
@@ -4629,6 +4634,14 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             if execution_guidance:
                 raw_messages = list(raw_messages)
                 raw_messages.append({"role": "user", "content": execution_guidance})
+            if public_delivery_reserve_guidance:
+                raw_messages = list(raw_messages)
+                raw_messages.append(
+                    {
+                        "role": "user",
+                        "content": public_delivery_reserve_guidance,
+                    }
+                )
         if transient_model_recovery_turn and not tool_free_finalization:
             raw_messages = list(raw_messages)
             raw_messages.append(
@@ -4686,6 +4699,9 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             )
             tools = self._with_model_review_control(tools, message.context)
             tools = self._with_acceptance_probe_control(tools, message.context)
+            if public_delivery_reserve_guidance and tools:
+                kwargs = dict(kwargs)
+                kwargs["tool_choice"] = "required"
             if independent_acceptance_review:
                 from aworld.runners.execution_protocol import (
                     load_acceptance_critic_state,
@@ -6288,6 +6304,55 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         )
         context.context_info["pre_generation_reserve_metrics"] = metrics
         return True
+
+    def _public_delivery_reserve_guidance(self, context: Context) -> str | None:
+        """Reserve a final Tool-capable window for named public outputs."""
+
+        artifacts = self._public_deliverable_artifacts(context)
+        missing = [
+            item for item in artifacts if not os.path.isfile(item["path"])
+        ]
+        if not missing or not self._long_horizon_skill_active():
+            return None
+        try:
+            policy = self._resolve_execution_protocol_policy(context)
+            state = ExecutionProtocolStore(context, self.id(), policy).load()
+            task = context.get_task()
+            remaining = task.remaining_seconds() if task is not None else None
+            total = getattr(task, "timeout", None) if task is not None else None
+        except Exception:
+            return None
+        if (
+            not state.long_horizon_armed
+            or state.phase not in {ProtocolPhase.EXECUTE, ProtocolPhase.REPAIR}
+            or isinstance(remaining, bool)
+            or not isinstance(remaining, (int, float))
+            or not math.isfinite(float(remaining))
+        ):
+            return None
+        delivery_window = 180.0
+        if isinstance(total, (int, float)) and not isinstance(total, bool):
+            delivery_window = min(300.0, max(120.0, float(total) * 0.1))
+        threshold = float(policy.finalization_reserve_seconds) + delivery_window
+        if float(remaining) > threshold:
+            return None
+        metrics = context.context_info.get("public_delivery_reserve_metrics")
+        if not isinstance(metrics, dict):
+            metrics = {}
+        metrics["guidance_count"] = int(metrics.get("guidance_count", 0) or 0) + 1
+        metrics["last_remaining_seconds"] = max(0.0, float(remaining))
+        metrics["delivery_window_seconds"] = delivery_window
+        context.context_info["public_delivery_reserve_metrics"] = metrics
+        names = ", ".join(item["display_path"] for item in missing)
+        return (
+            "AWorld public-delivery reserve: caller time is approaching the "
+            f"tool-free finalization boundary, and named output(s) are still "
+            f"missing: {names}. Stop open-ended exploration. Your next response "
+            "must be one complete Tool call that creates or updates the smallest "
+            "honest inspectable candidate at the declared path. Use any later "
+            "time to validate and refine it. Do not spend this delivery window "
+            "on another read-only probe or dependency installation."
+        )
 
     def _automatic_generation_budget_policy(
         self,

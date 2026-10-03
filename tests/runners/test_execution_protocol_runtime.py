@@ -142,6 +142,42 @@ def test_replan_exhaustion_keeps_tools_available_for_model_judgment() -> None:
     assert not execution_protocol_requires_tool_free_finalization(context, "agent")
 
 
+def test_replan_prioritizes_missing_public_deliverable(tmp_path) -> None:
+    context = _context("replan-public-delivery")
+    context.context_info["public_deliverable_contract"] = {
+        "schema_version": "aworld.public-deliverables/v1",
+        "authority": "public_task_advisory",
+        "source": "public_task_text",
+        "artifacts": [
+            {
+                "deliverable_id": "public-output-1",
+                "path": str(tmp_path / "result.json"),
+                "display_path": "result.json",
+                "kind": "file",
+                "authority": "public_task_advisory",
+            }
+        ],
+    }
+    policy = ExecutionProtocolPolicy(
+        mode=ProtocolMode.GUIDE,
+        activation_event_threshold=1,
+        stagnation_event_threshold=1,
+        repetition_threshold=1,
+    )
+    configure_execution_protocol(context, "agent", policy)
+    transition = record_tool_protocol_event(
+        context,
+        "agent",
+        _semantic_state(repetition_count=1),
+    )
+    assert transition.decision.action is ControllerAction.REQUEST_REPLAN
+
+    guidance = consume_execution_protocol_guidance(context, "agent")
+    assert guidance is not None
+    assert "result.json" in guidance
+    assert "next Tool action must create or update" in guidance
+
+
 def test_observe_replan_exhaustion_never_changes_tool_availability() -> None:
     context = _context("observe-finalize")
     policy = ExecutionProtocolPolicy(
