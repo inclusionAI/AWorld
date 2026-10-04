@@ -249,6 +249,37 @@ async def test_run_code_supports_explicit_cwd_env_and_compact_structured_output(
 
 
 @pytest.mark.asyncio
+async def test_run_code_injects_authoritative_task_scope_per_call() -> None:
+    child_code = (
+        "import os; print(os.environ['AWORLD_TASK_ID']); "
+        "print(os.environ['AWORLD_SESSION_ID']); "
+        "print(os.environ['AWORLD_TASK_EPOCH'])"
+    )
+    command = f"{shlex.quote(sys.executable)} -c {shlex.quote(child_code)}"
+
+    response = await run_code(
+        None,
+        command,
+        timeout=10,
+        env={"AWORLD_TASK_ID": "spoofed"},
+        env_content={
+            "task_id": "task-real",
+            "session_id": "session-real",
+            "task_epoch": 3,
+        },
+    )
+    payload = json.loads(response.text)
+
+    assert payload["success"] is True
+    assert payload["message"]["stdout"] == "task-real\nsession-real\n3\n"
+    assert set(payload["metadata"]["environment_keys"]) == {
+        "AWORLD_TASK_EPOCH",
+        "AWORLD_TASK_ID",
+        "AWORLD_SESSION_ID",
+    }
+
+
+@pytest.mark.asyncio
 async def test_truncated_output_is_retrievable_from_checksummed_artifact(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

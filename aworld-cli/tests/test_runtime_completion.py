@@ -139,6 +139,65 @@ def test_explicit_public_output_filename_becomes_advisory_deliverable(
     assert hints[0].authority == "public_task_advisory"
 
 
+def test_explicit_output_directory_list_becomes_advisory_deliverables(
+    tmp_path: Path,
+) -> None:
+    artifacts = tmp_path / "artifacts"
+    hints = infer_public_deliverable_hints(
+        "Write these two artifacts under `artifacts/`:\n\n"
+        "1. `document.md`\n"
+        "2. `layout.json`\n\n"
+        "Use the source faithfully.",
+        workspace_path=tmp_path,
+    )
+
+    assert [(item.path, item.display_path) for item in hints] == [
+        (str(artifacts / "document.md"), "document.md"),
+        (str(artifacts / "layout.json"), "layout.json"),
+    ]
+
+
+def test_output_directory_list_rejects_nested_or_extensionless_items(
+    tmp_path: Path,
+) -> None:
+    hints = infer_public_deliverable_hints(
+        "Create output files in `artifacts/`:\n"
+        "- `safe.json`\n"
+        "- `../outside.json`\n"
+        "- `nested/report.md`\n"
+        "- `README`",
+        workspace_path=tmp_path,
+    )
+
+    assert [(item.path, item.display_path) for item in hints] == [
+        (str(tmp_path / "artifacts" / "safe.json"), "safe.json"),
+    ]
+
+
+def test_input_directory_list_is_not_inferred_as_output(tmp_path: Path) -> None:
+    assert infer_public_deliverable_hints(
+        "Inspect these inputs under `/workspace/input/`:\n\n"
+        "1. `document.pdf`\n"
+        "2. `notes.txt`",
+        workspace_path=tmp_path,
+    ) == ()
+
+
+def test_output_directory_list_stops_before_later_input_list(tmp_path: Path) -> None:
+    hints = infer_public_deliverable_hints(
+        "Write output artifacts under `outputs/`:\n\n"
+        "1. `answer.md`: the result.\n\n"
+        "Then inspect these source files:\n\n"
+        "1. `input.pdf`\n"
+        "2. `notes.txt`",
+        workspace_path=tmp_path,
+    )
+
+    assert [(item.path, item.display_path) for item in hints] == [
+        (str(tmp_path / "outputs" / "answer.md"), "answer.md"),
+    ]
+
+
 @pytest.mark.parametrize(
     "request_text",
     (

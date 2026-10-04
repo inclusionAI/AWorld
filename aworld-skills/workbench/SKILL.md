@@ -1,6 +1,6 @@
 ---
 name: workbench
-description: Explicitly manage, validate, and publish workspace artifact candidates with the standalone Workbench CLI. Use only when Runtime selected the workbench capability for this run.
+description: Optionally manage, validate, compare, and publish workspace artifact candidates with the standalone Workbench CLI when checkpoints or multiple candidates would materially improve the task.
 metadata:
   default_enabled: false
 execution_assets:
@@ -17,26 +17,34 @@ execution_assets:
 
 # Use Workbench
 
-Workbench is an optional candidate-management helper. It is disabled unless the
-Runtime explicitly selects the `workbench` capability. Its checks and receipts
-are agent self-check evidence only: they are not the benchmark verifier, do not
-compute reward, and must not be described as caller or canonical acceptance.
+Workbench is an AWorld-owned candidate-management capability that is bundled but
+disabled by default. Use it only when it was explicitly selected and multiple
+candidates, rollback, checkpoint preservation, or measured local comparison
+provide real value. Direct and low-risk tasks should usually proceed without
+Workbench ceremony.
 
-The adapter supplies `WORKBENCH_*` values as runtime-provided configuration.
-They are ordinary environment variables that the agent shell can override, not
-a security boundary. Changing them cannot grant access beyond the terminal's
+Its checks and receipts are agent self-check evidence only. They do not inspect
+hidden checks, compute task reward, or represent caller/canonical acceptance.
+Final external evaluation is outside Workbench.
+
+`WORKBENCH_*` values are optional ordinary environment variables, not a
+security boundary. Changing them cannot grant access beyond the terminal's
 existing operating-system permissions and cannot produce canonical verifier or
-reward evidence.
+reward evidence. When they are absent, the CLI uses the real current directory
+as the workspace, puts state in AWorld's external control/state directory, and
+derives a bounded scope from AWorld task/session identity or a workspace
+fingerprint. Explicit values remain supported.
 
-Always call the mounted CLI at:
+Choose the configured AWorld interpreter when present; otherwise `python3`
+launches the CLI and the CLI uses `sys.executable`:
 
 ```bash
-"$AWORLD_PYTHON_EXECUTABLE" /skills/workbench/scripts/workbench.py --help
+WORKBENCH_PYTHON="${AWORLD_PYTHON_EXECUTABLE:-python3}"
+"$WORKBENCH_PYTHON" /skills/workbench/scripts/workbench.py --help
 ```
 
-Runtime provides the initial workspace, state directory, and run scope through
-environment variables; the CLI exposes no command-line shortcuts for replacing
-them. Workbench never infers outputs, checks, policy, or scope from task text,
+The CLI exposes no command-line shortcuts for replacing workspace, state, or
+scope. Workbench never infers outputs, checks, policy, or scope from task text,
 dataset names, or benchmark identity.
 
 ## Initialize an explicit self-check contract
@@ -72,7 +80,7 @@ configured directory.
 Initialize exactly once for the configured scope:
 
 ```bash
-"$AWORLD_PYTHON_EXECUTABLE" /skills/workbench/scripts/workbench.py init \
+"$WORKBENCH_PYTHON" /skills/workbench/scripts/workbench.py init \
   --contract workbench-contract.json
 ```
 
@@ -99,13 +107,13 @@ snapshot:
 Then run:
 
 ```bash
-"$AWORLD_PYTHON_EXECUTABLE" /skills/workbench/scripts/workbench.py save-candidate \
+"$WORKBENCH_PYTHON" /skills/workbench/scripts/workbench.py save-candidate \
   --manifest candidate.json
 
-"$AWORLD_PYTHON_EXECUTABLE" /skills/workbench/scripts/workbench.py validate-candidate \
+"$WORKBENCH_PYTHON" /skills/workbench/scripts/workbench.py validate-candidate \
   --candidate-id CANDIDATE_ID
 
-"$AWORLD_PYTHON_EXECUTABLE" /skills/workbench/scripts/workbench.py promote-candidate \
+"$WORKBENCH_PYTHON" /skills/workbench/scripts/workbench.py promote-candidate \
   --candidate-id CANDIDATE_ID \
   --receipt-id RECEIPT_ID
 ```
@@ -115,7 +123,7 @@ candidate remains selected by default. To deliberately replace it with a later
 validated candidate, make that decision explicit and give a reason:
 
 ```bash
-"$AWORLD_PYTHON_EXECUTABLE" /skills/workbench/scripts/workbench.py promote-candidate \
+"$WORKBENCH_PYTHON" /skills/workbench/scripts/workbench.py promote-candidate \
   --candidate-id CANDIDATE_ID \
   --receipt-id RECEIPT_ID \
   --supersede \
@@ -130,13 +138,13 @@ constraints. It only resolves selection when no objective exists.
 `inspect` is compact by default. Request one section when more detail is useful:
 
 ```bash
-"$AWORLD_PYTHON_EXECUTABLE" /skills/workbench/scripts/workbench.py inspect
-"$AWORLD_PYTHON_EXECUTABLE" /skills/workbench/scripts/workbench.py inspect --section contract
-"$AWORLD_PYTHON_EXECUTABLE" /skills/workbench/scripts/workbench.py inspect --section candidates
-"$AWORLD_PYTHON_EXECUTABLE" /skills/workbench/scripts/workbench.py inspect --section readback
-"$AWORLD_PYTHON_EXECUTABLE" /skills/workbench/scripts/workbench.py readback
+"$WORKBENCH_PYTHON" /skills/workbench/scripts/workbench.py inspect
+"$WORKBENCH_PYTHON" /skills/workbench/scripts/workbench.py inspect --section contract
+"$WORKBENCH_PYTHON" /skills/workbench/scripts/workbench.py inspect --section candidates
+"$WORKBENCH_PYTHON" /skills/workbench/scripts/workbench.py inspect --section readback
+"$WORKBENCH_PYTHON" /skills/workbench/scripts/workbench.py readback
 ```
 
 Use returned candidate and receipt IDs exactly. A successful Workbench check is
-still only local self-check evidence; the external benchmark verifier remains
-authoritative for reward.
+still only local self-check evidence; it makes no statement about hidden reward
+or canonical acceptance.

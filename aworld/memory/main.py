@@ -6,6 +6,7 @@ import json
 import os
 import traceback
 from datetime import datetime
+from pathlib import Path
 from typing import Callable, Optional, Tuple, Any
 
 from aworld.config import SummaryPromptConfig
@@ -21,6 +22,7 @@ from aworld.memory.models import AgentExperience, LongTermMemoryTriggerParams, M
 from aworld.memory.vector.factory import VectorDBFactory
 from aworld.models.llm import acall_llm_model
 from aworld.models.utils import num_tokens_from_messages
+from aworld.utils.runtime_state import runtime_state_path
 
 MEMORY_HOLDER = {}
 _REGISTERED_MEMORY_PROVIDERS: dict[str, Callable[[MemoryConfig, MemoryStore], "MemoryBase"]] = {}
@@ -31,10 +33,16 @@ def _default_file_memory_store() -> "MemoryStore":
     # return SQLiteMemoryStore(db_path=db_path)
     """默认使用 FileSystemMemoryStore，路径可通过 AWORLD_MEMORY_ROOT 环境变量配置"""
     from aworld.memory.db import FileSystemMemoryStore
-    memory_root = os.getenv("AWORLD_MEMORY_ROOT", "~/.aworld/memory")
-    # Expand "~" and any "$VARS" in the configured root path.
-    memory_root = os.path.expanduser(os.path.expandvars(memory_root))
-    return FileSystemMemoryStore(memory_root=memory_root)
+    configured_root = os.getenv("AWORLD_MEMORY_ROOT")
+    memory_root = (
+        Path(os.path.expanduser(os.path.expandvars(configured_root)))
+        if configured_root
+        else runtime_state_path(
+            "memory",
+            default=Path.home() / ".aworld" / "memory",
+        )
+    )
+    return FileSystemMemoryStore(memory_root=str(memory_root))
 
 AWORLD_MEMORY_EXTRACT_NEW_SUMMARY = """
 You are presented with a user task, a conversion that may contain the answer, and a previous conversation summary. 

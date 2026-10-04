@@ -4,9 +4,14 @@ import json
 from pathlib import Path
 from typing import Any
 
+from aworld.utils.runtime_state import runtime_state_path
+
 
 def default_skill_home() -> Path:
-    return Path.home() / ".aworld" / "skills"
+    return runtime_state_path(
+        "skills",
+        default=Path.home() / ".aworld" / "skills",
+    )
 
 
 def default_skill_state_path() -> Path:

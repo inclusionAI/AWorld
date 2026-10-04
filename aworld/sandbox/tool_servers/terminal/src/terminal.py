@@ -323,16 +323,18 @@ def _resolve_working_directory(cwd: str | None) -> Path:
     return resolved
 
 
-def _resolve_environment(overrides: Mapping[str, str] | None) -> dict[str, str]:
-    if overrides is None:
-        return dict(os.environ)
-    if not isinstance(overrides, Mapping):
+def _resolve_environment(
+    overrides: Mapping[str, str] | None,
+    *,
+    framework_scope: Mapping[str, Any] | None = None,
+) -> dict[str, str]:
+    if overrides is not None and not isinstance(overrides, Mapping):
         raise TypeError("env must be an object mapping names to string values")
-    if len(overrides) > _MAX_ENV_OVERRIDES:
+    if isinstance(overrides, Mapping) and len(overrides) > _MAX_ENV_OVERRIDES:
         raise ValueError(f"env must contain at most {_MAX_ENV_OVERRIDES} entries")
     normalized: dict[str, str] = {}
     total_bytes = 0
-    for raw_name, raw_value in overrides.items():
+    for raw_name, raw_value in (overrides or {}).items():
         if not isinstance(raw_name, str) or not _ENV_NAME.fullmatch(raw_name):
             raise ValueError(f"invalid environment variable name: {raw_name!r}")
         if not isinstance(raw_value, str) or "\x00" in raw_value:
@@ -343,7 +345,20 @@ def _resolve_environment(overrides: Mapping[str, str] | None) -> dict[str, str]:
                 f"env exceeds the {_MAX_ENV_OVERRIDE_BYTES}-byte override limit"
             )
         normalized[raw_name] = raw_value
-    return {**os.environ, **normalized}
+    resolved = {**os.environ, **normalized}
+    if isinstance(framework_scope, Mapping):
+        for source_name, environment_name in (
+            ("task_id", "AWORLD_TASK_ID"),
+            ("session_id", "AWORLD_SESSION_ID"),
+            ("task_epoch", "AWORLD_TASK_EPOCH"),
+        ):
+            value = framework_scope.get(source_name)
+            if value is None or isinstance(value, (dict, list, tuple)):
+                continue
+            bounded = str(value)[:512]
+            if bounded and "\x00" not in bounded:
+                resolved[environment_name] = bounded
+    return resolved
 
 
 class _ArtifactWriter:
@@ -642,6 +657,10 @@ async def run_code(
         default=None,
         description="Optional per-command environment overrides",
     ),
+    env_content: Optional[dict[str, Any]] = Field(
+        default=None,
+        description="Framework-injected task scope; hidden from the model schema",
+    ),
 ) -> Union[str, TextContent]:
     # Normalize parameters: when using MCP tool schemas, the raw values may be
     # FieldInfo instances. In that case, fall back to their default values.
@@ -660,12 +679,30 @@ async def run_code(
         cwd = cwd.default
     if isinstance(env, FieldInfo):
         env = env.default
+    if isinstance(env_content, FieldInfo):
+        env_content = env_content.default
 
     try:
         timeout_decision = _resolve_command_timeout(timeout)
         working_directory = _resolve_working_directory(cwd)
-        command_environment = _resolve_environment(env)
-        environment_keys = sorted(env or {})
+        command_environment = _resolve_environment(
+            env,
+            framework_scope=env_content,
+        )
+        environment_keys = sorted(
+            {
+                *(env or {}),
+                *(
+                    {
+                        "AWORLD_TASK_ID",
+                        "AWORLD_SESSION_ID",
+                        "AWORLD_TASK_EPOCH",
+                    }
+                    if isinstance(env_content, Mapping)
+                    else set()
+                ),
+            }
+        )
         if timeout_decision.effective_seconds <= 0:
             action_response = ActionResponse(
                 success=False,

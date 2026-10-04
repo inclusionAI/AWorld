@@ -51,6 +51,15 @@ _PUBLIC_DELIVERABLE_PATTERNS = (
         + _DELIVERABLE_TOKEN
     ),
 )
+_PUBLIC_DELIVERABLE_DIRECTORY_PATTERN = re.compile(
+    r"(?i)\b(?:save|write|create|generate|export|store|produce)\b"
+    r"[^\r\n.!?]{0,80}?\b(?:artifacts?|outputs?|files?)\b"
+    r"[^\r\n.!?]{0,40}?\b(?:under|in|into|to|at)\s+"
+    + _DELIVERABLE_TOKEN
+)
+_PUBLIC_DELIVERABLE_LIST_ITEM = re.compile(
+    r"(?im)^\s*(?:\d+[.)]|[-*])\s+`([^`\r\n]+)`"
+)
 _PUBLIC_EXECUTABLE_PATTERN = re.compile(
     r"(?i)\b([a-z0-9][a-z0-9._+-]{0,63})\s+(?:command[- ]line\s+)?tool\b"
 )
@@ -113,6 +122,31 @@ def _resolve_public_deliverable(
     return str(resolved), display
 
 
+def _immediate_directory_list_filenames(value: str) -> tuple[str, ...]:
+    """Return only the contiguous Markdown list following a directory clause."""
+
+    filenames: list[str] = []
+    started = False
+    preamble_lines = 0
+    for line in value.splitlines():
+        match = _PUBLIC_DELIVERABLE_LIST_ITEM.match(line)
+        if match is not None:
+            started = True
+            filenames.append(match.group(1).strip())
+            if len(filenames) >= _MAX_PUBLIC_DELIVERABLES:
+                break
+            continue
+        if started:
+            break
+        stripped = line.strip()
+        if not stripped or re.fullmatch(r"[:=-]+", stripped):
+            preamble_lines += 1
+            if preamble_lines <= 4:
+                continue
+        break
+    return tuple(filenames)
+
+
 def infer_public_deliverable_hints(
     request: str | None, *, workspace_path: str | os.PathLike[str]
 ) -> tuple[PublicDeliverableHint, ...]:
@@ -140,6 +174,45 @@ def infer_public_deliverable_hints(
                 continue
             seen.add(key)
             discovered.append((path, display))
+            if len(discovered) >= _MAX_PUBLIC_DELIVERABLES:
+                break
+        if len(discovered) >= _MAX_PUBLIC_DELIVERABLES:
+            break
+    # Some task contracts name one output directory and list the required
+    # filenames beneath it, for example ``Write these two artifacts under
+    # `/logs/artifacts/`:`` followed by numbered ``document.md`` and
+    # ``layout.json`` entries.  The ordinary verb-to-path patterns above see
+    # neither filename, so delivery reserve guidance would never arm.  Join
+    # only explicit Markdown list-item filenames to the explicitly declared
+    # directory; do not recursively infer paths from prose or code examples.
+    for directory_match in _PUBLIC_DELIVERABLE_DIRECTORY_PATTERN.finditer(
+        request[:256_000]
+    ):
+        resolved_directory = _resolve_public_deliverable(
+            _matched_deliverable_token(directory_match),
+            workspace_path=workspace_path,
+        )
+        if resolved_directory is None:
+            continue
+        directory_path, _display_directory = resolved_directory
+        list_region = request[directory_match.end() : directory_match.end() + 4096]
+        for filename in _immediate_directory_list_filenames(list_region):
+            candidate = Path(filename)
+            if (
+                not filename
+                or len(filename) > 255
+                or candidate.is_absolute()
+                or candidate.name != filename
+                or filename in {".", ".."}
+                or "." not in filename
+            ):
+                continue
+            joined = str(Path(directory_path) / filename)
+            key = os.path.normcase(joined)
+            if key in seen:
+                continue
+            seen.add(key)
+            discovered.append((joined, filename))
             if len(discovered) >= _MAX_PUBLIC_DELIVERABLES:
                 break
         if len(discovered) >= _MAX_PUBLIC_DELIVERABLES:

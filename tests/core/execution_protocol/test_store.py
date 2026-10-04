@@ -1,4 +1,7 @@
 from copy import deepcopy
+from concurrent.futures import ThreadPoolExecutor
+from threading import Event
+from types import SimpleNamespace
 
 from aworld.core.execution_protocol import (
     ControllerAction,
@@ -7,9 +10,17 @@ from aworld.core.execution_protocol import (
     ExecutionProtocolPolicy,
     ExecutionProtocolState,
     ExecutionProtocolStore,
+    ModelPlanUpdate,
     ProtocolScope,
 )
 from aworld.core.context.base import Context
+from aworld.core.context.amni import ApplicationContext
+from aworld.core.context.amni.state import (
+    ApplicationTaskContextState,
+    TaskInput,
+    TaskOutput,
+    TaskWorkingState,
+)
 
 
 class FakeContext:
@@ -37,6 +48,20 @@ class FakeContext:
 
     def get(self, key):
         return deepcopy(self.working_state.get(key))
+
+
+def _application_context() -> ApplicationContext:
+    return ApplicationContext(
+        task_state=ApplicationTaskContextState(
+            task_input=TaskInput(
+                session_id="protocol-session",
+                task_id="protocol-checkpoint",
+                content="complete the public task",
+            ),
+            working_state=TaskWorkingState(messages=[], user_profiles=[], kv_store={}),
+            task_output=TaskOutput(),
+        )
+    )
 
 
 def test_store_discards_state_from_a_stale_task_scope():
@@ -125,3 +150,79 @@ def test_store_uses_context_runtime_fan_in_across_transport_copy():
     restored = original.load()
     assert restored.event_count == 2
     assert [item.current_step for item in restored.history] == [1, 2]
+
+
+def test_store_atomically_projects_concurrent_transport_events_to_checkpoint(
+    monkeypatch,
+):
+    context = _application_context()
+    policy = ExecutionProtocolPolicy(mode="observe")
+    copies = [context.deep_copy(), context.deep_copy()]
+    for copy in copies:
+        copy._event_manager = SimpleNamespace(context=context)
+    stores = [ExecutionProtocolStore(copy, "agent", policy) for copy in copies]
+    first_projection_entered = Event()
+    release_first_projection = Event()
+    original_project = ExecutionProtocolStore._project
+
+    def delayed_project(store, state, *, context=None):
+        if state.event_count == 1 and not first_projection_entered.is_set():
+            first_projection_entered.set()
+            assert release_first_projection.wait(timeout=5)
+        return original_project(store, state, context=context)
+
+    monkeypatch.setattr(ExecutionProtocolStore, "_project", delayed_project)
+
+    def observe(store: ExecutionProtocolStore, step: int):
+        return store.apply(
+            ExecutionProtocolEvent(
+                kind=EventKind.TOOL_OBSERVATION,
+                current_step=step,
+                evidence_advanced=True,
+            )
+        )
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        first = pool.submit(observe, stores[0], 1)
+        assert first_projection_entered.wait(timeout=5)
+        second = pool.submit(observe, stores[1], 2)
+        assert not second.done()
+        release_first_projection.set()
+        assert first.result(timeout=5).state.event_count == 1
+        assert second.result(timeout=5).state.event_count == 2
+
+    restored = ApplicationContext.from_dict(context.to_dict())
+    restored_state = ExecutionProtocolStore(restored, "agent", policy).load()
+    assert restored_state.event_count == 2
+    assert [item.current_step for item in restored_state.history] == [1, 2]
+
+
+def test_model_plan_update_survives_core_only_checkpoint_round_trip():
+    context = _application_context()
+    policy = ExecutionProtocolPolicy(mode="guide")
+    update = ModelPlanUpdate.from_mapping(
+        {
+            "decision": "continue",
+            "horizon": "long",
+            "milestone": "validate candidate",
+            "next_action": "run a public probe",
+            "verification_plan": "inspect the observed result",
+            "completion_assessment": "in_progress",
+            "assumptions": [],
+            "retired_approaches": [],
+            "evidence_refs": [],
+            "selected_candidate_id": "candidate-2",
+        }
+    )
+    ExecutionProtocolStore(context, "agent", policy).apply(
+        ExecutionProtocolEvent(
+            kind=EventKind.MODEL_PLAN_UPDATE,
+            model_plan_update=update,
+        )
+    )
+
+    restored = ApplicationContext.from_dict(context.to_dict())
+    restored_state = ExecutionProtocolStore(restored, "agent", policy).load()
+
+    assert restored_state.model_plan_update == update
+    assert restored_state.long_horizon_armed is True

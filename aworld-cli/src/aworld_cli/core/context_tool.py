@@ -24,6 +24,7 @@ from aworld.core.tool.action import ToolAction
 from aworld.core.tool.base import AsyncTool, ToolFactory
 from aworld.logs.util import logger
 from aworld.tools.utils import build_observation
+from aworld.utils.runtime_state import runtime_state_path
 
 CONTEXT_TOOL = "CONTEXT_TOOL"
 
@@ -108,9 +109,16 @@ class ContextTool(AsyncTool):
         if memory_root:
             root = Path(memory_root)
         else:
-            # Use AWORLD_MEMORY_ROOT env var or default
-            env_root = os.getenv("AWORLD_MEMORY_ROOT", "~/.aworld/memory")
-            root = Path(os.path.expanduser(os.path.expandvars(env_root)))
+            # Use an explicit memory root or the isolated framework state root.
+            env_root = os.getenv("AWORLD_MEMORY_ROOT")
+            root = (
+                Path(os.path.expanduser(os.path.expandvars(env_root)))
+                if env_root
+                else runtime_state_path(
+                    "memory",
+                    default=Path.home() / ".aworld" / "memory",
+                )
+            )
 
         return root
 

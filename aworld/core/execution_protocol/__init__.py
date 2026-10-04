@@ -11,6 +11,7 @@ from .acceptance import (
     fresh_acceptance_critic_messages,
 )
 from .models import (
+    CompletionAssessment,
     ControllerAction,
     ControllerDecision,
     DecisionReason,
@@ -20,6 +21,8 @@ from .models import (
     ExecutionProtocolPolicy,
     ExecutionProtocolState,
     ModelExecutionProfile,
+    ModelPlanUpdate,
+    PlanUpdateDecision,
     ProtocolEventRecord,
     ProtocolMode,
     ProtocolPhase,
@@ -37,6 +40,7 @@ __all__ = [
     "AcceptanceCriticDecision",
     "AcceptanceDecision",
     "AcceptanceProbeReceipt",
+    "CompletionAssessment",
     "ControllerAction",
     "ControllerDecision",
     "DecisionReason",
@@ -49,6 +53,8 @@ __all__ = [
     "ExecutionProtocolState",
     "ExecutionProtocolStore",
     "ModelExecutionProfile",
+    "ModelPlanUpdate",
+    "PlanUpdateDecision",
     "ProtocolEventRecord",
     "ProtocolMode",
     "ProtocolPhase",

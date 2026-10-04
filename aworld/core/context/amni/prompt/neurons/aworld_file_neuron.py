@@ -7,6 +7,7 @@ from . import Neuron
 from .neuron_factory import neuron_factory
 from aworld.memory.main import MemoryFactory
 from aworld.logs.util import logger
+from aworld.utils.runtime_state import runtime_state_path
 
 AWORLD_FILE_NEURON_NAME = "aworld_file"
 
@@ -51,7 +52,10 @@ class AWORLDFileNeuron(Neuron):
         working_dir = getattr(context, 'working_directory', os.getcwd())
         
         search_paths = [
-            Path.home() / '.aworld' / 'AWORLD.md',  # User-level (DEFAULT)
+            runtime_state_path(
+                "AWORLD.md",
+                default=Path.home() / '.aworld' / 'AWORLD.md',
+            ),  # User-level/control-root default
             Path(working_dir) / '.aworld' / 'AWORLD.md',  # Project-specific (optional)
             Path(working_dir) / 'AWORLD.md',  # Project root (optional)
         ]

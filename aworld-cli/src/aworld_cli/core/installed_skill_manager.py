@@ -19,6 +19,7 @@ from typing import Literal, Optional
 
 from aworld.plugins.discovery import discover_plugins
 from aworld.skills.compat_provider import build_compat_registry
+from aworld.utils.runtime_state import runtime_state_path
 from aworld_cli.core.plugin_manager import PluginManager, list_builtin_plugins
 
 logger = logging.getLogger(__name__)
@@ -28,11 +29,17 @@ SkillScope = str
 
 
 def default_skill_home() -> Path:
-    return Path.home() / ".aworld" / "skills"
+    return runtime_state_path(
+        "skills",
+        default=Path.home() / ".aworld" / "skills",
+    )
 
 
 def default_installed_skill_root() -> Path:
-    return Path.home() / ".aworld" / ".installed-skills"
+    return runtime_state_path(
+        ".installed-skills",
+        default=Path.home() / ".aworld" / ".installed-skills",
+    )
 
 
 def default_legacy_installed_skill_root() -> Path:

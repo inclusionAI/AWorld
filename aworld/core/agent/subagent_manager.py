@@ -20,13 +20,16 @@ Design Document: docs/design/subagent-architecture.md
 """
 
 import asyncio
+import copy
 import time
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List, Literal, Optional
+from typing import Any, Dict, List, Literal, Mapping, Optional
 
+from aworld.config.conf import ConfigDict
 from aworld.logs.util import logger
+from aworld.utils.runtime_state import get_runtime_state_root
 from aworld.utils.skill_loader import extract_front_matter
 from aworld.core.context.compiler import (
     AdapterResult,
@@ -44,6 +47,73 @@ from aworld.core.context.compiler import (
 )
 
 
+def _default_agent_md_search_paths() -> list[str]:
+    control_root = get_runtime_state_root()
+    if control_root is not None:
+        return [str(control_root / "agents")]
+    return ["./.aworld/agents", "~/.aworld/agents", "./agents"]
+
+
+def _observed_child_request_evidence(
+    child_calls: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Project content-free evidence from requests that reached the provider.
+
+    The collaborator transcript remains private.  This projection retains only
+    bounded model/routing/reasoning fields plus attempt state, which is enough
+    to distinguish inherited configuration from an actually prepared or
+    invoked provider request.
+    """
+    profiles: list[dict[str, Any]] = []
+    provider_attempt_count = 0
+    provider_invoked_count = 0
+    for raw in child_calls[-32:]:
+        if not isinstance(raw, Mapping) or raw.get("record_kind") != "model_attempt":
+            continue
+        provider_request = raw.get("provider_request")
+        payload = (
+            provider_request.get("payload")
+            if isinstance(provider_request, Mapping)
+            else None
+        )
+        payload = payload if isinstance(payload, Mapping) else {}
+        attempt_status = raw.get("provider_attempt_status")
+        if attempt_status in {"prepared", "attempted"}:
+            provider_attempt_count += 1
+        if raw.get("provider_invoked") is True:
+            provider_invoked_count += 1
+        profile = {
+            "model": payload.get("model") or raw.get("model"),
+            "provider": (
+                provider_request.get("provider_name")
+                if isinstance(provider_request, Mapping)
+                else None
+            )
+            or raw.get("provider_name"),
+            "reasoning_effort": payload.get("reasoning_effort"),
+            "thinking": payload.get("thinking"),
+            "max_completion_tokens": payload.get("max_completion_tokens"),
+            "provider_attempt_status": attempt_status,
+            "provider_invoked": raw.get("provider_invoked") is True,
+            "status": raw.get("status"),
+        }
+        if profile not in profiles:
+            profiles.append(profile)
+    return {
+        "model_attempt_count": len(
+            [
+                raw
+                for raw in child_calls[-32:]
+                if isinstance(raw, Mapping)
+                and raw.get("record_kind") == "model_attempt"
+            ]
+        ),
+        "provider_prepared_or_attempted_count": provider_attempt_count,
+        "provider_invoked_count": provider_invoked_count,
+        "profiles": profiles[-8:],
+    }
+
+
 @dataclass
 class SubagentInfo:
     """
@@ -56,6 +126,8 @@ class SubagentInfo:
         tools: List of tool names this subagent can use
         agent_instance: Reference to Agent object (for TeamSwarm members)
         config: Configuration dict (for agent.md loaded subagents)
+        context_mode: ``fresh`` removes ambient parent task state before execution
+        merge_mode: ``answer_only`` merges accounting, not mutable child state
     """
     name: str
     description: str
@@ -63,6 +135,14 @@ class SubagentInfo:
     tools: List[str]
     agent_instance: Optional['Agent'] = None  # Forward reference to avoid circular import
     config: Optional[dict] = None
+    context_mode: Literal['inherit', 'fresh'] = 'inherit'
+    merge_mode: Literal['full', 'answer_only'] = 'full'
+
+    def __post_init__(self) -> None:
+        if self.context_mode not in {"inherit", "fresh"}:
+            raise ValueError("context_mode must be inherit or fresh")
+        if self.merge_mode not in {"full", "answer_only"}:
+            raise ValueError("merge_mode must be full or answer_only")
 
 
 class SubagentManager:
@@ -160,7 +240,11 @@ class SubagentManager:
                     source='team_member',
                     tools=agent.tool_names if hasattr(agent, 'tool_names') else [],
                     agent_instance=agent,
-                    config=None
+                    config=None,
+                    context_mode=getattr(
+                        agent, "subagent_context_mode", "inherit"
+                    ),
+                    merge_mode=getattr(agent, "subagent_merge_mode", "full"),
                 )
 
                 # Store in registry (may overwrite if name collision, which is intentional)
@@ -200,7 +284,7 @@ class SubagentManager:
             Consider caching parsed configs if performance becomes an issue.
         """
         if not search_paths:
-            search_paths = ['./.aworld/agents', '~/.aworld/agents', './agents']
+            search_paths = _default_agent_md_search_paths()
 
         async with self._registry_lock:
             scanned_count = 0
@@ -270,7 +354,16 @@ class SubagentManager:
                             }
                         )
 
-                        # Store in registry (may overwrite if name collision)
+                        existing = self._available_subagents.get(name)
+                        if existing is not None and existing.source == "team_member":
+                            logger.warning(
+                                "SubagentManager.scan_agent_md_files: "
+                                f"Ignoring agent.md collision with team member: {name}"
+                            )
+                            continue
+
+                        # Explicit agent.md sources may refresh another agent.md,
+                        # but can never replace a wheel/team-owned collaborator.
                         self._available_subagents[name] = subagent_info
                         registered_count += 1
 
@@ -323,8 +416,7 @@ class SubagentManager:
             if self._agent_md_scan_task is None:
                 search_paths = self._agent_md_search_paths
                 if search_paths is None:
-                    # Use default search paths
-                    search_paths = ['./.aworld/agents', '~/.aworld/agents', './agents']
+                    search_paths = _default_agent_md_search_paths()
 
                 logger.debug(
                     f"SubagentManager._ensure_agent_md_scanned: "
@@ -439,7 +531,6 @@ class SubagentManager:
             Audit logs are emitted at start/success/failure for observability.
             Trajectory merging is NOT implemented (deferred per user request).
         """
-        import time
         from aworld.core.task import Task
         from aworld.runner import Runners
         from aworld.core.agent.base import BaseAgent
@@ -458,6 +549,8 @@ class SubagentManager:
             )
 
         subagent_info = self._available_subagents[name]
+        fresh_context = subagent_info.context_mode == "fresh"
+        answer_only_merge = subagent_info.merge_mode == "answer_only"
         logger.info(
             f"SubagentManager.spawn: Starting subagent '{name}' "
             f"(source={subagent_info.source}) with directive: {directive[:100]}..."
@@ -485,7 +578,7 @@ class SubagentManager:
         # Step 3: Create isolated sub_context for subtask
         # build_sub_context creates a deep copy with isolated token tracking
         # Allow overriding sub_task_id (e.g., for background tasks to ensure ID consistency)
-        sub_task_id = kwargs.get('sub_task_id', f"{name}_{int(time.time() * 1000)}")
+        sub_task_id = kwargs.get('sub_task_id', f"{name}_{uuid.uuid4().hex}")
         sub_context = await current_context.build_sub_context(
             sub_task_content=directive,
             sub_task_id=sub_task_id,
@@ -493,11 +586,11 @@ class SubagentManager:
         )
 
         context_pack = None
+        child_depth = kwargs.pop(
+            "child_depth",
+            getattr(current_context, "_delegation_depth", 0) + 1,
+        )
         if delegation_spec is not None:
-            child_depth = kwargs.pop(
-                "child_depth",
-                getattr(current_context, "_delegation_depth", 0) + 1,
-            )
             if child_depth > delegation_spec.max_depth:
                 return ChildResult(
                     status=ChildStatus.DEPTH_EXCEEDED,
@@ -508,12 +601,43 @@ class SubagentManager:
                     usage=ChildUsage(input_tokens=0, output_tokens=0, turns=0),
                     reason_code="delegation_depth_exceeded",
                 )
+        if delegation_spec is not None or fresh_context:
+            sub_context.prepare_delegated_child(delegation_depth=child_depth)
+
+            if fresh_context:
+                # ApplicationContext builds a useful shared-workspace child but
+                # historically copied task memory/kv state as well.  A verifier
+                # must not inherit the solver transcript or private scratch state.
+                task_state_service = getattr(sub_context, "task_state_service", None)
+                get_working_state = getattr(
+                    task_state_service, "get_working_state", None
+                )
+                working_state = (
+                    get_working_state() if callable(get_working_state) else None
+                )
+                if working_state is not None:
+                    if hasattr(working_state, "history_messages"):
+                        working_state.history_messages = []
+                    if hasattr(working_state, "user_profiles"):
+                        working_state.user_profiles = []
+                    if hasattr(working_state, "kv_store"):
+                        working_state.kv_store = {}
+
+            # Manager-owned answer/delegation merges must happen exactly once.
+            # Detaching prevents ApplicationContext.update_task_after_run from
+            # importing the child's full mutable state before the bounded merge.
+            if delegation_spec is not None or answer_only_merge:
+                if hasattr(sub_context, "_parent"):
+                    sub_context._parent = None
+                elif "parent" in getattr(sub_context, "__dict__", {}):
+                    sub_context.parent = None
+
+        if delegation_spec is not None:
             available_items = tuple(
                 item
                 for sidecar in current_context.get_context_observations()
                 for item in sidecar.result.items
             )
-            sub_context.prepare_delegated_child(delegation_depth=child_depth)
             context_pack = ContextPack.build(
                 spec=delegation_spec,
                 available_items=available_items,
@@ -609,20 +733,82 @@ class SubagentManager:
 
             # Step 5: Execute subagent with sub_context
             # Create a Task with the sub_context
+            get_parent_task = getattr(current_context, "get_task", None)
+            parent_task = get_parent_task() if callable(get_parent_task) else None
+            parent_remaining = None
+            if parent_task is not None:
+                try:
+                    value = parent_task.remaining_seconds()
+                except Exception:
+                    value = None
+                if isinstance(value, (int, float)) and not isinstance(value, bool):
+                    parent_reserve = getattr(
+                        parent_task, "completion_reserve_seconds", None
+                    )
+                    parent_reserve = (
+                        float(parent_reserve)
+                        if isinstance(parent_reserve, (int, float))
+                        and not isinstance(parent_reserve, bool)
+                        else 0.0
+                    )
+                    resolve_protocol = getattr(
+                        self.agent, "_resolve_execution_protocol_policy", None
+                    )
+                    try:
+                        protocol_policy = (
+                            resolve_protocol(current_context)
+                            if callable(resolve_protocol)
+                            else None
+                        )
+                    except Exception:
+                        protocol_policy = None
+                    protocol_mode = getattr(
+                        getattr(protocol_policy, "mode", None), "value", None
+                    )
+                    protocol_reserve = getattr(
+                        protocol_policy, "finalization_reserve_seconds", None
+                    )
+                    if (
+                        protocol_mode != "off"
+                        and isinstance(protocol_reserve, (int, float))
+                        and not isinstance(protocol_reserve, bool)
+                    ):
+                        parent_reserve = max(
+                            parent_reserve, float(protocol_reserve)
+                        )
+                    parent_remaining = max(
+                        0.0, float(value) - max(0.0, parent_reserve)
+                    )
+            explicit_remaining = None
+            if delegation_spec is not None and delegation_spec.deadline is not None:
+                explicit_remaining = max(
+                    0.0,
+                    delegation_spec.deadline.timestamp() - time.time(),
+                )
+            bounded_deadlines = [
+                value
+                for value in (parent_remaining, explicit_remaining)
+                if value is not None
+            ]
+            execution_timeout = min(bounded_deadlines) if bounded_deadlines else None
+            if execution_timeout is not None and execution_timeout <= 0:
+                raise asyncio.TimeoutError("delegation deadline elapsed")
             task = Task(
                 input=directive,
                 swarm=Swarm(cloned_agent),
                 session_id=sub_context.session_id if hasattr(sub_context, 'session_id') else None,
-                context=sub_context
+                context=sub_context,
+                parent_task=parent_task,
+                timeout=execution_timeout,
             )
 
             # Execute via Runners
             run = Runners.run_task(task)
-            if delegation_spec is not None and delegation_spec.deadline is not None:
-                remaining = delegation_spec.deadline.timestamp() - time.time()
-                if remaining <= 0:
-                    raise asyncio.TimeoutError("delegation deadline elapsed")
-                result_dict = await asyncio.wait_for(run, timeout=remaining)
+            if execution_timeout is not None:
+                result_dict = await asyncio.wait_for(
+                    run,
+                    timeout=execution_timeout,
+                )
             else:
                 result_dict = await run
             task_response = result_dict.get(task.id)
@@ -631,8 +817,9 @@ class SubagentManager:
             if task_response and task_response.success:
                 result_str = str(task_response.answer) if task_response.answer else ""
 
-                # Step 6: Merge sub_context back to parent context
-                # This merges token usage, kv_store, and other state
+                # Step 6: Merge sub_context back to parent context. Fresh
+                # collaborators return only their answer plus attributed usage;
+                # ordinary legacy collaborators retain full merge behavior.
                 if delegation_spec is not None:
                     try:
                         frozen_answer = freeze_json(task_response.answer)
@@ -706,6 +893,67 @@ class SubagentManager:
                             ),
                         },
                     )
+                elif answer_only_merge:
+                    child_config = getattr(
+                        getattr(cloned_agent, "conf", None), "llm_config", None
+                    )
+                    child_params = getattr(child_config, "params", None)
+                    child_params = (
+                        dict(child_params) if isinstance(child_params, dict) else {}
+                    )
+                    template_kwargs = child_params.get("chat_template_kwargs")
+                    template_kwargs = (
+                        dict(template_kwargs)
+                        if isinstance(template_kwargs, dict)
+                        else {}
+                    )
+                    child_calls = sub_context.get_llm_calls()
+                    current_context.merge_delegation_context(
+                        sub_context,
+                        delegation_record={
+                            "child_task_id": sub_task_id,
+                            "subagent": name,
+                            "status": ChildStatus.SUCCEEDED.value,
+                            "context_mode": subagent_info.context_mode,
+                            "merge_mode": subagent_info.merge_mode,
+                            "result_length": len(result_str),
+                            "request_profile": {
+                                "model": getattr(
+                                    child_config, "llm_model_name", None
+                                ),
+                                "provider": getattr(
+                                    child_config, "llm_provider", None
+                                ),
+                                "reasoning_effort": child_params.get(
+                                    "reasoning_effort",
+                                    template_kwargs.get("reasoning_effort"),
+                                ),
+                                "thinking": child_params.get(
+                                    "thinking", template_kwargs.get("thinking")
+                                ),
+                                "max_completion_tokens": child_params.get(
+                                    "max_completion_tokens"
+                                ),
+                            },
+                            "usage": {
+                                "input_tokens": int(
+                                    sub_context.token_usage.get(
+                                        "prompt_tokens", 0
+                                    )
+                                ),
+                                "output_tokens": int(
+                                    sub_context.token_usage.get(
+                                        "completion_tokens", 0
+                                    )
+                                ),
+                                "turns": len(child_calls),
+                            },
+                            "observed_request_evidence": (
+                                _observed_child_request_evidence(child_calls)
+                            ),
+                        },
+                        include_llm_calls=False,
+                    )
                 else:
                     current_context.merge_sub_context(sub_context)
 
@@ -749,7 +997,20 @@ class SubagentManager:
                         },
                     )
                     return child_result
-                current_context.merge_sub_context(sub_context)
+                if answer_only_merge:
+                    current_context.merge_delegation_context(
+                        sub_context,
+                        delegation_record={
+                            "child_task_id": sub_task_id,
+                            "subagent": name,
+                            "status": ChildStatus.FAILED.value,
+                            "context_mode": subagent_info.context_mode,
+                            "merge_mode": subagent_info.merge_mode,
+                        },
+                        include_llm_calls=False,
+                    )
+                else:
+                    current_context.merge_sub_context(sub_context)
 
                 return f"[Error] Subagent '{name}' failed: {error_msg}"
 
@@ -775,6 +1036,18 @@ class SubagentManager:
                         "child_task_id": sub_task_id,
                         "status": child_result.status.value,
                     },
+                )
+            elif answer_only_merge:
+                current_context.merge_delegation_context(
+                    sub_context,
+                    delegation_record={
+                        "child_task_id": sub_task_id,
+                        "subagent": name,
+                        "status": ChildStatus.CANCELLED.value,
+                        "context_mode": subagent_info.context_mode,
+                        "merge_mode": subagent_info.merge_mode,
+                    },
+                    include_llm_calls=False,
                 )
             raise
         except Exception as e:
@@ -816,6 +1089,23 @@ class SubagentManager:
                             "child_task_id": sub_task_id,
                             "status": child_result.status.value,
                         },
+                    )
+                elif answer_only_merge:
+                    status = (
+                        ChildStatus.DEADLINE_EXCEEDED
+                        if isinstance(e, asyncio.TimeoutError)
+                        else ChildStatus.FAILED
+                    )
+                    current_context.merge_delegation_context(
+                        sub_context,
+                        delegation_record={
+                            "child_task_id": sub_task_id,
+                            "subagent": name,
+                            "status": status.value,
+                            "context_mode": subagent_info.context_mode,
+                            "merge_mode": subagent_info.merge_mode,
+                        },
+                        include_llm_calls=False,
                     )
                 else:
                     current_context.merge_sub_context(sub_context)
@@ -918,10 +1208,33 @@ class SubagentManager:
                 # Fallback: check for agent_names attribute directly
                 agent_names = getattr(original, 'agent_names', [])
 
-            # Create new instance with same immutable config but fresh mutable state
+            # Create a new instance with the same behavior-defining configuration
+            # but fresh mutable execution state.  In particular, collaborator
+            # prompts and budget policies are part of capability semantics; losing
+            # them turns a verifier/developer clone into an unscoped generic Agent.
+            original_conf = getattr(original, "conf", None)
+
+            def clone_config_value(value):
+                if isinstance(value, dict):
+                    return ConfigDict(
+                        {key: clone_config_value(item) for key, item in value.items()}
+                    )
+                if isinstance(value, list):
+                    return [clone_config_value(item) for item in value]
+                if isinstance(value, tuple):
+                    return tuple(clone_config_value(item) for item in value)
+                try:
+                    return copy.deepcopy(value)
+                except Exception:
+                    # Provider/parser extensions may deliberately retain live
+                    # objects. Sharing an immutable extension is safer than
+                    # falling back to a shallow copy of the whole config tree.
+                    return value
+
+            cloned_conf = clone_config_value(original_conf)
             cloned = original.__class__(
                 name=original.name(),
-                conf=original.conf.copy() if hasattr(original.conf, 'copy') else original.conf,
+                conf=cloned_conf,
                 desc=getattr(original, 'desc', lambda: None)() if callable(getattr(original, 'desc', None)) else getattr(original, '_desc', None),
                 tool_names=filtered_tools,  # ✅ Apply tool filtering
                 agent_names=agent_names.copy() if isinstance(agent_names, list) else [],
@@ -929,7 +1242,27 @@ class SubagentManager:
                 black_tool_actions=getattr(original, 'black_tool_actions', {}).copy() if hasattr(getattr(original, 'black_tool_actions', {}), 'copy') else {},
                 feedback_tool_result=getattr(original, 'feedback_tool_result', True),
                 wait_tool_result=getattr(original, 'wait_tool_result', False),
-                sandbox=getattr(original, 'sandbox', None)  # ✅ Sandbox is stateless, safe to share
+                sandbox=getattr(original, 'sandbox', None),  # ✅ Shared authority boundary
+                system_prompt=getattr(original, 'system_prompt', None),
+                need_reset=getattr(original, 'need_reset', True),
+                step_reset=getattr(original, 'step_reset', True),
+                use_tools_in_prompt=getattr(original, 'use_tools_in_prompt', False),
+                event_driven=getattr(original, 'event_driven', True),
+                llm_max_attempts=getattr(original, 'llm_max_attempts', 2),
+                llm_retry_delay=getattr(original, 'llm_retry_delay', 10.0),
+                generation_budget_policy=getattr(
+                    original, '_explicit_generation_budget_policy', None
+                ),
+                execution_protocol_policy=getattr(
+                    original, '_explicit_execution_protocol_policy', None
+                ),
+                tool_surface_specs=getattr(original, '_tool_surface_specs', ()),
+                tool_surface_profile=getattr(original, '_tool_surface_profile', None),
+                tool_surface_probes=getattr(original, '_tool_surface_probes', ()),
+                max_loop_steps=getattr(original, 'max_loop_steps', 0),
+                _generation_budget_explicit_fields=getattr(
+                    original, '_generation_budget_explicit_fields', ()
+                ),
             )
 
             logger.debug(
@@ -949,8 +1282,6 @@ class SubagentManager:
                 f"Constructor-based cloning failed for {original.__class__.__name__}: {e}. "
                 f"Falling back to copy-based cloning."
             )
-
-            import copy
 
             # Create shallow copy
             cloned = copy.copy(original)

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import copy
 import threading
+from contextlib import contextmanager
 from typing import Any, Callable
 
 
@@ -31,9 +32,7 @@ class TaskRuntimeStateRegistry:
         with self._lock:
             return copy.deepcopy(self._values.get(self._key(task_id, namespace, key)))
 
-    def write(
-        self, task_id: str | None, namespace: str, key: str, value: Any
-    ) -> None:
+    def write(self, task_id: str | None, namespace: str, key: str, value: Any) -> None:
         with self._lock:
             self._values[self._key(task_id, namespace, key)] = copy.deepcopy(value)
 
@@ -43,17 +42,26 @@ class TaskRuntimeStateRegistry:
         namespace: str,
         key: str,
         updater: Callable[[Any], Any],
+        projector: Callable[[Any], None] | None = None,
     ) -> Any:
         with self._lock:
             registry_key = self._key(task_id, namespace, key)
+            existed = registry_key in self._values
             current = copy.deepcopy(self._values.get(registry_key))
             updated = updater(current)
             self._values[registry_key] = copy.deepcopy(updated)
+            try:
+                if projector is not None:
+                    projector(copy.deepcopy(updated))
+            except Exception:
+                if existed:
+                    self._values[registry_key] = current
+                else:
+                    self._values.pop(registry_key, None)
+                raise
             return copy.deepcopy(updated)
 
-    def claim_token(
-        self, task_id: str | None, namespace: str, token: str
-    ) -> bool:
+    def claim_token(self, task_id: str | None, namespace: str, token: str) -> bool:
         """Return true exactly once for a task-scoped continuation token."""
         claim = (task_id, str(namespace), str(token))
         with self._lock:
@@ -61,6 +69,12 @@ class TaskRuntimeStateRegistry:
                 return False
             self._claimed_tokens.add(claim)
             return True
+
+    @contextmanager
+    def transaction(self):
+        """Serialize a multi-key task-state derivation on this registry."""
+        with self._lock:
+            yield
 
 
 __all__ = ["TaskRuntimeStateRegistry"]

@@ -1,59 +1,52 @@
-import os
-from pathlib import Path
-from typing import Dict, Any, List
+from __future__ import annotations
 
-from aworld.agents.llm_agent import Agent
-from aworld.config import AgentConfig, ModelConfig
+import os
+from collections.abc import Sequence
+from pathlib import Path
+
+from aworld.config import AgentConfig
 from aworld.core.agent.swarm import Swarm
-from aworld.core.common import Observation, ActionModel
-from aworld.core.context.amni.config import get_default_config, AgentContextConfig, ContextEnvConfig
-from aworld.core.context.base import Context
-from aworld.core.event.base import Message
-from aworld.runners.hook.hook_factory import HookFactory
-from aworld.runners.hook.hooks import PreLLMCallHook, PostLLMCallHook
+from aworld.core.context.amni.config import (
+    AgentContextConfig,
+    ContextEnvConfig,
+    get_default_config,
+)
+from aworld.core.context.generation_budget import GenerationBudgetPolicy
 from aworld.sandbox import Sandbox
 from aworld_cli.core import agent
 from aworld_cli.core.skill_registry import build_skill_resolver_inputs
+
 from ...agents.sandbox_factory import create_agent_sandbox
+from .._common import (
+    FreshAnswerOnlyCollaborator,
+    READ_ONLY_FILESYSTEM_ALLOWLIST,
+    inherited_collaborator_config,
+    public_collaborator_prompt,
+)
 
 
-@HookFactory.register(name="pre_evaluator_hook")
-class PreMultiTaskEvaluatorHook(PreLLMCallHook):
-    """Hook triggered before LLM execution. Used for monitoring, logging, etc. Should NOT modify input/output content."""
-    
-    async def exec(self, message: Message, context: Context = None) -> Message:
-        if message.sender.startswith('evaluator'):
-            # Logging and monitoring only - do not modify content
-            pass
-        return message
+_EVALUATOR_PROMPT = """
+You are AWorld's fresh-context evaluator. Assess the delegated public objective
+against the actual candidate and shared workspace evidence. The root agent may
+invoke you whenever an independent quality assessment could change its next
+decision; no special wording in the original user request is required.
+
+Inspect rather than modify the candidate through the read-only filesystem
+surface. Assess existing public checks, distinguish process success from task
+correctness, and identify stale or missing evidence. If a new executable probe
+is needed, specify it for the root agent to run. Return exactly these sections: Decision (`ready`,
+`repair`, or `uncertain`), Evidence, Gaps, and Recommended next action. The
+root agent owns any repair and the final completion decision.
+"""
 
 
-@HookFactory.register(name="post_evaluator_hook")
-class PostMultiTaskEvaluatorHook(PostLLMCallHook):
-    """Hook triggered after LLM execution. Used for monitoring, logging, etc. Should NOT modify input/output content."""
-    
-    async def exec(self, message: Message, context: Context = None) -> Message:
-        if message.sender.startswith('evaluator'):
-            # Logging and monitoring only - do not modify content
-            pass
-        return message
+class MultiTaskEvaluatorAgent(FreshAnswerOnlyCollaborator):
+    """Evaluate a delegated public candidate and return advisory findings."""
+
+    mcp_tool_action_allowlist = READ_ONLY_FILESYSTEM_ALLOWLIST
 
 
-class MultiTaskEvaluatorAgent(Agent):
-    """A versatile agent specializing in evaluation and presenting professional suggestions for the apps/code/html/website improvement."""
-
-    async def async_policy(self, observation: Observation, info: Dict[str, Any] = {}, message: Message = None,
-                           **kwargs) -> List[ActionModel]:
-        """
-        Execute the agent's policy for multi-domain tasks.
-        
-        This agent handles two primary domains:
-        1. Evaluation: Analyze the app/code/html/website's performance, user experience, and so on.
-        2. Improvement: Present professional suggestions for the app/code/html/website improvement.
-        """
-        return await super().async_policy(observation, info, message, **kwargs)
-
-def build_context_config(debug_mode):
+def build_context_config(debug_mode: bool):
     config = get_default_config()
     config.debug_mode = debug_mode
     config.agent_config = AgentContextConfig(
@@ -62,6 +55,7 @@ def build_context_config(debug_mode):
     )
     config.env_config = ContextEnvConfig()
     return config
+
 
 @agent(
     name="evaluator",
@@ -73,7 +67,16 @@ def build_context_config(debug_mode):
         debug_mode=True,
     ),
 )
-def build_evaluator_swarm(sandbox: Sandbox = None):
+def build_evaluator_swarm(
+    sandbox: Sandbox | None = None,
+    *,
+    agent_config: AgentConfig | None = None,
+    generation_budget_policy: GenerationBudgetPolicy | None = None,
+    generation_budget_explicit_fields: Sequence[str] = (),
+    max_loop_steps: int = 0,
+    llm_max_attempts: int = 3,
+    llm_retry_delay: float = 2.0,
+):
     """Build and configure the multi-task evaluator agent swarm."""
     # APP_EVALUATOR_SKILLS_DIR: override skill read directory (plugin root with skills/ subdir)
     plugin_base_dir = Path(__file__).resolve().parents[2]  # smllc bundle root
@@ -84,37 +87,36 @@ def build_evaluator_swarm(sandbox: Sandbox = None):
         user_dir=env_skills_path,
     )
 
-    # Create Agent configuration with Claude Sonnet model
-    agent_config = AgentConfig(
-        llm_config=ModelConfig(
-            llm_model_name=os.environ.get("LLM_MODEL_NAME", "claude-3-5-sonnet-20241022"),
-            llm_provider=os.environ.get("LLM_PROVIDER", "openai"),
-            llm_api_key=os.environ.get("LLM_API_KEY"),
-            llm_base_url=os.environ.get("LLM_BASE_URL"),
-            llm_temperature=float(os.environ.get("LLM_TEMPERATURE", "0.1")),
-            params={"max_completion_tokens": 59000},
-            llm_stream_call=os.environ.get("STREAM", "0").lower() in ("1", "true", "yes")
-        ),
-        skill_configs={},
-        ext={"skill_resolver_inputs": resolver_inputs},
+    collaborator_config = inherited_collaborator_config(
+        agent_config,
+        resolver_inputs=resolver_inputs,
     )
 
-    mcp_servers = ["terminal"]
+    mcp_servers = ["filesystem"]
     if sandbox is None:
         sandbox = create_agent_sandbox(mcp_servers)
-
-    _prompt_path = Path(__file__).resolve().parent / "prompt.txt"
-    _system_prompt = _prompt_path.read_text(encoding="utf-8")
 
     # Create MultiTaskEvaluatorAgent instance
     evaluator = MultiTaskEvaluatorAgent(
         name="evaluator",
-        desc="A versatile intelligent assistant that can evaluate the apps/code/html/website's performance, user experience, and so on, and present professional suggestions for the apps/code/html/website improvement.",
-        conf=agent_config,
-        system_prompt=_system_prompt,
+        desc=(
+            "Evaluates a delegated public app, code, HTML, or website candidate "
+            "and returns improvement guidance."
+        ),
+        conf=collaborator_config,
+        system_prompt=public_collaborator_prompt(_EVALUATOR_PROMPT),
         mcp_servers=mcp_servers,
         sandbox=sandbox,
-        tool_names = ["CAST_SEARCH", "CAST_ANALYSIS"]
+        # CAST_ANALYSIS records under a global basename-derived cache and
+        # CAST_SEARCH can consume that cross-task state. A fresh evaluator is
+        # deliberately restricted to its scoped read-only filesystem view.
+        tool_names=[],
+        enable_subagent=False,
+        llm_max_attempts=llm_max_attempts,
+        llm_retry_delay=llm_retry_delay,
+        generation_budget_policy=generation_budget_policy,
+        _generation_budget_explicit_fields=tuple(generation_budget_explicit_fields),
+        max_loop_steps=max_loop_steps,
     )
 
     # Return the Swarm containing this Agent

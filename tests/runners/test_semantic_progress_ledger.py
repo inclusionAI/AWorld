@@ -1,8 +1,20 @@
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
+from threading import Event
+from types import SimpleNamespace
 
+import aworld.runners.post_tool_progress as post_tool_progress_module
 from aworld.core.common import ActionModel, ActionResult, Observation
+from aworld.core.context.amni import ApplicationContext
+from aworld.core.context.amni.state import (
+    ApplicationTaskContextState,
+    TaskInput,
+    TaskOutput,
+    TaskWorkingState,
+)
 from aworld.core.context.base import Context
 from aworld.core.context.compiler import (
+    ADAPTIVE_WORK_STATE_KEY,
     ArtifactEvidence,
     ArtifactRequirement,
     CompletionContract,
@@ -18,8 +30,12 @@ from aworld.runners.execution_protocol import (
     configure_execution_protocol,
     consume_execution_protocol_guidance,
     load_execution_protocol_state,
+    record_model_plan_update,
 )
-from aworld.runners.post_tool_progress import record_semantic_tool_progress
+from aworld.runners.post_tool_progress import (
+    record_semantic_tool_progress,
+    semantic_progress_for_agent,
+)
 
 
 def _record_failure(context: Context, index: int):
@@ -44,6 +60,98 @@ def _record_failure(context: Context, index: int):
             ]
         ),
     )
+
+
+def _application_context() -> ApplicationContext:
+    context = ApplicationContext(
+        task_state=ApplicationTaskContextState(
+            task_input=TaskInput(
+                session_id="semantic-session",
+                task_id="semantic-checkpoint",
+                content="complete the public task",
+            ),
+            working_state=TaskWorkingState(
+                messages=[], user_profiles=[], kv_store={}
+            ),
+            task_output=TaskOutput(),
+        )
+    )
+    configure_execution_protocol(
+        context,
+        "agent",
+        ExecutionProtocolPolicy(
+            mode=ProtocolMode.GUIDE,
+            semantic_progress_enabled=True,
+        ),
+    )
+    return context
+
+
+def test_concurrent_semantic_and_adaptive_evidence_survives_checkpoint(
+    monkeypatch,
+):
+    context = _application_context()
+    transport_copies = [context.deep_copy(), context.deep_copy()]
+    for transport_copy in transport_copies:
+        transport_copy._event_manager = SimpleNamespace(context=context)
+    first_derivation_entered = Event()
+    release_first_derivation = Event()
+    original_record = (
+        post_tool_progress_module._record_semantic_tool_progress_locked
+    )
+
+    def delayed_record(*args, **kwargs):
+        if not first_derivation_entered.is_set():
+            first_derivation_entered.set()
+            assert release_first_derivation.wait(timeout=5)
+        return original_record(*args, **kwargs)
+
+    monkeypatch.setattr(
+        post_tool_progress_module,
+        "_record_semantic_tool_progress_locked",
+        delayed_record,
+    )
+
+    def observe(copy: ApplicationContext, index: int):
+        return record_semantic_tool_progress(
+            copy,
+            tool_name="terminal",
+            agent_id="agent",
+            actions=[
+                ActionModel(
+                    tool_name="terminal",
+                    action_name="execute",
+                    tool_call_id=f"concurrent-{index}",
+                    params={"command": f"inspect-{index}"},
+                )
+            ],
+            observation=Observation(
+                action_result=[
+                    ActionResult(content=f"observation-{index}", success=True)
+                ]
+            ),
+        )
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        first = pool.submit(observe, transport_copies[0], 1)
+        assert first_derivation_entered.wait(timeout=5)
+        second = pool.submit(observe, transport_copies[1], 2)
+        assert not second.done()
+        release_first_derivation.set()
+        assert first.result(timeout=5)["observation_count"] == 1
+        assert second.result(timeout=5)["observation_count"] == 2
+
+    restored = ApplicationContext.from_dict(context.to_dict())
+    semantic = semantic_progress_for_agent(restored, agent_id="agent")
+    adaptive = restored.task_state.working_state.kv_store[
+        f"{ADAPTIVE_WORK_STATE_KEY}:agent"
+    ]
+
+    assert semantic["observation_count"] == 2
+    assert semantic["runtime_revision"] >= 2
+    assert adaptive["observation_count"] == 2
+    assert len(adaptive["recent_operations"]) == 2
+    assert len(set(adaptive["attempted_operation_hashes"])) == 2
 
 
 def test_repeated_failure_signature_offers_bounded_checkpoint():
@@ -236,6 +344,22 @@ def test_two_ineffective_replans_stop_injecting_without_finalizing():
             next_index += 1
         guidance = consume_execution_protocol_guidance(context, "agent")
         assert guidance is not None and "checkpoint" in guidance
+        assert record_model_plan_update(
+            context,
+            "agent",
+            {
+                "decision": "replan",
+                "horizon": "long",
+                "milestone": "resolve the repeated failure",
+                "next_action": "try a materially different bounded probe",
+                "verification_plan": "compare the next observed failure signature",
+                "completion_assessment": "in_progress",
+                "assumptions": [],
+                "retired_approaches": ["repeat the same ineffective retry"],
+                "evidence_refs": [f"tool:call-{next_index - 1}"],
+                "selected_candidate_id": None,
+            },
+        ) is not None
 
     for _ in range(6):
         _record_failure(context, next_index)
@@ -301,6 +425,22 @@ def test_distinct_successful_investigations_offer_durable_evidence_checkpoint():
     assert "inspectable milestone evidence" in guidance
     assert "keeps all normal Tools available" in guidance
     assert consume_execution_protocol_guidance(context, "agent") is None
+    assert record_model_plan_update(
+        context,
+        "agent",
+        {
+            "decision": "continue",
+            "horizon": "long",
+            "milestone": "collect discriminating evidence",
+            "next_action": "inspect one new stage",
+            "verification_plan": "compare it with the milestone contract",
+            "completion_assessment": "in_progress",
+            "assumptions": ["the next stage is independently observable"],
+            "retired_approaches": [],
+            "evidence_refs": ["tool:call-5"],
+            "selected_candidate_id": None,
+        },
+    ) is not None
     reset = record_semantic_tool_progress(
         context,
         tool_name="terminal",

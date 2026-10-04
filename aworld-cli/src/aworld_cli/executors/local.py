@@ -36,6 +36,7 @@ from aworld.utils.runtime_state import runtime_state_path
 from aworld_cli.core.plugin_manager import PluginManager
 from aworld_cli.core.runtime_completion import configure_runtime_completion
 from aworld_cli.core.skill_activation_resolver import (
+    ResolvedSkillSet,
     SkillActivationResolver,
     SkillResolverRequest,
 )
@@ -756,6 +757,7 @@ class LocalAgentExecutor(BaseAgentExecutor):
             agent_conf = getattr(agent, "conf", None)
             if agent_conf is not None and isinstance(getattr(agent_conf, "ext", None), dict):
                 resolver_inputs = dict(agent_conf.ext.get("skill_resolver_inputs", {}))
+            skills_disabled = resolver_inputs.get("skills_disabled") is True
 
             compatibility_sources = tuple(
                 dict.fromkeys(
@@ -793,20 +795,32 @@ class LocalAgentExecutor(BaseAgentExecutor):
                 agent_name,
             )
             request = SkillResolverRequest(
-                plugin_roots=runtime_plugin_roots + skill_package_roots + plugin_roots,
+                plugin_roots=(
+                    ()
+                    if skills_disabled
+                    else runtime_plugin_roots + skill_package_roots + plugin_roots
+                ),
                 runtime_scope="session",
                 agent_name=agent_name,
-                task_text=task_text,
-                requested_skill_names=requested,
-                default_skill_names=tuple(resolver_inputs.get("default_skill_names", [])),
-                enabled_skill_names=enabled_skill_names,
+                task_text="" if skills_disabled else task_text,
+                requested_skill_names=() if skills_disabled else requested,
+                default_skill_names=(
+                    ()
+                    if skills_disabled
+                    else tuple(resolver_inputs.get("default_skill_names", []))
+                ),
+                enabled_skill_names=() if skills_disabled else enabled_skill_names,
                 disabled_skill_names=disabled_skill_names,
-                compatibility_sources=compatibility_sources,
+                compatibility_sources=(
+                    () if skills_disabled else compatibility_sources
+                ),
                 compatibility_skill_patterns=tuple(
                     str(item)
                     for item in resolver_inputs.get("compatibility_skill_patterns", [])
                 ),
-                isolated_candidate_sources=runtime_isolated_sources,
+                isolated_candidate_sources=(
+                    () if skills_disabled else runtime_isolated_sources
+                ),
             )
             for source in request.isolated_candidate_sources:
                 try:
@@ -815,7 +829,16 @@ class LocalAgentExecutor(BaseAgentExecutor):
                     )
                 except (OSError, RuntimeError):
                     continue
-            result = resolver.resolve(request)
+            result = (
+                ResolvedSkillSet(
+                    skill_configs={},
+                    active_skill_names=(),
+                    available_skill_names=(),
+                    activation_evidence=(),
+                )
+                if skills_disabled
+                else resolver.resolve(request)
+            )
             if agent_conf is not None:
                 agent_conf.skill_configs = result.skill_configs
                 # Agents and sandboxes retain their own skill configuration
@@ -1377,9 +1400,10 @@ class LocalAgentExecutor(BaseAgentExecutor):
         )
 
         if acceptance_state is None:
+            repair_limit = policy.max_repairs
             if (
                 not protocol_state.long_horizon_armed
-                or policy.max_repairs < 1
+                or repair_limit == 0
                 or not structured_gap
             ):
                 return None
@@ -1389,7 +1413,9 @@ class LocalAgentExecutor(BaseAgentExecutor):
 
             acceptance_state = new_goal_contract_state(
                 str(logical_task_state.get("objective") or ""),
-                max_turns=1 + policy.max_repairs,
+                max_turns=(
+                    None if repair_limit is None else 1 + repair_limit
+                ),
                 source="direct_long_horizon",
             )
             # Reuse the invocation identity so every internal segment observes

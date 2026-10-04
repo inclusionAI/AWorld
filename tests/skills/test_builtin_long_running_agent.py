@@ -56,7 +56,8 @@ def test_long_running_agent_skill_is_domain_and_benchmark_independent() -> None:
     assert "terminal-bench" not in text
     assert "case id" not in text
     assert "hidden verifier" not in text
-    assert "workbench" not in text
+    assert "candidate-management workbench" in text
+    assert "do not manufacture a workbench contract" in text
     assert "rolling plan" in text
     assert "fail open" in text or "fail-open" in text
     assert "replace the only copy of" in text
@@ -90,3 +91,5 @@ def test_builtin_skill_requests_profile_only_with_a_real_tool_call() -> None:
     assert "__aworld_execution_profile" in skill
     assert "same real tool call" in skill
     assert "Do not make a separate Tool call" in skill
+    assert "__aworld_plan_update" in skill
+    assert "__aworld_public_probe" in skill

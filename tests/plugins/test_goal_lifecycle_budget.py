@@ -221,6 +221,7 @@ def test_direct_long_horizon_acceptance_continues_without_replaying_prompt():
     from aworld.core.task import Task, TaskResponse
     from aworld.runners.execution_protocol import (
         configure_execution_protocol,
+        record_model_plan_update,
         record_tool_protocol_event,
     )
 
@@ -236,8 +237,24 @@ def test_direct_long_horizon_acceptance_continues_without_replaying_prompt():
     configure_execution_protocol(
         context,
         "root-agent",
-        ExecutionProtocolPolicy(mode="guide", activation_event_threshold=1),
+        ExecutionProtocolPolicy(mode="guide"),
     )
+    assert record_model_plan_update(
+        context,
+        "root-agent",
+        {
+            "decision": "continue",
+            "horizon": "long",
+            "milestone": "complete the requested project",
+            "next_action": "continue implementation",
+            "verification_plan": "inspect and test the candidate",
+            "completion_assessment": "in_progress",
+            "assumptions": [],
+            "retired_approaches": [],
+            "evidence_refs": [],
+            "selected_candidate_id": None,
+        },
+    ) is not None
     record_tool_protocol_event(
         context,
         "root-agent",
@@ -285,6 +302,7 @@ def test_direct_long_horizon_acceptance_continues_without_replaying_prompt():
     assert continuation.prompt != "build the requested project"
     assert "Last attempt receipt:" in continuation.prompt
     assert continuation.acceptance_state["workspace_id"] == logical_state["workspace_id"]
+    assert continuation.acceptance_state["max_turns"] is None
     assert response.execution_protocol["armed"] is True
     assert response.execution_protocol["acceptance_continuation_count"] == 1
 
@@ -389,6 +407,7 @@ def test_direct_acceptance_respects_deadline_reserve():
     from aworld.core.task import Task, TaskResponse
     from aworld.runners.execution_protocol import (
         configure_execution_protocol,
+        record_model_plan_update,
         record_tool_protocol_event,
     )
 
@@ -404,8 +423,24 @@ def test_direct_acceptance_respects_deadline_reserve():
     configure_execution_protocol(
         context,
         "root-agent",
-        ExecutionProtocolPolicy(mode="guide", activation_event_threshold=1),
+        ExecutionProtocolPolicy(mode="guide"),
     )
+    assert record_model_plan_update(
+        context,
+        "root-agent",
+        {
+            "decision": "continue",
+            "horizon": "long",
+            "milestone": "complete long work",
+            "next_action": "continue bounded execution",
+            "verification_plan": "inspect the final candidate",
+            "completion_assessment": "in_progress",
+            "assumptions": [],
+            "retired_approaches": [],
+            "evidence_refs": [],
+            "selected_candidate_id": None,
+        },
+    ) is not None
     record_tool_protocol_event(
         context,
         "root-agent",

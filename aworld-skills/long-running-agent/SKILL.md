@@ -10,9 +10,11 @@ execution_assets:
 # Long-Running Agent
 
 Use this skill to keep a long task coherent without turning its initial plan into
-an inflexible script. The AWorld runtime owns protocol state, budgets, review
-scheduling, and safety. This skill guides how to plan and reason when those
-capabilities are enabled.
+an inflexible script. The AWorld framework inside the wheel owns protocol state,
+review scheduling, and repair policy while consuming the caller-provided task
+deadline and capabilities. This skill guides how to plan and reason when those
+capabilities are enabled; the outer harness does not select those task
+strategies.
 
 Read [references/execution-semantics.md](./references/execution-semantics.md) when
 creating or revising the charter and rolling plan. Read
@@ -25,8 +27,8 @@ final result.
 For a direct task that can be completed and checked in a few actions, execute it
 normally. Do not manufacture a charter, milestones, or checkpoints merely
 because this skill is enabled. Adopt the long-running workflow only when the
-runtime requests a checkpoint or final review, or when sustained dependent work
-actually needs a recoverable rolling plan.
+AWorld execution engine requests a checkpoint or final review, or when sustained
+dependent work actually needs a recoverable rolling plan.
 
 ## Declare a long horizon without a separate turn
 
@@ -34,7 +36,7 @@ When the first actual Tool call exposes the optional
 `__aworld_execution_profile` parameter, include it when the current plan
 credibly needs multiple dependent milestones or at least six Tool actions.
 Include the profile in the same real tool call that you already need; the
-runtime removes it before the Tool executes. Omit it when the work is direct or
+AWorld removes it before the Tool executes. Omit it when the work is direct or
 the horizon is genuinely uncertain. Do not make a separate Tool call merely to
 classify the task, and do not delay useful work to produce the profile.
 
@@ -43,8 +45,11 @@ milestones or an expected sequence of at least several Tool actions. Report a
 bounded estimate through `confidence`, `milestone_count`,
 `expected_tool_actions`, and `verification_required`. Use `short` or omit the
 profile when the work is direct or uncertain. This is an advisory planning
-assessment: the runtime may still arm from observed execution, stagnation, or
-the deadline reserve, and your declaration is not evidence of completion.
+assessment and is not evidence of completion. Tool counts and stagnation never
+silently override an explicit `short` decision. They may request that you
+reassess the horizon; only your later structured plan update may change it.
+The deadline reserve is a mechanical stop boundary, not a long-task
+classification.
 
 ## Establish a rolling charter
 
@@ -81,7 +86,16 @@ At a meaningful milestone boundary or a framework-requested checkpoint:
    repeated without new evidence.
 4. Update the current milestone and choose the next bounded action.
 
-Do not create a checkpoint after every tool call. Let the runtime record
+When a real Tool schema exposes `__aworld_plan_update`, attach a bounded update
+to that Tool call when the checkpoint would materially help recovery or change
+the plan. Set `decision` to `continue` when the current approach remains sound,
+or `replan` when evidence justifies changing it. Record the current horizon,
+milestone, next action, verification plan, completion assessment, assumptions,
+retired approaches, evidence references, and selected candidate id. AWorld
+removes this object before dispatch. Reading checkpoint guidance alone does not
+count as replanning; the structured update records your actual decision.
+
+Do not create a checkpoint after every tool call. Let AWorld record
 low-level events; keep the semantic checkpoint small enough to survive context
 pressure.
 
@@ -103,11 +117,20 @@ result. A successful command status proves that command completed; it does not
 by itself prove the broader objective. When evidence is partial, state exactly
 what it supports instead of promoting it to full completion.
 
+When a Tool schema exposes `__aworld_public_probe`, you may attach a
+model-designed smoke, regression, invariant, or counterexample probe to the
+real Tool call that executes it. State the hypothesis and highest-risk
+counterexample. AWorld binds the separately observed result to the public
+request and current candidate in the evidence ledger. The receipt is local
+self-check evidence only; it is never hidden-grader evidence, canonical
+acceptance, or benchmark reward. Rerun a probe after later candidate or
+artifact changes make its receipt stale.
+
 ## Recover before continuing
 
 After context loss, compaction, interruption, or handoff, first recover the
 charter, current milestone, latest observations, retired approaches, unresolved
-assumptions, and any review feedback supplied by the runtime. Resume from that
+assumptions, and any review feedback supplied by AWorld. Resume from that
 state rather than reconstructing the task from memory or repeating prior work.
 
 When the runtime supplies a structured previous-attempt receipt, use its
@@ -124,10 +147,22 @@ When preparing a candidate final result:
 1. Reconcile every public requirement in the charter with current evidence.
 2. Check whether later changes made earlier evidence stale.
 3. Identify direct contradictions and material evidence gaps.
-4. If a concrete gap can be resolved within the remaining budget, resume the
+4. When a fresh-context `verifier` collaborator is actually available and an
+   independent check could change the completion decision, delegate the public
+   objective, candidate locations, and concrete claims to check. Treat its
+   report as advice, not hidden-grader evidence or completion authority.
+5. When comparison or implementation can be safely isolated, use the
+   fresh-context `evaluator` or `developer` collaborator only if its result can
+   materially change the next decision. Give it a bounded public subtask and
+   integrate its answer; availability never requires delegation.
+6. If a candidate-management Workbench is available and the task has multiple
+   valuable artifact candidates, use it to snapshot, validate, compare, and
+   publish the selected candidate. Do not manufacture a Workbench contract for
+   direct work. Its receipts remain agent self-check evidence.
+7. If a concrete gap can be resolved within the remaining budget, resume the
    normal bounded-step workflow, use the Tools needed to finish it, and
    reassess before producing a new candidate final result.
-5. Otherwise return the best current result and describe material uncertainty
+8. Otherwise return the best current result and describe material uncertainty
    accurately.
 
 Keep the review itself bounded. A model decision that work is incomplete may

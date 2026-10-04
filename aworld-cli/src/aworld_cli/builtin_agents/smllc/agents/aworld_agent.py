@@ -49,11 +49,13 @@ AWORLD_MAX_COMPLETION_TOKENS_HARD_LIMIT = 64000
 AWORLD_BUILTIN_SUBAGENT_NAMES = (
     "developer",
     "evaluator",
+    "verifier",
     "diffusion",
     "avatar",
     "audio",
     "image",
 )
+AWORLD_CORE_SUBAGENT_NAMES = ("developer", "evaluator", "verifier")
 _BACKGROUND_SUBAGENT_ACTIONS = (
     "spawn_background",
     "check_task",
@@ -283,9 +285,19 @@ def resolve_aworld_generation_budget() -> Optional[GenerationBudgetPolicy]:
 
 
 def resolve_aworld_builtin_subagents() -> tuple[str, ...]:
-    """Resolve an explicit, task-text-independent collaborator allowlist."""
+    """Resolve the task-text-independent collaborator capability set.
 
-    raw_value = os.environ.get("AWORLD_BUILTIN_SUBAGENTS", "none").strip().lower()
+    No collaborator is created by default, so the root remains the sole task
+    owner and executor. Developer, evaluator, verifier, and media specialists
+    remain explicit opt-ins. Availability never forces delegation. ``core``
+    enables the three public task collaborators, while ``all`` and ``auto``
+    retain their historical meaning.
+    """
+
+    configured = os.environ.get("AWORLD_BUILTIN_SUBAGENTS")
+    raw_value = "none" if configured is None else configured.strip().lower()
+    if raw_value == "core":
+        return AWORLD_CORE_SUBAGENT_NAMES
     if raw_value in {"all", "auto"}:
         return AWORLD_BUILTIN_SUBAGENT_NAMES
     if raw_value in {"", "none"}:
@@ -350,6 +362,33 @@ def render_aworld_system_prompt(
     available_subagents: Sequence[str] = (),
 ) -> str:
     prompt_template = (Path(__file__).resolve().parent / "prompt.txt").read_text(encoding="utf-8")
+    available_subagent_set = set(available_subagents)
+    role_guidance = []
+    if "developer" in available_subagent_set:
+        role_guidance.append(
+            "   When `developer` is listed, you may delegate a bounded "
+            "implementation subtask whose result can be integrated safely in "
+            "the shared workspace. Give it the exact public scope, constraints, "
+            "files, and checks; retain responsibility for integration."
+        )
+    if "evaluator" in available_subagent_set:
+        role_guidance.append(
+            "   When `evaluator` is listed, you may delegate a bounded "
+            "fresh-context comparison or quality assessment when it can "
+            "materially change candidate selection or the next action. Treat "
+            "its report as advisory public self-check evidence."
+        )
+    if "verifier" in available_subagent_set:
+        role_guidance.append(
+            "   When `verifier` is listed, you may delegate a bounded candidate "
+            "or completion claim for a fresh-context cross-check when "
+            "independent inspection could materially change the result. Give "
+            "it the public objective, relevant deliverable locations, and the "
+            "concrete claims to check. Its report is advisory: use observed "
+            "gaps to repair when warranted, and retain responsibility for "
+            "deciding when the task is complete. Do not invoke it merely "
+            "because it is available."
+        )
     current = now or datetime.now(_BEIJING_TZ)
     if current.tzinfo is None:
         current = current.replace(tzinfo=_BEIJING_TZ)
@@ -362,8 +401,9 @@ def render_aworld_system_prompt(
             ", ".join(sorted(set(available_tools))) or "none"
         ),
         "{{available_subagents}}": (
-            ", ".join(sorted(set(available_subagents))) or "none"
+            ", ".join(sorted(available_subagent_set)) or "none"
         ),
+        "{{subagent_role_guidance}}": "\n".join(role_guidance),
         "{{delegation_guidance}}": (
             "Delegate only when a listed subagent is materially better suited "
             "to an independent subtask. Use its exact listed name."
@@ -496,19 +536,19 @@ def _subagent_names(sub_agents: Sequence[BaseAgent]) -> List[str]:
 def _build_aworld_sub_agents(
     sandbox,
     enabled_names: Optional[Sequence[str]] = None,
+    *,
+    agent_config: Optional[AgentConfig] = None,
+    generation_budget_policy: Optional[GenerationBudgetPolicy] = None,
+    generation_budget_explicit_fields: Sequence[str] = (),
+    max_loop_steps: int = 0,
+    llm_max_attempts: int = 3,
+    llm_retry_delay: float = 2.0,
 ) -> List[BaseAgent]:
     """Build optional collaborators before publishing root capabilities."""
 
     enabled = set(
         resolve_aworld_builtin_subagents() if enabled_names is None else enabled_names
     )
-    if not _CAST_TOOLS_AVAILABLE and {"developer", "evaluator"} & enabled:
-        logger.warning(
-            "Developer and evaluator sub-agents are disabled because CAST "
-            f"dependencies are unavailable: {_CAST_TOOLS_UNAVAILABLE_REASON}"
-        )
-        enabled.difference_update({"developer", "evaluator"})
-
     sub_agents = []
     bundle_package = __package__.rsplit(".", 1)[0]
     for label in AWORLD_BUILTIN_SUBAGENT_NAMES:
@@ -520,7 +560,19 @@ def _build_aworld_sub_agents(
             # registrations cannot affect a default CLI run.
             module = import_module(f"{bundle_package}.optional_agents.{label}.{label}")
             builder = getattr(module, f"build_{label}_swarm")
-            sub_agents.extend(extract_agents_from_swarm(builder(sandbox=sandbox)))
+            builder_kwargs = {"sandbox": sandbox}
+            if label in AWORLD_CORE_SUBAGENT_NAMES:
+                builder_kwargs.update(
+                    agent_config=agent_config,
+                    generation_budget_policy=generation_budget_policy,
+                    generation_budget_explicit_fields=(
+                        generation_budget_explicit_fields
+                    ),
+                    max_loop_steps=max_loop_steps,
+                    llm_max_attempts=llm_max_attempts,
+                    llm_retry_delay=llm_retry_delay,
+                )
+            sub_agents.extend(extract_agents_from_swarm(builder(**builder_kwargs)))
         except Exception as exc:
             logger.warning(
                 f"Optional Aworld {label} sub-agent is unavailable: {exc}"
@@ -553,9 +605,11 @@ def build_aworld_agent(include_skills: Optional[str] = None):
     """
     Build the default automation agent with terminal, workspace and context tools.
 
-    Skills follow their exposure policy and user settings. Specialized collaborators
-    are loaded only when selected through AWORLD_BUILTIN_SUBAGENTS. The default
-    swarm contains only Aworld; durable tools depend on the tool surface profile.
+    Skills follow their exposure policy and user settings. The root agent owns
+    planning, execution, review, repair, and completion by default. Fresh-context
+    developer, evaluator, verifier, and media specialists are explicit opt-ins
+    through AWORLD_BUILTIN_SUBAGENTS. Durable tools depend on the tool surface
+    profile.
 
     Args:
         include_skills (str, optional): Specify which skills to include.
@@ -621,12 +675,19 @@ def build_aworld_agent(include_skills: Optional[str] = None):
         and generation_budget_policy is None
         else ()
     )
+    max_loop_steps = resolve_aworld_max_loop_steps()
 
     # Resolve optional collaborators before constructing the root agent so its
     # prompt and tool catalog describe capabilities that actually exist.
     sub_agents = _build_aworld_sub_agents(
         sandbox,
         enabled_names=resolve_aworld_builtin_subagents(),
+        agent_config=agent_config,
+        generation_budget_policy=generation_budget_policy,
+        generation_budget_explicit_fields=generation_budget_explicit_fields,
+        max_loop_steps=max_loop_steps,
+        llm_max_attempts=3,
+        llm_retry_delay=2.0,
     )
     subagent_names = _subagent_names(sub_agents)
     root_tool_names, black_tool_actions = _aworld_root_tool_policy(
@@ -677,7 +738,7 @@ def build_aworld_agent(include_skills: Optional[str] = None):
         llm_retry_delay=2.0,
         generation_budget_policy=generation_budget_policy,
         _generation_budget_explicit_fields=generation_budget_explicit_fields,
-        max_loop_steps=resolve_aworld_max_loop_steps(),
+        max_loop_steps=max_loop_steps,
         **budgeted_agent_kwargs,
     )
     aworld_agent.tool_surface_profile = tool_surface_profile

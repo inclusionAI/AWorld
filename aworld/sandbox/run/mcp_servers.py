@@ -1392,6 +1392,8 @@ class McpServers:
                 env_content_value["task_id"] = context.task_id
             if hasattr(context, 'session_id') and context.session_id:
                 env_content_value["session_id"] = context.session_id
+            if hasattr(context, 'task_epoch') and context.task_epoch is not None:
+                env_content_value["task_epoch"] = context.task_epoch
 
         # 3. Dynamically add additional context from event_message
         if event_message:
@@ -1399,16 +1401,16 @@ class McpServers:
                 env_content_value["agent_id"] = event_message.sender
 
         # 4. Merge into parameter
-        # If user already provided the parameter, merge (user values take priority)
+        # If a stale caller supplied the hidden parameter, merge it while
+        # keeping framework task/session identity authoritative.
         if env_content_name not in parameter:
             parameter[env_content_name] = env_content_value
         else:
-            # User provided value exists, merge it (user values override)
             user_value = parameter[env_content_name]
             if isinstance(user_value, dict):
-                # Merge: user values override env_content values
-                parameter[env_content_name] = {**env_content_value, **user_value}
-            # If user_value is not a dict, keep it as is (user's choice)
+                parameter[env_content_name] = {**user_value, **env_content_value}
+            else:
+                parameter[env_content_name] = env_content_value
 
         logger.debug(f"Injected env_content parameter '{env_content_name}' for tool '{tool_key}'")
 

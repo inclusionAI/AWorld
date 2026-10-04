@@ -59,13 +59,19 @@ class ExecutionProtocolStore:
             return None
         return state.bounded(self._policy.history_limit)
 
-    def _local_value(self) -> Any:
-        context_info = getattr(self._context, "context_info", None)
+    def _local_value(self, context: Any | None = None) -> Any:
+        owner = self._context if context is None else context
+        task_state = getattr(owner, "task_state", None)
+        working_state = getattr(task_state, "working_state", None)
+        kv_store = getattr(working_state, "kv_store", None)
+        if isinstance(kv_store, Mapping) and self.context_key in kv_store:
+            return deepcopy(kv_store.get(self.context_key))
+        context_info = getattr(owner, "context_info", None)
         if isinstance(context_info, Mapping):
             value = context_info.get(self.context_key)
             if value is not None:
                 return value
-        get = getattr(self._context, "get", None)
+        get = getattr(owner, "get", None)
         if callable(get):
             try:
                 return get(self.context_key)
@@ -84,12 +90,21 @@ class ExecutionProtocolStore:
         state = self._decode(value) or self._decode(self._local_value())
         return state or ExecutionProtocolState.initial(self._scope)
 
-    def _project(self, state: ExecutionProtocolState) -> None:
+    def _project(
+        self, state: ExecutionProtocolState, *, context: Any | None = None
+    ) -> None:
+        owner = self._context if context is None else context
         payload = state.bounded(self._policy.history_limit).to_dict()
-        context_info = getattr(self._context, "context_info", None)
+        context_info = getattr(owner, "context_info", None)
         if isinstance(context_info, dict):
             context_info[self.context_key] = deepcopy(payload)
-        put = getattr(self._context, "put", None)
+        task_state = getattr(owner, "task_state", None)
+        working_state = getattr(task_state, "working_state", None)
+        kv_store = getattr(working_state, "kv_store", None)
+        if isinstance(kv_store, dict):
+            kv_store[self.context_key] = deepcopy(payload)
+            return
+        put = getattr(owner, "put", None)
         if callable(put):
             try:
                 put(self.context_key, deepcopy(payload))
@@ -109,13 +124,55 @@ class ExecutionProtocolStore:
                 writer(self._agent_id, EXECUTION_PROTOCOL_STATE_KEY, payload)
             except Exception:
                 pass
-        self._project(state)
+        owner_resolver = getattr(self._context, "_task_runtime_registry_owner", None)
+        durable_owner = owner_resolver() if callable(owner_resolver) else self._context
+        self._project(state, context=durable_owner)
+        if self._context is not durable_owner:
+            self._project(state)
         return state
 
     def apply(self, event: ExecutionProtocolEvent) -> ProtocolTransition:
         """Atomically fan in an event when the Context supports runtime updates."""
+        owner_resolver = getattr(self._context, "_task_runtime_registry_owner", None)
+        durable_owner = owner_resolver() if callable(owner_resolver) else self._context
+        atomic_updater = getattr(
+            self._context, "update_and_project_task_runtime_state", None
+        )
         updater = getattr(self._context, "update_task_runtime_state", None)
         captured: list[ProtocolTransition] = []
+
+        if callable(atomic_updater):
+            durable_seed = self._decode(self._local_value(durable_owner))
+
+            def update_and_capture(current):
+                state = (
+                    self._decode(current)
+                    or durable_seed
+                    or ExecutionProtocolState.initial(self._scope)
+                )
+                transition = safe_transition_execution_protocol(
+                    state, event, self._policy
+                )
+                captured.append(transition)
+                return transition.state.bounded(self._policy.history_limit).to_dict()
+
+            try:
+                payload = atomic_updater(
+                    self._agent_id,
+                    EXECUTION_PROTOCOL_STATE_KEY,
+                    update_and_capture,
+                    lambda projected: self._project(
+                        self._decode(projected) or captured[-1].state,
+                        context=durable_owner,
+                    ),
+                )
+                if captured:
+                    state = self._decode(payload) or captured[-1].state
+                    if self._context is not durable_owner:
+                        self._project(state)
+                    return ProtocolTransition(state, captured[-1].decision)
+            except Exception:
+                captured.clear()
 
         if callable(updater):
 
@@ -132,7 +189,9 @@ class ExecutionProtocolStore:
                 if captured:
                     state = self._decode(payload) or captured[-1].state
                     transition = ProtocolTransition(state, captured[-1].decision)
-                    self._project(state)
+                    self._project(state, context=durable_owner)
+                    if self._context is not durable_owner:
+                        self._project(state)
                     return transition
             except Exception:
                 captured.clear()

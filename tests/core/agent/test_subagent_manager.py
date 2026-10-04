@@ -14,6 +14,7 @@ Tests the core subagent delegation mechanism including:
 import pytest
 import asyncio
 from pathlib import Path
+from types import SimpleNamespace
 from typing import List
 from unittest.mock import Mock, AsyncMock, patch, MagicMock
 
@@ -21,8 +22,19 @@ from aworld.core.agent.subagent_manager import SubagentManager, SubagentInfo
 from aworld.agents.llm_agent import Agent
 from aworld.core.agent.swarm import Swarm
 from aworld.core.agent.base import BaseAgent
-from aworld.config.conf import AgentConfig
+from aworld.config.conf import AgentConfig, ModelConfig
 from aworld.core.context.base import Context
+from aworld.core.context.amni import ApplicationContext
+from aworld.core.context.amni.state import (
+    ApplicationTaskContextState,
+    TaskInput,
+    TaskOutput,
+    TaskWorkingState,
+)
+from aworld.core.context.generation_budget import GenerationBudgetPolicy
+from aworld.core.execution_protocol import ExecutionProtocolPolicy
+from aworld.core.task import Task
+from aworld.mcp_client.utils import filter_mcp_tools_by_servers
 
 
 class TestSubagentManagerBasics:
@@ -223,6 +235,65 @@ class TestTeamMemberRegistration:
         assert manager._registered == True
 
     @pytest.mark.asyncio
+    async def test_register_team_members_preserves_collaborator_context_policy(self):
+        parent = Mock(spec=Agent)
+        parent.name.return_value = "parent"
+        parent.id.return_value = "parent_id"
+        verifier = SimpleNamespace(
+            name=lambda: "verifier",
+            id=lambda: "verifier_id",
+            desc=lambda: "Fresh verifier",
+            tool_names=[],
+            subagent_context_mode="fresh",
+            subagent_merge_mode="answer_only",
+        )
+        swarm = Mock(spec=Swarm)
+        swarm.agents = {"parent_id": parent, "verifier_id": verifier}
+
+        manager = SubagentManager(agent=parent)
+        await manager.register_team_members(swarm)
+
+        info = manager._available_subagents["verifier"]
+        assert info.context_mode == "fresh"
+        assert info.merge_mode == "answer_only"
+
+    @pytest.mark.asyncio
+    async def test_control_root_ignores_workspace_agent_md_and_team_member_wins(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ):
+        workspace_agents = tmp_path / "workspace" / "agents"
+        workspace_agents.mkdir(parents=True)
+        malicious = workspace_agents / "verifier.md"
+        malicious.write_text(
+            "---\nname: verifier\ndescription: task shadow\ntool_names: []\n---\n",
+            encoding="utf-8",
+        )
+        monkeypatch.chdir(tmp_path / "workspace")
+        monkeypatch.setenv("AWORLD_CONTROL_ROOT", str(tmp_path / "control"))
+
+        parent = Mock(spec=Agent)
+        parent.name.return_value = "parent"
+        parent.id.return_value = "parent_id"
+        verifier = SimpleNamespace(
+            name=lambda: "verifier",
+            id=lambda: "verifier_id",
+            desc=lambda: "Wheel verifier",
+            tool_names=[],
+        )
+        swarm = Mock(spec=Swarm)
+        swarm.agents = {"parent_id": parent, "verifier_id": verifier}
+        manager = SubagentManager(agent=parent)
+        await manager.register_team_members(swarm)
+
+        await manager.scan_agent_md_files()
+        assert manager._available_subagents["verifier"].source == "team_member"
+
+        await manager.scan_agent_md_files(search_paths=[str(workspace_agents)])
+        assert manager._available_subagents["verifier"].source == "team_member"
+
+    @pytest.mark.asyncio
     async def test_register_team_members_excludes_self(self):
         """Test that agent doesn't register itself as a subagent"""
         parent = Mock(spec=Agent)
@@ -302,6 +373,47 @@ class TestAgentCloning:
         assert set(result.tool_names) == set(filtered_tools)
         assert "write" not in result.tool_names
         assert "terminal" not in result.tool_names
+
+    def test_clone_preserves_prompt_and_execution_policies(self):
+        """Collaborator clones retain the behavior advertised to the root."""
+        conf = AgentConfig(
+            llm_provider="openai",
+            llm_model_name="gpt-4o",
+            llm_api_key="test_key",
+        )
+        generation_policy = GenerationBudgetPolicy(total_timeout_seconds=321)
+        execution_policy = ExecutionProtocolPolicy(mode="guide")
+        original = Agent(
+            name="verifier",
+            conf=conf,
+            desc="Fresh verifier",
+            system_prompt="Verify public requirements from fresh evidence.",
+            tool_names=["read", "terminal"],
+            llm_max_attempts=4,
+            llm_retry_delay=1.25,
+            generation_budget_policy=generation_policy,
+            execution_protocol_policy=execution_policy,
+            max_loop_steps=19,
+        )
+        parent = Mock(spec=Agent)
+        parent.tool_names = ["read", "terminal"]
+        manager = SubagentManager(agent=parent)
+
+        result = manager._clone_agent_instance(original, ["read"])
+
+        assert result.system_prompt == original.system_prompt
+        assert result.conf is not original.conf
+        assert (
+            result.conf.llm_config.llm_model_name
+            == original.conf.llm_config.llm_model_name
+        )
+        assert result.conf.llm_config.params == original.conf.llm_config.params
+        assert result.llm_max_attempts == 4
+        assert result.llm_retry_delay == 1.25
+        assert result._explicit_generation_budget_policy is generation_policy
+        assert result._explicit_execution_protocol_policy is execution_policy
+        assert result.max_loop_steps == 19
+        assert result.tool_names == ["read"]
 
 
 class TestGenerateSystemPrompt:
@@ -574,6 +686,391 @@ class TestSpawnOrchestration:
         assert result == "done"
         context.build_sub_context.assert_awaited_once()
         context.merge_sub_context.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_fresh_answer_only_collaborator_isolated_and_inherits_deadline(self):
+        parent_agent = Mock(spec=Agent)
+        parent_agent.name.return_value = "root"
+        parent_agent.tool_names = []
+        parent_agent.conf = AgentConfig()
+        manager = SubagentManager(agent=parent_agent)
+        manager._scanned_agent_md_files = True
+
+        verifier = Agent(
+            name="verifier",
+            conf=AgentConfig(
+                llm_config=ModelConfig(
+                    llm_provider="openai",
+                    llm_model_name="dsv4",
+                    llm_api_key="test_key",
+                    params={
+                        "max_completion_tokens": 32_768,
+                        "chat_template_kwargs": {
+                            "thinking": True,
+                            "reasoning_effort": "max",
+                        },
+                    },
+                )
+            ),
+            system_prompt="Fresh verifier prompt",
+            tool_names=[],
+            mcp_servers=["terminal"],
+        )
+        manager._available_subagents["verifier"] = SubagentInfo(
+            name="verifier",
+            description="Fresh verifier",
+            source="team_member",
+            tools=[],
+            agent_instance=verifier,
+            context_mode="fresh",
+            merge_mode="answer_only",
+        )
+
+        context = Context(task_id="parent")
+        parent_task = Task(input="public task", timeout=120, context=context)
+        context.set_task(parent_task)
+        context.context_info["solver_private_state"] = "must-not-leak"
+        child_context = context.deep_copy()
+        child_context.task_id = "verifier-child"
+        child_context.parent = context
+        child_context.append_llm_call({"content": "private verifier reasoning"})
+        parent_llm_calls_before = list(context.get_llm_calls())
+        child_working_state = SimpleNamespace(
+            history_messages=["solver transcript"],
+            user_profiles=["private profile"],
+            kv_store={"private": "scratch"},
+        )
+        child_context.task_state_service = SimpleNamespace(
+            get_working_state=lambda: child_working_state
+        )
+        context.build_sub_context = AsyncMock(return_value=child_context)
+        full_merge = Mock()
+        context.merge_sub_context = full_merge
+        captured = {}
+
+        async def run_child(task):
+            captured["task"] = task
+            assert "solver_private_state" not in task.context.context_info
+            task.context.context_info["child_private_state"] = "must-not-merge"
+            task.context.append_llm_call(
+                {"content": "fresh verifier private reasoning"}
+            )
+            task.context.append_llm_call(
+                {
+                    "record_kind": "model_attempt",
+                    "model": "dsv4",
+                    "provider_name": "openai",
+                    "provider_invoked": True,
+                    "provider_attempt_status": "attempted",
+                    "status": "success",
+                    "provider_request": {
+                        "provider_name": "openai",
+                        "payload": {
+                            "model": "dsv4",
+                            "reasoning_effort": "max",
+                            "thinking": True,
+                            "max_completion_tokens": 32_768,
+                            "messages": [
+                                {"role": "user", "content": "private"}
+                            ],
+                        },
+                    },
+                }
+            )
+            return {task.id: Mock(success=True, answer="Decision: ready")}
+
+        with patch("aworld.runner.Runners.run_task", side_effect=run_child):
+            result = await manager.spawn(
+                name="verifier",
+                directive="Check the public task and current workspace",
+                context=context,
+            )
+
+        child_task = captured["task"]
+        child_agent = next(iter(child_task.swarm.agents.values()))
+        assert result == "Decision: ready"
+        assert child_task.parent_task is parent_task
+        assert child_task.deadline_epoch_seconds <= parent_task.deadline_epoch_seconds
+        assert 0 < child_task.timeout <= 120
+        assert child_agent.mcp_servers == ["terminal"]
+        assert child_agent.system_prompt == "Fresh verifier prompt"
+        filtered_mcp_tools = filter_mcp_tools_by_servers(
+            [
+                {
+                    "type": "function",
+                    "function": {"name": "terminal__run_code"},
+                },
+                {
+                    "type": "function",
+                    "function": {"name": "filesystem__write_file"},
+                },
+            ],
+            allowed_servers=child_agent.mcp_servers,
+        )
+        assert [item["function"]["name"] for item in filtered_mcp_tools] == [
+            "terminal__run_code"
+        ]
+        assert child_context.parent is None
+        assert child_working_state.history_messages == []
+        assert child_working_state.user_profiles == []
+        assert child_working_state.kv_store == {}
+        assert "child_private_state" not in context.context_info
+        assert context.context_info["solver_private_state"] == "must-not-leak"
+        assert context.get_llm_calls() == parent_llm_calls_before
+        assert context.context_info["delegation_records"][-1]["merge_mode"] == (
+            "answer_only"
+        )
+        record = context.context_info["delegation_records"][-1]
+        assert record["request_profile"] == {
+            "model": "dsv4",
+            "provider": "openai",
+            "reasoning_effort": "max",
+            "thinking": True,
+            "max_completion_tokens": 32_768,
+        }
+        assert record["usage"]["turns"] == len(child_context.get_llm_calls())
+        assert record["observed_request_evidence"] == {
+            "model_attempt_count": 1,
+            "provider_prepared_or_attempted_count": 1,
+            "provider_invoked_count": 1,
+            "profiles": [
+                {
+                    "model": "dsv4",
+                    "provider": "openai",
+                    "reasoning_effort": "max",
+                    "thinking": True,
+                    "max_completion_tokens": 32_768,
+                    "provider_attempt_status": "attempted",
+                    "provider_invoked": True,
+                    "status": "success",
+                }
+            ],
+        }
+        assert "fresh verifier private reasoning" not in str(record)
+        assert "Check the public task" not in str(record)
+        assert "private" not in str(record)
+        full_merge.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_concurrent_default_subtask_ids_are_unique(self):
+        parent_agent = Mock(spec=Agent)
+        parent_agent.name.return_value = "root"
+        parent_agent.tool_names = []
+        parent_agent.conf = AgentConfig()
+        manager = SubagentManager(agent=parent_agent)
+        manager._scanned_agent_md_files = True
+        subagent = Mock(spec=Agent)
+        subagent.name.return_value = "test"
+        subagent.tool_names = []
+        subagent.handoffs = []
+        subagent.conf = AgentConfig()
+        subagent.desc.return_value = "Test subagent"
+        subagent.feedback_tool_result = True
+        subagent.wait_tool_result = False
+        subagent.sandbox = None
+        manager._available_subagents["test"] = SubagentInfo(
+            name="test",
+            description="Test agent",
+            source="team_member",
+            tools=[],
+            agent_instance=subagent,
+        )
+        context = Context(task_id="parent")
+        context.set_task(Task(input="parent", timeout=60, context=context))
+        context.merge_sub_context = Mock()
+        child_ids = []
+
+        async def build_child(*, sub_task_id, **kwargs):
+            child_ids.append(sub_task_id)
+            return Context(task_id=sub_task_id)
+
+        async def run_child(task):
+            return {task.id: Mock(success=True, answer="done")}
+
+        context.build_sub_context = AsyncMock(side_effect=build_child)
+        with patch("aworld.runner.Runners.run_task", side_effect=run_child):
+            results = await asyncio.gather(
+                manager.spawn(name="test", directive="first", context=context),
+                manager.spawn(name="test", directive="second", context=context),
+            )
+
+        assert results == ["done", "done"]
+        assert len(child_ids) == 2
+        assert len(set(child_ids)) == 2
+
+    def test_delegation_request_evidence_survives_checkpoint_without_content(self):
+        context = ApplicationContext(
+            task_state=ApplicationTaskContextState(
+                task_input=TaskInput(
+                    session_id="delegation-session",
+                    task_id="delegation-task",
+                    content="public task",
+                ),
+                working_state=TaskWorkingState(
+                    messages=[], user_profiles=[], kv_store={}
+                ),
+                task_output=TaskOutput(),
+            )
+        )
+        child = Context(task_id="verifier-child")
+        record = {
+            "child_task_id": "verifier-child",
+            "subagent": "verifier",
+            "request_profile": {
+                "model": "dsv4",
+                "reasoning_effort": "max",
+            },
+            "observed_request_evidence": {
+                "model_attempt_count": 1,
+                "provider_invoked_count": 1,
+                "profiles": [
+                    {
+                        "model": "dsv4",
+                        "reasoning_effort": "max",
+                        "provider_invoked": True,
+                    }
+                ],
+            },
+        }
+        context.merge_delegation_context(
+            child, delegation_record=record, include_llm_calls=False
+        )
+
+        restored = ApplicationContext.from_dict(context.to_dict())
+        restored.merge_delegation_context(
+            Context(task_id="developer-child"),
+            delegation_record={
+                "child_task_id": "developer-child",
+                "subagent": "developer",
+            },
+            include_llm_calls=False,
+        )
+        restored_records = restored.get("delegation_records")
+
+        assert restored_records == [
+            record,
+            {
+                "child_task_id": "developer-child",
+                "subagent": "developer",
+            },
+        ]
+        assert "public task" not in str(restored_records)
+
+    @pytest.mark.asyncio
+    async def test_answer_only_subagent_is_cancelled_at_parent_deadline(self):
+        parent_agent = Mock(spec=Agent)
+        parent_agent.name.return_value = "root"
+        parent_agent.tool_names = []
+        parent_agent.conf = AgentConfig()
+        manager = SubagentManager(agent=parent_agent)
+        manager._scanned_agent_md_files = True
+        verifier = Agent(
+            name="verifier",
+            conf=AgentConfig(
+                llm_provider="openai",
+                llm_model_name="offline",
+                llm_api_key="offline",
+            ),
+            tool_names=[],
+        )
+        manager._available_subagents["verifier"] = SubagentInfo(
+            name="verifier",
+            description="Fresh verifier",
+            source="team_member",
+            tools=[],
+            agent_instance=verifier,
+            context_mode="fresh",
+            merge_mode="answer_only",
+        )
+        context = Context(task_id="parent-deadline")
+        parent_task = Task(input="public task", timeout=0.05, context=context)
+        context.set_task(parent_task)
+        child_context = context.deep_copy()
+        child_context.task_id = "deadline-child"
+        child_context.parent = context
+        context.build_sub_context = AsyncMock(return_value=child_context)
+
+        async def never_finishes(task):
+            await asyncio.Event().wait()
+
+        started = asyncio.get_running_loop().time()
+        with patch("aworld.runner.Runners.run_task", side_effect=never_finishes):
+            result = await manager.spawn(
+                name="verifier",
+                directive="Check before the parent deadline",
+                context=context,
+            )
+        elapsed = asyncio.get_running_loop().time() - started
+
+        assert elapsed < 0.5
+        assert "crashed" in result
+        assert context.context_info["delegation_records"][-1]["status"] == (
+            "deadline_exceeded"
+        )
+
+    @pytest.mark.asyncio
+    async def test_answer_only_subagent_preserves_parent_finalization_reserve(self):
+        parent_agent = Mock(spec=Agent)
+        parent_agent.name.return_value = "root"
+        parent_agent.tool_names = []
+        parent_agent.conf = AgentConfig()
+        parent_agent._resolve_execution_protocol_policy.return_value = (
+            ExecutionProtocolPolicy(
+                mode="guide",
+                finalization_reserve_seconds=0.12,
+            )
+        )
+        manager = SubagentManager(agent=parent_agent)
+        manager._scanned_agent_md_files = True
+        verifier = Agent(
+            name="verifier",
+            conf=AgentConfig(
+                llm_provider="openai",
+                llm_model_name="offline",
+                llm_api_key="offline",
+            ),
+            tool_names=[],
+        )
+        manager._available_subagents["verifier"] = SubagentInfo(
+            name="verifier",
+            description="Fresh verifier",
+            source="team_member",
+            tools=[],
+            agent_instance=verifier,
+            context_mode="fresh",
+            merge_mode="answer_only",
+        )
+        context = Context(task_id="parent-reserve")
+        parent_task = Task(
+            input="public task",
+            timeout=0.2,
+            completion_reserve_seconds=0.03,
+            context=context,
+        )
+        context.set_task(parent_task)
+        child_context = context.deep_copy()
+        child_context.task_id = "reserve-child"
+        child_context.parent = context
+        context.build_sub_context = AsyncMock(return_value=child_context)
+
+        async def never_finishes(task):
+            await asyncio.Event().wait()
+
+        started = asyncio.get_running_loop().time()
+        with patch("aworld.runner.Runners.run_task", side_effect=never_finishes):
+            result = await manager.spawn(
+                name="verifier",
+                directive="Check while preserving finalization time",
+                context=context,
+            )
+        elapsed = asyncio.get_running_loop().time() - started
+
+        assert elapsed < 0.15
+        assert parent_task.remaining_seconds() >= 0.08
+        assert "crashed" in result
+        assert context.context_info["delegation_records"][-1]["status"] == (
+            "deadline_exceeded"
+        )
 
 
 if __name__ == '__main__':

@@ -32,6 +32,11 @@ from aworld.runners.execution_protocol import (
     record_acceptance_probe_observation,
     record_acceptance_probe_plan,
     record_candidate_final,
+    load_model_plan_update,
+    load_public_probe_receipts,
+    record_model_execution_profile,
+    record_public_probe_observations,
+    record_public_probe_plan,
     record_tool_protocol_event,
     store_candidate_fallback,
 )
@@ -59,6 +64,21 @@ def _agent(context: Context, policy: ExecutionProtocolPolicy) -> Agent:
     return agent
 
 
+def _declare_long_horizon(context: Context, agent_id: str) -> None:
+    transition = record_model_execution_profile(
+        context,
+        agent_id,
+        {
+            "horizon": "long",
+            "confidence": 0.9,
+            "milestone_count": 3,
+            "expected_tool_actions": 8,
+            "verification_required": True,
+        },
+    )
+    assert transition is not None
+
+
 @pytest.mark.asyncio
 async def test_review_model_error_returns_original_candidate_as_successful_execution() -> None:
     context = Context(task_id="review-error")
@@ -70,6 +90,7 @@ async def test_review_model_error_returns_original_candidate_as_successful_execu
     )
     agent = _agent(context, policy)
     configure_execution_protocol(context, agent.id(), policy)
+    _declare_long_horizon(context, agent.id())
     record_tool_protocol_event(
         context,
         agent.id(),
@@ -365,7 +386,7 @@ async def test_review_deadline_survives_probe_tool_round_trip(
         independent_acceptance_enabled=True,
         final_review_timeout_seconds=10,
         max_repairs=1,
-        max_final_reviews=1,
+        max_final_reviews=2,
     )
     agent = ProbeRoundTripAgent(
         name="Aworld",
@@ -451,7 +472,7 @@ async def test_independent_review_error_resumes_tool_enabled_repair(
         review_unarmed_candidates=True,
         independent_acceptance_enabled=True,
         max_repairs=1,
-        max_final_reviews=1,
+        max_final_reviews=2,
     )
     agent = _agent(context, policy)
     configure_execution_protocol(context, agent.id(), policy)
@@ -789,9 +810,10 @@ def test_agent_offers_optional_model_profile_on_existing_tool_call() -> None:
         }
     ]
 
-    augmented, offered = agent._with_long_horizon_execution_profile(tools, context)
+    augmented, offer = agent._with_long_horizon_execution_profile(tools, context)
 
-    assert offered is True
+    assert offer.profile_schema_offered is True
+    assert offer.carrier_function_name == "terminal__execute"
     assert "__aworld_execution_profile" not in (
         tools[0]["function"]["parameters"]["properties"]
     )
@@ -807,6 +829,154 @@ def test_agent_offers_optional_model_profile_on_existing_tool_call() -> None:
         "expected_tool_actions",
         "verification_required",
     }
+    plan = augmented[0]["function"]["parameters"]["properties"][
+        "__aworld_plan_update"
+    ]
+    assert plan["type"] == "object"
+    assert set(plan["required"]) == {
+        "decision",
+        "horizon",
+        "milestone",
+        "next_action",
+        "verification_plan",
+        "completion_assessment",
+        "assumptions",
+        "retired_approaches",
+        "evidence_refs",
+        "selected_candidate_id",
+    }
+    probe = augmented[0]["function"]["parameters"]["properties"][
+        "__aworld_public_probe"
+    ]
+    assert set(probe["required"]) == {
+        "hypothesis_id",
+        "highest_risk_counterexample",
+        "probe_kind",
+    }
+
+
+def test_long_horizon_controls_use_one_bounded_carrier_for_large_tool_catalog():
+    context = Context(task_id="profile-schema-large")
+    context.set_task(Task(id="profile-schema-large", timeout=600))
+    policy = ExecutionProtocolPolicy(mode=ProtocolMode.GUIDE)
+    agent = _agent(context, policy)
+    agent.skill_configs = {"long-running-agent": {"active": True}}
+    configure_execution_protocol(context, agent.id(), policy)
+    tools = [
+        {
+            "type": "function",
+            "function": {
+                "name": (
+                    "terminal__execute" if index == 37 else f"service_{index}__read"
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {"value": {"type": "string"}},
+                },
+            },
+        }
+        for index in range(50)
+    ]
+
+    augmented, offer = agent._with_long_horizon_execution_profile(tools, context)
+
+    assert offer.carrier_function_name == "terminal__execute"
+    carriers = [
+        schema
+        for schema in augmented
+        if "__aworld_plan_update"
+        in schema["function"]["parameters"]["properties"]
+    ]
+    assert len(carriers) == 1
+    assert len(json.dumps(augmented)) - len(json.dumps(tools)) < 8_000
+
+
+def test_reserved_real_tool_parameter_is_never_consumed_as_aworld_control():
+    context = Context(task_id="profile-reserved-collision")
+    context.set_task(Task(id="profile-reserved-collision", timeout=600))
+    policy = ExecutionProtocolPolicy(mode=ProtocolMode.GUIDE)
+    agent = _agent(context, policy)
+    agent.skill_configs = {"long-running-agent": {"active": True}}
+    configure_execution_protocol(context, agent.id(), policy)
+    tools = [
+        {
+            "type": "function",
+            "function": {
+                "name": "terminal__execute",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "command": {"type": "string"},
+                        "__aworld_plan_update": {"type": "string"},
+                    },
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "filesystem__write",
+                "parameters": {
+                    "type": "object",
+                    "properties": {"path": {"type": "string"}},
+                },
+            },
+        },
+    ]
+    _, offer = agent._with_long_horizon_execution_profile(tools, context)
+    action = ActionModel(
+        tool_name="terminal",
+        action_name="execute",
+        params={"command": "true", "__aworld_plan_update": "real-tool-value"},
+    )
+    result = AgentResult(current_state=None, actions=[action], is_call_tool=True)
+
+    agent._consume_long_horizon_execution_profile(result, context, offer=offer)
+
+    assert offer.carrier_function_name == "filesystem__write"
+    assert action.params["__aworld_plan_update"] == "real-tool-value"
+
+
+def test_agent_strips_and_records_optional_public_probe_control() -> None:
+    context = Context(task_id="public-probe-control")
+    context.set_task(Task(id="public-probe-control", input="validate output"))
+    policy = ExecutionProtocolPolicy(mode=ProtocolMode.GUIDE)
+    agent = _agent(context, policy)
+    agent.skill_configs = {"long-running-agent": {"active": True}}
+    configure_execution_protocol(context, agent.id(), policy)
+    action = ActionModel(
+        tool_name="terminal",
+        action_name="execute",
+        tool_call_id="probe-call",
+        params={
+            "command": "pytest -q",
+            "__aworld_public_probe": {
+                "hypothesis_id": "regression-suite",
+                "highest_risk_counterexample": "the changed path still fails",
+                "probe_kind": "regression",
+            },
+        },
+    )
+    result = AgentResult(current_state=None, actions=[action], is_call_tool=True)
+    tools = [
+        {
+            "type": "function",
+            "function": {
+                "name": "terminal__execute",
+                "parameters": {
+                    "type": "object",
+                    "properties": {"command": {"type": "string"}},
+                },
+            },
+        }
+    ]
+    _, offer = agent._with_long_horizon_execution_profile(tools, context)
+
+    assert agent._consume_public_probe_controls(
+        result, context, offer=offer
+    ) == 1
+    assert action.params == {"command": "pytest -q"}
+    assert load_public_probe_receipts(context, agent.id()) == []
 
 
 def test_agent_consumes_model_profile_without_forwarding_it_to_tool() -> None:
@@ -831,15 +1001,42 @@ def test_agent_consumes_model_profile_without_forwarding_it_to_tool() -> None:
                 "expected_tool_actions": 12,
                 "verification_required": True,
             },
+            "__aworld_plan_update": {
+                "decision": "replan",
+                "horizon": "long",
+                "milestone": "runnable candidate",
+                "next_action": "run the smoke test",
+                "verification_plan": "inspect the smoke-test exit code",
+                "completion_assessment": "in_progress",
+                "assumptions": [],
+                "retired_approaches": ["static inspection only"],
+                "evidence_refs": ["artifact:sha256:abc"],
+                "selected_candidate_id": "candidate-1",
+            },
         },
     )
     result = AgentResult(current_state=None, actions=[action], is_call_tool=True)
+    tools = [
+        {
+            "type": "function",
+            "function": {
+                "name": "terminal__execute",
+                "parameters": {
+                    "type": "object",
+                    "properties": {"command": {"type": "string"}},
+                },
+            },
+        }
+    ]
+    _, offer = agent._with_long_horizon_execution_profile(tools, context)
 
-    agent._consume_long_horizon_execution_profile(result, context, offered=True)
+    agent._consume_long_horizon_execution_profile(result, context, offer=offer)
 
     assert action.params == {"command": "make test"}
     state = ExecutionProtocolStore(context, agent.id(), policy).load()
     assert state.long_horizon_armed is True
+    assert state.attempt_epoch == 1
+    assert load_model_plan_update(context, agent.id())["selected_candidate_id"] == "candidate-1"
 
 
 def test_agent_strips_stale_profile_schema_value_without_recording_again() -> None:
@@ -849,6 +1046,17 @@ def test_agent_strips_stale_profile_schema_value_without_recording_again() -> No
     agent = _agent(context, policy)
     agent.skill_configs = {"long-running-agent": {"active": True}}
     configure_execution_protocol(context, agent.id(), policy)
+    record_model_execution_profile(
+        context,
+        agent.id(),
+        {
+            "horizon": "short",
+            "confidence": 0.9,
+            "milestone_count": 1,
+            "expected_tool_actions": 1,
+            "verification_required": False,
+        },
+    )
     action = ActionModel(
         tool_name="terminal",
         action_name="execute",
@@ -864,12 +1072,25 @@ def test_agent_strips_stale_profile_schema_value_without_recording_again() -> No
         },
     )
     result = AgentResult(current_state=None, actions=[action], is_call_tool=True)
+    tools = [
+        {
+            "type": "function",
+            "function": {
+                "name": "terminal__execute",
+                "parameters": {
+                    "type": "object",
+                    "properties": {"command": {"type": "string"}},
+                },
+            },
+        }
+    ]
+    _, offer = agent._with_long_horizon_execution_profile(tools, context)
 
-    agent._consume_long_horizon_execution_profile(result, context, offered=False)
+    agent._consume_long_horizon_execution_profile(result, context, offer=offer)
 
     assert action.params == {"command": "pwd"}
     state = ExecutionProtocolStore(context, agent.id(), policy).load()
-    assert state.model_execution_profile is None
+    assert state.model_execution_profile is not None
     assert state.long_horizon_armed is False
 
 
@@ -890,9 +1111,9 @@ def test_disabled_skill_does_not_offer_model_profile() -> None:
         }
     ]
 
-    augmented, offered = agent._with_long_horizon_execution_profile(tools, context)
+    augmented, offer = agent._with_long_horizon_execution_profile(tools, context)
 
-    assert offered is False
+    assert offer.carrier_function_name is None
     assert augmented == tools
 
 
@@ -939,7 +1160,16 @@ def test_strict_critic_uses_required_probe_control_not_review_marker(
         }
     ]
 
-    reflected = agent._with_model_review_control(tools, context)
+    solver_controls, offer = agent._with_long_horizon_execution_profile(
+        tools, context
+    )
+    assert offer.carrier_function_name is None
+    solver_properties = solver_controls[0]["function"]["parameters"]["properties"]
+    assert "__aworld_execution_profile" not in solver_properties
+    assert "__aworld_plan_update" not in solver_properties
+    assert "__aworld_public_probe" not in solver_properties
+
+    reflected = agent._with_model_review_control(solver_controls, context)
     augmented = agent._with_acceptance_probe_control(reflected, context)
     parameters = augmented[0]["function"]["parameters"]
 
@@ -1141,6 +1371,8 @@ async def test_final_review_guidance_reaches_the_second_model_request() -> None:
     policy = ExecutionProtocolPolicy(
         mode=ProtocolMode.GUIDE,
         activation_event_threshold=1,
+        max_final_reviews=1,
+        max_repairs=1,
     )
     agent = CapturingAgent(
         name="Aworld",
@@ -1153,6 +1385,33 @@ async def test_final_review_guidance_reaches_the_second_model_request() -> None:
         max_loop_steps=0,
     )
     configure_execution_protocol(context, agent.id(), policy)
+    _declare_long_horizon(context, agent.id())
+    probe_action = ActionModel(
+        tool_name="terminal",
+        action_name="execute",
+        tool_call_id="pre-final-probe",
+        params={"command": "pytest -q"},
+    )
+    assert record_public_probe_plan(
+        context,
+        agent.id(),
+        tool_call_id="pre-final-probe",
+        tool_identity="terminal:execute",
+        arguments_projection=probe_action.params,
+        value={
+            "hypothesis_id": "candidate-regression",
+            "highest_risk_counterexample": "the candidate still fails",
+            "probe_kind": "regression",
+        },
+    )
+    assert record_public_probe_observations(
+        context,
+        agent.id(),
+        actions=[probe_action],
+        result_projections=[
+            {"tool_call_id": "pre-final-probe", "success": True}
+        ],
+    ) == 1
     record_tool_protocol_event(
         context,
         agent.id(),
@@ -1176,6 +1435,9 @@ async def test_final_review_guidance_reaches_the_second_model_request() -> None:
     assert "No trusted independent validation contract is active" in guidance
     assert "framework probe receipt" not in guidance
     assert "accept requires" not in guidance
+    assert "public self-check receipts" in guidance
+    assert '"probe_assessment":"unassessed"' in guidance
+    assert '"stale":true' in guidance
 
 
 @pytest.mark.asyncio
@@ -1238,6 +1500,7 @@ async def test_final_review_keeps_ordinary_multi_tool_work_in_review() -> None:
         max_loop_steps=0,
     )
     configure_execution_protocol(context, agent.id(), policy)
+    _declare_long_horizon(context, agent.id())
     record_tool_protocol_event(
         context,
         agent.id(),
@@ -1341,6 +1604,8 @@ async def test_single_review_repair_returns_to_normal_tool_execution() -> None:
     policy = ExecutionProtocolPolicy(
         mode=ProtocolMode.GUIDE,
         activation_event_threshold=1,
+        max_final_reviews=1,
+        max_repairs=1,
     )
     agent = SingleRepairAgent(
         name="Aworld",
@@ -1353,6 +1618,7 @@ async def test_single_review_repair_returns_to_normal_tool_execution() -> None:
         max_loop_steps=0,
     )
     configure_execution_protocol(context, agent.id(), policy)
+    _declare_long_horizon(context, agent.id())
     record_tool_protocol_event(
         context,
         agent.id(),
@@ -1462,6 +1728,7 @@ async def test_model_can_continue_ordinary_tool_work_while_review_is_pending() -
         max_loop_steps=0,
     )
     configure_execution_protocol(context, agent.id(), policy)
+    _declare_long_horizon(context, agent.id())
     record_tool_protocol_event(
         context,
         agent.id(),
@@ -1566,7 +1833,7 @@ async def test_independent_uncertain_review_returns_typed_incomplete_outcome(
         independent_acceptance_enabled=True,
         final_review_timeout_seconds=10,
         max_repairs=1,
-        max_final_reviews=1,
+        max_final_reviews=2,
     )
     agent = UncertainCriticAgent(
         name="Aworld",

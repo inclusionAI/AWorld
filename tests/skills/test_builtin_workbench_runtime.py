@@ -26,6 +26,7 @@ def _run_workbench(
     env: dict[str, str],
     *arguments: str,
     check: bool = True,
+    cwd: Path | None = None,
 ) -> dict:
     completed = subprocess.run(
         [sys.executable, str(script), *arguments],
@@ -34,6 +35,7 @@ def _run_workbench(
         text=True,
         timeout=30,
         check=False,
+        cwd=cwd,
     )
     output = completed.stdout if completed.returncode == 0 else completed.stderr
     payload = json.loads(output.splitlines()[-1])
@@ -55,7 +57,7 @@ def test_builtin_workbench_requires_explicit_selection() -> None:
 
     assert "workbench" not in AWORLD_DEFAULT_SKILL_NAMES
     assert "workbench" not in implicit.available_skill_names
-    assert "workbench" not in implicit.active_skill_names
+    assert implicit.active_skill_names == ("long-running-agent",)
 
     explicit = SkillActivationResolver().resolve(
         SkillResolverRequest(
@@ -100,8 +102,11 @@ def test_builtin_workbench_skill_exposes_only_the_fixed_explicit_cli() -> None:
     normalized = skill.lower()
     compacted = " ".join(normalized.split())
 
-    assert '"$AWORLD_PYTHON_EXECUTABLE" /skills/workbench/scripts/workbench.py' in skill
+    assert '"$WORKBENCH_PYTHON" /skills/workbench/scripts/workbench.py' in skill
+    assert '${AWORLD_PYTHON_EXECUTABLE:-python3}' in skill
     assert "default_enabled: false" in skill
+    assert "disabled by default" in normalized
+    assert "explicitly selected" in compacted
     assert "agent self-check evidence only" in normalized
     assert "ordinary environment variables" in compacted
     assert "not a security boundary" in compacted
@@ -110,26 +115,148 @@ def test_builtin_workbench_skill_exposes_only_the_fixed_explicit_cli() -> None:
     assert "parsebench" not in normalized
 
 
-def test_builtin_workbench_cli_requires_runtime_configuration(
+def test_builtin_workbench_cli_initializes_without_runtime_configuration(
     tmp_path: Path,
 ) -> None:
     script = get_builtin_skills_path() / "workbench" / "scripts" / "workbench.py"
-    state = tmp_path / "state"
+    workspace = tmp_path / "workspace"
+    home = tmp_path / "home"
+    workspace.mkdir()
+    home.mkdir()
+    env = {
+        key: value
+        for key, value in os.environ.items()
+        if not key.startswith("WORKBENCH_")
+        and key
+        not in {
+            "AWORLD_CONTROL_ROOT",
+            "AWORLD_PYTHON_EXECUTABLE",
+            "AWORLD_SESSION_ID",
+            "AWORLD_TASK_ID",
+            "XDG_STATE_HOME",
+        }
+    }
+    env["HOME"] = str(home)
+    contract = workspace / "contract.json"
+    contract.write_text(
+        json.dumps(
+            {
+                "schema_version": "workbench.contract/v1",
+                "authority": "agent_self_check",
+                "outputs": [
+                    {
+                        "id": "result",
+                        "path": "result.txt",
+                        "checks": [
+                            {
+                                "id": "result-nonempty",
+                                "kind": "nonempty",
+                                "path": "result.txt",
+                            }
+                        ],
+                    }
+                ],
+                "inputs": [],
+                "checks": [],
+                "policy": {
+                    "mandatory_checks": ["result-nonempty"],
+                    "hard_constraints": [],
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    payload = _run_workbench(
+        script,
+        env,
+        "init",
+        "--contract",
+        "contract.json",
+        cwd=workspace,
+    )
+
+    assert payload["success"] is True
+    assert payload["authority"] == "agent_self_check"
+    assert payload["task_reward"] == "not_assessed"
+    state = home / ".local" / "state" / "aworld" / "workbench"
+    assert state.is_dir()
+    assert list(state.rglob("delivery-session.json"))
+    assert not (workspace / ".aworld").exists()
+    assert not (workspace / ".workbench").exists()
+
+
+def test_builtin_workbench_cli_uses_aworld_control_root_and_task_scope(
+    tmp_path: Path,
+) -> None:
+    script = get_builtin_skills_path() / "workbench" / "scripts" / "workbench.py"
+    workspace = tmp_path / "workspace"
+    control = tmp_path / "control"
+    workspace.mkdir()
+    contract = workspace / "contract.json"
+    contract.write_text(
+        json.dumps(
+            {
+                "schema_version": "workbench.contract/v1",
+                "authority": "agent_self_check",
+                "outputs": [
+                    {
+                        "id": "result",
+                        "path": "result.txt",
+                        "checks": [
+                            {
+                                "id": "result-nonempty",
+                                "kind": "nonempty",
+                                "path": "result.txt",
+                            }
+                        ],
+                    }
+                ],
+                "inputs": [],
+                "checks": [],
+                "policy": {
+                    "mandatory_checks": ["result-nonempty"],
+                    "hard_constraints": [],
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
     env = {
         key: value
         for key, value in os.environ.items()
         if not key.startswith("WORKBENCH_") and key != "AWORLD_PYTHON_EXECUTABLE"
     }
-    env["WORKBENCH_STATE_ROOT"] = str(state)
-    env["WORKBENCH_SCOPE_ID"] = "aworld-test-scope"
+    env.update(
+        {
+            "AWORLD_CONTROL_ROOT": str(control),
+            "AWORLD_TASK_ID": "task-123",
+            "AWORLD_TASK_EPOCH": "1",
+        }
+    )
 
-    payload = _run_workbench(script, env, "inspect", check=False)
+    _run_workbench(
+        script,
+        env,
+        "init",
+        "--contract",
+        "contract.json",
+        cwd=workspace,
+    )
 
-    assert payload["success"] is False
-    assert payload["authority"] == "agent_self_check"
-    assert payload["task_reward"] == "not_assessed"
-    assert "WORKBENCH_WORKSPACE_ROOT" in payload["error"]
-    assert not state.exists()
+    assert (control / "workbench").is_dir()
+    assert len(list((control / "workbench").rglob("delivery-session.json"))) == 1
+    second_task_env = {**env, "AWORLD_TASK_EPOCH": "2"}
+    _run_workbench(
+        script,
+        second_task_env,
+        "init",
+        "--contract",
+        "contract.json",
+        cwd=workspace,
+    )
+    assert len(list((control / "workbench").rglob("delivery-session.json"))) == 2
+    assert not any(path.name.startswith(".workbench") for path in workspace.iterdir())
 
 
 def test_builtin_workbench_cli_candidate_lifecycle_uses_explicit_contract(

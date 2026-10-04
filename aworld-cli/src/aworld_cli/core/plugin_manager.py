@@ -16,6 +16,7 @@ from aworld.logs.util import logger
 from aworld.plugins.discovery import discover_plugins
 from aworld.plugins.validation import validate_plugin_path
 from aworld.plugins.registry import PluginCapabilityRegistry
+from aworld.utils.runtime_state import get_runtime_state_root, runtime_state_path
 from aworld_cli.core.boot_logging import log_verbose_boot
 
 # Default plugin installation directory
@@ -52,11 +53,19 @@ def get_default_plugin_dir() -> Path:
     """
     if DEFAULT_PLUGIN_DIR != _INITIAL_DEFAULT_PLUGIN_DIR:
         return Path(DEFAULT_PLUGIN_DIR)
-    return Path.home() / ".aworld" / "plugins"
+    return runtime_state_path(
+        "plugins",
+        default=Path.home() / ".aworld" / "plugins",
+    )
 
 
 def _resolve_repo_cli_package_dir() -> Path | None:
     """Prefer the current repo checkout when running from inside the source tree."""
+    # A managed caller-provided control root marks an isolated packaged run.
+    # Its task workspace may contain arbitrary files named like an AWorld source
+    # checkout; those files must not replace wheel-owned built-ins.
+    if get_runtime_state_root() is not None:
+        return None
     current_dir = Path.cwd().resolve()
     for base_dir in (current_dir, *current_dir.parents):
         candidate = base_dir / "aworld-cli" / "src" / "aworld_cli"

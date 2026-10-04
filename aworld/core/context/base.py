@@ -2374,8 +2374,11 @@ class Context:
         other_context: "Context",
         *,
         delegation_record: Dict[str, Any],
+        include_llm_calls: bool = True,
     ) -> None:
         """Merge child accounting/evidence without importing its mutable state."""
+        if not isinstance(include_llm_calls, bool):
+            raise TypeError("include_llm_calls must be a boolean")
         child_tokens = copy.deepcopy(getattr(other_context, "_token_usage", {}) or {})
         baseline_tokens = copy.deepcopy(
             getattr(other_context, "_merge_token_baseline", {}) or {}
@@ -2390,15 +2393,36 @@ class Context:
                 len(other_context.get_llm_calls()),
             ),
         )
-        for llm_call in other_context.get_llm_calls()[baseline:]:
-            attributed = copy.deepcopy(llm_call)
-            attributed["delegation"] = copy.deepcopy(delegation_record)
-            self.append_llm_call(attributed)
+        if include_llm_calls:
+            for llm_call in other_context.get_llm_calls()[baseline:]:
+                attributed = copy.deepcopy(llm_call)
+                attributed["delegation"] = copy.deepcopy(delegation_record)
+                self.append_llm_call(attributed)
         records = self.context_info.get("delegation_records")
         if not isinstance(records, list):
-            records = []
+            task_state = getattr(self, "task_state", None)
+            working_state = getattr(task_state, "working_state", None)
+            kv_store = getattr(working_state, "kv_store", None)
+            persisted = (
+                kv_store.get("delegation_records")
+                if isinstance(kv_store, dict)
+                else None
+            )
+            records = copy.deepcopy(persisted) if isinstance(persisted, list) else []
         records.append(copy.deepcopy(delegation_record))
+        records = records[-64:]
         self.context_info["delegation_records"] = records
+        # ApplicationContext checkpoints serialize Task WorkingState, not
+        # process-local context_info.  Keep this content-free, bounded audit
+        # trail recoverable without importing private child messages.
+        put_working_state = getattr(self, "put", None)
+        if callable(put_working_state):
+            try:
+                put_working_state(
+                    "delegation_records", copy.deepcopy(records)
+                )
+            except Exception:
+                pass
         other_context._merge_token_baseline = child_tokens
 
     def save_action_trajectory(
@@ -2545,6 +2569,32 @@ class Context:
             registry = TaskRuntimeStateRegistry()
             owner._task_runtime_state_registry = registry
         return registry.update(self.task_id, namespace, key, updater)
+
+    def update_and_project_task_runtime_state(
+        self, namespace: str, key: str, updater, projector
+    ) -> Any:
+        """Atomically update shared runtime state and its durable projection."""
+        owner = self._task_runtime_registry_owner()
+        registry = getattr(owner, "_task_runtime_state_registry", None)
+        if registry is None:
+            registry = TaskRuntimeStateRegistry()
+            owner._task_runtime_state_registry = registry
+        return registry.update(
+            self.task_id,
+            namespace,
+            key,
+            updater,
+            projector=projector,
+        )
+
+    def task_runtime_state_transaction(self):
+        """Return the shared re-entrant transaction for task runtime state."""
+        owner = self._task_runtime_registry_owner()
+        registry = getattr(owner, "_task_runtime_state_registry", None)
+        if registry is None:
+            registry = TaskRuntimeStateRegistry()
+            owner._task_runtime_state_registry = registry
+        return registry.transaction()
 
     def claim_task_runtime_token(self, namespace: str, token: str) -> bool:
         owner = self._task_runtime_registry_owner()

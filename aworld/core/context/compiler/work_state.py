@@ -246,6 +246,14 @@ def build_adaptive_work_state_entry(
         "rollback_performed": rollback_performed,
         "implicit_artifact_loss": implicit_artifact_loss,
         "goal_progress": progress.get("goal_progress") is True,
+        "public_probe_receipt_count": int(
+            progress.get("public_probe_receipt_count", 0) or 0
+        ),
+        "public_probe_receipts": [
+            dict(item)
+            for item in (progress.get("public_probe_receipts") or [])[-4:]
+            if isinstance(item, Mapping)
+        ],
         "available_artifacts": available_artifacts,
     }
 
@@ -322,6 +330,8 @@ def advance_adaptive_work_state(
         "milestones": milestones[-4:],
         "attempted_operation_hashes": hashes[-24:],
         "available_artifacts": list(artifacts_by_ref.values())[-12:],
+        "public_probe_receipt_count": value.get("public_probe_receipt_count", 0),
+        "public_probe_receipts": list(value.get("public_probe_receipts") or [])[-4:],
     }
 
 
@@ -537,7 +547,7 @@ def _fit_work_state_payload(
             "task_progress": {
                 key: _bounded_projection(state_value, depth=3)
                 for key, state_value in payload.get("task_progress", {}).items()
-                if key in {"pending_artifacts", "repeated_read_evidence", "public_requirements"}
+                if key in {"pending_artifacts", "repeated_read_evidence", "public_requirements", "public_probe_receipts"}
             },
             "projection": {
                 "budget_tokens": ADAPTIVE_WORK_STATE_MAX_TOKENS,
@@ -584,7 +594,7 @@ def adaptive_work_state_message(state: Any) -> dict[str, Any] | None:
         "observed_work": visible_entries,
         "task_progress": {
             key: _bounded_projection(state[key])
-            for key in ("public_requirements", "current_task_request", "current_plan", "candidate_submission", "pending_artifacts", "validation_evidence", "repeated_read_evidence", "failed_operations")
+            for key in ("public_requirements", "current_task_request", "current_plan", "candidate_submission", "pending_artifacts", "validation_evidence", "public_probe_receipts", "repeated_read_evidence", "failed_operations")
             if key in state
         },
     }

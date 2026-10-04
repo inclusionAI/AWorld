@@ -165,11 +165,34 @@ _DETACHED_GENERATION_TASKS: set[asyncio.Task] = set()
 _ACTIVE_GENERATION_TASKS: set[asyncio.Task] = set()
 _GENERATION_TASKS_LOCK = threading.Lock()
 _LONG_HORIZON_EXECUTION_PROFILE_PARAM = "__aworld_execution_profile"
+_LONG_HORIZON_PLAN_UPDATE_PARAM = "__aworld_plan_update"
 _LONG_HORIZON_HYPOTHESIS_PARAM = "__aworld_hypothesis_id"
+_PUBLIC_PROBE_PARAM = "__aworld_public_probe"
 _ACCEPTANCE_PROBE_PARAM = "__aworld_acceptance_probe"
 _REVIEW_DECISION_PARAM = "__aworld_review_decision"
 INDEPENDENT_ACCEPTANCE_CRITIC_ENV = "AWORLD_INDEPENDENT_ACCEPTANCE_CRITIC"
 SEMANTIC_PROGRESS_LEDGER_ENV = "AWORLD_SEMANTIC_PROGRESS_LEDGER"
+
+
+@dataclass(frozen=True, slots=True)
+class _LongHorizonControlOffer:
+    carrier_function_name: str | None = None
+    owned_parameters: frozenset[str] = frozenset()
+    injected_parameters: frozenset[str] = frozenset()
+    profile_schema_offered: bool = False
+
+    def matches(self, action: ActionModel) -> bool:
+        carrier = self.carrier_function_name
+        if carrier is None:
+            return False
+        tool_name = str(getattr(action, "tool_name", "") or "")
+        action_name = str(getattr(action, "action_name", "") or "")
+        return carrier in {
+            tool_name,
+            action_name,
+            f"{tool_name}__{action_name}",
+            f"{tool_name}:{action_name}",
+        }
 
 # Only stable provider signals may enter task-level model recovery.  Human
 # error text is intentionally excluded: it is provider-specific, mutable, and
@@ -295,6 +318,7 @@ class ToolCallParseIssueCode(str, Enum):
     EMPTY_ARGUMENTS = "empty_arguments"
     INVALID_ARGUMENTS_JSON = "invalid_arguments_json"
     ARGUMENTS_NOT_OBJECT = "arguments_not_object"
+    TOOL_NOT_IN_LIVE_SURFACE = "tool_not_in_live_surface"
 
 
 @dataclass(frozen=True)
@@ -391,6 +415,27 @@ class LlmOutputParser(ModelOutputParser[ModelResponse, AgentResult]):
                         )
                     )
                     continue
+
+                agent_info = kwargs.get("agent")
+                action_guard = getattr(
+                    agent_info, "is_model_tool_call_allowed", None
+                )
+                if callable(action_guard):
+                    try:
+                        action_allowed = action_guard(full_name)
+                    except Exception:
+                        action_allowed = False
+                    if action_allowed is not True:
+                        parse_issues.append(
+                            ToolCallParseIssue(
+                                call_index=idx,
+                                call_id=call_id,
+                                code=(
+                                    ToolCallParseIssueCode.TOOL_NOT_IN_LIVE_SURFACE
+                                ),
+                            )
+                        )
+                        continue
 
                 logger.info(
                     f"🔧 [Agent:{agent_id}] Processing tool call #{idx + 1}: {full_name}, call_id={tool_call.id}"
@@ -913,10 +958,15 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         ):
             external_reserve = 0.0
         available = max(0.0, float(total) - float(external_reserve))
-        finalization_window = min(
-            float(policy.final_review_timeout_seconds),
-            0.15 * available,
+        # Reserve scheduling remains bounded, but it is not a semantic review
+        # timeout. By default the review itself may use the caller's remaining
+        # task deadline (important for slow max-reasoning providers).
+        review_reserve_cap = (
+            float(policy.final_review_timeout_seconds)
+            if policy.final_review_timeout_seconds is not None
+            else 45.0
         )
+        finalization_window = min(review_reserve_cap, 0.15 * available)
         protocol_reserve = float(external_reserve) + max(
             0.1, finalization_window
         )
@@ -971,27 +1021,110 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             ],
         }
 
-    def _with_long_horizon_execution_profile(
-        self,
-        tools: List[Dict[str, Any]] | None,
-        context: Context,
-    ) -> tuple[List[Dict[str, Any]] | None, bool]:
-        """Offer a one-time typed assessment on existing real Tool calls."""
-        if not tools or not self._long_horizon_skill_active():
-            return tools, False
-        from aworld.runners.execution_protocol import (
-            execution_protocol_accepts_model_profile,
-        )
+    @staticmethod
+    def _long_horizon_plan_update_schema() -> dict[str, Any]:
+        return {
+            "type": "object",
+            "description": (
+                "Optional AWorld model-owned checkpoint attached to a real Tool "
+                "call. Use it when establishing or revising a milestone, after "
+                "an advisory checkpoint, when changing the task horizon, or when "
+                "selecting a candidate. Its statements are planning claims, not "
+                "verification evidence, and AWorld removes it before execution."
+            ),
+            "additionalProperties": False,
+            "properties": {
+                "decision": {
+                    "type": "string",
+                    "enum": ["continue", "replan"],
+                },
+                "horizon": {"type": "string", "enum": ["short", "long"]},
+                "milestone": {"type": "string", "maxLength": 512},
+                "next_action": {"type": "string", "maxLength": 1024},
+                "verification_plan": {"type": "string", "maxLength": 1024},
+                "completion_assessment": {
+                    "type": "string",
+                    "enum": ["in_progress", "uncertain", "candidate_ready"],
+                },
+                "assumptions": {
+                    "type": "array",
+                    "maxItems": 8,
+                    "items": {"type": "string", "maxLength": 512},
+                },
+                "retired_approaches": {
+                    "type": "array",
+                    "maxItems": 8,
+                    "items": {"type": "string", "maxLength": 512},
+                },
+                "evidence_refs": {
+                    "type": "array",
+                    "maxItems": 16,
+                    "items": {"type": "string", "maxLength": 256},
+                },
+                "selected_candidate_id": {
+                    "anyOf": [
+                        {"type": "string", "maxLength": 128},
+                        {"type": "null"},
+                    ]
+                },
+            },
+            "required": [
+                "decision",
+                "horizon",
+                "milestone",
+                "next_action",
+                "verification_plan",
+                "completion_assessment",
+                "assumptions",
+                "retired_approaches",
+                "evidence_refs",
+                "selected_candidate_id",
+            ],
+        }
 
-        offer_profile = execution_protocol_accepts_model_profile(
-            context, self.id()
-        )
+    @staticmethod
+    def _public_probe_schema() -> dict[str, Any]:
+        return {
+            "type": "object",
+            "description": (
+                "Optional model-designed public self-check attached to the Tool "
+                "call that executes it. Describe the concrete hypothesis and "
+                "highest-risk counterexample. AWorld binds the observed result "
+                "to the public request and current candidate as advisory evidence; "
+                "it never represents benchmark reward or canonical acceptance."
+            ),
+            "additionalProperties": False,
+            "properties": {
+                "hypothesis_id": {"type": "string", "maxLength": 128},
+                "highest_risk_counterexample": {
+                    "type": "string",
+                    "maxLength": 1024,
+                },
+                "probe_kind": {
+                    "type": "string",
+                    "enum": ["smoke", "regression", "counterexample", "invariant"],
+                },
+            },
+            "required": [
+                "hypothesis_id",
+                "highest_risk_counterexample",
+                "probe_kind",
+            ],
+        }
 
-        augmented: list[dict[str, Any]] = []
-        offered = False
-        for schema in tools:
-            candidate = copy.deepcopy(schema)
-            function = candidate.get("function") if isinstance(candidate, dict) else None
+    @staticmethod
+    def _long_horizon_control_carrier(
+        tools: List[Dict[str, Any]],
+    ) -> tuple[int, str] | None:
+        reserved = {
+            _LONG_HORIZON_EXECUTION_PROFILE_PARAM,
+            _LONG_HORIZON_PLAN_UPDATE_PARAM,
+            _LONG_HORIZON_HYPOTHESIS_PARAM,
+            _PUBLIC_PROBE_PARAM,
+        }
+        candidates: list[tuple[int, int, str]] = []
+        for index, schema in enumerate(tools):
+            function = schema.get("function") if isinstance(schema, dict) else None
             parameters = (
                 function.get("parameters") if isinstance(function, dict) else None
             )
@@ -1000,49 +1133,139 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                 if isinstance(parameters, dict)
                 else None
             )
+            name = function.get("name") if isinstance(function, dict) else None
             if (
-                offer_profile
-                and isinstance(properties, dict)
-                and _LONG_HORIZON_EXECUTION_PROFILE_PARAM not in properties
+                not isinstance(name, str)
+                or not name
+                or not isinstance(properties, dict)
+                or reserved.intersection(properties)
             ):
-                properties[_LONG_HORIZON_EXECUTION_PROFILE_PARAM] = (
-                    self._long_horizon_execution_profile_schema()
-                )
-                offered = True
-            if (
-                isinstance(properties, dict)
-                and _LONG_HORIZON_HYPOTHESIS_PARAM not in properties
-            ):
-                properties[_LONG_HORIZON_HYPOTHESIS_PARAM] = {
-                    "type": "string",
-                    "maxLength": 128,
-                    "description": (
-                        "Optional stable id for the hypothesis this Tool call tests. "
-                        "AWorld removes it before Tool execution."
-                    ),
+                continue
+            normalized = name.casefold()
+            priority = (
+                0
+                if "terminal" in normalized
+                and any(token in normalized for token in ("execute", "run", "shell"))
+                else 1
+                if any(token in normalized for token in ("execute", "run", "write", "edit"))
+                else 2
+            )
+            candidates.append((priority, index, name))
+        if not candidates:
+            return None
+        _, index, name = min(candidates)
+        return index, name
+
+    def _with_long_horizon_execution_profile(
+        self,
+        tools: List[Dict[str, Any]] | None,
+        context: Context,
+    ) -> tuple[List[Dict[str, Any]] | None, _LongHorizonControlOffer]:
+        """Offer controls on one collision-free real Tool schema."""
+        empty_offer = _LongHorizonControlOffer()
+        if not tools or not self._long_horizon_skill_active():
+            return tools, empty_offer
+        from aworld.runners.execution_protocol import (
+            acceptance_critic_active,
+            execution_protocol_accepts_model_profile,
+            load_execution_protocol_state,
+        )
+
+        # Strict acceptance uses a fresh, independently constrained request.
+        # Solver planning and self-check controls must not enter that surface.
+        if acceptance_critic_active(context, self.id()):
+            return tools, empty_offer
+
+        offer_profile = execution_protocol_accepts_model_profile(
+            context, self.id()
+        )
+        protocol_state = load_execution_protocol_state(context, self.id())
+        offer_plan_update = (
+            protocol_state.phase in {ProtocolPhase.EXECUTE, ProtocolPhase.REPAIR}
+            and not protocol_state.review_pending
+        )
+
+        augmented = copy.deepcopy(tools)
+        carrier = self._long_horizon_control_carrier(augmented)
+        if carrier is None:
+            return augmented, empty_offer
+        carrier_index, carrier_name = carrier
+        properties = augmented[carrier_index]["function"]["parameters"]["properties"]
+        injected: set[str] = set()
+        if offer_profile:
+            properties[_LONG_HORIZON_EXECUTION_PROFILE_PARAM] = (
+                self._long_horizon_execution_profile_schema()
+            )
+            injected.add(_LONG_HORIZON_EXECUTION_PROFILE_PARAM)
+        if offer_plan_update:
+            properties[_LONG_HORIZON_PLAN_UPDATE_PARAM] = (
+                self._long_horizon_plan_update_schema()
+            )
+            injected.add(_LONG_HORIZON_PLAN_UPDATE_PARAM)
+        properties[_PUBLIC_PROBE_PARAM] = self._public_probe_schema()
+        injected.add(_PUBLIC_PROBE_PARAM)
+        properties[_LONG_HORIZON_HYPOTHESIS_PARAM] = {
+            "type": "string",
+            "maxLength": 128,
+            "description": (
+                "Optional stable id for the hypothesis this Tool call tests. "
+                "AWorld removes it before Tool execution."
+            ),
+        }
+        injected.add(_LONG_HORIZON_HYPOTHESIS_PARAM)
+        return augmented, _LongHorizonControlOffer(
+            carrier_function_name=carrier_name,
+            owned_parameters=frozenset(
+                {
+                    _LONG_HORIZON_EXECUTION_PROFILE_PARAM,
+                    _LONG_HORIZON_PLAN_UPDATE_PARAM,
+                    _LONG_HORIZON_HYPOTHESIS_PARAM,
+                    _PUBLIC_PROBE_PARAM,
                 }
-            augmented.append(candidate)
-        return augmented, offered
+            ),
+            injected_parameters=frozenset(injected),
+            profile_schema_offered=offer_profile,
+        )
 
     def _consume_long_horizon_execution_profile(
         self,
         result: AgentResult,
         context: Context,
         *,
-        offered: bool,
+        offer: _LongHorizonControlOffer,
     ) -> None:
         """Strip control metadata before Tool dispatch and record it once."""
         if not self._long_horizon_skill_active():
             return
         profiles: list[Any] = []
+        plan_updates: list[Any] = []
         hypotheses: dict[str, str] = {}
         for action in result.actions or ():
+            if not offer.matches(action):
+                continue
             params = getattr(action, "params", None)
             if not isinstance(params, dict):
                 continue
-            if _LONG_HORIZON_EXECUTION_PROFILE_PARAM in params:
-                profiles.append(params.pop(_LONG_HORIZON_EXECUTION_PROFILE_PARAM))
-            hypothesis = params.pop(_LONG_HORIZON_HYPOTHESIS_PARAM, None)
+            if _LONG_HORIZON_EXECUTION_PROFILE_PARAM in params and (
+                _LONG_HORIZON_EXECUTION_PROFILE_PARAM in offer.owned_parameters
+            ):
+                value = params.pop(_LONG_HORIZON_EXECUTION_PROFILE_PARAM)
+                if (
+                    _LONG_HORIZON_EXECUTION_PROFILE_PARAM
+                    in offer.injected_parameters
+                ):
+                    profiles.append(value)
+            if _LONG_HORIZON_PLAN_UPDATE_PARAM in params and (
+                _LONG_HORIZON_PLAN_UPDATE_PARAM in offer.owned_parameters
+            ):
+                value = params.pop(_LONG_HORIZON_PLAN_UPDATE_PARAM)
+                if _LONG_HORIZON_PLAN_UPDATE_PARAM in offer.injected_parameters:
+                    plan_updates.append(value)
+            hypothesis = (
+                params.pop(_LONG_HORIZON_HYPOTHESIS_PARAM, None)
+                if _LONG_HORIZON_HYPOTHESIS_PARAM in offer.injected_parameters
+                else None
+            )
             if (
                 isinstance(hypothesis, str)
                 and hypothesis.strip()
@@ -1053,11 +1276,50 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             from aworld.runners.execution_protocol import record_tool_hypotheses
 
             record_tool_hypotheses(context, self.id(), hypotheses)
-        if not profiles or not offered:
-            return
-        from aworld.runners.execution_protocol import record_model_execution_profile
+        if profiles and offer.profile_schema_offered:
+            from aworld.runners.execution_protocol import record_model_execution_profile
 
-        record_model_execution_profile(context, self.id(), profiles[0])
+            record_model_execution_profile(context, self.id(), profiles[0])
+        if len(plan_updates) == 1:
+            from aworld.runners.execution_protocol import record_model_plan_update
+
+            record_model_plan_update(context, self.id(), plan_updates[0])
+
+    def _consume_public_probe_controls(
+        self,
+        result: AgentResult,
+        context: Context,
+        *,
+        offer: _LongHorizonControlOffer,
+    ) -> int:
+        """Strip and bind optional public self-check metadata before dispatch."""
+        if not self._long_horizon_skill_active():
+            return 0
+        from aworld.runners.execution_protocol import record_public_probe_plan
+
+        recorded = 0
+        for action in result.actions or ():
+            if (
+                _PUBLIC_PROBE_PARAM not in offer.injected_parameters
+                or not offer.matches(action)
+            ):
+                continue
+            params = getattr(action, "params", None)
+            if not isinstance(params, dict):
+                continue
+            value = params.pop(_PUBLIC_PROBE_PARAM, None)
+            if value is None:
+                continue
+            if record_public_probe_plan(
+                context,
+                self.id(),
+                tool_call_id=str(action.tool_call_id or ""),
+                tool_identity=f"{action.tool_name or ''}:{action.action_name or ''}",
+                arguments_projection=params,
+                value=value,
+            ):
+                recorded += 1
+        return recorded
 
     @staticmethod
     def _acceptance_probe_schema() -> dict[str, Any]:
@@ -2037,6 +2299,20 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                 filtered_mcp_tools = filter_mcp_tools_by_servers(
                     all_mcp_tools, allowed_servers=self.mcp_servers
                 )
+                if self.black_tool_actions:
+                    filtered_mcp_tools = [
+                        tool
+                        for tool in filtered_mcp_tools
+                        if not (
+                            "__" in tool.get("function", {}).get("name", "")
+                            and (
+                                lambda server, action: action
+                                in self.black_tool_actions.get(server, ())
+                            )(
+                                *tool["function"]["name"].split("__", 1)
+                            )
+                        )
+                    ]
 
                 processed_tools, tool_mapping = await process_mcp_tools(
                     filtered_mcp_tools
@@ -3202,11 +3478,11 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
     def _remaining_before_completion_reserve(
         context: Context | None,
         *,
-        cap_seconds: float,
+        cap_seconds: float | None,
     ) -> float:
         """Return agent-owned time without consuming caller persistence time."""
         if context is None:
-            return max(0.1, cap_seconds)
+            return max(0.1, float(cap_seconds or 3600.0))
         get_task = getattr(context, "get_task", None)
         try:
             task = get_task() if callable(get_task) else None
@@ -3215,21 +3491,23 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                 task, "completion_reserve_seconds", 0.0
             ) if task is not None else 0.0
         except Exception:
-            return max(0.1, cap_seconds)
+            return max(0.1, float(cap_seconds or 3600.0))
         if (
             isinstance(remaining, bool)
             or not isinstance(remaining, (int, float))
         ):
-            return max(0.1, cap_seconds)
+            return max(0.1, float(cap_seconds or 3600.0))
         if (
             isinstance(external_reserve, bool)
             or not isinstance(external_reserve, (int, float))
             or external_reserve < 0
         ):
             external_reserve = 0.0
-        return min(
-            max(0.1, cap_seconds),
-            max(0.1, float(remaining) - float(external_reserve)),
+        available = max(0.1, float(remaining) - float(external_reserve))
+        return (
+            min(max(0.1, float(cap_seconds)), available)
+            if cap_seconds is not None
+            else available
         )
 
     async def async_finalize_at_loop_budget(
@@ -3977,23 +4255,23 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                     )
                 else:
                     policy = execution_protocol_policy(message.context, self.id())
-                    if long_horizon_review_deadline is None:
+                    configured_review_timeout = policy.final_review_timeout_seconds
+                    if (
+                        configured_review_timeout is not None
+                        and long_horizon_review_deadline is None
+                    ):
                         long_horizon_review_deadline = (
                             self._ensure_long_horizon_review_deadline(
                                 message.context,
-                                timeout_seconds=float(
-                                    getattr(
-                                        policy,
-                                        "final_review_timeout_seconds",
-                                        45.0,
-                                    )
-                                ),
+                                timeout_seconds=float(configured_review_timeout),
                             )
                         )
                     review_remaining = (
                         long_horizon_review_deadline - _monotonic_now()
+                        if long_horizon_review_deadline is not None
+                        else None
                     )
-                    if review_remaining <= 0:
+                    if review_remaining is not None and review_remaining <= 0:
                         raise asyncio.TimeoutError(
                             "long-horizon final review deadline exhausted"
                         )
@@ -4443,10 +4721,9 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         reason = exc.reason.value
         if self._claim_long_horizon_generation_finalization(context):
             protocol_policy = self._resolve_execution_protocol_policy(context)
-            timeout = float(protocol_policy.final_review_timeout_seconds)
             timeout = self._remaining_before_completion_reserve(
                 context,
-                cap_seconds=timeout,
+                cap_seconds=protocol_policy.final_review_timeout_seconds,
             )
             finalization_kwargs = dict(kwargs)
             finalization_kwargs.pop("_loop_budget_finalization", None)
@@ -4564,7 +4841,7 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         tool_free_finalization = (
             loop_budget_finalization or protocol_tool_free_finalization
         )
-        execution_profile_offered = False
+        execution_control_offer = _LongHorizonControlOffer()
         if tool_free_finalization:
             # Consumed by invoke_model; never forwarded to a provider.  A
             # finalization turn runs until the caller-owned persistence
@@ -4691,7 +4968,7 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             tools = None
         else:
             tools = await self._filter_tools(message.context)
-            tools, execution_profile_offered = (
+            tools, execution_control_offer = (
                 self._with_long_horizon_execution_profile(
                     tools,
                     message.context,
@@ -5161,7 +5438,7 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                     self._consume_long_horizon_execution_profile(
                         agent_result,
                         message.context,
-                        offered=execution_profile_offered,
+                        offer=execution_control_offer,
                     )
                     if agent_result.is_call_tool:
                         review_repair_requested = (
@@ -5169,6 +5446,12 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                                 agent_result, message.context
                             )
                         )
+                        if not independent_acceptance_review:
+                            self._consume_public_probe_controls(
+                                agent_result,
+                                message.context,
+                                offer=execution_control_offer,
+                            )
                     if independent_acceptance_review and agent_result.is_call_tool:
                         critic_probe_planned = self._consume_acceptance_probe_control(
                             agent_result, message.context
@@ -5392,6 +5675,40 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                             store_candidate_fallback(
                                 message.context, self.id(), agent_result.actions
                             )
+                            from aworld.runners.execution_protocol import (
+                                load_public_probe_receipts,
+                            )
+
+                            public_receipts = load_public_probe_receipts(
+                                message.context, self.id()
+                            )
+                            if public_receipts:
+                                receipt_summary = [
+                                    {
+                                        key: receipt.get(key)
+                                        for key in (
+                                            "receipt_id",
+                                            "hypothesis_id",
+                                            "probe_kind",
+                                            "selected_candidate_id",
+                                            "tool_execution_succeeded",
+                                            "probe_assessment",
+                                            "stale",
+                                        )
+                                    }
+                                    for receipt in public_receipts[-4:]
+                                ]
+                                long_horizon_review_feedback += (
+                                    " Current public self-check receipts "
+                                    "(advisory; tool success is not hypothesis "
+                                    "acceptance): "
+                                    + json.dumps(
+                                        receipt_summary,
+                                        ensure_ascii=False,
+                                        separators=(",", ":"),
+                                    )
+                                    + "."
+                                )
                         else:
                             clear_candidate_fallback(message.context, self.id())
                     if (
@@ -6381,8 +6698,14 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         if not protocol_state.long_horizon_armed:
             return None
 
-        total_timeout = 360.0
-        idle_timeout = 120.0
+        # The caller-owned Task deadline is the only active-generation wall
+        # clock.  A fixed per-turn ceiling makes an armed long-horizon task less
+        # capable than the same task before arming, and is especially harmful
+        # for providers that intentionally spend longer on reasoning.  Keep an
+        # idle watchdog for transport liveness, but otherwise consume at most
+        # the task time that remains before the protocol's finalization reserve.
+        total_timeout = None
+        idle_timeout = None
         get_task = getattr(context, "get_task", None)
         try:
             task = get_task() if callable(get_task) else None
@@ -6397,11 +6720,11 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                 float(remaining_seconds)
                 - float(protocol_policy.finalization_reserve_seconds),
             )
-            total_timeout = min(total_timeout, available_seconds)
-            idle_timeout = min(idle_timeout, total_timeout)
+            total_timeout = available_seconds
 
-        # Automatic protection is liveness-only. Active-stream truncation and
-        # action repair remain caller-owned because they can change semantics.
+        # Automatic protection follows only the caller deadline. Provider idle
+        # and active-stream ceilings are explicit caller/transport policy: a
+        # framework-fixed value can truncate slow max-reasoning generations.
         return GenerationBudgetPolicy(
             total_timeout_seconds=total_timeout,
             stream_idle_timeout_seconds=idle_timeout,

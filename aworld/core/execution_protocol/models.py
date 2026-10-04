@@ -1,8 +1,9 @@
 """Typed state for AWorld's domain-independent long-horizon protocol.
 
-The protocol intentionally stores measurements rather than task or tool text.
-Plans and reviewer outputs remain model claims; observed progress enters through
-the numeric and boolean fields on :class:`ExecutionProtocolEvent`.
+The protocol stores bounded measurements plus an explicitly typed model-owned
+plan checkpoint; it never stores raw task text or raw Tool output. Plan fields
+remain claims, while observed progress enters through the evidence fields on
+:class:`ExecutionProtocolEvent`.
 """
 
 from __future__ import annotations
@@ -32,8 +33,20 @@ class ExecutionHorizon(str, Enum):
     LONG = "long"
 
 
+class PlanUpdateDecision(str, Enum):
+    CONTINUE = "continue"
+    REPLAN = "replan"
+
+
+class CompletionAssessment(str, Enum):
+    IN_PROGRESS = "in_progress"
+    UNCERTAIN = "uncertain"
+    CANDIDATE_READY = "candidate_ready"
+
+
 class EventKind(str, Enum):
     MODEL_EXECUTION_PROFILE = "model_execution_profile"
+    MODEL_PLAN_UPDATE = "model_plan_update"
     TOOL_OBSERVATION = "tool_observation"
     REPLAN_APPLIED = "replan_applied"
     CANDIDATE_FINAL = "candidate_final"
@@ -72,6 +85,8 @@ class DecisionReason(str, Enum):
     MODEL_SHORT_HORIZON = "model_short_horizon"
     MODEL_PROFILE_INSUFFICIENT = "model_profile_insufficient"
     MODEL_PROFILE_ALREADY_RECORDED = "model_profile_already_recorded"
+    MODEL_PLAN_CHECKPOINT = "model_plan_checkpoint"
+    MODEL_REPLAN_APPLIED = "model_replan_applied"
     STAGNATION_DETECTED = "stagnation_detected"
     REPLAN_LIMIT_REACHED = "replan_limit_reached"
     REPLAN_APPLIED = "replan_applied"
@@ -163,6 +178,148 @@ class ModelExecutionProfile:
         )
 
 
+def _bounded_text_tuple(
+    value: Any,
+    *,
+    name: str,
+    maximum_items: int,
+    maximum_chars: int,
+) -> tuple[str, ...]:
+    if not isinstance(value, (list, tuple)) or len(value) > maximum_items:
+        raise ValueError(f"{name} must be a list with at most {maximum_items} items")
+    normalized: list[str] = []
+    for item in value:
+        if (
+            not isinstance(item, str)
+            or not item.strip()
+            or len(item.strip()) > maximum_chars
+        ):
+            raise ValueError(
+                f"{name} items must be nonempty strings of at most {maximum_chars} characters"
+            )
+        normalized.append(item.strip())
+    return tuple(normalized)
+
+
+@dataclass(frozen=True, slots=True)
+class ModelPlanUpdate:
+    """Bounded model-owned checkpoint claim attached to a real Tool call.
+
+    This record is intentionally separate from observed Tool evidence.  It
+    captures the model's current milestone, verification intent, and selected
+    candidate without allowing those claims to become completion evidence.
+    """
+
+    decision: PlanUpdateDecision
+    horizon: ExecutionHorizon
+    milestone: str
+    next_action: str
+    verification_plan: str
+    completion_assessment: CompletionAssessment
+    assumptions: tuple[str, ...] = field(default_factory=tuple)
+    retired_approaches: tuple[str, ...] = field(default_factory=tuple)
+    evidence_refs: tuple[str, ...] = field(default_factory=tuple)
+    selected_candidate_id: str | None = None
+
+    def __post_init__(self) -> None:
+        for name, enum_type in (
+            ("decision", PlanUpdateDecision),
+            ("horizon", ExecutionHorizon),
+            ("completion_assessment", CompletionAssessment),
+        ):
+            value = getattr(self, name)
+            if not isinstance(value, enum_type):
+                try:
+                    object.__setattr__(self, name, enum_type(value))
+                except (TypeError, ValueError) as exc:
+                    raise ValueError(f"unsupported {name}") from exc
+        for name, maximum in (
+            ("milestone", 512),
+            ("next_action", 1024),
+            ("verification_plan", 1024),
+        ):
+            value = getattr(self, name)
+            if not isinstance(value, str) or not value.strip() or len(value.strip()) > maximum:
+                raise ValueError(
+                    f"{name} must be a nonempty string of at most {maximum} characters"
+                )
+            object.__setattr__(self, name, value.strip())
+        for name, maximum_items, maximum_chars in (
+            ("assumptions", 8, 512),
+            ("retired_approaches", 8, 512),
+            ("evidence_refs", 16, 256),
+        ):
+            object.__setattr__(
+                self,
+                name,
+                _bounded_text_tuple(
+                    getattr(self, name),
+                    name=name,
+                    maximum_items=maximum_items,
+                    maximum_chars=maximum_chars,
+                ),
+            )
+        candidate_id = self.selected_candidate_id
+        if candidate_id is not None:
+            if (
+                not isinstance(candidate_id, str)
+                or not candidate_id.strip()
+                or len(candidate_id.strip()) > 128
+            ):
+                raise ValueError(
+                    "selected_candidate_id must be null or a nonempty string of at most 128 characters"
+                )
+            object.__setattr__(self, "selected_candidate_id", candidate_id.strip())
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "decision": self.decision.value,
+            "horizon": self.horizon.value,
+            "milestone": self.milestone,
+            "next_action": self.next_action,
+            "verification_plan": self.verification_plan,
+            "completion_assessment": self.completion_assessment.value,
+            "assumptions": list(self.assumptions),
+            "retired_approaches": list(self.retired_approaches),
+            "evidence_refs": list(self.evidence_refs),
+            "selected_candidate_id": self.selected_candidate_id,
+        }
+
+    @classmethod
+    def from_mapping(cls, value: Mapping[str, Any]) -> "ModelPlanUpdate":
+        if not isinstance(value, Mapping):
+            raise ValueError("model plan update must be a mapping")
+        expected = {
+            "decision",
+            "horizon",
+            "milestone",
+            "next_action",
+            "verification_plan",
+            "completion_assessment",
+            "assumptions",
+            "retired_approaches",
+            "evidence_refs",
+            "selected_candidate_id",
+        }
+        unknown = set(value) - expected
+        if unknown:
+            raise ValueError("model plan update contains unknown fields")
+        if set(value) != expected:
+            raise ValueError("model plan update is missing required fields")
+        return cls(
+            decision=value.get("decision"),
+            horizon=value.get("horizon"),
+            milestone=value.get("milestone"),
+            next_action=value.get("next_action"),
+            verification_plan=value.get("verification_plan"),
+            completion_assessment=value.get("completion_assessment"),
+            assumptions=value.get("assumptions"),
+            retired_approaches=value.get("retired_approaches"),
+            evidence_refs=value.get("evidence_refs"),
+            selected_candidate_id=value.get("selected_candidate_id"),
+        )
+
+
 @dataclass(frozen=True, slots=True)
 class ExecutionProtocolPolicy:
     """Validated limits for one task-scoped execution protocol."""
@@ -179,6 +336,9 @@ class ExecutionProtocolPolicy:
     independent_acceptance_enabled: bool = True
     semantic_progress_enabled: bool = True
     history_limit: int = 32
+    # Legacy compatibility knobs retained in the v1 wire format. They no
+    # longer classify or arm a task: horizon ownership belongs to the model's
+    # execution profile and later plan updates.
     activation_event_threshold: int = 6
     model_activation_confidence_threshold: float = 0.7
     model_activation_min_milestones: int = 2
@@ -187,11 +347,17 @@ class ExecutionProtocolPolicy:
     repetition_threshold: int = 3
     low_information_gain_threshold: int = 3
     no_goal_progress_threshold: int = 6
-    max_replans: int = 2
-    max_final_reviews: int = 1
-    max_repairs: int = 1
+    # Semantic loop counts are model-owned. ``None`` leaves replanning,
+    # reviewing, and repair bounded by the caller's task deadline instead of a
+    # framework-selected number of attempts. Explicit callers may still set a
+    # finite compatibility limit for controlled experiments.
+    max_replans: int | None = None
+    max_final_reviews: int | None = None
+    max_repairs: int | None = None
     finalization_reserve_seconds: float = 60.0
-    final_review_timeout_seconds: float = 45.0
+    # ``None`` lets review consume the caller's remaining task deadline. A
+    # finite value is retained only for explicit compatibility experiments.
+    final_review_timeout_seconds: float | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.mode, ProtocolMode):
@@ -238,14 +404,10 @@ class ExecutionProtocolPolicy:
             )
         for name in ("max_replans", "max_final_reviews", "max_repairs"):
             value = getattr(self, name)
-            if isinstance(value, bool) or not isinstance(value, int) or value < 0:
-                raise ValueError(f"{name} must be a non-negative integer")
-        if self.max_replans > 16:
-            raise ValueError("max_replans must not exceed 16")
-        if self.max_final_reviews > 1:
-            raise ValueError("max_final_reviews must not exceed 1")
-        if self.max_repairs > 1:
-            raise ValueError("max_repairs must not exceed 1")
+            if value is not None and (
+                isinstance(value, bool) or not isinstance(value, int) or value < 0
+            ):
+                raise ValueError(f"{name} must be a non-negative integer or None")
         reserve = self.finalization_reserve_seconds
         if (
             isinstance(reserve, bool)
@@ -254,14 +416,14 @@ class ExecutionProtocolPolicy:
         ):
             raise ValueError("finalization_reserve_seconds must be non-negative")
         review_timeout = self.final_review_timeout_seconds
-        if (
+        if review_timeout is not None and (
             isinstance(review_timeout, bool)
             or not isinstance(review_timeout, (int, float))
             or review_timeout <= 0
-            or review_timeout > 3600
+            or review_timeout > 86_400
         ):
             raise ValueError(
-                "final_review_timeout_seconds must be in the range (0, 3600]"
+                "final_review_timeout_seconds must be None or in the range (0, 86400]"
             )
 
     def to_dict(self) -> dict[str, Any]:
@@ -329,7 +491,7 @@ class ExecutionProtocolPolicy:
             # Additive v1 field retained for compatibility with persisted
             # policies written before bounded final review timeouts existed.
             final_review_timeout_seconds=value.get(
-                "final_review_timeout_seconds", 45.0
+                "final_review_timeout_seconds"
             ),
         )
 
@@ -379,7 +541,7 @@ def _non_negative_int(value: Any, name: str) -> int:
 
 @dataclass(frozen=True, slots=True)
 class ExecutionProtocolEvent:
-    """One bounded, text-free signal consumed by the controller."""
+    """One bounded signal consumed by the controller."""
 
     kind: EventKind
     repetition_count: int = 0
@@ -394,6 +556,7 @@ class ExecutionProtocolEvent:
     result_hash: str | None = None
     review_outcome: ReviewOutcome | None = None
     model_execution_profile: ModelExecutionProfile | None = None
+    model_plan_update: ModelPlanUpdate | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.kind, EventKind):
@@ -459,6 +622,14 @@ class ExecutionProtocolEvent:
             raise ValueError(
                 "model_execution_profile must be ModelExecutionProfile or None"
             )
+        if self.kind is EventKind.MODEL_PLAN_UPDATE and self.model_plan_update is None:
+            raise ValueError("model_plan_update event requires model_plan_update")
+        if self.kind is not EventKind.MODEL_PLAN_UPDATE and self.model_plan_update is not None:
+            raise ValueError("model_plan_update is valid only for model_plan_update events")
+        if self.model_plan_update is not None and not isinstance(
+            self.model_plan_update, ModelPlanUpdate
+        ):
+            raise ValueError("model_plan_update must be ModelPlanUpdate or None")
 
     def to_record(self, sequence: int) -> "ProtocolEventRecord":
         return ProtocolEventRecord(
@@ -476,6 +647,7 @@ class ExecutionProtocolEvent:
             result_hash=self.result_hash,
             review_outcome=self.review_outcome,
             model_execution_profile=self.model_execution_profile,
+            model_plan_update=self.model_plan_update,
         )
 
 
@@ -495,6 +667,7 @@ class ProtocolEventRecord:
     result_hash: str | None = None
     review_outcome: ReviewOutcome | None = None
     model_execution_profile: ModelExecutionProfile | None = None
+    model_plan_update: ModelPlanUpdate | None = None
 
     def __post_init__(self) -> None:
         for name in (
@@ -549,6 +722,14 @@ class ProtocolEventRecord:
             self.model_execution_profile, ModelExecutionProfile
         ):
             raise ValueError("record model_execution_profile has invalid type")
+        if self.kind is EventKind.MODEL_PLAN_UPDATE and self.model_plan_update is None:
+            raise ValueError("model_plan_update record requires model_plan_update")
+        if self.kind is not EventKind.MODEL_PLAN_UPDATE and self.model_plan_update is not None:
+            raise ValueError("model_plan_update is valid only for model plan update records")
+        if self.model_plan_update is not None and not isinstance(
+            self.model_plan_update, ModelPlanUpdate
+        ):
+            raise ValueError("record model_plan_update has invalid type")
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -572,12 +753,18 @@ class ProtocolEventRecord:
                 if self.model_execution_profile is not None
                 else None
             ),
+            "model_plan_update": (
+                self.model_plan_update.to_dict()
+                if self.model_plan_update is not None
+                else None
+            ),
         }
 
     @classmethod
     def from_dict(cls, value: Mapping[str, Any]) -> "ProtocolEventRecord":
         outcome = value.get("review_outcome")
         profile = value.get("model_execution_profile")
+        plan_update = value.get("model_plan_update")
         return cls(
             sequence=_non_negative_int(value.get("sequence"), "sequence"),
             kind=EventKind(value.get("kind")),
@@ -605,6 +792,11 @@ class ProtocolEventRecord:
                 if profile is not None
                 else None
             ),
+            model_plan_update=(
+                ModelPlanUpdate.from_mapping(plan_update)
+                if plan_update is not None
+                else None
+            ),
         )
 
 
@@ -629,6 +821,7 @@ class ExecutionProtocolState:
     long_horizon_armed: bool = False
     acceptance_confirmed: bool = False
     model_execution_profile: ModelExecutionProfile | None = None
+    model_plan_update: ModelPlanUpdate | None = None
     history: tuple[ProtocolEventRecord, ...] = field(default_factory=tuple)
 
     def __post_init__(self) -> None:
@@ -672,6 +865,10 @@ class ExecutionProtocolState:
             raise ValueError(
                 "model_execution_profile must be ModelExecutionProfile or None"
             )
+        if self.model_plan_update is not None and not isinstance(
+            self.model_plan_update, ModelPlanUpdate
+        ):
+            raise ValueError("model_plan_update must be ModelPlanUpdate or None")
         if self.history:
             sequences = tuple(item.sequence for item in self.history)
             if sequences != tuple(range(sequences[0], sequences[0] + len(sequences))):
@@ -726,6 +923,11 @@ class ExecutionProtocolState:
                 if self.model_execution_profile is not None
                 else None
             ),
+            "model_plan_update": (
+                self.model_plan_update.to_dict()
+                if self.model_plan_update is not None
+                else None
+            ),
             "history": [item.to_dict() for item in self.history],
         }
 
@@ -737,6 +939,7 @@ class ExecutionProtocolState:
         if not isinstance(history, list):
             raise ValueError("history must be a list")
         profile = value.get("model_execution_profile")
+        plan_update = value.get("model_plan_update")
         event_count = _non_negative_int(value.get("event_count"), "event_count")
         return cls(
             scope=ProtocolScope.from_dict(value.get("scope", {})),
@@ -775,6 +978,11 @@ class ExecutionProtocolState:
                 if profile is not None
                 else None
             ),
+            model_plan_update=(
+                ModelPlanUpdate.from_mapping(plan_update)
+                if plan_update is not None
+                else None
+            ),
             history=tuple(ProtocolEventRecord.from_dict(item) for item in history),
         )
 
@@ -792,6 +1000,7 @@ class ProtocolTransition:
 
 
 __all__ = [
+    "CompletionAssessment",
     "ControllerAction",
     "ControllerDecision",
     "DecisionReason",
@@ -801,6 +1010,8 @@ __all__ = [
     "ExecutionProtocolPolicy",
     "ExecutionProtocolState",
     "ModelExecutionProfile",
+    "ModelPlanUpdate",
+    "PlanUpdateDecision",
     "ProtocolEventRecord",
     "ProtocolMode",
     "ProtocolPhase",

@@ -33,6 +33,24 @@ def test_discovery_prefers_dot_aworld_workspace_file(tmp_path, monkeypatch):
     assert layers.warning is None
 
 
+def test_control_root_replaces_ambient_home_global_instruction(tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    control = tmp_path / "control"
+    workspace = tmp_path / "workspace"
+    (home / ".aworld").mkdir(parents=True)
+    (home / ".aworld" / "AWORLD.md").write_text("ambient home", encoding="utf-8")
+    control.mkdir()
+    (control / "AWORLD.md").write_text("managed global", encoding="utf-8")
+    workspace.mkdir()
+    monkeypatch.setattr(Path, "home", lambda: home)
+    monkeypatch.setenv("AWORLD_CONTROL_ROOT", str(control))
+
+    layers = discover_workspace_instruction_layers(workspace_path=workspace)
+
+    assert layers.global_file == control / "AWORLD.md"
+    assert home / ".aworld" / "AWORLD.md" not in layers.effective_read_files
+
+
 def test_discovery_warns_when_only_root_file_exists(tmp_path, monkeypatch):
     home = tmp_path / "home"
     workspace = tmp_path / "workspace"

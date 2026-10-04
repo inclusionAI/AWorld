@@ -16,6 +16,7 @@ from aworld_cli.core.plugin_manager import get_plugin_skills_dir
 
 from aworld.logs.util import logger
 from aworld.utils.skill_loader import DEFAULT_CACHE_DIR
+from aworld.utils.runtime_state import runtime_state_path
 
 
 class SkillRegistry(CompatSkillRegistry):
@@ -42,7 +43,12 @@ def resolve_repo_aworld_skills_path() -> Path | None:
 
 def get_default_skill_source_paths() -> List[Path]:
     """Return the default runtime-visible skill roots when no env override is set."""
-    paths: List[Path] = [(Path.home() / ".aworld" / "skills").resolve()]
+    paths: List[Path] = [
+        runtime_state_path(
+            "skills",
+            default=Path.home() / ".aworld" / "skills",
+        ).resolve()
+    ]
     repo_aworld_skills = resolve_repo_aworld_skills_path()
     if repo_aworld_skills is not None:
         paths.append(repo_aworld_skills)

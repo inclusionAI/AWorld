@@ -2,7 +2,7 @@ import json
 import os
 import re
 import time
-from typing import Any
+from typing import Any, Mapping
 
 from aworld.core.common import ActionModel, Observation
 from aworld.utils.serialized_util import to_serializable
@@ -93,6 +93,32 @@ def _runtime_context(context):
         getattr(event_manager, "context", None) if event_manager is not None else None
     )
     return root_context or context
+
+
+def _runtime_registry_owner(context):
+    resolver = getattr(context, "_task_runtime_registry_owner", None)
+    return resolver() if callable(resolver) else context
+
+
+def _working_state_value(context, key: str) -> Any:
+    task_state = getattr(context, "task_state", None)
+    working_state = getattr(task_state, "working_state", None)
+    kv_store = getattr(working_state, "kv_store", None)
+    if isinstance(kv_store, Mapping) and key in kv_store:
+        return kv_store.get(key)
+    return None
+
+
+def _project_working_state_value(context, key: str, value: Any) -> None:
+    task_state = getattr(context, "task_state", None)
+    working_state = getattr(task_state, "working_state", None)
+    kv_store = getattr(working_state, "kv_store", None)
+    if isinstance(kv_store, dict):
+        kv_store[key] = value
+        return
+    put = getattr(context, "put", None)
+    if callable(put):
+        put(key, value)
 
 
 def _semantic_state_scope(context) -> dict[str, Any]:
@@ -196,6 +222,39 @@ def record_semantic_tool_progress(
     actions: list[ActionModel],
     observation: Observation,
 ) -> dict[str, Any] | None:
+    """Serialize evidence derivation across transported Tool result groups."""
+    runtime_context = _runtime_context(context)
+    if runtime_context is None:
+        return None
+    transaction = getattr(
+        runtime_context, "task_runtime_state_transaction", None
+    )
+    if callable(transaction):
+        with transaction():
+            return _record_semantic_tool_progress_locked(
+                runtime_context,
+                tool_name=tool_name,
+                agent_id=agent_id,
+                actions=actions,
+                observation=observation,
+            )
+    return _record_semantic_tool_progress_locked(
+        runtime_context,
+        tool_name=tool_name,
+        agent_id=agent_id,
+        actions=actions,
+        observation=observation,
+    )
+
+
+def _record_semantic_tool_progress_locked(
+    context,
+    *,
+    tool_name: str,
+    agent_id: str,
+    actions: list[ActionModel],
+    observation: Observation,
+) -> dict[str, Any] | None:
     """Record bounded hashes for repetition and low-information-gain signals."""
     runtime_context = _runtime_context(context)
     if runtime_context is None:
@@ -210,6 +269,12 @@ def record_semantic_tool_progress(
         shared_reader(agent_id, _SEMANTIC_RUNTIME_KEY)
         if callable(shared_reader)
         else None
+    )
+    durable_owner = _runtime_registry_owner(runtime_context)
+    semantic_working_key = f"{SEMANTIC_PROGRESS_KEY}:{agent_id}"
+    previous = _select_semantic_state(
+        previous,
+        _working_state_value(durable_owner, semantic_working_key),
     )
     state_by_agent = runtime_context.context_info.get(SEMANTIC_PROGRESS_KEY)
     if not isinstance(state_by_agent, dict):
@@ -707,6 +772,7 @@ def record_semantic_tool_progress(
         "current_agent_step": current_agent_step,
         "no_goal_progress_count": no_goal_progress_count,
         "updated_at": time.time(),
+        "observation_count": int(previous.get("observation_count", 0) or 0) + 1,
         "runtime_revision": int(previous.get("runtime_revision", 0) or 0) + 1,
     }
     state_by_agent[agent_id] = state
@@ -714,6 +780,53 @@ def record_semantic_tool_progress(
     shared_writer = getattr(runtime_context, "write_task_runtime_state", None)
     if callable(shared_writer):
         shared_writer(agent_id, _SEMANTIC_RUNTIME_KEY, state)
+    _project_working_state_value(durable_owner, semantic_working_key, state)
+
+    # Bind optional model-designed public probes to the separately observed
+    # Tool result before checkpointing the operational work ledger. These are
+    # advisory self-check receipts, never canonical acceptance or reward.
+    try:
+        from aworld.runners.execution_protocol import (
+            load_public_probe_receipts,
+            record_public_probe_observations,
+        )
+
+        record_public_probe_observations(
+            runtime_context,
+            agent_id,
+            actions=actions,
+            result_projections=action_results,
+            artifact_after=artifact_fingerprint,
+        )
+        public_probe_receipts = load_public_probe_receipts(
+            runtime_context, agent_id
+        )
+        if public_probe_receipts:
+            state["public_probe_receipt_count"] = len(public_probe_receipts)
+            state["public_probe_receipts"] = [
+                {
+                    key: receipt.get(key)
+                    for key in (
+                        "receipt_id",
+                        "hypothesis_id",
+                        "probe_kind",
+                        "selected_candidate_id",
+                        "tool_execution_succeeded",
+                        "probe_assessment",
+                        "stale",
+                    )
+                }
+                for receipt in public_probe_receipts[-4:]
+            ]
+            state_by_agent[agent_id] = state
+            runtime_context.context_info[SEMANTIC_PROGRESS_KEY] = state_by_agent
+            if callable(shared_writer):
+                shared_writer(agent_id, _SEMANTIC_RUNTIME_KEY, state)
+            _project_working_state_value(
+                durable_owner, semantic_working_key, state
+            )
+    except Exception:
+        pass
 
     # Project the same append-only Tool boundary into a bounded operational
     # ledger.  Runtime fan-in prevents transport-copy loss; Amni WorkingState
@@ -733,28 +846,37 @@ def record_semantic_tool_progress(
         ),
         semantic_progress=state,
     )
+    context_key = f"{ADAPTIVE_WORK_STATE_KEY}:{agent_id}"
+    durable_work_state = _working_state_value(durable_owner, context_key)
+
+    def advance(current):
+        return advance_adaptive_work_state(
+            current if isinstance(current, dict) else durable_work_state,
+            work_entry,
+        )
+
+    def project_adaptive(value):
+        durable_owner.context_info[context_key] = value
+        _project_working_state_value(durable_owner, context_key, value)
+
+    atomic_update = getattr(
+        runtime_context, "update_and_project_task_runtime_state", None
+    )
     update_runtime = getattr(runtime_context, "update_task_runtime_state", None)
-    if callable(update_runtime):
-        work_state = update_runtime(
+    if callable(atomic_update):
+        work_state = atomic_update(
             agent_id,
             ADAPTIVE_WORK_STATE_KEY,
-            lambda current: advance_adaptive_work_state(current, work_entry),
+            advance,
+            project_adaptive,
         )
+    elif callable(update_runtime):
+        work_state = update_runtime(agent_id, ADAPTIVE_WORK_STATE_KEY, advance)
+        project_adaptive(work_state)
     else:
-        context_key = f"{ADAPTIVE_WORK_STATE_KEY}:{agent_id}"
-        work_state = advance_adaptive_work_state(
-            runtime_context.context_info.get(context_key), work_entry
-        )
-    context_key = f"{ADAPTIVE_WORK_STATE_KEY}:{agent_id}"
+        work_state = advance(runtime_context.context_info.get(context_key))
+        project_adaptive(work_state)
     runtime_context.context_info[context_key] = work_state
-    put_working_state = getattr(runtime_context, "put", None)
-    if callable(put_working_state):
-        try:
-            put_working_state(context_key, work_state)
-        except Exception:
-            # The runtime registry is authoritative during the current process;
-            # non-Amni Context implementations need not expose WorkingState.
-            pass
 
     metrics = _metrics_dict(runtime_context)
     metrics["semantic_tool_observation_count"] = (
@@ -909,6 +1031,13 @@ def semantic_progress_for_agent(context, *, agent_id: str) -> dict[str, Any]:
         if callable(shared_reader)
         else None
     )
+    durable_owner = _runtime_registry_owner(runtime_context)
+    state = _select_semantic_state(
+        state,
+        _working_state_value(
+            durable_owner, f"{SEMANTIC_PROGRESS_KEY}:{agent_id}"
+        ),
+    )
     state_by_agent = runtime_context.context_info.get(SEMANTIC_PROGRESS_KEY)
     if not isinstance(state_by_agent, dict):
         state_by_agent = {}
@@ -917,7 +1046,166 @@ def semantic_progress_for_agent(context, *, agent_id: str) -> dict[str, Any]:
     return dict(state) if isinstance(state, dict) else {}
 
 
+def refresh_public_probe_receipt_projection(
+    context, *, agent_id: str
+) -> list[dict[str, Any]]:
+    runtime_context = _runtime_context(context)
+    if runtime_context is None:
+        return []
+    transaction = getattr(
+        runtime_context, "task_runtime_state_transaction", None
+    )
+    if callable(transaction):
+        with transaction():
+            return _refresh_public_probe_receipt_projection_locked(
+                runtime_context, agent_id=agent_id
+            )
+    return _refresh_public_probe_receipt_projection_locked(
+        runtime_context, agent_id=agent_id
+    )
+
+
+def _refresh_public_probe_receipt_projection_locked(
+    context, *, agent_id: str
+) -> list[dict[str, Any]]:
+    """Refresh current advisory probe receipts in both operational ledgers.
+
+    Candidate selection is a model-owned state transition rather than a Tool
+    observation.  Re-projecting here prevents a previously-current receipt
+    from remaining current in checkpoint/compaction state after the candidate
+    changes.  These fields remain explicitly advisory and never imply reward
+    or canonical acceptance.
+    """
+    runtime_context = _runtime_context(context)
+    if runtime_context is None:
+        return []
+    try:
+        from aworld.runners.execution_protocol import load_public_probe_receipts
+
+        receipts = load_public_probe_receipts(runtime_context, agent_id)
+    except Exception:
+        return []
+    projection = [
+        {
+            key: receipt.get(key)
+            for key in (
+                "receipt_id",
+                "hypothesis_id",
+                "probe_kind",
+                "selected_candidate_id",
+                "tool_execution_succeeded",
+                "probe_assessment",
+                "stale",
+            )
+        }
+        for receipt in receipts[-4:]
+        if isinstance(receipt, Mapping)
+    ]
+
+    shared_reader = getattr(runtime_context, "read_task_runtime_state", None)
+    shared_writer = getattr(runtime_context, "write_task_runtime_state", None)
+    durable_owner = _runtime_registry_owner(runtime_context)
+    semantic_working_key = f"{SEMANTIC_PROGRESS_KEY}:{agent_id}"
+    state_by_agent = runtime_context.context_info.get(SEMANTIC_PROGRESS_KEY)
+    if not isinstance(state_by_agent, dict):
+        state_by_agent = {}
+    shared_state = (
+        shared_reader(agent_id, _SEMANTIC_RUNTIME_KEY)
+        if callable(shared_reader)
+        else None
+    )
+    shared_state = _select_semantic_state(
+        shared_state,
+        _working_state_value(durable_owner, semantic_working_key),
+    )
+    semantic_state = _select_semantic_state(
+        shared_state, state_by_agent.get(agent_id)
+    )
+    semantic_state = _semantic_state_in_scope(
+        semantic_state, _semantic_state_scope(runtime_context)
+    )
+    if isinstance(semantic_state, dict):
+        semantic_state = dict(semantic_state)
+        previous_projection = semantic_state.get("public_probe_receipts") or []
+        previous_count = int(
+            semantic_state.get("public_probe_receipt_count", 0) or 0
+        )
+        if projection:
+            semantic_state["public_probe_receipt_count"] = len(receipts)
+            semantic_state["public_probe_receipts"] = projection
+        else:
+            semantic_state.pop("public_probe_receipt_count", None)
+            semantic_state.pop("public_probe_receipts", None)
+        if previous_projection != projection or previous_count != len(receipts):
+            semantic_state["runtime_revision"] = (
+                int(semantic_state.get("runtime_revision", 0) or 0) + 1
+            )
+        state_by_agent[agent_id] = semantic_state
+        runtime_context.context_info[SEMANTIC_PROGRESS_KEY] = state_by_agent
+        if callable(shared_writer):
+            shared_writer(agent_id, _SEMANTIC_RUNTIME_KEY, semantic_state)
+        _project_working_state_value(
+            durable_owner, semantic_working_key, semantic_state
+        )
+
+    from aworld.core.context.compiler import ADAPTIVE_WORK_STATE_KEY
+
+    context_key = f"{ADAPTIVE_WORK_STATE_KEY}:{agent_id}"
+    adaptive_state = (
+        shared_reader(agent_id, ADAPTIVE_WORK_STATE_KEY)
+        if callable(shared_reader)
+        else None
+    )
+    if not isinstance(adaptive_state, dict):
+        adaptive_state = _working_state_value(durable_owner, context_key)
+    if not isinstance(adaptive_state, dict):
+        adaptive_state = runtime_context.context_info.get(context_key)
+    if isinstance(adaptive_state, dict):
+        adaptive_state = dict(adaptive_state)
+        previous_projection = adaptive_state.get("public_probe_receipts") or []
+        previous_count = int(
+            adaptive_state.get("public_probe_receipt_count", 0) or 0
+        )
+        if projection:
+            adaptive_state["public_probe_receipt_count"] = len(receipts)
+            adaptive_state["public_probe_receipts"] = projection
+        else:
+            adaptive_state.pop("public_probe_receipt_count", None)
+            adaptive_state.pop("public_probe_receipts", None)
+        if previous_projection != projection or previous_count != len(receipts):
+            adaptive_state["revision"] = (
+                int(adaptive_state.get("revision", 0) or 0) + 1
+            )
+        runtime_context.context_info[context_key] = adaptive_state
+        if callable(shared_writer):
+            shared_writer(agent_id, ADAPTIVE_WORK_STATE_KEY, adaptive_state)
+        _project_working_state_value(
+            durable_owner, context_key, adaptive_state
+        )
+    return projection
+
+
 def acknowledge_semantic_checkpoint(context, *, agent_id: str) -> None:
+    runtime_context = _runtime_context(context)
+    if runtime_context is None:
+        return
+    transaction = getattr(
+        runtime_context, "task_runtime_state_transaction", None
+    )
+    if callable(transaction):
+        with transaction():
+            _acknowledge_semantic_checkpoint_locked(
+                runtime_context, agent_id=agent_id
+            )
+        return
+    _acknowledge_semantic_checkpoint_locked(
+        runtime_context, agent_id=agent_id
+    )
+
+
+def _acknowledge_semantic_checkpoint_locked(
+    context, *, agent_id: str
+) -> None:
     runtime_context = _runtime_context(context)
     if runtime_context is None:
         return
@@ -926,6 +1214,12 @@ def acknowledge_semantic_checkpoint(context, *, agent_id: str) -> None:
         shared_reader(agent_id, _SEMANTIC_RUNTIME_KEY)
         if callable(shared_reader)
         else None
+    )
+    durable_owner = _runtime_registry_owner(runtime_context)
+    semantic_working_key = f"{SEMANTIC_PROGRESS_KEY}:{agent_id}"
+    shared_state = _select_semantic_state(
+        shared_state,
+        _working_state_value(durable_owner, semantic_working_key),
     )
     state_by_agent = runtime_context.context_info.get(SEMANTIC_PROGRESS_KEY)
     if not isinstance(state_by_agent, dict):
@@ -949,6 +1243,7 @@ def acknowledge_semantic_checkpoint(context, *, agent_id: str) -> None:
     shared_writer = getattr(runtime_context, "write_task_runtime_state", None)
     if callable(shared_writer):
         shared_writer(agent_id, _SEMANTIC_RUNTIME_KEY, state)
+    _project_working_state_value(durable_owner, semantic_working_key, state)
 
 
 def arm_post_tool_progress_watchdog(

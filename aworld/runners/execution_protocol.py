@@ -23,6 +23,7 @@ from aworld.core.execution_protocol import (
     ExecutionProtocolPolicy,
     ExecutionProtocolStore,
     ModelExecutionProfile,
+    ModelPlanUpdate,
     ProtocolMode,
     ProtocolTransition,
     ReviewOutcome,
@@ -36,6 +37,7 @@ EXECUTION_PROTOCOL_FALLBACK_KEY = "execution_protocol_candidate_fallback"
 EXECUTION_PROTOCOL_MODEL_PROFILE_KEY = "execution_protocol_model_profile_attempt"
 EXECUTION_PROTOCOL_HYPOTHESES_KEY = "execution_protocol_hypotheses"
 EXECUTION_PROTOCOL_CRITIC_KEY = "execution_protocol_acceptance_critic"
+EXECUTION_PROTOCOL_PUBLIC_PROBES_KEY = "execution_protocol_public_probes"
 INDEPENDENT_ACCEPTANCE_CRITIC_ENV = "AWORLD_INDEPENDENT_ACCEPTANCE_CRITIC"
 SEMANTIC_PROGRESS_LEDGER_ENV = "AWORLD_SEMANTIC_PROGRESS_LEDGER"
 _MAX_FALLBACK_CHARS = 64_000
@@ -79,6 +81,43 @@ def _context_key(base: str, agent_id: str) -> str:
     return f"{base}:{agent_id}"
 
 
+def _project_runtime_value(owner, agent_id: str, key: str, value: Any) -> None:
+    """Project one bounded runtime value into checkpointed task state."""
+    scoped_key = _context_key(key, agent_id)
+    context_info = getattr(owner, "context_info", None)
+    if isinstance(context_info, dict):
+        if value is None:
+            context_info.pop(scoped_key, None)
+        else:
+            context_info[scoped_key] = deepcopy(value)
+    task_state = getattr(owner, "task_state", None)
+    working_state = getattr(task_state, "working_state", None)
+    kv_store = getattr(working_state, "kv_store", None)
+    if isinstance(kv_store, dict):
+        if value is None:
+            kv_store.pop(scoped_key, None)
+        else:
+            kv_store[scoped_key] = deepcopy(value)
+        return
+    put_working_state = getattr(owner, "put", None)
+    if callable(put_working_state):
+        put_working_state(scoped_key, deepcopy(value))
+
+
+def _read_projected_runtime_value(owner, agent_id: str, key: str) -> Any:
+    """Read checkpointed state without consulting the in-process registry."""
+    scoped_key = _context_key(key, agent_id)
+    task_state = getattr(owner, "task_state", None)
+    working_state = getattr(task_state, "working_state", None)
+    kv_store = getattr(working_state, "kv_store", None)
+    if isinstance(kv_store, Mapping) and scoped_key in kv_store:
+        return deepcopy(kv_store.get(scoped_key))
+    context_info = getattr(owner, "context_info", None)
+    if isinstance(context_info, Mapping) and scoped_key in context_info:
+        return deepcopy(context_info.get(scoped_key))
+    return None
+
+
 def _write_runtime_value(context, agent_id: str, key: str, value: Any) -> None:
     owner = state_context(context)
     if owner is None:
@@ -89,13 +128,10 @@ def _write_runtime_value(context, agent_id: str, key: str, value: Any) -> None:
             writer(agent_id, key, deepcopy(value))
         except Exception:
             pass
-    context_info = getattr(owner, "context_info", None)
-    if isinstance(context_info, dict):
-        scoped_key = _context_key(key, agent_id)
-        if value is None:
-            context_info.pop(scoped_key, None)
-        else:
-            context_info[scoped_key] = deepcopy(value)
+    try:
+        _project_runtime_value(owner, agent_id, key, value)
+    except Exception:
+        pass
 
 
 def _read_runtime_value(context, agent_id: str, key: str) -> Any:
@@ -111,11 +147,81 @@ def _read_runtime_value(context, agent_id: str, key: str) -> Any:
         if value is not None:
             return value
     context_info = getattr(owner, "context_info", None)
-    return (
+    value = (
         context_info.get(_context_key(key, agent_id))
         if isinstance(context_info, Mapping)
         else None
     )
+    if value is not None:
+        return value
+    # Checkpoint restore must not instantiate ApplicationContext services just
+    # to read its serialized WorkingState. Service initialization can import
+    # optional MCP dependencies that are intentionally absent in core-only
+    # environments.
+    task_state = getattr(owner, "task_state", None)
+    working_state = getattr(task_state, "working_state", None)
+    kv_store = getattr(working_state, "kv_store", None)
+    scoped_key = _context_key(key, agent_id)
+    if isinstance(kv_store, Mapping) and scoped_key in kv_store:
+        return kv_store.get(scoped_key)
+    get_working_state = getattr(owner, "get", None)
+    if callable(get_working_state):
+        try:
+            return get_working_state(scoped_key)
+        except Exception:
+            pass
+    return None
+
+
+def _update_runtime_value(context, agent_id: str, key: str, update) -> Any:
+    """Atomically fan in one bounded runtime-state mutation when supported."""
+    owner = state_context(context)
+    if owner is None:
+        return None
+    registry_owner_resolver = getattr(owner, "_task_runtime_registry_owner", None)
+    durable_owner = (
+        registry_owner_resolver()
+        if callable(registry_owner_resolver)
+        else owner
+    )
+    atomic_updater = getattr(owner, "update_and_project_task_runtime_state", None)
+    if callable(atomic_updater):
+        durable_seed = _read_projected_runtime_value(
+            durable_owner, agent_id, key
+        )
+
+        def seeded_update(current):
+            return update(
+                deepcopy(durable_seed) if current is None else current
+            )
+
+        try:
+            value = atomic_updater(
+                agent_id,
+                key,
+                seeded_update,
+                lambda projected: _project_runtime_value(
+                    durable_owner, agent_id, key, projected
+                ),
+            )
+            if owner is not durable_owner:
+                _project_runtime_value(owner, agent_id, key, value)
+            return value
+        except Exception:
+            return _read_runtime_value(owner, agent_id, key)
+    updater = getattr(owner, "update_task_runtime_state", None)
+    if callable(updater):
+        try:
+            value = updater(agent_id, key, update)
+            _project_runtime_value(durable_owner, agent_id, key, value)
+            if owner is not durable_owner:
+                _project_runtime_value(owner, agent_id, key, value)
+            return value
+        except Exception:
+            pass
+    value = update(_read_runtime_value(owner, agent_id, key))
+    _write_runtime_value(owner, agent_id, key, value)
+    return value
 
 
 def configure_execution_protocol(
@@ -173,6 +279,324 @@ def record_tool_hypotheses(
     owner = state_context(context)
     if owner is not None:
         owner.context_info[f"execution_protocol_hypotheses:{agent_id}"] = bounded
+
+
+def _public_request_hash(context) -> str:
+    from aworld.core.context.compiler import semantic_fingerprint
+
+    owner = state_context(context)
+    task = None
+    getter = getattr(owner, "get_task", None) if owner is not None else None
+    try:
+        task = getter() if callable(getter) else None
+    except Exception:
+        task = None
+    request = (
+        getattr(task, "input", None)
+        or getattr(owner, "task_input", None)
+        or ""
+    )
+    return semantic_fingerprint(str(request))
+
+
+def _public_candidate_binding(context, agent_id: str) -> tuple[str, str | None]:
+    from aworld.core.context.compiler import semantic_fingerprint
+
+    fallback = load_candidate_fallback(context, agent_id) or ()
+    candidate = str(getattr(fallback[0], "policy_info", "") or "") if fallback else ""
+    policy = execution_protocol_policy(context, agent_id)
+    protocol_state = ExecutionProtocolStore(context, agent_id, policy).load()
+    selected_candidate_id = (
+        protocol_state.model_plan_update.selected_candidate_id
+        if protocol_state.model_plan_update is not None
+        else None
+    )
+    return (
+        semantic_fingerprint(
+            {
+                "candidate_response_hash": semantic_fingerprint(candidate),
+                "selected_candidate_id": selected_candidate_id,
+            }
+        ),
+        selected_candidate_id,
+    )
+
+
+def _public_probe_scope(context, agent_id: str) -> dict[str, Any]:
+    owner = state_context(context)
+    return {
+        "task_id": str(getattr(owner, "task_id", "") or ""),
+        "task_epoch": int(getattr(owner, "task_epoch", 0) or 0),
+        "agent_id": agent_id,
+    }
+
+
+def _normalize_public_probe_state(
+    value: Any, *, expected_scope: Mapping[str, Any] | None = None
+) -> dict[str, Any]:
+    if (
+        not isinstance(value, Mapping)
+        or value.get("schema_version") != "aworld.public-probe-ledger/v1"
+        or (
+            expected_scope is not None
+            and value.get("scope") != dict(expected_scope)
+        )
+    ):
+        return {
+            "schema_version": "aworld.public-probe-ledger/v1",
+            "scope": dict(expected_scope or {}),
+            "revision": 0,
+            "plans": {},
+            "receipts": [],
+        }
+    plans = value.get("plans")
+    receipts = value.get("receipts")
+    return {
+        "schema_version": "aworld.public-probe-ledger/v1",
+        "scope": dict(value.get("scope") or expected_scope or {}),
+        "revision": int(value.get("revision", 0) or 0),
+        "plans": dict(plans) if isinstance(plans, Mapping) else {},
+        "receipts": list(receipts) if isinstance(receipts, list) else [],
+    }
+
+
+def _public_probe_state(context, agent_id: str) -> dict[str, Any]:
+    return _normalize_public_probe_state(
+        _read_runtime_value(
+            context, agent_id, EXECUTION_PROTOCOL_PUBLIC_PROBES_KEY
+        ),
+        expected_scope=_public_probe_scope(context, agent_id),
+    )
+
+
+def record_public_probe_plan(
+    context,
+    agent_id: str,
+    *,
+    tool_call_id: str,
+    tool_identity: str,
+    arguments_projection: Mapping[str, Any],
+    value: Mapping[str, Any],
+) -> bool:
+    """Bind one model-designed public self-check to a real Tool call."""
+    from aworld.core.context.compiler import semantic_fingerprint
+
+    policy = execution_protocol_policy(context, agent_id)
+    if policy.mode is ProtocolMode.OFF:
+        return False
+    if (
+        not isinstance(value, Mapping)
+        or set(value)
+        != {
+            "hypothesis_id",
+            "highest_risk_counterexample",
+            "probe_kind",
+        }
+        or not isinstance(tool_call_id, str)
+        or not tool_call_id
+        or len(tool_call_id) > 256
+        or not isinstance(tool_identity, str)
+        or not tool_identity.strip()
+        or len(tool_identity) > 256
+        or not isinstance(arguments_projection, Mapping)
+    ):
+        return False
+    hypothesis_id = value.get("hypothesis_id")
+    counterexample = value.get("highest_risk_counterexample")
+    probe_kind = value.get("probe_kind")
+    if (
+        not isinstance(hypothesis_id, str)
+        or not hypothesis_id.strip()
+        or len(hypothesis_id.strip()) > 128
+        or not isinstance(counterexample, str)
+        or not counterexample.strip()
+        or len(counterexample.strip()) > 1024
+        or probe_kind not in {"smoke", "regression", "counterexample", "invariant"}
+    ):
+        return False
+    normalized_tool_identity = ":".join(
+        part.strip().casefold() for part in tool_identity.split(":", 1)
+    )
+    candidate_hash, selected_candidate_id = _public_candidate_binding(
+        context, agent_id
+    )
+    plan = {
+        "tool_call_id": tool_call_id,
+        "tool_identity": normalized_tool_identity,
+        "arguments_projection": _bounded_probe_value(arguments_projection),
+        "arguments_hash": semantic_fingerprint(arguments_projection),
+        "hypothesis_id": hypothesis_id.strip(),
+        "highest_risk_counterexample": counterexample.strip(),
+        "probe_kind": probe_kind,
+        "selected_candidate_id": selected_candidate_id,
+        "request_hash": _public_request_hash(context),
+        "candidate_hash": candidate_hash,
+    }
+    recorded = False
+    expected_scope = _public_probe_scope(context, agent_id)
+
+    def add_plan(current):
+        nonlocal recorded
+        state = _normalize_public_probe_state(
+            current, expected_scope=expected_scope
+        )
+        plans = state["plans"]
+        if tool_call_id in plans:
+            return state
+        plans[tool_call_id] = plan
+        state["plans"] = dict(list(plans.items())[-16:])
+        state["revision"] = int(state.get("revision", 0) or 0) + 1
+        recorded = True
+        return state
+
+    _update_runtime_value(
+        context,
+        agent_id,
+        EXECUTION_PROTOCOL_PUBLIC_PROBES_KEY,
+        add_plan,
+    )
+    return recorded
+
+
+def record_public_probe_observations(
+    context,
+    agent_id: str,
+    *,
+    actions: Any,
+    result_projections: Any,
+    artifact_after: Any = None,
+) -> int:
+    """Create advisory receipts from separately observed Tool results."""
+    from aworld.core.context.compiler import semantic_fingerprint
+
+    action_by_id = {
+        getattr(action, "tool_call_id", None): action
+        for action in actions or ()
+        if isinstance(getattr(action, "tool_call_id", None), str)
+    }
+    result_by_id = {
+        item.get("tool_call_id"): item
+        for item in result_projections or ()
+        if isinstance(item, Mapping) and isinstance(item.get("tool_call_id"), str)
+    }
+    observed_ids: set[str] = set()
+    expected_scope = _public_probe_scope(context, agent_id)
+
+    def add_observations(current):
+        state = _normalize_public_probe_state(
+            current, expected_scope=expected_scope
+        )
+        plans = state["plans"]
+        receipts = [
+            item for item in state["receipts"] if isinstance(item, Mapping)
+        ]
+        observed_ids.clear()
+        for tool_call_id, plan in list(plans.items()):
+            action = action_by_id.get(tool_call_id)
+            result = result_by_id.get(tool_call_id)
+            if action is None or result is None or not isinstance(plan, Mapping):
+                continue
+            actual_identity = ":".join(
+                part.strip().casefold()
+                for part in (
+                    str(getattr(action, "tool_name", "") or ""),
+                    str(getattr(action, "action_name", "") or ""),
+                )
+            )
+            actual_arguments = getattr(action, "params", None)
+            if (
+                actual_identity != plan.get("tool_identity")
+                or not isinstance(actual_arguments, Mapping)
+                or semantic_fingerprint(actual_arguments)
+                != plan.get("arguments_hash")
+            ):
+                continue
+            artifact_after_hash = semantic_fingerprint(artifact_after)
+            receipt_core = {
+                "schema_version": "aworld.public-probe-receipt/v1",
+                "authority": "agent_self_check",
+                "task_reward": "not_assessed",
+                "hypothesis_id": plan.get("hypothesis_id"),
+                "highest_risk_counterexample": plan.get(
+                    "highest_risk_counterexample"
+                ),
+                "probe_kind": plan.get("probe_kind"),
+                "selected_candidate_id": plan.get("selected_candidate_id"),
+                "tool_identity": plan.get("tool_identity"),
+                "arguments_hash": plan.get("arguments_hash"),
+                "request_hash": plan.get("request_hash"),
+                "candidate_hash": plan.get("candidate_hash"),
+                "artifact_after_hash": artifact_after_hash,
+                "artifact_bound": artifact_after is not None,
+                "result_hash": semantic_fingerprint(result),
+                "tool_execution_succeeded": result.get("success") is True,
+                "probe_assessment": "unassessed",
+                "failure_code": (
+                    str(result.get("failure_code"))[:256]
+                    if result.get("failure_code") is not None
+                    else None
+                ),
+            }
+            receipt_core["receipt_id"] = semantic_fingerprint(receipt_core)
+            receipts.append(receipt_core)
+            plans.pop(tool_call_id, None)
+            observed_ids.add(tool_call_id)
+        state["plans"] = dict(list(plans.items())[-16:])
+        state["receipts"] = receipts[-16:]
+        state["revision"] = int(state.get("revision", 0) or 0) + 1
+        return state
+
+    _update_runtime_value(
+        context,
+        agent_id,
+        EXECUTION_PROTOCOL_PUBLIC_PROBES_KEY,
+        add_observations,
+    )
+    return len(observed_ids)
+
+
+def load_public_probe_receipts(context, agent_id: str) -> list[dict[str, Any]]:
+    """Return bounded advisory receipts with current-staleness projections."""
+    from aworld.core.context.compiler import semantic_fingerprint
+
+    state = _public_probe_state(context, agent_id)
+    request_hash = _public_request_hash(context)
+    candidate_hash, _ = _public_candidate_binding(context, agent_id)
+    try:
+        from aworld.runners.post_tool_progress import semantic_progress_for_agent
+
+        semantic_state = semantic_progress_for_agent(context, agent_id=agent_id)
+    except Exception:
+        semantic_state = {}
+    current_artifact = semantic_state.get("artifact_fingerprint")
+    current_artifact_hash = semantic_fingerprint(current_artifact)
+    output = []
+    for raw in state["receipts"][-16:]:
+        if not isinstance(raw, Mapping):
+            continue
+        receipt = dict(raw)
+        request_current = receipt.get("request_hash") == request_hash
+        candidate_current = receipt.get("candidate_hash") == candidate_hash
+        artifact_bound = receipt.get("artifact_bound") is True
+        artifact_current = (
+            not artifact_bound
+            or (
+                current_artifact is not None
+                and receipt.get("artifact_after_hash") == current_artifact_hash
+            )
+        )
+        receipt.update(
+            {
+                "request_current": request_current,
+                "candidate_current": candidate_current,
+                "artifact_current": artifact_current,
+                "stale": not (
+                    request_current and candidate_current and artifact_current
+                ),
+            }
+        )
+        output.append(receipt)
+    return output
 
 
 def acceptance_critic_active(context, agent_id: str) -> bool:
@@ -288,6 +712,8 @@ def record_acceptance_probe_plan(
     probe_kind: str,
 ) -> bool:
     """Bind exactly one critic-selected probe to the pending review."""
+    from aworld.core.context.compiler import semantic_fingerprint
+
     if not acceptance_critic_active(context, agent_id):
         return False
     if not all(
@@ -336,6 +762,7 @@ def record_acceptance_probe_plan(
             "highest_risk_counterexample": highest_risk_counterexample.strip()[:1024],
             "tool_identity": normalized_tool_identity[:256],
             "arguments_projection": bounded_arguments,
+            "arguments_hash": semantic_fingerprint(arguments_projection),
             "candidate": candidate[:64_000],
             "evidence": evidence,
             "artifact_before": evidence.get("artifact_fingerprint"),
@@ -381,11 +808,12 @@ def record_acceptance_probe_observation(
         )
     )
     actual_arguments = getattr(actual_action, "params", None)
+    from aworld.core.context.compiler import semantic_fingerprint
+
     if (
         actual_identity != current.get("tool_identity")
         or not isinstance(actual_arguments, Mapping)
-        or _bounded_probe_value(actual_arguments)
-        != current.get("arguments_projection")
+        or semantic_fingerprint(actual_arguments) != current.get("arguments_hash")
     ):
         return False
     if not isinstance(result_projection, Mapping) or result_projection.get(
@@ -552,6 +980,7 @@ def project_execution_protocol_telemetry(value: Any) -> dict[str, Any] | None:
         "finalization_entered",
         "implicit_acceptance_created",
         "acceptance_satisfied",
+        "legacy_activation_fields_ignored",
     }
     counters = {
         "event_count",
@@ -600,6 +1029,7 @@ def build_execution_protocol_telemetry(context, agent_id: str) -> dict[str, Any]
         "mode": policy.mode.value,
         "phase": state.phase.value,
         "armed": state.long_horizon_armed,
+        "legacy_activation_fields_ignored": True,
         "event_count": state.event_count,
         "tool_observation_count": state.tool_observation_count,
         "stagnant_observations": state.stagnant_observations,
@@ -609,7 +1039,9 @@ def build_execution_protocol_telemetry(context, agent_id: str) -> dict[str, Any]
         "repair_count": state.repair_count,
         "finalization_entered": state.finalization_entered,
         "model_horizon": (
-            state.model_execution_profile.horizon.value
+            state.model_plan_update.horizon.value
+            if state.model_plan_update is not None
+            else state.model_execution_profile.horizon.value
             if state.model_execution_profile is not None
             else None
         ),
@@ -656,6 +1088,14 @@ def _record_transition_metrics(context, transition: ProtocolTransition) -> None:
         )
         metrics["model_confidence"] = (
             transition.state.model_execution_profile.confidence
+        )
+    if transition.state.model_plan_update is not None:
+        metrics["model_horizon"] = transition.state.model_plan_update.horizon.value
+        metrics["model_plan_decision"] = (
+            transition.state.model_plan_update.decision.value
+        )
+        metrics["model_completion_assessment"] = (
+            transition.state.model_plan_update.completion_assessment.value
         )
     metrics["last_action"] = action
     metrics["last_reason"] = reason
@@ -778,6 +1218,51 @@ def record_model_execution_profile(
     )
 
 
+def record_model_plan_update(
+    context,
+    agent_id: str,
+    value: Mapping[str, Any],
+) -> ProtocolTransition | None:
+    """Record one strict model-owned checkpoint from a real Tool turn.
+
+    The update is a bounded claim, not observed evidence. It can classify or
+    reclassify the task horizon and acknowledge an advisory checkpoint, but it
+    cannot accept completion or manufacture verifier evidence.
+    """
+    policy = execution_protocol_policy(context, agent_id)
+    if policy.mode is ProtocolMode.OFF:
+        return None
+    try:
+        update = ModelPlanUpdate.from_mapping(value)
+    except (TypeError, ValueError, KeyError):
+        return None
+    transition = _apply_event(
+        context,
+        agent_id,
+        ExecutionProtocolEvent(
+            kind=EventKind.MODEL_PLAN_UPDATE,
+            model_plan_update=update,
+        ),
+    )
+    try:
+        from aworld.runners.post_tool_progress import (
+            acknowledge_semantic_checkpoint,
+            refresh_public_probe_receipt_projection,
+        )
+
+        acknowledge_semantic_checkpoint(context, agent_id=agent_id)
+        refresh_public_probe_receipt_projection(context, agent_id=agent_id)
+    except Exception:
+        pass
+    return transition
+
+
+def load_model_plan_update(context, agent_id: str) -> dict[str, Any]:
+    """Return the latest validated model claim for this exact task scope."""
+    update = load_execution_protocol_state(context, agent_id).model_plan_update
+    return update.to_dict() if update is not None else {}
+
+
 def consume_execution_protocol_guidance(context, agent_id: str) -> str | None:
     """Return one bounded control message, consuming it exactly once."""
     policy = execution_protocol_policy(context, agent_id)
@@ -789,19 +1274,6 @@ def consume_execution_protocol_guidance(context, agent_id: str) -> str | None:
     _write_runtime_value(context, agent_id, EXECUTION_PROTOCOL_PENDING_KEY, None)
     action = pending.get("action")
     if action == ControllerAction.REQUEST_REPLAN.value:
-        _apply_event(
-            context,
-            agent_id,
-            ExecutionProtocolEvent(kind=EventKind.REPLAN_APPLIED),
-        )
-        try:
-            from aworld.runners.post_tool_progress import (
-                acknowledge_semantic_checkpoint,
-            )
-
-            acknowledge_semantic_checkpoint(context, agent_id=agent_id)
-        except Exception:
-            pass
         missing_delivery_guidance = ""
         missing = _missing_public_deliverable_names(context)
         if missing:
@@ -939,6 +1411,14 @@ def store_candidate_fallback(context, agent_id: str, actions) -> None:
             else None
         ),
     )
+    try:
+        from aworld.runners.post_tool_progress import (
+            refresh_public_probe_receipt_projection,
+        )
+
+        refresh_public_probe_receipt_projection(context, agent_id=agent_id)
+    except Exception:
+        pass
 
 
 def load_candidate_fallback(context, agent_id: str):
@@ -965,6 +1445,14 @@ def load_candidate_fallback(context, agent_id: str):
 
 def clear_candidate_fallback(context, agent_id: str) -> None:
     _write_runtime_value(context, agent_id, EXECUTION_PROTOCOL_FALLBACK_KEY, None)
+    try:
+        from aworld.runners.post_tool_progress import (
+            refresh_public_probe_receipt_projection,
+        )
+
+        refresh_public_probe_receipt_projection(context, agent_id=agent_id)
+    except Exception:
+        pass
 
 
 def execution_protocol_requires_tool_free_finalization(context, agent_id: str) -> bool:
@@ -1029,6 +1517,7 @@ __all__ = [
     "EXECUTION_PROTOCOL_CRITIC_KEY",
     "EXECUTION_PROTOCOL_PENDING_KEY",
     "EXECUTION_PROTOCOL_POLICY_KEY",
+    "EXECUTION_PROTOCOL_PUBLIC_PROBES_KEY",
     "configure_execution_protocol",
     "acceptance_critic_active",
     "clear_acceptance_critic_state",
@@ -1042,6 +1531,9 @@ __all__ = [
     "model_owned_review_active",
     "record_candidate_final",
     "record_model_execution_profile",
+    "record_model_plan_update",
+    "record_public_probe_observations",
+    "record_public_probe_plan",
     "record_tool_hypotheses",
     "record_acceptance_probe_plan",
     "record_acceptance_probe_observation",
@@ -1052,6 +1544,8 @@ __all__ = [
     "record_tool_protocol_event",
     "load_candidate_fallback",
     "load_execution_protocol_state",
+    "load_model_plan_update",
+    "load_public_probe_receipts",
     "load_acceptance_critic_state",
     "project_execution_protocol_telemetry",
     "store_candidate_fallback",

@@ -1,51 +1,52 @@
-import os
-from pathlib import Path
-from typing import Dict, Any, List
+from __future__ import annotations
 
-from aworld.agents.llm_agent import Agent
-from aworld.config import AgentConfig, ModelConfig
+import os
+from collections.abc import Sequence
+from pathlib import Path
+
+from aworld.config import AgentConfig
 from aworld.core.agent.swarm import Swarm
-from aworld.core.common import Observation, ActionModel
-from aworld.core.context.amni.config import get_default_config, AgentContextConfig, ContextEnvConfig
-from aworld.core.context.base import Context
-from aworld.core.event.base import Message
-from aworld.runners.hook.hook_factory import HookFactory
-from aworld.runners.hook.hooks import PreLLMCallHook, PostLLMCallHook
+from aworld.core.context.amni.config import (
+    AgentContextConfig,
+    ContextEnvConfig,
+    get_default_config,
+)
+from aworld.core.context.generation_budget import GenerationBudgetPolicy
 from aworld.sandbox import Sandbox
 from aworld_cli.core import agent
 from aworld_cli.core.skill_registry import build_skill_resolver_inputs
-from .mcp_config import mcp_config
+
 from ...agents.sandbox_factory import create_agent_sandbox
+from .._common import (
+    FreshAnswerOnlyCollaborator,
+    inherited_collaborator_config,
+    public_collaborator_prompt,
+    registered_optional_tools,
+)
+from .mcp_config import mcp_config
 
 
-@HookFactory.register(name="pre_developer_hook")
-class PreDeveloperHook(PreLLMCallHook):
-    """Hook triggered before LLM execution. Used for monitoring, logging, etc. Should NOT modify input/output content."""
-    
-    async def exec(self, message: Message, context: Context = None) -> Message:
-        if message.sender.startswith("developer"):
-            pass
-        return message
+_DEVELOPER_PROMPT = """
+You are AWorld's developer collaborator. Implement the bounded public
+development subtask delegated by the root agent in the shared workspace.
+
+Inspect relevant files before editing, preserve unrelated user work, and use
+only tools actually exposed in this run. CAST tools may help when present but
+are never required; terminal and filesystem operations are valid fallbacks.
+Verify material changes with the smallest relevant checks. Do not commit,
+publish, or broaden scope unless the delegated public objective explicitly
+requires it.
+
+Return a concise report containing the outcome, files changed, checks run, and
+remaining gaps. The root agent owns integration and completion.
+"""
 
 
-@HookFactory.register(name="post_developer_hook")
-class PostDeveloperHook(PostLLMCallHook):
-    """Hook triggered after LLM execution. Used for monitoring, logging, etc. Should NOT modify input/output content."""
-    
-    async def exec(self, message: Message, context: Context = None) -> Message:
-        if message.sender.startswith("developer"):
-            pass
-        return message
+class DeveloperAgent(FreshAnswerOnlyCollaborator):
+    """Implement a delegated public development task in the shared workspace."""
 
 
-class DeveloperAgent(Agent):
-    """Analyzes and optimizes existing agents by patching system prompts and tool configuration."""
-
-    async def async_policy(self, observation: Observation, info: Dict[str, Any] = {}, message: Message = None,
-                           **kwargs) -> List[ActionModel]:
-        return await super().async_policy(observation, info, message, **kwargs)
-
-def build_context_config(debug_mode):
+def build_context_config(debug_mode: bool):
     config = get_default_config()
     config.debug_mode = debug_mode
     config.agent_config = AgentContextConfig(
@@ -55,6 +56,7 @@ def build_context_config(debug_mode):
     config.env_config = ContextEnvConfig()
     return config
 
+
 @agent(
     name="developer",
     desc="Analyzes and edits code, HTML, and other files for development work; can develop apps; supports code refactoring and optimization.",
@@ -62,7 +64,16 @@ def build_context_config(debug_mode):
         debug_mode=True,
     ),
 )
-def build_developer_swarm(sandbox: 'Sandbox' = None):
+def build_developer_swarm(
+    sandbox: Sandbox | None = None,
+    *,
+    agent_config: AgentConfig | None = None,
+    generation_budget_policy: GenerationBudgetPolicy | None = None,
+    generation_budget_explicit_fields: Sequence[str] = (),
+    max_loop_steps: int = 0,
+    llm_max_attempts: int = 3,
+    llm_retry_delay: float = 2.0,
+):
     plugin_base_dir = Path(__file__).resolve().parents[2]  # smllc bundle root
     # Get user skills directory from environment (optional)
     env_skills_path = os.environ.get("DEVELOPER_SKILLS_PATH")
@@ -71,20 +82,9 @@ def build_developer_swarm(sandbox: 'Sandbox' = None):
         user_dir=env_skills_path,
     )
 
-    # Create Agent configuration
-    agent_config = AgentConfig(
-        # DO NOT MODIFY: LLM config block below must be preserved exactly (env vars + defaults).
-        llm_config=ModelConfig(
-            llm_model_name=os.environ.get("LLM_MODEL_NAME", "gpt-3.5-turbo"),
-            llm_provider=os.environ.get("LLM_PROVIDER", "openai"),
-            llm_api_key=os.environ.get("LLM_API_KEY"),
-            llm_base_url=os.environ.get("LLM_BASE_URL", "https://api.openai.com/v1"),
-            llm_temperature=float(os.environ.get("LLM_TEMPERATURE", "0.1")),
-            params={"max_completion_tokens": 64000},
-            llm_stream_call=os.environ.get("STREAM", "0").lower() in ("1", "true", "yes")
-        ),
-        skill_configs={},
-        ext={"skill_resolver_inputs": resolver_inputs},
+    collaborator_config = inherited_collaborator_config(
+        agent_config,
+        resolver_inputs=resolver_inputs,
     )
 
     # Sandbox: reuse shared sandbox if provided, otherwise create new one
@@ -99,20 +99,37 @@ def build_developer_swarm(sandbox: 'Sandbox' = None):
     developer_mcp_servers = ["filesystem", "terminal"]
 
     # Skill tool_list: AGENT_REGISTRY, CAST_ANALYSIS, CAST_CODER, CAST_SEARCH
-    tool_names = [
-        "CAST_ANALYSIS", "CAST_CODER", "CAST_SEARCH",
-        "glob",  # Phase 2: File pattern matching
-        "git_status", "git_diff", "git_log", "git_commit", "git_blame"  # Phase 2: Git tools
-    ]
+    tool_names = registered_optional_tools(
+        [
+            "CAST_ANALYSIS",
+            "CAST_CODER",
+            "CAST_SEARCH",
+            "glob",
+            "git_status",
+            "git_diff",
+            "git_log",
+            "git_commit",
+            "git_blame",
+        ]
+    )
 
     developer_agent = DeveloperAgent(
         name="developer",
-        desc="Analyzes and edits code, HTML, and other files for development work; can develop apps; supports code refactoring and optimization.",
-        conf=agent_config,
-        system_prompt=(Path(__file__).resolve().parent / "prompt.txt").read_text(encoding="utf-8"),
+        desc=(
+            "Analyzes and edits code, HTML, and other files for delegated "
+            "development work."
+        ),
+        conf=collaborator_config,
+        system_prompt=public_collaborator_prompt(_DEVELOPER_PROMPT),
         tool_names=tool_names,
         mcp_servers=developer_mcp_servers,  # Explicitly set allowed MCP servers
-        sandbox=sandbox  # Shared sandbox (tools filtered by developer_mcp_servers)
+        sandbox=sandbox,  # Shared sandbox (tools filtered by developer_mcp_servers)
+        enable_subagent=False,
+        llm_max_attempts=llm_max_attempts,
+        llm_retry_delay=llm_retry_delay,
+        generation_budget_policy=generation_budget_policy,
+        _generation_budget_explicit_fields=tuple(generation_budget_explicit_fields),
+        max_loop_steps=max_loop_steps,
     )
 
     # Return the Swarm containing this Agent

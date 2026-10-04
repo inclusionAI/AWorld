@@ -32,6 +32,29 @@ def create_test_context(working_dir=None):
     return context
 
 
+def test_aworld_file_neuron_uses_control_root_for_global_instruction(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    control = tmp_path / "control"
+    control.mkdir()
+    controlled = control / "AWORLD.md"
+    controlled.write_text("managed global", encoding="utf-8")
+    # The autouse fixture maps Path.home() to this per-test directory.
+    ambient = tmp_path / "home" / ".aworld" / "AWORLD.md"
+    ambient.parent.mkdir(parents=True)
+    ambient.write_text("ambient home", encoding="utf-8")
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    monkeypatch.setenv("AWORLD_CONTROL_ROOT", str(control))
+
+    neuron = AWORLDFileNeuron()
+
+    assert neuron._find_aworld_file(
+        create_test_context(working_dir=workspace)
+    ) == controlled
+
+
 @pytest.fixture
 def temp_aworld_file():
     """Create temporary AWORLD.md file"""

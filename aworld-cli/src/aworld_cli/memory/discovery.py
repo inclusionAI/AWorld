@@ -5,6 +5,8 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
+from aworld.utils.runtime_state import runtime_state_path
+
 IMPORT_PATTERN = re.compile(r"^@(?:import\s+)?(.+\.md)\s*$", re.MULTILINE)
 
 
@@ -24,7 +26,10 @@ def discover_workspace_instruction_layers(
     workspace = Path(workspace_path or os.getcwd()).expanduser().resolve()
     global_file = workspace_file = compatibility_file = None
 
-    global_candidate = (Path.home() / ".aworld" / "AWORLD.md").resolve()
+    global_candidate = runtime_state_path(
+        "AWORLD.md",
+        default=Path.home() / ".aworld" / "AWORLD.md",
+    ).resolve()
     if global_candidate.is_file():
         global_file = global_candidate
 

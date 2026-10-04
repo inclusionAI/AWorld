@@ -13,6 +13,7 @@ from .models import (
     ExecutionProtocolEvent,
     ExecutionProtocolPolicy,
     ExecutionProtocolState,
+    PlanUpdateDecision,
     ProtocolMode,
     ProtocolPhase,
     ProtocolTransition,
@@ -104,15 +105,12 @@ def transition_execution_protocol(
             )
         profile = event.model_execution_profile
         next_state = replace(next_state, model_execution_profile=profile)
+        # The model owns the semantic workflow.  A typed long-horizon
+        # declaration arms the protocol directly; confidence, milestone, and
+        # action estimates remain telemetry rather than a second framework
+        # decision that can silently override the model.
         credible_long = (
-            profile is not None
-            and profile.horizon is ExecutionHorizon.LONG
-            and profile.confidence >= policy.model_activation_confidence_threshold
-            and (
-                profile.milestone_count >= policy.model_activation_min_milestones
-                or profile.expected_tool_actions
-                >= policy.model_activation_min_tool_actions
-            )
+            profile is not None and profile.horizon is ExecutionHorizon.LONG
         )
         if credible_long:
             next_state = replace(next_state, long_horizon_armed=True)
@@ -121,6 +119,36 @@ def transition_execution_protocol(
             reason = DecisionReason.MODEL_SHORT_HORIZON
         else:
             reason = DecisionReason.MODEL_PROFILE_INSUFFICIENT
+        return ProtocolTransition(
+            next_state,
+            _decision(ControllerAction.CONTINUE, reason),
+        )
+
+    if event.kind is EventKind.MODEL_PLAN_UPDATE:
+        if state.phase not in {ProtocolPhase.EXECUTE, ProtocolPhase.REPAIR} or (
+            state.review_pending
+        ):
+            return ProtocolTransition(
+                next_state,
+                _decision(ControllerAction.CONTINUE, DecisionReason.INVALID_EVENT),
+            )
+        update = event.model_plan_update
+        next_state = replace(
+            next_state,
+            model_plan_update=update,
+            long_horizon_armed=(
+                update is not None and update.horizon is ExecutionHorizon.LONG
+            ),
+            phase=ProtocolPhase.EXECUTE,
+            attempt_epoch=next_state.attempt_epoch + 1,
+            stagnant_observations=0,
+        )
+        reason = (
+            DecisionReason.MODEL_REPLAN_APPLIED
+            if update is not None
+            and update.decision is PlanUpdateDecision.REPLAN
+            else DecisionReason.MODEL_PLAN_CHECKPOINT
+        )
         return ProtocolTransition(
             next_state,
             _decision(ControllerAction.CONTINUE, reason),
@@ -140,13 +168,6 @@ def transition_execution_protocol(
             reason = DecisionReason.OBSERVATION_RECORDED
 
         stagnant = _is_stagnant(next_state, event, policy)
-        should_arm = (
-            next_state.tool_observation_count >= policy.activation_event_threshold
-            or stagnant
-        )
-        if should_arm and not next_state.long_horizon_armed:
-            next_state = replace(next_state, long_horizon_armed=True)
-
         reserve_reached = (
             event.remaining_seconds is not None
             and event.remaining_seconds <= policy.finalization_reserve_seconds
@@ -157,7 +178,6 @@ def transition_execution_protocol(
                 next_state,
                 phase=ProtocolPhase.FINALIZE,
                 finalization_entered=True,
-                long_horizon_armed=True,
             )
             action = _observed_action(
                 policy.mode,
@@ -170,7 +190,10 @@ def transition_execution_protocol(
             )
 
         if stagnant:
-            if next_state.replan_count >= policy.max_replans:
+            if (
+                policy.max_replans is not None
+                and next_state.replan_count >= policy.max_replans
+            ):
                 # Exhausting the bounded advisory budget only suppresses more
                 # checkpoint injection.  The model retains authority to decide
                 # whether to continue or change approach.  This signal is not
@@ -265,14 +288,11 @@ def transition_execution_protocol(
                     DecisionReason.SHORT_TASK_BYPASS,
                 ),
             )
-        review_budget = (
-            max(policy.max_final_reviews, policy.max_repairs + 1)
-            if policy.independent_acceptance_enabled
-            else policy.max_final_reviews
-        )
-        if next_state.final_review_count < review_budget and (
-            policy.independent_acceptance_enabled or next_state.repair_count == 0
-        ):
+        # Review and repair limits are independent compatibility controls.
+        # ``None`` means caller-deadline bounded; an explicit review limit must
+        # never be widened by the repair setting.
+        review_budget = policy.max_final_reviews
+        if review_budget is None or next_state.final_review_count < review_budget:
             next_state = replace(
                 next_state,
                 phase=ProtocolPhase.REVIEW,
@@ -334,7 +354,10 @@ def transition_execution_protocol(
                 ReviewOutcome.ERROR,
             }
         ):
-            if next_state.repair_count < policy.max_repairs:
+            if (
+                policy.max_repairs is None
+                or next_state.repair_count < policy.max_repairs
+            ):
                 next_state = replace(
                     next_state,
                     phase=ProtocolPhase.REPAIR,

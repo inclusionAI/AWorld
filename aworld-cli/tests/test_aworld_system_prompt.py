@@ -315,7 +315,23 @@ def test_builtin_subagents_can_be_disabled_for_one_shot_runners(
     assert resolve_aworld_builtin_subagents() == ()
 
 
-def test_default_agent_executes_without_loading_specialists(monkeypatch, tmp_path) -> None:
+def test_builtin_subagents_default_to_none_and_keep_explicit_core(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("AWORLD_BUILTIN_SUBAGENTS", raising=False)
+    assert resolve_aworld_builtin_subagents() == ()
+
+    monkeypatch.setenv("AWORLD_BUILTIN_SUBAGENTS", "core")
+    assert resolve_aworld_builtin_subagents() == (
+        "developer",
+        "evaluator",
+        "verifier",
+    )
+
+
+def test_default_agent_is_strictly_single_main_agent(
+    monkeypatch, tmp_path
+) -> None:
     from aworld.agents.llm_agent import get_tool_desc, tool_desc_transform
 
     monkeypatch.delenv("AWORLD_BUILTIN_SUBAGENTS", raising=False)
@@ -323,14 +339,16 @@ def test_default_agent_executes_without_loading_specialists(monkeypatch, tmp_pat
     monkeypatch.setenv("LLM_API_KEY", "offline")
     monkeypatch.chdir(tmp_path)
 
-    def unexpected_import(name):
-        pytest.fail(f"Default agent must not import a specialist: {name}")
-
-    monkeypatch.setattr(aworld_agent, "import_module", unexpected_import)
     assert resolve_aworld_builtin_subagents() == ()
     swarm = aworld_agent.build_aworld_agent()
     assert len(swarm.agents) == 1
-    root = next(iter(swarm.agents.values()))
+    root = next(agent for agent in swarm.agents.values() if agent.name() == "Aworld")
+    collaborators = {
+        agent.name(): agent
+        for agent in swarm.agents.values()
+        if agent.name() != "Aworld"
+    }
+    assert collaborators == {}
     assert root.name() == "Aworld"
     assert root.enable_subagent is False
     assert "WORKBENCH" not in root.tool_names
@@ -346,10 +364,38 @@ def test_default_agent_executes_without_loading_specialists(monkeypatch, tmp_pat
     assert "Configured tool capabilities:" in root.system_prompt
     assert "filesystem" in root.system_prompt
     assert "terminal" in root.system_prompt
+    assert "Available subagents: none" in root.system_prompt
+    assert "do not attempt delegation" in root.system_prompt
     tools, _ = _aworld_root_tool_policy(
         resolve_aworld_tool_surface_profile(), has_subagents=False,
     )
     assert "async_spawn_subagent" not in tools
+
+
+def test_verifier_remains_an_explicit_fresh_context_opt_in(
+    monkeypatch, tmp_path
+) -> None:
+    monkeypatch.setenv("AWORLD_BUILTIN_SUBAGENTS", "verifier")
+    monkeypatch.setenv("LLM_MODEL_NAME", "gpt-4")
+    monkeypatch.setenv("LLM_API_KEY", "offline")
+    monkeypatch.chdir(tmp_path)
+
+    swarm = aworld_agent.build_aworld_agent()
+    assert {agent.name() for agent in swarm.agents.values()} == {
+        "Aworld",
+        "verifier",
+    }
+    root = next(agent for agent in swarm.agents.values() if agent.name() == "Aworld")
+    verifier = next(
+        agent for agent in swarm.agents.values() if agent.name() == "verifier"
+    )
+    assert root.enable_subagent is True
+    assert verifier.enable_subagent is False
+    assert verifier.sandbox is root.sandbox
+    assert verifier.subagent_context_mode == "fresh"
+    assert verifier.subagent_merge_mode == "answer_only"
+    assert "Available subagents: verifier" in root.system_prompt
+    assert "fresh-context cross-check" in root.system_prompt
 
 
 def test_cli_explicit_generation_budget_off_suppresses_skill_auto_watchdog(
@@ -453,7 +499,7 @@ def test_aworld_max_loop_steps_cannot_exceed_hard_limit(
         resolve_aworld_max_loop_steps()
 
 
-def test_optional_subagent_failures_do_not_hide_healthy_subagents(
+def test_cast_unavailable_does_not_hide_developer_or_evaluator(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     class FakeAgent:
@@ -466,13 +512,13 @@ def test_optional_subagent_failures_do_not_hide_healthy_subagents(
     seen_sandboxes = []
 
     def successful_builder(name: str):
-        def build(*, sandbox):
+        def build(*, sandbox, **kwargs):
             seen_sandboxes.append(sandbox)
             return name
 
         return build
 
-    def failing_builder(*, sandbox):
+    def failing_builder(*, sandbox, **kwargs):
         seen_sandboxes.append(sandbox)
         raise RuntimeError("not configured")
 
@@ -497,10 +543,19 @@ def test_optional_subagent_failures_do_not_hide_healthy_subagents(
         sandbox=shared_sandbox, enabled_names=aworld_agent.AWORLD_BUILTIN_SUBAGENT_NAMES,
     )
 
-    assert aworld_agent._subagent_names(agents) == ["audio", "diffusion", "image"]
-    assert seen_sandboxes == [shared_sandbox] * 4
+    assert aworld_agent._subagent_names(agents) == [
+        "audio",
+        "developer",
+        "diffusion",
+        "evaluator",
+        "image",
+        "verifier",
+    ]
+    assert seen_sandboxes == [shared_sandbox] * 7
     assert [name.rsplit(".", 1)[-1] for name in imported] == [
-        "diffusion", "avatar", "audio", "image",
+        "developer",
+        "evaluator",
+        "verifier", "diffusion", "avatar", "audio", "image",
     ]
 
 

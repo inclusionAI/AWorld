@@ -28,9 +28,11 @@ from aworld.runners.execution_protocol import (
     final_review_guidance,
     load_candidate_fallback,
     load_execution_protocol_state,
+    load_model_plan_update,
     model_owned_review_active,
     record_candidate_final,
     record_model_execution_profile,
+    record_model_plan_update,
     record_review_repair_decision,
     record_review_tool_action,
     record_tool_protocol_event,
@@ -67,6 +69,21 @@ def _semantic_state(**overrides):
     return state
 
 
+def _declare_long_horizon(context: Context, agent_id: str = "agent") -> None:
+    transition = record_model_execution_profile(
+        context,
+        agent_id,
+        {
+            "horizon": "long",
+            "confidence": 0.9,
+            "milestone_count": 3,
+            "expected_tool_actions": 8,
+            "verification_required": True,
+        },
+    )
+    assert transition is not None
+
+
 def test_guide_mode_delivers_each_replan_checkpoint_once() -> None:
     context = _context()
     policy = ExecutionProtocolPolicy(
@@ -95,7 +112,28 @@ def test_guide_mode_delivers_each_replan_checkpoint_once() -> None:
     assert consume_execution_protocol_guidance(context, "agent") is None
     state = ExecutionProtocolStore(context, "agent", policy).load()
     assert state.replan_count == 1
-    assert state.attempt_epoch == 1
+    assert state.attempt_epoch == 0
+
+    applied = record_model_plan_update(
+        context,
+        "agent",
+        {
+            "decision": "continue",
+            "horizon": "short",
+            "milestone": "bounded diagnosis",
+            "next_action": "run a different public probe",
+            "verification_plan": "compare the probe result with the request",
+            "completion_assessment": "uncertain",
+            "assumptions": ["the probe is locally available"],
+            "retired_approaches": [],
+            "evidence_refs": ["tool:call-1"],
+            "selected_candidate_id": None,
+        },
+    )
+    assert applied is not None
+    assert applied.state.attempt_epoch == 1
+    assert applied.state.long_horizon_armed is False
+    assert load_model_plan_update(context, "agent")["milestone"] == "bounded diagnosis"
 
 
 def test_observe_mode_records_without_changing_the_prompt() -> None:
@@ -245,12 +283,13 @@ def test_scoped_state_and_bounded_telemetry_are_public_read_only_views() -> None
     telemetry = build_execution_protocol_telemetry(context, "agent")
 
     assert state.scope.task_id == "telemetry"
-    assert state.long_horizon_armed is True
+    assert state.long_horizon_armed is False
     assert telemetry == {
         "schema_version": "aworld.execution-protocol-telemetry/v1",
         "mode": "guide",
         "phase": "execute",
-        "armed": True,
+        "armed": False,
+        "legacy_activation_fields_ignored": True,
         "event_count": 1,
         "tool_observation_count": 1,
         "stagnant_observations": 0,
@@ -260,6 +299,25 @@ def test_scoped_state_and_bounded_telemetry_are_public_read_only_views() -> None
         "repair_count": 0,
         "finalization_entered": False,
     }
+
+
+def test_invalid_model_plan_update_fails_open_without_acknowledging_checkpoint():
+    context = _context("invalid-plan-update")
+    policy = ExecutionProtocolPolicy(
+        mode=ProtocolMode.GUIDE,
+        repetition_threshold=1,
+        stagnation_event_threshold=1,
+    )
+    configure_execution_protocol(context, "agent", policy)
+    record_tool_protocol_event(
+        context, "agent", _semantic_state(repetition_count=1)
+    )
+    assert consume_execution_protocol_guidance(context, "agent") is not None
+
+    assert record_model_plan_update(context, "agent", {"decision": "replan"}) is None
+    state = load_execution_protocol_state(context, "agent")
+    assert state.attempt_epoch == 0
+    assert load_model_plan_update(context, "agent") == {}
 
 
 def test_evidence_fingerprint_change_alone_does_not_reset_stagnation() -> None:
@@ -309,6 +367,7 @@ def test_final_review_is_requested_once_and_unknown_submits_current_result() -> 
         mode=ProtocolMode.GUIDE, activation_event_threshold=1
     )
     configure_execution_protocol(context, "agent", policy)
+    _declare_long_horizon(context)
     record_tool_protocol_event(
         context,
         "agent",
@@ -387,6 +446,7 @@ def test_ordinary_review_tool_action_stays_in_review() -> None:
         mode=ProtocolMode.GUIDE, activation_event_threshold=1
     )
     configure_execution_protocol(context, "agent", policy)
+    _declare_long_horizon(context)
     record_tool_protocol_event(
         context,
         "agent",
@@ -412,6 +472,7 @@ def test_only_strict_structured_review_decision_enters_repair() -> None:
         independent_acceptance_enabled=False,
     )
     configure_execution_protocol(context, "agent", policy)
+    _declare_long_horizon(context)
     record_tool_protocol_event(
         context,
         "agent",

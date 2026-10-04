@@ -193,6 +193,7 @@ def test_aworld_agent_requires_explicit_filex_enable(
     executor._resolve_swarm_skills(task)
 
     assert "filex" not in root.skill_configs
+    assert "workbench" not in root.skill_configs
 
     state.enable_skill("filex")
     executor._resolve_swarm_skills(task)

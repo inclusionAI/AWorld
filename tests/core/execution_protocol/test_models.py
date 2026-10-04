@@ -3,15 +3,70 @@ from dataclasses import FrozenInstanceError, replace
 import pytest
 
 from aworld.core.execution_protocol import (
+    CompletionAssessment,
     ExecutionHorizon,
     EventKind,
     ExecutionProtocolEvent,
     ExecutionProtocolPolicy,
     ExecutionProtocolState,
     ModelExecutionProfile,
+    ModelPlanUpdate,
+    PlanUpdateDecision,
     ProtocolMode,
     ProtocolScope,
 )
+
+
+def _plan_update(**overrides):
+    value = {
+        "decision": "replan",
+        "horizon": "long",
+        "milestone": "produce a runnable candidate",
+        "next_action": "run the smallest discriminating probe",
+        "verification_plan": "execute the public smoke test",
+        "completion_assessment": "in_progress",
+        "assumptions": ["the public test is representative"],
+        "retired_approaches": ["repeat the same failing command"],
+        "evidence_refs": ["tool:call-7", "artifact:sha256:abc"],
+        "selected_candidate_id": "candidate-2",
+    }
+    value.update(overrides)
+    return value
+
+
+def test_model_plan_update_has_a_strict_bounded_round_trip():
+    update = ModelPlanUpdate.from_mapping(_plan_update())
+
+    assert update.decision is PlanUpdateDecision.REPLAN
+    assert update.horizon is ExecutionHorizon.LONG
+    assert update.completion_assessment is CompletionAssessment.IN_PROGRESS
+    assert update.evidence_refs == ("tool:call-7", "artifact:sha256:abc")
+    assert ModelPlanUpdate.from_mapping(update.to_dict()) == update
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("decision", "restart-everything"),
+        ("horizon", "maybe"),
+        ("milestone", ""),
+        ("next_action", "x" * 1025),
+        ("verification_plan", ""),
+        ("completion_assessment", "complete"),
+        ("assumptions", ["x"] * 9),
+        ("retired_approaches", ["x" * 513]),
+        ("evidence_refs", ["x"] * 17),
+        ("selected_candidate_id", "x" * 129),
+    ],
+)
+def test_model_plan_update_rejects_invalid_or_unbounded_claims(field, value):
+    with pytest.raises(ValueError):
+        ModelPlanUpdate.from_mapping(_plan_update(**{field: value}))
+
+
+def test_model_plan_update_rejects_unknown_fields():
+    with pytest.raises(ValueError, match="unknown fields"):
+        ModelPlanUpdate.from_mapping(_plan_update(task_reward=1))
 
 
 @pytest.mark.parametrize(
@@ -84,12 +139,11 @@ def test_model_execution_profile_rejects_unknown_fields():
         ("model_activation_min_tool_actions", 1025),
         ("stagnation_event_threshold", True),
         ("max_replans", -1),
-        ("max_replans", 17),
-        ("max_final_reviews", 2),
-        ("max_repairs", 2),
+        ("max_final_reviews", True),
+        ("max_repairs", -1),
         ("finalization_reserve_seconds", -0.1),
         ("final_review_timeout_seconds", 0),
-        ("final_review_timeout_seconds", 3601),
+        ("final_review_timeout_seconds", 86_401),
         ("review_unarmed_candidates", "yes"),
     ],
 )
@@ -104,6 +158,28 @@ def test_policy_coerces_valid_mode_and_is_immutable():
     assert policy.mode is ProtocolMode.GUIDE
     with pytest.raises(FrozenInstanceError):
         policy.mode = ProtocolMode.OFF
+
+
+def test_policy_leaves_semantic_attempt_counts_model_owned_by_default():
+    policy = ExecutionProtocolPolicy(mode="guide")
+
+    assert policy.max_replans is None
+    assert policy.max_final_reviews is None
+    assert policy.max_repairs is None
+    assert policy.final_review_timeout_seconds is None
+
+
+def test_policy_accepts_explicit_finite_compatibility_limits():
+    policy = ExecutionProtocolPolicy(
+        mode="guide",
+        max_replans=24,
+        max_final_reviews=4,
+        max_repairs=3,
+    )
+
+    assert policy.max_replans == 24
+    assert policy.max_final_reviews == 4
+    assert policy.max_repairs == 3
 
 
 def test_policy_has_a_stable_serialized_round_trip():
@@ -133,7 +209,7 @@ def test_policy_restores_pre_activation_v1_with_safe_default():
     restored = ExecutionProtocolPolicy.from_dict(payload)
 
     assert restored.activation_event_threshold == 6
-    assert restored.final_review_timeout_seconds == 45.0
+    assert restored.final_review_timeout_seconds is None
     assert restored.review_unarmed_candidates is False
 
 

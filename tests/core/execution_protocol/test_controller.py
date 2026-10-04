@@ -11,6 +11,7 @@ from aworld.core.execution_protocol import (
     ExecutionProtocolPolicy,
     ExecutionProtocolState,
     ModelExecutionProfile,
+    ModelPlanUpdate,
     ProtocolPhase,
     ProtocolScope,
     ReviewOutcome,
@@ -78,24 +79,36 @@ def test_high_confidence_model_profile_arms_before_tool_threshold():
     assert transition.decision.reason is DecisionReason.MODEL_LONG_HORIZON
 
 
-@pytest.mark.parametrize(
-    "event",
-    [
-        _profile(horizon=ExecutionHorizon.SHORT),
-        _profile(confidence=0.69),
-        _profile(milestone_count=1, expected_tool_actions=5),
-    ],
-)
-def test_model_profile_cannot_arm_without_credible_long_signal(event):
+def test_short_model_profile_does_not_arm_long_horizon_protocol():
     transition = transition_execution_protocol(
-        _state(), event, ExecutionProtocolPolicy(mode="guide")
+        _state(),
+        _profile(horizon=ExecutionHorizon.SHORT),
+        ExecutionProtocolPolicy(mode="guide"),
     )
 
     assert transition.state.long_horizon_armed is False
     assert transition.state.model_execution_profile is not None
 
 
-def test_short_model_profile_cannot_suppress_framework_tool_fallback():
+@pytest.mark.parametrize(
+    "event",
+    [
+        _profile(confidence=0.01),
+        _profile(milestone_count=1, expected_tool_actions=0),
+    ],
+)
+def test_typed_long_horizon_declaration_is_not_overridden_by_framework_estimates(
+    event,
+):
+    transition = transition_execution_protocol(
+        _state(), event, ExecutionProtocolPolicy(mode="guide")
+    )
+
+    assert transition.state.long_horizon_armed is True
+    assert transition.decision.reason is DecisionReason.MODEL_LONG_HORIZON
+
+
+def test_short_model_profile_remains_authoritative_after_framework_observations():
     policy = ExecutionProtocolPolicy(mode="guide", activation_event_threshold=3)
     state = transition_execution_protocol(
         _state(), _profile(horizon=ExecutionHorizon.SHORT), policy
@@ -108,7 +121,96 @@ def test_short_model_profile_cannot_suppress_framework_tool_fallback():
         ).state
 
     assert state.tool_observation_count == 3
-    assert state.long_horizon_armed is True
+    assert state.long_horizon_armed is False
+
+
+def test_framework_observations_do_not_classify_an_unprofiled_task_as_long():
+    policy = ExecutionProtocolPolicy(mode="guide", activation_event_threshold=1)
+
+    transition = transition_execution_protocol(
+        _state(),
+        _tool(current_step=1, repetition_count=3),
+        policy,
+    )
+
+    assert transition.decision.action is ControllerAction.REQUEST_REPLAN
+    assert transition.state.long_horizon_armed is False
+
+
+def test_model_plan_update_can_reclassify_horizon_and_acknowledge_checkpoint():
+    policy = ExecutionProtocolPolicy(mode="guide", repetition_threshold=1)
+    checkpoint = transition_execution_protocol(
+        _state(), _tool(current_step=1, repetition_count=1), policy
+    )
+    update = ModelPlanUpdate.from_mapping(
+        {
+            "decision": "replan",
+            "horizon": "long",
+            "milestone": "first candidate",
+            "next_action": "implement the bounded fix",
+            "verification_plan": "run the public regression test",
+            "completion_assessment": "in_progress",
+            "assumptions": [],
+            "retired_approaches": ["repeat inspection"],
+            "evidence_refs": ["tool:call-1"],
+            "selected_candidate_id": None,
+        }
+    )
+
+    applied = transition_execution_protocol(
+        checkpoint.state,
+        ExecutionProtocolEvent(
+            kind=EventKind.MODEL_PLAN_UPDATE,
+            model_plan_update=update,
+        ),
+        policy,
+    )
+
+    assert applied.state.long_horizon_armed is True
+    assert applied.state.model_plan_update == update
+    assert applied.state.attempt_epoch == 1
+    assert applied.state.stagnant_observations == 0
+    assert applied.decision.reason is DecisionReason.MODEL_REPLAN_APPLIED
+
+
+def test_model_plan_update_cannot_escape_pending_review_phase():
+    policy = ExecutionProtocolPolicy(
+        mode="guide",
+        review_unarmed_candidates=True,
+        independent_acceptance_enabled=False,
+    )
+    review = transition_execution_protocol(
+        _state(), ExecutionProtocolEvent(kind=EventKind.CANDIDATE_FINAL), policy
+    )
+    update = ModelPlanUpdate.from_mapping(
+        {
+            "decision": "replan",
+            "horizon": "long",
+            "milestone": "repair candidate",
+            "next_action": "change the output",
+            "verification_plan": "rerun the public check",
+            "completion_assessment": "in_progress",
+            "assumptions": [],
+            "retired_approaches": [],
+            "evidence_refs": [],
+            "selected_candidate_id": None,
+        }
+    )
+
+    ignored = transition_execution_protocol(
+        review.state,
+        ExecutionProtocolEvent(
+            kind=EventKind.MODEL_PLAN_UPDATE,
+            model_plan_update=update,
+        ),
+        policy,
+    )
+
+    assert ignored.decision.reason is DecisionReason.INVALID_EVENT
+    assert ignored.state.phase is ProtocolPhase.REVIEW
+    assert ignored.state.review_pending is True
+    assert ignored.state.attempt_epoch == 0
+    assert ignored.state.model_plan_update is None
 
 
 def test_runtime_can_request_model_review_for_an_unarmed_candidate():
@@ -135,7 +237,7 @@ def test_observe_reports_would_replan_without_issuing_guidance():
 
     assert transition.decision.action is ControllerAction.WOULD_REQUEST_REPLAN
     assert transition.state.replan_count == 1
-    assert transition.state.long_horizon_armed is True
+    assert transition.state.long_horizon_armed is False
 
 
 def test_guide_stops_requesting_replans_at_limit_without_revoking_tools():
@@ -189,6 +291,53 @@ def test_guide_stops_requesting_replans_at_limit_without_revoking_tools():
     assert reserve.state.finalization_entered is True
 
 
+def test_default_policy_keeps_replan_advice_available_until_deadline():
+    policy = ExecutionProtocolPolicy(mode="guide", repetition_threshold=2)
+    state = _state()
+
+    for expected_count in range(1, 5):
+        transition = transition_execution_protocol(
+            state,
+            _tool(repetition_count=2),
+            policy,
+        )
+        assert transition.decision.action is ControllerAction.REQUEST_REPLAN
+        assert transition.state.replan_count == expected_count
+        state = transition_execution_protocol(
+            transition.state,
+            ExecutionProtocolEvent(kind=EventKind.REPLAN_APPLIED),
+            policy,
+        ).state
+
+
+def test_default_policy_allows_multiple_evidence_driven_review_repairs():
+    policy = ExecutionProtocolPolicy(
+        mode="guide",
+        review_unarmed_candidates=True,
+        independent_acceptance_enabled=False,
+    )
+    state = _state()
+
+    for expected_count in range(1, 4):
+        review = transition_execution_protocol(
+            state,
+            ExecutionProtocolEvent(kind=EventKind.CANDIDATE_FINAL),
+            policy,
+        )
+        assert review.decision.action is ControllerAction.REQUEST_FINAL_REVIEW
+        repair = transition_execution_protocol(
+            review.state,
+            ExecutionProtocolEvent(
+                kind=EventKind.REVIEW_RESULT,
+                review_outcome=ReviewOutcome.REPAIR,
+            ),
+            policy,
+        )
+        assert repair.decision.action is ControllerAction.REQUEST_REPAIR
+        assert repair.state.repair_count == expected_count
+        state = repair.state
+
+
 def test_observed_progress_resets_stagnation_counter():
     state = replace(_state(), stagnant_observations=5)
     transition = transition_execution_protocol(
@@ -222,7 +371,7 @@ def test_unknown_progress_does_not_accumulate_stagnation_or_request_replan():
         state = transition.state
         decisions.append(transition.decision.action)
 
-    assert state.long_horizon_armed is True
+    assert state.long_horizon_armed is False
     assert state.stagnant_observations == 0
     assert state.replan_count == 0
     assert ControllerAction.REQUEST_REPLAN not in decisions
@@ -250,7 +399,7 @@ def test_observable_no_progress_accumulates_and_requests_replan():
 
     assert transition.decision.action is ControllerAction.REQUEST_REPLAN
     assert state.stagnant_observations == 3
-    assert state.long_horizon_armed is True
+    assert state.long_horizon_armed is False
 
 
 def test_finalization_reserve_is_generic_and_emitted_once():
@@ -264,7 +413,7 @@ def test_finalization_reserve_is_generic_and_emitted_once():
 
     assert first.decision.action is ControllerAction.ENTER_FINALIZATION
     assert first.state.phase is ProtocolPhase.FINALIZE
-    assert first.state.long_horizon_armed is True
+    assert first.state.long_horizon_armed is False
     assert second.decision.action is ControllerAction.CONTINUE
 
 
@@ -290,7 +439,7 @@ def test_candidate_final_in_finalization_reserve_bypasses_review():
     assert submitted.state.phase is ProtocolPhase.COMPLETE
 
 
-def test_tool_event_threshold_arms_long_horizon_protocol():
+def test_tool_event_threshold_never_overrides_model_horizon_ownership():
     policy = ExecutionProtocolPolicy(
         mode="guide",
         activation_event_threshold=3,
@@ -304,11 +453,13 @@ def test_tool_event_threshold_arms_long_horizon_protocol():
             policy,
         ).state
 
-    assert state.long_horizon_armed is True
+    assert state.long_horizon_armed is False
 
 
-def test_default_threshold_arms_after_six_tool_observations() -> None:
-    policy = ExecutionProtocolPolicy(mode="guide")
+def test_default_threshold_does_not_classify_or_force_review() -> None:
+    policy = ExecutionProtocolPolicy(
+        mode="guide", independent_acceptance_enabled=False
+    )
     state = _state()
     for step in range(1, 7):
         state = transition_execution_protocol(
@@ -323,8 +474,8 @@ def test_default_threshold_arms_after_six_tool_observations() -> None:
         policy,
     )
 
-    assert state.long_horizon_armed is True
-    assert transition.decision.action is ControllerAction.REQUEST_FINAL_REVIEW
+    assert state.long_horizon_armed is False
+    assert transition.decision.action is ControllerAction.SUBMIT_CURRENT_RESULT
 
 
 def test_candidate_final_before_arming_bypasses_review_without_consuming_it():
@@ -388,9 +539,12 @@ def test_history_is_bounded_independently_of_total_event_count():
     assert [item.sequence for item in state.history] == [6, 7, 8]
 
 
-def test_first_candidate_final_gets_one_bounded_review_and_repair():
+def test_explicit_limits_keep_one_bounded_review_and_repair_compatibility():
     policy = ExecutionProtocolPolicy(
-        mode="guide", independent_acceptance_enabled=False
+        mode="guide",
+        independent_acceptance_enabled=False,
+        max_final_reviews=1,
+        max_repairs=1,
     )
     review = transition_execution_protocol(
         _armed_state(), ExecutionProtocolEvent(kind=EventKind.CANDIDATE_FINAL), policy

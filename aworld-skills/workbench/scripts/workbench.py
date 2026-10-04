@@ -3,18 +3,20 @@
 
 This CLI records agent self-check evidence. It never infers a contract, decides
 benchmark reward, or represents its receipts as caller/canonical verification.
-The runtime-provided environment is a convenience, not a security boundary:
-changing it cannot expand the calling terminal's operating-system permissions.
+Optional environment and AWorld control-state values are conveniences, not a
+security boundary; changing them cannot expand terminal permissions.
 """
 
 from __future__ import annotations
 
 import argparse
 import asyncio
+import hashlib
 import json
 import os
 import re
 import sys
+import tempfile
 from collections.abc import Mapping
 from copy import deepcopy
 from pathlib import Path
@@ -59,8 +61,8 @@ def _emit(payload: Mapping[str, Any], *, stream=None) -> bool:
 
 
 def _maybe_reexec() -> None:
-    target = str(os.environ.get("AWORLD_PYTHON_EXECUTABLE") or "").strip()
-    if not target or os.environ.get(_REEXEC_MARKER) == "1":
+    target = str(os.environ.get("AWORLD_PYTHON_EXECUTABLE") or sys.executable).strip()
+    if os.environ.get(_REEXEC_MARKER) == "1":
         return
     target_path = Path(target)
     if not target_path.is_absolute() or not target_path.is_file():
@@ -72,39 +74,85 @@ def _maybe_reexec() -> None:
     os.execve(target, [target, str(Path(__file__).resolve()), *sys.argv[1:]], env)
 
 
-def _required_env_path(name: str, *, must_exist: bool) -> Path:
+def _configured_env_path(name: str, *, must_exist: bool) -> Path | None:
     raw = str(os.environ.get(name) or "").strip()
     if not raw:
-        raise WorkbenchCliError(f"Runtime-provided configuration {name} is required")
+        return None
     path = Path(raw)
     if not path.is_absolute():
-        raise WorkbenchCliError(
-            f"Runtime-provided configuration {name} must be absolute"
-        )
+        raise WorkbenchCliError(f"Explicit configuration {name} must be absolute")
     if path.is_symlink():
-        raise WorkbenchCliError(
-            f"Runtime-provided configuration {name} must not be a symbolic link"
-        )
+        raise WorkbenchCliError(f"Explicit configuration {name} must not be a symbolic link")
     resolved = path.resolve(strict=must_exist)
     if must_exist and not resolved.is_dir():
-        raise WorkbenchCliError(
-            f"Runtime-provided configuration {name} must be a directory"
-        )
+        raise WorkbenchCliError(f"Explicit configuration {name} must be a directory")
     return resolved
 
 
+def _is_within(path: Path, parent: Path) -> bool:
+    return path == parent or path.is_relative_to(parent)
+
+
+def _default_state_root(workspace: Path) -> Path:
+    raw_control = str(os.environ.get("AWORLD_CONTROL_ROOT") or "").strip()
+    if raw_control:
+        control = Path(raw_control).expanduser().resolve(strict=False)
+        state = control / "workbench"
+        if _is_within(state, workspace):
+            raise WorkbenchCliError(
+                "AWORLD_CONTROL_ROOT must keep Workbench state outside the workspace"
+            )
+        return state
+
+    raw_xdg = str(os.environ.get("XDG_STATE_HOME") or "").strip()
+    if raw_xdg and Path(raw_xdg).expanduser().is_absolute():
+        control = Path(raw_xdg).expanduser().resolve(strict=False) / "aworld"
+    else:
+        control = Path.home().resolve(strict=False) / ".local" / "state" / "aworld"
+    state = control / "workbench"
+    if _is_within(state, workspace):
+        state = (
+            Path(tempfile.gettempdir()).resolve()
+            / f"aworld-control-{os.getuid()}"
+            / "workbench"
+        )
+    if _is_within(state, workspace):
+        raise WorkbenchCliError("Unable to derive state storage outside the workspace")
+    return state
+
+
+def _derived_scope_id(workspace: Path) -> str:
+    identity = {
+        name: str(os.environ.get(name) or "").strip()
+        for name in ("AWORLD_SESSION_ID", "AWORLD_TASK_ID", "AWORLD_TASK_EPOCH")
+        if str(os.environ.get(name) or "").strip()
+    }
+    if identity:
+        source = json.dumps(identity, ensure_ascii=False, sort_keys=True)
+        kind = "task"
+    else:
+        source = str(workspace)
+        kind = "workspace"
+    digest = hashlib.sha256(source.encode("utf-8")).hexdigest()
+    return f"aworld-{kind}-{digest}"
+
+
 def _runtime_roots() -> tuple[Path, Path, str]:
-    workspace = _required_env_path("WORKBENCH_WORKSPACE_ROOT", must_exist=True)
-    state = _required_env_path("WORKBENCH_STATE_ROOT", must_exist=False)
-    if state == workspace or state.is_relative_to(workspace):
+    workspace = _configured_env_path("WORKBENCH_WORKSPACE_ROOT", must_exist=True)
+    if workspace is None:
+        workspace = Path.cwd().resolve(strict=True)
+    state = _configured_env_path("WORKBENCH_STATE_ROOT", must_exist=False)
+    if state is None:
+        state = _default_state_root(workspace)
+    if _is_within(state, workspace):
         raise WorkbenchCliError("Workbench state root must be outside the workspace")
     if state.exists() and (state.is_symlink() or not state.is_dir()):
         raise WorkbenchCliError("Workbench state root must be a regular directory")
     scope = str(os.environ.get("WORKBENCH_SCOPE_ID") or "").strip()
+    if not scope:
+        scope = _derived_scope_id(workspace)
     if not scope or len(scope) > 256 or any(ord(char) < 33 for char in scope):
-        raise WorkbenchCliError(
-            "Runtime-provided configuration WORKBENCH_SCOPE_ID is invalid"
-        )
+        raise WorkbenchCliError("Explicit configuration WORKBENCH_SCOPE_ID is invalid")
     return workspace, state, scope
 
 
@@ -442,9 +490,9 @@ def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Manage explicit agent self-check artifact candidates",
         epilog=(
-            "WORKBENCH_* values are runtime-provided, agent-mutable configuration, "
-            "not a security boundary. Overrides do not expand terminal permissions "
-            "or create canonical verifier/reward evidence."
+            "WORKBENCH_* values are optional, agent-mutable configuration, not a "
+            "security boundary. Overrides do not expand terminal permissions or "
+            "create canonical verifier/reward evidence."
         ),
     )
     commands = parser.add_subparsers(dest="command", required=True)

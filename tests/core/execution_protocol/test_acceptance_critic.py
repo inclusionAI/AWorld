@@ -53,6 +53,8 @@ def _context(name: str) -> Context:
             mode=ProtocolMode.GUIDE,
             review_unarmed_candidates=True,
             independent_acceptance_enabled=True,
+            max_final_reviews=2,
+            max_repairs=1,
         ),
     )
     return context

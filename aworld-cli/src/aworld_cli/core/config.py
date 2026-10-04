@@ -5,6 +5,7 @@ from typing import Optional, Dict, Any
 
 from dotenv import load_dotenv
 from aworld.logs.util import logger
+from aworld.utils.runtime_state import runtime_state_path
 
 
 class AWorldConfig:
@@ -12,7 +13,9 @@ class AWorldConfig:
     
     def __init__(self):
         self.home_dir = Path.home()
-        self.config_dir = self.home_dir / ".aworld"
+        self.config_dir = runtime_state_path(
+            default=self.home_dir / ".aworld"
+        )
         self.config_file = self.config_dir / "aworld.json"
         self._config: Optional[Dict[str, Any]] = None
     
@@ -278,7 +281,12 @@ def _apply_skills_path_env(skills_cfg: Optional[Dict[str, Any]] = None) -> None:
     SKILLS_PATH fallback: default_skills_base. Others fallback: SKILLS_PATH when unset.
     """
     skills_cfg = skills_cfg or {}
-    default_skills_base = str(Path.home() / ".aworld" / "skills")
+    default_skills_base = str(
+        runtime_state_path(
+            "skills",
+            default=Path.home() / ".aworld" / "skills",
+        )
+    )
     # print(f'default_skills_base {Path.home()}')
     aworld_skills = _get_aworld_skills_path()
     if aworld_skills:

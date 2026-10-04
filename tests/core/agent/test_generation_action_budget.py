@@ -160,15 +160,34 @@ def test_armed_protocol_keeps_watchdog_off_when_skill_is_inactive() -> None:
     assert policy.action_repair_enabled is False
 
 
-def test_armed_long_running_skill_enables_liveness_only_watchdog_defaults() -> None:
+def test_armed_long_running_skill_adds_no_framework_idle_ceiling() -> None:
     policy = _long_running_generation_agent(
         armed=True
     )._resolve_generation_budget_policy()
 
-    assert policy.total_timeout_seconds == 360
-    assert policy.stream_idle_timeout_seconds == 120
+    assert policy.total_timeout_seconds is None
+    assert policy.stream_idle_timeout_seconds is None
     assert policy.active_tool_free_timeout_seconds is None
     assert policy.action_repair_timeout_seconds is None
+    assert policy.action_repair_enabled is False
+
+
+def test_armed_long_running_skill_uses_remaining_task_budget_without_fixed_cap(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    agent = _long_running_generation_agent(armed=True)
+    context = agent.context
+    protocol = agent._resolve_execution_protocol_policy(context)
+    monkeypatch.setattr(context.get_task(), "remaining_seconds", lambda: 1200.0)
+
+    policy = agent._resolve_generation_budget_policy(context)
+
+    assert policy.total_timeout_seconds == pytest.approx(
+        1200.0 - protocol.finalization_reserve_seconds
+    )
+    assert policy.total_timeout_seconds > 360.0
+    assert policy.stream_idle_timeout_seconds is None
+    assert policy.active_tool_free_timeout_seconds is None
     assert policy.action_repair_enabled is False
 
 
@@ -304,7 +323,7 @@ def test_automatic_watchdog_reserves_task_time_for_finalization() -> None:
     # The protocol derives a 15% finalization window from the bounded Task
     # instead of applying the fixed 60-second reserve to short tasks.
     assert 55.0 < policy.total_timeout_seconds <= 55.25
-    assert policy.stream_idle_timeout_seconds == policy.total_timeout_seconds
+    assert policy.stream_idle_timeout_seconds is None
     assert policy.active_tool_free_timeout_seconds is None
     assert policy.action_repair_enabled is False
     metrics = agent.context.context_info[f"generation_budget_policy:{agent.id()}"]
