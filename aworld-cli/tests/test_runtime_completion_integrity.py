@@ -443,6 +443,52 @@ async def test_task_handler_rejects_stale_runner_context_execution_state():
 
 
 @pytest.mark.asyncio
+async def test_task_handler_does_not_use_trajectory_epoch_for_execution_state():
+    task = Task(
+        id="same-task",
+        name="same-task",
+        input="work",
+        trajectory_task_epoch=9,
+    )
+    context = Context(task_id=task.id, task_epoch=0)
+    context.set_task(task)
+    record_execution_state(
+        context,
+        "root-agent",
+        "incomplete",
+        "model_output_truncated",
+        recoverable=True,
+    )
+
+    class TaskRunner:
+        def __init__(self):
+            self.task = task
+            self.context = context
+            self.start_time = time.time()
+            self._task_response = None
+
+        async def stop(self):
+            return None
+
+    handler = DefaultTaskHandler(TaskRunner())
+    events = [
+        event
+        async for event in handler._do_handle(
+            Message(
+                category=Constants.TASK,
+                payload="incomplete answer",
+                headers={"context": context},
+                topic=TopicType.FINISHED,
+            )
+        )
+    ]
+    response = events[-1].payload
+    assert response.success is False
+    assert response.semantic_status == "incomplete"
+    assert response.completion_reason == "model_output_truncated"
+
+
+@pytest.mark.asyncio
 async def test_repeated_prose_is_not_completion():
     async def chat(*args, **kwargs):
         return "I need to continue fixing this."

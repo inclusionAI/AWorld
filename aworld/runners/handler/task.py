@@ -104,16 +104,12 @@ class DefaultTaskHandler(TaskHandler):
         # transport copy can carry the authoritative incomplete/budget stop
         # even when unrelated ContextState data cannot be merged.
         expected_task_id = getattr(self.runner.task, "id", None)
-        expected_task_epoch = getattr(
-            self.runner.task, "trajectory_task_epoch", None
-        )
-        if expected_task_epoch is None:
-            if getattr(self.runner.context, "task_id", None) == expected_task_id:
-                expected_task_epoch = getattr(
-                    self.runner.context, "task_epoch", None
-                )
-            elif getattr(message.context, "task_id", None) == expected_task_id:
-                expected_task_epoch = getattr(message.context, "task_epoch", None)
+        if getattr(self.runner.context, "task_id", None) == expected_task_id:
+            expected_task_epoch = getattr(self.runner.context, "task_epoch", None)
+        elif getattr(message.context, "task_id", None) == expected_task_id:
+            expected_task_epoch = getattr(message.context, "task_epoch", None)
+        else:
+            expected_task_epoch = None
 
         def scoped_execution_state(context):
             value = get_execution_state(context)

@@ -277,6 +277,18 @@ def test_public_delivery_requires_only_a_write_capable_tool() -> None:
         [
             {
                 "type": "function",
+                "function": {"name": "db__run_readonly_query"},
+            },
+            {
+                "type": "function",
+                "function": {"name": "sql__execute_select"},
+            },
+        ]
+    ) is False
+    assert Agent._public_delivery_write_tool_available(
+        [
+            {
+                "type": "function",
                 "function": {"name": "terminal__run_code"},
             }
         ]
