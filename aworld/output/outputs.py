@@ -7,7 +7,7 @@ from typing import AsyncIterator, Any, Union, Iterator, Optional
 
 from aworld.logs.util import logger
 from aworld.output import Output
-from aworld.output.base import RUN_FINISHED_SIGNAL, MessageOutput
+from aworld.output.base import ChunkOutput, RUN_FINISHED_SIGNAL, MessageOutput
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -186,7 +186,12 @@ class StreamingOutputs(AsyncOutputs):
 
                 try:
                     output = await self._next_output_or_producer_completion()
-                    logger.info("Outputs got output: {}".format(output.output_type()))
+                    if isinstance(output, ChunkOutput):
+                        logger.debug("Outputs got stream chunk")
+                    else:
+                        logger.info(
+                            "Outputs got output: {}".format(output.output_type())
+                        )
                     self._visited_outputs.append(output)
 
                 except asyncio.CancelledError as err:

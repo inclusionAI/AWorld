@@ -5,6 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
+import aworld.models.llm as llm_module
 from aworld.config import ConfigDict
 from aworld.core.context.base import Context
 from aworld.core.context.compiler import canonical_json_hash
@@ -157,6 +158,59 @@ class ReasoningRecordingProvider(RecordingLLMProvider):
         self.kwargs_by_method["astream_completion"] = dict(kwargs)
         async for chunk in super().astream_completion(messages, **kwargs):
             yield chunk
+
+
+class ManyChunkRecordingProvider(RecordingLLMProvider):
+    def stream_completion(self, messages, **kwargs):
+        self.seen_requests.append(messages)
+        for index in range(1_000):
+            yield ModelResponse(
+                id="many-chunk-sync",
+                model=self.model_name,
+                content="x",
+                finish_reason="stop" if index == 999 else None,
+            )
+
+    async def astream_completion(self, messages, **kwargs):
+        self.seen_requests.append(messages)
+        for index in range(1_000):
+            yield ModelResponse(
+                id="many-chunk-async",
+                model=self.model_name,
+                content="x",
+                finish_reason="stop" if index == 999 else None,
+            )
+
+
+class ClosableSyncStreamProvider(RecordingLLMProvider):
+    class Iterator:
+        def __init__(self, model_name):
+            self.model_name = model_name
+            self.closed = False
+
+        def __iter__(self):
+            return self
+
+        def __next__(self):
+            if self.closed:
+                raise StopIteration
+            return ModelResponse(
+                id="closable-sync-stream",
+                model=self.model_name,
+                content="partial",
+            )
+
+        def close(self):
+            self.closed = True
+
+    def __init__(self):
+        super().__init__()
+        self.iterator = None
+
+    def stream_completion(self, messages, **kwargs):
+        self.seen_requests.append(messages)
+        self.iterator = self.Iterator(self.model_name)
+        return self.iterator
 
 
 @pytest.mark.asyncio
@@ -955,6 +1009,66 @@ def test_stream_completion_appends_one_final_llm_call_record():
     assert diagnostics["stream"]["chunk_count"] == 2
     assert diagnostics["stream"]["content_chars_observed"] == len("partialfinal")
     assert diagnostics["stream"]["first_chunk_latency_ms"] >= 0
+
+
+@pytest.mark.asyncio
+async def test_stream_logging_is_constant_per_call_for_many_chunks(monkeypatch):
+    directions = []
+
+    def record_log(direction, *_args, **_kwargs):
+        directions.append(direction)
+
+    monkeypatch.setattr(llm_module, "log_llm_record", record_log)
+    provider = ManyChunkRecordingProvider()
+    llm_model = LLMModel(custom_provider=provider)
+
+    assert len(list(llm_model.stream_completion([{"role": "user", "content": "sync"}]))) == 1_000
+    assert len(
+        [
+            chunk
+            async for chunk in llm_model.astream_completion(
+                [{"role": "user", "content": "async"}]
+            )
+        ]
+    ) == 1_000
+
+    assert directions.count("CHUNK") == 0
+    assert directions.count("STREAM_SUMMARY") == 2
+    assert directions == [
+        "INPUT",
+        "STREAM_SUMMARY",
+        "INPUT",
+        "STREAM_SUMMARY",
+    ]
+
+
+def test_sync_stream_early_close_closes_provider_and_logs_one_cancelled_summary(
+    monkeypatch,
+):
+    records = []
+
+    def record_log(direction, _model, data, *_args, **_kwargs):
+        records.append((direction, data))
+
+    monkeypatch.setattr(llm_module, "log_llm_record", record_log)
+    provider = ClosableSyncStreamProvider()
+    llm_model = LLMModel(custom_provider=provider)
+    context = Context(task_id="closable-sync-stream")
+    stream = llm_model.stream_completion(
+        [{"role": "user", "content": "sync"}], context=context
+    )
+
+    assert next(stream).content == "partial"
+    stream.close()
+
+    assert provider.iterator is not None
+    assert provider.iterator.closed is True
+    summaries = [data for direction, data in records if direction == "STREAM_SUMMARY"]
+    assert len(summaries) == 1
+    assert summaries[0]["terminal_status"] == "cancelled"
+    assert summaries[0]["terminal_error"] == "stream_closed_early"
+    assert summaries[0]["chunk_count"] == 1
+    assert context.get_llm_calls()[0]["status"] == "cancelled"
 
 
 def test_stream_completion_uses_last_meaningful_chunk_for_llm_call_record():

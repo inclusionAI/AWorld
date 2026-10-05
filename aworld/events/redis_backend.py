@@ -4,7 +4,7 @@ import pickle
 import traceback
 
 from aworld.config import BaseConfig
-from aworld.core.event.base import Message
+from aworld.core.event.base import Constants, Message
 from aworld.events import InMemoryEventbus
 from aworld.logs.util import logger
 
@@ -31,16 +31,28 @@ class RedisEventbus(InMemoryEventbus):
         return await self.client.dbsize()
 
     async def publish(self, message: Message, **kwargs):
-        logger.info(f"publish message: {message} of task: {message.task_id}")
+        if message.category == Constants.CHUNK:
+            logger.debug(
+                f"publish stream chunk id={message.id} task={message.task_id}"
+            )
+        else:
+            logger.info(f"publish message: {message} of task: {message.task_id}")
 
         name = message.task_id
         try:
             data = {"data": pickle.dumps(message)}
             msg_id = await self.client.xadd(name=name, id="*", fields=data)
-            logger.info(f"redis add id {msg_id} to {name} channel.")
+            if message.category == Constants.CHUNK:
+                logger.debug(f"redis add stream chunk id {msg_id} to {name} channel.")
+            else:
+                logger.info(f"redis add id {msg_id} to {name} channel.")
             return msg_id
         except Exception:
-            logger.error(f"Error sending msg to redis eventbus, {message}\n{traceback.format_exc()}")
+            logger.error(
+                "Error sending message to redis eventbus; "
+                f"message_id={message.id} category={message.category} "
+                f"task={message.task_id}\n{traceback.format_exc()}"
+            )
             # Publishing is part of the terminal response delivery contract.
             # Propagate the failure so the runner can activate its local
             # fallback instead of treating a dropped Redis write as success.
@@ -54,7 +66,12 @@ class RedisEventbus(InMemoryEventbus):
                 message_id = msg[0]
                 message_content = msg[1]
                 data = pickle.loads(message_content.get(b"data"))
-                logger.info(f"Get message: {message_id} with content {data}")
+                if data.category == Constants.CHUNK:
+                    logger.debug(
+                        f"Get stream chunk message: {message_id} task={data.task_id}"
+                    )
+                else:
+                    logger.info(f"Get message: {message_id} with content {data}")
                 await self.client.xdel(name, message_id)
                 return data
         return None

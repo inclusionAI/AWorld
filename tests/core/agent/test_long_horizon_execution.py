@@ -1735,10 +1735,19 @@ def test_strict_critic_uses_required_probe_control_not_review_marker(
 
 
 @pytest.mark.asyncio
-async def test_production_policy_path_records_one_decision_then_exposes_real_tools() -> (
-    None
-):
+@pytest.mark.parametrize(
+    ("caller_reasoning", "expected_reasoning"),
+    [
+        (None, ["xhigh", "high"]),
+        ("max", ["xhigh", "xhigh"]),
+    ],
+)
+async def test_production_policy_path_records_one_decision_then_exposes_real_tools(
+    caller_reasoning,
+    expected_reasoning,
+) -> None:
     captured_tools = []
+    captured_reasoning = []
 
     class ProfileAgent(Agent):
         async def _add_message_to_memory(self, *args, **kwargs):
@@ -1764,6 +1773,7 @@ async def test_production_policy_path_records_one_decision_then_exposes_real_too
 
         async def invoke_model(self, messages=None, message=None, **kwargs):
             captured_tools.append(kwargs["prepared_tools"])
+            captured_reasoning.append(kwargs.get("reasoning_effort"))
             if len(captured_tools) == 1:
                 function_name = "aworld__execution_decision"
                 arguments = {
@@ -1828,6 +1838,8 @@ async def test_production_policy_path_records_one_decision_then_exposes_real_too
         max_loop_steps=0,
     )
     agent.skill_configs = {"long-running-agent": {"active": True}}
+    agent.conf.llm_config.reasoning_phase_policy = ReasoningPhasePolicy.balanced()
+    agent.conf.llm_config.reasoning_transport = "openai"
     agent._llm = SimpleNamespace(
         context_compiler_mode="enforce",
         _context_progressive_skills=False,
@@ -1837,16 +1849,25 @@ async def test_production_policy_path_records_one_decision_then_exposes_real_too
         _context_task_catalog_policy="sticky",
         _context_artifact_offload=True,
         enforced_tool_output_policy=None,
-        provider=None,
+        provider=SimpleNamespace(
+            reasoning_transport_capability=lambda: OPENAI_REASONING_CAPABILITY
+        ),
     )
     message = Message(category=Constants.AGENT, headers={"context": context})
 
+    request_kwargs = (
+        {"reasoning_effort": caller_reasoning}
+        if caller_reasoning is not None
+        else {}
+    )
     result = await agent.async_policy(
         Observation(content="complete the task"),
         message=message,
+        **request_kwargs,
     )
 
     assert len(captured_tools) == 2
+    assert captured_reasoning == expected_reasoning
     assert captured_tools[0][0]["function"]["name"] == ("aworld__execution_decision")
     assert (
         "__aworld_execution_profile"
@@ -2695,6 +2716,7 @@ async def test_independent_uncertain_review_returns_typed_incomplete_outcome(
     calls = 0
     clock = 0.0
     requests = []
+    captured_reasoning = []
 
     def monotonic_now() -> float:
         return clock
@@ -2717,6 +2739,7 @@ async def test_independent_uncertain_review_returns_typed_incomplete_outcome(
             nonlocal calls, clock
             calls += 1
             requests.append(messages)
+            captured_reasoning.append(kwargs.get("reasoning_effort"))
             if calls in {1, 3}:
                 content = f"candidate-{calls}"
             else:
@@ -2781,12 +2804,15 @@ async def test_independent_uncertain_review_returns_typed_incomplete_outcome(
         execution_protocol_policy=policy,
         max_loop_steps=0,
     )
+    agent.conf.llm_config.reasoning_phase_policy = ReasoningPhasePolicy.balanced()
+    agent.conf.llm_config.reasoning_transport = "openai"
     monkeypatch.setattr(llm_agent_module, "_monotonic_now", monotonic_now)
     message = Message(category=Constants.AGENT, headers={"context": context})
 
     result = await agent.async_policy(Observation(content="start"), message=message)
 
     assert calls == 4
+    assert captured_reasoning == ["high", "xhigh", "high", "xhigh"]
     assert "completion is unverified" in result[0].policy_info.lower()
     state = get_execution_state(context)
     assert state["status"] == "incomplete"

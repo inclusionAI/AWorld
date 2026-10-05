@@ -850,7 +850,12 @@ class TaskEventRunner(TaskRunner):
         event_bus = self.event_mng.event_bus
 
         key = message.category
-        logger.info(f"Task {self.task.id} consume message: {message}")
+        if key == Constants.CHUNK:
+            logger.debug(
+                f"Task {self.task.id} consume stream chunk message_id={message.id}"
+            )
+        else:
+            logger.info(f"Task {self.task.id} consume message: {message}")
         if key == Constants.TOOL_CALLBACK:
             logger.info(f"Task {self.task.id} Tool callback message {message.id}")
         transformer = self.event_mng.get_transform_handler(key)
@@ -925,13 +930,22 @@ class TaskEventRunner(TaskRunner):
                                       handler=handler,
                                       attributes={semconv.TRACE_ID: self.context.trace_id}):
             try:
-                logger.info(f"process start message id: {message.id} of task {self.task.id}")
+                log_progress = (
+                    logger.debug
+                    if message.category == Constants.CHUNK
+                    else logger.info
+                )
+                log_progress(
+                    f"process start message id: {message.id} of task {self.task.id}"
+                )
                 if asyncio.iscoroutinefunction(handler):
                     con = await handler(con)
                 else:
                     con = handler(con)
 
-                logger.info(f"process end message id: {message.id} of task {self.task.id}")
+                log_progress(
+                    f"process end message id: {message.id} of task {self.task.id}"
+                )
                 if isinstance(con, Message):
                     # process in framework
                     self.state_manager.save_message_handle_result(name=handler.__name__,

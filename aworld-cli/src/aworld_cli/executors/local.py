@@ -2254,11 +2254,6 @@ class LocalAgentExecutor(BaseAgentExecutor):
                                     tc_content_est = meta.get("tool_calls_content_estimated", False)
                                     agent_id = meta.get("agent_id")
                                     agent_name = meta.get("agent_name")
-                                    logger.info(
-                                        f"agent_name={agent_name} chunk_summary="
-                                        f"{summarize_llm_payload_for_log(chunk) if chunk else {}} "
-                                        f"buffer={_stream_buffer_log_summary(ctrl.buffer.accumulated_content, ctrl.buffer.accumulated_tool_calls)}"
-                                    )
                                     if out_tok is None or inp_tok is None or tc_count is None:
                                         chunk = output.data if hasattr(output, "data") else getattr(output, "data", None)
                                         if chunk:

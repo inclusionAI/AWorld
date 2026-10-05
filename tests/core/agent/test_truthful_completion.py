@@ -250,7 +250,7 @@ async def test_deployed_probe_composition_never_finishes_reasoning_length_respon
 
 
 @pytest.mark.asyncio
-async def test_stream_info_logs_keep_reasoning_and_content_payloads_out(monkeypatch):
+async def test_stream_chunks_do_not_emit_agent_info_logs(monkeypatch):
     agent = _agent(policy=GenerationBudgetPolicy(total_timeout_seconds=5))
     message = _message("bounded stream log")
     secret = "private-stream-payload"
@@ -282,10 +282,7 @@ async def test_stream_info_logs_keep_reasoning_and_content_payloads_out(monkeypa
 
     assert response.content == secret
     assert response.reasoning_content == secret * 2
-    assert log_messages
-    assert all(secret not in entry for entry in log_messages)
-    assert any('"content_chars": 22' in entry for entry in log_messages)
-    assert any('"reasoning_chars": 44' in entry for entry in log_messages)
+    assert log_messages == []
 
 
 @pytest.mark.asyncio

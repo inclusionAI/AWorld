@@ -294,6 +294,9 @@ _LLM_LOG_FORMATTER = (
 llm_logger = AWorldLogger(tag='llm', name='AWorld', formatter=_LLM_LOG_FORMATTER)
 
 _SAFE_LLM_STATUS = re.compile(r"^[A-Za-z0-9_.:-]{1,64}$")
+_SAFE_LLM_RECEIPT_LABEL = re.compile(
+    r"^[A-Za-z0-9][A-Za-z0-9._:+/-]{0,127}$"
+)
 
 
 def _llm_field(value: Any, name: str, default: Any = None) -> Any:
@@ -431,6 +434,76 @@ def summarize_llm_record_for_log(direction: str, data: Any) -> Dict[str, Any]:
         return _input_log_summary(data)
     if normalized in {"OUTPUT", "CHUNK"}:
         return summarize_llm_payload_for_log(data)
+    if normalized == "STREAM_SUMMARY":
+        source = data if isinstance(data, dict) else {}
+
+        def bounded_metric(name: str) -> int:
+            value = source.get(name)
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                return 0
+            try:
+                return max(0, min(int(value), 2_147_483_647))
+            except (OverflowError, ValueError):
+                return 0
+
+        status = source.get("terminal_status")
+        if not isinstance(status, str) or not _SAFE_LLM_STATUS.fullmatch(status):
+            status = "unknown"
+        error_code = source.get("terminal_error")
+        if not isinstance(error_code, str) or not _SAFE_LLM_STATUS.fullmatch(
+            error_code
+        ):
+            error_code = None
+        return {
+            "schema_version": "aworld.llm-stream-summary-log.v1",
+            "terminal_status": status,
+            "terminal_error": error_code,
+            "reported": source.get("reported") is True,
+            "chunk_count": bounded_metric("chunk_count"),
+            "content_chars_observed": bounded_metric("content_chars_observed"),
+            "reasoning_chars_observed": bounded_metric(
+                "reasoning_chars_observed"
+            ),
+            "tool_call_chunks": bounded_metric("tool_call_chunks"),
+            "tool_argument_chars_observed": bounded_metric(
+                "tool_argument_chars_observed"
+            ),
+            "first_chunk_latency_ms": bounded_metric("first_chunk_latency_ms"),
+            "duration_ms": bounded_metric("duration_ms"),
+        }
+    if normalized == "REASONING_SELECTION":
+        source = data if isinstance(data, dict) else {}
+
+        def safe_label(name: str) -> str | None:
+            value = source.get(name)
+            return (
+                value
+                if isinstance(value, str)
+                and _SAFE_LLM_RECEIPT_LABEL.fullmatch(value)
+                else None
+            )
+
+        status = source.get("status")
+        return {
+            "schema_version": "aworld.reasoning-selection-log.v1",
+            "status": (
+                status
+                if isinstance(status, str) and _SAFE_LLM_STATUS.fullmatch(status)
+                else "recorded"
+            ),
+            "phase": safe_label("phase"),
+            "source": safe_label("source"),
+            "reasoning_effort": safe_label("reasoning_effort"),
+            "thinking": (
+                source.get("thinking")
+                if type(source.get("thinking")) is bool
+                else None
+            ),
+            "policy_id": safe_label("policy_id"),
+            "transport": safe_label("transport"),
+            "applied": source.get("applied") is True,
+            "reason_code": safe_label("reason_code"),
+        }
     if normalized == "OPENAI_PARAMS":
         return _request_params_log_summary(data)
     return {
@@ -551,7 +624,6 @@ def log_llm_record(
         model_name=model_name,
         meta=meta_str,
     )
-    bound_logger.info(json.dumps(body, ensure_ascii=False))
     raw_payload_opt_in = os.getenv(
         "AWORLD_LLM_LOG_RAW_PAYLOADS", "false"
     ).lower() in {"true", "1", "yes"} or (
@@ -559,6 +631,12 @@ def log_llm_record(
         and os.getenv("AWORLD_LLM_LOG_RAW_CHUNKS", "false").lower()
         in {"true", "1", "yes"}
     )
+    # A stream can contain tens of thousands of deltas.  Per-chunk INFO
+    # summaries still exhaust log budgets even though each record is bounded.
+    # The model boundary emits one STREAM_SUMMARY per call instead; raw chunk
+    # inspection remains an explicit DEBUG-only diagnostic.
+    if not is_stream_chunk:
+        bound_logger.info(json.dumps(body, ensure_ascii=False))
     if raw_payload_opt_in:
         # Full payloads stay out of ordinary INFO logs. The explicit opt-in is
         # DEBUG-only because it may contain prompts, reasoning, or Tool args.

@@ -5676,6 +5676,12 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             tool_free_finalization=tool_free_finalization,
             role_reasoning_phase=getattr(self, "reasoning_phase_override", None),
         )
+        # Continuations are new execution boundaries and must resolve their own
+        # phase profile.  Keep the caller-owned request before adding this
+        # turn's framework-owned reasoning selection; otherwise a plan/review
+        # effort is replayed as an explicit caller pin on the following
+        # execute/repair turn.
+        continuation_request_kwargs = dict(kwargs)
         kwargs, reasoning_selection = self._apply_reasoning_phase_policy(
             kwargs,
             phase=reasoning_phase,
@@ -6394,7 +6400,7 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         if execution_decision_feedback:
             recursive_kwargs = {
                 key: value
-                for key, value in kwargs.items()
+                for key, value in continuation_request_kwargs.items()
                 if key
                 not in {
                     "response_parse_args",
@@ -6425,7 +6431,7 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         if long_horizon_review_feedback:
             recursive_kwargs = {
                 key: value
-                for key, value in kwargs.items()
+                for key, value in continuation_request_kwargs.items()
                 if key
                 not in {
                     "response_parse_args",
@@ -6457,7 +6463,7 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                 observation=observation,
                 info=info,
                 message=message,
-                kwargs=kwargs,
+                kwargs=continuation_request_kwargs,
                 iterative=True,
             )
 
@@ -7802,11 +7808,6 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                 if chunk.is_tool_progress_only:
                     continue
 
-                logger.info(
-                    "llm_agent chunk summary "
-                    f"[agent_name={self.name()}, agent_id={self.id()}]: "
-                    f"{json.dumps(summarize_llm_payload_for_log(chunk), sort_keys=True)}"
-                )
                 if chunk.content:
                     llm_response.content += chunk.content
                 if chunk.reasoning_content:

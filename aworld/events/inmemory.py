@@ -5,7 +5,7 @@ from inspect import isfunction
 from typing import Dict, Callable, Any, List
 
 from aworld.core.common import Config
-from aworld.core.event.base import Message
+from aworld.core.event.base import Constants, Message
 from aworld.core.event.event_bus import Eventbus
 from aworld.logs.util import logger
 
@@ -25,7 +25,13 @@ class InMemoryEventbus(Eventbus):
 
     async def publish(self, message: Message, **kwargs):
         type = kwargs.get("type", "")
-        logger.info(f"{type}|publish message: {message} of task: {message.task_id}")
+        if message.category == Constants.CHUNK:
+            logger.debug(
+                f"{type}|publish stream chunk id={message.id} "
+                f"task={message.task_id}"
+            )
+        else:
+            logger.info(f"{type}|publish message: {message} of task: {message.task_id}")
         queue = self._message_queue.get(message.task_id)
         if not queue:
             queue = PriorityQueue()

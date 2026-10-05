@@ -906,6 +906,44 @@ class LLMModel:
                 )
             )
 
+    @classmethod
+    def _log_stream_summary(
+        cls,
+        *,
+        model_name: str,
+        diagnostics: dict[str, Any],
+        terminal_status: str,
+        terminal_error: str | None,
+        started_at: float,
+        finished_at: float,
+        params: dict[str, Any],
+        trace_id: str | None,
+    ) -> None:
+        """Emit one content-free record for the entire provider stream."""
+        payload = dict(diagnostics)
+        payload.update(
+            {
+                "terminal_status": terminal_status,
+                "terminal_error": terminal_error,
+                "duration_ms": cls._bounded_diagnostic_metric(
+                    round(max(finished_at - started_at, 0.0) * 1000)
+                ),
+            }
+        )
+        try:
+            log_llm_record(
+                "STREAM_SUMMARY",
+                model_name,
+                payload,
+                params,
+                trace_id,
+            )
+        except Exception as exc:
+            logger.warning(
+                "LLM stream summary logging failed; "
+                f"error_type={type(exc).__name__}"
+            )
+
     @staticmethod
     def _has_meaningful_value(value: Any) -> bool:
         if value is None or value == "" or value is False:
@@ -2361,6 +2399,19 @@ class LLMModel:
         )
         if reasoning_selection_receipt is not None:
             llm_call["reasoning_selection"] = reasoning_selection_receipt
+            try:
+                log_llm_record(
+                    "REASONING_SELECTION",
+                    str(llm_call["model"] or "unknown-model"),
+                    reasoning_selection_receipt,
+                    {"task_id": context.task_id, "request_id": request_id},
+                    context.trace_id or None,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "Reasoning selection logging failed; "
+                    f"error_type={type(exc).__name__}"
+                )
         try:
             turn_receipt = context.record_model_turn(request_id, messages)
             llm_call["turn_economics"] = turn_receipt.to_redacted_dict()
@@ -3233,15 +3284,17 @@ class LLMModel:
             kwargs[AWORLD_PROVIDER_CANDIDATE_KWARG] = provider_candidate
         if observed_attribution is not None:
             kwargs[AWORLD_PROVIDER_OBSERVED_ATTRIBUTION_KWARG] = observed_attribution
+        provider_stream = None
         try:
-            for chunk in self.provider.stream_completion(
+            provider_stream = self.provider.stream_completion(
                 messages=messages,
                 temperature=temperature,
                 max_tokens=max_tokens,
                 stop=stop,
                 context=context,
                 **kwargs,
-            ):
+            )
+            for chunk in provider_stream:
                 self._observe_stream_chunk(
                     stream_diagnostics,
                     chunk,
@@ -3262,18 +3315,6 @@ class LLMModel:
                     )
                     chunk.tool_call_progress = tool_progress
                     chunk.usage_is_cumulative = cumulative_usage
-                log_params["time_cost"] = round(time.time() - start_ms, 3)
-                log_params["stream_chunk_index"] = stream_diagnostics[
-                    "chunk_count"
-                ]
-                log_llm_record(
-                    "CHUNK",
-                    self.provider.model_name,
-                    chunk,
-                    log_params,
-                    context_trace_id,
-                )
-                start_ms = time.time()
                 final_chunk = chunk
                 record_chunk = self._capture_stream_response_record(record_chunk, chunk)
                 yield chunk
@@ -3298,23 +3339,43 @@ class LLMModel:
                 terminal_error = "provider_stream_failed"
             raise
         finally:
-            # Every yielded non-progress chunk was already folded into
-            # ``record_chunk``. Re-merging ``final_chunk`` here would double
-            # count a terminal delta-usage chunk.
-            persisted_chunk = (
-                record_chunk
-                if record_chunk is not None
-                else self._safe_copy(final_chunk)
-            )
-            self._finish_llm_call_record(
-                context=context,
-                request_id=request_id,
-                status=terminal_status,
-                response=persisted_chunk,
-                finished_at=time.time(),
-                error_code=terminal_error,
-                stream_diagnostics=stream_diagnostics,
-            )
+            try:
+                close = getattr(provider_stream, "close", None)
+                if close is not None:
+                    close()
+            except Exception as exc:
+                logger.warning(
+                    f"Provider stream cleanup failed; error_type={type(exc).__name__}"
+                )
+            finally:
+                # Every yielded non-progress chunk was already folded into
+                # ``record_chunk``. Re-merging ``final_chunk`` here would double
+                # count a terminal delta-usage chunk.
+                persisted_chunk = (
+                    record_chunk
+                    if record_chunk is not None
+                    else self._safe_copy(final_chunk)
+                )
+                finished_at = time.time()
+                self._finish_llm_call_record(
+                    context=context,
+                    request_id=request_id,
+                    status=terminal_status,
+                    response=persisted_chunk,
+                    finished_at=finished_at,
+                    error_code=terminal_error,
+                    stream_diagnostics=stream_diagnostics,
+                )
+                self._log_stream_summary(
+                    model_name=self.provider.model_name,
+                    diagnostics=stream_diagnostics,
+                    terminal_status=terminal_status,
+                    terminal_error=terminal_error,
+                    started_at=stream_started_at,
+                    finished_at=finished_at,
+                    params={"task_id": context_task_id, "request_id": request_id},
+                    trace_id=context_trace_id,
+                )
 
     async def astream_completion(
         self,
@@ -3429,15 +3490,16 @@ class LLMModel:
             kwargs[AWORLD_PROVIDER_CANDIDATE_KWARG] = provider_candidate
         if observed_attribution is not None:
             kwargs[AWORLD_PROVIDER_OBSERVED_ATTRIBUTION_KWARG] = observed_attribution
-        provider_stream = self.provider.astream_completion(
-            messages=messages,
-            temperature=temperature,
-            max_tokens=max_tokens,
-            stop=stop,
-            context=context,
-            **kwargs,
-        )
+        provider_stream = None
         try:
+            provider_stream = self.provider.astream_completion(
+                messages=messages,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                stop=stop,
+                context=context,
+                **kwargs,
+            )
             async for chunk in provider_stream:
                 self._observe_stream_chunk(
                     stream_diagnostics,
@@ -3457,18 +3519,6 @@ class LLMModel:
                     )
                     chunk.tool_call_progress = tool_progress
                     chunk.usage_is_cumulative = cumulative_usage
-                log_params["time_cost"] = round(time.time() - start_ms, 3)
-                log_params["stream_chunk_index"] = stream_diagnostics[
-                    "chunk_count"
-                ]
-                log_llm_record(
-                    "CHUNK",
-                    self.provider.model_name,
-                    chunk,
-                    log_params,
-                    context_trace_id,
-                )
-                start_ms = time.time()
                 final_chunk = chunk
                 record_chunk = self._capture_stream_response_record(record_chunk, chunk)
                 yield chunk
@@ -3507,14 +3557,25 @@ class LLMModel:
                     if record_chunk is not None
                     else self._safe_copy(final_chunk)
                 )
+                finished_at = time.time()
                 self._finish_llm_call_record(
                     context=context,
                     request_id=request_id,
                     status=terminal_status,
                     response=persisted_chunk,
-                    finished_at=time.time(),
+                    finished_at=finished_at,
                     error_code=terminal_error,
                     stream_diagnostics=stream_diagnostics,
+                )
+                self._log_stream_summary(
+                    model_name=self.provider.model_name,
+                    diagnostics=stream_diagnostics,
+                    terminal_status=terminal_status,
+                    terminal_error=terminal_error,
+                    started_at=stream_started_at,
+                    finished_at=finished_at,
+                    params={"task_id": context_task_id, "request_id": request_id},
+                    trace_id=context_trace_id,
                 )
 
     def speech_to_text(
