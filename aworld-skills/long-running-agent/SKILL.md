@@ -30,26 +30,29 @@ because this skill is enabled. Adopt the long-running workflow only when the
 AWorld execution engine requests a checkpoint or final review, or when sustained
 dependent work actually needs a recoverable rolling plan.
 
-## Declare a long horizon without a separate turn
+## Make the execution decision explicitly
 
-When the first actual Tool call exposes the optional
-`__aworld_execution_profile` parameter, include it when the current plan
-credibly needs multiple dependent milestones or at least six Tool actions.
-Include the profile in the same real tool call that you already need; the
-AWorld removes it before the Tool executes. Omit it when the work is direct or
-the horizon is genuinely uncertain. Do not make a separate Tool call merely to
-classify the task, and do not delay useful work to produce the profile.
+Before the first ordinary Tool action, AWorld may expose only the internal
+`aworld__execution_decision` Tool. Use it once to record both the bounded
+`__aworld_execution_profile` and the current `__aworld_plan_update` checkpoint.
+This action changes no user state: it makes your decision recoverable, then
+AWorld restores the ordinary Tool surface.
 
-Set `horizon` to `long` only for sustained dependent work, such as multiple
-milestones or an expected sequence of at least several Tool actions. Report a
-bounded estimate through `confidence`, `milestone_count`,
-`expected_tool_actions`, and `verification_required`. Use `short` or omit the
-profile when the work is direct or uncertain. This is an advisory planning
-assessment and is not evidence of completion. Tool counts and stagnation never
-silently override an explicit `short` decision. They may request that you
-reassess the horizon; only your later structured plan update may change it.
+Choose `horizon=long` only for sustained dependent work, such as multiple
+milestones or an expected sequence of at least several Tool actions. Choose
+`short` for direct work and `unknown` when the available evidence does not yet
+support either classification. Report a bounded estimate through `confidence`,
+`milestone_count`, `expected_tool_actions`, and `verification_required`, then
+state the next bounded action in `__aworld_plan_update`. This is a planning
+claim, never completion evidence. Tool counts and stagnation do not silently
+override an explicit horizon; a later model-owned checkpoint may revise it.
 The deadline reserve is a mechanical stop boundary, not a long-task
 classification.
+
+If a malformed decision is re-requested, correct it rather than repeating the
+same payload. AWorld bounds this control exchange and may resume normal Tools
+with an unknown/unacknowledged classification; do not treat that fail-open as
+evidence that the task is short or complete.
 
 ## Establish a rolling charter
 
@@ -86,14 +89,14 @@ At a meaningful milestone boundary or a framework-requested checkpoint:
    repeated without new evidence.
 4. Update the current milestone and choose the next bounded action.
 
-When a real Tool schema exposes `__aworld_plan_update`, attach a bounded update
-to that Tool call when the checkpoint would materially help recovery or change
-the plan. Set `decision` to `continue` when the current approach remains sound,
-or `replan` when evidence justifies changing it. Record the current horizon,
+When stagnation or another material boundary causes AWorld to expose
+`aworld__execution_decision` again, record a bounded `__aworld_plan_update`.
+Set `decision` to `continue` when the current approach remains sound, or
+`replan` when evidence justifies changing it. Record the current horizon,
 milestone, next action, verification plan, completion assessment, assumptions,
-retired approaches, evidence references, and selected candidate id. AWorld
-removes this object before dispatch. Reading checkpoint guidance alone does not
-count as replanning; the structured update records your actual decision.
+retired approaches, evidence references, and selected candidate id. Reading
+checkpoint guidance alone does not count as replanning; the structured update
+records your actual decision before ordinary Tools resume.
 
 Do not create a checkpoint after every tool call. Let AWorld record
 low-level events; keep the semantic checkpoint small enough to survive context
@@ -116,6 +119,21 @@ After a state-changing action, prefer fresh evidence before relying on an older
 result. A successful command status proves that command completed; it does not
 by itself prove the broader objective. When evidence is partial, state exactly
 what it supports instead of promoting it to full completion.
+
+Treat a test written from the same assumptions as the implementation as a
+self-authored oracle, not an independent check. For ambiguous semantics,
+compare at least one plausible alternative interpretation or construct a
+counterexample that would distinguish them. For accuracy, performance, size,
+or other threshold requirements, seek a repeatable safety margin rather than
+stopping at a single measurement barely above the boundary. Re-run material
+checks in a clean process or environment when shared state could make a test
+circular.
+
+Do not search AWorld control-state directories, external scoring artifacts, or
+runtime diagnostic logs for an expected answer. They are not public task
+evidence. Inspect them only when the user explicitly asks to diagnose the
+framework itself; otherwise spend the task budget on the public workspace and
+requirements.
 
 When a Tool schema exposes `__aworld_public_probe`, you may attach a
 model-designed smoke, regression, invariant, or counterexample probe to the
@@ -147,10 +165,13 @@ When preparing a candidate final result:
 1. Reconcile every public requirement in the charter with current evidence.
 2. Check whether later changes made earlier evidence stale.
 3. Identify direct contradictions and material evidence gaps.
-4. When a fresh-context `verifier` collaborator is actually available and an
-   independent check could change the completion decision, delegate the public
-   objective, candidate locations, and concrete claims to check. Treat its
-   report as advice, not hidden-grader evidence or completion authority.
+4. When `AWORLD_ADVISORY_VERIFIER.review_candidate` is exposed and a fresh
+   check could change the completion decision, invoke it with the bounded
+   candidate claim, public deliverable locations, and evidence summary. AWorld
+   binds the authoritative caller task itself; do not restate or narrow it.
+   Treat the fresh-context, read-only report as advice, not external scoring
+   evidence or completion authority. If the capability is absent, an explicitly
+   selected `verifier` collaborator may serve the same advisory role.
 5. When comparison or implementation can be safely isolated, use the
    fresh-context `evaluator` or `developer` collaborator only if its result can
    materially change the next decision. Give it a bounded public subtask and

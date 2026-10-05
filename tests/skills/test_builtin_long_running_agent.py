@@ -66,6 +66,10 @@ def test_long_running_agent_skill_is_domain_and_benchmark_independent() -> None:
     assert "smallest inspectable candidate" in text
     assert "do not reserve all writes for the end" in text
     assert "prevents repeated analysis" in text
+    assert "self-authored oracle" in text
+    assert "repeatable safety margin" in text
+    assert "aworld control-state directories" in text
+    assert "aworld_advisory_verifier.review_candidate" in text
     assert Path(skill_root / "references" / "execution-semantics.md").is_file()
 
 
@@ -83,13 +87,15 @@ def test_long_running_agent_stages_its_referenced_guidance() -> None:
     }
 
 
-def test_builtin_skill_requests_profile_only_with_a_real_tool_call() -> None:
+def test_builtin_skill_uses_explicit_model_owned_decision_boundary() -> None:
     skill = (get_builtin_skills_path() / "long-running-agent" / "SKILL.md").read_text(
         encoding="utf-8"
     )
 
+    assert "aworld__execution_decision" in skill
     assert "__aworld_execution_profile" in skill
-    assert "same real tool call" in skill
-    assert "Do not make a separate Tool call" in skill
+    assert "`short` for direct work" in skill
+    assert "`unknown` when the available evidence" in skill
+    assert "changes no user state" in skill
     assert "__aworld_plan_update" in skill
     assert "__aworld_public_probe" in skill
