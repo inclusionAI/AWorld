@@ -26,6 +26,10 @@ from .mac_ui_automation import (
     augment_aworld_agent_mcp_servers,
 )
 from .sandbox_factory import create_agent_sandbox
+from .lazy_verifier import (
+    ADVISORY_VERIFIER_TOOL,
+    LazyVerifierFactory,
+)
 
 # Import SpawnSubagentTool to ensure it's registered in ToolFactory
 from aworld.core.tool.builtin import SpawnSubagentTool  # noqa: F401
@@ -334,6 +338,7 @@ def _aworld_root_tool_policy(
 
     tool_names = [
         CONTEXT_TOOL,
+        ADVISORY_VERIFIER_TOOL,
         *(
             [CAST_SEARCH]
             if _CAST_TOOLS_AVAILABLE and profile.profile_id == "general"
@@ -363,6 +368,7 @@ def render_aworld_system_prompt(
 ) -> str:
     prompt_template = (Path(__file__).resolve().parent / "prompt.txt").read_text(encoding="utf-8")
     available_subagent_set = set(available_subagents)
+    available_tool_set = set(available_tools)
     role_guidance = []
     if "developer" in available_subagent_set:
         role_guidance.append(
@@ -389,6 +395,15 @@ def render_aworld_system_prompt(
             "deciding when the task is complete. Do not invoke it merely "
             "because it is available."
         )
+    if ADVISORY_VERIFIER_TOOL in available_tool_set:
+        role_guidance.append(
+            "   A lazy advisory verifier is available through "
+            f"`{ADVISORY_VERIFIER_TOOL}`. No verifier Agent exists until you "
+            "explicitly invoke `review_candidate`. Use it only when a fresh, "
+            "read-only cross-check could materially change repair or submission. "
+            "Its report is public self-check evidence, never canonical reward "
+            "authority; you retain completion responsibility."
+        )
     current = now or datetime.now(_BEIJING_TZ)
     if current.tzinfo is None:
         current = current.replace(tzinfo=_BEIJING_TZ)
@@ -398,7 +413,7 @@ def render_aworld_system_prompt(
         "{{current_datetime}}": current.strftime("%Y-%m-%d %H:%M:%S"),
         "{{working_directory}}": os.path.realpath(os.getcwd()),
         "{{available_tools}}": (
-            ", ".join(sorted(set(available_tools))) or "none"
+            ", ".join(sorted(available_tool_set)) or "none"
         ),
         "{{available_subagents}}": (
             ", ".join(sorted(available_subagent_set)) or "none"
@@ -742,6 +757,19 @@ def build_aworld_agent(include_skills: Optional[str] = None):
         **budgeted_agent_kwargs,
     )
     aworld_agent.tool_surface_profile = tool_surface_profile
+    # Keep the default swarm strictly main-only.  This factory stores immutable
+    # construction inputs but imports and constructs the verifier only after an
+    # explicit model Tool call.
+    aworld_agent.lazy_verifier_factory = LazyVerifierFactory(
+        parent_agent=aworld_agent,
+        sandbox=sandbox,
+        agent_config=agent_config,
+        generation_budget_policy=generation_budget_policy,
+        generation_budget_explicit_fields=generation_budget_explicit_fields,
+        max_loop_steps=max_loop_steps,
+        llm_max_attempts=3,
+        llm_retry_delay=2.0,
+    )
     if sub_agents:
         logger.info(
             f"Adding {len(sub_agents)} initialized sub-agent(s) to Aworld TeamSwarm"
