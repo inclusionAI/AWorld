@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from types import SimpleNamespace
 
 import pytest
 
@@ -19,6 +20,7 @@ from aworld.core.context.compiler import (
 from aworld.core.context.execution_state import get_execution_state
 from aworld.core.event.base import Constants, Message
 from aworld.core.execution_protocol import (
+    ControllerAction,
     ExecutionProtocolPolicy,
     ExecutionProtocolStore,
     ProtocolMode,
@@ -1061,6 +1063,8 @@ def test_agent_consumes_explicit_decision_without_forwarding_internal_tool() -> 
     state = ExecutionProtocolStore(context, agent.id(), policy).load()
     assert state.long_horizon_armed is True
     assert state.attempt_epoch == 1
+    assert state.replan_requested_count == 0
+    assert state.replan_applied_count == 0
     assert load_model_plan_update(context, agent.id())["selected_candidate_id"] == "candidate-1"
 
 
@@ -1126,12 +1130,32 @@ def test_unacknowledged_replan_checkpoint_fails_open_without_claiming_applied():
     assert execution_protocol_model_decision_boundary(context, agent.id()) is None
 
     state = ExecutionProtocolStore(context, agent.id(), policy).load()
-    assert state.decision_checkpoint_pending is True
+    assert state.decision_checkpoint_pending is False
     assert state.replan_requested_count == 1
     assert state.replan_applied_count == 0
     telemetry = build_execution_protocol_telemetry(context, agent.id())
     assert telemetry["replan_decision_status"] == "fail_open_unacknowledged"
     assert telemetry["replan_decision_attempt_count"] == 2
+
+    record_tool_protocol_event(
+        context,
+        agent.id(),
+        {"completion_advanced": True, "current_agent_step": 3},
+    )
+    assert execution_protocol_model_decision_boundary(context, agent.id()) is None
+    state = ExecutionProtocolStore(context, agent.id(), policy).load()
+    assert state.replan_requested_count == 1
+
+    record_tool_protocol_event(
+        context,
+        agent.id(),
+        {"repetition_count": 1, "current_agent_step": 4},
+    )
+    state = ExecutionProtocolStore(context, agent.id(), policy).load()
+    assert state.replan_requested_count == 2
+    assert execution_protocol_model_decision_boundary(context, agent.id()) == (
+        "replan"
+    )
 
 
 def test_pending_stagnation_checkpoint_exposes_only_required_model_decision():
@@ -1262,6 +1286,79 @@ def test_disabled_skill_does_not_offer_model_profile() -> None:
 
     assert offer.carrier_function_name is None
     assert augmented == tools
+
+
+def test_no_user_tools_keeps_unknown_review_path_without_impossible_control() -> None:
+    context = Context(task_id="profile-no-tools")
+    context.set_task(Task(id="profile-no-tools", timeout=600))
+    policy = ExecutionProtocolPolicy(
+        mode=ProtocolMode.GUIDE,
+        independent_acceptance_enabled=False,
+    )
+    agent = _agent(context, policy)
+    agent.skill_configs = {"long-running-agent": {"active": True}}
+    configure_execution_protocol(context, agent.id(), policy)
+
+    augmented, offer = agent._with_long_horizon_execution_profile(None, context)
+    transition = record_candidate_final(context, agent.id())
+
+    assert augmented is None
+    assert offer.decision_boundary is None
+    assert offer.carrier_function_name is None
+    assert transition is not None
+    assert transition.decision.action is ControllerAction.REQUEST_FINAL_REVIEW
+
+
+@pytest.mark.asyncio
+async def test_no_user_tools_never_send_required_without_a_tool_catalog() -> None:
+    requests = []
+
+    class NoToolAgent(Agent):
+        async def _add_message_to_memory(self, *args, **kwargs):
+            return None
+
+        async def build_llm_input(self, observation, info=None, message=None, **kwargs):
+            return [{"role": "user", "content": str(observation.content or "")}]
+
+        async def _filter_tools(self, context=None):
+            return None
+
+        async def invoke_model(self, messages=None, message=None, **kwargs):
+            requests.append(kwargs)
+            content = "candidate" if len(requests) == 1 else "reviewed candidate"
+            return ModelResponse(
+                id=f"no-tool-{len(requests)}",
+                model="offline",
+                content=content,
+                message={"role": "assistant", "content": content},
+                finish_reason="stop",
+                usage={"prompt_tokens": 1, "completion_tokens": 1},
+            )
+
+    context = Context(task_id="profile-no-tools-production")
+    context.set_task(Task(id="profile-no-tools-production", timeout=600))
+    agent = NoToolAgent(
+        name="Aworld",
+        conf=AgentConfig(
+            llm_provider="openai",
+            llm_model_name="offline",
+            llm_api_key="offline",
+        ),
+        execution_protocol_policy=ExecutionProtocolPolicy(
+            mode=ProtocolMode.GUIDE,
+            independent_acceptance_enabled=False,
+        ),
+        max_loop_steps=0,
+    )
+    agent.skill_configs = {"long-running-agent": {"active": True}}
+    message = Message(category=Constants.AGENT, headers={"context": context})
+
+    result = await agent.async_policy(Observation(content="answer"), message=message)
+
+    assert result[0].policy_info == "reviewed candidate"
+    assert len(requests) == 2
+    assert all(request.get("prepared_tools") is None for request in requests)
+    assert all("tool_choice" not in request for request in requests)
 
 
 def test_strict_critic_uses_required_probe_control_not_review_marker(
@@ -1413,6 +1510,17 @@ async def test_production_policy_path_records_one_decision_then_exposes_real_too
         max_loop_steps=0,
     )
     agent.skill_configs = {"long-running-agent": {"active": True}}
+    agent._llm = SimpleNamespace(
+        context_compiler_mode="enforce",
+        _context_progressive_skills=False,
+        _context_progressive_tools=True,
+        _context_progressive_tool_base_tools=("terminal__execute",),
+        _context_progressive_tool_unmanaged_policy="preserve",
+        _context_task_catalog_policy="sticky",
+        _context_artifact_offload=True,
+        enforced_tool_output_policy=None,
+        provider=None,
+    )
     message = Message(category=Constants.AGENT, headers={"context": context})
 
     result = await agent.async_policy(
@@ -1427,6 +1535,7 @@ async def test_production_policy_path_records_one_decision_then_exposes_real_too
     assert "__aworld_execution_profile" in captured_tools[0][0]["function"][
         "parameters"
     ]["properties"]
+    assert captured_tools[1][0]["function"]["name"] == "terminal__execute"
     assert result[0].params == {"command": "make test"}
     assert result[0].tool_name == "terminal"
     state = ExecutionProtocolStore(context, agent.id(), policy).load()

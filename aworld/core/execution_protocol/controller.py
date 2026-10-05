@@ -142,6 +142,7 @@ def transition_execution_protocol(
                 _decision(ControllerAction.CONTINUE, DecisionReason.INVALID_EVENT),
             )
         update = event.model_plan_update
+        requested_replan_pending = state.decision_checkpoint_pending
         next_state = replace(
             next_state,
             model_plan_update=update,
@@ -156,6 +157,7 @@ def transition_execution_protocol(
                 next_state.replan_applied_count + 1
                 if update is not None
                 and update.decision is PlanUpdateDecision.REPLAN
+                and requested_replan_pending
                 else next_state.replan_applied_count
             ),
         )
@@ -163,6 +165,7 @@ def transition_execution_protocol(
             DecisionReason.MODEL_REPLAN_APPLIED
             if update is not None
             and update.decision is PlanUpdateDecision.REPLAN
+            and requested_replan_pending
             else DecisionReason.MODEL_PLAN_CHECKPOINT
         )
         return ProtocolTransition(
@@ -252,11 +255,31 @@ def transition_execution_protocol(
             attempt_epoch=next_state.attempt_epoch + 1,
             stagnant_observations=0,
             decision_checkpoint_pending=False,
-            replan_applied_count=next_state.replan_applied_count + 1,
+            replan_applied_count=(
+                next_state.replan_applied_count + 1
+                if state.decision_checkpoint_pending
+                else next_state.replan_applied_count
+            ),
         )
         return ProtocolTransition(
             next_state,
             _decision(ControllerAction.CONTINUE, DecisionReason.REPLAN_APPLIED),
+        )
+
+    if event.kind is EventKind.REPLAN_UNACKNOWLEDGED:
+        next_state = replace(
+            next_state,
+            phase=ProtocolPhase.EXECUTE,
+            stagnant_observations=0,
+            decision_checkpoint_pending=False,
+            last_replan_attempt_epoch=None,
+        )
+        return ProtocolTransition(
+            next_state,
+            _decision(
+                ControllerAction.CONTINUE,
+                DecisionReason.MODEL_REPLAN_UNACKNOWLEDGED,
+            ),
         )
 
     if event.kind is EventKind.CANDIDATE_FINAL:

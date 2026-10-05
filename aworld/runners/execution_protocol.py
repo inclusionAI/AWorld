@@ -1214,6 +1214,25 @@ def record_tool_protocol_event(
         result_hash=semantic_state.get("result_hash"),
     )
     transition = _apply_event(context, agent_id, event)
+    if transition.decision.action is ControllerAction.REQUEST_REPLAN:
+        expected_scope = _model_decision_scope(context, agent_id)
+
+        def begin_replan_decision(current):
+            attempts = _normalized_decision_attempts(
+                current, expected_scope=expected_scope
+            )
+            attempts["replan"] = {
+                "attempt_count": 0,
+                "request_sequence": transition.state.replan_requested_count,
+            }
+            return attempts
+
+        _update_runtime_value(
+            context,
+            agent_id,
+            EXECUTION_PROTOCOL_MODEL_DECISIONS_KEY,
+            begin_replan_decision,
+        )
     if transition.decision.action in {
         ControllerAction.REQUEST_REPLAN,
         ControllerAction.ENTER_FINALIZATION,
@@ -1261,7 +1280,7 @@ def execution_protocol_model_decision_boundary(
     if state.decision_checkpoint_pending:
         replan = attempts["replan"]
         if (
-            replan.get("checkpoint_revision") == state.revision
+            replan.get("request_sequence") == state.replan_requested_count
             and replan.get("status") == "fail_open_unacknowledged"
         ):
             return None
@@ -1278,7 +1297,7 @@ def record_model_decision_attempt_failure(
     if execution_protocol_model_decision_boundary(context, agent_id) != boundary:
         return False
     state = load_execution_protocol_state(context, agent_id)
-    checkpoint_revision = state.revision
+    request_sequence = state.replan_requested_count if boundary == "replan" else 0
     expected_scope = _model_decision_scope(context, agent_id)
     retry = False
 
@@ -1290,7 +1309,7 @@ def record_model_decision_attempt_failure(
         previous = attempts[boundary]
         if (
             boundary == "replan"
-            and previous.get("checkpoint_revision") != checkpoint_revision
+            and previous.get("request_sequence") != request_sequence
         ):
             previous = {}
         count = min(
@@ -1300,7 +1319,7 @@ def record_model_decision_attempt_failure(
         retry = count < _MAX_DECISION_ATTEMPTS
         attempts[boundary] = {
             "attempt_count": count,
-            "checkpoint_revision": checkpoint_revision,
+            "request_sequence": request_sequence,
             "status": (
                 "retry_required"
                 if retry
@@ -1314,6 +1333,12 @@ def record_model_decision_attempt_failure(
     _update_runtime_value(
         context, agent_id, EXECUTION_PROTOCOL_MODEL_DECISIONS_KEY, update
     )
+    if not retry and boundary == "replan":
+        _apply_event(
+            context,
+            agent_id,
+            ExecutionProtocolEvent(kind=EventKind.REPLAN_UNACKNOWLEDGED),
+        )
     return retry
 
 
@@ -1423,7 +1448,10 @@ def record_model_decision_boundary(
         return False
     if execution_protocol_model_decision_boundary(context, agent_id) != boundary:
         return False
-    checkpoint_revision = load_execution_protocol_state(context, agent_id).revision
+    boundary_state = load_execution_protocol_state(context, agent_id)
+    request_sequence = (
+        boundary_state.replan_requested_count if boundary == "replan" else 0
+    )
     try:
         update = ModelPlanUpdate.from_mapping(plan_update)
         profile = (
@@ -1475,7 +1503,7 @@ def record_model_decision_boundary(
                     _MAX_DECISION_ATTEMPTS,
                     max(1, int(previous.get("attempt_count", 0) or 0) + 1),
                 ),
-                "checkpoint_revision": checkpoint_revision,
+                "request_sequence": request_sequence,
                 "status": "acknowledged",
             }
             return attempts

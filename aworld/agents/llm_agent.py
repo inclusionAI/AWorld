@@ -5110,6 +5110,7 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         )
         if (
             not tool_free_finalization
+            and execution_control_offer.decision_boundary is None
             and getattr(self.llm, "_context_progressive_skills", True)
             and context_compiler_mode != "off"
         ):
@@ -5177,7 +5178,10 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                     sticky=progressive_sticky,
                     available_tool_ids=(),
                 )
-        elif context_compiler_mode != "off":
+        elif (
+            context_compiler_mode != "off"
+            and execution_control_offer.decision_boundary is None
+        ):
             try:
                 from aworld.core.context.compiler import (
                     CatalogChangeAction,

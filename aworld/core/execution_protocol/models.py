@@ -50,6 +50,7 @@ class EventKind(str, Enum):
     MODEL_PLAN_UPDATE = "model_plan_update"
     TOOL_OBSERVATION = "tool_observation"
     REPLAN_APPLIED = "replan_applied"
+    REPLAN_UNACKNOWLEDGED = "replan_unacknowledged"
     CANDIDATE_FINAL = "candidate_final"
     REVIEW_RESULT = "review_result"
 
@@ -88,6 +89,7 @@ class DecisionReason(str, Enum):
     MODEL_PROFILE_ALREADY_RECORDED = "model_profile_already_recorded"
     MODEL_PLAN_CHECKPOINT = "model_plan_checkpoint"
     MODEL_REPLAN_APPLIED = "model_replan_applied"
+    MODEL_REPLAN_UNACKNOWLEDGED = "model_replan_unacknowledged"
     STAGNATION_DETECTED = "stagnation_detected"
     REPLAN_LIMIT_REACHED = "replan_limit_reached"
     REPLAN_APPLIED = "replan_applied"
