@@ -769,7 +769,9 @@ class AWorldCLI:
 
         # Subtitle / Version
         subtitle = Text("🤖 Interact with your agents directly from the terminal", style="italic #875fff")
-        version = Text("\n v0.1.0", style="dim white")
+        from . import __version__
+
+        version = Text(f"\n v{__version__}", style="dim white")
         
         self.console.print(Text.assemble(subtitle, version))
         self.console.print() # Padding

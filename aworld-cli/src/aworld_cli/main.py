@@ -966,10 +966,17 @@ def print_help_text(*, zh: bool = False) -> None:
 
 
 def build_parser(zh: bool = False) -> argparse.ArgumentParser:
+    from . import __version__
+
     _, _, description_en, description_zh = _help_texts()
     parser = argparse.ArgumentParser(
         description=description_zh if zh else description_en,
         formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    parser.add_argument(
+        "--version",
+        action="version",
+        version=f"aworld-cli {__version__}",
     )
     parser.add_argument(
         "-zh",
