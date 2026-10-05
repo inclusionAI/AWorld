@@ -398,6 +398,51 @@ async def test_task_handler_rejects_wrong_epoch_terminal_execution_state():
 
 
 @pytest.mark.asyncio
+async def test_task_handler_rejects_stale_runner_context_execution_state():
+    task = Task(id="current-task", name="current-task", input="work")
+    stale_context = Context(task_id="previous-task", task_epoch=1)
+    stale_context.set_task(
+        Task(id="previous-task", name="previous-task", input="old work")
+    )
+    record_execution_state(
+        stale_context,
+        "root-agent",
+        "incomplete",
+        "previous-task-stop",
+        recoverable=True,
+    )
+    terminal_context = Context(task_id=task.id, task_epoch=2)
+    terminal_context.set_task(task)
+
+    class TaskRunner:
+        def __init__(self):
+            self.task = task
+            self.context = stale_context
+            self.start_time = time.time()
+            self._task_response = None
+
+        async def stop(self):
+            return None
+
+    handler = DefaultTaskHandler(TaskRunner())
+    events = [
+        event
+        async for event in handler._do_handle(
+            Message(
+                category=Constants.TASK,
+                payload="current terminal answer",
+                headers={"context": terminal_context},
+                topic=TopicType.FINISHED,
+            )
+        )
+    ]
+    response = events[-1].payload
+    assert response.success is True
+    assert response.semantic_status not in {"incomplete", "budget_exhausted"}
+    assert response.completion_reason is None
+
+
+@pytest.mark.asyncio
 async def test_repeated_prose_is_not_completion():
     async def chat(*args, **kwargs):
         return "I need to continue fixing this."

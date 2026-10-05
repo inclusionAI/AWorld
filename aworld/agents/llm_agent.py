@@ -5079,7 +5079,10 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                 kwargs["tool_choice"] = "required"
             tools = self._with_model_review_control(tools, message.context)
             tools = self._with_acceptance_probe_control(tools, message.context)
-            if public_delivery_reserve_guidance and tools:
+            if (
+                public_delivery_reserve_guidance
+                and self._public_delivery_write_tool_available(tools)
+            ):
                 kwargs = dict(kwargs)
                 kwargs["tool_choice"] = "required"
             if independent_acceptance_review:
@@ -6837,6 +6840,37 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             "candidate. Do not spend this delivery window on another read-only "
             "probe or dependency installation."
         )
+
+    @staticmethod
+    def _public_delivery_write_tool_available(
+        tools: Sequence[Dict[str, Any]] | None,
+    ) -> bool:
+        """Conservatively recognize a Tool surface that can create a file."""
+
+        mutation_tokens = {
+            "bash",
+            "copy",
+            "create",
+            "edit",
+            "execute",
+            "move",
+            "patch",
+            "run",
+            "save",
+            "shell",
+            "terminal",
+            "upload",
+            "write",
+        }
+        for schema in tools or ():
+            function = schema.get("function") if isinstance(schema, dict) else None
+            name = function.get("name") if isinstance(function, dict) else None
+            if not isinstance(name, str):
+                continue
+            normalized = re.sub(r"[^a-z0-9]+", " ", name.casefold()).split()
+            if mutation_tokens.intersection(normalized):
+                return True
+        return False
 
     def _automatic_generation_budget_policy(
         self,

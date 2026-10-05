@@ -211,6 +211,12 @@ def test_side_effect_filter_applies_to_noun_form_but_keeps_user_imperative(
         "The tests create a file /tmp/test-output.bin while they run.",
         "The renderer must write a file /tmp/frame.bmp for each frame.",
         "Example: create a file sample.json to illustrate the format.",
+        "Only if debugging is enabled, create a file debug.log.",
+        "Should you create a file scratch.txt, remove it before finishing.",
+        "Provided that tracing is requested, write a file trace.json.",
+        "In case diagnostics fail, create a file diagnostics.txt.",
+        "The installation process must create a file /tmp/install.state while running.",
+        "The workflow must write a file trace.json during execution.",
     ),
 )
 def test_negated_conditional_or_component_outputs_are_not_deliverables(

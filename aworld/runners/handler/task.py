@@ -103,23 +103,36 @@ class DefaultTaskHandler(TaskHandler):
         # terminal event before the broader, best-effort Context merge: a
         # transport copy can carry the authoritative incomplete/budget stop
         # even when unrelated ContextState data cannot be merged.
+        expected_task_id = getattr(self.runner.task, "id", None)
+        expected_task_epoch = getattr(
+            self.runner.task, "trajectory_task_epoch", None
+        )
+        if expected_task_epoch is None:
+            if getattr(self.runner.context, "task_id", None) == expected_task_id:
+                expected_task_epoch = getattr(
+                    self.runner.context, "task_epoch", None
+                )
+            elif getattr(message.context, "task_id", None) == expected_task_id:
+                expected_task_epoch = getattr(message.context, "task_epoch", None)
+
+        def scoped_execution_state(context):
+            value = get_execution_state(context)
+            if not isinstance(value, dict):
+                return None
+            if value.get("task_id") != expected_task_id:
+                return None
+            if value.get("task_epoch") != expected_task_epoch:
+                return None
+            return value
+
         runner_execution_state = (
-            get_execution_state(self.runner.context)
+            scoped_execution_state(self.runner.context)
             if topic == TopicType.FINISHED
             else None
         )
         terminal_execution_state = None
         if topic == TopicType.FINISHED:
-            candidate_execution_state = get_execution_state(message.context)
-            expected_task_id = getattr(self.runner.task, "id", None)
-            expected_task_epoch = getattr(self.runner.context, "task_epoch", None)
-            if (
-                isinstance(candidate_execution_state, dict)
-                and candidate_execution_state.get("task_id") == expected_task_id
-                and candidate_execution_state.get("task_epoch")
-                == expected_task_epoch
-            ):
-                terminal_execution_state = candidate_execution_state
+            terminal_execution_state = scoped_execution_state(message.context)
         self.runner.context.merge_context(message.context)
         task_item: TaskItem = message.payload
         if topic == TopicType.SUBSCRIBE_TOOL:
@@ -225,7 +238,7 @@ class DefaultTaskHandler(TaskHandler):
             execution_state = (
                 terminal_execution_state
                 or runner_execution_state
-                or get_execution_state(self.runner.context)
+                or scoped_execution_state(self.runner.context)
                 or {}
             )
             semantic_status = execution_state.get("status")

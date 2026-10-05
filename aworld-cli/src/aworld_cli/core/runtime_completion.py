@@ -155,7 +155,10 @@ def _is_described_runtime_side_effect(request: str, match: re.Match[str]) -> boo
         clause_prefix,
     ):
         return True
-    if re.match(r"(?i)^(?:if|unless)\b", clause_prefix):
+    if re.match(
+        r"(?i)^(?:if|only\s+if|unless|provided\s+that|in\s+case)\b",
+        clause_prefix,
+    ) or re.match(r"(?i)^should\s+(?:you|the\s+agent)\b", clause_prefix):
         return True
     # Tests, examples, and supplied components often describe files they
     # create while running.  Such observations are not instructions to the
@@ -178,7 +181,7 @@ def _is_described_runtime_side_effect(request: str, match: re.Match[str]) -> boo
         return False
     return bool(
         re.search(
-            r"(?i)(?:\b(?:will|would|can|could|may|might|should)\s+|"
+        r"(?i)(?:\b(?:will|would|can|could|may|might|should|must)\s+|"
             r"\b(?:is|are|was|were)\s+(?:expected|going|required)\s+to\s+)$",
             prefix,
         )

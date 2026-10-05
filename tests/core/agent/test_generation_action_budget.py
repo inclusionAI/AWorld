@@ -264,6 +264,25 @@ def test_public_delivery_reserve_forces_tool_action_for_missing_output(
     assert agent._public_delivery_reserve_guidance(context) is None
 
 
+def test_public_delivery_requires_only_a_write_capable_tool() -> None:
+    assert Agent._public_delivery_write_tool_available(
+        [
+            {
+                "type": "function",
+                "function": {"name": "filesystem__read_file"},
+            }
+        ]
+    ) is False
+    assert Agent._public_delivery_write_tool_available(
+        [
+            {
+                "type": "function",
+                "function": {"name": "terminal__run_code"},
+            }
+        ]
+    ) is True
+
+
 def test_explicit_generation_compiler_configuration_wins_after_arming() -> None:
     policy = _long_running_generation_agent(
         armed=True,
