@@ -24,7 +24,12 @@ from aworld.core.exceptions import AWorldTransientModelError
 from aworld.core.execution_protocol import ExecutionProtocolStore
 from aworld.core.task import Task
 from aworld.models.model_response import Function, ModelResponse, ToolCall
-from aworld.runners.execution_protocol import build_execution_protocol_telemetry
+from aworld.runners.execution_protocol import (
+    build_execution_protocol_telemetry,
+    configure_execution_protocol,
+    record_model_execution_profile,
+    record_tool_protocol_event,
+)
 
 
 class _ToolAgent(Agent):
@@ -424,7 +429,10 @@ async def test_exhausted_transient_provider_retries_resume_with_normal_tools(
     class ProviderStatusError(Exception):
         status_code = 502
 
-    agent = _long_running_generation_agent(armed=True)
+    # A real initial decision boundary precedes protocol arming. Transport
+    # fail-open must still permit one ordinary recovery turn within the caller
+    # deadline instead of requiring an impossible pre-armed state.
+    agent = _long_running_generation_agent(armed=False)
     agent._llm = object()
     agent.llm_max_attempts = 3
     agent.llm_retry_delay = 0
@@ -512,6 +520,121 @@ async def test_exhausted_transient_provider_retries_resume_with_normal_tools(
     assert protocol["initial_decision_attempt_count"] == 0
     assert protocol["initial_decision_unavailable_count"] == 1
     assert protocol["initial_decision_fail_open_reason"] == "provider_unavailable"
+
+
+@pytest.mark.asyncio
+async def test_unarmed_replan_transport_failure_resumes_with_normal_tools(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class ProviderStatusError(Exception):
+        status_code = 429
+
+    agent = _long_running_generation_agent(armed=False)
+    agent._llm = object()
+    agent.llm_max_attempts = 3
+    agent.llm_retry_delay = 0
+    agent.context._session = Session(session_id="replan-transient-recovery-s")
+    task = Task(
+        id="long-running-generation-budget",
+        name="long-running-generation-budget",
+        input="create /app/primers.fasta",
+        timeout=600,
+    )
+    agent.context.set_task(task)
+    policy = agent._resolve_execution_protocol_policy(agent.context)
+    configure_execution_protocol(agent.context, agent.id(), policy)
+    record_model_execution_profile(
+        agent.context,
+        agent.id(),
+        {
+            "horizon": "short",
+            "confidence": 1.0,
+            "milestone_count": 1,
+            "expected_tool_actions": 1,
+            "verification_required": True,
+        },
+    )
+    transition = record_tool_protocol_event(
+        agent.context,
+        agent.id(),
+        {
+            "repetition_count": policy.repetition_threshold,
+            "current_agent_step": 2,
+        },
+    )
+    assert transition is not None
+    state = ExecutionProtocolStore(agent.context, agent.id(), policy).load()
+    assert state.long_horizon_armed is False
+    assert state.decision_checkpoint_pending is True
+
+    provider_calls: list[dict] = []
+
+    async def provider(*args, **kwargs):
+        provider_calls.append(kwargs)
+        if len(provider_calls) <= agent.llm_max_attempts:
+            raise ProviderStatusError("rate limited")
+        return ModelResponse(
+            id="recovered-replan-tool-turn",
+            model="fake-model",
+            content="resume material work",
+            finish_reason="tool_calls",
+            tool_calls=[
+                ToolCall(
+                    id="write-after-replan",
+                    function=Function(
+                        name="workspace__write",
+                        arguments=(
+                            '{"path":"/app/primers.fasta",'
+                            '"content":">input_fwd\\nACGT"}'
+                        ),
+                    ),
+                )
+            ],
+        )
+
+    async def no_memory(*args, **kwargs):
+        return None
+
+    async def no_output(*args, **kwargs):
+        return None
+
+    async def simple_input(observation, info=None, message=None, **kwargs):
+        return [{"role": "user", "content": str(observation.content or "")}]
+
+    monkeypatch.setattr(llm_agent_module, "acall_llm_model", provider)
+    monkeypatch.setattr(agent, "build_llm_input", simple_input)
+    monkeypatch.setattr(agent, "_add_message_to_memory", no_memory)
+    monkeypatch.setattr(agent, "send_agent_response_output", no_output)
+    message = Message(
+        category=Constants.AGENT,
+        payload=Observation(content="the current approach repeated"),
+        receiver=agent.id(),
+        headers={"context": agent.context},
+    )
+
+    actions = await agent.async_policy(
+        message.payload,
+        message=message,
+        stream=False,
+    )
+
+    assert len(provider_calls) == 4
+    assert all(
+        call["tools"][0]["function"]["name"] == "aworld__execution_decision"
+        for call in provider_calls[:3]
+    )
+    assert provider_calls[-1]["tools"][0]["function"]["name"] == "workspace__write"
+    assert actions[0].tool_name == "workspace"
+    assert actions[0].action_name == "write"
+    state = ExecutionProtocolStore(agent.context, agent.id(), policy).load()
+    assert state.decision_checkpoint_pending is False
+    assert state.replan_requested_count == 1
+    assert state.replan_applied_count == 0
+    protocol = build_execution_protocol_telemetry(agent.context, agent.id())
+    assert protocol["replan_decision_status"] == "fail_open_unacknowledged"
+    assert protocol["replan_decision_attempt_count"] == 0
+    assert protocol["replan_decision_unavailable_count"] == 1
+    assert protocol["replan_decision_fail_open_reason"] == "provider_unavailable"
 
 
 @pytest.mark.asyncio

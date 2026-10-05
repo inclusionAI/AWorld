@@ -3732,6 +3732,8 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
     def _long_horizon_transient_recovery_window(
         self,
         context: Context,
+        *,
+        allow_unarmed_decision_fail_open: bool = False,
     ) -> float | None:
         """Return solve time left before the protocol/caller finalization reserve."""
 
@@ -3742,7 +3744,9 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             state = ExecutionProtocolStore(context, self.id(), policy).load()
         except Exception:
             return None
-        if not state.long_horizon_armed or state.phase not in {
+        if (
+            not state.long_horizon_armed and not allow_unarmed_decision_fail_open
+        ) or state.phase not in {
             ProtocolPhase.EXECUTE,
             ProtocolPhase.REPAIR,
         }:
@@ -3813,10 +3817,14 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         *,
         reason: str,
         details: dict[str, Any] | None = None,
+        allow_unarmed_decision_fail_open: bool = False,
     ) -> bool:
         """Wait within solve time and schedule one ordinary model/tool turn."""
 
-        available = self._long_horizon_transient_recovery_window(context)
+        available = self._long_horizon_transient_recovery_window(
+            context,
+            allow_unarmed_decision_fail_open=allow_unarmed_decision_fail_open,
+        )
         if available is None or available <= 0.1:
             return False
         current = context.context_info.get("transient_model_recovery_metrics")
@@ -3830,7 +3838,10 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             return False
         if delay:
             await asyncio.sleep(delay)
-            available = self._long_horizon_transient_recovery_window(context)
+            available = self._long_horizon_transient_recovery_window(
+                context,
+                allow_unarmed_decision_fail_open=allow_unarmed_decision_fail_open,
+            )
             if available is None or available <= 0.1:
                 return False
         metrics = self._record_transient_model_recovery(
@@ -4493,21 +4504,27 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                     decision_boundary = getattr(
                         exc, _LONG_HORIZON_DECISION_BOUNDARY_ATTR, None
                     )
+                    decision_fail_open_recorded = False
                     if decision_boundary is not None:
                         from aworld.runners.execution_protocol import (
                             record_model_decision_unavailable,
                         )
 
-                        record_model_decision_unavailable(
-                            message.context,
-                            self.id(),
-                            boundary=decision_boundary,
-                            reason="provider_unavailable",
+                        decision_fail_open_recorded = (
+                            record_model_decision_unavailable(
+                                message.context,
+                                self.id(),
+                                boundary=decision_boundary,
+                                reason="provider_unavailable",
+                            )
                         )
                     if await self._schedule_transient_model_recovery(
                         message.context,
                         reason=recovery_reason,
                         details=transient_details,
+                        allow_unarmed_decision_fail_open=(
+                            decision_fail_open_recorded
+                        ),
                     ):
                         transient_recovery_turn = True
                         kwargs = dict(kwargs)
