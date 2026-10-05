@@ -230,8 +230,12 @@ def transition_execution_protocol(
                 next_state = replace(
                     next_state,
                     replan_count=next_state.replan_count + 1,
-                    replan_requested_count=next_state.replan_requested_count + 1,
-                    decision_checkpoint_pending=True,
+                    replan_requested_count=(
+                        next_state.replan_requested_count + 1
+                        if policy.mode is ProtocolMode.GUIDE
+                        else next_state.replan_requested_count
+                    ),
+                    decision_checkpoint_pending=policy.mode is ProtocolMode.GUIDE,
                     last_replan_attempt_epoch=next_state.attempt_epoch,
                 )
                 action = _observed_action(

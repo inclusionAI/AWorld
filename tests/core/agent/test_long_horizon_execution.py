@@ -1210,6 +1210,94 @@ def test_pending_stagnation_checkpoint_exposes_only_required_model_decision():
     assert "__aworld_execution_profile" not in parameters["properties"]
 
 
+@pytest.mark.asyncio
+async def test_observe_mode_never_mutates_tools_or_tool_choice_after_stagnation():
+    requests = []
+    original_tools = [
+        {
+            "type": "function",
+            "function": {
+                "name": "terminal__execute",
+                "parameters": {
+                    "type": "object",
+                    "properties": {"command": {"type": "string"}},
+                    "required": ["command"],
+                },
+            },
+        }
+    ]
+
+    class ObserveAgent(Agent):
+        async def _add_message_to_memory(self, *args, **kwargs):
+            return None
+
+        async def build_llm_input(self, observation, info=None, message=None, **kwargs):
+            return [{"role": "user", "content": str(observation.content or "")}]
+
+        async def _filter_tools(self, context=None):
+            return original_tools
+
+        async def invoke_model(self, messages=None, message=None, **kwargs):
+            requests.append(kwargs)
+            return ModelResponse(
+                id=f"observe-{len(requests)}",
+                model="offline",
+                content="",
+                tool_calls=[
+                    ToolCall(
+                        id=f"observe-call-{len(requests)}",
+                        function=Function(
+                            name="terminal__execute",
+                            arguments=json.dumps({"command": "pwd"}),
+                        ),
+                    )
+                ],
+                finish_reason="tool_calls",
+                usage={"prompt_tokens": 1, "completion_tokens": 1},
+            )
+
+    context = Context(task_id="observe-inert")
+    context.set_task(Task(id="observe-inert", timeout=600))
+    policy = ExecutionProtocolPolicy(
+        mode=ProtocolMode.OBSERVE,
+        repetition_threshold=1,
+    )
+    agent = ObserveAgent(
+        name="Aworld",
+        conf=AgentConfig(
+            llm_provider="openai",
+            llm_model_name="offline",
+            llm_api_key="offline",
+        ),
+        execution_protocol_policy=policy,
+        max_loop_steps=0,
+    )
+    agent.skill_configs = {"long-running-agent": {"active": True}}
+    message = Message(category=Constants.AGENT, headers={"context": context})
+
+    await agent.async_policy(Observation(content="first"), message=message)
+    transition = record_tool_protocol_event(
+        context,
+        agent.id(),
+        {"repetition_count": 1, "current_agent_step": 2},
+    )
+    assert transition is not None
+    assert transition.decision.action is ControllerAction.WOULD_REQUEST_REPLAN
+    assert transition.state.replan_count == 1
+    assert transition.state.replan_requested_count == 0
+    assert transition.state.decision_checkpoint_pending is False
+    await agent.async_policy(Observation(content="second"), message=message)
+
+    assert len(requests) == 2
+    assert all(request["prepared_tools"] == original_tools for request in requests)
+    assert all("tool_choice" not in request for request in requests)
+    assert all(
+        "__aworld_execution_profile"
+        not in request["prepared_tools"][0]["function"]["parameters"]["properties"]
+        for request in requests
+    )
+
+
 def test_agent_strips_stale_profile_schema_value_without_recording_again() -> None:
     context = Context(task_id="profile-stale-catalog")
     context.set_task(Task(id="profile-stale-catalog", timeout=600))

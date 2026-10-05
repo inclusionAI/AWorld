@@ -1177,11 +1177,16 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         from aworld.runners.execution_protocol import (
             acceptance_critic_active,
             execution_protocol_model_decision_boundary,
+            execution_protocol_policy,
         )
 
         # Strict acceptance uses a fresh, independently constrained request.
         # Solver planning and self-check controls must not enter that surface.
         if acceptance_critic_active(context, self.id()):
+            return tools, empty_offer
+        # OBSERVE is telemetry-only. It must never alter the provider request,
+        # Tool schema, tool_choice, or task catalog.
+        if execution_protocol_policy(context, self.id()).mode is not ProtocolMode.GUIDE:
             return tools, empty_offer
 
         boundary = execution_protocol_model_decision_boundary(context, self.id())

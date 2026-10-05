@@ -1264,7 +1264,7 @@ def execution_protocol_model_decision_boundary(
 ) -> str | None:
     """Return the pending framework boundary, never a semantic decision."""
     policy = execution_protocol_policy(context, agent_id)
-    if policy.mode is ProtocolMode.OFF:
+    if policy.mode is not ProtocolMode.GUIDE:
         return None
     state = ExecutionProtocolStore(context, agent_id, policy).load()
     attempts = _normalized_decision_attempts(
