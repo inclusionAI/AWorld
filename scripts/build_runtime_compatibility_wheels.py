@@ -85,24 +85,35 @@ def _wheel_metadata(path: Path):
 
 
 def _stage_source(source: Path, destination: Path) -> None:
+    generic_ignore = shutil.ignore_patterns(
+        ".git",
+        ".venv",
+        ".aworld",
+        ".agent",
+        ".env",
+        "__pycache__",
+        ".pytest_cache",
+        "*.egg-info",
+        "failed_requests",
+        "build",
+        "tmp",
+        "uv.lock",
+    )
+    source_root = source.resolve()
+
+    def ignore(directory: str, names: list[str]) -> set[str]:
+        ignored = set(generic_ignore(directory, names))
+        # Only the repository-root release output is disposable.  The tracked
+        # WebUI bundle lives at aworld/cmd/web/webui/dist and is required by
+        # the legacy Runtime wheel.
+        if Path(directory).resolve() == source_root and "dist" in names:
+            ignored.add("dist")
+        return ignored
+
     shutil.copytree(
         source,
         destination,
-        ignore=shutil.ignore_patterns(
-            ".git",
-            ".venv",
-            ".aworld",
-            ".agent",
-            ".env",
-            "__pycache__",
-            ".pytest_cache",
-            "*.egg-info",
-            "failed_requests",
-            "build",
-            "dist",
-            "tmp",
-            "uv.lock",
-        ),
+        ignore=ignore,
     )
     (destination / "pyproject.toml").unlink()
     shutil.copyfile(

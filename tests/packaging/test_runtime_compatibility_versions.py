@@ -107,3 +107,26 @@ def test_runtime_builder_rejects_timestamp_drift_without_hash_timing_tricks(
         archive.writestr(wrong, "pass\n")
     with pytest.raises(RuntimeError, match="timestamps outside SOURCE_DATE_EPOCH"):
         builder._verify_wheel_timestamp(drifted, epoch)
+
+
+def test_runtime_builder_preserves_tracked_nested_dist_assets(tmp_path) -> None:
+    builder = _load_build_script()
+    source = tmp_path / "source"
+    destination = tmp_path / "staged"
+    (source / "packaging/runtime").mkdir(parents=True)
+    (source / "aworld-cli").mkdir()
+    webui_dist = source / "aworld/cmd/web/webui/dist"
+    webui_dist.mkdir(parents=True)
+    (source / "pyproject.toml").write_text("[project]\nname='fixture'\n")
+    (source / builder.CLI_MANIFEST).write_text("[project]\nname='fixture-cli'\n")
+    (source / "aworld-cli/pyproject.toml").write_text("stale\n")
+    (webui_dist / "index.html").write_text("tracked bundle\n")
+    (source / "dist").mkdir()
+    (source / "dist/stale.whl").write_text("release output\n")
+
+    builder._stage_source(source, destination)
+
+    assert (destination / "aworld/cmd/web/webui/dist/index.html").read_text() == (
+        "tracked bundle\n"
+    )
+    assert not (destination / "dist").exists()
