@@ -1,6 +1,8 @@
+import hashlib
 import json
 import os
 import re
+import stat as stat_module
 import time
 from typing import Any, Mapping
 
@@ -22,6 +24,76 @@ _VOLATILE_FAILURE_TEXT = re.compile(
 )
 _PUBLIC_DELIVERABLE_SCHEMA = "aworld.public-deliverables/v1"
 _PUBLIC_DELIVERABLE_AUTHORITY = "public_task_advisory"
+_PUBLIC_DELIVERABLE_BASELINE_KEY = "public_deliverable_baseline"
+_PUBLIC_DELIVERABLE_HASH_MAX_BYTES = 8 * 1024 * 1024
+
+
+def _public_file_version(
+    path: str,
+    stat_result: os.stat_result,
+    *,
+    hash_budget_bytes: int,
+) -> tuple[str, int]:
+    """Return content identity when bounded, otherwise a conservative size receipt.
+
+    Metadata-only changes such as ``touch`` must not count as candidate
+    progress. Large or unreadable files therefore fall back to size-only
+    identity: a size change is real content-state change, while same-size
+    updates remain deliberately unobservable rather than becoming false
+    positive progress.
+    """
+
+    if stat_result.st_size > hash_budget_bytes:
+        return f"size-only:{stat_result.st_size}", 0
+    digest = hashlib.sha256()
+    try:
+        flags = os.O_RDONLY | getattr(os, "O_NONBLOCK", 0)
+        descriptor = os.open(path, flags)
+        with os.fdopen(descriptor, "rb") as handle:
+            before = os.fstat(handle.fileno())
+            if (
+                not stat_module.S_ISREG(before.st_mode)
+                or before.st_size > hash_budget_bytes
+            ):
+                return f"size-only:{before.st_size}", 0
+            bytes_read = 0
+            while bytes_read <= hash_budget_bytes:
+                chunk = handle.read(
+                    min(1024 * 1024, hash_budget_bytes + 1 - bytes_read)
+                )
+                if not chunk:
+                    break
+                bytes_read += len(chunk)
+                if bytes_read > hash_budget_bytes:
+                    return f"size-only:{before.st_size}", 0
+                digest.update(chunk)
+            after = os.fstat(handle.fileno())
+        current = os.stat(path)
+    except OSError:
+        return f"size-only:{stat_result.st_size}", 0
+    stable_identity = (
+        (
+            before.st_dev,
+            before.st_ino,
+            before.st_size,
+            before.st_mtime_ns,
+        )
+        == (
+            after.st_dev,
+            after.st_ino,
+            after.st_size,
+            after.st_mtime_ns,
+        )
+        == (
+            current.st_dev,
+            current.st_ino,
+            current.st_size,
+            current.st_mtime_ns,
+        )
+    )
+    if not stable_identity or bytes_read != before.st_size:
+        return f"size-only:{current.st_size}", 0
+    return "sha256:" + digest.hexdigest(), bytes_read
 
 
 def _public_deliverable_projection(context) -> dict[str, Any] | None:
@@ -39,6 +111,7 @@ def _public_deliverable_projection(context) -> dict[str, Any] | None:
     if not isinstance(artifacts, list) or not artifacts or len(artifacts) > 16:
         return None
     projection = []
+    remaining_hash_budget = _PUBLIC_DELIVERABLE_HASH_MAX_BYTES
     for item in artifacts:
         if (
             not isinstance(item, dict)
@@ -49,13 +122,24 @@ def _public_deliverable_projection(context) -> dict[str, Any] | None:
         ):
             return None
         try:
+            stat = os.stat(item["path"])
             exists = os.path.isfile(item["path"])
         except OSError:
+            stat = None
             exists = False
+        version = None
+        if exists and stat is not None:
+            version, consumed = _public_file_version(
+                item["path"],
+                stat,
+                hash_budget_bytes=remaining_hash_budget,
+            )
+            remaining_hash_budget = max(0, remaining_hash_budget - consumed)
         projection.append(
             {
                 "deliverable_id": item["deliverable_id"],
                 "exists": exists,
+                "version": version,
             }
         )
     return {
@@ -63,6 +147,101 @@ def _public_deliverable_projection(context) -> dict[str, Any] | None:
         "existing_count": sum(item["exists"] for item in projection),
         "artifacts": projection,
     }
+
+
+def capture_public_deliverable_baseline(context) -> None:
+    """Capture candidate versions before ordinary task Tools execute."""
+
+    from aworld.core.context.compiler import semantic_fingerprint
+
+    runtime_context = _runtime_context(context)
+    if runtime_context is None:
+        return
+    scope = _semantic_state_scope(runtime_context)
+    current = runtime_context.context_info.get(_PUBLIC_DELIVERABLE_BASELINE_KEY)
+    if isinstance(current, dict) and current.get("scope") == scope:
+        return
+    projection = _public_deliverable_projection(runtime_context)
+    runtime_context.context_info[_PUBLIC_DELIVERABLE_BASELINE_KEY] = {
+        "scope": scope,
+        "fingerprint": (
+            semantic_fingerprint(projection) if projection is not None else None
+        ),
+        "artifacts": (
+            {
+                item["deliverable_id"]: item.get("version")
+                for item in projection.get("artifacts", ())
+            }
+            if projection is not None
+            else {}
+        ),
+    }
+
+
+def _observed_action_names(
+    tool_name: str,
+    actions: list[ActionModel],
+) -> tuple[str, ...]:
+    """Project exact bounded Tool identities without parsing plan prose."""
+
+    names: list[str] = []
+    for value in (tool_name,):
+        if isinstance(value, str) and value.strip():
+            names.append(value.strip())
+    for action in actions:
+        tool = getattr(action, "tool_name", None)
+        operation = getattr(action, "action_name", None)
+        model_visible = getattr(action, "model_visible_tool_name", None)
+        for value in (model_visible, tool, operation):
+            if isinstance(value, str) and value.strip() and len(value.strip()) <= 256:
+                names.append(value.strip())
+        if (
+            isinstance(tool, str)
+            and tool.strip()
+            and isinstance(operation, str)
+            and operation.strip()
+        ):
+            names.append(f"{tool.strip()}__{operation.strip()}")
+    return tuple(dict.fromkeys(names))[:32]
+
+
+def _observed_action_signatures(
+    actions: list[ActionModel],
+) -> tuple[str, ...]:
+    """Hash exact executed function identities and params without retaining args."""
+
+    from aworld.core.execution_protocol import action_signature
+
+    signatures: list[str] = []
+    for action in actions:
+        tool = getattr(action, "tool_name", None)
+        operation = getattr(action, "action_name", None)
+        model_visible = getattr(action, "model_visible_tool_name", None)
+        params = getattr(action, "params", None)
+        if (
+            not isinstance(tool, str)
+            or not tool.strip()
+            or not isinstance(params, Mapping)
+        ):
+            continue
+        identities = []
+        if isinstance(model_visible, str) and model_visible.strip():
+            identities.append(model_visible.strip())
+        identities.append(tool.strip())
+        if isinstance(operation, str) and operation.strip():
+            identities.extend(
+                [operation.strip(), f"{tool.strip()}__{operation.strip()}"]
+            )
+        for identity in identities:
+            try:
+                signature = action_signature(identity, params)
+            except ValueError:
+                continue
+            if signature not in signatures:
+                signatures.append(signature)
+            if len(signatures) >= 32:
+                return tuple(signatures)
+    return tuple(signatures)
 
 
 def _select_semantic_state(shared: Any, local: Any) -> dict[str, Any] | None:
@@ -226,9 +405,7 @@ def record_semantic_tool_progress(
     runtime_context = _runtime_context(context)
     if runtime_context is None:
         return None
-    transaction = getattr(
-        runtime_context, "task_runtime_state_transaction", None
-    )
+    transaction = getattr(runtime_context, "task_runtime_state_transaction", None)
     if callable(transaction):
         with transaction():
             return _record_semantic_tool_progress_locked(
@@ -391,9 +568,7 @@ def _record_semantic_tool_progress_locked(
     }
     all_immutable_input_evidence_by_id = {
         str(item.input_id): item
-        for item in getattr(
-            runtime_context, "_completion_immutable_input_evidence", ()
-        )
+        for item in getattr(runtime_context, "_completion_immutable_input_evidence", ())
     }
     all_final_evidence_codes = sorted(
         set(getattr(runtime_context, "_completion_final_evidence_codes", ()))
@@ -413,8 +588,7 @@ def _record_semantic_tool_progress_locked(
         for value in getattr(completion_contract, "required_self_check_ids", ())
     )
     required_immutable_input_ids = {
-        str(value)
-        for value in getattr(completion_contract, "immutable_inputs", ())
+        str(value) for value in getattr(completion_contract, "immutable_inputs", ())
     }
     required_final_evidence_codes = {
         str(value)
@@ -450,8 +624,7 @@ def _record_semantic_tool_progress_locked(
             "self_check_count": len(self_check_evidence_by_id),
             "final_evidence_count": len(final_evidence_codes),
             "satisfied_artifact_count": sum(
-                evidence.exists is True
-                for evidence in artifact_evidence_by_id.values()
+                evidence.exists is True for evidence in artifact_evidence_by_id.values()
             ),
             "successful_self_check_count": sum(
                 evidence.exit_code == 0
@@ -525,13 +698,62 @@ def _record_semantic_tool_progress_locked(
         if public_delivery_projection is not None
         else 0
     )
+    public_deliverable_declared = public_delivery_projection is not None
+    missing_public_deliverable_count = (
+        int(public_delivery_projection["declared_count"]) - public_delivery_count
+        if public_delivery_projection is not None
+        else 0
+    )
+    candidate_present = (
+        public_delivery_count > 0 if public_delivery_projection is not None else None
+    )
+    baseline = runtime_context.context_info.get(_PUBLIC_DELIVERABLE_BASELINE_KEY)
+    baseline_versions = (
+        baseline.get("artifacts")
+        if isinstance(baseline, dict)
+        and baseline.get("scope") == semantic_scope
+        and isinstance(baseline.get("artifacts"), dict)
+        else {}
+    )
+    previous_versions = previous.get("public_delivery_versions")
+    if not isinstance(previous_versions, dict):
+        previous_versions = baseline_versions
+    public_delivery_versions = (
+        {
+            item["deliverable_id"]: item.get("version")
+            for item in public_delivery_projection.get("artifacts", ())
+        }
+        if public_delivery_projection is not None
+        else {}
+    )
     previous_public_delivery_high_water = int(
         previous.get("public_delivery_high_water_count", 0) or 0
     )
-    public_delivery_advanced = bool(
+    public_delivery_changed = bool(
         public_delivery_projection is not None
-        and public_delivery_count > previous_public_delivery_high_water
+        and any(
+            version is not None and version != previous_versions.get(deliverable_id)
+            for deliverable_id, version in public_delivery_versions.items()
+        )
     )
+    recent_public_delivery_fingerprints = [
+        value
+        for value in (previous.get("recent_public_delivery_fingerprints") or ())
+        if isinstance(value, str)
+    ][-7:]
+    if (
+        not recent_public_delivery_fingerprints
+        and isinstance(baseline, dict)
+        and isinstance(baseline.get("fingerprint"), str)
+    ):
+        recent_public_delivery_fingerprints.append(baseline["fingerprint"])
+    public_delivery_advanced = bool(
+        public_delivery_changed
+        and public_delivery_fingerprint
+        and public_delivery_fingerprint not in recent_public_delivery_fingerprints
+    )
+    if public_delivery_fingerprint:
+        recent_public_delivery_fingerprints.append(public_delivery_fingerprint)
     public_delivery_high_water_count = max(
         previous_public_delivery_high_water,
         public_delivery_count,
@@ -548,8 +770,7 @@ def _record_semantic_tool_progress_locked(
     )
     if not semantic_ledger_enabled:
         goal_progress_observable = (
-            completion_projection is not None
-            or public_delivery_projection is not None
+            completion_projection is not None or public_delivery_projection is not None
         )
     elif completion_projection is not None or public_delivery_projection is not None:
         goal_progress_observable = True
@@ -578,9 +799,7 @@ def _record_semantic_tool_progress_locked(
         else None
     )
     previous_completion_score = previous.get("completion_score")
-    previous_completion_high_water_score = previous.get(
-        "completion_high_water_score"
-    )
+    previous_completion_high_water_score = previous.get("completion_high_water_score")
     if not isinstance(previous_completion_high_water_score, list):
         previous_completion_high_water_score = (
             previous_completion_score
@@ -687,6 +906,7 @@ def _record_semantic_tool_progress_locked(
     history.append(result_hash)
     repetition_count = recent_pairs.count(semantic_pair_hash)
     result_repetition_count = history.count(result_hash)
+    new_information_observed = result_repetition_count == 1
     # Successful investigation can produce useful observations without
     # advancing a durable, inspectable milestone.  Keep that evidence in
     # ``semantic_progress`` while allowing the advisory clock to continue.
@@ -695,10 +915,7 @@ def _record_semantic_tool_progress_locked(
     # The signal never stops the task, revokes Tools, or imposes a cost limit.
     durable_stagnation_count = (
         0
-        if (
-            not semantic_ledger_enabled
-            or durable_milestone_advanced
-        )
+        if (not semantic_ledger_enabled or durable_milestone_advanced)
         else int(previous.get("durable_stagnation_count", 0) or 0) + 1
     )
     low_information_gain_count = max(
@@ -731,6 +948,7 @@ def _record_semantic_tool_progress_locked(
         "artifact_changed": artifact_changed,
         "artifact_fingerprint": artifact_fingerprint,
         "artifact_advanced": artifact_advanced,
+        "workspace_mutated": bool(artifact_changed and not rollback_performed),
         "diagnostic_progress_observable": diagnostic_progress_observable,
         "failure_signature": failure_signature,
         "recent_failure_signatures": recent_failure_signatures[-8:],
@@ -749,7 +967,23 @@ def _record_semantic_tool_progress_locked(
         "public_delivery_count": public_delivery_count,
         "public_delivery_high_water_count": public_delivery_high_water_count,
         "public_delivery_advanced": public_delivery_advanced,
+        "public_delivery_changed": public_delivery_changed,
+        "recent_public_delivery_fingerprints": (
+            recent_public_delivery_fingerprints[-8:]
+        ),
+        "public_delivery_versions": public_delivery_versions,
+        "public_deliverable_declared": public_deliverable_declared,
+        "missing_public_deliverable_count": missing_public_deliverable_count,
+        "candidate_present": candidate_present,
+        # Exact plan/action alignment needs to know whether the declared
+        # candidate changed on this Tool turn. Durable goal progress below is
+        # stricter: an A→B→A oscillation is not a new milestone.
+        "candidate_advanced": public_delivery_changed,
         "validation_evidence_advanced": validation_evidence_advanced,
+        "validation_observed": validation_evidence_advanced,
+        "new_information_observed": new_information_observed,
+        "observed_action_names": _observed_action_names(tool_name, actions),
+        "observed_action_signatures": _observed_action_signatures(actions),
         "durable_milestone_advanced": durable_milestone_advanced,
         "progress_guard_reset": progress_guard_reset,
         "progress_guard_required": progress_guard_required,
@@ -791,16 +1025,16 @@ def _record_semantic_tool_progress_locked(
             record_public_probe_observations,
         )
 
-        record_public_probe_observations(
+        observed_probe_count = record_public_probe_observations(
             runtime_context,
             agent_id,
             actions=actions,
             result_projections=action_results,
             artifact_after=artifact_fingerprint,
         )
-        public_probe_receipts = load_public_probe_receipts(
-            runtime_context, agent_id
-        )
+        if observed_probe_count:
+            state["validation_observed"] = True
+        public_probe_receipts = load_public_probe_receipts(runtime_context, agent_id)
         if public_probe_receipts:
             state["public_probe_receipt_count"] = len(public_probe_receipts)
             state["public_probe_receipts"] = [
@@ -822,9 +1056,7 @@ def _record_semantic_tool_progress_locked(
             runtime_context.context_info[SEMANTIC_PROGRESS_KEY] = state_by_agent
             if callable(shared_writer):
                 shared_writer(agent_id, _SEMANTIC_RUNTIME_KEY, state)
-            _project_working_state_value(
-                durable_owner, semantic_working_key, state
-            )
+            _project_working_state_value(durable_owner, semantic_working_key, state)
     except Exception:
         pass
 
@@ -991,12 +1223,8 @@ def _record_semantic_tool_progress_locked(
             else None,
             "observed_content_present": bool(serialized_probe_content),
             "observed_content_hash": semantic_fingerprint(serialized_probe_content),
-            "stdout_tail": bounded_tail(
-                probe_metadata.get("stdout")
-            ),
-            "stderr_tail": bounded_tail(
-                probe_metadata.get("stderr")
-            ),
+            "stdout_tail": bounded_tail(probe_metadata.get("stdout")),
+            "stderr_tail": bounded_tail(probe_metadata.get("stderr")),
             "content_tail": bounded_tail(serialized_probe_content),
         }
         record_acceptance_probe_observation(
@@ -1034,9 +1262,7 @@ def semantic_progress_for_agent(context, *, agent_id: str) -> dict[str, Any]:
     durable_owner = _runtime_registry_owner(runtime_context)
     state = _select_semantic_state(
         state,
-        _working_state_value(
-            durable_owner, f"{SEMANTIC_PROGRESS_KEY}:{agent_id}"
-        ),
+        _working_state_value(durable_owner, f"{SEMANTIC_PROGRESS_KEY}:{agent_id}"),
     )
     state_by_agent = runtime_context.context_info.get(SEMANTIC_PROGRESS_KEY)
     if not isinstance(state_by_agent, dict):
@@ -1052,9 +1278,7 @@ def refresh_public_probe_receipt_projection(
     runtime_context = _runtime_context(context)
     if runtime_context is None:
         return []
-    transaction = getattr(
-        runtime_context, "task_runtime_state_transaction", None
-    )
+    transaction = getattr(runtime_context, "task_runtime_state_transaction", None)
     if callable(transaction):
         with transaction():
             return _refresh_public_probe_receipt_projection_locked(
@@ -1118,18 +1342,14 @@ def _refresh_public_probe_receipt_projection_locked(
         shared_state,
         _working_state_value(durable_owner, semantic_working_key),
     )
-    semantic_state = _select_semantic_state(
-        shared_state, state_by_agent.get(agent_id)
-    )
+    semantic_state = _select_semantic_state(shared_state, state_by_agent.get(agent_id))
     semantic_state = _semantic_state_in_scope(
         semantic_state, _semantic_state_scope(runtime_context)
     )
     if isinstance(semantic_state, dict):
         semantic_state = dict(semantic_state)
         previous_projection = semantic_state.get("public_probe_receipts") or []
-        previous_count = int(
-            semantic_state.get("public_probe_receipt_count", 0) or 0
-        )
+        previous_count = int(semantic_state.get("public_probe_receipt_count", 0) or 0)
         if projection:
             semantic_state["public_probe_receipt_count"] = len(receipts)
             semantic_state["public_probe_receipts"] = projection
@@ -1163,9 +1383,7 @@ def _refresh_public_probe_receipt_projection_locked(
     if isinstance(adaptive_state, dict):
         adaptive_state = dict(adaptive_state)
         previous_projection = adaptive_state.get("public_probe_receipts") or []
-        previous_count = int(
-            adaptive_state.get("public_probe_receipt_count", 0) or 0
-        )
+        previous_count = int(adaptive_state.get("public_probe_receipt_count", 0) or 0)
         if projection:
             adaptive_state["public_probe_receipt_count"] = len(receipts)
             adaptive_state["public_probe_receipts"] = projection
@@ -1173,15 +1391,11 @@ def _refresh_public_probe_receipt_projection_locked(
             adaptive_state.pop("public_probe_receipt_count", None)
             adaptive_state.pop("public_probe_receipts", None)
         if previous_projection != projection or previous_count != len(receipts):
-            adaptive_state["revision"] = (
-                int(adaptive_state.get("revision", 0) or 0) + 1
-            )
+            adaptive_state["revision"] = int(adaptive_state.get("revision", 0) or 0) + 1
         runtime_context.context_info[context_key] = adaptive_state
         if callable(shared_writer):
             shared_writer(agent_id, ADAPTIVE_WORK_STATE_KEY, adaptive_state)
-        _project_working_state_value(
-            durable_owner, context_key, adaptive_state
-        )
+        _project_working_state_value(durable_owner, context_key, adaptive_state)
     return projection
 
 
@@ -1189,23 +1403,15 @@ def acknowledge_semantic_checkpoint(context, *, agent_id: str) -> None:
     runtime_context = _runtime_context(context)
     if runtime_context is None:
         return
-    transaction = getattr(
-        runtime_context, "task_runtime_state_transaction", None
-    )
+    transaction = getattr(runtime_context, "task_runtime_state_transaction", None)
     if callable(transaction):
         with transaction():
-            _acknowledge_semantic_checkpoint_locked(
-                runtime_context, agent_id=agent_id
-            )
+            _acknowledge_semantic_checkpoint_locked(runtime_context, agent_id=agent_id)
         return
-    _acknowledge_semantic_checkpoint_locked(
-        runtime_context, agent_id=agent_id
-    )
+    _acknowledge_semantic_checkpoint_locked(runtime_context, agent_id=agent_id)
 
 
-def _acknowledge_semantic_checkpoint_locked(
-    context, *, agent_id: str
-) -> None:
+def _acknowledge_semantic_checkpoint_locked(context, *, agent_id: str) -> None:
     runtime_context = _runtime_context(context)
     if runtime_context is None:
         return

@@ -15,6 +15,9 @@ from aworld.models.provider_context_request import (
     mark_prepared_provider_attempt,
     prepare_provider_context_request,
 )
+from aworld.models.reasoning_policy import (
+    ReasoningTransportCapability,
+)
 
 
 REVIEWED_CUSTOM_CONTEXT_LOWERING = ProviderLoweringCapability(
@@ -22,6 +25,15 @@ REVIEWED_CUSTOM_CONTEXT_LOWERING = ProviderLoweringCapability(
     adapter_identity="aworld.provider.custom.standard_chat",
     adapter_version="v1",
     request_projection="aworld.standard-chat.params.v1",
+)
+
+REVIEWED_CUSTOM_OPENAI_REASONING_CAPABILITY = ReasoningTransportCapability(
+    provider_name="custom",
+    adapter_identity="aworld.provider.custom.standard_chat",
+    supported_transports=frozenset({"openai"}),
+    # A custom transport must be opted in explicitly; protocol compatibility
+    # alone is not evidence that its endpoint accepts reasoning_effort.
+    auto_transport=None,
 )
 
 
@@ -50,6 +62,11 @@ class ReviewedCustomChatProvider(LLMProviderBase):
     ) -> ProviderLoweringCapability | None:
         return REVIEWED_CUSTOM_CONTEXT_LOWERING
 
+    def reasoning_transport_capability(
+        self,
+    ) -> ReasoningTransportCapability | None:
+        return REVIEWED_CUSTOM_OPENAI_REASONING_CAPABILITY
+
     def postprocess_response(self, response: Any) -> ModelResponse:
         if not isinstance(response, ModelResponse):
             raise TypeError("custom transport must return ModelResponse")
@@ -70,6 +87,8 @@ class ReviewedCustomChatProvider(LLMProviderBase):
             "max_tokens": params["max_tokens"],
             "stop": params["stop"],
         }
+        if "reasoning_effort" in params:
+            payload["reasoning_effort"] = params["reasoning_effort"]
         tools = standard["tools"]
         if tools is not None:
             payload["tools"] = tools
@@ -169,5 +188,6 @@ class ReviewedCustomChatProvider(LLMProviderBase):
 
 __all__ = [
     "REVIEWED_CUSTOM_CONTEXT_LOWERING",
+    "REVIEWED_CUSTOM_OPENAI_REASONING_CAPABILITY",
     "ReviewedCustomChatProvider",
 ]

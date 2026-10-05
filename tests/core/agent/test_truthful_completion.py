@@ -250,6 +250,45 @@ async def test_deployed_probe_composition_never_finishes_reasoning_length_respon
 
 
 @pytest.mark.asyncio
+async def test_stream_info_logs_keep_reasoning_and_content_payloads_out(monkeypatch):
+    agent = _agent(policy=GenerationBudgetPolicy(total_timeout_seconds=5))
+    message = _message("bounded stream log")
+    secret = "private-stream-payload"
+
+    async def stream(*args, **kwargs):
+        yield ModelResponse(
+            id="bounded-log",
+            model="fake",
+            content=secret,
+            reasoning_content=secret * 2,
+            finish_reason="stop",
+        )
+
+    log_messages = []
+    monkeypatch.setattr(module, "acall_llm_model_stream", stream)
+    monkeypatch.setattr(module.logger, "info", log_messages.append)
+
+    response = await agent._consume_model_stream(
+        messages=[],
+        message=message,
+        tools=[],
+        float_temperature=0.1,
+        prompt_tokens_est=0,
+        controller=module.GenerationBudgetController(
+            GenerationBudgetPolicy(total_timeout_seconds=5)
+        ),
+        request_kwargs={},
+    )
+
+    assert response.content == secret
+    assert response.reasoning_content == secret * 2
+    assert log_messages
+    assert all(secret not in entry for entry in log_messages)
+    assert any('"content_chars": 22' in entry for entry in log_messages)
+    assert any('"reasoning_chars": 44' in entry for entry in log_messages)
+
+
+@pytest.mark.asyncio
 async def test_loop_summary_cannot_turn_budget_stop_into_success():
     agent = _agent(policy=GenerationBudgetPolicy(total_timeout_seconds=5))
     message = _message("budget")

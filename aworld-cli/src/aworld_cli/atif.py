@@ -364,6 +364,17 @@ def build_atif_trajectory(
             "action_count": action_count,
         },
     }
+    from aworld_cli.executors.stats import build_llm_diagnostics_summary
+
+    llm_diagnostics = build_llm_diagnostics_summary(
+        [
+            call
+            for call in trajectory_payload.get("llm_calls") or []
+            if isinstance(call, dict)
+        ]
+    )
+    if llm_diagnostics.get("call_count"):
+        final_metrics["extra"]["llm_diagnostics"] = llm_diagnostics
     execution_protocol = _execution_protocol_telemetry(
         trajectory_payload.get("execution_protocol")
     )

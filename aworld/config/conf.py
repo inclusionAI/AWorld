@@ -13,6 +13,8 @@ from typing import Any, Dict, List, Optional, Callable, Union, Iterable, Literal
 import yaml
 from pydantic import BaseModel, Field, model_validator
 
+from aworld.models.reasoning_policy import ReasoningPhasePolicy
+
 
 def load_config(file_name: str, dir_name: str = None) -> Dict[str, Any]:
     from aworld.logs.util import logger
@@ -232,6 +234,12 @@ class ModelConfig(BaseConfig):
         "qwen"  # Tokenizer family; context capacity is resolved separately.
     )
     params: Optional[Dict[str, Any]] = {}
+    # Explicit AWorld-owned per-phase selection. ``None`` preserves the
+    # provider/caller's static request behavior; no phase profile is inferred.
+    reasoning_phase_policy: Optional[ReasoningPhasePolicy] = None
+    reasoning_transport: Literal[
+        "auto", "openai", "openai_chat_template"
+    ] = "auto"
     ext_config: Optional[Dict[str, Any]] = {}
     llm_response_parser: Optional[Any] = None
     context_cache: ContextCacheConfig = Field(default_factory=ContextCacheConfig)

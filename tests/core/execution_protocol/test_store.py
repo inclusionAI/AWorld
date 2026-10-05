@@ -1,5 +1,6 @@
 from copy import deepcopy
 from concurrent.futures import ThreadPoolExecutor
+import json
 from threading import Event
 from types import SimpleNamespace
 
@@ -200,14 +201,18 @@ def test_store_atomically_projects_concurrent_transport_events_to_checkpoint(
 def test_model_plan_update_survives_core_only_checkpoint_round_trip():
     context = _application_context()
     policy = ExecutionProtocolPolicy(mode="guide")
-    update = ModelPlanUpdate.from_mapping(
+    update = ModelPlanUpdate.from_model_mapping(
         {
             "decision": "continue",
             "horizon": "long",
             "milestone": "validate candidate",
             "next_action": "run a public probe",
+            "next_action_tool": "terminal__execute",
+            "next_action_arguments": '{"command":"private exact probe"}',
             "verification_plan": "inspect the observed result",
             "completion_assessment": "in_progress",
+            "delivery_intent": "validate_candidate",
+            "delivery_rationale": "the candidate needs a fresh public check",
             "assumptions": [],
             "retired_approaches": [],
             "evidence_refs": [],
@@ -220,6 +225,10 @@ def test_model_plan_update_survives_core_only_checkpoint_round_trip():
             model_plan_update=update,
         )
     )
+
+    checkpoint = json.dumps(context.to_dict())
+    assert "next_action_arguments" not in checkpoint
+    assert "private exact probe" not in checkpoint
 
     restored = ApplicationContext.from_dict(context.to_dict())
     restored_state = ExecutionProtocolStore(restored, "agent", policy).load()

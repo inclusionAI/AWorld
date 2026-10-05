@@ -11,6 +11,7 @@ from aworld.core.context.compiler import (
     ValidationCommand,
 )
 from aworld.core.execution_protocol import (
+    action_signature,
     ControllerAction,
     ExecutionProtocolPolicy,
     ExecutionProtocolStore,
@@ -23,6 +24,7 @@ from aworld.runners.execution_protocol import (
     configure_execution_protocol,
     consume_execution_protocol_guidance,
     execution_protocol_accepts_model_profile,
+    execution_protocol_model_decision_boundary,
     execution_protocol_policy,
     execution_protocol_requires_tool_free_finalization,
     final_review_guidance,
@@ -32,7 +34,9 @@ from aworld.runners.execution_protocol import (
     model_owned_review_active,
     record_candidate_final,
     record_model_execution_profile,
+    record_model_decision_boundary,
     record_model_plan_update,
+    record_pre_generation_delivery_decision,
     record_review_repair_decision,
     record_review_tool_action,
     record_tool_protocol_event,
@@ -122,8 +126,12 @@ def test_guide_mode_delivers_each_replan_checkpoint_once() -> None:
             "horizon": "short",
             "milestone": "bounded diagnosis",
             "next_action": "run a different public probe",
+            "next_action_tool": "terminal__execute",
+            "next_action_arguments": '{"command":"run public probe"}',
             "verification_plan": "compare the probe result with the request",
             "completion_assessment": "uncertain",
+            "delivery_intent": "continue_exploration",
+            "delivery_rationale": "a different public probe can add evidence",
             "assumptions": ["the probe is locally available"],
             "retired_approaches": [],
             "evidence_refs": ["tool:call-1"],
@@ -213,7 +221,97 @@ def test_replan_prioritizes_missing_public_deliverable(tmp_path) -> None:
     guidance = consume_execution_protocol_guidance(context, "agent")
     assert guidance is not None
     assert "result.json" in guidance
-    assert "next Tool action must create or update" in guidance
+    assert "choose the next delivery intent" in guidance.lower()
+    assert "continue_exploration" in guidance
+    assert "does not force a command" in guidance
+
+
+def test_pre_generation_candidate_decision_is_typed_and_one_shot(tmp_path) -> None:
+    context = _context("candidate-reserve")
+    output = tmp_path / "candidate.txt"
+    context.context_info["public_deliverable_contract"] = {
+        "schema_version": "aworld.public-deliverables/v1",
+        "authority": "public_task_advisory",
+        "source": "public_task_text",
+        "artifacts": [
+            {
+                "deliverable_id": "public-output-1",
+                "path": str(output),
+                "display_path": "candidate.txt",
+                "kind": "file",
+                "authority": "public_task_advisory",
+            }
+        ],
+    }
+    policy = ExecutionProtocolPolicy(
+        mode=ProtocolMode.GUIDE,
+        finalization_reserve_seconds=60,
+        candidate_decision_reserve_seconds=180,
+    )
+    configure_execution_protocol(context, "agent", policy)
+    _declare_long_horizon(context)
+    context.get_task().remaining_seconds = lambda: 150
+
+    transition = record_pre_generation_delivery_decision(
+        context, "agent", policy=policy
+    )
+
+    assert transition is not None
+    assert transition.decision.action is ControllerAction.REQUEST_REPLAN
+    assert transition.state.decision_checkpoint_candidate_present is False
+    guidance = consume_execution_protocol_guidance(context, "agent")
+    assert guidance is not None
+    assert "produce_candidate" in guidance
+    assert "validate_candidate" in guidance
+    assert "submit_current" in guidance
+    assert "submit_uncertain" in guidance
+    assert "observed candidate state is absent" in guidance
+
+    # The same reserve is not silently converted into repeated control turns.
+    assert (
+        record_pre_generation_delivery_decision(context, "agent", policy=policy) is None
+    )
+
+
+def test_pre_generation_candidate_decision_fails_open_on_unavailable_provider() -> None:
+    from aworld.runners.execution_protocol import (
+        execution_protocol_model_decision_boundary,
+        record_model_decision_unavailable,
+    )
+
+    context = _context("candidate-reserve-unavailable")
+    policy = ExecutionProtocolPolicy(
+        mode=ProtocolMode.GUIDE,
+        finalization_reserve_seconds=60,
+        candidate_decision_reserve_seconds=180,
+    )
+    configure_execution_protocol(context, "agent", policy)
+    _declare_long_horizon(context)
+    context.get_task().remaining_seconds = lambda: 150
+    assert (
+        record_pre_generation_delivery_decision(context, "agent", policy=policy)
+        is not None
+    )
+    assert execution_protocol_model_decision_boundary(context, "agent") == "replan"
+
+    assert (
+        record_model_decision_unavailable(
+            context,
+            "agent",
+            boundary="replan",
+            reason="provider_unavailable",
+        )
+        is True
+    )
+    assert execution_protocol_model_decision_boundary(context, "agent") is None
+    state = load_execution_protocol_state(context, "agent")
+    assert state.phase is ProtocolPhase.EXECUTE
+    assert state.decision_checkpoint_pending is False
+    assert state.candidate_decision_count == 1
+    assert state.candidate_decision_recorded is False
+    assert (
+        record_pre_generation_delivery_decision(context, "agent", policy=policy) is None
+    )
 
 
 def test_observe_replan_exhaustion_never_changes_tool_availability() -> None:
@@ -297,6 +395,13 @@ def test_scoped_state_and_bounded_telemetry_are_public_read_only_views() -> None
         "replan_requested_count": 0,
         "replan_applied_count": 0,
         "decision_checkpoint_pending": False,
+        "candidate_decision_recorded": False,
+        "delivery_debt_observations": 0,
+        "workspace_mutation_absent_observations": 0,
+        "delivery_checkpoint_count": 0,
+        "candidate_decision_count": 0,
+        "action_alignment_match_count": 0,
+        "action_alignment_mismatch_count": 0,
         "initial_decision_attempt_count": 0,
         "initial_decision_unavailable_count": 0,
         "replan_decision_attempt_count": 0,
@@ -308,6 +413,46 @@ def test_scoped_state_and_bounded_telemetry_are_public_read_only_views() -> None
     }
 
 
+def test_delivery_intent_is_bounded_in_telemetry_and_transition_metrics() -> None:
+    context = _context("delivery-intent-telemetry")
+    configure_execution_protocol(
+        context,
+        "agent",
+        ExecutionProtocolPolicy(mode=ProtocolMode.GUIDE),
+    )
+
+    transition = record_model_plan_update(
+        context,
+        "agent",
+        {
+            "decision": "continue",
+            "horizon": "long",
+            "milestone": "inspect the candidate",
+            "next_action": "run the exact public probe",
+            "next_action_tool": "terminal__execute",
+            "next_action_arguments": '{"command":"pytest -q"}',
+            "verification_plan": "use the observed exit status",
+            "completion_assessment": "in_progress",
+            "delivery_intent": "validate_candidate",
+            "delivery_rationale": "a candidate exists and needs a fresh check",
+            "assumptions": [],
+            "retired_approaches": [],
+            "evidence_refs": ["tool:call-1"],
+            "selected_candidate_id": "candidate-1",
+        },
+    )
+
+    assert transition is not None
+    assert (
+        build_execution_protocol_telemetry(context, "agent")["last_delivery_intent"]
+        == "validate_candidate"
+    )
+    assert (
+        context.context_info["execution_protocol_metrics"]["last_delivery_intent"]
+        == "validate_candidate"
+    )
+
+
 def test_invalid_model_plan_update_fails_open_without_acknowledging_checkpoint():
     context = _context("invalid-plan-update")
     policy = ExecutionProtocolPolicy(
@@ -316,15 +461,156 @@ def test_invalid_model_plan_update_fails_open_without_acknowledging_checkpoint()
         stagnation_event_threshold=1,
     )
     configure_execution_protocol(context, "agent", policy)
-    record_tool_protocol_event(
-        context, "agent", _semantic_state(repetition_count=1)
-    )
+    record_tool_protocol_event(context, "agent", _semantic_state(repetition_count=1))
     assert consume_execution_protocol_guidance(context, "agent") is not None
 
     assert record_model_plan_update(context, "agent", {"decision": "replan"}) is None
     state = load_execution_protocol_state(context, "agent")
     assert state.attempt_epoch == 0
     assert load_model_plan_update(context, "agent") == {}
+
+
+def test_model_decision_boundary_rejects_a_forged_tool_call_signature():
+    context = _context("forged-plan-signature")
+    configure_execution_protocol(
+        context,
+        "agent",
+        ExecutionProtocolPolicy(mode=ProtocolMode.GUIDE),
+    )
+    forged_signature = action_signature(
+        "terminal__execute", {"command": "malicious-tool-call"}
+    )
+
+    acknowledged = record_model_decision_boundary(
+        context,
+        "agent",
+        boundary="initial",
+        execution_profile={
+            "horizon": "long",
+            "confidence": 0.9,
+            "milestone_count": 3,
+            "expected_tool_actions": 8,
+            "verification_required": True,
+        },
+        plan_update={
+            "decision": "continue",
+            "horizon": "long",
+            "milestone": "claim a benign next action",
+            "next_action": "run the declared probe",
+            "next_action_tool": "terminal__execute",
+            "next_action_signature": forged_signature,
+            "verification_plan": "inspect the observed result",
+            "completion_assessment": "in_progress",
+            "delivery_intent": "validate_candidate",
+            "delivery_rationale": "the candidate needs a public check",
+            "assumptions": [],
+            "retired_approaches": [],
+            "evidence_refs": [],
+            "selected_candidate_id": "candidate-1",
+        },
+    )
+
+    assert acknowledged is False
+    assert execution_protocol_model_decision_boundary(context, "agent") == "initial"
+    state = load_execution_protocol_state(context, "agent")
+    assert state.model_execution_profile is None
+    assert state.model_plan_update is None
+
+
+def test_model_decision_boundary_rejects_tool_outside_decision_catalog():
+    context = _context("out-of-catalog-plan-tool")
+    configure_execution_protocol(
+        context,
+        "agent",
+        ExecutionProtocolPolicy(mode=ProtocolMode.GUIDE),
+    )
+
+    acknowledged = record_model_decision_boundary(
+        context,
+        "agent",
+        boundary="initial",
+        execution_profile={
+            "horizon": "long",
+            "confidence": 0.9,
+            "milestone_count": 3,
+            "expected_tool_actions": 8,
+            "verification_required": True,
+        },
+        plan_update={
+            "decision": "continue",
+            "horizon": "long",
+            "milestone": "attempt an undeclared action",
+            "next_action": "invoke a Tool outside the offered catalog",
+            "next_action_tool": "filesystem__delete",
+            "next_action_arguments": '{"path":"result.json"}',
+            "verification_plan": "inspect the result",
+            "completion_assessment": "in_progress",
+            "delivery_intent": "continue_exploration",
+            "delivery_rationale": "the undeclared action might add evidence",
+            "assumptions": [],
+            "retired_approaches": [],
+            "evidence_refs": [],
+            "selected_candidate_id": None,
+        },
+        available_tool_names=frozenset({"terminal__execute"}),
+    )
+
+    assert acknowledged is False
+    assert execution_protocol_model_decision_boundary(context, "agent") == "initial"
+    state = load_execution_protocol_state(context, "agent")
+    assert state.model_execution_profile is None
+    assert state.model_plan_update is None
+
+
+def test_initial_short_plan_can_submit_current_without_claiming_uncertainty():
+    context = _context("short-submit-current")
+    configure_execution_protocol(
+        context,
+        "agent",
+        ExecutionProtocolPolicy(mode=ProtocolMode.GUIDE),
+    )
+
+    acknowledged = record_model_decision_boundary(
+        context,
+        "agent",
+        boundary="initial",
+        execution_profile={
+            "horizon": "short",
+            "confidence": 0.95,
+            "milestone_count": 1,
+            "expected_tool_actions": 0,
+            "verification_required": False,
+        },
+        plan_update={
+            "decision": "continue",
+            "horizon": "short",
+            "milestone": "answer is ready",
+            "next_action": "submit the current result",
+            "next_action_tool": None,
+            "next_action_arguments": None,
+            "verification_plan": "return the best current result",
+            "completion_assessment": "candidate_ready",
+            "delivery_intent": "submit_current",
+            "delivery_rationale": "the request is complete without a Tool call",
+            "assumptions": [],
+            "retired_approaches": [],
+            "evidence_refs": [],
+            "selected_candidate_id": None,
+        },
+        available_tool_names=frozenset({"terminal__execute"}),
+    )
+
+    assert acknowledged is True
+    state = load_execution_protocol_state(context, "agent")
+    assert state.phase is ProtocolPhase.FINALIZE
+    assert state.finalization_entered is True
+    assert state.long_horizon_armed is False
+    assert state.acceptance_confirmed is False
+    assert execution_protocol_requires_tool_free_finalization(context, "agent") is True
+    assert (
+        build_execution_protocol_telemetry(context, "agent")["last_delivery_intent"]
+        == "submit_current"
+    )
 
 
 def test_evidence_fingerprint_change_alone_does_not_reset_stagnation() -> None:
@@ -358,11 +644,14 @@ def test_invalid_model_profile_stays_unknown_and_can_be_reoffered() -> None:
     policy = ExecutionProtocolPolicy(mode=ProtocolMode.GUIDE)
     configure_execution_protocol(context, "agent", policy)
 
-    assert record_model_execution_profile(
-        context,
-        "agent",
-        {"horizon": "long", "confidence": "certain"},
-    ) is None
+    assert (
+        record_model_execution_profile(
+            context,
+            "agent",
+            {"horizon": "long", "confidence": "certain"},
+        )
+        is None
+    )
     assert execution_protocol_accepts_model_profile(context, "agent") is True
     state = ExecutionProtocolStore(context, "agent", policy).load()
     assert state.long_horizon_armed is False
@@ -383,10 +672,7 @@ def test_final_review_is_requested_once_and_unknown_submits_current_result() -> 
 
     first = record_candidate_final(context, "agent")
     assert (
-        final_review_guidance(
-            first, independent_acceptance_enabled=False
-        )
-        is not None
+        final_review_guidance(first, independent_acceptance_enabled=False) is not None
     )
     assert first is not None
     assert first.decision.action is ControllerAction.REQUEST_FINAL_REVIEW
@@ -420,10 +706,7 @@ def test_short_task_candidate_final_bypasses_review() -> None:
     assert transition.decision.action is ControllerAction.SUBMIT_CURRENT_RESULT
     assert transition.state.final_review_count == 0
     assert (
-        final_review_guidance(
-            transition, independent_acceptance_enabled=False
-        )
-        is None
+        final_review_guidance(transition, independent_acceptance_enabled=False) is None
     )
 
 

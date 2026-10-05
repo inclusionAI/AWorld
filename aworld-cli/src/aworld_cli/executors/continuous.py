@@ -420,6 +420,14 @@ class ContinuousExecutor:
                 and llm_usage.get("ledger_consistent") is True
             ):
                 result["llm_usage"] = to_serializable(llm_usage)
+            llm_diagnostics = getattr(
+                self.agent_executor, "last_llm_diagnostics", None
+            )
+            if (
+                isinstance(llm_diagnostics, dict)
+                and llm_diagnostics.get("call_count")
+            ):
+                result["llm_diagnostics"] = to_serializable(llm_diagnostics)
             return self._attach_task_response_evidence(result, task_response)
             
         except Exception as e:

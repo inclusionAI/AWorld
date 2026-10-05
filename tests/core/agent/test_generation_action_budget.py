@@ -230,7 +230,7 @@ def test_pre_generation_check_keeps_solve_window_open_before_reserve(
 
 
 @pytest.mark.parametrize("armed", [False, True])
-def test_public_delivery_reserve_forces_tool_action_for_missing_output(
+def test_public_delivery_reserve_requests_typed_model_decision_only_when_armed(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path,
     armed: bool,
@@ -254,51 +254,46 @@ def test_public_delivery_reserve_forces_tool_action_for_missing_output(
         ],
     }
     policy = agent._resolve_execution_protocol_policy(context)
+    configure_execution_protocol(context, agent.id(), policy)
+    if armed:
+        assert record_model_execution_profile(
+            context,
+            agent.id(),
+            {
+                "horizon": "long",
+                "confidence": 0.9,
+                "milestone_count": 3,
+                "expected_tool_actions": 8,
+                "verification_required": True,
+            },
+        ) is not None
     monkeypatch.setattr(
         context.get_task(),
         "remaining_seconds",
         lambda: policy.finalization_reserve_seconds + 179,
     )
 
-    guidance = agent._public_delivery_reserve_guidance(context)
-    assert guidance is not None
-    assert "result.json" in guidance
-    assert "when a write-capable Tool is available" in guidance
-    assert "report that concrete limitation" in guidance
+    from aworld.runners.execution_protocol import (
+        execution_protocol_model_decision_boundary,
+        record_pre_generation_delivery_decision,
+    )
+
+    transition = record_pre_generation_delivery_decision(
+        context, agent.id(), policy=policy
+    )
+    if armed:
+        assert transition is not None
+        assert transition.decision.reason.value == "candidate_decision_reserve"
+        assert execution_protocol_model_decision_boundary(context, agent.id()) == "replan"
+    else:
+        assert transition is None
+        assert execution_protocol_model_decision_boundary(context, agent.id()) == "initial"
 
     output.write_text("{}")
-    assert agent._public_delivery_reserve_guidance(context) is None
-
-
-def test_public_delivery_requires_only_a_write_capable_tool() -> None:
-    assert Agent._public_delivery_write_tool_available(
-        [
-            {
-                "type": "function",
-                "function": {"name": "filesystem__read_file"},
-            }
-        ]
-    ) is False
-    assert Agent._public_delivery_write_tool_available(
-        [
-            {
-                "type": "function",
-                "function": {"name": "db__run_readonly_query"},
-            },
-            {
-                "type": "function",
-                "function": {"name": "sql__execute_select"},
-            },
-        ]
-    ) is False
-    assert Agent._public_delivery_write_tool_available(
-        [
-            {
-                "type": "function",
-                "function": {"name": "terminal__run_code"},
-            }
-        ]
-    ) is True
+    if not armed:
+        assert record_pre_generation_delivery_decision(
+            context, agent.id(), policy=policy
+        ) is None
 
 
 def test_explicit_generation_compiler_configuration_wins_after_arming() -> None:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
+import json
 from threading import Barrier, Event
 from types import SimpleNamespace
 
@@ -73,7 +74,12 @@ def _probe_value(**overrides):
     return value
 
 
-def _select_candidate(context: Context, candidate_id: str) -> None:
+def _select_candidate(
+    context: Context,
+    candidate_id: str,
+    *,
+    next_command: str = "true",
+) -> None:
     assert (
         record_model_plan_update(
             context,
@@ -83,8 +89,12 @@ def _select_candidate(context: Context, candidate_id: str) -> None:
                 "horizon": "long",
                 "milestone": "validate the selected candidate",
                 "next_action": "run the discriminating public probe",
+                "next_action_tool": "terminal__execute",
+                "next_action_arguments": json.dumps({"command": next_command}),
                 "verification_plan": "bind the observed probe to this candidate",
                 "completion_assessment": "in_progress",
+                "delivery_intent": "validate_candidate",
+                "delivery_rationale": "the selected candidate needs a fresh probe",
                 "assumptions": [],
                 "retired_approaches": [],
                 "evidence_refs": [],
@@ -97,7 +107,11 @@ def _select_candidate(context: Context, candidate_id: str) -> None:
 
 def test_public_probe_receipt_binds_request_candidate_action_and_observation():
     context = _context()
-    _select_candidate(context, "candidate-2")
+    _select_candidate(
+        context,
+        "candidate-2",
+        next_command="python -m json.tool report.json",
+    )
     store_candidate_fallback(
         context,
         "agent",
@@ -155,7 +169,7 @@ def test_public_probe_receipt_binds_request_candidate_action_and_observation():
 
 def test_public_probe_receipt_becomes_stale_when_candidate_changes():
     context = _context()
-    _select_candidate(context, "candidate-1")
+    _select_candidate(context, "candidate-1", next_command="pytest -q")
     store_candidate_fallback(
         context,
         "agent",

@@ -8,6 +8,7 @@ from typing import (
 )
 
 from aworld.models.model_response import ModelResponse
+from aworld.models.reasoning_policy import ReasoningTransportCapability
 from aworld.core.context.base import Context
 from aworld.core.context.compiler import (
     CachePlan,
@@ -81,6 +82,12 @@ class LLMProviderBase(abc.ABC):
         self,
     ) -> ProviderLoweringCapability | None:
         """Return a versioned provider-owned lowering contract, if supported."""
+        return None
+
+    def reasoning_transport_capability(
+        self,
+    ) -> ReasoningTransportCapability | None:
+        """Return this adapter's reviewed reasoning wire contract, if any."""
         return None
 
     def provider_native_cache_control_enabled(

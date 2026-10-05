@@ -110,6 +110,54 @@ def _missing_public_deliverable_names(context) -> tuple[str, ...]:
     return tuple(missing)
 
 
+def _public_delivery_status(context) -> dict[str, Any]:
+    """Return bounded public candidate presence without inspecting contents."""
+
+    value = getattr(context, "context_info", {}).get("public_deliverable_contract")
+    if (
+        not isinstance(value, Mapping)
+        or value.get("schema_version") != _PUBLIC_DELIVERABLE_SCHEMA
+        or value.get("authority") != _PUBLIC_DELIVERABLE_AUTHORITY
+        or value.get("source") != "public_task_text"
+    ):
+        return {
+            "public_deliverable_declared": False,
+            "missing_public_deliverable_count": 0,
+            "candidate_present": None,
+        }
+    artifacts = value.get("artifacts")
+    if not isinstance(artifacts, list) or not artifacts or len(artifacts) > 16:
+        return {
+            "public_deliverable_declared": False,
+            "missing_public_deliverable_count": 0,
+            "candidate_present": None,
+        }
+    existing = 0
+    for item in artifacts:
+        if (
+            not isinstance(item, Mapping)
+            or item.get("kind") != "file"
+            or item.get("authority") != _PUBLIC_DELIVERABLE_AUTHORITY
+            or not isinstance(item.get("path"), str)
+        ):
+            return {
+                "public_deliverable_declared": False,
+                "missing_public_deliverable_count": 0,
+                "candidate_present": None,
+            }
+        try:
+            existing += int(os.path.isfile(item["path"]))
+        except OSError:
+            pass
+    return {
+        "public_deliverable_declared": True,
+        "missing_public_deliverable_count": len(artifacts) - existing,
+        # One real named output is sufficient to establish an inspectable
+        # candidate. It is not evidence that every deliverable is complete.
+        "candidate_present": existing > 0,
+    }
+
+
 def _context_key(base: str, agent_id: str) -> str:
     return f"{base}:{agent_id}"
 
@@ -213,20 +261,14 @@ def _update_runtime_value(context, agent_id: str, key: str, update) -> Any:
         return None
     registry_owner_resolver = getattr(owner, "_task_runtime_registry_owner", None)
     durable_owner = (
-        registry_owner_resolver()
-        if callable(registry_owner_resolver)
-        else owner
+        registry_owner_resolver() if callable(registry_owner_resolver) else owner
     )
     atomic_updater = getattr(owner, "update_and_project_task_runtime_state", None)
     if callable(atomic_updater):
-        durable_seed = _read_projected_runtime_value(
-            durable_owner, agent_id, key
-        )
+        durable_seed = _read_projected_runtime_value(durable_owner, agent_id, key)
 
         def seeded_update(current):
-            return update(
-                deepcopy(durable_seed) if current is None else current
-            )
+            return update(deepcopy(durable_seed) if current is None else current)
 
         try:
             value = atomic_updater(
@@ -266,7 +308,9 @@ def configure_execution_protocol(
     acceptance_flag = os.environ.get(INDEPENDENT_ACCEPTANCE_CRITIC_ENV)
     semantic_flag = os.environ.get(SEMANTIC_PROGRESS_LEDGER_ENV)
     owner = state_context(context)
-    contract = getattr(owner, "completion_contract", None) if owner is not None else None
+    contract = (
+        getattr(owner, "completion_contract", None) if owner is not None else None
+    )
     trusted_validation_available = bool(
         getattr(contract, "validation_commands", ()) or ()
     )
@@ -324,11 +368,7 @@ def _public_request_hash(context) -> str:
         task = getter() if callable(getter) else None
     except Exception:
         task = None
-    request = (
-        getattr(task, "input", None)
-        or getattr(owner, "task_input", None)
-        or ""
-    )
+    request = getattr(task, "input", None) or getattr(owner, "task_input", None) or ""
     return semantic_fingerprint(str(request))
 
 
@@ -370,10 +410,7 @@ def _normalize_public_probe_state(
     if (
         not isinstance(value, Mapping)
         or value.get("schema_version") != "aworld.public-probe-ledger/v1"
-        or (
-            expected_scope is not None
-            and value.get("scope") != dict(expected_scope)
-        )
+        or (expected_scope is not None and value.get("scope") != dict(expected_scope))
     ):
         return {
             "schema_version": "aworld.public-probe-ledger/v1",
@@ -395,9 +432,7 @@ def _normalize_public_probe_state(
 
 def _public_probe_state(context, agent_id: str) -> dict[str, Any]:
     return _normalize_public_probe_state(
-        _read_runtime_value(
-            context, agent_id, EXECUTION_PROTOCOL_PUBLIC_PROBES_KEY
-        ),
+        _read_runtime_value(context, agent_id, EXECUTION_PROTOCOL_PUBLIC_PROBES_KEY),
         expected_scope=_public_probe_scope(context, agent_id),
     )
 
@@ -450,9 +485,7 @@ def record_public_probe_plan(
     normalized_tool_identity = ":".join(
         part.strip().casefold() for part in tool_identity.split(":", 1)
     )
-    candidate_hash, selected_candidate_id = _public_candidate_binding(
-        context, agent_id
-    )
+    candidate_hash, selected_candidate_id = _public_candidate_binding(context, agent_id)
     plan = {
         "tool_call_id": tool_call_id,
         "tool_identity": normalized_tool_identity,
@@ -470,9 +503,7 @@ def record_public_probe_plan(
 
     def add_plan(current):
         nonlocal recorded
-        state = _normalize_public_probe_state(
-            current, expected_scope=expected_scope
-        )
+        state = _normalize_public_probe_state(current, expected_scope=expected_scope)
         plans = state["plans"]
         if tool_call_id in plans:
             return state
@@ -516,13 +547,9 @@ def record_public_probe_observations(
     expected_scope = _public_probe_scope(context, agent_id)
 
     def add_observations(current):
-        state = _normalize_public_probe_state(
-            current, expected_scope=expected_scope
-        )
+        state = _normalize_public_probe_state(current, expected_scope=expected_scope)
         plans = state["plans"]
-        receipts = [
-            item for item in state["receipts"] if isinstance(item, Mapping)
-        ]
+        receipts = [item for item in state["receipts"] if isinstance(item, Mapping)]
         observed_ids.clear()
         for tool_call_id, plan in list(plans.items()):
             action = action_by_id.get(tool_call_id)
@@ -540,8 +567,7 @@ def record_public_probe_observations(
             if (
                 actual_identity != plan.get("tool_identity")
                 or not isinstance(actual_arguments, Mapping)
-                or semantic_fingerprint(actual_arguments)
-                != plan.get("arguments_hash")
+                or semantic_fingerprint(actual_arguments) != plan.get("arguments_hash")
             ):
                 continue
             artifact_after_hash = semantic_fingerprint(artifact_after)
@@ -550,9 +576,7 @@ def record_public_probe_observations(
                 "authority": "agent_self_check",
                 "task_reward": "not_assessed",
                 "hypothesis_id": plan.get("hypothesis_id"),
-                "highest_risk_counterexample": plan.get(
-                    "highest_risk_counterexample"
-                ),
+                "highest_risk_counterexample": plan.get("highest_risk_counterexample"),
                 "probe_kind": plan.get("probe_kind"),
                 "selected_candidate_id": plan.get("selected_candidate_id"),
                 "tool_identity": plan.get("tool_identity"),
@@ -611,12 +635,9 @@ def load_public_probe_receipts(context, agent_id: str) -> list[dict[str, Any]]:
         request_current = receipt.get("request_hash") == request_hash
         candidate_current = receipt.get("candidate_hash") == candidate_hash
         artifact_bound = receipt.get("artifact_bound") is True
-        artifact_current = (
-            not artifact_bound
-            or (
-                current_artifact is not None
-                and receipt.get("artifact_after_hash") == current_artifact_hash
-            )
+        artifact_current = not artifact_bound or (
+            current_artifact is not None
+            and receipt.get("artifact_after_hash") == current_artifact_hash
         )
         receipt.update(
             {
@@ -645,10 +666,7 @@ def acceptance_critic_active(context, agent_id: str) -> bool:
 def model_owned_review_active(context, agent_id: str) -> bool:
     """Return whether a non-critic model-owned review is currently pending."""
     policy = execution_protocol_policy(context, agent_id)
-    if (
-        policy.mode is ProtocolMode.OFF
-        or policy.independent_acceptance_enabled
-    ):
+    if policy.mode is ProtocolMode.OFF or policy.independent_acceptance_enabled:
         return False
     return ExecutionProtocolStore(context, agent_id, policy).load().review_pending
 
@@ -717,7 +735,9 @@ def _matching_completion_validation_id(
     if not isinstance(command_text, str) or not command_text.strip():
         return None
     owner = state_context(context)
-    contract = getattr(owner, "completion_contract", None) if owner is not None else None
+    contract = (
+        getattr(owner, "completion_contract", None) if owner is not None else None
+    )
     for validation in getattr(contract, "validation_commands", ()) or ():
         argv = tuple(getattr(validation, "argv", ()) or ())
         if not argv:
@@ -858,9 +878,7 @@ def record_acceptance_probe_observation(
     framework_result_projection = dict(result_projection)
     framework_validation_id = current.get("framework_validation_id")
     if isinstance(framework_validation_id, str) and framework_validation_id:
-        framework_result_projection["framework_validation_id"] = (
-            framework_validation_id
-        )
+        framework_result_projection["framework_validation_id"] = framework_validation_id
     validated, validation_code = validate_probe_result(
         probe_kind=current["probe_kind"],
         tool_identity=current["tool_identity"],
@@ -1009,10 +1027,27 @@ def project_execution_protocol_telemetry(value: Any) -> dict[str, Any] | None:
         "initial_decision_fail_open_reason": {
             "provider_unavailable",
             "model_response_incomplete",
+            "decision_schema_overflow",
         },
         "replan_decision_fail_open_reason": {
             "provider_unavailable",
             "model_response_incomplete",
+            "decision_schema_overflow",
+        },
+        "decision_checkpoint_reason": {
+            "stagnation_detected",
+            "delivery_debt_detected",
+            "next_action_mismatch",
+            "candidate_decision_reserve",
+        },
+        "last_action_alignment": {"matched", "mismatched", "unobservable"},
+        "last_delivery_intent": {
+            "unknown",
+            "continue_exploration",
+            "produce_candidate",
+            "validate_candidate",
+            "submit_current",
+            "submit_uncertain",
         },
         "acceptance_disposition": {"complete", "continue", "limit_reached"},
         "acceptance_reason": {
@@ -1033,6 +1068,8 @@ def project_execution_protocol_telemetry(value: Any) -> dict[str, Any] | None:
         "acceptance_satisfied",
         "legacy_activation_fields_ignored",
         "decision_checkpoint_pending",
+        "candidate_decision_recorded",
+        "decision_checkpoint_candidate_present",
     }
     counters = {
         "event_count",
@@ -1048,6 +1085,12 @@ def project_execution_protocol_telemetry(value: Any) -> dict[str, Any] | None:
         "candidate_final_count",
         "final_review_count",
         "repair_count",
+        "delivery_debt_observations",
+        "workspace_mutation_absent_observations",
+        "delivery_checkpoint_count",
+        "candidate_decision_count",
+        "action_alignment_match_count",
+        "action_alignment_mismatch_count",
         "acceptance_attempt",
         "acceptance_continuation_count",
         "acceptance_controller_error_count",
@@ -1083,9 +1126,7 @@ def build_execution_protocol_telemetry(context, agent_id: str) -> dict[str, Any]
     policy = execution_protocol_policy(context, agent_id)
     state = ExecutionProtocolStore(context, agent_id, policy).load()
     decisions = _normalized_decision_attempts(
-        _read_runtime_value(
-            context, agent_id, EXECUTION_PROTOCOL_MODEL_DECISIONS_KEY
-        ),
+        _read_runtime_value(context, agent_id, EXECUTION_PROTOCOL_MODEL_DECISIONS_KEY),
         expected_scope=_model_decision_scope(context, agent_id),
     )
     telemetry = {
@@ -1101,6 +1142,28 @@ def build_execution_protocol_telemetry(context, agent_id: str) -> dict[str, Any]
         "replan_requested_count": state.replan_requested_count,
         "replan_applied_count": state.replan_applied_count,
         "decision_checkpoint_pending": state.decision_checkpoint_pending,
+        "decision_checkpoint_reason": (
+            state.decision_checkpoint_reason.value
+            if state.decision_checkpoint_reason is not None
+            else None
+        ),
+        "decision_checkpoint_candidate_present": (
+            state.decision_checkpoint_candidate_present
+        ),
+        "candidate_decision_recorded": state.candidate_decision_recorded,
+        "delivery_debt_observations": state.delivery_debt_observations,
+        "workspace_mutation_absent_observations": (
+            state.workspace_mutation_absent_observations
+        ),
+        "delivery_checkpoint_count": state.delivery_checkpoint_count,
+        "candidate_decision_count": state.candidate_decision_count,
+        "last_action_alignment": (
+            state.last_action_alignment.value
+            if state.last_action_alignment is not None
+            else None
+        ),
+        "action_alignment_match_count": state.action_alignment_match_count,
+        "action_alignment_mismatch_count": state.action_alignment_mismatch_count,
         "initial_decision_status": decisions["initial"].get("status"),
         "initial_decision_attempt_count": int(
             decisions["initial"].get("attempt_count", 0) or 0
@@ -1118,9 +1181,7 @@ def build_execution_protocol_telemetry(context, agent_id: str) -> dict[str, Any]
         "replan_decision_unavailable_count": int(
             decisions["replan"].get("unavailable_count", 0) or 0
         ),
-        "replan_decision_fail_open_reason": decisions["replan"].get(
-            "fail_open_reason"
-        ),
+        "replan_decision_fail_open_reason": decisions["replan"].get("fail_open_reason"),
         "candidate_final_count": state.candidate_final_count,
         "final_review_count": state.final_review_count,
         "repair_count": state.repair_count,
@@ -1130,6 +1191,11 @@ def build_execution_protocol_telemetry(context, agent_id: str) -> dict[str, Any]
             if state.model_plan_update is not None
             else state.model_execution_profile.horizon.value
             if state.model_execution_profile is not None
+            else None
+        ),
+        "last_delivery_intent": (
+            state.model_plan_update.delivery_intent.value
+            if state.model_plan_update is not None
             else None
         ),
     }
@@ -1171,6 +1237,31 @@ def _record_transition_metrics(context, transition: ProtocolTransition) -> None:
     metrics["decision_checkpoint_pending"] = (
         transition.state.decision_checkpoint_pending
     )
+    metrics["decision_checkpoint_reason"] = (
+        transition.state.decision_checkpoint_reason.value
+        if transition.state.decision_checkpoint_reason is not None
+        else None
+    )
+    metrics["delivery_debt_observations"] = transition.state.delivery_debt_observations
+    metrics["workspace_mutation_absent_observations"] = (
+        transition.state.workspace_mutation_absent_observations
+    )
+    metrics["delivery_checkpoint_count"] = transition.state.delivery_checkpoint_count
+    metrics["candidate_decision_count"] = transition.state.candidate_decision_count
+    metrics["candidate_decision_recorded"] = (
+        transition.state.candidate_decision_recorded
+    )
+    metrics["last_action_alignment"] = (
+        transition.state.last_action_alignment.value
+        if transition.state.last_action_alignment is not None
+        else None
+    )
+    metrics["action_alignment_match_count"] = (
+        transition.state.action_alignment_match_count
+    )
+    metrics["action_alignment_mismatch_count"] = (
+        transition.state.action_alignment_mismatch_count
+    )
     metrics["final_review_count"] = transition.state.final_review_count
     metrics["repair_count"] = transition.state.repair_count
     metrics["long_horizon_armed"] = transition.state.long_horizon_armed
@@ -1188,6 +1279,9 @@ def _record_transition_metrics(context, transition: ProtocolTransition) -> None:
         )
         metrics["model_completion_assessment"] = (
             transition.state.model_plan_update.completion_assessment.value
+        )
+        metrics["last_delivery_intent"] = (
+            transition.state.model_plan_update.delivery_intent.value
         )
     metrics["last_action"] = action
     metrics["last_reason"] = reason
@@ -1230,12 +1324,38 @@ def record_tool_protocol_event(
             semantic_state.get("completion_advanced")
             or semantic_state.get("goal_progress") is True
         ),
+        public_deliverable_declared=bool(
+            semantic_state.get("public_deliverable_declared")
+        ),
+        missing_public_deliverable_count=int(
+            semantic_state.get("missing_public_deliverable_count", 0) or 0
+        ),
+        candidate_present=semantic_state.get("candidate_present"),
+        candidate_advanced=bool(semantic_state.get("candidate_advanced")),
+        workspace_mutated=bool(semantic_state.get("workspace_mutated")),
+        validation_observed=bool(semantic_state.get("validation_observed")),
+        new_information_observed=bool(semantic_state.get("new_information_observed")),
+        observed_action_names=tuple(semantic_state.get("observed_action_names") or ()),
+        observed_action_signatures=tuple(
+            semantic_state.get("observed_action_signatures") or ()
+        ),
         current_step=int(semantic_state.get("current_agent_step", 0) or 0),
         remaining_seconds=_remaining_task_seconds(context),
         operation_hash=semantic_state.get("operation_hash"),
         result_hash=semantic_state.get("result_hash"),
     )
     transition = _apply_event(context, agent_id, event)
+    _record_pending_checkpoint(context, agent_id, transition)
+    return transition
+
+
+def _record_pending_checkpoint(
+    context,
+    agent_id: str,
+    transition: ProtocolTransition,
+) -> None:
+    """Project one controller checkpoint into the bounded model boundary."""
+
     if transition.decision.action is ControllerAction.REQUEST_REPLAN:
         expected_scope = _model_decision_scope(context, agent_id)
 
@@ -1267,9 +1387,64 @@ def record_tool_protocol_event(
                 "action": transition.decision.action.value,
                 "reason": transition.decision.reason.value,
                 "revision": transition.state.revision,
+                "candidate_present": (
+                    transition.state.decision_checkpoint_candidate_present
+                ),
+                "delivery_debt_observations": (
+                    transition.state.delivery_debt_observations
+                ),
+                "workspace_mutation_absent_observations": (
+                    transition.state.workspace_mutation_absent_observations
+                ),
             },
         )
-    return transition
+
+
+def record_pre_generation_delivery_decision(
+    context,
+    agent_id: str,
+    *,
+    policy: ExecutionProtocolPolicy | None = None,
+) -> ProtocolTransition | None:
+    """Request one typed delivery choice before Tool-free finalization.
+
+    This is AWorld-owned deadline mechanics.  It observes only caller time and
+    public candidate presence, and leaves every semantic option to the model.
+    """
+
+    policy = policy or execution_protocol_policy(context, agent_id)
+    if policy.mode is ProtocolMode.OFF:
+        return None
+    state = ExecutionProtocolStore(context, agent_id, policy).load()
+    remaining = _remaining_task_seconds(context)
+    if (
+        not state.long_horizon_armed
+        or state.phase.value not in {"execute", "repair"}
+        or state.decision_checkpoint_pending
+        or state.candidate_decision_count > 0
+        or remaining is None
+        or remaining > policy.candidate_decision_reserve_seconds
+    ):
+        return None
+    status = _public_delivery_status(state_context(context))
+    transition = _apply_event(
+        context,
+        agent_id,
+        ExecutionProtocolEvent(
+            kind=EventKind.DELIVERY_STATUS,
+            remaining_seconds=remaining,
+            public_deliverable_declared=status["public_deliverable_declared"],
+            missing_public_deliverable_count=status["missing_public_deliverable_count"],
+            candidate_present=status["candidate_present"],
+        ),
+    )
+    _record_pending_checkpoint(context, agent_id, transition)
+    return (
+        transition
+        if transition.decision.action
+        in {ControllerAction.REQUEST_REPLAN, ControllerAction.ENTER_FINALIZATION}
+        else None
+    )
 
 
 def execution_protocol_accepts_model_profile(context, agent_id: str) -> bool:
@@ -1281,18 +1456,14 @@ def execution_protocol_accepts_model_profile(context, agent_id: str) -> bool:
     return state.model_execution_profile is None
 
 
-def execution_protocol_model_decision_boundary(
-    context, agent_id: str
-) -> str | None:
+def execution_protocol_model_decision_boundary(context, agent_id: str) -> str | None:
     """Return the pending framework boundary, never a semantic decision."""
     policy = execution_protocol_policy(context, agent_id)
     if policy.mode is not ProtocolMode.GUIDE:
         return None
     state = ExecutionProtocolStore(context, agent_id, policy).load()
     attempts = _normalized_decision_attempts(
-        _read_runtime_value(
-            context, agent_id, EXECUTION_PROTOCOL_MODEL_DECISIONS_KEY
-        ),
+        _read_runtime_value(context, agent_id, EXECUTION_PROTOCOL_MODEL_DECISIONS_KEY),
         expected_scope=_model_decision_scope(context, agent_id),
     )
     if state.model_execution_profile is None:
@@ -1325,9 +1496,7 @@ def record_model_decision_attempt_failure(
 
     def update(current):
         nonlocal retry
-        attempts = _normalized_decision_attempts(
-            current, expected_scope=expected_scope
-        )
+        attempts = _normalized_decision_attempts(current, expected_scope=expected_scope)
         previous = attempts[boundary]
         if (
             boundary == "replan"
@@ -1381,7 +1550,11 @@ def record_model_decision_unavailable(
     """
     if boundary not in {"initial", "replan"}:
         return False
-    if reason not in {"provider_unavailable", "model_response_incomplete"}:
+    if reason not in {
+        "provider_unavailable",
+        "model_response_incomplete",
+        "decision_schema_overflow",
+    }:
         return False
     if execution_protocol_model_decision_boundary(context, agent_id) != boundary:
         return False
@@ -1390,9 +1563,7 @@ def record_model_decision_unavailable(
     expected_scope = _model_decision_scope(context, agent_id)
 
     def update(current):
-        attempts = _normalized_decision_attempts(
-            current, expected_scope=expected_scope
-        )
+        attempts = _normalized_decision_attempts(current, expected_scope=expected_scope)
         previous = attempts[boundary]
         if (
             boundary == "replan"
@@ -1487,8 +1658,20 @@ def record_model_plan_update(
     if policy.mode is ProtocolMode.OFF:
         return None
     try:
-        update = ModelPlanUpdate.from_mapping(value)
+        update = ModelPlanUpdate.from_model_mapping(value)
     except (TypeError, ValueError, KeyError):
+        return None
+    return _record_validated_model_plan_update(context, agent_id, update)
+
+
+def _record_validated_model_plan_update(
+    context,
+    agent_id: str,
+    update: ModelPlanUpdate,
+) -> ProtocolTransition | None:
+    """Record an already validated model update without reparsing persisted data."""
+    policy = execution_protocol_policy(context, agent_id)
+    if policy.mode is ProtocolMode.OFF:
         return None
     transition = _apply_event(
         context,
@@ -1527,6 +1710,7 @@ def record_model_decision_boundary(
     boundary: str,
     execution_profile: Mapping[str, Any] | None,
     plan_update: Mapping[str, Any] | None,
+    available_tool_names: frozenset[str] | None = None,
 ) -> bool:
     """Validate and record an explicit model-owned decision acknowledgement.
 
@@ -1544,13 +1728,26 @@ def record_model_decision_boundary(
         boundary_state.replan_requested_count if boundary == "replan" else 0
     )
     try:
-        update = ModelPlanUpdate.from_mapping(plan_update)
+        update = ModelPlanUpdate.from_model_mapping(plan_update)
         profile = (
             ModelExecutionProfile.from_mapping(execution_profile)
             if boundary == "initial"
             else None
         )
     except (TypeError, ValueError, KeyError):
+        if boundary == "initial":
+            _write_runtime_value(
+                context,
+                agent_id,
+                EXECUTION_PROTOCOL_MODEL_PROFILE_KEY,
+                {"status": "invalid", "classification": "unknown"},
+            )
+        return False
+    trusted_tool_names = available_tool_names or frozenset()
+    if (
+        update.next_action_tool is not None
+        and update.next_action_tool not in trusted_tool_names
+    ):
         if boundary == "initial":
             _write_runtime_value(
                 context,
@@ -1573,9 +1770,7 @@ def record_model_decision_boundary(
         )
         if profile_transition is None:
             return False
-    update_transition = record_model_plan_update(
-        context, agent_id, update.to_dict()
-    )
+    update_transition = _record_validated_model_plan_update(context, agent_id, update)
     acknowledged = bool(
         update_transition is not None
         and update_transition.decision.reason.value != "invalid_event"
@@ -1625,17 +1820,60 @@ def consume_execution_protocol_guidance(context, agent_id: str) -> str | None:
     _write_runtime_value(context, agent_id, EXECUTION_PROTOCOL_PENDING_KEY, None)
     action = pending.get("action")
     if action == ControllerAction.REQUEST_REPLAN.value:
+        reason = pending.get("reason")
         missing_delivery_guidance = ""
         missing = _missing_public_deliverable_names(context)
         if missing:
             missing_delivery_guidance = (
                 " The public task still has missing named output file(s): "
                 + ", ".join(missing)
-                + ". Stop open-ended analysis: the next Tool action must "
-                "create or update the smallest inspectable candidate for "
-                "those outputs, then use later actions to validate and refine "
-                "it. If no honest candidate can be written, record the concrete "
-                "blocker instead of repeating discovery."
+                + ". Choose the next delivery intent explicitly; this signal "
+                "does not force a command or claim that a write is safe."
+            )
+        if reason == "candidate_decision_reserve":
+            candidate_state = (
+                "present"
+                if pending.get("candidate_present") is True
+                else "absent"
+                if pending.get("candidate_present") is False
+                else "not publicly observable"
+            )
+            return (
+                "AWorld candidate-decision reserve: ordinary Tools are still "
+                "available, but the caller deadline is approaching the later "
+                "tool-free finalization boundary. The observed candidate state "
+                f"is {candidate_state}. Choose and justify one typed delivery "
+                "intent: continue_exploration, produce_candidate, "
+                "validate_candidate, submit_current, or submit_uncertain. For a "
+                "Tool-backed choice, state a bounded next action and expected "
+                "public observation; a submit choice enters Tool-free finalization. "
+                "AWorld records whether the next observed action aligns with a "
+                "Tool-backed choice; "
+                "it does not select a command or decide correctness."
+                + missing_delivery_guidance
+            )
+        if reason == "next_action_mismatch":
+            return (
+                "AWorld plan/action alignment checkpoint: the last observed Tool "
+                "outcome did not implement the typed delivery intent from the "
+                "previous plan. Reassess the evidence, then keep or revise the "
+                "intent and declare one new bounded next action. This receipt does "
+                "not judge task correctness or prohibit the action that ran."
+                + missing_delivery_guidance
+            )
+        if reason == "delivery_debt_detected":
+            return (
+                "AWorld delivery-debt checkpoint: a concrete public deliverable "
+                "remains absent across bounded Tool observations. Choose the next "
+                "delivery intent explicitly: continue_exploration when one more "
+                "discriminating observation is justified, produce_candidate when "
+                "an honest inspectable candidate is possible, validate_candidate "
+                "when a candidate exists, submit_current when the best current "
+                "result is ready, or submit_uncertain when a material gap cannot "
+                "be resolved safely. Include an evidence-linked rationale and, "
+                "for a Tool-backed choice, one bounded next action. Submit choices "
+                "enter Tool-free finalization. This is an advisory accounting boundary and "
+                "does not force a command." + missing_delivery_guidance
             )
         return (
             "AWorld long-horizon checkpoint: the framework observed a bounded "
@@ -1644,9 +1882,11 @@ def consume_execution_protocol_guidance(context, agent_id: str) -> str | None:
             "progress. Continue it when warranted only with a bounded next action "
             "that is expected to change a concrete decision. Otherwise revise the "
             "approach and prioritize creating, updating, or validating inspectable "
-            "milestone evidence. This checkpoint is advisory, keeps all normal "
-            "Tools available, and is not evidence of task completion."
-            + missing_delivery_guidance
+            "milestone evidence. Choose the next delivery intent explicitly when "
+            "a concrete deliverable is pending; continue_exploration remains a "
+            "valid evidence-linked model choice. This checkpoint is advisory, "
+            "keeps all normal Tools available, does not force a command, and is "
+            "not evidence of task completion." + missing_delivery_guidance
         )
     if action == ControllerAction.ENTER_FINALIZATION.value:
         return (
@@ -1888,6 +2128,7 @@ __all__ = [
     "record_model_decision_attempt_failure",
     "record_model_decision_unavailable",
     "record_model_plan_update",
+    "record_pre_generation_delivery_decision",
     "record_public_probe_observations",
     "record_public_probe_plan",
     "record_tool_hypotheses",

@@ -9,6 +9,9 @@ remain claims, while observed progress enters through the evidence fields on
 from __future__ import annotations
 
 import math
+import hashlib
+import json
+import re
 from dataclasses import dataclass, field, replace
 from enum import Enum
 from typing import Any, ClassVar, Mapping
@@ -45,10 +48,30 @@ class CompletionAssessment(str, Enum):
     CANDIDATE_READY = "candidate_ready"
 
 
+class DeliveryIntent(str, Enum):
+    """Model-owned delivery choice at a bounded planning checkpoint."""
+
+    # Compatibility value for checkpoints persisted before the delivery
+    # contract existed. New model-facing schemas do not offer it.
+    UNKNOWN = "unknown"
+    CONTINUE_EXPLORATION = "continue_exploration"
+    PRODUCE_CANDIDATE = "produce_candidate"
+    VALIDATE_CANDIDATE = "validate_candidate"
+    SUBMIT_CURRENT = "submit_current"
+    SUBMIT_UNCERTAIN = "submit_uncertain"
+
+
+class NextActionAlignment(str, Enum):
+    MATCHED = "matched"
+    MISMATCHED = "mismatched"
+    UNOBSERVABLE = "unobservable"
+
+
 class EventKind(str, Enum):
     MODEL_EXECUTION_PROFILE = "model_execution_profile"
     MODEL_PLAN_UPDATE = "model_plan_update"
     TOOL_OBSERVATION = "tool_observation"
+    DELIVERY_STATUS = "delivery_status"
     REPLAN_APPLIED = "replan_applied"
     REPLAN_UNACKNOWLEDGED = "replan_unacknowledged"
     CANDIDATE_FINAL = "candidate_final"
@@ -91,6 +114,9 @@ class DecisionReason(str, Enum):
     MODEL_REPLAN_APPLIED = "model_replan_applied"
     MODEL_REPLAN_UNACKNOWLEDGED = "model_replan_unacknowledged"
     STAGNATION_DETECTED = "stagnation_detected"
+    DELIVERY_DEBT_DETECTED = "delivery_debt_detected"
+    NEXT_ACTION_MISMATCH = "next_action_mismatch"
+    CANDIDATE_DECISION_RESERVE = "candidate_decision_reserve"
     REPLAN_LIMIT_REACHED = "replan_limit_reached"
     REPLAN_APPLIED = "replan_applied"
     FINALIZATION_RESERVE = "finalization_reserve"
@@ -204,6 +230,40 @@ def _bounded_text_tuple(
     return tuple(normalized)
 
 
+def action_signature(tool_name: str, arguments: Mapping[str, Any]) -> str:
+    """Return a bounded canonical signature for one exact model-selected action."""
+
+    if (
+        not isinstance(tool_name, str)
+        or not tool_name.strip()
+        or len(tool_name.strip()) > 256
+        or not isinstance(arguments, Mapping)
+    ):
+        raise ValueError("action signature requires a bounded Tool name and arguments")
+    try:
+        canonical_arguments = json.dumps(
+            dict(arguments),
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        )
+    except (TypeError, ValueError) as exc:
+        raise ValueError("action arguments must be canonical JSON") from exc
+    if len(canonical_arguments) > 4096:
+        raise ValueError("action arguments must not exceed 4096 characters")
+    payload = json.dumps(
+        {
+            "tool": tool_name.strip(),
+            "arguments": json.loads(canonical_arguments),
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return "sha256:" + hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
 @dataclass(frozen=True, slots=True)
 class ModelPlanUpdate:
     """Bounded model-owned checkpoint claim attached to a real Tool call.
@@ -223,12 +283,17 @@ class ModelPlanUpdate:
     retired_approaches: tuple[str, ...] = field(default_factory=tuple)
     evidence_refs: tuple[str, ...] = field(default_factory=tuple)
     selected_candidate_id: str | None = None
+    delivery_intent: DeliveryIntent = DeliveryIntent.UNKNOWN
+    delivery_rationale: str = ""
+    next_action_tool: str | None = None
+    next_action_signature: str | None = None
 
     def __post_init__(self) -> None:
         for name, enum_type in (
             ("decision", PlanUpdateDecision),
             ("horizon", ExecutionHorizon),
             ("completion_assessment", CompletionAssessment),
+            ("delivery_intent", DeliveryIntent),
         ):
             value = getattr(self, name)
             if not isinstance(value, enum_type):
@@ -242,11 +307,66 @@ class ModelPlanUpdate:
             ("verification_plan", 1024),
         ):
             value = getattr(self, name)
-            if not isinstance(value, str) or not value.strip() or len(value.strip()) > maximum:
+            if (
+                not isinstance(value, str)
+                or not value.strip()
+                or len(value.strip()) > maximum
+            ):
                 raise ValueError(
                     f"{name} must be a nonempty string of at most {maximum} characters"
                 )
             object.__setattr__(self, name, value.strip())
+        next_action_tool = self.next_action_tool
+        if next_action_tool is not None:
+            if (
+                not isinstance(next_action_tool, str)
+                or not next_action_tool.strip()
+                or len(next_action_tool.strip()) > 256
+            ):
+                raise ValueError(
+                    "next_action_tool must be null or a nonempty string of at most 256 characters"
+                )
+            object.__setattr__(self, "next_action_tool", next_action_tool.strip())
+        next_action_signature = self.next_action_signature
+        if next_action_signature is not None and (
+            not isinstance(next_action_signature, str)
+            or re.fullmatch(r"sha256:[0-9a-f]{64}", next_action_signature) is None
+        ):
+            raise ValueError(
+                "next_action_signature must be a sha256 fingerprint or null"
+            )
+        tool_required_intents = {
+            DeliveryIntent.CONTINUE_EXPLORATION,
+            DeliveryIntent.PRODUCE_CANDIDATE,
+            DeliveryIntent.VALIDATE_CANDIDATE,
+        }
+        if self.delivery_intent in tool_required_intents and (
+            next_action_tool is None or next_action_signature is None
+        ):
+            raise ValueError(
+                "next_action_tool and next_action_signature are required for a Tool-backed delivery intent"
+            )
+        terminal_intents = {
+            DeliveryIntent.SUBMIT_CURRENT,
+            DeliveryIntent.SUBMIT_UNCERTAIN,
+        }
+        if self.delivery_intent in terminal_intents and (
+            next_action_tool is not None or next_action_signature is not None
+        ):
+            raise ValueError(
+                "next_action_tool and next_action_signature must be null for a terminal delivery intent"
+            )
+        rationale = self.delivery_rationale
+        if not isinstance(rationale, str) or len(rationale.strip()) > 1024:
+            raise ValueError(
+                "delivery_rationale must be a string of at most 1024 characters"
+            )
+        rationale = rationale.strip()
+        if self.delivery_intent is not DeliveryIntent.UNKNOWN and not rationale:
+            raise ValueError(
+                "delivery_rationale must be nonempty for a declared delivery intent"
+            )
+        object.__setattr__(self, "delivery_rationale", rationale)
         for name, maximum_items, maximum_chars in (
             ("assumptions", 8, 512),
             ("retired_approaches", 8, 512),
@@ -280,8 +400,12 @@ class ModelPlanUpdate:
             "horizon": self.horizon.value,
             "milestone": self.milestone,
             "next_action": self.next_action,
+            "next_action_tool": self.next_action_tool,
+            "next_action_signature": self.next_action_signature,
             "verification_plan": self.verification_plan,
             "completion_assessment": self.completion_assessment.value,
+            "delivery_intent": self.delivery_intent.value,
+            "delivery_rationale": self.delivery_rationale,
             "assumptions": list(self.assumptions),
             "retired_approaches": list(self.retired_approaches),
             "evidence_refs": list(self.evidence_refs),
@@ -289,10 +413,98 @@ class ModelPlanUpdate:
         }
 
     @classmethod
-    def from_mapping(cls, value: Mapping[str, Any]) -> "ModelPlanUpdate":
+    def _from_validated_mapping(
+        cls,
+        value: Mapping[str, Any],
+        *,
+        next_action_signature: str | None,
+    ) -> "ModelPlanUpdate":
+        return cls(
+            decision=value.get("decision"),
+            horizon=value.get("horizon"),
+            milestone=value.get("milestone"),
+            next_action=value.get("next_action"),
+            next_action_tool=value.get("next_action_tool"),
+            next_action_signature=next_action_signature,
+            verification_plan=value.get("verification_plan"),
+            completion_assessment=value.get("completion_assessment"),
+            delivery_intent=value.get("delivery_intent", DeliveryIntent.UNKNOWN.value),
+            delivery_rationale=value.get("delivery_rationale", ""),
+            assumptions=value.get("assumptions"),
+            retired_approaches=value.get("retired_approaches"),
+            evidence_refs=value.get("evidence_refs"),
+            selected_candidate_id=value.get("selected_candidate_id"),
+        )
+
+    @classmethod
+    def from_model_mapping(cls, value: Mapping[str, Any]) -> "ModelPlanUpdate":
+        """Parse an untrusted model response and derive its action fingerprint.
+
+        Models must provide the exact Tool arguments as a JSON object string.
+        A precomputed signature is deliberately outside this input schema so a
+        model cannot claim alignment with arguments it did not actually name.
+        """
         if not isinstance(value, Mapping):
             raise ValueError("model plan update must be a mapping")
-        expected = {
+        required = {
+            "decision",
+            "horizon",
+            "milestone",
+            "next_action",
+            "next_action_tool",
+            "next_action_arguments",
+            "verification_plan",
+            "completion_assessment",
+            "delivery_intent",
+            "delivery_rationale",
+            "assumptions",
+            "retired_approaches",
+            "evidence_refs",
+            "selected_candidate_id",
+        }
+        unknown = set(value) - required
+        if unknown:
+            raise ValueError("model plan update contains unknown fields")
+        if not required.issubset(value):
+            raise ValueError("model plan update is missing required fields")
+        try:
+            delivery_intent = DeliveryIntent(value.get("delivery_intent"))
+        except (TypeError, ValueError) as exc:
+            raise ValueError("unsupported delivery_intent") from exc
+        if delivery_intent is DeliveryIntent.UNKNOWN:
+            raise ValueError("model delivery_intent must be explicit")
+        next_action_arguments = value.get("next_action_arguments")
+        if next_action_arguments is not None:
+            if (
+                not isinstance(next_action_arguments, str)
+                or len(next_action_arguments) > 4096
+            ):
+                raise ValueError(
+                    "next_action_arguments must be a JSON object string of at most 4096 characters"
+                )
+            try:
+                parsed_arguments = json.loads(next_action_arguments)
+            except json.JSONDecodeError as exc:
+                raise ValueError("next_action_arguments must be valid JSON") from exc
+            if not isinstance(parsed_arguments, dict):
+                raise ValueError("next_action_arguments must encode a JSON object")
+            next_action_signature = action_signature(
+                value.get("next_action_tool"),
+                parsed_arguments,
+            )
+        else:
+            next_action_signature = None
+        return cls._from_validated_mapping(
+            value,
+            next_action_signature=next_action_signature,
+        )
+
+    @classmethod
+    def from_persisted_mapping(cls, value: Mapping[str, Any]) -> "ModelPlanUpdate":
+        """Restore a trusted checkpoint without accepting raw Tool arguments."""
+        if not isinstance(value, Mapping):
+            raise ValueError("persisted model plan update must be a mapping")
+        required = {
             "decision",
             "horizon",
             "milestone",
@@ -304,23 +516,26 @@ class ModelPlanUpdate:
             "evidence_refs",
             "selected_candidate_id",
         }
-        unknown = set(value) - expected
+        optional = {
+            "delivery_intent",
+            "delivery_rationale",
+            "next_action_tool",
+            "next_action_signature",
+        }
+        unknown = set(value) - required - optional
         if unknown:
-            raise ValueError("model plan update contains unknown fields")
-        if set(value) != expected:
-            raise ValueError("model plan update is missing required fields")
-        return cls(
-            decision=value.get("decision"),
-            horizon=value.get("horizon"),
-            milestone=value.get("milestone"),
-            next_action=value.get("next_action"),
-            verification_plan=value.get("verification_plan"),
-            completion_assessment=value.get("completion_assessment"),
-            assumptions=value.get("assumptions"),
-            retired_approaches=value.get("retired_approaches"),
-            evidence_refs=value.get("evidence_refs"),
-            selected_candidate_id=value.get("selected_candidate_id"),
+            raise ValueError("persisted model plan update contains unknown fields")
+        if not required.issubset(value):
+            raise ValueError("persisted model plan update is missing required fields")
+        return cls._from_validated_mapping(
+            value,
+            next_action_signature=value.get("next_action_signature"),
         )
+
+    @classmethod
+    def from_mapping(cls, value: Mapping[str, Any]) -> "ModelPlanUpdate":
+        """Compatibility alias for the safe, untrusted model parser."""
+        return cls.from_model_mapping(value)
 
 
 @dataclass(frozen=True, slots=True)
@@ -350,6 +565,7 @@ class ExecutionProtocolPolicy:
     repetition_threshold: int = 3
     low_information_gain_threshold: int = 3
     no_goal_progress_threshold: int = 6
+    delivery_debt_observation_threshold: int = 3
     # Semantic loop counts are model-owned. ``None`` leaves replanning,
     # reviewing, and repair bounded by the caller's task deadline instead of a
     # framework-selected number of attempts. Explicit callers may still set a
@@ -358,6 +574,10 @@ class ExecutionProtocolPolicy:
     max_final_reviews: int | None = None
     max_repairs: int | None = None
     finalization_reserve_seconds: float = 60.0
+    # The earlier reserve exposes a model-owned delivery choice while ordinary
+    # Tools are still available. It does not itself revoke Tools or select an
+    # action. Callers may tune it together with the finalization reserve.
+    candidate_decision_reserve_seconds: float = 240.0
     # ``None`` lets review consume the caller's remaining task deadline. A
     # finite value is retained only for explicit compatibility experiments.
     final_review_timeout_seconds: float | None = None
@@ -384,6 +604,7 @@ class ExecutionProtocolPolicy:
             "repetition_threshold",
             "low_information_gain_threshold",
             "no_goal_progress_threshold",
+            "delivery_debt_observation_threshold",
         ):
             value = getattr(self, name)
             if isinstance(value, bool) or not isinstance(value, int) or value < 1:
@@ -415,9 +636,26 @@ class ExecutionProtocolPolicy:
         if (
             isinstance(reserve, bool)
             or not isinstance(reserve, (int, float))
+            or not math.isfinite(float(reserve))
             or reserve < 0
         ):
-            raise ValueError("finalization_reserve_seconds must be non-negative")
+            raise ValueError(
+                "finalization_reserve_seconds must be finite and non-negative"
+            )
+        candidate_reserve = self.candidate_decision_reserve_seconds
+        if (
+            isinstance(candidate_reserve, bool)
+            or not isinstance(candidate_reserve, (int, float))
+            or not math.isfinite(float(candidate_reserve))
+            or candidate_reserve < 0
+        ):
+            raise ValueError(
+                "candidate_decision_reserve_seconds must be finite and non-negative"
+            )
+        if candidate_reserve and candidate_reserve < reserve:
+            raise ValueError(
+                "candidate_decision_reserve_seconds must be zero or at least finalization_reserve_seconds"
+            )
         review_timeout = self.final_review_timeout_seconds
         if review_timeout is not None and (
             isinstance(review_timeout, bool)
@@ -449,10 +687,16 @@ class ExecutionProtocolPolicy:
             "repetition_threshold": self.repetition_threshold,
             "low_information_gain_threshold": self.low_information_gain_threshold,
             "no_goal_progress_threshold": self.no_goal_progress_threshold,
+            "delivery_debt_observation_threshold": (
+                self.delivery_debt_observation_threshold
+            ),
             "max_replans": self.max_replans,
             "max_final_reviews": self.max_final_reviews,
             "max_repairs": self.max_repairs,
             "finalization_reserve_seconds": self.finalization_reserve_seconds,
+            "candidate_decision_reserve_seconds": (
+                self.candidate_decision_reserve_seconds
+            ),
             "final_review_timeout_seconds": self.final_review_timeout_seconds,
         }
 
@@ -487,15 +731,19 @@ class ExecutionProtocolPolicy:
             repetition_threshold=value.get("repetition_threshold"),
             low_information_gain_threshold=value.get("low_information_gain_threshold"),
             no_goal_progress_threshold=value.get("no_goal_progress_threshold"),
+            delivery_debt_observation_threshold=value.get(
+                "delivery_debt_observation_threshold", 3
+            ),
             max_replans=value.get("max_replans"),
             max_final_reviews=value.get("max_final_reviews"),
             max_repairs=value.get("max_repairs"),
             finalization_reserve_seconds=value.get("finalization_reserve_seconds"),
+            candidate_decision_reserve_seconds=value.get(
+                "candidate_decision_reserve_seconds", 240.0
+            ),
             # Additive v1 field retained for compatibility with persisted
             # policies written before bounded final review timeouts existed.
-            final_review_timeout_seconds=value.get(
-                "final_review_timeout_seconds"
-            ),
+            final_review_timeout_seconds=value.get("final_review_timeout_seconds"),
         )
 
 
@@ -553,6 +801,15 @@ class ExecutionProtocolEvent:
     goal_progress_observable: bool | None = None
     goal_progress: bool | None = None
     evidence_advanced: bool = False
+    public_deliverable_declared: bool = False
+    missing_public_deliverable_count: int = 0
+    candidate_present: bool | None = None
+    candidate_advanced: bool = False
+    workspace_mutated: bool = False
+    validation_observed: bool = False
+    new_information_observed: bool = False
+    observed_action_names: tuple[str, ...] = field(default_factory=tuple)
+    observed_action_signatures: tuple[str, ...] = field(default_factory=tuple)
     current_step: int = 0
     remaining_seconds: float | None = None
     operation_hash: str | None = None
@@ -572,14 +829,51 @@ class ExecutionProtocolEvent:
             "low_information_gain_count",
             "no_goal_progress_count",
             "current_step",
+            "missing_public_deliverable_count",
         ):
             _non_negative_int(getattr(self, name), name)
         for name in ("goal_progress_observable", "goal_progress"):
             value = getattr(self, name)
             if value is not None and not isinstance(value, bool):
                 raise ValueError(f"{name} must be a boolean or None")
-        if not isinstance(self.evidence_advanced, bool):
-            raise ValueError("evidence_advanced must be a boolean")
+        for name in (
+            "evidence_advanced",
+            "public_deliverable_declared",
+            "workspace_mutated",
+            "candidate_advanced",
+            "validation_observed",
+            "new_information_observed",
+        ):
+            if not isinstance(getattr(self, name), bool):
+                raise ValueError(f"{name} must be a boolean")
+        if self.candidate_present is not None and not isinstance(
+            self.candidate_present, bool
+        ):
+            raise ValueError("candidate_present must be a boolean or None")
+        object.__setattr__(
+            self,
+            "observed_action_names",
+            _bounded_text_tuple(
+                self.observed_action_names,
+                name="observed_action_names",
+                maximum_items=32,
+                maximum_chars=256,
+            ),
+        )
+        signatures = self.observed_action_signatures
+        if (
+            not isinstance(signatures, (list, tuple))
+            or len(signatures) > 32
+            or any(
+                not isinstance(item, str)
+                or re.fullmatch(r"sha256:[0-9a-f]{64}", item) is None
+                for item in signatures
+            )
+        ):
+            raise ValueError(
+                "observed_action_signatures must contain at most 32 sha256 fingerprints"
+            )
+        object.__setattr__(self, "observed_action_signatures", tuple(signatures))
         if self.remaining_seconds is not None:
             value = self.remaining_seconds
             if (
@@ -627,8 +921,13 @@ class ExecutionProtocolEvent:
             )
         if self.kind is EventKind.MODEL_PLAN_UPDATE and self.model_plan_update is None:
             raise ValueError("model_plan_update event requires model_plan_update")
-        if self.kind is not EventKind.MODEL_PLAN_UPDATE and self.model_plan_update is not None:
-            raise ValueError("model_plan_update is valid only for model_plan_update events")
+        if (
+            self.kind is not EventKind.MODEL_PLAN_UPDATE
+            and self.model_plan_update is not None
+        ):
+            raise ValueError(
+                "model_plan_update is valid only for model_plan_update events"
+            )
         if self.model_plan_update is not None and not isinstance(
             self.model_plan_update, ModelPlanUpdate
         ):
@@ -644,6 +943,15 @@ class ExecutionProtocolEvent:
             goal_progress_observable=self.goal_progress_observable,
             goal_progress=self.goal_progress,
             evidence_advanced=self.evidence_advanced,
+            public_deliverable_declared=self.public_deliverable_declared,
+            missing_public_deliverable_count=self.missing_public_deliverable_count,
+            candidate_present=self.candidate_present,
+            candidate_advanced=self.candidate_advanced,
+            workspace_mutated=self.workspace_mutated,
+            validation_observed=self.validation_observed,
+            new_information_observed=self.new_information_observed,
+            observed_action_names=self.observed_action_names,
+            observed_action_signatures=self.observed_action_signatures,
             current_step=self.current_step,
             remaining_seconds=self.remaining_seconds,
             operation_hash=self.operation_hash,
@@ -664,6 +972,15 @@ class ProtocolEventRecord:
     goal_progress_observable: bool | None = None
     goal_progress: bool | None = None
     evidence_advanced: bool = False
+    public_deliverable_declared: bool = False
+    missing_public_deliverable_count: int = 0
+    candidate_present: bool | None = None
+    candidate_advanced: bool = False
+    workspace_mutated: bool = False
+    validation_observed: bool = False
+    new_information_observed: bool = False
+    observed_action_names: tuple[str, ...] = field(default_factory=tuple)
+    observed_action_signatures: tuple[str, ...] = field(default_factory=tuple)
     current_step: int = 0
     remaining_seconds: float | None = None
     operation_hash: str | None = None
@@ -679,6 +996,7 @@ class ProtocolEventRecord:
             "low_information_gain_count",
             "no_goal_progress_count",
             "current_step",
+            "missing_public_deliverable_count",
         ):
             _non_negative_int(getattr(self, name), name)
         if not isinstance(self.kind, EventKind):
@@ -687,8 +1005,44 @@ class ProtocolEventRecord:
             value = getattr(self, name)
             if value is not None and not isinstance(value, bool):
                 raise ValueError(f"{name} must be a boolean or None")
-        if not isinstance(self.evidence_advanced, bool):
-            raise ValueError("evidence_advanced must be a boolean")
+        for name in (
+            "evidence_advanced",
+            "public_deliverable_declared",
+            "workspace_mutated",
+            "candidate_advanced",
+            "validation_observed",
+            "new_information_observed",
+        ):
+            if not isinstance(getattr(self, name), bool):
+                raise ValueError(f"{name} must be a boolean")
+        if self.candidate_present is not None and not isinstance(
+            self.candidate_present, bool
+        ):
+            raise ValueError("candidate_present must be a boolean or None")
+        object.__setattr__(
+            self,
+            "observed_action_names",
+            _bounded_text_tuple(
+                self.observed_action_names,
+                name="observed_action_names",
+                maximum_items=32,
+                maximum_chars=256,
+            ),
+        )
+        signatures = self.observed_action_signatures
+        if (
+            not isinstance(signatures, (list, tuple))
+            or len(signatures) > 32
+            or any(
+                not isinstance(item, str)
+                or re.fullmatch(r"sha256:[0-9a-f]{64}", item) is None
+                for item in signatures
+            )
+        ):
+            raise ValueError(
+                "observed_action_signatures must contain at most 32 sha256 fingerprints"
+            )
+        object.__setattr__(self, "observed_action_signatures", tuple(signatures))
         if self.remaining_seconds is not None and (
             isinstance(self.remaining_seconds, bool)
             or not isinstance(self.remaining_seconds, (int, float))
@@ -727,8 +1081,13 @@ class ProtocolEventRecord:
             raise ValueError("record model_execution_profile has invalid type")
         if self.kind is EventKind.MODEL_PLAN_UPDATE and self.model_plan_update is None:
             raise ValueError("model_plan_update record requires model_plan_update")
-        if self.kind is not EventKind.MODEL_PLAN_UPDATE and self.model_plan_update is not None:
-            raise ValueError("model_plan_update is valid only for model plan update records")
+        if (
+            self.kind is not EventKind.MODEL_PLAN_UPDATE
+            and self.model_plan_update is not None
+        ):
+            raise ValueError(
+                "model_plan_update is valid only for model plan update records"
+            )
         if self.model_plan_update is not None and not isinstance(
             self.model_plan_update, ModelPlanUpdate
         ):
@@ -744,6 +1103,15 @@ class ProtocolEventRecord:
             "goal_progress_observable": self.goal_progress_observable,
             "goal_progress": self.goal_progress,
             "evidence_advanced": self.evidence_advanced,
+            "public_deliverable_declared": self.public_deliverable_declared,
+            "missing_public_deliverable_count": self.missing_public_deliverable_count,
+            "candidate_present": self.candidate_present,
+            "candidate_advanced": self.candidate_advanced,
+            "workspace_mutated": self.workspace_mutated,
+            "validation_observed": self.validation_observed,
+            "new_information_observed": self.new_information_observed,
+            "observed_action_names": list(self.observed_action_names),
+            "observed_action_signatures": list(self.observed_action_signatures),
             "current_step": self.current_step,
             "remaining_seconds": self.remaining_seconds,
             "operation_hash": self.operation_hash,
@@ -783,6 +1151,18 @@ class ProtocolEventRecord:
             goal_progress_observable=value.get("goal_progress_observable"),
             goal_progress=value.get("goal_progress"),
             evidence_advanced=value.get("evidence_advanced", False),
+            public_deliverable_declared=value.get("public_deliverable_declared", False),
+            missing_public_deliverable_count=_non_negative_int(
+                value.get("missing_public_deliverable_count", 0),
+                "missing_public_deliverable_count",
+            ),
+            candidate_present=value.get("candidate_present"),
+            candidate_advanced=value.get("candidate_advanced", False),
+            workspace_mutated=value.get("workspace_mutated", False),
+            validation_observed=value.get("validation_observed", False),
+            new_information_observed=value.get("new_information_observed", False),
+            observed_action_names=value.get("observed_action_names") or (),
+            observed_action_signatures=value.get("observed_action_signatures") or (),
             current_step=_non_negative_int(
                 value.get("current_step", 0), "current_step"
             ),
@@ -796,7 +1176,7 @@ class ProtocolEventRecord:
                 else None
             ),
             model_plan_update=(
-                ModelPlanUpdate.from_mapping(plan_update)
+                ModelPlanUpdate.from_persisted_mapping(plan_update)
                 if plan_update is not None
                 else None
             ),
@@ -821,7 +1201,22 @@ class ExecutionProtocolState:
     replan_requested_count: int = 0
     replan_applied_count: int = 0
     decision_checkpoint_pending: bool = False
+    decision_checkpoint_reason: DecisionReason | None = None
+    decision_checkpoint_candidate_present: bool | None = None
     last_replan_attempt_epoch: int | None = None
+    last_delivery_debt_attempt_epoch: int | None = None
+    delivery_debt_observations: int = 0
+    workspace_mutation_absent_observations: int = 0
+    delivery_checkpoint_count: int = 0
+    candidate_decision_count: int = 0
+    candidate_decision_recorded: bool = False
+    next_action_alignment_pending: bool = False
+    pending_next_action_plan_sequence: int | None = None
+    last_action_alignment: NextActionAlignment | None = None
+    last_action_alignment_plan_sequence: int | None = None
+    last_action_alignment_observation_sequence: int | None = None
+    action_alignment_match_count: int = 0
+    action_alignment_mismatch_count: int = 0
     final_review_count: int = 0
     repair_count: int = 0
     candidate_final_count: int = 0
@@ -853,20 +1248,65 @@ class ExecutionProtocolState:
             "final_review_count",
             "repair_count",
             "candidate_final_count",
+            "delivery_debt_observations",
+            "workspace_mutation_absent_observations",
+            "delivery_checkpoint_count",
+            "candidate_decision_count",
+            "action_alignment_match_count",
+            "action_alignment_mismatch_count",
         ):
             _non_negative_int(getattr(self, name), name)
         if self.last_replan_attempt_epoch is not None:
             _non_negative_int(
                 self.last_replan_attempt_epoch, "last_replan_attempt_epoch"
             )
+        for name in (
+            "last_delivery_debt_attempt_epoch",
+            "pending_next_action_plan_sequence",
+            "last_action_alignment_plan_sequence",
+            "last_action_alignment_observation_sequence",
+        ):
+            value = getattr(self, name)
+            if value is not None:
+                _non_negative_int(value, name)
         if (
             not isinstance(self.review_pending, bool)
             or not isinstance(self.decision_checkpoint_pending, bool)
             or not isinstance(self.finalization_entered, bool)
             or not isinstance(self.long_horizon_armed, bool)
             or not isinstance(self.acceptance_confirmed, bool)
+            or not isinstance(self.candidate_decision_recorded, bool)
+            or not isinstance(self.next_action_alignment_pending, bool)
         ):
             raise ValueError("state flags must be booleans")
+        if self.decision_checkpoint_reason is not None and not isinstance(
+            self.decision_checkpoint_reason, DecisionReason
+        ):
+            try:
+                object.__setattr__(
+                    self,
+                    "decision_checkpoint_reason",
+                    DecisionReason(self.decision_checkpoint_reason),
+                )
+            except (TypeError, ValueError) as exc:
+                raise ValueError("unsupported decision_checkpoint_reason") from exc
+        if self.decision_checkpoint_candidate_present is not None and not isinstance(
+            self.decision_checkpoint_candidate_present, bool
+        ):
+            raise ValueError(
+                "decision_checkpoint_candidate_present must be a boolean or None"
+            )
+        if self.last_action_alignment is not None and not isinstance(
+            self.last_action_alignment, NextActionAlignment
+        ):
+            try:
+                object.__setattr__(
+                    self,
+                    "last_action_alignment",
+                    NextActionAlignment(self.last_action_alignment),
+                )
+            except (TypeError, ValueError) as exc:
+                raise ValueError("unsupported last_action_alignment") from exc
         if not isinstance(self.history, tuple) or not all(
             isinstance(item, ProtocolEventRecord) for item in self.history
         ):
@@ -925,7 +1365,38 @@ class ExecutionProtocolState:
             "replan_requested_count": self.replan_requested_count,
             "replan_applied_count": self.replan_applied_count,
             "decision_checkpoint_pending": self.decision_checkpoint_pending,
+            "decision_checkpoint_reason": (
+                self.decision_checkpoint_reason.value
+                if self.decision_checkpoint_reason is not None
+                else None
+            ),
+            "decision_checkpoint_candidate_present": (
+                self.decision_checkpoint_candidate_present
+            ),
             "last_replan_attempt_epoch": self.last_replan_attempt_epoch,
+            "last_delivery_debt_attempt_epoch": self.last_delivery_debt_attempt_epoch,
+            "delivery_debt_observations": self.delivery_debt_observations,
+            "workspace_mutation_absent_observations": (
+                self.workspace_mutation_absent_observations
+            ),
+            "delivery_checkpoint_count": self.delivery_checkpoint_count,
+            "candidate_decision_count": self.candidate_decision_count,
+            "candidate_decision_recorded": self.candidate_decision_recorded,
+            "next_action_alignment_pending": self.next_action_alignment_pending,
+            "pending_next_action_plan_sequence": self.pending_next_action_plan_sequence,
+            "last_action_alignment": (
+                self.last_action_alignment.value
+                if self.last_action_alignment is not None
+                else None
+            ),
+            "last_action_alignment_plan_sequence": (
+                self.last_action_alignment_plan_sequence
+            ),
+            "last_action_alignment_observation_sequence": (
+                self.last_action_alignment_observation_sequence
+            ),
+            "action_alignment_match_count": self.action_alignment_match_count,
+            "action_alignment_mismatch_count": self.action_alignment_mismatch_count,
             "final_review_count": self.final_review_count,
             "repair_count": self.repair_count,
             "candidate_final_count": self.candidate_final_count,
@@ -975,18 +1446,59 @@ class ExecutionProtocolState:
                 value.get("replan_count", 0), "replan_count"
             ),
             replan_requested_count=_non_negative_int(
-                value.get(
-                    "replan_requested_count", value.get("replan_count", 0)
-                ),
+                value.get("replan_requested_count", value.get("replan_count", 0)),
                 "replan_requested_count",
             ),
             replan_applied_count=_non_negative_int(
                 value.get("replan_applied_count", 0), "replan_applied_count"
             ),
-            decision_checkpoint_pending=value.get(
-                "decision_checkpoint_pending", False
+            decision_checkpoint_pending=value.get("decision_checkpoint_pending", False),
+            decision_checkpoint_reason=value.get("decision_checkpoint_reason"),
+            decision_checkpoint_candidate_present=value.get(
+                "decision_checkpoint_candidate_present"
             ),
             last_replan_attempt_epoch=value.get("last_replan_attempt_epoch"),
+            last_delivery_debt_attempt_epoch=value.get(
+                "last_delivery_debt_attempt_epoch"
+            ),
+            delivery_debt_observations=_non_negative_int(
+                value.get("delivery_debt_observations", 0),
+                "delivery_debt_observations",
+            ),
+            workspace_mutation_absent_observations=_non_negative_int(
+                value.get("workspace_mutation_absent_observations", 0),
+                "workspace_mutation_absent_observations",
+            ),
+            delivery_checkpoint_count=_non_negative_int(
+                value.get("delivery_checkpoint_count", 0),
+                "delivery_checkpoint_count",
+            ),
+            candidate_decision_count=_non_negative_int(
+                value.get("candidate_decision_count", 0),
+                "candidate_decision_count",
+            ),
+            candidate_decision_recorded=value.get("candidate_decision_recorded", False),
+            next_action_alignment_pending=value.get(
+                "next_action_alignment_pending", False
+            ),
+            pending_next_action_plan_sequence=value.get(
+                "pending_next_action_plan_sequence"
+            ),
+            last_action_alignment=value.get("last_action_alignment"),
+            last_action_alignment_plan_sequence=value.get(
+                "last_action_alignment_plan_sequence"
+            ),
+            last_action_alignment_observation_sequence=value.get(
+                "last_action_alignment_observation_sequence"
+            ),
+            action_alignment_match_count=_non_negative_int(
+                value.get("action_alignment_match_count", 0),
+                "action_alignment_match_count",
+            ),
+            action_alignment_mismatch_count=_non_negative_int(
+                value.get("action_alignment_mismatch_count", 0),
+                "action_alignment_mismatch_count",
+            ),
             final_review_count=_non_negative_int(
                 value.get("final_review_count", 0), "final_review_count"
             ),
@@ -1006,7 +1518,7 @@ class ExecutionProtocolState:
                 else None
             ),
             model_plan_update=(
-                ModelPlanUpdate.from_mapping(plan_update)
+                ModelPlanUpdate.from_persisted_mapping(plan_update)
                 if plan_update is not None
                 else None
             ),
@@ -1029,7 +1541,9 @@ class ProtocolTransition:
 __all__ = [
     "CompletionAssessment",
     "ControllerAction",
+    "action_signature",
     "ControllerDecision",
+    "DeliveryIntent",
     "DecisionReason",
     "EventKind",
     "ExecutionProtocolEvent",
@@ -1038,6 +1552,7 @@ __all__ = [
     "ExecutionProtocolState",
     "ModelExecutionProfile",
     "ModelPlanUpdate",
+    "NextActionAlignment",
     "PlanUpdateDecision",
     "ProtocolEventRecord",
     "ProtocolMode",

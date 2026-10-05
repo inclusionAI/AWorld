@@ -141,6 +141,138 @@ def _sdk_request_body(adapter_params):
     return json.loads(request.content)
 
 
+@pytest.mark.parametrize("provider_type", [OpenAIProvider, AzureOpenAIProvider])
+@pytest.mark.parametrize(
+    ("internal_effort", "wire_effort"),
+    [("max", "xhigh"), ("off", "none")],
+)
+def test_official_openai_adapters_serialize_only_standard_reasoning_efforts(
+    provider_type, internal_effort, wire_effort
+):
+    provider = _provider(provider_type)
+
+    adapter_params = provider.get_openai_params(
+        [{"role": "user", "content": "go"}],
+        reasoning_effort=internal_effort,
+    )
+    wire = _sdk_request_body(adapter_params)
+
+    assert adapter_params["reasoning_effort"] == wire_effort
+    assert wire["reasoning_effort"] == wire_effort
+    assert wire["reasoning_effort"] != internal_effort
+
+
+@pytest.mark.parametrize(
+    ("effort", "thinking"), [("max", True), ("off", False)]
+)
+def test_openai_adapter_explicit_chat_template_serializes_vendor_extremes(
+    effort, thinking
+):
+    provider = _provider(OpenAIProvider)
+
+    adapter_params = provider.get_openai_params(
+        [{"role": "user", "content": "go"}],
+        reasoning_effort=effort,
+        extra_body={
+            "chat_template_kwargs": {
+                "reasoning_effort": effort,
+                "thinking": thinking,
+            }
+        },
+    )
+    wire = _sdk_request_body(adapter_params)
+
+    assert adapter_params["reasoning_effort"] == effort
+    assert wire["reasoning_effort"] == effort
+    assert wire["chat_template_kwargs"] == {
+        "reasoning_effort": effort,
+        "thinking": thinking,
+    }
+
+
+def test_azure_adapter_does_not_claim_chat_template_reasoning_capability():
+    provider = _provider(AzureOpenAIProvider)
+
+    adapter_params = provider.get_openai_params(
+        [{"role": "user", "content": "go"}],
+        reasoning_effort="max",
+        extra_body={
+            "chat_template_kwargs": {
+                "reasoning_effort": "max",
+                "thinking": True,
+                "unrelated": "keep",
+            }
+        },
+    )
+    wire = _sdk_request_body(adapter_params)
+
+    assert adapter_params["reasoning_effort"] == "xhigh"
+    assert wire["reasoning_effort"] == "xhigh"
+    assert wire["chat_template_kwargs"] == {"unrelated": "keep"}
+
+
+def test_openai_final_merge_prefers_per_call_canonical_reasoning_without_mutation():
+    defaults = {
+        "thinking": False,
+        "enable_thinking": False,
+        "chat_template_kwargs": {
+            "provider_option": "keep",
+            "reasoning_effort": "off",
+            "enable_thinking": False,
+        },
+        "extra_body": {
+            "reasoning_effort": "off",
+            "thinking": False,
+            "enable_thinking": False,
+            "routing": {"tier": "configured"},
+        },
+    }
+    provider = _provider(OpenAIProvider, defaults)
+    original = copy.deepcopy(provider.kwargs)
+
+    params = provider.get_openai_params(
+        [{"role": "user", "content": "go"}],
+        model_name="gpt-4.1-compatible",
+        reasoning_effort="high",
+        extra_body={
+            "chat_template_kwargs": {
+                "caller_option": "keep",
+                "reasoning_effort": "high",
+                "thinking": True,
+                "enable_thinking": False,
+            }
+        },
+    )
+
+    assert params["reasoning_effort"] == "high"
+    assert all(
+        alias not in params
+        for alias in ("thinking", "enable_thinking", "chat_template_kwargs")
+    )
+    assert all(
+        alias not in params["extra_body"]
+        for alias in ("reasoning_effort", "thinking", "enable_thinking")
+    )
+    assert params["extra_body"]["chat_template_kwargs"] == {
+        "caller_option": "keep",
+        "reasoning_effort": "high",
+        "thinking": True,
+    }
+    assert provider.kwargs == original
+
+    top_level_only = provider.get_openai_params(
+        [{"role": "user", "content": "go again"}],
+        model_name="another-openai-compatible-model",
+        reasoning_effort="medium",
+    )
+    assert top_level_only["reasoning_effort"] == "medium"
+    assert "chat_template_kwargs" not in top_level_only
+    assert top_level_only["extra_body"] == {
+        "routing": {"tier": "configured"}
+    }
+    assert provider.kwargs == original
+
+
 def _http_request_body(monkeypatch, provider, request_kwargs, max_tokens=None):
     from aworld.models.llm_http_handler import LLMHTTPHandler
 

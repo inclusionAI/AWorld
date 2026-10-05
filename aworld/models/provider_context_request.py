@@ -57,15 +57,19 @@ def _standard_request(
     temperature: float,
     max_tokens: int | None,
     stop: list[str] | None,
+    reasoning_effort: str | None = None,
 ) -> dict[str, Any]:
+    params = {
+        "temperature": temperature,
+        "max_tokens": max_tokens,
+        "stop": stop,
+    }
+    if reasoning_effort is not None:
+        params["reasoning_effort"] = reasoning_effort
     return {
         "messages": messages,
         "tools": tools,
-        "params": {
-            "temperature": temperature,
-            "max_tokens": max_tokens,
-            "stop": stop,
-        },
+        "params": params,
     }
 
 
@@ -77,11 +81,12 @@ def _validate_candidate_payload(payload: dict[str, Any]) -> None:
     if payload["tools"] is not None and not isinstance(payload["tools"], list):
         raise TypeError("candidate tools must be a list or null")
     params = payload["params"]
-    if not isinstance(params, dict) or set(params) != {
-        "temperature",
-        "max_tokens",
-        "stop",
-    }:
+    required_params = {"temperature", "max_tokens", "stop"}
+    if (
+        not isinstance(params, dict)
+        or not required_params.issubset(params)
+        or set(params) - required_params - {"reasoning_effort"}
+    ):
         raise ValueError("unsupported candidate parameter projection")
 
 
@@ -114,6 +119,7 @@ def prepare_provider_context_request(
         temperature=temperature,
         max_tokens=max_tokens,
         stop=stop,
+        reasoning_effort=request_kwargs.get("reasoning_effort"),
     )
     selected = current
     capability = provider.context_candidate_lowering_capability()

@@ -12,6 +12,7 @@ from aworld.agents.llm_agent import (
 from aworld.config import AgentConfig, ModelConfig
 from aworld.core.context.generation_budget import GenerationBudgetPolicy
 from aworld.models.model_response import Function, ModelResponse, ToolCall
+from aworld.models.reasoning_policy import ReasoningPhasePolicy
 from aworld_cli.builtin_agents.smllc.optional_agents import _common
 from aworld_cli.builtin_agents.smllc.optional_agents.developer.developer import (
     build_developer_swarm,
@@ -47,6 +48,7 @@ def test_verifier_inherits_model_generation_budget_and_shared_sandbox() -> None:
                     "reasoning_effort": "max",
                 },
             },
+            reasoning_phase_policy=ReasoningPhasePolicy.balanced(),
         ),
         use_vision=True,
         skill_configs={"root-only-skill": {"active": True}},
@@ -80,6 +82,12 @@ def test_verifier_inherits_model_generation_budget_and_shared_sandbox() -> None:
     assert verifier.conf.llm_config.max_model_len == 131072
     assert verifier.conf.llm_config.params == parent_config.llm_config.params
     assert verifier.conf.llm_config.params is not parent_config.llm_config.params
+    assert (
+        ReasoningPhasePolicy.from_value(
+            verifier.conf.llm_config.reasoning_phase_policy
+        )
+        == parent_config.llm_config.reasoning_phase_policy
+    )
     assert verifier.conf.skill_configs == {}
     assert verifier._explicit_generation_budget_policy is generation_budget
     assert verifier._generation_budget_explicit_fields == {"generation_budget_mode"}
@@ -168,9 +176,12 @@ def test_default_collaborators_inherit_root_execution_profile() -> None:
             assert "cast tools may help" in collaborator.system_prompt.lower()
             assert "never required" in collaborator.system_prompt.lower()
         if expected_name == "evaluator":
+            assert collaborator.reasoning_phase_override == "review"
             assert "no special wording" in collaborator.system_prompt.lower()
             assert "CAST_ANALYSIS" not in collaborator.tool_names
             assert "CAST_SEARCH" not in collaborator.tool_names
+        if expected_name == "verifier":
+            assert collaborator.reasoning_phase_override == "review"
 
 
 def test_developer_and_evaluator_remain_available_without_cast(monkeypatch) -> None:

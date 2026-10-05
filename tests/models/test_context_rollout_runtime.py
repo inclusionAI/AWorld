@@ -34,6 +34,11 @@ from aworld.core.context.tool_output_runtime import (
 from aworld.core.llm_provider import LLMProviderBase
 from aworld.models.llm import LLMModel
 from aworld.models.model_response import ModelResponse
+from aworld.models.reasoning_policy import (
+    AWORLD_REASONING_SELECTION_KWARG,
+    ReasoningPhasePolicy,
+    resolve_reasoning_request,
+)
 from aworld.models.anthropic_provider import AnthropicProvider
 from aworld.models.ant_provider import AntProvider
 from aworld.models.openai_provider import AzureOpenAIProvider
@@ -1206,6 +1211,69 @@ def _reviewed_custom_provider() -> tuple[
         ReviewedCustomChatProvider(transport=Transport(), model_name="custom-test"),
         calls,
     )
+
+
+@pytest.mark.asyncio
+async def test_reviewed_custom_explicit_openai_reasoning_reaches_all_wire_paths():
+    provider, calls = _reviewed_custom_provider()
+    model = LLMModel(custom_provider=provider)
+    resolved, receipt = resolve_reasoning_request(
+        phase="plan",
+        model_name=provider.model_name,
+        provider="custom",
+        request_kwargs={},
+        policy=ReasoningPhasePolicy.balanced(),
+        reasoning_transport="openai",
+        transport_capability=provider.reasoning_transport_capability(),
+    )
+    assert resolved == {"reasoning_effort": "xhigh"}
+    assert receipt.applied is True
+    assert receipt.reasoning_effort == "xhigh"
+    request_kwargs = {
+        **resolved,
+        AWORLD_REASONING_SELECTION_KWARG: receipt.to_dict(),
+    }
+    contexts = [Context(task_id=f"custom-reasoning-{index}") for index in range(4)]
+
+    model.completion(
+        [{"role": "user", "content": "sync"}],
+        context=contexts[0],
+        **request_kwargs,
+    )
+    assert list(
+        model.stream_completion(
+            [{"role": "user", "content": "sync stream"}],
+            context=contexts[1],
+            **request_kwargs,
+        )
+    )
+    await model.acompletion(
+        [{"role": "user", "content": "async"}],
+        context=contexts[2],
+        **request_kwargs,
+    )
+    assert [
+        chunk
+        async for chunk in model.astream_completion(
+            [{"role": "user", "content": "async stream"}],
+            context=contexts[3],
+            **request_kwargs,
+        )
+    ]
+
+    assert len(calls) == 4
+    assert [call["reasoning_effort"] for call in calls] == ["xhigh"] * 4
+    assert [call.get("stream", False) for call in calls] == [
+        False,
+        True,
+        False,
+        True,
+    ]
+    for context in contexts:
+        record = context.get_llm_calls()[0]
+        assert record["request"]["params"]["reasoning_effort"] == "xhigh"
+        assert record["provider_request"]["payload"]["reasoning_effort"] == "xhigh"
+        assert record["reasoning_selection"] == receipt.to_dict()
 
 
 def _count_framework_compiles(monkeypatch, counters, *, fail=False):

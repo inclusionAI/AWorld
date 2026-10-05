@@ -266,6 +266,207 @@ def build_complete_llm_usage_summary(
     return summary
 
 
+def _diagnostic_non_negative_int(value: Any) -> Optional[int]:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        return None
+    return min(value, 2_147_483_647)
+
+
+def build_llm_diagnostics_summary(
+    llm_calls: Optional[List[Dict[str, Any]]],
+) -> Dict[str, Any]:
+    """Aggregate bounded, content-free usage and timing diagnostics.
+
+    ``reported`` is deliberately a complete-ledger statement. Partial provider
+    usage/timing remains visible through counts and partial totals, but cannot
+    be mistaken for complete run accounting.
+    """
+    calls_by_request_id: Dict[str, Dict[str, Any]] = {}
+    missing_identity: List[Dict[str, Any]] = []
+    ledger_consistent = True
+    for call in llm_calls or []:
+        if not isinstance(call, dict) or call.get("record_kind") not in (
+            None,
+            "model_attempt",
+        ):
+            continue
+        request_id = call.get("request_id")
+        if not isinstance(request_id, str) or not request_id.strip():
+            missing_identity.append(call)
+            ledger_consistent = False
+            continue
+        existing = calls_by_request_id.get(request_id)
+        if existing is None:
+            calls_by_request_id[request_id] = call
+        elif existing != call:
+            ledger_consistent = False
+    calls = [*calls_by_request_id.values(), *missing_identity]
+    call_count = len(calls)
+
+    usage_reported = 0
+    input_token_calls = output_token_calls = total_token_calls = 0
+    input_tokens = output_tokens = total_tokens = 0
+    timing_reported = 0
+    total_duration_ms = max_duration_ms = 0
+    first_chunk_reported = 0
+    max_first_chunk_latency_ms = 0
+    stream_reported = 0
+    chunk_count = content_chars = reasoning_chars = 0
+    tool_call_chunks = tool_argument_chars = 0
+
+    for call in calls:
+        diagnostics = call.get("diagnostics")
+        diagnostics = diagnostics if isinstance(diagnostics, dict) else {}
+
+        usage = diagnostics.get("usage")
+        usage = usage if isinstance(usage, dict) else {}
+        is_usage_reported = (
+            usage.get("reported") is True
+            or (
+                not usage
+                and call.get("usage_reported") is True
+            )
+        )
+        if is_usage_reported:
+            usage_reported += 1
+            normalized = call.get("usage_normalized")
+            normalized = normalized if isinstance(normalized, dict) else {}
+            call_input = _diagnostic_non_negative_int(
+                usage.get(
+                    "input_tokens",
+                    normalized.get("prompt_tokens", normalized.get("input_tokens")),
+                )
+            )
+            call_output = _diagnostic_non_negative_int(
+                usage.get(
+                    "output_tokens",
+                    normalized.get(
+                        "completion_tokens", normalized.get("output_tokens")
+                    ),
+                )
+            )
+            call_total = _diagnostic_non_negative_int(
+                usage.get("total_tokens", normalized.get("total_tokens"))
+            )
+            if call_total is None and call_input is not None and call_output is not None:
+                call_total = min(call_input + call_output, 2_147_483_647)
+            if call_input is not None:
+                input_token_calls += 1
+                input_tokens = min(input_tokens + call_input, 2_147_483_647)
+            if call_output is not None:
+                output_token_calls += 1
+                output_tokens = min(output_tokens + call_output, 2_147_483_647)
+            if call_total is not None:
+                total_token_calls += 1
+                total_tokens = min(total_tokens + call_total, 2_147_483_647)
+
+        timing = diagnostics.get("timing")
+        timing = timing if isinstance(timing, dict) else {}
+        duration_ms = _diagnostic_non_negative_int(timing.get("duration_ms"))
+        if duration_ms is None:
+            started_at = call.get("started_at")
+            finished_at = call.get("finished_at")
+            if (
+                isinstance(started_at, (int, float))
+                and not isinstance(started_at, bool)
+                and isinstance(finished_at, (int, float))
+                and not isinstance(finished_at, bool)
+                and finished_at >= started_at
+            ):
+                duration_ms = _diagnostic_non_negative_int(
+                    min(round((finished_at - started_at) * 1000), 2_147_483_647)
+                )
+        if duration_ms is not None:
+            timing_reported += 1
+            total_duration_ms = min(
+                total_duration_ms + duration_ms, 2_147_483_647
+            )
+            max_duration_ms = max(max_duration_ms, duration_ms)
+
+        stream = diagnostics.get("stream")
+        stream = stream if isinstance(stream, dict) else {}
+        if stream.get("reported") is True:
+            stream_reported += 1
+            for key, accumulator_name in (
+                ("chunk_count", "chunk_count"),
+                ("content_chars_observed", "content_chars"),
+                ("reasoning_chars_observed", "reasoning_chars"),
+                ("tool_call_chunks", "tool_call_chunks"),
+                ("tool_argument_chars_observed", "tool_argument_chars"),
+            ):
+                value = _diagnostic_non_negative_int(stream.get(key)) or 0
+                if accumulator_name == "chunk_count":
+                    chunk_count = min(chunk_count + value, 2_147_483_647)
+                elif accumulator_name == "content_chars":
+                    content_chars = min(content_chars + value, 2_147_483_647)
+                elif accumulator_name == "reasoning_chars":
+                    reasoning_chars = min(reasoning_chars + value, 2_147_483_647)
+                elif accumulator_name == "tool_call_chunks":
+                    tool_call_chunks = min(
+                        tool_call_chunks + value, 2_147_483_647
+                    )
+                else:
+                    tool_argument_chars = min(
+                        tool_argument_chars + value, 2_147_483_647
+                    )
+            first_chunk_latency = _diagnostic_non_negative_int(
+                stream.get("first_chunk_latency_ms")
+            )
+            if first_chunk_latency is not None:
+                first_chunk_reported += 1
+                max_first_chunk_latency_ms = max(
+                    max_first_chunk_latency_ms, first_chunk_latency
+                )
+
+    usage_summary: Dict[str, Any] = {
+        "reported": bool(
+            ledger_consistent and call_count and usage_reported == call_count
+        ),
+        "reported_call_count": usage_reported,
+        "unreported_call_count": max(call_count - usage_reported, 0),
+        "token_totals_complete": bool(
+            ledger_consistent and call_count and total_token_calls == call_count
+        ),
+    }
+    if input_token_calls:
+        usage_summary["input_tokens"] = input_tokens
+    if output_token_calls:
+        usage_summary["output_tokens"] = output_tokens
+    if total_token_calls:
+        usage_summary["total_tokens"] = total_tokens
+    timing_summary: Dict[str, Any] = {
+        "reported": bool(
+            ledger_consistent and call_count and timing_reported == call_count
+        ),
+        "reported_call_count": timing_reported,
+        "unreported_call_count": max(call_count - timing_reported, 0),
+        "total_duration_ms": total_duration_ms,
+        "max_duration_ms": max_duration_ms,
+        "first_chunk_reported_call_count": first_chunk_reported,
+        "max_first_chunk_latency_ms": max_first_chunk_latency_ms,
+    }
+    stream_summary: Dict[str, Any] = {
+        "reported": bool(
+            ledger_consistent and call_count and stream_reported == call_count
+        ),
+        "reported_call_count": stream_reported,
+        "unreported_call_count": max(call_count - stream_reported, 0),
+        "chunk_count": chunk_count,
+        "content_chars_observed": content_chars,
+        "reasoning_chars_observed": reasoning_chars,
+        "tool_call_chunks": tool_call_chunks,
+        "tool_argument_chars_observed": tool_argument_chars,
+    }
+    return {
+        "schema_version": "aworld.llm_diagnostics.v1",
+        "call_count": call_count,
+        "ledger_consistent": ledger_consistent,
+        "usage": usage_summary,
+        "timing": timing_summary,
+        "stream": stream_summary,
+    }
+
+
 def build_llm_usage_observability(
     llm_calls: Optional[List[Dict[str, Any]]],
     *,

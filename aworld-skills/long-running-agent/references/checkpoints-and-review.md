@@ -14,6 +14,33 @@ A useful checkpoint is concise and decision-oriented. It should recover:
 - retired approaches and why they were retired;
 - the next bounded action and its expected evidence.
 
+Every execution decision includes a typed delivery choice and its rationale;
+delivery debt or an approaching candidate-decision reserve makes that choice
+especially urgent. The valid choices are continued exploration, candidate
+production, candidate validation, current-result submission, and uncertain
+submission. A continued-exploration choice should name the one
+discriminating observation expected next. A candidate-production choice is not
+fulfilled by an unrelated workspace mutation; rely on an inspectable public
+candidate observation when one is available.
+
+Treat a plan/action mismatch receipt as a request to reconsider the declared
+choice, not as a verdict that the Tool action was useless or that the task
+failed. Where the environment cannot expose candidate or validation evidence,
+keep that alignment unknown rather than inventing a match.
+
+The typed next action has an exact JSON/null invariant. For a Tool-backed
+choice (`continue_exploration`, `produce_candidate`, or `validate_candidate`),
+`next_action_tool` is the exact offered function name and
+`next_action_arguments` is a JSON string encoding the complete argument object
+for that call; both are non-null. For `submit_current` or `submit_uncertain`,
+both fields are null and AWorld enters Tool-free finalization. Use
+`submit_current` for a ready best-current result without falsely claiming
+uncertainty. The next Tool call for a Tool-backed choice should use the same
+identity and arguments. AWorld strips framework control fields, hashes the
+identity and canonical JSON arguments,
+and retains only the SHA-256 signature for alignment; it does not persist the
+raw declared arguments in protocol records or telemetry.
+
 Do not copy raw command history into a checkpoint. Retain identifiers or short
 summaries sufficient to locate important observations when the runtime makes
 them available. Do not invent timestamps, statuses, or evidence that the

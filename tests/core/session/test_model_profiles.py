@@ -77,3 +77,15 @@ def test_default_environment_profile_and_oversized_output(tmp_path):
     assert result.model == "custom" and result.context_window == 32000
     with pytest.raises(ValueError, match="leave room"):
         settings(tmp_path, "--context-window", "8000", "--max-output-tokens", "8000")
+
+
+def test_core_cli_accepts_explicit_max_reasoning_effort(tmp_path):
+    result = settings(
+        tmp_path,
+        "--model",
+        "matrixllm.aisearch_dsv4_flash",
+        "--reasoning-effort",
+        "max",
+    )
+
+    assert result.parameters["reasoning_effort"] == "max"

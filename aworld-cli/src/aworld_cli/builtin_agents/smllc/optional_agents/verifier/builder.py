@@ -23,6 +23,7 @@ class TaskVerifierAgent(FreshAnswerOnlyCollaborator):
     """Fresh, answer-only collaborator with a read-only filesystem surface."""
 
     mcp_tool_action_allowlist = READ_ONLY_FILESYSTEM_ALLOWLIST
+    reasoning_phase_override = "review"
 
 
 def build_verifier_swarm(

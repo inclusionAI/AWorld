@@ -10,6 +10,11 @@ from aworld.core.context.base import Context
 from aworld.core.context.compiler import canonical_json_hash
 from aworld.core.task import Task, TaskResponse
 from aworld.models.llm import AWORLD_CONTEXT_CALL_ID_KWARG, LLMModel
+from aworld.models.reasoning_policy import (
+    AWORLD_REASONING_SELECTION_KWARG,
+    ReasoningPhasePolicy,
+    resolve_reasoning_request,
+)
 from aworld.models.model_response import ModelResponse
 from aworld.models.openai_provider import OpenAIProvider
 from aworld.core.llm_provider import LLMProviderBase
@@ -131,6 +136,282 @@ class RecordingLLMProvider(LLMProviderBase):
         )
 
 
+class ReasoningRecordingProvider(RecordingLLMProvider):
+    def __init__(self):
+        super().__init__(model_name="aisearch_dsv4flash_cron_job")
+        self.kwargs_by_method = {}
+
+    async def acompletion(self, messages, **kwargs):
+        self.kwargs_by_method["acompletion"] = dict(kwargs)
+        return await super().acompletion(messages, **kwargs)
+
+    def completion(self, messages, **kwargs):
+        self.kwargs_by_method["completion"] = dict(kwargs)
+        return super().completion(messages, **kwargs)
+
+    def stream_completion(self, messages, **kwargs):
+        self.kwargs_by_method["stream_completion"] = dict(kwargs)
+        yield from super().stream_completion(messages, **kwargs)
+
+    async def astream_completion(self, messages, **kwargs):
+        self.kwargs_by_method["astream_completion"] = dict(kwargs)
+        async for chunk in super().astream_completion(messages, **kwargs):
+            yield chunk
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("effort", ["high", "medium", "xhigh"])
+async def test_reasoning_selection_is_recorded_and_not_forwarded_as_provider_kwarg(
+    effort,
+):
+    provider = ReasoningRecordingProvider()
+    model = LLMModel(custom_provider=provider)
+    selection = {
+        "phase": "execute",
+        "source": "phase_policy",
+        "reasoning_effort": effort,
+        "thinking": True,
+        "policy_id": "balanced/v1",
+        "transport": "openai/v1",
+        "applied": True,
+        "reason_code": "phase_policy_selected",
+    }
+
+    sync_context = Context(task_id="reasoning-selection-sync")
+    model.completion(
+        [{"role": "user", "content": "continue sync"}],
+        context=sync_context,
+        reasoning_effort=effort,
+        **{AWORLD_REASONING_SELECTION_KWARG: selection},
+    )
+    assert AWORLD_REASONING_SELECTION_KWARG not in provider.kwargs_by_method[
+        "completion"
+    ]
+    sync_record = sync_context.get_llm_calls()[0]
+    assert sync_record["request"]["params"]["reasoning_effort"] == effort
+    assert sync_record["reasoning_selection"] == selection
+
+    sync_stream_context = Context(task_id="reasoning-selection-sync-stream")
+    sync_chunks = list(
+        model.stream_completion(
+            [{"role": "user", "content": "stream sync"}],
+            context=sync_stream_context,
+            reasoning_effort=effort,
+            **{AWORLD_REASONING_SELECTION_KWARG: selection},
+        )
+    )
+    assert sync_chunks
+    assert AWORLD_REASONING_SELECTION_KWARG not in provider.kwargs_by_method[
+        "stream_completion"
+    ]
+    sync_stream_record = sync_stream_context.get_llm_calls()[0]
+    assert sync_stream_record["request"]["params"]["reasoning_effort"] == effort
+    assert sync_stream_record["reasoning_selection"] == selection
+
+    context = Context(task_id="reasoning-selection-record")
+    await model.acompletion(
+        [{"role": "user", "content": "continue"}],
+        context=context,
+        reasoning_effort=effort,
+        extra_body={
+            "chat_template_kwargs": {
+                "reasoning_effort": effort,
+                "thinking": True,
+            }
+        },
+        **{AWORLD_REASONING_SELECTION_KWARG: selection},
+    )
+
+    assert AWORLD_REASONING_SELECTION_KWARG not in provider.kwargs_by_method[
+        "acompletion"
+    ]
+    record = context.get_llm_calls()[0]
+    assert record["request"]["params"]["reasoning_effort"] == effort
+    assert record["reasoning_selection"] == selection
+
+    stream_context = Context(task_id="reasoning-selection-stream")
+    chunks = [
+        chunk
+        async for chunk in model.astream_completion(
+            [{"role": "user", "content": "stream"}],
+            context=stream_context,
+            reasoning_effort=effort,
+            **{AWORLD_REASONING_SELECTION_KWARG: selection},
+        )
+    ]
+    assert chunks
+    assert AWORLD_REASONING_SELECTION_KWARG not in provider.kwargs_by_method[
+        "astream_completion"
+    ]
+    stream_record = stream_context.get_llm_calls()[0]
+    assert stream_record["request"]["params"]["reasoning_effort"] == effort
+    assert stream_record["reasoning_selection"] == selection
+
+
+@pytest.mark.asyncio
+async def test_reasoning_selection_rejects_untrusted_payloads_in_all_call_shapes():
+    provider = ReasoningRecordingProvider()
+    model = LLMModel(custom_provider=provider)
+    valid = {
+        "phase": "execute",
+        "source": "phase_policy",
+        "reasoning_effort": "high",
+        "thinking": True,
+        "policy_id": "balanced/v1",
+        "transport": "openai/v1",
+        "applied": True,
+        "reason_code": "phase_policy_selected",
+    }
+    secret = "caller-secret-must-not-be-recorded"
+
+    sync_context = Context(task_id="reasoning-invalid-sync")
+    model.completion(
+        [{"role": "user", "content": "sync"}],
+        context=sync_context,
+        reasoning_effort="high",
+        **{AWORLD_REASONING_SELECTION_KWARG: {**valid, "secret": secret}},
+    )
+
+    async_context = Context(task_id="reasoning-invalid-async")
+    await model.acompletion(
+        [{"role": "user", "content": "async"}],
+        context=async_context,
+        reasoning_effort="high",
+        **{
+            AWORLD_REASONING_SELECTION_KWARG: {
+                **valid,
+                "reasoning_effort": "max",
+            }
+        },
+    )
+
+    sync_stream_context = Context(task_id="reasoning-invalid-sync-stream")
+    assert list(
+        model.stream_completion(
+            [{"role": "user", "content": "sync stream"}],
+            context=sync_stream_context,
+            reasoning_effort="high",
+            **{
+                AWORLD_REASONING_SELECTION_KWARG: {
+                    **valid,
+                    "applied": False,
+                }
+            },
+        )
+    )
+
+    async_stream_context = Context(task_id="reasoning-invalid-async-stream")
+    assert [
+        chunk
+        async for chunk in model.astream_completion(
+            [{"role": "user", "content": "async stream"}],
+            context=async_stream_context,
+            reasoning_effort="high",
+            **{
+                AWORLD_REASONING_SELECTION_KWARG: {
+                    **valid,
+                    "policy_id": "x" * 129,
+                }
+            },
+        )
+    ]
+
+    contexts = (
+        sync_context,
+        async_context,
+        sync_stream_context,
+        async_stream_context,
+    )
+    for context in contexts:
+        record = context.get_llm_calls()[0]
+        assert record["reasoning_selection"] == {
+            "status": "selection_receipt_invalid"
+        }
+        assert secret not in str(record)
+    for provider_kwargs in provider.kwargs_by_method.values():
+        assert AWORLD_REASONING_SELECTION_KWARG not in provider_kwargs
+
+
+def test_reasoning_receipt_rejects_conflicting_canonical_locations():
+    receipt = {
+        "phase": "execute",
+        "source": "caller",
+        "reasoning_effort": "high",
+        "thinking": True,
+        "policy_id": None,
+        "transport": "openai/v1",
+        "applied": True,
+        "reason_code": "explicit_caller_pin",
+    }
+
+    assert LLMModel._project_reasoning_selection_receipt(
+        receipt,
+        request_kwargs={
+            "reasoning_effort": "high",
+            "extra_body": {
+                "chat_template_kwargs": {"reasoning_effort": "low"}
+            },
+        },
+    ) == {"status": "selection_receipt_invalid"}
+
+
+@pytest.mark.parametrize(
+    ("provider_name", "model_name", "request_kwargs", "policy", "reason_code"),
+    [
+        (
+            "anthropic",
+            "gpt-4.1",
+            {"reasoning_effort": "high"},
+            None,
+            "unsupported_reasoning_transport",
+        ),
+        (
+            "anthropic",
+            "gpt-4.1",
+            {},
+            ReasoningPhasePolicy.balanced(),
+            "unsupported_reasoning_transport",
+        ),
+        (
+            "openai",
+            "aisearch_dsv4flash_cron_job",
+            {"extra_body": {"chat_template_kwargs": "invalid"}},
+            ReasoningPhasePolicy.balanced(),
+            "incompatible_request_shape",
+        ),
+    ],
+)
+def test_reasoning_selection_preserves_bounded_fail_open_receipts(
+    provider_name,
+    model_name,
+    request_kwargs,
+    policy,
+    reason_code,
+):
+    resolved, receipt = resolve_reasoning_request(
+        phase="execute",
+        model_name=model_name,
+        provider=provider_name,
+        request_kwargs=request_kwargs,
+        policy=policy,
+    )
+    assert receipt.applied is False
+    assert receipt.reason_code == reason_code
+
+    provider = ReasoningRecordingProvider()
+    provider.model_name = model_name
+    model = LLMModel(custom_provider=provider)
+    context = Context(task_id=f"reasoning-{reason_code}")
+    model.completion(
+        [{"role": "user", "content": "continue"}],
+        context=context,
+        **resolved,
+        **{AWORLD_REASONING_SELECTION_KWARG: receipt.to_dict()},
+    )
+
+    assert context.get_llm_calls()[0]["reasoning_selection"] == receipt.to_dict()
+
+
 def test_turn_economics_storage_failure_does_not_block_provider(monkeypatch):
     provider = RecordingLLMProvider()
     model = LLMModel(custom_provider=provider)
@@ -180,6 +461,7 @@ class TerminalMarkerStreamProvider(RecordingLLMProvider):
             message={"role": "assistant", "content": ""},
             finish_reason="stop",
         )
+
     async def astream_completion(self, messages, **kwargs):
         self.seen_requests.append(messages)
         yield ModelResponse(
@@ -208,6 +490,91 @@ class TerminalMarkerStreamProvider(RecordingLLMProvider):
             message={"role": "assistant", "content": ""},
             finish_reason="stop",
         )
+
+
+class SplitUsageStreamProvider(RecordingLLMProvider):
+    def __init__(self, *, cumulative: bool):
+        super().__init__()
+        self.cumulative = cumulative
+
+    def _chunks(self):
+        yield ModelResponse(
+            id="split-usage",
+            model=self.model_name,
+            content="partial",
+            usage={"prompt_tokens": 10, "total_tokens": 10},
+            raw_usage={"input": {"tokens": 10}},
+            usage_reported=True,
+            usage_is_cumulative=self.cumulative,
+        )
+        yield ModelResponse(
+            id="split-usage",
+            model=self.model_name,
+            finish_reason="stop",
+            usage=(
+                {
+                    "prompt_tokens": 10,
+                    "completion_tokens": 5,
+                    "total_tokens": 15,
+                }
+                if self.cumulative
+                else {"completion_tokens": 5, "total_tokens": 5}
+            ),
+            raw_usage=(
+                {"input": {"tokens": 10}, "output": {"tokens": 5}}
+                if self.cumulative
+                else {"output": {"tokens": 5}}
+            ),
+            usage_reported=True,
+            usage_is_cumulative=self.cumulative,
+        )
+
+    def stream_completion(self, messages, **kwargs):
+        self.seen_requests.append(messages)
+        yield from self._chunks()
+
+    async def astream_completion(self, messages, **kwargs):
+        self.seen_requests.append(messages)
+        for chunk in self._chunks():
+            yield chunk
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("cumulative", [False, True])
+async def test_stream_usage_capture_merges_deltas_and_replaces_cumulative_snapshots(
+    cumulative,
+):
+    provider = SplitUsageStreamProvider(cumulative=cumulative)
+    model = LLMModel(custom_provider=provider)
+
+    sync_context = Context(task_id=f"split-usage-sync-{cumulative}")
+    assert list(
+        model.stream_completion(
+            [{"role": "user", "content": "sync"}],
+            context=sync_context,
+        )
+    )
+    async_context = Context(task_id=f"split-usage-async-{cumulative}")
+    assert [
+        chunk
+        async for chunk in model.astream_completion(
+            [{"role": "user", "content": "async"}],
+            context=async_context,
+        )
+    ]
+
+    for context in (sync_context, async_context):
+        record = context.get_llm_calls()[0]
+        assert record["usage_normalized"] == {
+            "prompt_tokens": 10,
+            "completion_tokens": 5,
+            "total_tokens": 15,
+        }
+        assert record["usage_raw"] == {
+            "input": {"tokens": 10},
+            "output": {"tokens": 5},
+        }
+        assert record["usage_reported"] is True
 
 
 class ToolChoiceProvider(RecordingLLMProvider):
@@ -573,6 +940,21 @@ def test_stream_completion_appends_one_final_llm_call_record():
         "total_tokens": 21,
     }
     assert llm_calls[0]["response"]["finish_reason"] == "stop"
+    diagnostics = llm_calls[0]["diagnostics"]
+    assert diagnostics["schema_version"] == "aworld.llm_call_diagnostics.v1"
+    assert diagnostics["usage"] == {
+        "reported": True,
+        "input_tokens": 13,
+        "output_tokens": 8,
+        "total_tokens": 21,
+    }
+    assert diagnostics["timing"]["reported"] is True
+    assert diagnostics["timing"]["source"] == "framework"
+    assert diagnostics["timing"]["duration_ms"] >= 0
+    assert diagnostics["stream"]["reported"] is True
+    assert diagnostics["stream"]["chunk_count"] == 2
+    assert diagnostics["stream"]["content_chars_observed"] == len("partialfinal")
+    assert diagnostics["stream"]["first_chunk_latency_ms"] >= 0
 
 
 def test_stream_completion_uses_last_meaningful_chunk_for_llm_call_record():
@@ -618,6 +1000,48 @@ async def test_astream_completion_appends_one_final_llm_call_record():
         "cache_hit_tokens": 4,
     }
     assert llm_calls[0]["response"]["finish_reason"] == "stop"
+    diagnostics = llm_calls[0]["diagnostics"]
+    assert diagnostics["usage"]["reported"] is True
+    assert diagnostics["stream"]["reported"] is True
+    assert diagnostics["stream"]["chunk_count"] == 2
+    assert diagnostics["stream"]["content_chars_observed"] == len("partialfinal")
+
+
+@pytest.mark.asyncio
+async def test_interrupted_stream_records_unreported_usage_and_observed_timing():
+    class UnreportedStreamProvider(RecordingLLMProvider):
+        async def astream_completion(self, messages, **kwargs):
+            self.seen_requests.append(messages)
+            yield ModelResponse(
+                id="unreported-stream",
+                model=self.model_name,
+                reasoning_content="reasoning stays in memory",
+                content="partial",
+            )
+            while True:
+                await asyncio.sleep(1)
+
+    llm_model = LLMModel(custom_provider=UnreportedStreamProvider())
+    context = Context(task_id="task-stream-unreported")
+    stream = llm_model.astream_completion(
+        [{"role": "user", "content": "async stream"}], context=context
+    )
+
+    chunk = await stream.__anext__()
+    assert chunk.content == "partial"
+    await stream.aclose()
+
+    diagnostics = context.get_llm_calls()[0]["diagnostics"]
+    assert diagnostics["usage"] == {
+        "reported": False,
+        "reason_code": "provider_usage_unreported",
+    }
+    assert diagnostics["timing"]["reported"] is True
+    assert diagnostics["stream"]["reported"] is True
+    assert diagnostics["stream"]["chunk_count"] == 1
+    assert diagnostics["stream"]["reasoning_chars_observed"] == len(
+        "reasoning stays in memory"
+    )
 
 
 @pytest.mark.asyncio

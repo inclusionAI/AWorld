@@ -6,7 +6,9 @@ import pytest
 
 from aworld_cli.builtin_plugins.goal_session.common import parse_goal_args
 from aworld_cli.builtin_plugins.goal_session.hooks.task_completed import (
-    apply_turn_outcome, handle_event, new_goal_contract_state,
+    apply_turn_outcome,
+    handle_event,
+    new_goal_contract_state,
 )
 from aworld_cli.executors.local import LocalAgentExecutor, _GoalContinuation
 
@@ -14,7 +16,9 @@ from aworld_cli.executors.local import LocalAgentExecutor, _GoalContinuation
 def test_goal_has_no_default_turn_or_time_cap():
     state = new_goal_contract_state("finish the work")
     for _ in range(5000):
-        state, again = apply_turn_outcome(state, {"semantic_status": "incomplete", "recoverable": True})
+        state, again = apply_turn_outcome(
+            state, {"semantic_status": "incomplete", "recoverable": True}
+        )
         assert again
     assert state["max_turns"] is None
     assert "deadline_epoch_seconds" not in state
@@ -22,24 +26,40 @@ def test_goal_has_no_default_turn_or_time_cap():
 
 def test_explicit_goal_attempt_limit_is_preserved_on_continuation():
     state = new_goal_contract_state("work", max_turns=2)
-    state, again = apply_turn_outcome(state, {"semantic_status":"budget_exhausted", "recoverable":True})
+    state, again = apply_turn_outcome(
+        state, {"semantic_status": "budget_exhausted", "recoverable": True}
+    )
     assert again and state["max_turns"] == 2
-    state, again = apply_turn_outcome(state, {"semantic_status":"incomplete", "recoverable":True})
+    state, again = apply_turn_outcome(
+        state, {"semantic_status": "incomplete", "recoverable": True}
+    )
     assert not again and state["status"] == "budget_limited"
 
 
 def test_incomplete_promise_does_not_complete_goal_and_old_deadline_is_ignored():
     state = new_goal_contract_state("work", completion_promise="DONE")
-    state, again = apply_turn_outcome(state, {"semantic_status":"incomplete", "recoverable":True, "final_answer":"<promise>DONE</promise>"})
+    state, again = apply_turn_outcome(
+        state,
+        {
+            "semantic_status": "incomplete",
+            "recoverable": True,
+            "final_answer": "<promise>DONE</promise>",
+        },
+    )
     assert again and not state["completion_promise_satisfied"]
     state["deadline_epoch_seconds"] = 1
-    state, again = apply_turn_outcome(state, {"semantic_status":"succeeded", "final_answer":"<promise>DONE</promise>"})
+    state, again = apply_turn_outcome(
+        state,
+        {"semantic_status": "succeeded", "final_answer": "<promise>DONE</promise>"},
+    )
     assert not again and state["status"] == "complete"
     assert "deadline_epoch_seconds" not in state
 
 
 def test_goal_without_promise_stops_on_typed_success():
-    state, again = apply_turn_outcome(new_goal_contract_state("work"), {"semantic_status":"succeeded"})
+    state, again = apply_turn_outcome(
+        new_goal_contract_state("work"), {"semantic_status": "succeeded"}
+    )
     assert not again and state["status"] == "complete"
     assert state["last_attempt_receipt"]["disposition"] == "complete"
     assert state["last_attempt_receipt"]["acceptance_satisfied"] is True
@@ -117,7 +137,9 @@ def test_goal_receipt_carries_bounded_typed_acceptance_reasons():
         "aworld_cli.builtin_plugins.goal_session.hooks.task_completed",
         fromlist=["build_goal_context_prompt"],
     ).build_goal_context_prompt(state)
-    assert "Unsatisfied evidence: self_check_failed, required_artifact_missing" in prompt
+    assert (
+        "Unsatisfied evidence: self_check_failed, required_artifact_missing" in prompt
+    )
     assert "extra-6" not in prompt
 
 
@@ -136,7 +158,7 @@ def test_goal_attempt_limit_is_persisted_as_a_non_successful_halt_receipt():
 def test_untyped_text_promise_is_not_completion_evidence():
     state, again = apply_turn_outcome(
         new_goal_contract_state("work", completion_promise="DONE"),
-        {"final_answer":"<promise>DONE</promise>","task_status":"completed"},
+        {"final_answer": "<promise>DONE</promise>", "task_status": "completed"},
     )
     assert again and state["status"] == "active"
 
@@ -144,7 +166,11 @@ def test_untyped_text_promise_is_not_completion_evidence():
 def test_no_progress_does_not_stop_attempts_or_invent_a_budget():
     state, again = apply_turn_outcome(
         new_goal_contract_state("work"),
-        {"semantic_status":"incomplete","completion_reason":"no_new_evidence","recoverable":False},
+        {
+            "semantic_status": "incomplete",
+            "completion_reason": "no_new_evidence",
+            "recoverable": False,
+        },
     )
     assert again and state["status"] == "active"
     assert "deadline_epoch_seconds" not in state and state["max_turns"] is None
@@ -152,29 +178,45 @@ def test_no_progress_does_not_stop_attempts_or_invent_a_budget():
 
 def test_pause_wins_race_with_old_completion_hook():
     stale = new_goal_contract_state("work")
-    writes=[]
-    handle=SimpleNamespace(read=lambda:{**stale,"active":False,"status":"paused"}, write=writes.append)
-    assert handle_event({"semantic_status":"incomplete"}, {**stale,"__plugin_state__":handle}) == {"action":"allow"}
+    writes = []
+    handle = SimpleNamespace(
+        read=lambda: {**stale, "active": False, "status": "paused"}, write=writes.append
+    )
+    assert handle_event(
+        {"semantic_status": "incomplete"}, {**stale, "__plugin_state__": handle}
+    ) == {"action": "allow"}
     assert writes == []
 
 
-@pytest.mark.parametrize("args", ["work --max-turns 0", "work --timeout-seconds 0", "work --timeout-seconds nan", "work --deadline-epoch-seconds inf"])
+@pytest.mark.parametrize(
+    "args",
+    [
+        "work --max-turns 0",
+        "work --timeout-seconds 0",
+        "work --timeout-seconds nan",
+        "work --deadline-epoch-seconds inf",
+    ],
+)
 def test_invalid_attempt_limits_and_unsupported_time_options_rejected(args):
     with pytest.raises(ValueError):
         parse_goal_args(args)
 
 
 @pytest.mark.asyncio
-async def test_cli_continues_thousands_of_goal_turns_without_recursion_or_time_limit(monkeypatch):
-    executor=object.__new__(LocalAgentExecutor)
-    executor._base_runtime=None
-    seen=[]
+async def test_cli_continues_thousands_of_goal_turns_without_recursion_or_time_limit(
+    monkeypatch,
+):
+    executor = object.__new__(LocalAgentExecutor)
+    executor._base_runtime = None
+    seen = []
 
-    async def turn(message, requested_skill_names=None, _previous_goal_context=None, **_kwargs):
+    async def turn(
+        message, requested_skill_names=None, _previous_goal_context=None, **_kwargs
+    ):
         seen.append(message)
-        return _GoalContinuation("continue") if len(seen)<1500 else "done"
+        return _GoalContinuation("continue") if len(seen) < 1500 else "done"
 
-    executor._chat_turn=turn
+    executor._chat_turn = turn
     monkeypatch.setenv("AWORLD_TASK_DEADLINE_EPOCH_SECONDS", "1")
     assert await executor.chat("work") == "done"
     assert len(seen) == 1500
@@ -239,22 +281,29 @@ def test_direct_long_horizon_acceptance_continues_without_replaying_prompt():
         "root-agent",
         ExecutionProtocolPolicy(mode="guide"),
     )
-    assert record_model_plan_update(
-        context,
-        "root-agent",
-        {
-            "decision": "continue",
-            "horizon": "long",
-            "milestone": "complete the requested project",
-            "next_action": "continue implementation",
-            "verification_plan": "inspect and test the candidate",
-            "completion_assessment": "in_progress",
-            "assumptions": [],
-            "retired_approaches": [],
-            "evidence_refs": [],
-            "selected_candidate_id": None,
-        },
-    ) is not None
+    assert (
+        record_model_plan_update(
+            context,
+            "root-agent",
+            {
+                "decision": "continue",
+                "horizon": "long",
+                "milestone": "complete the requested project",
+                "next_action": "continue implementation",
+                "next_action_tool": "terminal__execute",
+                "next_action_arguments": '{"command":"continue implementation"}',
+                "verification_plan": "inspect and test the candidate",
+                "completion_assessment": "in_progress",
+                "delivery_intent": "continue_exploration",
+                "delivery_rationale": "implementation still needs bounded work",
+                "assumptions": [],
+                "retired_approaches": [],
+                "evidence_refs": [],
+                "selected_candidate_id": None,
+            },
+        )
+        is not None
+    )
     record_tool_protocol_event(
         context,
         "root-agent",
@@ -301,7 +350,9 @@ def test_direct_long_horizon_acceptance_continues_without_replaying_prompt():
     assert continuation.source == "direct_acceptance"
     assert continuation.prompt != "build the requested project"
     assert "Last attempt receipt:" in continuation.prompt
-    assert continuation.acceptance_state["workspace_id"] == logical_state["workspace_id"]
+    assert (
+        continuation.acceptance_state["workspace_id"] == logical_state["workspace_id"]
+    )
     assert continuation.acceptance_state["max_turns"] is None
     assert response.execution_protocol["armed"] is True
     assert response.execution_protocol["acceptance_continuation_count"] == 1
@@ -388,15 +439,18 @@ def test_direct_acceptance_bypasses_unarmed_short_task():
         semantic_status="succeeded",
     )
 
-    assert executor._direct_acceptance_continuation(
-        task=task,
-        response=response,
-        answer="",
-        event={"task_id": task.id, "semantic_status": "succeeded"},
-        origin_user_input="answer directly",
-        logical_task_state=new_goal_contract_state("answer directly"),
-        acceptance_state=None,
-    ) is None
+    assert (
+        executor._direct_acceptance_continuation(
+            task=task,
+            response=response,
+            answer="",
+            event={"task_id": task.id, "semantic_status": "succeeded"},
+            origin_user_input="answer directly",
+            logical_task_state=new_goal_contract_state("answer directly"),
+            acceptance_state=None,
+        )
+        is None
+    )
     assert response.execution_protocol["armed"] is False
     assert "implicit_acceptance_created" not in response.execution_protocol
 
@@ -425,22 +479,29 @@ def test_direct_acceptance_respects_deadline_reserve():
         "root-agent",
         ExecutionProtocolPolicy(mode="guide"),
     )
-    assert record_model_plan_update(
-        context,
-        "root-agent",
-        {
-            "decision": "continue",
-            "horizon": "long",
-            "milestone": "complete long work",
-            "next_action": "continue bounded execution",
-            "verification_plan": "inspect the final candidate",
-            "completion_assessment": "in_progress",
-            "assumptions": [],
-            "retired_approaches": [],
-            "evidence_refs": [],
-            "selected_candidate_id": None,
-        },
-    ) is not None
+    assert (
+        record_model_plan_update(
+            context,
+            "root-agent",
+            {
+                "decision": "continue",
+                "horizon": "long",
+                "milestone": "complete long work",
+                "next_action": "continue bounded execution",
+                "next_action_tool": "terminal__execute",
+                "next_action_arguments": '{"command":"continue bounded execution"}',
+                "verification_plan": "inspect the final candidate",
+                "completion_assessment": "in_progress",
+                "delivery_intent": "continue_exploration",
+                "delivery_rationale": "the candidate still needs bounded work",
+                "assumptions": [],
+                "retired_approaches": [],
+                "evidence_refs": [],
+                "selected_candidate_id": None,
+            },
+        )
+        is not None
+    )
     record_tool_protocol_event(
         context,
         "root-agent",
@@ -512,21 +573,24 @@ def test_explicit_goal_owned_segment_cannot_start_implicit_acceptance():
         communicate_agent=SimpleNamespace(id=lambda: "root-agent")
     )
 
-    assert executor._direct_acceptance_continuation(
-        task=task,
-        response=TaskResponse(
-            success=False,
+    assert (
+        executor._direct_acceptance_continuation(
+            task=task,
+            response=TaskResponse(
+                success=False,
+                answer="partial",
+                semantic_status="incomplete",
+                recoverable=True,
+            ),
             answer="partial",
-            semantic_status="incomplete",
-            recoverable=True,
-        ),
-        answer="partial",
-        event={"semantic_status": "incomplete", "recoverable": True},
-        origin_user_input="work",
-        logical_task_state=new_goal_contract_state("work"),
-        acceptance_state=None,
-        explicit_goal_owned_segment=True,
-    ) is None
+            event={"semantic_status": "incomplete", "recoverable": True},
+            origin_user_input="work",
+            logical_task_state=new_goal_contract_state("work"),
+            acceptance_state=None,
+            explicit_goal_owned_segment=True,
+        )
+        is None
+    )
 
 
 def test_direct_acceptance_limit_is_exported_as_unsatisfied():
@@ -564,15 +628,18 @@ def test_direct_acceptance_limit_is_exported_as_unsatisfied():
         recoverable=True,
     )
 
-    assert executor._direct_acceptance_continuation(
-        task=task,
-        response=response,
-        answer="still partial",
-        event={"semantic_status": "incomplete", "recoverable": True},
-        origin_user_input="work",
-        logical_task_state=state,
-        acceptance_state=state,
-    ) is None
+    assert (
+        executor._direct_acceptance_continuation(
+            task=task,
+            response=response,
+            answer="still partial",
+            event={"semantic_status": "incomplete", "recoverable": True},
+            origin_user_input="work",
+            logical_task_state=state,
+            acceptance_state=state,
+        )
+        is None
+    )
     assert response.success is False
     assert response.semantic_status == "budget_exhausted"
     assert response.execution_protocol["acceptance_disposition"] == "limit_reached"
@@ -604,9 +671,7 @@ async def test_later_segment_error_retains_prior_evidence_without_receipt_mismat
                 success=False,
                 semantic_status="incomplete",
                 llm_calls=[{"request_id": "call-1"}],
-                trajectory=[
-                    {"meta": {"task_id": "segment-1"}, "action": {}}
-                ],
+                trajectory=[{"meta": {"task_id": "segment-1"}, "action": {}}],
             )
             return _GoalContinuation(
                 "repair",
@@ -652,9 +717,7 @@ async def test_pre_run_failure_creates_typed_envelope_for_prior_evidence():
                 success=False,
                 semantic_status="incomplete",
                 llm_calls=[{"request_id": "call-1"}],
-                trajectory=[
-                    {"meta": {"task_id": "segment-1"}, "action": {}}
-                ],
+                trajectory=[{"meta": {"task_id": "segment-1"}, "action": {}}],
             )
             return _GoalContinuation(
                 "repair",
@@ -714,51 +777,70 @@ async def test_explicit_goal_continuations_do_not_build_unbounded_run_envelope()
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("status,maximum", [("paused", None), ("budget_limited", None), ("budget_limited", 5)])
-async def test_goal_resume_keeps_work_scope_and_discards_old_time_limit(status, maximum):
+@pytest.mark.parametrize(
+    "status,maximum",
+    [("paused", None), ("budget_limited", None), ("budget_limited", 5)],
+)
+async def test_goal_resume_keeps_work_scope_and_discards_old_time_limit(
+    status, maximum
+):
     from aworld_cli.builtin_plugins.goal_session.hooks.stop import GoalCommand
     from aworld_cli.core.command_system import CommandContext
 
-    state={**new_goal_contract_state("work", max_turns=maximum), "active":False,
-           "status":status, "last_task_id":"prior-task", "last_task_epoch":7,
-           "deadline_epoch_seconds":1}
+    state = {
+        **new_goal_contract_state("work", max_turns=maximum),
+        "active": False,
+        "status": status,
+        "last_task_id": "prior-task",
+        "last_task_epoch": 7,
+        "deadline_epoch_seconds": 1,
+    }
+
     def update(values):
         state.update(values)
         return dict(state)
+
     def write(values):
         state.clear()
         state.update(values)
-    handle=SimpleNamespace(read=lambda:dict(state), update=update, write=write)
-    command=object.__new__(GoalCommand)
-    command.get_state_handle=lambda _:handle
-    executor=SimpleNamespace()
-    context=CommandContext(cwd="/tmp",user_args="resume",executor=executor,session_id="same-session")
+
+    handle = SimpleNamespace(read=lambda: dict(state), update=update, write=write)
+    command = object.__new__(GoalCommand)
+    command.get_state_handle = lambda _: handle
+    executor = SimpleNamespace()
+    context = CommandContext(
+        cwd="/tmp", user_args="resume", executor=executor, session_id="same-session"
+    )
     assert await command.pre_execute(context) is None
     assert command.should_start_new_session(context) is False
     await command.get_prompt(context)
     assert state["status"] == "active" and "deadline_epoch_seconds" not in state
     assert executor._resume_context_checkpoint_once
-    assert executor._resume_goal_work_scope_once == {"source_task_id":"prior-task","source_task_epoch":7}
-
+    assert executor._resume_goal_work_scope_once == {
+        "source_task_id": "prior-task",
+        "source_task_epoch": 7,
+    }
 
 
 @pytest.mark.asyncio
 async def test_user_pause_cancels_context_construction_without_a_timer(monkeypatch):
-    executor=object.__new__(LocalAgentExecutor)
-    executor._base_runtime=None
-    executor.session_id="session"
-    executor._run_plugin_task_hook=AsyncMock(return_value=[])
-    entered=asyncio.Event()
-    cancelled=[]
+    executor = object.__new__(LocalAgentExecutor)
+    executor._base_runtime = None
+    executor.session_id = "session"
+    executor._run_plugin_task_hook = AsyncMock(return_value=[])
+    entered = asyncio.Event()
+    cancelled = []
+
     async def blocked_turn(*args, **kwargs):
         entered.set()
         try:
             await asyncio.Event().wait()
         finally:
             cancelled.append(True)
-    executor._chat_turn=blocked_turn
+
+    executor._chat_turn = blocked_turn
     monkeypatch.setenv("AWORLD_TASK_DEADLINE_EPOCH_SECONDS", "1")
-    running=asyncio.create_task(executor.chat("work"))
+    running = asyncio.create_task(executor.chat("work"))
     await entered.wait()
     assert not running.done()
     executor.request_goal_pause()
@@ -770,24 +852,34 @@ async def test_user_pause_cancels_context_construction_without_a_timer(monkeypat
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("status", ["complete", "paused", "budget_limited"])
-async def test_ordinary_cli_work_does_not_inherit_inactive_goal_limits(monkeypatch, status):
-    executor=object.__new__(LocalAgentExecutor)
-    executor._base_runtime=SimpleNamespace(build_plugin_hook_state=lambda *args:{
-        "active":False, "status":status, "deadline_epoch_seconds":1,
-    })
+async def test_ordinary_cli_work_does_not_inherit_inactive_goal_limits(
+    monkeypatch, status
+):
+    executor = object.__new__(LocalAgentExecutor)
+    executor._base_runtime = SimpleNamespace(
+        build_plugin_hook_state=lambda *args: {
+            "active": False,
+            "status": status,
+            "deadline_epoch_seconds": 1,
+        }
+    )
+
     async def turn(*args, **kwargs):
         assert "_lifetime" not in kwargs
         return "ordinary CLI work"
-    executor._chat_turn=turn
+
+    executor._chat_turn = turn
     monkeypatch.delenv("AWORLD_TASK_DEADLINE_EPOCH_SECONDS", raising=False)
     assert await executor.chat("new request") == "ordinary CLI work"
 
 
 def test_goal_resume_maps_only_unique_configured_agent_names():
-    executor=object.__new__(LocalAgentExecutor)
-    executor.swarm=SimpleNamespace(agents={
-        "new-a":SimpleNamespace(name=lambda:"worker",id=lambda:"new-a"),
-        "new-b":SimpleNamespace(name=lambda:"duplicate",id=lambda:"new-b"),
-        "new-c":SimpleNamespace(name=lambda:"duplicate",id=lambda:"new-c"),
-    })
-    assert executor._goal_agent_ids() == {"worker":"new-a"}
+    executor = object.__new__(LocalAgentExecutor)
+    executor.swarm = SimpleNamespace(
+        agents={
+            "new-a": SimpleNamespace(name=lambda: "worker", id=lambda: "new-a"),
+            "new-b": SimpleNamespace(name=lambda: "duplicate", id=lambda: "new-b"),
+            "new-c": SimpleNamespace(name=lambda: "duplicate", id=lambda: "new-c"),
+        }
+    )
+    assert executor._goal_agent_ids() == {"worker": "new-a"}

@@ -1,8 +1,11 @@
 from dataclasses import FrozenInstanceError, replace
+import json
 
 import pytest
 
 from aworld.core.execution_protocol import (
+    action_signature,
+    DeliveryIntent,
     CompletionAssessment,
     ExecutionHorizon,
     EventKind,
@@ -23,8 +26,12 @@ def _plan_update(**overrides):
         "horizon": "long",
         "milestone": "produce a runnable candidate",
         "next_action": "run the smallest discriminating probe",
+        "next_action_tool": "terminal",
+        "next_action_arguments": '{"command":"pytest -q"}',
         "verification_plan": "execute the public smoke test",
         "completion_assessment": "in_progress",
+        "delivery_intent": "validate_candidate",
+        "delivery_rationale": "the candidate exists and needs a public check",
         "assumptions": ["the public test is representative"],
         "retired_approaches": ["repeat the same failing command"],
         "evidence_refs": ["tool:call-7", "artifact:sha256:abc"],
@@ -35,13 +42,68 @@ def _plan_update(**overrides):
 
 
 def test_model_plan_update_has_a_strict_bounded_round_trip():
-    update = ModelPlanUpdate.from_mapping(_plan_update())
+    update = ModelPlanUpdate.from_model_mapping(_plan_update())
 
     assert update.decision is PlanUpdateDecision.REPLAN
     assert update.horizon is ExecutionHorizon.LONG
     assert update.completion_assessment is CompletionAssessment.IN_PROGRESS
+    assert update.delivery_intent is DeliveryIntent.VALIDATE_CANDIDATE
     assert update.evidence_refs == ("tool:call-7", "artifact:sha256:abc")
-    assert ModelPlanUpdate.from_mapping(update.to_dict()) == update
+    persisted = update.to_dict()
+    assert "next_action_arguments" not in persisted
+    assert persisted["next_action_signature"] == action_signature(
+        "terminal", {"command": "pytest -q"}
+    )
+    assert "pytest -q" not in json.dumps(persisted)
+    assert ModelPlanUpdate.from_persisted_mapping(persisted) == update
+
+
+def test_model_plan_update_rejects_a_model_supplied_action_signature():
+    payload = _plan_update()
+    payload.pop("next_action_arguments")
+    payload["next_action_signature"] = action_signature(
+        "terminal", {"command": "malicious-tool-call"}
+    )
+
+    with pytest.raises(ValueError, match="unknown fields"):
+        ModelPlanUpdate.from_model_mapping(payload)
+
+
+@pytest.mark.parametrize(
+    "field",
+    [
+        "delivery_intent",
+        "delivery_rationale",
+        "next_action_tool",
+        "next_action_arguments",
+    ],
+)
+def test_model_plan_update_requires_explicit_delivery_contract(field):
+    payload = _plan_update()
+    payload.pop(field)
+
+    with pytest.raises(ValueError, match="missing required fields"):
+        ModelPlanUpdate.from_model_mapping(payload)
+
+
+@pytest.mark.parametrize("intent", ["unknown", DeliveryIntent.UNKNOWN])
+def test_model_plan_update_rejects_legacy_unknown_intent_from_model(intent):
+    with pytest.raises(ValueError, match="delivery_intent must be explicit"):
+        ModelPlanUpdate.from_model_mapping(_plan_update(delivery_intent=intent))
+
+
+def test_persisted_model_plan_update_never_accepts_raw_action_arguments():
+    with pytest.raises(ValueError, match="persisted.*unknown fields"):
+        ModelPlanUpdate.from_persisted_mapping(_plan_update())
+
+
+def test_action_signature_is_canonical_and_exported_from_package():
+    assert action_signature("terminal__execute", {"b": 2, "a": 1}) == (
+        action_signature("terminal__execute", {"a": 1, "b": 2})
+    )
+    assert action_signature("terminal__execute", {"command": "one"}) != (
+        action_signature("terminal__execute", {"command": "two"})
+    )
 
 
 @pytest.mark.parametrize(
@@ -51,8 +113,12 @@ def test_model_plan_update_has_a_strict_bounded_round_trip():
         ("horizon", "maybe"),
         ("milestone", ""),
         ("next_action", "x" * 1025),
+        ("next_action_tool", "x" * 257),
         ("verification_plan", ""),
         ("completion_assessment", "complete"),
+        ("delivery_intent", "force-a-write"),
+        ("delivery_rationale", ""),
+        ("delivery_rationale", "x" * 1025),
         ("assumptions", ["x"] * 9),
         ("retired_approaches", ["x" * 513]),
         ("evidence_refs", ["x"] * 17),
@@ -67,6 +133,71 @@ def test_model_plan_update_rejects_invalid_or_unbounded_claims(field, value):
 def test_model_plan_update_rejects_unknown_fields():
     with pytest.raises(ValueError, match="unknown fields"):
         ModelPlanUpdate.from_mapping(_plan_update(task_reward=1))
+
+
+def test_model_plan_update_restores_legacy_persisted_payload():
+    payload = _plan_update()
+    for field in (
+        "delivery_intent",
+        "delivery_rationale",
+        "next_action_tool",
+        "next_action_arguments",
+    ):
+        payload.pop(field)
+
+    update = ModelPlanUpdate.from_persisted_mapping(payload)
+
+    assert update.delivery_intent is DeliveryIntent.UNKNOWN
+    assert update.delivery_rationale == ""
+    assert update.next_action_tool is None
+    assert update.next_action_signature is None
+
+
+@pytest.mark.parametrize(
+    ("intent", "tool", "arguments"),
+    [
+        ("continue_exploration", None, None),
+        ("produce_candidate", None, None),
+        ("validate_candidate", None, None),
+        ("submit_current", "terminal", None),
+        ("submit_uncertain", "terminal", None),
+    ],
+)
+def test_model_plan_update_requires_tool_identity_exactly_when_action_is_planned(
+    intent, tool, arguments
+):
+    with pytest.raises(ValueError, match="next_action_tool"):
+        ModelPlanUpdate.from_mapping(
+            _plan_update(
+                delivery_intent=intent,
+                delivery_rationale="bounded rationale",
+                next_action_tool=tool,
+                next_action_arguments=arguments,
+            )
+        )
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [None, "[]", "not-json", '{"number":NaN}'],
+)
+def test_model_plan_update_requires_exact_json_object_arguments(arguments):
+    with pytest.raises(ValueError):
+        ModelPlanUpdate.from_mapping(_plan_update(next_action_arguments=arguments))
+
+
+@pytest.mark.parametrize("intent", ["submit_current", "submit_uncertain"])
+def test_terminal_delivery_intent_requires_null_tool_and_arguments(intent):
+    update = ModelPlanUpdate.from_mapping(
+        _plan_update(
+            delivery_intent=intent,
+            next_action_tool=None,
+            next_action_arguments=None,
+        )
+    )
+
+    assert update.next_action_tool is None
+    assert update.next_action_signature is None
 
 
 @pytest.mark.parametrize(
@@ -157,6 +288,12 @@ def test_model_execution_profile_rejects_unknown_fields():
         ("max_final_reviews", True),
         ("max_repairs", -1),
         ("finalization_reserve_seconds", -0.1),
+        ("finalization_reserve_seconds", float("nan")),
+        ("finalization_reserve_seconds", float("inf")),
+        ("candidate_decision_reserve_seconds", -0.1),
+        ("candidate_decision_reserve_seconds", float("nan")),
+        ("candidate_decision_reserve_seconds", float("inf")),
+        ("delivery_debt_observation_threshold", 0),
         ("final_review_timeout_seconds", 0),
         ("final_review_timeout_seconds", 86_401),
         ("review_unarmed_candidates", "yes"),
@@ -165,6 +302,20 @@ def test_model_execution_profile_rejects_unknown_fields():
 def test_policy_rejects_invalid_bounds(field, value):
     with pytest.raises(ValueError):
         ExecutionProtocolPolicy(**{field: value})
+
+
+def test_candidate_decision_reserve_must_precede_finalization_or_be_disabled():
+    with pytest.raises(ValueError, match="at least finalization"):
+        ExecutionProtocolPolicy(
+            finalization_reserve_seconds=60,
+            candidate_decision_reserve_seconds=30,
+        )
+
+    policy = ExecutionProtocolPolicy(
+        finalization_reserve_seconds=60,
+        candidate_decision_reserve_seconds=0,
+    )
+    assert policy.candidate_decision_reserve_seconds == 0
 
 
 def test_policy_coerces_valid_mode_and_is_immutable():

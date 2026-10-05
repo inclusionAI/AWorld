@@ -6,7 +6,7 @@ import traceback
 import inspect
 from copy import deepcopy
 from dataclasses import dataclass
-from typing import Any, Dict, List, Generator, AsyncGenerator, Tuple, Optional
+from typing import Any, Dict, List, Generator, AsyncGenerator, Tuple, Optional, Mapping
 
 import httpx
 from openai import (
@@ -59,6 +59,11 @@ from aworld.models.llm_http_handler import LLMHTTPHandler
 from aworld.models.openai_message_sanitizer import sanitize_openai_messages
 from aworld.models.model_response import ModelResponse, LLMResponseError
 from aworld.models.prompt_cache import OpenAIPromptAssemblyLowerer
+from aworld.models.reasoning_policy import (
+    AZURE_OPENAI_REASONING_CAPABILITY,
+    OPENAI_REASONING_CAPABILITY,
+    ReasoningTransportCapability,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -88,8 +93,193 @@ AZURE_OPENAI_CONTEXT_LOWERING = ProviderLoweringCapability(
 )
 
 
+_OPENAI_REASONING_ALIASES = ("thinking", "enable_thinking")
+
+
+def _reasoning_switch(value: Any) -> bool | None:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, Mapping):
+        mode = value.get("type")
+        if mode in {"enabled", "disabled"}:
+            return mode == "enabled"
+    return None
+
+
+def _reasoning_selection(params: Mapping[str, Any]) -> tuple[Any, bool | None]:
+    """Read one request's reasoning declaration without validating SDK values."""
+
+    extra_body = params.get("extra_body")
+    extra = extra_body if isinstance(extra_body, Mapping) else {}
+    nested_template = extra.get("chat_template_kwargs")
+    nested = nested_template if isinstance(nested_template, Mapping) else {}
+    top_template_value = params.get("chat_template_kwargs")
+    top_template = (
+        top_template_value if isinstance(top_template_value, Mapping) else {}
+    )
+
+    effort = params.get("reasoning_effort")
+    if effort is None:
+        for candidate in (
+            nested.get("reasoning_effort"),
+            extra.get("reasoning_effort"),
+            top_template.get("reasoning_effort"),
+        ):
+            if candidate is not None:
+                effort = candidate
+                break
+
+    thinking = None
+    for candidate in (
+        nested.get("thinking"),
+        nested.get("enable_thinking"),
+        params.get("thinking"),
+        params.get("enable_thinking"),
+        extra.get("thinking"),
+        extra.get("enable_thinking"),
+        top_template.get("thinking"),
+        top_template.get("enable_thinking"),
+    ):
+        thinking = _reasoning_switch(candidate)
+        if thinking is not None:
+            break
+
+    if effort is None and thinking is not None:
+        effort = "max" if thinking else "off"
+    if isinstance(effort, str) and effort.strip():
+        effort = effort.strip().lower()
+        # Canonical effort is authoritative at this final merge boundary.
+        thinking = effort not in {"none", "off"}
+    return effort, thinking
+
+
+def _reasoning_templates(
+    params: Mapping[str, Any] | None,
+) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+    if params is None:
+        return None, None
+    raw_top = params.get("chat_template_kwargs")
+    top = dict(raw_top) if isinstance(raw_top, Mapping) else None
+    raw_extra = params.get("extra_body")
+    raw_nested = (
+        raw_extra.get("chat_template_kwargs")
+        if isinstance(raw_extra, Mapping)
+        else None
+    )
+    nested = dict(raw_nested) if isinstance(raw_nested, Mapping) else None
+    return top, nested
+
+
+def _template_declares_reasoning(template: Mapping[str, Any] | None) -> bool:
+    return isinstance(template, Mapping) and any(
+        template.get(key) is not None
+        for key in ("reasoning_effort", "thinking", "enable_thinking")
+    )
+
+
+def _standard_openai_effort(effort: Any) -> Any:
+    if not isinstance(effort, str):
+        return effort
+    return {"max": "xhigh", "off": "none"}.get(effort.strip().lower(), effort)
+
+
+def _normalize_openai_reasoning_params(
+    params: Mapping[str, Any],
+    *,
+    preferred: Mapping[str, Any] | None = None,
+    allow_chat_template_reasoning: bool = True,
+) -> Dict[str, Any]:
+    """Canonicalize legacy reasoning aliases on a fresh OpenAI request mapping.
+
+    ``preferred`` is the per-call request before provider defaults are merged.
+    Its canonical selection wins over stale defaults, while nested containers
+    are copied only when this function changes them.  Arbitrary SDK-native
+    values outside the reviewed reasoning aliases remain untouched.
+    """
+
+    result = dict(params)
+    preferred_effort, preferred_thinking = (
+        _reasoning_selection(preferred) if preferred is not None else (None, None)
+    )
+    merged_effort, merged_thinking = _reasoning_selection(params)
+    effort = preferred_effort if preferred_effort is not None else merged_effort
+    thinking = (
+        preferred_thinking
+        if preferred_effort is not None
+        else merged_thinking
+    )
+
+    merged_top_template, merged_nested_template = _reasoning_templates(params)
+    preferred_top_template, preferred_nested_template = _reasoning_templates(
+        preferred
+    )
+    preferred_owns_reasoning = preferred_effort is not None
+    preferred_declares_template = (
+        preferred_top_template is not None or preferred_nested_template is not None
+    )
+    if preferred_owns_reasoning or preferred_declares_template:
+        top_template = preferred_top_template
+        nested_template = preferred_nested_template
+    else:
+        top_template = merged_top_template
+        nested_template = merged_nested_template
+    use_chat_template_reasoning = allow_chat_template_reasoning and (
+        _template_declares_reasoning(top_template)
+        or _template_declares_reasoning(nested_template)
+    )
+    if not use_chat_template_reasoning:
+        effort = _standard_openai_effort(effort)
+        if effort is not None:
+            thinking = effort != "none"
+
+    result.pop("chat_template_kwargs", None)
+    for alias in _OPENAI_REASONING_ALIASES:
+        result.pop(alias, None)
+
+    raw_extra_body = result.get("extra_body")
+    extra_body = dict(raw_extra_body) if isinstance(raw_extra_body, Mapping) else None
+    if extra_body is not None:
+        for alias in ("reasoning_effort", *_OPENAI_REASONING_ALIASES):
+            extra_body.pop(alias, None)
+        if preferred_owns_reasoning or preferred_declares_template:
+            extra_body.pop("chat_template_kwargs", None)
+
+    template = None
+    if top_template is not None or nested_template is not None:
+        template = {
+            **(top_template or {}),
+            **(nested_template or {}),
+        }
+        for alias in ("reasoning_effort", "thinking", "enable_thinking"):
+            template.pop(alias, None)
+        if use_chat_template_reasoning and effort is not None:
+            template["reasoning_effort"] = effort
+            if thinking is not None:
+                template["thinking"] = thinking
+        if template and extra_body is None and raw_extra_body is None:
+            extra_body = {}
+        if extra_body is not None:
+            if template:
+                extra_body["chat_template_kwargs"] = template
+            else:
+                extra_body.pop("chat_template_kwargs", None)
+
+    if effort is not None:
+        result["reasoning_effort"] = effort
+    if extra_body is not None:
+        result["extra_body"] = extra_body
+    return result
+
+
 class OpenAIProvider(LLMProviderBase):
     """OpenAI provider implementation."""
+
+    def _allows_chat_template_reasoning(self) -> bool:
+        capability = self.reasoning_transport_capability()
+        return (
+            capability is not None
+            and "openai_chat_template" in capability.supported_transports
+        )
 
     def _authoritative_max_retries(self, *, http_handler: bool) -> int:
         if os.getenv("AWORLD_SELF_EVOLVE_DISABLE_PROVIDER_RETRIES") == "1":
@@ -251,6 +441,11 @@ class OpenAIProvider(LLMProviderBase):
     ) -> ProviderLoweringCapability | None:
         return OPENAI_CONTEXT_LOWERING
 
+    def reasoning_transport_capability(
+        self,
+    ) -> ReasoningTransportCapability | None:
+        return OPENAI_REASONING_CAPABILITY
+
     def context_model_boundary_messages(
         self, messages: List[Dict[str, Any]]
     ) -> List[Dict[str, Any]]:
@@ -271,6 +466,11 @@ class OpenAIProvider(LLMProviderBase):
         request_kwargs = dict(kwargs) if stream else kwargs
         if stream:
             request_kwargs["stream"] = True
+        request_kwargs = _normalize_openai_reasoning_params(
+            request_kwargs,
+            preferred=request_kwargs,
+            allow_chat_template_reasoning=self._allows_chat_template_reasoning(),
+        )
         envelope = request_kwargs.pop(AWORLD_PROVIDER_CANDIDATE_KWARG, None)
         observed_envelope = request_kwargs.pop(
             AWORLD_PROVIDER_OBSERVED_ATTRIBUTION_KWARG, None
@@ -288,14 +488,18 @@ class OpenAIProvider(LLMProviderBase):
                 if capability != observed_envelope.expected_lowering:
                     raise ValueError("observed attribution adapter mismatch")
                 observed_payload = observed_envelope.observed_request.thaw()
+                observed_params = {
+                    "temperature": temperature,
+                    "max_tokens": max_tokens,
+                    "stop": stop,
+                }
+                reasoning_effort = request_kwargs.get("reasoning_effort")
+                if reasoning_effort is not None:
+                    observed_params["reasoning_effort"] = reasoning_effort
                 current_payload = {
                     "messages": messages,
                     "tools": request_kwargs.get("tools"),
-                    "params": {
-                        "temperature": temperature,
-                        "max_tokens": max_tokens,
-                        "stop": stop,
-                    },
+                    "params": observed_params,
                 }
                 if observed_payload != current_payload:
                     raise ValueError("observed request changed before provider")
@@ -320,11 +524,12 @@ class OpenAIProvider(LLMProviderBase):
                 if set(payload) != {"messages", "tools", "params"}:
                     raise ValueError("unsupported model-boundary projection")
                 params = payload["params"]
-                if not isinstance(params, dict) or set(params) != {
-                    "temperature",
-                    "max_tokens",
-                    "stop",
-                }:
+                required_params = {"temperature", "max_tokens", "stop"}
+                if (
+                    not isinstance(params, dict)
+                    or not required_params.issubset(params)
+                    or set(params) - required_params - {"reasoning_effort"}
+                ):
                     raise ValueError("unsupported candidate parameter projection")
                 if not isinstance(payload["messages"], list):
                     raise TypeError("candidate messages must be a list")
@@ -337,6 +542,10 @@ class OpenAIProvider(LLMProviderBase):
                 temperature = params["temperature"]
                 max_tokens = params["max_tokens"]
                 stop = params["stop"]
+                if "reasoning_effort" in params:
+                    request_kwargs["reasoning_effort"] = params[
+                        "reasoning_effort"
+                    ]
             except Exception:
                 raise CandidateRequestNotEnforceable(
                     "provider_candidate_schema_unsupported"
@@ -1368,6 +1577,13 @@ class OpenAIProvider(LLMProviderBase):
         llm_params = dict(self.kwargs.get("params", {}))
         llm_params.update(kwargs)
         llm_params.update(lowered_request_kwargs)
+        per_call_params = dict(kwargs)
+        per_call_params.update(lowered_request_kwargs)
+        llm_params = _normalize_openai_reasoning_params(
+            llm_params,
+            preferred=per_call_params,
+            allow_chat_template_reasoning=self._allows_chat_template_reasoning(),
+        )
         llm_params.pop("response_parse_args", None)
         llm_params.pop("context", None)
         llm_params.update(
@@ -1558,6 +1774,11 @@ class AzureOpenAIProvider(OpenAIProvider):
         self,
     ) -> ProviderLoweringCapability | None:
         return AZURE_OPENAI_CONTEXT_LOWERING
+
+    def reasoning_transport_capability(
+        self,
+    ) -> ReasoningTransportCapability | None:
+        return AZURE_OPENAI_REASONING_CAPABILITY
 
     def _azure_client_kwargs(self, *, async_client: bool) -> dict[str, Any]:
         api_key = self.api_key or os.getenv("AZURE_OPENAI_API_KEY", "")

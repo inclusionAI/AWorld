@@ -57,6 +57,12 @@ from aworld.models.model_response import ModelResponse
 from aworld.models.context_window import resolve_model_context_window
 from aworld.models.request_model import effective_request_model_name, effective_request_output_limits
 from aworld.models.usage import build_cache_usage_receipt
+from aworld.models.reasoning_policy import (
+    AWORLD_REASONING_SELECTION_KWARG,
+    OPENAI_REASONING_TRANSPORTS,
+    REASONING_EFFORTS,
+    request_reasoning_effort,
+)
 from aworld.core.context.base import Context
 from aworld.core.context.compiler import (
     AWORLD_PROVIDER_CANDIDATE_KWARG,
@@ -154,6 +160,21 @@ MODEL_NAMES = {
     "openai": ["gpt-4o", "gpt-4", "gpt-3.5-turbo", "o3-mini", "gpt-4o-mini"],
     "azure_openai": ["gpt-4", "gpt-4-turbo", "gpt-4o", "gpt-35-turbo"],
 }
+
+_MAX_LLM_DIAGNOSTIC_METRIC = 2_147_483_647
+_REASONING_SELECTION_RECEIPT_KEYS = (
+    "phase",
+    "source",
+    "reasoning_effort",
+    "thinking",
+    "policy_id",
+    "transport",
+    "applied",
+    "reason_code",
+)
+_REASONING_SELECTION_RECEIPT_KEY_SET = frozenset(
+    _REASONING_SELECTION_RECEIPT_KEYS
+)
 
 # Endpoint patterns for identifying providers
 ENDPOINT_PATTERNS = {
@@ -590,6 +611,8 @@ class LLMModel:
             "llm_client_type",
             "llm_response_parser",
             "context_compiler",
+            "reasoning_phase_policy",
+            "reasoning_transport",
             "max_tokens",
         ]
         args = {}
@@ -811,6 +834,79 @@ class LLMModel:
             return value
 
     @staticmethod
+    def _bounded_diagnostic_metric(value: Any) -> int:
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            return 0
+        return min(max(int(value), 0), _MAX_LLM_DIAGNOSTIC_METRIC)
+
+    @classmethod
+    def _new_stream_diagnostics(cls) -> dict[str, Any]:
+        return {
+            "reported": False,
+            "reason_code": "provider_stream_not_observed",
+            "chunk_count": 0,
+            "content_chars_observed": 0,
+            "reasoning_chars_observed": 0,
+            "tool_call_chunks": 0,
+            "tool_argument_chars_observed": 0,
+        }
+
+    @classmethod
+    def _observe_stream_chunk(
+        cls,
+        diagnostics: dict[str, Any],
+        chunk: ModelResponse,
+        *,
+        started_at: float,
+        observed_at: float,
+    ) -> None:
+        """Accumulate only bounded counts; never retain streamed text here."""
+        if diagnostics.get("reported") is not True:
+            diagnostics["reported"] = True
+            diagnostics.pop("reason_code", None)
+            diagnostics["first_chunk_latency_ms"] = cls._bounded_diagnostic_metric(
+                round(max(observed_at - started_at, 0.0) * 1000)
+            )
+        diagnostics["chunk_count"] = cls._bounded_diagnostic_metric(
+            diagnostics.get("chunk_count", 0) + 1
+        )
+        content = getattr(chunk, "content", None)
+        reasoning = getattr(chunk, "reasoning_content", None)
+        diagnostics["content_chars_observed"] = cls._bounded_diagnostic_metric(
+            diagnostics.get("content_chars_observed", 0)
+            + (len(content) if isinstance(content, str) else 0)
+        )
+        diagnostics["reasoning_chars_observed"] = cls._bounded_diagnostic_metric(
+            diagnostics.get("reasoning_chars_observed", 0)
+            + (len(reasoning) if isinstance(reasoning, str) else 0)
+        )
+        tool_calls = getattr(chunk, "tool_calls", None)
+        if isinstance(tool_calls, (list, tuple)) and tool_calls:
+            diagnostics["tool_call_chunks"] = cls._bounded_diagnostic_metric(
+                diagnostics.get("tool_call_chunks", 0) + 1
+            )
+            argument_chars = 0
+            for tool_call in tool_calls:
+                function = (
+                    tool_call.get("function")
+                    if isinstance(tool_call, dict)
+                    else getattr(tool_call, "function", None)
+                )
+                arguments = (
+                    function.get("arguments")
+                    if isinstance(function, dict)
+                    else getattr(function, "arguments", None)
+                )
+                if isinstance(arguments, str):
+                    argument_chars += len(arguments)
+            diagnostics["tool_argument_chars_observed"] = (
+                cls._bounded_diagnostic_metric(
+                    diagnostics.get("tool_argument_chars_observed", 0)
+                    + argument_chars
+                )
+            )
+
+    @staticmethod
     def _has_meaningful_value(value: Any) -> bool:
         if value is None or value == "" or value is False:
             return False
@@ -845,6 +941,53 @@ class LLMModel:
             cls._has_meaningful_value(value) and key != "role"
             for key, value in message.items()
         )
+
+    @classmethod
+    def _merge_stream_usage_mapping(
+        cls,
+        base: Any,
+        delta: Any,
+        *,
+        depth: int = 0,
+    ) -> dict[str, Any]:
+        """Merge a bounded non-cumulative provider usage delta."""
+
+        if not isinstance(base, dict):
+            base = {}
+        if not isinstance(delta, dict) or depth > 8:
+            return cls._safe_copy(base)
+        result: dict[str, Any] = {}
+        keys = tuple(dict.fromkeys((*base.keys(), *delta.keys())))[:128]
+        for key in keys:
+            base_value = base.get(key)
+            delta_value = delta.get(key)
+            if isinstance(base_value, dict) or isinstance(delta_value, dict):
+                result[key] = cls._merge_stream_usage_mapping(
+                    base_value,
+                    delta_value,
+                    depth=depth + 1,
+                )
+                continue
+            if (
+                isinstance(base_value, (int, float))
+                and not isinstance(base_value, bool)
+            ) or (
+                isinstance(delta_value, (int, float))
+                and not isinstance(delta_value, bool)
+            ):
+                total = 0
+                for value in (base_value, delta_value):
+                    if isinstance(value, (int, float)) and not isinstance(value, bool):
+                        try:
+                            total += max(int(value), 0)
+                        except (OverflowError, ValueError):
+                            continue
+                result[key] = min(total, _MAX_LLM_DIAGNOSTIC_METRIC)
+                continue
+            value = delta_value if delta_value is not None else base_value
+            if value is not None:
+                result[key] = cls._safe_copy(value)
+        return result
 
     @classmethod
     def _is_meaningful_stream_response(cls, response: Optional[ModelResponse]) -> bool:
@@ -898,10 +1041,30 @@ class LLMModel:
             if self._has_meaningful_value(value):
                 setattr(merged, attr, self._safe_copy(value))
 
-        if self._usage_has_meaningful_value(getattr(next_response, "usage", None)):
-            merged.usage = self._safe_copy(next_response.usage)
-        if self._usage_has_meaningful_value(getattr(next_response, "raw_usage", None)):
-            merged.raw_usage = self._safe_copy(next_response.raw_usage)
+        next_usage = getattr(next_response, "usage", None)
+        next_raw_usage = getattr(next_response, "raw_usage", None)
+        usage_is_cumulative = (
+            getattr(next_response, "usage_is_cumulative", False) is True
+        )
+        if self._usage_has_meaningful_value(next_usage):
+            merged.usage = (
+                self._safe_copy(next_usage)
+                if usage_is_cumulative
+                else self._merge_stream_usage_mapping(
+                    getattr(merged, "usage", None),
+                    next_usage,
+                )
+            )
+            merged.usage_is_cumulative = usage_is_cumulative
+        if self._usage_has_meaningful_value(next_raw_usage):
+            merged.raw_usage = (
+                self._safe_copy(next_raw_usage)
+                if usage_is_cumulative
+                else self._merge_stream_usage_mapping(
+                    getattr(merged, "raw_usage", None),
+                    next_raw_usage,
+                )
+            )
         if getattr(next_response, "usage_reported", False) is True:
             merged.usage_reported = True
         if message is not None:
@@ -929,6 +1092,157 @@ class LLMModel:
     def _resolve_request_model_name(self, **kwargs) -> Optional[str]:
         return kwargs.get("model_name") or getattr(self.provider, "model_name", None)
 
+    @staticmethod
+    def _request_reasoning_effort(
+        request_kwargs: dict[str, Any] | None,
+    ) -> str | None:
+        """Read conflict-checked effort without retaining the request body."""
+
+        return request_reasoning_effort(request_kwargs)
+
+    @classmethod
+    def _project_reasoning_selection_receipt(
+        cls,
+        receipt: Any,
+        *,
+        request_kwargs: dict[str, Any] | None,
+    ) -> dict[str, Any] | None:
+        """Project an untrusted selection sidecar into bounded telemetry.
+
+        The private kwarg is accepted by direct callers, so it is not an
+        authority merely because it reached this boundary.  Preserve only the
+        exact receipt schema and only when its applied selection agrees with
+        the effective request.  Invalid input collapses to one content-free
+        status and therefore cannot smuggle caller fields into the call ledger.
+        """
+
+        if receipt is None:
+            return None
+
+        invalid = {"status": "selection_receipt_invalid"}
+        if (
+            type(receipt) is not dict
+            or len(receipt) != len(_REASONING_SELECTION_RECEIPT_KEYS)
+            or any(type(key) is not str for key in receipt)
+            or frozenset(receipt) != _REASONING_SELECTION_RECEIPT_KEY_SET
+        ):
+            return invalid
+
+        phase = receipt["phase"]
+        source = receipt["source"]
+        reasoning_effort = receipt["reasoning_effort"]
+        thinking = receipt["thinking"]
+        policy_id = receipt["policy_id"]
+        transport = receipt["transport"]
+        applied = receipt["applied"]
+        reason_code = receipt["reason_code"]
+
+        if type(phase) is not str or phase not in {
+            "plan",
+            "execute",
+            "review",
+            "finalize",
+        }:
+            return invalid
+        if type(source) is not str or source not in {
+            "caller",
+            "phase_policy",
+            "unchanged",
+        }:
+            return invalid
+        if reasoning_effort is not None and (
+            type(reasoning_effort) is not str
+            or reasoning_effort not in REASONING_EFFORTS
+        ):
+            return invalid
+        if thinking is not None and type(thinking) is not bool:
+            return invalid
+        if policy_id is not None and (
+            type(policy_id) is not str
+            or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}", policy_id)
+            is None
+        ):
+            return invalid
+        if transport is not None and (
+            type(transport) is not str
+            or transport not in OPENAI_REASONING_TRANSPORTS
+        ):
+            return invalid
+        if type(applied) is not bool:
+            return invalid
+        if type(reason_code) is not str or reason_code not in {
+            "no_reasoning_selection",
+            "explicit_caller_pin",
+            "phase_policy_selected",
+            "unsupported_reasoning_transport",
+            "unsupported_reasoning_effort",
+            "incompatible_request_shape",
+        }:
+            return invalid
+
+        try:
+            request_effort = cls._request_reasoning_effort(request_kwargs)
+        except Exception:
+            return invalid
+        if reason_code == "no_reasoning_selection":
+            if (
+                applied
+                or source != "unchanged"
+                or reasoning_effort is not None
+                or thinking is not None
+                or policy_id is not None
+                or transport is not None
+                or request_effort is not None
+            ):
+                return invalid
+        elif reason_code in {"explicit_caller_pin", "phase_policy_selected"}:
+            if (
+                not applied
+                or reasoning_effort != request_effort
+                or request_effort not in REASONING_EFFORTS
+                or thinking is not (request_effort not in {"none", "off"})
+                or transport not in OPENAI_REASONING_TRANSPORTS
+            ):
+                return invalid
+            if source == "caller" and (
+                policy_id is not None or reason_code != "explicit_caller_pin"
+            ):
+                return invalid
+            if source == "phase_policy" and (
+                policy_id is None or reason_code != "phase_policy_selected"
+            ):
+                return invalid
+        else:
+            if (
+                applied
+                or source not in {"caller", "phase_policy"}
+                or reasoning_effort is None
+                or thinking is not (reasoning_effort not in {"none", "off"})
+            ):
+                return invalid
+            if source == "caller" and (
+                policy_id is not None or request_effort != reasoning_effort
+            ):
+                return invalid
+            if source == "phase_policy" and (
+                policy_id is None or request_effort is not None
+            ):
+                return invalid
+            if reason_code == "unsupported_reasoning_transport":
+                if transport is not None:
+                    return invalid
+            elif reason_code == "unsupported_reasoning_effort":
+                if (
+                    transport not in OPENAI_REASONING_TRANSPORTS
+                ):
+                    return invalid
+            elif reason_code == "incompatible_request_shape" and transport is not None:
+                return invalid
+
+        return {
+            key: receipt[key] for key in _REASONING_SELECTION_RECEIPT_KEYS
+        }
+
     def _model_boundary_request(
         self,
         *,
@@ -937,15 +1251,20 @@ class LLMModel:
         max_tokens: int,
         stop: List[str],
         tools: Any,
+        request_kwargs: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
+        params = {
+            "temperature": temperature,
+            "max_tokens": max_tokens,
+            "stop": self._safe_copy(stop),
+        }
+        reasoning_effort = self._request_reasoning_effort(request_kwargs)
+        if reasoning_effort is not None:
+            params["reasoning_effort"] = reasoning_effort
         return {
             "messages": self._safe_copy(messages),
             "tools": self._safe_copy(tools),
-            "params": {
-                "temperature": temperature,
-                "max_tokens": max_tokens,
-                "stop": self._safe_copy(stop),
-            },
+            "params": params,
         }
 
     async def _apply_before_llm_hooks(
@@ -1390,6 +1709,7 @@ class LLMModel:
         model_name: str | None,
         call_shape: ContextCallShape,
         request_kwargs: dict[str, Any] | None = None,
+        reasoning_selection: dict[str, Any] | None = None,
         defer_budget_failure: bool = False,
         recovery_receipts: list | None = None,
     ) -> tuple[
@@ -1438,6 +1758,7 @@ class LLMModel:
                         max_tokens=max_tokens,
                         stop=stop,
                         tools=tools,
+                        request_kwargs=request_kwargs,
                     ),
                     capture_stage=RequestCaptureStage.MODEL_BOUNDARY,
                     fidelity=ProviderRequestFidelity.MODEL_BOUNDARY,
@@ -1524,6 +1845,8 @@ class LLMModel:
                 model_name=model_name,
                 context_rollout=metadata,
                 provider_invoked=False,
+                request_kwargs=request_kwargs,
+                reasoning_selection=reasoning_selection,
             )
             self._finish_llm_call_record(
                 context=context,
@@ -1569,6 +1892,7 @@ class LLMModel:
                     max_tokens=max_tokens,
                     stop=stop,
                     tools=tools,
+                    request_kwargs=request_kwargs,
                 ),
                 capture_stage=RequestCaptureStage.MODEL_BOUNDARY,
                 fidelity=ProviderRequestFidelity.MODEL_BOUNDARY,
@@ -1607,7 +1931,9 @@ class LLMModel:
                         or getattr(self.provider, "model_name", None)
                         or "unknown-model"
                     ),
-                    reasoning_effort=None,
+                    reasoning_effort=self._request_reasoning_effort(
+                        request_kwargs
+                    ),
                     execution_mode=f"chat_completions.{call_shape.value}",
                     context_limit=context_limit,
                 ),
@@ -1931,6 +2257,8 @@ class LLMModel:
         model_name: str | None,
         context_rollout: dict[str, Any] | None = None,
         provider_invoked: bool = True,
+        request_kwargs: dict[str, Any] | None = None,
+        reasoning_selection: dict[str, Any] | None = None,
     ) -> None:
         if context is None:
             return
@@ -1951,6 +2279,7 @@ class LLMModel:
             max_tokens=max_tokens,
             stop=stop,
             tools=tools,
+            request_kwargs=request_kwargs,
         )
         observe_payload: dict[str, Any]
         observation = None
@@ -2004,6 +2333,21 @@ class LLMModel:
             "usage_normalized": {},
             "usage_raw": {},
             "usage_reported": False,
+            "diagnostics": {
+                "schema_version": "aworld.llm_call_diagnostics.v1",
+                "usage": {
+                    "reported": False,
+                    "reason_code": "provider_usage_unreported",
+                },
+                "timing": {
+                    "reported": False,
+                    "reason_code": "request_in_progress",
+                },
+                "stream": {
+                    "reported": False,
+                    "reason_code": "provider_stream_not_observed",
+                },
+            },
             "single_attempt_proven": bool(
                 getattr(self.provider, "authoritative_usage_single_attempt", False)
             ),
@@ -2011,6 +2355,12 @@ class LLMModel:
             "attempt": 1,
             "provider_invoked": bool(provider_invoked),
         }
+        reasoning_selection_receipt = self._project_reasoning_selection_receipt(
+            reasoning_selection,
+            request_kwargs=request_kwargs,
+        )
+        if reasoning_selection_receipt is not None:
+            llm_call["reasoning_selection"] = reasoning_selection_receipt
         try:
             turn_receipt = context.record_model_turn(request_id, messages)
             llm_call["turn_economics"] = turn_receipt.to_redacted_dict()
@@ -2143,6 +2493,7 @@ class LLMModel:
         finished_at: float,
         response: ModelResponse | None = None,
         error_code: str | None = None,
+        stream_diagnostics: dict[str, Any] | None = None,
     ) -> None:
         if context is None:
             return
@@ -2153,6 +2504,40 @@ class LLMModel:
             updated = dict(record)
             updated["status"] = status
             updated["finished_at"] = finished_at
+            diagnostics = {
+                "schema_version": "aworld.llm_call_diagnostics.v1",
+                "usage": {
+                    "reported": False,
+                    "reason_code": "provider_usage_unreported",
+                },
+                "timing": {
+                    "reported": False,
+                    "reason_code": "request_timing_unavailable",
+                },
+                "stream": (
+                    self._safe_copy(stream_diagnostics)
+                    if isinstance(stream_diagnostics, dict)
+                    else {
+                        "reported": False,
+                        "reason_code": "provider_stream_not_observed",
+                    }
+                ),
+            }
+            started_at = updated.get("started_at")
+            if (
+                isinstance(started_at, (int, float))
+                and not isinstance(started_at, bool)
+                and isinstance(finished_at, (int, float))
+                and not isinstance(finished_at, bool)
+                and finished_at >= started_at
+            ):
+                diagnostics["timing"] = {
+                    "reported": True,
+                    "source": "framework",
+                    "duration_ms": self._bounded_diagnostic_metric(
+                        round((finished_at - started_at) * 1000)
+                    ),
+                }
             if error_code is not None:
                 updated["error"] = {"code": error_code}
             else:
@@ -2178,6 +2563,33 @@ class LLMModel:
                 updated["usage_reported"] = (
                     getattr(response, "usage_reported", False) is True
                 )
+                if updated["usage_reported"]:
+                    usage_diagnostics: dict[str, Any] = {"reported": True}
+                    for target, aliases in (
+                        ("input_tokens", ("prompt_tokens", "input_tokens")),
+                        (
+                            "output_tokens",
+                            ("completion_tokens", "output_tokens"),
+                        ),
+                        ("total_tokens", ("total_tokens",)),
+                    ):
+                        value = next(
+                            (
+                                usage_normalized.get(alias)
+                                for alias in aliases
+                                if alias in usage_normalized
+                            ),
+                            None,
+                        )
+                        if (
+                            isinstance(value, int)
+                            and not isinstance(value, bool)
+                            and value >= 0
+                        ):
+                            usage_diagnostics[target] = min(
+                                value, _MAX_LLM_DIAGNOSTIC_METRIC
+                            )
+                    diagnostics["usage"] = usage_diagnostics
                 updated["cache_usage_receipt"] = build_cache_usage_receipt(
                     raw_usage=updated["usage_raw"],
                     normalized_usage=usage_normalized,
@@ -2193,6 +2605,7 @@ class LLMModel:
                             "status": "unavailable",
                             "reason_code": "tool_origin_record_failed",
                         }
+            updated["diagnostics"] = diagnostics
             context.replace_llm_call(
                 index, updated, event_type=f"model_request_{status}"
             )
@@ -2269,6 +2682,9 @@ class LLMModel:
         """
         if max_tokens is None:
             max_tokens = self._configured_max_tokens
+        reasoning_selection = kwargs.pop(
+            AWORLD_REASONING_SELECTION_KWARG, None
+        )
         # Call provider's acompletion method directly
         agent_call_id = _resolve_context_call_id(kwargs)
         start_ms = time.time()
@@ -2325,6 +2741,7 @@ class LLMModel:
                 model_name=kwargs.get("model_name") or kwargs.get("model"),
                 call_shape=ContextCallShape.ASYNC,
                 request_kwargs=kwargs,
+                reasoning_selection=reasoning_selection,
             )
         )
         self._begin_llm_call_record(
@@ -2342,6 +2759,8 @@ class LLMModel:
             provider_invoked=(
                 provider_candidate is None and observed_attribution is None
             ),
+            request_kwargs=kwargs,
+            reasoning_selection=reasoning_selection,
         )
         if provider_candidate is not None:
             kwargs[AWORLD_PROVIDER_CANDIDATE_KWARG] = provider_candidate
@@ -2519,6 +2938,9 @@ class LLMModel:
         """
         if max_tokens is None:
             max_tokens = self._configured_max_tokens
+        reasoning_selection = kwargs.pop(
+            AWORLD_REASONING_SELECTION_KWARG, None
+        )
         # Call provider's completion method directly
         agent_call_id = _resolve_context_call_id(kwargs)
         start_ms = time.time()
@@ -2574,6 +2996,7 @@ class LLMModel:
                 model_name=kwargs.get("model_name") or kwargs.get("model"),
                 call_shape=ContextCallShape.SYNC,
                 request_kwargs=kwargs,
+                reasoning_selection=reasoning_selection,
             )
         )
         self._begin_llm_call_record(
@@ -2591,6 +3014,8 @@ class LLMModel:
             provider_invoked=(
                 provider_candidate is None and observed_attribution is None
             ),
+            request_kwargs=kwargs,
+            reasoning_selection=reasoning_selection,
         )
         if provider_candidate is not None:
             kwargs[AWORLD_PROVIDER_CANDIDATE_KWARG] = provider_candidate
@@ -2720,6 +3145,9 @@ class LLMModel:
         """
         if max_tokens is None:
             max_tokens = self._configured_max_tokens
+        reasoning_selection = kwargs.pop(
+            AWORLD_REASONING_SELECTION_KWARG, None
+        )
         agent_call_id = _resolve_context_call_id(kwargs)
         start_ms = time.time()
         request_id = LLMModel._generate_llm_request_id()
@@ -2750,6 +3178,7 @@ class LLMModel:
 
         final_chunk = None
         record_chunk = None
+        stream_diagnostics = self._new_stream_diagnostics()
         terminal_status = "success"
         terminal_error = None
         messages = self._finalize_context_messages_for_rollout(
@@ -2779,6 +3208,7 @@ class LLMModel:
                 model_name=kwargs.get("model_name") or kwargs.get("model"),
                 call_shape=ContextCallShape.SYNC_STREAM,
                 request_kwargs=kwargs,
+                reasoning_selection=reasoning_selection,
             )
         )
         self._begin_llm_call_record(
@@ -2796,6 +3226,8 @@ class LLMModel:
             provider_invoked=(
                 provider_candidate is None and observed_attribution is None
             ),
+            request_kwargs=kwargs,
+            reasoning_selection=reasoning_selection,
         )
         if provider_candidate is not None:
             kwargs[AWORLD_PROVIDER_CANDIDATE_KWARG] = provider_candidate
@@ -2810,6 +3242,12 @@ class LLMModel:
                 context=context,
                 **kwargs,
             ):
+                self._observe_stream_chunk(
+                    stream_diagnostics,
+                    chunk,
+                    started_at=stream_started_at,
+                    observed_at=time.time(),
+                )
                 if chunk.is_tool_progress_only:
                     yield chunk
                     continue
@@ -2825,6 +3263,9 @@ class LLMModel:
                     chunk.tool_call_progress = tool_progress
                     chunk.usage_is_cumulative = cumulative_usage
                 log_params["time_cost"] = round(time.time() - start_ms, 3)
+                log_params["stream_chunk_index"] = stream_diagnostics[
+                    "chunk_count"
+                ]
                 log_llm_record(
                     "CHUNK",
                     self.provider.model_name,
@@ -2857,8 +3298,13 @@ class LLMModel:
                 terminal_error = "provider_stream_failed"
             raise
         finally:
-            persisted_chunk = self._capture_stream_response_record(
-                record_chunk, final_chunk
+            # Every yielded non-progress chunk was already folded into
+            # ``record_chunk``. Re-merging ``final_chunk`` here would double
+            # count a terminal delta-usage chunk.
+            persisted_chunk = (
+                record_chunk
+                if record_chunk is not None
+                else self._safe_copy(final_chunk)
             )
             self._finish_llm_call_record(
                 context=context,
@@ -2867,6 +3313,7 @@ class LLMModel:
                 response=persisted_chunk,
                 finished_at=time.time(),
                 error_code=terminal_error,
+                stream_diagnostics=stream_diagnostics,
             )
 
     async def astream_completion(
@@ -2895,6 +3342,9 @@ class LLMModel:
         """
         if max_tokens is None:
             max_tokens = self._configured_max_tokens
+        reasoning_selection = kwargs.pop(
+            AWORLD_REASONING_SELECTION_KWARG, None
+        )
         # Call provider's astream_completion method directly
         agent_call_id = _resolve_context_call_id(kwargs)
         start_ms = time.time()
@@ -2924,6 +3374,7 @@ class LLMModel:
                 logger.warning(f"BEFORE_LLM_CALL hook execution failed: {exc}")
         final_chunk = None
         record_chunk = None
+        stream_diagnostics = self._new_stream_diagnostics()
         terminal_status = "success"
         terminal_error = None
         messages = self._finalize_context_messages_for_rollout(
@@ -2953,6 +3404,7 @@ class LLMModel:
                 model_name=kwargs.get("model_name") or kwargs.get("model"),
                 call_shape=ContextCallShape.ASYNC_STREAM,
                 request_kwargs=kwargs,
+                reasoning_selection=reasoning_selection,
             )
         )
         self._begin_llm_call_record(
@@ -2970,6 +3422,8 @@ class LLMModel:
             provider_invoked=(
                 provider_candidate is None and observed_attribution is None
             ),
+            request_kwargs=kwargs,
+            reasoning_selection=reasoning_selection,
         )
         if provider_candidate is not None:
             kwargs[AWORLD_PROVIDER_CANDIDATE_KWARG] = provider_candidate
@@ -2985,6 +3439,12 @@ class LLMModel:
         )
         try:
             async for chunk in provider_stream:
+                self._observe_stream_chunk(
+                    stream_diagnostics,
+                    chunk,
+                    started_at=stream_started_at,
+                    observed_at=time.time(),
+                )
                 if chunk.is_tool_progress_only:
                     yield chunk
                     continue
@@ -2998,6 +3458,9 @@ class LLMModel:
                     chunk.tool_call_progress = tool_progress
                     chunk.usage_is_cumulative = cumulative_usage
                 log_params["time_cost"] = round(time.time() - start_ms, 3)
+                log_params["stream_chunk_index"] = stream_diagnostics[
+                    "chunk_count"
+                ]
                 log_llm_record(
                     "CHUNK",
                     self.provider.model_name,
@@ -3039,8 +3502,10 @@ class LLMModel:
                     f"Provider stream cleanup failed; error_type={type(exc).__name__}"
                 )
             finally:
-                persisted_chunk = self._capture_stream_response_record(
-                    record_chunk, final_chunk
+                persisted_chunk = (
+                    record_chunk
+                    if record_chunk is not None
+                    else self._safe_copy(final_chunk)
                 )
                 self._finish_llm_call_record(
                     context=context,
@@ -3049,6 +3514,7 @@ class LLMModel:
                     response=persisted_chunk,
                     finished_at=time.time(),
                     error_code=terminal_error,
+                    stream_diagnostics=stream_diagnostics,
                 )
 
     def speech_to_text(

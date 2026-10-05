@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from aworld.config.conf import ModelConfig
+from aworld.models.reasoning_policy import ReasoningPhasePolicy
 
 
 CONTEXT_WINDOW_ENV = "AWORLD_CONTEXT_WINDOW_TOKENS"
@@ -146,6 +147,10 @@ def _profile_from_env() -> dict[str, Any] | None:
         "temperature": os.environ.get("LLM_TEMPERATURE"),
         "max_model_len": resolve_context_window_env(),
         "context_compiler": resolve_context_compiler_env(),
+        "reasoning_phase_policy": os.environ.get(
+            "AWORLD_REASONING_PHASE_POLICY"
+        ),
+        "reasoning_transport": os.environ.get("AWORLD_REASONING_TRANSPORT"),
     }
 
 
@@ -215,6 +220,22 @@ def _model_config_from_profile(profile: Mapping[str, Any]) -> ModelConfig | None
     compiler = _profile_value(profile, "context_compiler")
     if isinstance(compiler, Mapping):
         kwargs["context_compiler"] = dict(compiler)
+    reasoning_phase_policy = _profile_value(
+        profile,
+        "reasoning_phase_policy",
+        "AWORLD_REASONING_PHASE_POLICY",
+    )
+    if reasoning_phase_policy is not None:
+        kwargs["reasoning_phase_policy"] = ReasoningPhasePolicy.from_value(
+            reasoning_phase_policy
+        )
+    reasoning_transport = _profile_value(
+        profile,
+        "reasoning_transport",
+        "AWORLD_REASONING_TRANSPORT",
+    )
+    if reasoning_transport is not None:
+        kwargs["reasoning_transport"] = str(reasoning_transport).strip().lower()
     return ModelConfig(**kwargs)
 
 

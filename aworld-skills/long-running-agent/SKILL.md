@@ -98,6 +98,37 @@ retired approaches, evidence references, and selected candidate id. Reading
 checkpoint guidance alone does not count as replanning; the structured update
 records your actual decision before ordinary Tools resume.
 
+At every execution decision, including the initial decision and every replan,
+choose one typed `delivery_intent`: `continue_exploration`, `produce_candidate`,
+`validate_candidate`, `submit_current`, or `submit_uncertain`. Use
+`submit_current` when the best current result is ready to return; use
+`submit_uncertain` only when a material unresolved gap must be disclosed. Give
+an evidence-linked `delivery_rationale`. Continued exploration remains your decision when one
+more discriminating observation is genuinely needed; say what that observation
+is and why it can change the decision. AWorld records whether the next observed
+Tool outcome aligns with the declared intent. It does not choose a command,
+equate unrelated workspace churn with a candidate, or decide task correctness.
+Delivery-debt and deadline-reserve checkpoints make this choice especially
+urgent, but do not change the schema or choose the intent for you.
+
+For `continue_exploration`, `produce_candidate`, or `validate_candidate`, set
+`next_action_tool` to the exact available Tool function name and set
+`next_action_arguments` to a JSON-encoded object string containing the exact
+arguments for that next call. Neither value may be null. For
+`submit_current` or `submit_uncertain`, both values must be null; either choice
+enters Tool-free finalization. Do not substitute a prose command,
+a native object, partial arguments, or placeholder JSON. AWorld removes its own
+control fields before execution, converts the declared Tool plus arguments to a
+SHA-256 signature, and persists only that fingerprint; the raw declared
+arguments are not retained in execution-protocol state or telemetry.
+
+Before the later Tool-free finalization reserve, AWorld may request this choice
+once while ordinary Tools remain available and report whether a public
+candidate is observed. Use that remaining window deliberately, but do not
+manufacture a candidate or unsafe mutation merely to satisfy the checkpoint.
+If the declared action cannot be carried out, revise the plan or submit the
+uncertainty accurately.
+
 Do not create a checkpoint after every tool call. Let AWorld record
 low-level events; keep the semantic checkpoint small enough to survive context
 pressure.

@@ -420,6 +420,48 @@ async def test_openai_observe_opaque_sdk_params_match_off_once_sync_and_async():
 
 
 @pytest.mark.asyncio
+async def test_openai_observe_canonicalizes_nested_reasoning_for_non_dsv4_sync_and_async():
+    provider, sync_calls, async_calls = _provider()
+    provider.model_name = "gpt-4.1-compatible"
+    model = _observe_model(provider)
+    nested_only = {
+        "extra_body": {
+            "chat_template_kwargs": {
+                "reasoning_effort": "low",
+                "thinking": True,
+                "tokenizer_option": "keep",
+            }
+        }
+    }
+    contexts = [
+        Context(task_id="observe-nested-reasoning-sync"),
+        Context(task_id="observe-nested-reasoning-async"),
+    ]
+
+    model.completion(
+        [{"role": "user", "content": "sync"}],
+        context=contexts[0],
+        **nested_only,
+    )
+    await model.acompletion(
+        [{"role": "user", "content": "async"}],
+        context=contexts[1],
+        **nested_only,
+    )
+
+    for sent, context in zip((sync_calls[0], async_calls[0]), contexts):
+        assert sent["reasoning_effort"] == "low"
+        assert sent["extra_body"]["chat_template_kwargs"] == {
+            "reasoning_effort": "low",
+            "thinking": True,
+            "tokenizer_option": "keep",
+        }
+        assert context.get_llm_calls()[0]["context_rollout"][
+            "provider_attribution"
+        ]["status"] == "available"
+
+
+@pytest.mark.asyncio
 async def test_openai_observe_stream_close_preserves_attempt_truth_sync_and_async():
     provider, sync_calls, async_calls = _provider()
     model = _observe_model(provider)
@@ -562,7 +604,12 @@ async def test_openai_enforce_lowers_same_candidate_once_across_all_paths():
         "tools": legacy_tools,
         "response_format": {"type": "json_object"},
         "tool_choice": "auto",
-        "reasoning_effort": "low",
+        "extra_body": {
+            "chat_template_kwargs": {
+                "reasoning_effort": "low",
+                "thinking": True,
+            }
+        },
     }
 
     await model.acompletion(legacy_messages, context=contexts[0], **common)
@@ -587,6 +634,10 @@ async def test_openai_enforce_lowers_same_candidate_once_across_all_paths():
         assert sent["response_format"] == {"type": "json_object"}
         assert sent["tool_choice"] == "auto"
         assert sent["reasoning_effort"] == "low"
+        assert sent["extra_body"]["chat_template_kwargs"] == {
+            "reasoning_effort": "low",
+            "thinking": True,
+        }
         assert all(not key.startswith("_aworld_") for key in sent)
         assert "context" not in sent
         assert "llm_request_id" not in sent
@@ -1102,7 +1153,7 @@ def test_entrypoint_label_state_and_stale_raw_provider_receipt_are_rejected():
     assert unavailable["reason_code"] == "entrypoint_provider_evidence_required"
 
 
-def test_provider_verified_parity_preserves_model_visible_provider_parameters():
+def test_provider_verified_parity_tracks_reasoning_in_semantic_profile():
     provider, _, _ = _provider()
     model = LLMModel(
         conf=ModelConfig(context_compiler={"mode": "enforce", "universal_final": True}),
@@ -1130,7 +1181,7 @@ def test_provider_verified_parity_preserves_model_visible_provider_parameters():
 
     assert (
         receipts[0].receipt.semantic_fingerprint
-        == receipts[1].receipt.semantic_fingerprint
+        != receipts[1].receipt.semantic_fingerprint
     )
     assert (
         receipts[0].receipt.provider_binding["provider_request_content_hash"]

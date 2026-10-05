@@ -44,6 +44,7 @@ class MultiTaskEvaluatorAgent(FreshAnswerOnlyCollaborator):
     """Evaluate a delegated public candidate and return advisory findings."""
 
     mcp_tool_action_allowlist = READ_ONLY_FILESYSTEM_ALLOWLIST
+    reasoning_phase_override = "review"
 
 
 def build_context_config(debug_mode: bool):

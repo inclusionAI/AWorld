@@ -11,9 +11,11 @@ from .acceptance import (
     fresh_acceptance_critic_messages,
 )
 from .models import (
+    action_signature,
     CompletionAssessment,
     ControllerAction,
     ControllerDecision,
+    DeliveryIntent,
     DecisionReason,
     EventKind,
     ExecutionHorizon,
@@ -22,6 +24,7 @@ from .models import (
     ExecutionProtocolState,
     ModelExecutionProfile,
     ModelPlanUpdate,
+    NextActionAlignment,
     PlanUpdateDecision,
     ProtocolEventRecord,
     ProtocolMode,
@@ -37,12 +40,14 @@ from .store import (
 )
 
 __all__ = [
+    "action_signature",
     "AcceptanceCriticDecision",
     "AcceptanceDecision",
     "AcceptanceProbeReceipt",
     "CompletionAssessment",
     "ControllerAction",
     "ControllerDecision",
+    "DeliveryIntent",
     "DecisionReason",
     "EXECUTION_PROTOCOL_POLICY_KEY",
     "EXECUTION_PROTOCOL_STATE_KEY",
@@ -54,6 +59,7 @@ __all__ = [
     "ExecutionProtocolStore",
     "ModelExecutionProfile",
     "ModelPlanUpdate",
+    "NextActionAlignment",
     "PlanUpdateDecision",
     "ProtocolEventRecord",
     "ProtocolMode",

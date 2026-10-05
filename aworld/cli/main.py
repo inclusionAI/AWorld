@@ -98,7 +98,7 @@ def parser():
     value.add_argument("--timeout", type=float, help="Total execution budget per run in seconds")
     value.add_argument("--request-timeout", type=float, default=60)
     value.add_argument("--max-retries", type=int, default=3, help="Retries per unresolved model request (0-10)")
-    value.add_argument("--reasoning-effort", choices=["none", "minimal", "low", "medium", "high", "xhigh"])
+    value.add_argument("--reasoning-effort", choices=["none", "minimal", "low", "medium", "high", "xhigh", "max"])
     value.add_argument("--context-window", type=int, help="Override profile/environment/model-registry context limit")
     value.add_argument("--max-output-tokens", type=int, help="Override profile output reserve and per-request cap")
     value.add_argument("--compaction-trigger-ratio", type=float, default=0.85,

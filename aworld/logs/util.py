@@ -4,6 +4,7 @@ import asyncio
 import inspect
 import json
 import os
+import re
 import sys
 import traceback
 from enum import Enum
@@ -292,6 +293,152 @@ _LLM_LOG_FORMATTER = (
 )
 llm_logger = AWorldLogger(tag='llm', name='AWorld', formatter=_LLM_LOG_FORMATTER)
 
+_SAFE_LLM_STATUS = re.compile(r"^[A-Za-z0-9_.:-]{1,64}$")
+
+
+def _llm_field(value: Any, name: str, default: Any = None) -> Any:
+    if isinstance(value, dict):
+        return value.get(name, default)
+    return getattr(value, name, default)
+
+
+def _text_size(value: Any) -> int:
+    return len(value) if isinstance(value, str) else 0
+
+
+def summarize_tool_calls_for_log(tool_calls: Any) -> Dict[str, int]:
+    """Return content-free counts without serializing cumulative arguments."""
+    if not isinstance(tool_calls, (list, tuple)):
+        return {"tool_call_count": 0, "tool_argument_chars": 0}
+    argument_chars = 0
+    count = 0
+    for tool_call in tool_calls:
+        if tool_call is None:
+            continue
+        count += 1
+        tool_call = _llm_field(tool_call, "data", tool_call)
+        function = _llm_field(tool_call, "function", {})
+        arguments = _llm_field(function, "arguments", "")
+        argument_chars += _text_size(arguments)
+    return {
+        "tool_call_count": count,
+        "tool_argument_chars": argument_chars,
+    }
+
+
+def summarize_llm_payload_for_log(data: Any) -> Dict[str, Any]:
+    """Project one chunk to constant-size, content-free INFO telemetry."""
+    tool_counts = summarize_tool_calls_for_log(
+        _llm_field(data, "tool_calls")
+    )
+    finish_reason = _llm_field(data, "finish_reason")
+    if not isinstance(finish_reason, str) or not _SAFE_LLM_STATUS.fullmatch(
+        finish_reason
+    ):
+        finish_reason = None
+    return {
+        "schema_version": "aworld.llm-stream-log.v1",
+        "content_chars": _text_size(_llm_field(data, "content")),
+        "reasoning_chars": _text_size(_llm_field(data, "reasoning_content")),
+        **tool_counts,
+        "usage_reported": _llm_field(data, "usage_reported", False) is True,
+        "finish_reason": finish_reason,
+        "provider_request_id_present": bool(
+            _llm_field(data, "provider_request_id")
+        ),
+    }
+
+
+def _nested_text_chars(value: Any, *, depth: int = 0) -> int:
+    if depth > 8:
+        return 0
+    if isinstance(value, str):
+        return len(value)
+    if isinstance(value, (list, tuple)):
+        return sum(
+            _nested_text_chars(item, depth=depth + 1)
+            for item in value[:32]
+        )
+    if isinstance(value, dict):
+        return sum(
+            _nested_text_chars(item, depth=depth + 1)
+            for item in list(value.values())[:32]
+        )
+    return 0
+
+
+def _input_log_summary(data: Any) -> Dict[str, Any]:
+    messages = data if isinstance(data, (list, tuple)) else ()
+    recent_messages = messages[-8:]
+    role_counts: Dict[str, int] = {}
+    tool_call_count = 0
+    for message in recent_messages:
+        if not isinstance(message, dict):
+            continue
+        role = message.get("role")
+        if isinstance(role, str) and _SAFE_LLM_STATUS.fullmatch(role):
+            role_counts[role] = role_counts.get(role, 0) + 1
+        tool_calls = message.get("tool_calls")
+        if isinstance(tool_calls, (list, tuple)):
+            tool_call_count += len(tool_calls)
+    return {
+        "schema_version": "aworld.llm-input-log.v1",
+        "message_count": len(messages),
+        "recent_message_count": len(recent_messages),
+        "recent_message_text_chars": _nested_text_chars(recent_messages),
+        "recent_role_counts": role_counts,
+        "recent_tool_call_count": tool_call_count,
+    }
+
+
+def _request_params_log_summary(data: Any) -> Dict[str, Any]:
+    params = data if isinstance(data, dict) else {}
+    tools = params.get("tools")
+    template = params.get("chat_template_kwargs")
+    if not isinstance(template, dict):
+        extra_body = params.get("extra_body")
+        template = (
+            extra_body.get("chat_template_kwargs")
+            if isinstance(extra_body, dict)
+            else None
+        )
+    effort = params.get("reasoning_effort")
+    if not isinstance(effort, str) and isinstance(template, dict):
+        effort = template.get("reasoning_effort")
+    if not isinstance(effort, str) or not _SAFE_LLM_STATUS.fullmatch(effort):
+        effort = None
+    thinking = template.get("thinking") if isinstance(template, dict) else None
+    return {
+        "schema_version": "aworld.llm-request-params-log.v1",
+        "parameter_keys": sorted(
+            key
+            for key in params
+            if isinstance(key, str) and _SAFE_LLM_STATUS.fullmatch(key)
+        )[:64],
+        "tool_count": len(tools) if isinstance(tools, (list, tuple)) else 0,
+        "sampled_tool_schema_text_chars": _nested_text_chars(
+            tools[:16] if isinstance(tools, (list, tuple)) else ()
+        ),
+        "reasoning_effort": effort,
+        "thinking": thinking if isinstance(thinking, bool) else None,
+        "stream": params.get("stream") is True,
+    }
+
+
+def summarize_llm_record_for_log(direction: str, data: Any) -> Dict[str, Any]:
+    normalized = str(direction).upper()
+    if normalized == "INPUT":
+        return _input_log_summary(data)
+    if normalized in {"OUTPUT", "CHUNK"}:
+        return summarize_llm_payload_for_log(data)
+    if normalized == "OPENAI_PARAMS":
+        return _request_params_log_summary(data)
+    return {
+        "schema_version": "aworld.llm-log-summary.v1",
+        "payload_type": type(data).__name__[:64],
+        "text_chars": _nested_text_chars(data),
+    }
+
 if os.getenv('AWORLD_LOG_ENDABLE_MONKEY', 'true') == 'true':
     monkey_logger(logger)
     monkey_logger(trace_logger)
@@ -349,46 +496,75 @@ def log_llm_record(
 
     meta_parts = []
     if enriched_params:
-        meta_parts = [f"{k}={v}" for k, v in enriched_params.items()]
+        meta_parts = [
+            f"{str(k)[:64]}={str(v)[:256]}"
+            for k, v in enriched_params.items()
+        ]
 
-    body = to_serializable(data)
-    if isinstance(body, dict):
-        usage_source = body.get("raw_usage") if isinstance(body.get("raw_usage"), dict) else body.get("usage")
-        if isinstance(usage_source, dict):
-            normalized_usage = normalize_usage(usage_source)
-            if any(normalized_usage.get(key, 0) for key in ("prompt_tokens", "completion_tokens", "total_tokens")):
+    is_stream_chunk = str(direction).upper() == "CHUNK"
+    if str(direction).upper() in {"CHUNK", "OUTPUT"}:
+        stream_usage = (
+            raw_usage
+            if isinstance(raw_usage, dict)
+            else _llm_field(data, "usage")
+        )
+        if isinstance(stream_usage, dict):
+            normalized_stream_usage = normalize_usage(stream_usage)
+            if any(
+                normalized_stream_usage.get(key, 0)
+                for key in ("prompt_tokens", "completion_tokens", "total_tokens")
+            ):
                 meta_parts.extend(
                     [
-                        f"prompt_tokens={normalized_usage.get('prompt_tokens', 0)}",
-                        f"completion_tokens={normalized_usage.get('completion_tokens', 0)}",
-                        f"total_tokens={normalized_usage.get('total_tokens', 0)}",
+                        f"prompt_tokens={normalized_stream_usage.get('prompt_tokens', 0)}",
+                        f"completion_tokens={normalized_stream_usage.get('completion_tokens', 0)}",
+                        f"total_tokens={normalized_stream_usage.get('total_tokens', 0)}",
                     ]
                 )
-            if normalized_usage.get("cache_hit_tokens", 0):
-                meta_parts.append(f"cache_hit_tokens={normalized_usage['cache_hit_tokens']}")
-            if normalized_usage.get("cache_write_tokens", 0):
-                meta_parts.append(f"cache_write_tokens={normalized_usage['cache_write_tokens']}")
-
-        provider_request_id = body.get("provider_request_id")
+            if normalized_stream_usage.get("cache_hit_tokens", 0):
+                meta_parts.append(
+                    f"cache_hit_tokens={normalized_stream_usage['cache_hit_tokens']}"
+                )
+            if normalized_stream_usage.get("cache_write_tokens", 0):
+                meta_parts.append(
+                    f"cache_write_tokens={normalized_stream_usage['cache_write_tokens']}"
+                )
+    body = summarize_llm_record_for_log(direction, data)
+    if isinstance(data, dict):
+        provider_request_id = data.get("provider_request_id")
         if provider_request_id:
-            meta_parts.append(f"provider_request_id={provider_request_id}")
+            meta_parts.append(f"provider_request_id={str(provider_request_id)[:256]}")
 
-        prompt_cache_key = body.get("prompt_cache_key")
+        prompt_cache_key = data.get("prompt_cache_key")
         if prompt_cache_key:
-            meta_parts.append(f"prompt_cache_key={prompt_cache_key}")
+            meta_parts.append("prompt_cache_key_present=true")
 
-        stream_options = body.get("stream_options")
+        stream_options = data.get("stream_options")
         if isinstance(stream_options, dict) and "include_usage" in stream_options:
             meta_parts.append(f"stream_include_usage={stream_options['include_usage']}")
 
     meta_str = ", ".join(meta_parts) if meta_parts else ""
 
-    llm_logger._logger.bind(
+    bound_logger = llm_logger._logger.bind(
         trace_id=resolved_trace_id,
         direction=direction,
         model_name=model_name,
         meta=meta_str,
-    ).info(json.dumps(body, ensure_ascii=False))
+    )
+    bound_logger.info(json.dumps(body, ensure_ascii=False))
+    raw_payload_opt_in = os.getenv(
+        "AWORLD_LLM_LOG_RAW_PAYLOADS", "false"
+    ).lower() in {"true", "1", "yes"} or (
+        is_stream_chunk
+        and os.getenv("AWORLD_LLM_LOG_RAW_CHUNKS", "false").lower()
+        in {"true", "1", "yes"}
+    )
+    if raw_payload_opt_in:
+        # Full payloads stay out of ordinary INFO logs. The explicit opt-in is
+        # DEBUG-only because it may contain prompts, reasoning, or Tool args.
+        bound_logger.debug(
+            json.dumps(to_serializable(data), ensure_ascii=False)
+        )
 
 
 # log examples:

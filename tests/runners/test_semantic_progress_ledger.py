@@ -1,9 +1,14 @@
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
+import json
+import os
 from threading import Event
 from types import SimpleNamespace
 
+import pytest
+
 import aworld.runners.post_tool_progress as post_tool_progress_module
+from aworld.agents.llm_agent import LlmOutputParser
 from aworld.core.common import ActionModel, ActionResult, Observation
 from aworld.core.context.amni import ApplicationContext
 from aworld.core.context.amni.state import (
@@ -22,10 +27,13 @@ from aworld.core.context.compiler import (
     SelfCheckEvidence,
 )
 from aworld.core.execution_protocol import (
+    action_signature,
     ControllerAction,
     ExecutionProtocolPolicy,
+    NextActionAlignment,
     ProtocolMode,
 )
+from aworld.models.model_response import Function, ModelResponse, ToolCall
 from aworld.runners.execution_protocol import (
     configure_execution_protocol,
     consume_execution_protocol_guidance,
@@ -33,6 +41,7 @@ from aworld.runners.execution_protocol import (
     record_model_plan_update,
 )
 from aworld.runners.post_tool_progress import (
+    capture_public_deliverable_baseline,
     record_semantic_tool_progress,
     semantic_progress_for_agent,
 )
@@ -70,9 +79,7 @@ def _application_context() -> ApplicationContext:
                 task_id="semantic-checkpoint",
                 content="complete the public task",
             ),
-            working_state=TaskWorkingState(
-                messages=[], user_profiles=[], kv_store={}
-            ),
+            working_state=TaskWorkingState(messages=[], user_profiles=[], kv_store={}),
             task_output=TaskOutput(),
         )
     )
@@ -87,6 +94,118 @@ def _application_context() -> ApplicationContext:
     return context
 
 
+def test_action_arguments_are_hashed_into_semantic_and_protocol_receipts():
+    context = Context(task_id="action-signature")
+    configure_execution_protocol(
+        context,
+        "agent",
+        ExecutionProtocolPolicy(mode=ProtocolMode.GUIDE),
+    )
+
+    state = _record_failure(context, 7)
+    arguments = {"command": "candidate-7 --retry"}
+    expected = tuple(
+        action_signature(identity, arguments)
+        for identity in ("terminal", "execute", "terminal__execute")
+    )
+
+    assert state["observed_action_signatures"] == expected
+    assert "candidate-7 --retry" not in json.dumps(state)
+    protocol_state = load_execution_protocol_state(context, "agent")
+    assert protocol_state.history[-1].observed_action_signatures == expected
+    assert "candidate-7 --retry" not in json.dumps(protocol_state.history[-1].to_dict())
+
+
+@pytest.mark.asyncio
+async def test_friendly_mcp_identity_survives_mapping_for_plan_alignment():
+    parser_agent = SimpleNamespace(
+        sandbox=SimpleNamespace(
+            mcpservers=SimpleNamespace(mcp_servers={"docker": object()})
+        ),
+        tool_mapping={"run_code": "docker__run_code"},
+        is_model_tool_call_allowed=lambda name: name == "run_code",
+    )
+    parsed = await LlmOutputParser().parse(
+        ModelResponse(
+            id="friendly-mcp-call",
+            model="offline",
+            content="",
+            tool_calls=[
+                ToolCall(
+                    id="call-friendly",
+                    function=Function(
+                        name="run_code",
+                        arguments='{"code":"true"}',
+                    ),
+                )
+            ],
+            finish_reason="tool_calls",
+            usage={"prompt_tokens": 1, "completion_tokens": 1},
+        ),
+        agent_id="agent",
+        agent=parser_agent,
+    )
+    action = parsed.actions[0]
+    assert action.tool_name == "mcp"
+    assert action.action_name == "docker__run_code"
+    assert action.model_visible_tool_name == "run_code"
+
+    context = Context(task_id="friendly-mcp-alignment")
+    configure_execution_protocol(
+        context,
+        "agent",
+        ExecutionProtocolPolicy(mode=ProtocolMode.GUIDE),
+    )
+    assert (
+        record_model_plan_update(
+            context,
+            "agent",
+            {
+                "decision": "continue",
+                "horizon": "long",
+                "milestone": "validate through the friendly MCP Tool",
+                "next_action": "run the exact code probe",
+                "next_action_tool": "run_code",
+                "next_action_arguments": '{"code":"true"}',
+                "verification_plan": "inspect the observed Tool result",
+                "completion_assessment": "in_progress",
+                "delivery_intent": "validate_candidate",
+                "delivery_rationale": "the candidate needs one exact probe",
+                "assumptions": [],
+                "retired_approaches": [],
+                "evidence_refs": [],
+                "selected_candidate_id": "candidate-1",
+            },
+        )
+        is not None
+    )
+
+    semantic = record_semantic_tool_progress(
+        context,
+        tool_name="mcp",
+        agent_id="agent",
+        actions=[action],
+        observation=Observation(
+            action_result=[
+                ActionResult(
+                    tool_call_id="call-friendly",
+                    content="probe completed",
+                    success=True,
+                )
+            ]
+        ),
+    )
+
+    assert "run_code" in semantic["observed_action_names"]
+    assert (
+        action_signature("run_code", {"code": "true"})
+        in semantic["observed_action_signatures"]
+    )
+    protocol_state = load_execution_protocol_state(context, "agent")
+    assert protocol_state.last_action_alignment is NextActionAlignment.UNOBSERVABLE
+    assert protocol_state.action_alignment_mismatch_count == 0
+
+
 def test_concurrent_semantic_and_adaptive_evidence_survives_checkpoint(
     monkeypatch,
 ):
@@ -96,9 +215,7 @@ def test_concurrent_semantic_and_adaptive_evidence_survives_checkpoint(
         transport_copy._event_manager = SimpleNamespace(context=context)
     first_derivation_entered = Event()
     release_first_derivation = Event()
-    original_record = (
-        post_tool_progress_module._record_semantic_tool_progress_locked
-    )
+    original_record = post_tool_progress_module._record_semantic_tool_progress_locked
 
     def delayed_record(*args, **kwargs):
         if not first_derivation_entered.is_set():
@@ -241,12 +358,19 @@ def test_public_deliverable_creation_is_one_durable_milestone(tmp_path):
     assert missing["goal_progress_observable"] is True
     assert missing["public_delivery_count"] == 0
     assert missing["public_delivery_advanced"] is False
+    assert missing["public_deliverable_declared"] is True
+    assert missing["missing_public_deliverable_count"] == 1
+    assert missing["candidate_present"] is False
+    assert missing["workspace_mutated"] is False
+    assert missing["new_information_observed"] is True
 
     output.write_text("{}")
     created = _record_failure(context, 1)
     assert created["completion_advanced"] is False
     assert created["public_delivery_count"] == 1
     assert created["public_delivery_advanced"] is True
+    assert created["candidate_present"] is True
+    assert created["candidate_advanced"] is True
     assert created["durable_milestone_advanced"] is True
     assert created["goal_progress"] is True
     assert context.completion_contract is None
@@ -254,6 +378,110 @@ def test_public_deliverable_creation_is_one_durable_milestone(tmp_path):
     repeated = _record_failure(context, 2)
     assert repeated["public_delivery_advanced"] is False
     assert repeated["durable_milestone_advanced"] is False
+
+
+def test_public_deliverable_baseline_distinguishes_existing_file_from_update(
+    tmp_path,
+):
+    output = tmp_path / "result.json"
+    output.write_text("{}")
+    context = Context(task_id="public-delivery-update")
+    context.context_info["public_deliverable_contract"] = {
+        "schema_version": "aworld.public-deliverables/v1",
+        "authority": "public_task_advisory",
+        "source": "public_task_text",
+        "artifacts": [
+            {
+                "deliverable_id": "public-output-1",
+                "path": str(output),
+                "display_path": "result.json",
+                "kind": "file",
+                "authority": "public_task_advisory",
+            }
+        ],
+    }
+    capture_public_deliverable_baseline(context)
+
+    unchanged = _record_failure(context, 0)
+    assert unchanged["candidate_present"] is True
+    assert unchanged["candidate_advanced"] is False
+    assert "terminal" in unchanged["observed_action_names"]
+    assert "terminal__execute" in unchanged["observed_action_names"]
+
+    before = output.stat()
+    os.utime(
+        output,
+        ns=(before.st_atime_ns, before.st_mtime_ns + 1_000_000),
+    )
+    metadata_only = _record_failure(context, 1)
+    assert metadata_only["candidate_advanced"] is False
+
+    output.write_text('{"candidate": true}')
+    updated = _record_failure(context, 2)
+    assert updated["candidate_present"] is True
+    assert updated["candidate_advanced"] is True
+
+    output.write_text("{}")
+    reverted = _record_failure(context, 3)
+    assert reverted["candidate_advanced"] is True
+    assert reverted["public_delivery_advanced"] is False
+    assert reverted["goal_progress"] is False
+
+
+def test_public_deliverable_hash_stops_when_file_grows_past_shared_budget(
+    tmp_path,
+):
+    output = tmp_path / "growing.bin"
+    output.write_bytes(b"seed")
+    stale_stat = output.stat()
+    with output.open("ab") as handle:
+        handle.write(b"x" * (8 * 1024 * 1024 + 1))
+
+    version, consumed = post_tool_progress_module._public_file_version(
+        str(output),
+        stale_stat,
+        hash_budget_bytes=8 * 1024 * 1024,
+    )
+
+    assert version == f"size-only:{output.stat().st_size}"
+    assert consumed == 0
+
+
+def test_public_deliverable_content_oscillation_is_not_repeated_goal_progress(
+    tmp_path,
+):
+    output = tmp_path / "candidate.txt"
+    context = Context(task_id="public-delivery-oscillation")
+    context.context_info["public_deliverable_contract"] = {
+        "schema_version": "aworld.public-deliverables/v1",
+        "authority": "public_task_advisory",
+        "source": "public_task_text",
+        "artifacts": [
+            {
+                "deliverable_id": "candidate",
+                "path": str(output),
+                "display_path": "candidate.txt",
+                "kind": "file",
+                "authority": "public_task_advisory",
+            }
+        ],
+    }
+    capture_public_deliverable_baseline(context)
+
+    output.write_text("A")
+    first_a = _record_failure(context, 0)
+    output.write_text("B")
+    first_b = _record_failure(context, 1)
+    output.write_text("A")
+    repeated_a = _record_failure(context, 2)
+
+    assert first_a["public_delivery_advanced"] is True
+    assert first_b["public_delivery_advanced"] is True
+    assert repeated_a["public_delivery_changed"] is True
+    assert repeated_a["candidate_advanced"] is True
+    assert repeated_a["public_delivery_advanced"] is False
+    assert repeated_a["durable_milestone_advanced"] is False
+    assert repeated_a["goal_progress"] is False
 
 
 def test_alternating_known_failure_signatures_do_not_reset_progress():
@@ -344,22 +572,31 @@ def test_two_ineffective_replans_stop_injecting_without_finalizing():
             next_index += 1
         guidance = consume_execution_protocol_guidance(context, "agent")
         assert guidance is not None and "checkpoint" in guidance
-        assert record_model_plan_update(
-            context,
-            "agent",
-            {
-                "decision": "replan",
-                "horizon": "long",
-                "milestone": "resolve the repeated failure",
-                "next_action": "try a materially different bounded probe",
-                "verification_plan": "compare the next observed failure signature",
-                "completion_assessment": "in_progress",
-                "assumptions": [],
-                "retired_approaches": ["repeat the same ineffective retry"],
-                "evidence_refs": [f"tool:call-{next_index - 1}"],
-                "selected_candidate_id": None,
-            },
-        ) is not None
+        assert (
+            record_model_plan_update(
+                context,
+                "agent",
+                {
+                    "decision": "replan",
+                    "horizon": "long",
+                    "milestone": "resolve the repeated failure",
+                    "next_action": "try a materially different bounded probe",
+                    "next_action_tool": "terminal__execute",
+                    "next_action_arguments": json.dumps(
+                        {"command": f"candidate-{next_index} --retry"}
+                    ),
+                    "verification_plan": "compare the next observed failure signature",
+                    "completion_assessment": "in_progress",
+                    "delivery_intent": "validate_candidate",
+                    "delivery_rationale": "the next probe tests the revised approach",
+                    "assumptions": [],
+                    "retired_approaches": ["repeat the same ineffective retry"],
+                    "evidence_refs": [f"tool:call-{next_index - 1}"],
+                    "selected_candidate_id": None,
+                },
+            )
+            is not None
+        )
 
     for _ in range(6):
         _record_failure(context, next_index)
@@ -425,22 +662,29 @@ def test_distinct_successful_investigations_offer_durable_evidence_checkpoint():
     assert "inspectable milestone evidence" in guidance
     assert "keeps all normal Tools available" in guidance
     assert consume_execution_protocol_guidance(context, "agent") is None
-    assert record_model_plan_update(
-        context,
-        "agent",
-        {
-            "decision": "continue",
-            "horizon": "long",
-            "milestone": "collect discriminating evidence",
-            "next_action": "inspect one new stage",
-            "verification_plan": "compare it with the milestone contract",
-            "completion_assessment": "in_progress",
-            "assumptions": ["the next stage is independently observable"],
-            "retired_approaches": [],
-            "evidence_refs": ["tool:call-5"],
-            "selected_candidate_id": None,
-        },
-    ) is not None
+    assert (
+        record_model_plan_update(
+            context,
+            "agent",
+            {
+                "decision": "continue",
+                "horizon": "long",
+                "milestone": "collect discriminating evidence",
+                "next_action": "inspect one new stage",
+                "next_action_tool": "terminal__execute",
+                "next_action_arguments": '{"command":"inspect-after-checkpoint"}',
+                "verification_plan": "compare it with the milestone contract",
+                "completion_assessment": "in_progress",
+                "delivery_intent": "continue_exploration",
+                "delivery_rationale": "one new stage can add discriminating evidence",
+                "assumptions": ["the next stage is independently observable"],
+                "retired_approaches": [],
+                "evidence_refs": ["tool:call-5"],
+                "selected_candidate_id": None,
+            },
+        )
+        is not None
+    )
     reset = record_semantic_tool_progress(
         context,
         tool_name="terminal",
@@ -525,6 +769,7 @@ def test_unverified_artifact_advance_does_not_reset_durable_stagnation():
     )
 
     assert advanced["artifact_advanced"] is True
+    assert advanced["workspace_mutated"] is True
     assert advanced["diagnostic_progress_observable"] is True
     assert advanced["durable_milestone_advanced"] is False
     assert advanced["goal_progress_observable"] is None
@@ -759,14 +1004,10 @@ def test_completion_regression_cannot_replay_an_old_high_water_milestone():
                 context,
                 tool_name="terminal",
                 agent_id="agent",
-                actions=[
-                    ActionModel(tool_name="terminal", action_name="execute")
-                ],
+                actions=[ActionModel(tool_name="terminal", action_name="execute")],
                 observation=Observation(
                     action_result=[
-                        ActionResult(
-                            content=f"check-a exit {exit_code}", success=True
-                        )
+                        ActionResult(content=f"check-a exit {exit_code}", success=True)
                     ]
                 ),
             )

@@ -274,6 +274,7 @@ def _summary_metrics(summary: dict[str, Any] | None) -> dict[str, Any]:
     last_successful_checkpoint = None
     fidelities: list[str] = []
     execution_protocol = None
+    llm_calls: list[dict[str, Any]] = []
 
     if isinstance(summary, dict):
         for index, result in enumerate(summary.get("results") or [], start=1):
@@ -308,6 +309,15 @@ def _summary_metrics(summary: dict[str, Any] | None) -> dict[str, Any]:
             )
             if projected is not None:
                 execution_protocol = projected
+            raw_llm_calls = result.get("llm_calls")
+            if isinstance(raw_llm_calls, list):
+                llm_calls.extend(
+                    call for call in raw_llm_calls if isinstance(call, dict)
+                )
+
+    from aworld_cli.executors.stats import build_llm_diagnostics_summary
+
+    llm_diagnostics = build_llm_diagnostics_summary(llm_calls)
 
     return {
         "llm_call_count": llm_call_count,
@@ -317,6 +327,9 @@ def _summary_metrics(summary: dict[str, Any] | None) -> dict[str, Any]:
         "last_successful_checkpoint": last_successful_checkpoint,
         "fidelities": fidelities,
         "execution_protocol": execution_protocol,
+        "llm_diagnostics": (
+            llm_diagnostics if llm_diagnostics.get("call_count") else None
+        ),
     }
 
 
@@ -361,6 +374,7 @@ class DirectRunOutcome(Mapping[str, Any]):
     last_successful_checkpoint: dict[str, Any] | None = None
     failure_record: dict[str, Any] | None = None
     execution_protocol: dict[str, Any] | None = None
+    llm_diagnostics: dict[str, Any] | None = None
 
     SCHEMA_VERSION = "aworld.run.outcome.v1"
 
@@ -424,6 +438,7 @@ class DirectRunOutcome(Mapping[str, Any]):
             tool_call_count=metrics["tool_call_count"],
             action_count=metrics["action_count"],
             execution_protocol=metrics["execution_protocol"],
+            llm_diagnostics=metrics["llm_diagnostics"],
             last_successful_checkpoint=metrics["last_successful_checkpoint"],
             failure_record=dict(failure_record) if failure_record is not None else None,
         )
@@ -456,6 +471,8 @@ class DirectRunOutcome(Mapping[str, Any]):
             payload["failure"] = failure
         if self.execution_protocol is not None:
             payload["execution_protocol"] = dict(self.execution_protocol)
+        if self.llm_diagnostics is not None:
+            payload["llm_diagnostics"] = dict(self.llm_diagnostics)
         if atif_export is not None:
             payload["atif_export"] = dict(atif_export)
         return payload

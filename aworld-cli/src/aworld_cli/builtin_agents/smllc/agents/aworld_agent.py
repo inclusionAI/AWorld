@@ -17,6 +17,11 @@ from aworld.core.tool.surface import (
     ToolSurfaceProfile,
 )
 from aworld.logs.util import logger
+from aworld.models.reasoning_policy import (
+    ReasoningPhasePolicy,
+    ReasoningPolicyError,
+    ReasoningProfile,
+)
 from aworld_cli.core.context_tool import CONTEXT_TOOL
 from aworld_cli.core.model_profiles import resolve_context_compiler_env, resolve_context_window_env
 from aworld_cli.core.builtin_skills import AWORLD_DEFAULT_SKILL_NAMES
@@ -76,6 +81,54 @@ _GENERATION_BUDGET_ENV_NAMES = (
     "AWORLD_GENERATION_PARTIAL_RESPONSE_CONTEXT_CHARS",
     "AWORLD_GENERATION_ACTION_REPAIR_ENABLED",
 )
+
+
+def resolve_aworld_reasoning_configuration() -> tuple[
+    ReasoningPhasePolicy | None, dict
+]:
+    """Resolve an opt-in phase policy and an authoritative caller pin."""
+
+    policy = ReasoningPhasePolicy.from_value(
+        os.environ.get("AWORLD_REASONING_PHASE_POLICY")
+    )
+    effort = os.environ.get("LLM_REASONING_EFFORT")
+    raw_thinking = os.environ.get("LLM_ENABLE_THINKING")
+    thinking = None
+    if raw_thinking is not None:
+        normalized = raw_thinking.strip().lower()
+        if normalized not in {
+            "1",
+            "0",
+            "true",
+            "false",
+            "yes",
+            "no",
+            "on",
+            "off",
+        }:
+            raise ReasoningPolicyError(
+                "LLM_ENABLE_THINKING must be a boolean value"
+            )
+        thinking = normalized in {"1", "true", "yes", "on"}
+    if effort is None and thinking is None:
+        return policy, {}
+
+    profile = ReasoningProfile(
+        reasoning_effort=effort,
+        thinking=thinking,
+    )
+    params = {"reasoning_effort": profile.reasoning_effort}
+    reasoning_transport = os.environ.get(
+        "AWORLD_REASONING_TRANSPORT", "auto"
+    ).strip().lower()
+    if reasoning_transport == "openai_chat_template":
+        params["extra_body"] = {
+            "chat_template_kwargs": {
+                "reasoning_effort": profile.reasoning_effort,
+                "thinking": profile.thinking,
+            }
+        }
+    return policy, params
 
 
 def _register_optional_cast_tools(
@@ -656,6 +709,9 @@ def build_aworld_agent(include_skills: Optional[str] = None):
         if prompt_budget_policy is not None
         else resolve_aworld_max_completion_tokens()
     )
+    reasoning_phase_policy, reasoning_params = (
+        resolve_aworld_reasoning_configuration()
+    )
 
     # Configure agent: provider/base_url use getenv defaults; model_name/api_key may be None (ModelConfig accepts Optional[str])
     agent_config = AgentConfig(
@@ -667,7 +723,14 @@ def build_aworld_agent(include_skills: Optional[str] = None):
             llm_temperature=float(os.environ.get("LLM_TEMPERATURE", "0.1")),
             max_model_len=resolve_context_window_env(),
             context_compiler=resolve_context_compiler_env(),
-            params={"max_completion_tokens": max_completion_tokens},
+            params={
+                "max_completion_tokens": max_completion_tokens,
+                **reasoning_params,
+            },
+            reasoning_phase_policy=reasoning_phase_policy,
+            reasoning_transport=os.environ.get(
+                "AWORLD_REASONING_TRANSPORT", "auto"
+            ),
             llm_stream_call=os.environ.get("STREAM", "0").lower() in ("1", "true", "yes")
         ),
         use_vision=True,

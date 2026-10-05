@@ -14,6 +14,7 @@ Config = Union[Dict[str, Any], ConfigDict, BaseModel]
 
 class ActionResult(BaseModel):
     """Result of executing an action by use tool."""
+
     is_done: bool = False
     success: bool = False
     content: Any = None
@@ -32,6 +33,7 @@ class Observation(BaseModel):
 
     It can be an agent(as a tool) in the swarm or a tool in the virtual environment.
     """
+
     # default is None, means the main virtual environment or swarm
     container_id: Optional[str] = None
     # Observer who obtains observation, default is None for compatible, means an agent name or a tool name
@@ -65,7 +67,9 @@ class ParamInfo(BaseModel):
     required: bool = False
     desc: str = None
     default_value: Any = None
-    items: Optional[Dict[str, Any]] = None  # For array type: e.g. {"type": "string"} for Gemini/OpenAI schema
+    items: Optional[Dict[str, Any]] = (
+        None  # For array type: e.g. {"type": "string"} for Gemini/OpenAI schema
+    )
 
 
 class ToolActionInfo(BaseModel):
@@ -77,6 +81,11 @@ class ToolActionInfo(BaseModel):
 
 class ActionModel(BaseModel):
     tool_name: Optional[str] = None
+    # Exact function identity exposed to the model before any friendly MCP
+    # name is mapped onto the framework's execution namespace. This bounded
+    # sidecar lets protocol receipts compare the same public identity without
+    # retaining raw arguments.
+    model_visible_tool_name: Optional[str] = None
     tool_call_id: Optional[str] = None
     # agent name
     agent_name: Optional[str] = None
@@ -84,7 +93,7 @@ class ActionModel(BaseModel):
     action_name: Optional[str] = None
     params: Optional[Dict[str, Any]] = {}
     policy_info: Optional[Any] = None
-    action_type: Literal["normal", "background"] = 'normal'
+    action_type: Literal["normal", "background"] = "normal"
 
 
 class TaskItem(BaseModel):
@@ -99,14 +108,17 @@ class TaskItem(BaseModel):
     params: Optional[Dict[str, Any]] = {}
     policy_info: Optional[Any] = None
 
+
 class CallbackItem(BaseModel):
     data: Any
     node_id: str = None
     actions: List[ActionModel] = []
 
+
 class CallbackActionType(str, Enum):
     BYPASS = "bypass"
     OVERRIDE = "override"
+
 
 class CallbackResult(BaseModel):
     success: bool = False
@@ -116,27 +128,39 @@ class CallbackResult(BaseModel):
 
 class StreamingMode(enum.Enum):
     # core: only core message including agent, tool, chunk, task, group
-    CORE = 'core'
+    CORE = "core"
     # chunk: only chunk message
-    CHUNK = 'chunk'
+    CHUNK = "chunk"
     # output: only output message
-    OUTPUT = 'output'
+    OUTPUT = "output"
     # chunk_output: chunk and output message
-    CHUNK_OUTPUT = 'chunk_output'
+    CHUNK_OUTPUT = "chunk_output"
     # all: all message
-    ALL = 'all'
+    ALL = "all"
 
 
 class TaskStatusValue:
     """Task status constants."""
-    INIT = 'init'
-    RUNNING = 'running'
-    SUCCESS = 'success'
-    FAILED = 'failed'
-    CANCELLED = 'cancelled'
-    INTERRUPTED = 'interrupted'
-    TIMEOUT = 'timeout'
-    INCOMPLETE = 'incomplete'
-    BUDGET_EXHAUSTED = 'budget_exhausted'
 
-TaskStatus = Literal['init', 'running', 'success', 'failed', 'cancelled', 'interrupted', 'timeout', 'incomplete', 'budget_exhausted']
+    INIT = "init"
+    RUNNING = "running"
+    SUCCESS = "success"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
+    INTERRUPTED = "interrupted"
+    TIMEOUT = "timeout"
+    INCOMPLETE = "incomplete"
+    BUDGET_EXHAUSTED = "budget_exhausted"
+
+
+TaskStatus = Literal[
+    "init",
+    "running",
+    "success",
+    "failed",
+    "cancelled",
+    "interrupted",
+    "timeout",
+    "incomplete",
+    "budget_exhausted",
+]

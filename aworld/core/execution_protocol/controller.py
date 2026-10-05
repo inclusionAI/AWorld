@@ -7,12 +7,14 @@ from dataclasses import replace
 from .models import (
     ControllerAction,
     ControllerDecision,
+    DeliveryIntent,
     DecisionReason,
     EventKind,
     ExecutionHorizon,
     ExecutionProtocolEvent,
     ExecutionProtocolPolicy,
     ExecutionProtocolState,
+    NextActionAlignment,
     PlanUpdateDecision,
     ProtocolMode,
     ProtocolPhase,
@@ -77,6 +79,107 @@ def _model_horizon(state: ExecutionProtocolState) -> ExecutionHorizon:
     return ExecutionHorizon.UNKNOWN
 
 
+def _next_action_alignment(
+    state: ExecutionProtocolState,
+    event: ExecutionProtocolEvent,
+) -> NextActionAlignment | None:
+    """Compare one observed outcome with the model's typed next-action intent.
+
+    Natural-language plan text is deliberately not parsed.  When AWorld has no
+    public observation capable of distinguishing a match, the receipt is
+    explicitly unobservable rather than guessed.
+    """
+
+    if not state.next_action_alignment_pending or state.model_plan_update is None:
+        return None
+    intent = state.model_plan_update.delivery_intent
+    if intent is DeliveryIntent.UNKNOWN:
+        return None
+    expected_tool = state.model_plan_update.next_action_tool
+    expected_signature = state.model_plan_update.next_action_signature
+    if intent is DeliveryIntent.SUBMIT_UNCERTAIN:
+        # Any Tool observation contradicts the model's declared terminal step.
+        return NextActionAlignment.MISMATCHED
+    if (
+        expected_tool is None
+        or expected_signature is None
+        or not event.observed_action_names
+        or not event.observed_action_signatures
+    ):
+        return NextActionAlignment.UNOBSERVABLE
+    if expected_tool not in event.observed_action_names:
+        return NextActionAlignment.MISMATCHED
+    if expected_signature not in event.observed_action_signatures:
+        return NextActionAlignment.MISMATCHED
+    if intent is DeliveryIntent.CONTINUE_EXPLORATION:
+        matched = event.new_information_observed
+    elif intent is DeliveryIntent.PRODUCE_CANDIDATE:
+        if event.candidate_present is None:
+            return NextActionAlignment.UNOBSERVABLE
+        matched = event.candidate_advanced
+    elif intent is DeliveryIntent.VALIDATE_CANDIDATE:
+        # An ordinary Tool result may be a valid model-authored check without
+        # carrying AWorld's optional public-probe receipt. Absence of that
+        # receipt is not evidence that validation failed.
+        if not event.validation_observed:
+            return NextActionAlignment.UNOBSERVABLE
+        matched = True
+    else:
+        return NextActionAlignment.UNOBSERVABLE
+    return NextActionAlignment.MATCHED if matched else NextActionAlignment.MISMATCHED
+
+
+def _checkpoint_transition(
+    state: ExecutionProtocolState,
+    policy: ExecutionProtocolPolicy,
+    *,
+    reason: DecisionReason,
+    candidate_present: bool | None = None,
+) -> ProtocolTransition:
+    if policy.max_replans is not None and state.replan_count >= policy.max_replans:
+        return ProtocolTransition(
+            state,
+            _decision(
+                ControllerAction.CONTINUE,
+                DecisionReason.REPLAN_LIMIT_REACHED,
+            ),
+        )
+    if reason is DecisionReason.DELIVERY_DEBT_DETECTED:
+        state = replace(
+            state,
+            delivery_checkpoint_count=state.delivery_checkpoint_count + 1,
+            last_delivery_debt_attempt_epoch=state.attempt_epoch,
+        )
+    elif reason is DecisionReason.CANDIDATE_DECISION_RESERVE:
+        state = replace(
+            state,
+            candidate_decision_count=state.candidate_decision_count + 1,
+        )
+    next_state = replace(
+        state,
+        replan_count=state.replan_count + 1,
+        replan_requested_count=(
+            state.replan_requested_count + 1
+            if policy.mode is ProtocolMode.GUIDE
+            else state.replan_requested_count
+        ),
+        decision_checkpoint_pending=policy.mode is ProtocolMode.GUIDE,
+        decision_checkpoint_reason=(
+            reason if policy.mode is ProtocolMode.GUIDE else None
+        ),
+        decision_checkpoint_candidate_present=(
+            candidate_present if policy.mode is ProtocolMode.GUIDE else None
+        ),
+        last_replan_attempt_epoch=state.attempt_epoch,
+    )
+    action = _observed_action(
+        policy.mode,
+        guide=ControllerAction.REQUEST_REPLAN,
+        observe=ControllerAction.WOULD_REQUEST_REPLAN,
+    )
+    return ProtocolTransition(next_state, _decision(action, reason))
+
+
 def transition_execution_protocol(
     state: ExecutionProtocolState,
     event: ExecutionProtocolEvent,
@@ -118,9 +221,7 @@ def transition_execution_protocol(
         # declaration arms the protocol directly; confidence, milestone, and
         # action estimates remain telemetry rather than a second framework
         # decision that can silently override the model.
-        credible_long = (
-            profile is not None and profile.horizon is ExecutionHorizon.LONG
-        )
+        credible_long = profile is not None and profile.horizon is ExecutionHorizon.LONG
         if credible_long:
             next_state = replace(next_state, long_horizon_armed=True)
             reason = DecisionReason.MODEL_LONG_HORIZON
@@ -143,16 +244,46 @@ def transition_execution_protocol(
             )
         update = event.model_plan_update
         requested_replan_pending = state.decision_checkpoint_pending
+        candidate_decision_acknowledged = (
+            state.decision_checkpoint_reason
+            is DecisionReason.CANDIDATE_DECISION_RESERVE
+        )
+        terminal_intent = bool(
+            update is not None
+            and update.delivery_intent
+            in {
+                DeliveryIntent.SUBMIT_CURRENT,
+                DeliveryIntent.SUBMIT_UNCERTAIN,
+            }
+        )
+        alignment_pending = bool(
+            update is not None
+            and update.delivery_intent is not DeliveryIntent.UNKNOWN
+            and not terminal_intent
+        )
         next_state = replace(
             next_state,
             model_plan_update=update,
             long_horizon_armed=(
                 update is not None and update.horizon is ExecutionHorizon.LONG
             ),
-            phase=ProtocolPhase.EXECUTE,
+            phase=(
+                ProtocolPhase.FINALIZE if terminal_intent else ProtocolPhase.EXECUTE
+            ),
+            finalization_entered=(next_state.finalization_entered or terminal_intent),
             attempt_epoch=next_state.attempt_epoch + 1,
             stagnant_observations=0,
             decision_checkpoint_pending=False,
+            decision_checkpoint_reason=None,
+            decision_checkpoint_candidate_present=None,
+            candidate_decision_recorded=(
+                next_state.candidate_decision_recorded
+                or candidate_decision_acknowledged
+            ),
+            next_action_alignment_pending=alignment_pending,
+            pending_next_action_plan_sequence=(
+                next_state.event_count if alignment_pending else None
+            ),
             replan_applied_count=(
                 next_state.replan_applied_count + 1
                 if update is not None
@@ -173,20 +304,67 @@ def transition_execution_protocol(
             _decision(ControllerAction.CONTINUE, reason),
         )
 
-    if event.kind is EventKind.TOOL_OBSERVATION:
-        if _is_progress(event):
-            next_state = replace(next_state, stagnant_observations=0)
-            reason = DecisionReason.PROGRESS_OBSERVED
-        elif _has_stagnation_signal(event, policy):
-            next_state = replace(
-                next_state,
-                stagnant_observations=next_state.stagnant_observations + 1,
-            )
+    if event.kind in {EventKind.TOOL_OBSERVATION, EventKind.DELIVERY_STATUS}:
+        if event.kind is EventKind.DELIVERY_STATUS:
             reason = DecisionReason.OBSERVATION_RECORDED
         else:
-            reason = DecisionReason.OBSERVATION_RECORDED
+            candidate_missing = bool(
+                event.public_deliverable_declared and event.candidate_present is False
+            )
+            next_state = replace(
+                next_state,
+                delivery_debt_observations=(
+                    next_state.delivery_debt_observations + 1
+                    if candidate_missing
+                    else 0
+                ),
+                workspace_mutation_absent_observations=(
+                    next_state.workspace_mutation_absent_observations + 1
+                    if candidate_missing and not event.workspace_mutated
+                    else 0
+                ),
+            )
 
-        stagnant = _is_stagnant(next_state, event, policy)
+            alignment = _next_action_alignment(state, event)
+            if alignment is not None:
+                next_state = replace(
+                    next_state,
+                    next_action_alignment_pending=False,
+                    pending_next_action_plan_sequence=None,
+                    last_action_alignment=alignment,
+                    last_action_alignment_plan_sequence=(
+                        state.pending_next_action_plan_sequence
+                    ),
+                    last_action_alignment_observation_sequence=(next_state.event_count),
+                    action_alignment_match_count=(
+                        next_state.action_alignment_match_count + 1
+                        if alignment is NextActionAlignment.MATCHED
+                        else next_state.action_alignment_match_count
+                    ),
+                    action_alignment_mismatch_count=(
+                        next_state.action_alignment_mismatch_count + 1
+                        if alignment is NextActionAlignment.MISMATCHED
+                        else next_state.action_alignment_mismatch_count
+                    ),
+                )
+
+            if _is_progress(event):
+                next_state = replace(next_state, stagnant_observations=0)
+                reason = DecisionReason.PROGRESS_OBSERVED
+            elif _has_stagnation_signal(event, policy):
+                next_state = replace(
+                    next_state,
+                    stagnant_observations=next_state.stagnant_observations + 1,
+                )
+                reason = DecisionReason.OBSERVATION_RECORDED
+            else:
+                reason = DecisionReason.OBSERVATION_RECORDED
+
+        stagnant = (
+            _is_stagnant(next_state, event, policy)
+            if event.kind is EventKind.TOOL_OBSERVATION
+            else False
+        )
         reserve_reached = (
             event.remaining_seconds is not None
             and event.remaining_seconds <= policy.finalization_reserve_seconds
@@ -208,6 +386,75 @@ def transition_execution_protocol(
                 _decision(action, DecisionReason.FINALIZATION_RESERVE),
             )
 
+        model_long = next_state.long_horizon_armed
+        candidate_decision_due = bool(
+            model_long
+            and next_state.candidate_decision_count == 0
+            and not next_state.decision_checkpoint_pending
+            and not next_state.next_action_alignment_pending
+            and event.remaining_seconds is not None
+            and event.remaining_seconds <= policy.candidate_decision_reserve_seconds
+            and event.remaining_seconds > policy.finalization_reserve_seconds
+        )
+        if candidate_decision_due:
+            return _checkpoint_transition(
+                next_state,
+                policy,
+                reason=DecisionReason.CANDIDATE_DECISION_RESERVE,
+                candidate_present=event.candidate_present,
+            )
+
+        if event.kind is EventKind.DELIVERY_STATUS:
+            return ProtocolTransition(
+                next_state,
+                _decision(ControllerAction.CONTINUE, reason),
+            )
+
+        alignment_mismatched = (
+            next_state.last_action_alignment is NextActionAlignment.MISMATCHED
+            and next_state.last_action_alignment_observation_sequence
+            == next_state.event_count
+        )
+        if (
+            alignment_mismatched
+            and model_long
+            and not next_state.decision_checkpoint_pending
+        ):
+            return _checkpoint_transition(
+                next_state,
+                policy,
+                reason=DecisionReason.NEXT_ACTION_MISMATCH,
+                candidate_present=event.candidate_present,
+            )
+
+        delivery_debt = bool(
+            model_long
+            and not (
+                next_state.last_action_alignment is NextActionAlignment.MATCHED
+                and next_state.last_action_alignment_observation_sequence
+                == next_state.event_count
+            )
+            and event.public_deliverable_declared
+            and event.candidate_present is False
+            and (
+                next_state.delivery_debt_observations
+                >= policy.delivery_debt_observation_threshold
+                or next_state.workspace_mutation_absent_observations
+                >= policy.delivery_debt_observation_threshold
+            )
+        )
+        if (
+            delivery_debt
+            and not next_state.decision_checkpoint_pending
+            and next_state.last_delivery_debt_attempt_epoch != next_state.attempt_epoch
+        ):
+            return _checkpoint_transition(
+                next_state,
+                policy,
+                reason=DecisionReason.DELIVERY_DEBT_DETECTED,
+                candidate_present=False,
+            )
+
         if stagnant:
             if (
                 policy.max_replans is not None
@@ -227,25 +474,11 @@ def transition_execution_protocol(
                     ),
                 )
             if next_state.last_replan_attempt_epoch != next_state.attempt_epoch:
-                next_state = replace(
+                return _checkpoint_transition(
                     next_state,
-                    replan_count=next_state.replan_count + 1,
-                    replan_requested_count=(
-                        next_state.replan_requested_count + 1
-                        if policy.mode is ProtocolMode.GUIDE
-                        else next_state.replan_requested_count
-                    ),
-                    decision_checkpoint_pending=policy.mode is ProtocolMode.GUIDE,
-                    last_replan_attempt_epoch=next_state.attempt_epoch,
-                )
-                action = _observed_action(
-                    policy.mode,
-                    guide=ControllerAction.REQUEST_REPLAN,
-                    observe=ControllerAction.WOULD_REQUEST_REPLAN,
-                )
-                return ProtocolTransition(
-                    next_state,
-                    _decision(action, DecisionReason.STAGNATION_DETECTED),
+                    policy,
+                    reason=DecisionReason.STAGNATION_DETECTED,
+                    candidate_present=event.candidate_present,
                 )
         return ProtocolTransition(
             next_state,
@@ -259,6 +492,8 @@ def transition_execution_protocol(
             attempt_epoch=next_state.attempt_epoch + 1,
             stagnant_observations=0,
             decision_checkpoint_pending=False,
+            decision_checkpoint_reason=None,
+            decision_checkpoint_candidate_present=None,
             replan_applied_count=(
                 next_state.replan_applied_count + 1
                 if state.decision_checkpoint_pending
@@ -276,6 +511,8 @@ def transition_execution_protocol(
             phase=ProtocolPhase.EXECUTE,
             stagnant_observations=0,
             decision_checkpoint_pending=False,
+            decision_checkpoint_reason=None,
+            decision_checkpoint_candidate_present=None,
             last_replan_attempt_epoch=None,
         )
         return ProtocolTransition(

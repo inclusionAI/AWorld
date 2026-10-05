@@ -135,6 +135,7 @@ only-include = [
     "aworld/models/openai_tokenizer.py",
     "aworld/models/prompt_cache.py",
     "aworld/models/qwen_tokenizer.py",
+    "aworld/models/reasoning_policy.py",
     "aworld/models/usage.py",
     "aworld/models/utils.py",
     "aworld/trace/__init__.py",

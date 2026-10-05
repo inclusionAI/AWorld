@@ -59,6 +59,23 @@ def test_resolve_model_profile_accepts_env_style_aliases(monkeypatch: pytest.Mon
     assert config.llm_temperature == 0.0
 
 
+def test_resolve_model_profile_accepts_explicit_reasoning_transport() -> None:
+    config = resolve_model_profile(
+        "reasoning-model",
+        config_dict={
+            "models": {
+                "reasoning-model": {
+                    "provider": "openai",
+                    "model": "gpt-compatible",
+                    "reasoning_transport": "openai_chat_template",
+                }
+            }
+        },
+    )
+
+    assert config.reasoning_transport == "openai_chat_template"
+
+
 def test_resolve_model_profile_accepts_key_and_token_aliases() -> None:
     key_config = resolve_model_profile(
         "judge",

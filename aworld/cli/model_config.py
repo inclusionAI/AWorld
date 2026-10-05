@@ -126,7 +126,7 @@ def resolve_model_settings(args, *, environ=None, home=None):
             value = parameters[name]
             if isinstance(value, bool) or not isinstance(value, (int, float)) or not lower <= value <= upper:
                 raise ValueError(f"model profile {name} is outside its supported range")
-    if "reasoning_effort" in parameters and parameters["reasoning_effort"] not in ("none", "minimal", "low", "medium", "high", "xhigh"):
+    if "reasoning_effort" in parameters and parameters["reasoning_effort"] not in ("none", "minimal", "low", "medium", "high", "xhigh", "max"):
         raise ValueError("Unsupported model profile reasoning_effort")
     return ModelSettings(model, base_url, key, context_window, max_output, window_source, output_source,
                          profile_name, parameters)

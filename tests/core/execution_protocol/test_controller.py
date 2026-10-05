@@ -1,9 +1,12 @@
 from dataclasses import replace
+import json
 
 import pytest
 
 from aworld.core.execution_protocol import (
+    action_signature,
     ControllerAction,
+    DeliveryIntent,
     DecisionReason,
     EventKind,
     ExecutionHorizon,
@@ -12,6 +15,7 @@ from aworld.core.execution_protocol import (
     ExecutionProtocolState,
     ModelExecutionProfile,
     ModelPlanUpdate,
+    NextActionAlignment,
     ProtocolPhase,
     ProtocolScope,
     ReviewOutcome,
@@ -26,7 +30,28 @@ def _state():
     )
 
 
-def _tool(**kwargs):
+def _tool(
+    *,
+    action_tool: str = "terminal__execute",
+    action_arguments: dict | None = None,
+    **kwargs,
+):
+    if action_arguments is None:
+        action_arguments = {"command": "build-candidate"}
+    kwargs.setdefault(
+        "observed_action_names",
+        ("terminal", "execute", "terminal__execute"),
+    )
+    if kwargs["observed_action_names"] == ("terminal",):
+        kwargs["observed_action_names"] = (
+            "terminal",
+            "execute",
+            "terminal__execute",
+        )
+    kwargs.setdefault(
+        "observed_action_signatures",
+        (action_signature(action_tool, action_arguments),),
+    )
     return ExecutionProtocolEvent(kind=EventKind.TOOL_OBSERVATION, **kwargs)
 
 
@@ -51,6 +76,606 @@ def _profile(
             verification_required=True,
         ),
     )
+
+
+def _plan_update(
+    *,
+    intent: str,
+    decision: str = "continue",
+    horizon: str = "long",
+    tool: str | None = "terminal__execute",
+    arguments: dict | None = None,
+):
+    if arguments is None and intent not in {"submit_current", "submit_uncertain"}:
+        arguments = {"command": "build-candidate"}
+    return ModelPlanUpdate.from_mapping(
+        {
+            "decision": decision,
+            "horizon": horizon,
+            "milestone": "produce and check a candidate",
+            "next_action": "take one bounded action consistent with the declared intent",
+            "next_action_tool": tool,
+            "next_action_arguments": (
+                json.dumps(arguments, sort_keys=True) if arguments is not None else None
+            ),
+            "verification_plan": "inspect fresh public evidence",
+            "completion_assessment": "in_progress",
+            "delivery_intent": intent,
+            "delivery_rationale": "chosen from current public evidence",
+            "assumptions": [],
+            "retired_approaches": [],
+            "evidence_refs": ["tool:call-1"],
+            "selected_candidate_id": None,
+        }
+    )
+
+
+def test_missing_candidate_without_mutation_requests_model_owned_delivery_decision():
+    policy = ExecutionProtocolPolicy(
+        mode="guide",
+        delivery_debt_observation_threshold=2,
+        repetition_threshold=99,
+        low_information_gain_threshold=99,
+        no_goal_progress_threshold=99,
+    )
+    first = transition_execution_protocol(
+        _armed_state(),
+        _tool(
+            public_deliverable_declared=True,
+            candidate_present=False,
+            workspace_mutated=False,
+            new_information_observed=True,
+            observed_action_names=("terminal",),
+        ),
+        policy,
+    )
+    second = transition_execution_protocol(
+        first.state,
+        _tool(
+            public_deliverable_declared=True,
+            candidate_present=False,
+            workspace_mutated=False,
+            new_information_observed=True,
+            observed_action_names=("terminal",),
+        ),
+        policy,
+    )
+
+    assert first.decision.action is ControllerAction.CONTINUE
+    assert first.state.delivery_debt_observations == 1
+    assert second.decision.action is ControllerAction.REQUEST_REPLAN
+    assert second.decision.reason is DecisionReason.DELIVERY_DEBT_DETECTED
+    assert second.state.delivery_debt_observations == 2
+    assert second.state.delivery_checkpoint_count == 1
+    assert second.state.decision_checkpoint_pending is True
+    assert (
+        second.state.decision_checkpoint_reason is DecisionReason.DELIVERY_DEBT_DETECTED
+    )
+
+
+def test_delivery_debt_allows_explicit_exploration_deferral_and_tracks_alignment():
+    policy = ExecutionProtocolPolicy(
+        mode="guide",
+        delivery_debt_observation_threshold=1,
+        repetition_threshold=99,
+        low_information_gain_threshold=99,
+        no_goal_progress_threshold=99,
+    )
+    requested = transition_execution_protocol(
+        _armed_state(),
+        _tool(
+            public_deliverable_declared=True,
+            candidate_present=False,
+            workspace_mutated=False,
+        ),
+        policy,
+    )
+    deferred = transition_execution_protocol(
+        requested.state,
+        ExecutionProtocolEvent(
+            kind=EventKind.MODEL_PLAN_UPDATE,
+            model_plan_update=_plan_update(intent="continue_exploration"),
+        ),
+        policy,
+    )
+    observed = transition_execution_protocol(
+        deferred.state,
+        _tool(
+            public_deliverable_declared=True,
+            candidate_present=False,
+            workspace_mutated=False,
+            new_information_observed=True,
+            observed_action_names=("terminal",),
+        ),
+        policy,
+    )
+
+    assert (
+        deferred.state.model_plan_update.delivery_intent
+        is DeliveryIntent.CONTINUE_EXPLORATION
+    )
+    assert deferred.state.next_action_alignment_pending is True
+    assert observed.state.next_action_alignment_pending is False
+    assert observed.state.last_action_alignment is NextActionAlignment.MATCHED
+    assert observed.state.action_alignment_match_count == 1
+    assert observed.decision.action is ControllerAction.CONTINUE
+
+
+def test_declared_candidate_action_mismatch_requests_fresh_decision():
+    policy = ExecutionProtocolPolicy(
+        mode="guide",
+        delivery_debt_observation_threshold=99,
+        repetition_threshold=99,
+        low_information_gain_threshold=99,
+        no_goal_progress_threshold=99,
+    )
+    planned = transition_execution_protocol(
+        _armed_state(),
+        ExecutionProtocolEvent(
+            kind=EventKind.MODEL_PLAN_UPDATE,
+            model_plan_update=_plan_update(intent="produce_candidate"),
+        ),
+        policy,
+    )
+    mismatched = transition_execution_protocol(
+        planned.state,
+        _tool(
+            public_deliverable_declared=True,
+            candidate_present=False,
+            workspace_mutated=False,
+            new_information_observed=True,
+            observed_action_names=("terminal",),
+        ),
+        policy,
+    )
+
+    assert mismatched.decision.action is ControllerAction.REQUEST_REPLAN
+    assert mismatched.decision.reason is DecisionReason.NEXT_ACTION_MISMATCH
+    assert mismatched.state.last_action_alignment is NextActionAlignment.MISMATCHED
+    assert mismatched.state.action_alignment_mismatch_count == 1
+    assert mismatched.state.last_action_alignment_plan_sequence == 1
+    assert mismatched.state.last_action_alignment_observation_sequence == 2
+    assert mismatched.state.next_action_alignment_pending is False
+
+    replanned = transition_execution_protocol(
+        mismatched.state,
+        ExecutionProtocolEvent(
+            kind=EventKind.MODEL_PLAN_UPDATE,
+            model_plan_update=_plan_update(intent="produce_candidate"),
+        ),
+        policy,
+    )
+    repeated = transition_execution_protocol(
+        replanned.state,
+        _tool(
+            candidate_present=False,
+            candidate_advanced=False,
+            observed_action_names=("terminal",),
+        ),
+        policy,
+    )
+    assert repeated.decision.reason is DecisionReason.NEXT_ACTION_MISMATCH
+    assert repeated.state.action_alignment_mismatch_count == 2
+    assert repeated.state.last_action_alignment_plan_sequence == 3
+    assert repeated.state.last_action_alignment_observation_sequence == 4
+
+
+def test_exploration_alignment_requires_the_declared_tool_identity():
+    policy = ExecutionProtocolPolicy(mode="guide")
+    planned = transition_execution_protocol(
+        _armed_state(),
+        ExecutionProtocolEvent(
+            kind=EventKind.MODEL_PLAN_UPDATE,
+            model_plan_update=_plan_update(
+                intent="continue_exploration",
+                tool="filesystem__read_file",
+            ),
+        ),
+        policy,
+    )
+
+    different_action = transition_execution_protocol(
+        planned.state,
+        _tool(
+            new_information_observed=True,
+            observed_action_names=("terminal", "terminal__run_code"),
+        ),
+        policy,
+    )
+
+    assert different_action.decision.reason is DecisionReason.NEXT_ACTION_MISMATCH
+    assert (
+        different_action.state.last_action_alignment is NextActionAlignment.MISMATCHED
+    )
+
+
+def test_alignment_rejects_same_tool_with_different_arguments():
+    policy = ExecutionProtocolPolicy(mode="guide")
+    planned = transition_execution_protocol(
+        _armed_state(),
+        ExecutionProtocolEvent(
+            kind=EventKind.MODEL_PLAN_UPDATE,
+            model_plan_update=_plan_update(
+                intent="continue_exploration",
+                arguments={"command": "inspect-first-candidate"},
+            ),
+        ),
+        policy,
+    )
+
+    different_arguments = transition_execution_protocol(
+        planned.state,
+        _tool(
+            action_arguments={"command": "inspect-second-candidate"},
+            new_information_observed=True,
+        ),
+        policy,
+    )
+
+    assert different_arguments.decision.reason is DecisionReason.NEXT_ACTION_MISMATCH
+    assert (
+        different_arguments.state.last_action_alignment
+        is NextActionAlignment.MISMATCHED
+    )
+
+
+def test_declared_candidate_action_requires_observed_candidate_not_unrelated_mutation():
+    policy = ExecutionProtocolPolicy(mode="guide")
+    planned = transition_execution_protocol(
+        _armed_state(),
+        ExecutionProtocolEvent(
+            kind=EventKind.MODEL_PLAN_UPDATE,
+            model_plan_update=_plan_update(intent="produce_candidate"),
+        ),
+        policy,
+    )
+    matched = transition_execution_protocol(
+        planned.state,
+        _tool(
+            workspace_mutated=True,
+            candidate_present=False,
+            observed_action_names=("terminal",),
+        ),
+        policy,
+    )
+
+    assert matched.decision.action is ControllerAction.REQUEST_REPLAN
+    assert matched.state.last_action_alignment is NextActionAlignment.MISMATCHED
+    assert matched.state.action_alignment_match_count == 0
+
+    replanned = transition_execution_protocol(
+        matched.state,
+        ExecutionProtocolEvent(
+            kind=EventKind.MODEL_PLAN_UPDATE,
+            model_plan_update=_plan_update(intent="produce_candidate"),
+        ),
+        policy,
+    )
+    candidate = transition_execution_protocol(
+        replanned.state,
+        _tool(
+            workspace_mutated=True,
+            candidate_present=True,
+            candidate_advanced=True,
+            observed_action_names=("terminal",),
+        ),
+        policy,
+    )
+    assert candidate.decision.action is ControllerAction.CONTINUE
+    assert candidate.state.last_action_alignment is NextActionAlignment.MATCHED
+    assert candidate.state.action_alignment_match_count == 1
+
+
+def test_candidate_decision_reserve_precedes_tool_free_finalization():
+    policy = ExecutionProtocolPolicy(
+        mode="guide",
+        finalization_reserve_seconds=60,
+        candidate_decision_reserve_seconds=180,
+    )
+    checkpoint = transition_execution_protocol(
+        _armed_state(),
+        ExecutionProtocolEvent(
+            kind=EventKind.DELIVERY_STATUS,
+            remaining_seconds=150,
+            public_deliverable_declared=True,
+            candidate_present=False,
+        ),
+        policy,
+    )
+
+    assert checkpoint.decision.action is ControllerAction.REQUEST_REPLAN
+    assert checkpoint.decision.reason is DecisionReason.CANDIDATE_DECISION_RESERVE
+    assert checkpoint.state.phase is ProtocolPhase.EXECUTE
+    assert checkpoint.state.candidate_decision_count == 1
+    assert checkpoint.state.candidate_decision_recorded is False
+    assert checkpoint.state.decision_checkpoint_candidate_present is False
+
+    explicit_deferral = transition_execution_protocol(
+        checkpoint.state,
+        ExecutionProtocolEvent(
+            kind=EventKind.MODEL_PLAN_UPDATE,
+            model_plan_update=_plan_update(intent="continue_exploration"),
+        ),
+        policy,
+    )
+    assert explicit_deferral.decision.reason is DecisionReason.MODEL_PLAN_CHECKPOINT
+    assert explicit_deferral.state.decision_checkpoint_pending is False
+    assert explicit_deferral.state.candidate_decision_recorded is True
+    assert explicit_deferral.state.next_action_alignment_pending is True
+
+
+def test_observe_candidate_reserve_is_requested_but_never_recorded_as_acknowledged():
+    transition = transition_execution_protocol(
+        _armed_state(),
+        ExecutionProtocolEvent(
+            kind=EventKind.DELIVERY_STATUS,
+            remaining_seconds=150,
+            candidate_present=False,
+        ),
+        ExecutionProtocolPolicy(
+            mode="observe",
+            finalization_reserve_seconds=60,
+            candidate_decision_reserve_seconds=180,
+        ),
+    )
+
+    assert transition.decision.action is ControllerAction.WOULD_REQUEST_REPLAN
+    assert transition.state.candidate_decision_count == 1
+    assert transition.state.candidate_decision_recorded is False
+
+
+def test_unacknowledged_candidate_reserve_is_not_recorded_or_requested_again():
+    policy = ExecutionProtocolPolicy(
+        mode="guide",
+        finalization_reserve_seconds=60,
+        candidate_decision_reserve_seconds=180,
+    )
+    requested = transition_execution_protocol(
+        _armed_state(),
+        ExecutionProtocolEvent(
+            kind=EventKind.DELIVERY_STATUS,
+            remaining_seconds=150,
+            candidate_present=False,
+        ),
+        policy,
+    )
+    unacknowledged = transition_execution_protocol(
+        requested.state,
+        ExecutionProtocolEvent(kind=EventKind.REPLAN_UNACKNOWLEDGED),
+        policy,
+    )
+    repeated = transition_execution_protocol(
+        unacknowledged.state,
+        ExecutionProtocolEvent(
+            kind=EventKind.DELIVERY_STATUS,
+            remaining_seconds=140,
+            candidate_present=False,
+        ),
+        policy,
+    )
+
+    assert unacknowledged.state.candidate_decision_count == 1
+    assert unacknowledged.state.candidate_decision_recorded is False
+    assert repeated.state.candidate_decision_count == 1
+    assert repeated.decision.action is ControllerAction.CONTINUE
+
+
+def test_candidate_reserve_does_not_replace_an_unobserved_declared_action():
+    policy = ExecutionProtocolPolicy(
+        mode="guide",
+        finalization_reserve_seconds=60,
+        candidate_decision_reserve_seconds=180,
+    )
+    planned = transition_execution_protocol(
+        _armed_state(),
+        ExecutionProtocolEvent(
+            kind=EventKind.MODEL_PLAN_UPDATE,
+            model_plan_update=_plan_update(intent="produce_candidate"),
+        ),
+        policy,
+    )
+
+    reserve = transition_execution_protocol(
+        planned.state,
+        ExecutionProtocolEvent(
+            kind=EventKind.DELIVERY_STATUS,
+            remaining_seconds=150,
+            public_deliverable_declared=True,
+            candidate_present=False,
+        ),
+        policy,
+    )
+
+    assert reserve.decision.action is ControllerAction.CONTINUE
+    assert reserve.state.next_action_alignment_pending is True
+    assert reserve.state.candidate_decision_recorded is False
+
+
+def test_candidate_decision_reserve_records_candidate_state_without_overriding_choice():
+    policy = ExecutionProtocolPolicy(
+        mode="guide",
+        finalization_reserve_seconds=60,
+        candidate_decision_reserve_seconds=180,
+    )
+    missing = transition_execution_protocol(
+        _armed_state(),
+        ExecutionProtocolEvent(
+            kind=EventKind.DELIVERY_STATUS,
+            remaining_seconds=150,
+            candidate_present=False,
+        ),
+        policy,
+    )
+    missing_choice = transition_execution_protocol(
+        missing.state,
+        ExecutionProtocolEvent(
+            kind=EventKind.MODEL_PLAN_UPDATE,
+            model_plan_update=_plan_update(intent="validate_candidate"),
+        ),
+        policy,
+    )
+    assert missing_choice.decision.reason is DecisionReason.MODEL_PLAN_CHECKPOINT
+    assert (
+        missing_choice.state.model_plan_update.delivery_intent
+        is DeliveryIntent.VALIDATE_CANDIDATE
+    )
+
+    present = transition_execution_protocol(
+        _armed_state(),
+        ExecutionProtocolEvent(
+            kind=EventKind.DELIVERY_STATUS,
+            remaining_seconds=150,
+            candidate_present=True,
+        ),
+        policy,
+    )
+    valid = transition_execution_protocol(
+        present.state,
+        ExecutionProtocolEvent(
+            kind=EventKind.MODEL_PLAN_UPDATE,
+            model_plan_update=_plan_update(intent="validate_candidate"),
+        ),
+        policy,
+    )
+    assert valid.decision.reason is DecisionReason.MODEL_PLAN_CHECKPOINT
+
+
+def test_validation_intent_without_probe_receipt_is_unobservable_not_mismatched():
+    policy = ExecutionProtocolPolicy(mode="guide")
+    planned = transition_execution_protocol(
+        _armed_state(),
+        ExecutionProtocolEvent(
+            kind=EventKind.MODEL_PLAN_UPDATE,
+            model_plan_update=_plan_update(intent="validate_candidate"),
+        ),
+        policy,
+    )
+
+    unobserved = transition_execution_protocol(
+        planned.state,
+        _tool(
+            candidate_present=True,
+            validation_observed=False,
+            observed_action_names=("terminal",),
+        ),
+        policy,
+    )
+
+    assert unobserved.decision.action is ControllerAction.CONTINUE
+    assert unobserved.state.last_action_alignment is NextActionAlignment.UNOBSERVABLE
+    assert unobserved.state.action_alignment_mismatch_count == 0
+
+
+@pytest.mark.parametrize("intent", ["submit_current", "submit_uncertain"])
+def test_terminal_delivery_intent_enters_tool_free_finalization(intent):
+    policy = ExecutionProtocolPolicy(mode="guide")
+    planned = transition_execution_protocol(
+        _state(),
+        ExecutionProtocolEvent(
+            kind=EventKind.MODEL_PLAN_UPDATE,
+            model_plan_update=_plan_update(intent=intent, tool=None),
+        ),
+        policy,
+    )
+
+    assert planned.state.phase is ProtocolPhase.FINALIZE
+    assert planned.state.finalization_entered is True
+    assert planned.state.next_action_alignment_pending is False
+    assert planned.state.acceptance_confirmed is False
+    assert planned.state.candidate_final_count == 0
+
+    unexpected_tool = transition_execution_protocol(
+        planned.state,
+        _tool(observed_action_names=("terminal",)),
+        policy,
+    )
+    assert unexpected_tool.state.phase is ProtocolPhase.FINALIZE
+    assert unexpected_tool.state.last_action_alignment is None
+    assert unexpected_tool.state.action_alignment_mismatch_count == 0
+
+
+def test_explicit_short_horizon_bypasses_delivery_debt_and_candidate_reserve():
+    policy = ExecutionProtocolPolicy(
+        mode="guide",
+        delivery_debt_observation_threshold=1,
+        finalization_reserve_seconds=60,
+        candidate_decision_reserve_seconds=180,
+        repetition_threshold=99,
+        low_information_gain_threshold=99,
+        no_goal_progress_threshold=99,
+    )
+    state = transition_execution_protocol(
+        _state(), _profile(horizon=ExecutionHorizon.SHORT), policy
+    ).state
+    debt = transition_execution_protocol(
+        state,
+        _tool(
+            remaining_seconds=150,
+            public_deliverable_declared=True,
+            candidate_present=False,
+            workspace_mutated=False,
+        ),
+        policy,
+    )
+
+    assert debt.decision.action is ControllerAction.CONTINUE
+    assert debt.state.delivery_checkpoint_count == 0
+    assert debt.state.candidate_decision_count == 0
+
+
+def test_explicit_zero_replan_limit_suppresses_all_new_checkpoint_paths():
+    policy = ExecutionProtocolPolicy(
+        mode="guide",
+        max_replans=0,
+        delivery_debt_observation_threshold=1,
+        finalization_reserve_seconds=60,
+        candidate_decision_reserve_seconds=180,
+    )
+    candidate_reserve = transition_execution_protocol(
+        _armed_state(),
+        ExecutionProtocolEvent(
+            kind=EventKind.DELIVERY_STATUS,
+            remaining_seconds=150,
+            candidate_present=False,
+        ),
+        policy,
+    )
+    assert candidate_reserve.decision.reason is DecisionReason.REPLAN_LIMIT_REACHED
+    assert candidate_reserve.state.replan_count == 0
+    assert candidate_reserve.state.candidate_decision_count == 0
+    assert candidate_reserve.state.candidate_decision_recorded is False
+
+    debt = transition_execution_protocol(
+        _armed_state(),
+        _tool(
+            public_deliverable_declared=True,
+            candidate_present=False,
+            workspace_mutated=False,
+        ),
+        policy,
+    )
+    assert debt.decision.reason is DecisionReason.REPLAN_LIMIT_REACHED
+    assert debt.state.replan_count == 0
+    assert debt.state.delivery_checkpoint_count == 0
+
+    planned = transition_execution_protocol(
+        _armed_state(),
+        ExecutionProtocolEvent(
+            kind=EventKind.MODEL_PLAN_UPDATE,
+            model_plan_update=_plan_update(intent="produce_candidate"),
+        ),
+        policy,
+    )
+    mismatch = transition_execution_protocol(
+        planned.state,
+        _tool(
+            candidate_present=False,
+            observed_action_names=("terminal",),
+        ),
+        policy,
+    )
+    assert mismatch.decision.reason is DecisionReason.REPLAN_LIMIT_REACHED
+    assert mismatch.state.replan_count == 0
 
 
 def test_off_mode_is_completely_inert():
@@ -204,7 +829,7 @@ def test_model_plan_update_can_reclassify_horizon_and_acknowledge_checkpoint():
     checkpoint = transition_execution_protocol(
         _state(), _tool(current_step=1, repetition_count=1), policy
     )
-    update = ModelPlanUpdate.from_mapping(
+    update = ModelPlanUpdate.from_persisted_mapping(
         {
             "decision": "replan",
             "horizon": "long",
@@ -243,7 +868,7 @@ def test_continue_checkpoint_acknowledges_request_without_claiming_replan_applie
     requested = transition_execution_protocol(
         _state(), _tool(current_step=1, repetition_count=1), policy
     )
-    update = ModelPlanUpdate.from_mapping(
+    update = ModelPlanUpdate.from_persisted_mapping(
         {
             "decision": "continue",
             "horizon": "unknown",
@@ -285,7 +910,7 @@ def test_model_plan_update_cannot_escape_pending_review_phase():
     review = transition_execution_protocol(
         _state(), ExecutionProtocolEvent(kind=EventKind.CANDIDATE_FINAL), policy
     )
-    update = ModelPlanUpdate.from_mapping(
+    update = ModelPlanUpdate.from_persisted_mapping(
         {
             "decision": "replan",
             "horizon": "long",
@@ -320,9 +945,7 @@ def test_runtime_can_request_model_review_for_an_unarmed_candidate():
     transition = transition_execution_protocol(
         _state(),
         ExecutionProtocolEvent(kind=EventKind.CANDIDATE_FINAL),
-        ExecutionProtocolPolicy(
-            mode="guide", review_unarmed_candidates=True
-        ),
+        ExecutionProtocolPolicy(mode="guide", review_unarmed_candidates=True),
     )
 
     assert transition.decision.action is ControllerAction.REQUEST_FINAL_REVIEW
@@ -560,9 +1183,7 @@ def test_tool_event_threshold_never_overrides_model_horizon_ownership():
 
 
 def test_default_threshold_does_not_classify_but_unknown_requires_review() -> None:
-    policy = ExecutionProtocolPolicy(
-        mode="guide", independent_acceptance_enabled=False
-    )
+    policy = ExecutionProtocolPolicy(mode="guide", independent_acceptance_enabled=False)
     state = _state()
     for step in range(1, 7):
         state = transition_execution_protocol(
@@ -674,9 +1295,7 @@ def test_explicit_limits_keep_one_bounded_review_and_repair_compatibility():
 
 
 def test_ordinary_tool_observation_during_review_does_not_enter_repair():
-    policy = ExecutionProtocolPolicy(
-        mode="guide", independent_acceptance_enabled=False
-    )
+    policy = ExecutionProtocolPolicy(mode="guide", independent_acceptance_enabled=False)
     review = transition_execution_protocol(
         _armed_state(), ExecutionProtocolEvent(kind=EventKind.CANDIDATE_FINAL), policy
     )
@@ -694,9 +1313,7 @@ def test_ordinary_tool_observation_during_review_does_not_enter_repair():
 
 
 def test_uncertain_and_error_reviews_fail_open_to_current_result():
-    policy = ExecutionProtocolPolicy(
-        mode="guide", independent_acceptance_enabled=False
-    )
+    policy = ExecutionProtocolPolicy(mode="guide", independent_acceptance_enabled=False)
     for outcome, reason in (
         (ReviewOutcome.UNKNOWN, DecisionReason.REVIEW_UNCERTAIN),
         (ReviewOutcome.ERROR, DecisionReason.REVIEW_ERROR),
@@ -725,9 +1342,7 @@ def test_unsolicited_review_result_cannot_force_a_repair():
             kind=EventKind.REVIEW_RESULT,
             review_outcome=ReviewOutcome.REPAIR,
         ),
-        ExecutionProtocolPolicy(
-            mode="guide", independent_acceptance_enabled=False
-        ),
+        ExecutionProtocolPolicy(mode="guide", independent_acceptance_enabled=False),
     )
 
     assert transition.decision.action is ControllerAction.SUBMIT_CURRENT_RESULT

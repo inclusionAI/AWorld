@@ -99,6 +99,7 @@ def test_atif_exports_bounded_execution_protocol_telemetry():
         "repair_count": 1,
         "finalization_entered": True,
         "model_horizon": "long",
+        "last_delivery_intent": "validate_candidate",
         "implicit_acceptance_created": True,
         "acceptance_attempt": 2,
         "acceptance_continuation_count": 1,
@@ -273,11 +274,12 @@ def test_build_failed_partial_atif_preserves_authoritative_counts():
     )
 
     assert sum(step.get("llm_call_count", 0) for step in trajectory["steps"]) == 3
-    assert trajectory["final_metrics"]["extra"] == {
-        "llm_call_count": 3,
-        "tool_call_count": 1,
-        "action_count": 1,
-    }
+    final_extra = trajectory["final_metrics"]["extra"]
+    assert final_extra["llm_call_count"] == 3
+    assert final_extra["tool_call_count"] == 1
+    assert final_extra["action_count"] == 1
+    assert final_extra["llm_diagnostics"]["call_count"] == 3
+    assert final_extra["llm_diagnostics"]["usage"]["reported"] is False
     projection = trajectory["extra"]["aworld"]
     assert projection["completion_state"] == "incomplete"
     assert projection["trajectory_fidelity"] == "partial"

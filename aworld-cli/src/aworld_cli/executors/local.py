@@ -3,6 +3,7 @@ Local agent executor.
 """
 import asyncio
 import copy
+import math
 import os
 import time
 import re
@@ -29,7 +30,7 @@ from aworld.core.context.amni import TaskInput, ApplicationContext
 from aworld.core.context.amni.config import AmniConfigFactory, AmniConfigLevel
 from aworld.core.context.compiler.parity import _issue_context_entrypoint_claim
 from aworld.core.task import Task, TaskResponse
-from aworld.logs.util import logger
+from aworld.logs.util import logger, summarize_llm_payload_for_log, summarize_tool_calls_for_log
 from aworld.memory.main import _default_file_memory_store
 from aworld.runner import Runners
 from aworld.utils.runtime_state import runtime_state_path
@@ -46,6 +47,7 @@ from .hooks import ExecutorHookPoint, ExecutorHook
 from .stats import (
     StreamTokenStats,
     build_complete_llm_usage_summary,
+    build_llm_diagnostics_summary,
     build_llm_usage_observability,
     format_elapsed,
     resolve_stream_context_window,
@@ -87,6 +89,65 @@ class _GoalContinuation:
     logical_task_state: dict[str, Any] | None = None
     acceptance_state: dict[str, Any] | None = None
     source: str = "goal"
+
+
+def _stream_buffer_log_summary(
+    content: Any, tool_calls: Any
+) -> dict[str, int]:
+    """Return bounded-size stream-buffer counts for operational INFO logs."""
+    return {
+        "content_chars": len(content) if isinstance(content, str) else 0,
+        **summarize_tool_calls_for_log(tool_calls),
+    }
+
+
+def _message_output_log_summary(output: Any, answer: Any) -> dict[str, Any]:
+    payload = getattr(output, "data", None)
+    if payload is None:
+        payload = getattr(output, "source", None)
+    return {
+        "output_type": type(output).__name__,
+        "answer_chars": len(answer) if isinstance(answer, str) else 0,
+        "payload": summarize_llm_payload_for_log(payload),
+    }
+
+
+_MAX_LOGGED_TOKEN_COUNT = 2_147_483_647
+
+
+def _bounded_token_count(value: Any) -> int | None:
+    """Coerce untrusted usage values without exposing or exploding their repr."""
+    if type(value) not in {int, float}:
+        return None
+    if isinstance(value, float) and not math.isfinite(value):
+        return None
+    return max(0, min(int(value), _MAX_LOGGED_TOKEN_COUNT))
+
+
+def _usage_log_summary(usage: Any) -> dict[str, Any]:
+    """Return only fixed, bounded token fields for operational INFO logs."""
+
+    def _read(*names: str) -> int | None:
+        for name in names:
+            try:
+                value = (
+                    usage.get(name)
+                    if isinstance(usage, dict)
+                    else getattr(usage, name, None)
+                )
+            except Exception:
+                continue
+            normalized = _bounded_token_count(value)
+            if normalized is not None:
+                return normalized
+        return None
+
+    return {
+        "reported": usage is not None,
+        "input_tokens": _read("prompt_tokens", "input_tokens"),
+        "output_tokens": _read("completion_tokens", "output_tokens"),
+        "total_tokens": _read("total_tokens"),
+    }
 
 
 class LocalAgentExecutor(BaseAgentExecutor):
@@ -1242,6 +1303,9 @@ class LocalAgentExecutor(BaseAgentExecutor):
                 self.last_llm_usage = build_complete_llm_usage_summary(
                     response.llm_calls
                 )
+                self.last_llm_diagnostics = build_llm_diagnostics_summary(
+                    response.llm_calls
+                )
             if prior_segments:
                 response.execution_segments = copy.deepcopy(prior_segments)
 
@@ -1587,6 +1651,7 @@ class LocalAgentExecutor(BaseAgentExecutor):
             self.last_task_response = None
             self.last_task_interrupted = False
             self.last_llm_usage = None
+            self.last_llm_diagnostics = None
             self.last_skill_activation_evidence = ()
 
             # 2. Parse message - handle both string and tuple format
@@ -1806,7 +1871,16 @@ class LocalAgentExecutor(BaseAgentExecutor):
                                     # Fallback to get current agent from swarm
                                     if not current_agent_name and hasattr(self.swarm, 'cur_agent') and self.swarm.cur_agent:
                                         current_agent_name = getattr(self.swarm.cur_agent, 'name', None) or getattr(self.swarm.cur_agent, 'id', lambda: None)()
-                                    logger.info(f"Stop thinking status: {ctrl.loading_status} {ctrl.status_start_time} {elapsed_sec} {current_agent_name} {last_agent_name} {received_chunk_output} {stream_token_stats.get_current_stats()} {ctrl.buffer.accumulated_content} {ctrl.buffer.accumulated_tool_calls}")
+                                    logger.info(
+                                        "Stop thinking status: "
+                                        f"loading={ctrl.loading_status} "
+                                        f"started_at={ctrl.status_start_time} "
+                                        f"elapsed_seconds={elapsed_sec} "
+                                        f"agent={current_agent_name} previous_agent={last_agent_name} "
+                                        f"received_chunk={received_chunk_output} "
+                                        f"token_stats={stream_token_stats.get_current_stats()} "
+                                        f"buffer={_stream_buffer_log_summary(ctrl.buffer.accumulated_content, ctrl.buffer.accumulated_tool_calls)}"
+                                    )
 
                                     # Default agent name
                                     if not current_agent_name:
@@ -1822,9 +1896,10 @@ class LocalAgentExecutor(BaseAgentExecutor):
                                     if not received_chunk_output or not stream_token_stats.get_current_stats():
                                         try:
                                             # Log the output structure for debugging
-                                            logger.info(f"📊 Attempting to extract token stats from MessageOutput")
-                                            logger.info(f"📊 Output type: {type(output)}")
-                                            logger.info(f"📊 Output attributes: {dir(output)}")
+                                            logger.info(
+                                                "📊 Attempting to extract token stats from "
+                                                f"MessageOutput type={type(output).__name__[:128]}"
+                                            )
                                             
                                             # Try multiple paths to extract usage information
                                             usage = None
@@ -1835,39 +1910,48 @@ class LocalAgentExecutor(BaseAgentExecutor):
                                             # Path 1: Direct usage attribute
                                             if hasattr(output, 'usage') and output.usage:
                                                 usage = output.usage
-                                                logger.info(f"📊 Found usage in output.usage: {usage}")
+                                                logger.info(
+                                                    "📊 Found usage in output.usage: "
+                                                    f"{_usage_log_summary(usage)}"
+                                                )
                                             
                                             # Path 2: usage in data attribute
                                             elif hasattr(output, 'data') and output.data:
                                                 if hasattr(output.data, 'usage') and output.data.usage:
                                                     usage = output.data.usage
-                                                    logger.info(f"📊 Found usage in output.data.usage: {usage}")
+                                                    logger.info(
+                                                        "📊 Found usage in output.data.usage: "
+                                                        f"{_usage_log_summary(usage)}"
+                                                    )
                                             
                                             # Path 3: usage in source (ModelResponse)
                                             if not usage and hasattr(output, 'source') and output.source:
                                                 if hasattr(output.source, 'usage') and output.source.usage:
                                                     usage = output.source.usage
-                                                    logger.info(f"📊 Found usage in output.source.usage: {usage}")
+                                                    logger.info(
+                                                        "📊 Found usage in output.source.usage: "
+                                                        f"{_usage_log_summary(usage)}"
+                                                    )
                                             
                                             # Path 4: Check if output itself is a dict-like object
                                             if not usage and hasattr(output, '__dict__'):
                                                 output_dict = output.__dict__
                                                 if 'usage' in output_dict and output_dict['usage']:
                                                     usage = output_dict['usage']
-                                                    logger.info(f"📊 Found usage in output.__dict__: {usage}")
+                                                    logger.info(
+                                                        "📊 Found usage in output.__dict__: "
+                                                        f"{_usage_log_summary(usage)}"
+                                                    )
                                             
                                             # Extract tokens from usage object
                                             if usage:
-                                                # Handle dict-like usage
-                                                if isinstance(usage, dict):
-                                                    input_tokens = usage.get('prompt_tokens') or usage.get('input_tokens')
-                                                    output_tokens = usage.get('completion_tokens') or usage.get('output_tokens')
-                                                    logger.info(f"📊 Extracted from dict usage - input: {input_tokens}, output: {output_tokens}")
-                                                # Handle object-like usage
-                                                else:
-                                                    input_tokens = getattr(usage, 'prompt_tokens', None) or getattr(usage, 'input_tokens', None)
-                                                    output_tokens = getattr(usage, 'completion_tokens', None) or getattr(usage, 'output_tokens', None)
-                                                    logger.info(f"📊 Extracted from object usage - input: {input_tokens}, output: {output_tokens}")
+                                                usage_summary = _usage_log_summary(usage)
+                                                input_tokens = usage_summary["input_tokens"]
+                                                output_tokens = usage_summary["output_tokens"]
+                                                logger.info(
+                                                    "📊 Extracted token usage: "
+                                                    f"{usage_summary}"
+                                                )
                                             
                                             # Fallback: Estimate tokens if we couldn't extract them
                                             if input_tokens is None or output_tokens is None:
@@ -1946,7 +2030,10 @@ class LocalAgentExecutor(BaseAgentExecutor):
                                                 )
                                             else:
                                                 logger.warning(f"📊 No token data available to update stats")
-                                                logger.warning(f"📊 Output structure: {output}")
+                                                logger.warning(
+                                                    "📊 Output structure summary: "
+                                                    f"{_message_output_log_summary(output, answer)}"
+                                                )
                                         except Exception as extract_error:
                                             logger.error(f"📊 Failed to extract token stats from MessageOutput: {extract_error}")
                                             logger.error(f"📊 Traceback: {traceback.format_exc()}")
@@ -2026,8 +2113,10 @@ class LocalAgentExecutor(BaseAgentExecutor):
                                     # When STREAM=1: render message output; when STREAM=0: skip output, only update answer
                                     elif not stream_on:
                                         logger.info(f"Rendering message output for agent: {current_agent_name}")
-                                        logger.info(f"Output: {output}")
-                                        logger.info(f"Answer: {answer}")
+                                        logger.info(
+                                            "Message output summary: "
+                                            f"{_message_output_log_summary(output, answer)}"
+                                        )
                                         logger.info(f"Is handoff: {is_handoff}")
                                         answer, _ = self._render_simple_message_output(output, answer, agent_name=current_agent_name, is_handoff=is_handoff, content_already_streamed=received_chunk_output)
                                         
@@ -2165,7 +2254,11 @@ class LocalAgentExecutor(BaseAgentExecutor):
                                     tc_content_est = meta.get("tool_calls_content_estimated", False)
                                     agent_id = meta.get("agent_id")
                                     agent_name = meta.get("agent_name")
-                                    logger.info(f"agent_name: {agent_name} output: {output} accumulated_tool_calls: {ctrl.buffer.accumulated_tool_calls}")
+                                    logger.info(
+                                        f"agent_name={agent_name} chunk_summary="
+                                        f"{summarize_llm_payload_for_log(chunk) if chunk else {}} "
+                                        f"buffer={_stream_buffer_log_summary(ctrl.buffer.accumulated_content, ctrl.buffer.accumulated_tool_calls)}"
+                                    )
                                     if out_tok is None or inp_tok is None or tc_count is None:
                                         chunk = output.data if hasattr(output, "data") else getattr(output, "data", None)
                                         if chunk:
@@ -2469,6 +2562,9 @@ class LocalAgentExecutor(BaseAgentExecutor):
                 self.last_llm_usage = build_complete_llm_usage_summary(
                     final_llm_calls,
                 )
+                self.last_llm_diagnostics = build_llm_diagnostics_summary(
+                    final_llm_calls,
+                )
                 
                 # Return answer without printing (already displayed in stream)
                 # 💾 Save query to history (only if not already saved per round)
@@ -2481,7 +2577,11 @@ class LocalAgentExecutor(BaseAgentExecutor):
                         history = JSONLHistory(str(history_path), session_id=self.session_id)
                         
                         stats = stream_token_stats.get_stats_for_history() if stream_token_stats else None
-                        logger.info(f"💾 Final save - stream_token_stats exists: {stream_token_stats is not None}, stats: {stats}")
+                        logger.info(
+                            "💾 Final save - "
+                            f"stream_token_stats_exists={stream_token_stats is not None} "
+                            f"usage={_usage_log_summary(stats)}"
+                        )
                         
                         # If no stats from stream, try to extract from last_message_output
                         if not stats and last_message_output:
@@ -2496,8 +2596,9 @@ class LocalAgentExecutor(BaseAgentExecutor):
                                 
                                 if usage:
                                     # Extract token counts from usage
-                                    input_tokens = getattr(usage, 'prompt_tokens', None) or getattr(usage, 'input_tokens', None) or 0
-                                    output_tokens = getattr(usage, 'completion_tokens', None) or getattr(usage, 'output_tokens', None) or 0
+                                    usage_summary = _usage_log_summary(usage)
+                                    input_tokens = usage_summary["input_tokens"] or 0
+                                    output_tokens = usage_summary["output_tokens"] or 0
                                     
                                     # Get model name (original LLM model) and agent name
                                     model_name = None
@@ -2516,7 +2617,12 @@ class LocalAgentExecutor(BaseAgentExecutor):
                                         "model_name": model_name,
                                         "agent_name": agent_name,
                                     }
-                                    logger.info(f"💾 Extracted stats from last_message_output: {stats}")
+                                    logger.info(
+                                        "💾 Extracted stats from last_message_output: "
+                                        f"usage={usage_summary} "
+                                        f"model={str(model_name)[:128]} "
+                                        f"agent={str(agent_name)[:128]}"
+                                    )
                             except Exception as extract_error:
                                 logger.warning(f"💾 Failed to extract stats from last_message_output: {extract_error}")
                         
@@ -2525,11 +2631,11 @@ class LocalAgentExecutor(BaseAgentExecutor):
                         token_stats = None
                         if stats:
                             duration_seconds = time.time() - chat_start_time
-                            input_tokens = stats.get("input_tokens") or 0
-                            output_tokens = stats.get("output_tokens") or 0
+                            input_tokens = _bounded_token_count(stats.get("input_tokens")) or 0
+                            output_tokens = _bounded_token_count(stats.get("output_tokens")) or 0
                             total_tokens = input_tokens + output_tokens
-                            model_name = stats.get("model_name") or "unknown"
-                            agent_name = stats.get("agent_name") or "unknown"
+                            model_name = str(stats.get("model_name") or "unknown")[:256]
+                            agent_name = str(stats.get("agent_name") or "unknown")[:256]
                             token_stats = {
                                 "input_tokens": input_tokens,
                                 "output_tokens": output_tokens,
@@ -2539,7 +2645,13 @@ class LocalAgentExecutor(BaseAgentExecutor):
                                 "context_window_tokens": input_tokens,
                                 "duration_seconds": duration_seconds,
                             }
-                            logger.info(f"💾 Prepared token_stats for history: {token_stats}")
+                            logger.info(
+                                "💾 Prepared token_stats for history: "
+                                f"input_tokens={input_tokens} "
+                                f"output_tokens={output_tokens} "
+                                f"model={model_name[:128]} "
+                                f"agent={agent_name[:128]}"
+                            )
                         else:
                             logger.warning(f"💾 No token stats available - saving query without token info")
                         

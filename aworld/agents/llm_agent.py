@@ -94,7 +94,12 @@ from aworld.core.tool.surface import (
 from aworld.events import eventbus
 from aworld.events.util import send_message, send_message_with_future
 from aworld.logs.prompt_log import PromptLogger
-from aworld.logs.util import logger, Color, digest_logger
+from aworld.logs.util import (
+    logger,
+    Color,
+    digest_logger,
+    summarize_llm_payload_for_log,
+)
 from aworld.mcp_client.utils import (
     mcp_tool_desc_transform,
     process_mcp_tools,
@@ -183,6 +188,7 @@ class _LongHorizonControlOffer:
     injected_parameters: frozenset[str] = frozenset()
     profile_schema_offered: bool = False
     decision_boundary: str | None = None
+    decision_tool_names: frozenset[str] = frozenset()
 
     def matches(self, action: ActionModel) -> bool:
         carrier = self.carrier_function_name
@@ -196,6 +202,11 @@ class _LongHorizonControlOffer:
             f"{tool_name}__{action_name}",
             f"{tool_name}:{action_name}",
         }
+
+
+class _LongHorizonDecisionSchemaOverflow(ValueError):
+    """The complete trusted Tool-name enum cannot fit the decision surface."""
+
 
 # Only stable provider signals may enter task-level model recovery.  Human
 # error text is intentionally excluded: it is provider-specific, mutable, and
@@ -348,8 +359,7 @@ class ToolCallBatchParseError(AWorldRuntimeException):
             f"#{issue.call_index + 1}:{issue.code.value}" for issue in self.issues
         )
         super().__init__(
-            "Malformed tool-call batch; no tool calls were emitted "
-            f"({summary})"
+            f"Malformed tool-call batch; no tool calls were emitted ({summary})"
         )
 
 
@@ -426,9 +436,7 @@ class LlmOutputParser(ModelOutputParser[ModelResponse, AgentResult]):
                     continue
 
                 agent_info = kwargs.get("agent")
-                action_guard = getattr(
-                    agent_info, "is_model_tool_call_allowed", None
-                )
+                action_guard = getattr(agent_info, "is_model_tool_call_allowed", None)
                 if callable(action_guard):
                     try:
                         action_allowed = action_guard(full_name)
@@ -439,9 +447,7 @@ class LlmOutputParser(ModelOutputParser[ModelResponse, AgentResult]):
                             ToolCallParseIssue(
                                 call_index=idx,
                                 call_id=call_id,
-                                code=(
-                                    ToolCallParseIssueCode.TOOL_NOT_IN_LIVE_SURFACE
-                                ),
+                                code=(ToolCallParseIssueCode.TOOL_NOT_IN_LIVE_SURFACE),
                             )
                         )
                         continue
@@ -541,6 +547,7 @@ class LlmOutputParser(ModelOutputParser[ModelResponse, AgentResult]):
                     results.append(
                         ActionModel(
                             tool_name=full_name,
+                            model_visible_tool_name=original_name,
                             tool_call_id=tool_call.id,
                             agent_name=agent_id,
                             params=params,
@@ -556,6 +563,7 @@ class LlmOutputParser(ModelOutputParser[ModelResponse, AgentResult]):
                     results.append(
                         ActionModel(
                             tool_name=tool_name,
+                            model_visible_tool_name=original_name,
                             tool_call_id=tool_call.id,
                             action_name=action_name,
                             agent_name=agent_id,
@@ -770,15 +778,13 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         self._tool_surface_profile = tool_surface_profile or ToolSurfaceProfile()
         self._tool_surface_probes = tuple(tool_surface_probes or ())
         if not all(
-            isinstance(spec, ToolCapabilitySpec)
-            for spec in self._tool_surface_specs
+            isinstance(spec, ToolCapabilitySpec) for spec in self._tool_surface_specs
         ):
             raise TypeError("tool_surface_specs must contain ToolCapabilitySpec values")
         if not isinstance(self._tool_surface_profile, ToolSurfaceProfile):
             raise TypeError("tool_surface_profile must be a ToolSurfaceProfile")
         if not all(
-            isinstance(probe, CapabilityProbe)
-            for probe in self._tool_surface_probes
+            isinstance(probe, CapabilityProbe) for probe in self._tool_surface_probes
         ):
             raise TypeError("tool_surface_probes must contain CapabilityProbe values")
         self.tool_surface_receipt = None
@@ -889,15 +895,21 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         owned_extension = existing is getattr(
             context, "_goal_completion_owned_contract", None
         )
-        if existing is not None and owned_extension and any(
-            contract is getattr(context, attribute, None)
-            for attribute in ("_goal_completion_base_contract",)
+        if (
+            existing is not None
+            and owned_extension
+            and any(
+                contract is getattr(context, attribute, None)
+                for attribute in ("_goal_completion_base_contract",)
+            )
         ):
             # The local executor appended explicit goal verification to this
             # caller contract. Reinstalling it would silently drop those checks.
             return
         if existing is not None and existing != contract:
-            raise ValueError("the Context and primary Agent supply conflicting completion contracts")
+            raise ValueError(
+                "the Context and primary Agent supply conflicting completion contracts"
+            )
         if (
             existing == contract
             and context.completion_mode is CompletionMode(mode)
@@ -924,18 +936,12 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         ).strip().lower() in {"1", "true", "yes", "on"}
         policy = ExecutionProtocolPolicy(
             mode=ProtocolMode.GUIDE if active else ProtocolMode.OFF,
-            review_unarmed_candidates=(
-                review_unarmed_candidates if active else False
-            ),
+            review_unarmed_candidates=(review_unarmed_candidates if active else False),
             independent_acceptance_enabled=(
-                _default_on_env(INDEPENDENT_ACCEPTANCE_CRITIC_ENV)
-                if active
-                else False
+                _default_on_env(INDEPENDENT_ACCEPTANCE_CRITIC_ENV) if active else False
             ),
             semantic_progress_enabled=(
-                _default_on_env(SEMANTIC_PROGRESS_LEDGER_ENV)
-                if active
-                else False
+                _default_on_env(SEMANTIC_PROGRESS_LEDGER_ENV) if active else False
             ),
         )
         if not active or context is None:
@@ -949,16 +955,10 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         try:
             task = get_task() if callable(get_task) else None
             total = getattr(task, "timeout", None)
-            external_reserve = getattr(
-                task, "completion_reserve_seconds", None
-            )
+            external_reserve = getattr(task, "completion_reserve_seconds", None)
         except Exception:
             return policy
-        if (
-            isinstance(total, bool)
-            or not isinstance(total, (int, float))
-            or total <= 0
-        ):
+        if isinstance(total, bool) or not isinstance(total, (int, float)) or total <= 0:
             return policy
         if (
             isinstance(external_reserve, bool)
@@ -976,17 +976,21 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             else 45.0
         )
         finalization_window = min(review_reserve_cap, 0.15 * available)
-        protocol_reserve = float(external_reserve) + max(
-            0.1, finalization_window
-        )
+        protocol_reserve = float(external_reserve) + max(0.1, finalization_window)
         # Even malformed caller budgets must leave a non-empty solve window.
         protocol_reserve = min(
             protocol_reserve,
             max(0.0, float(total) - min(0.1, float(total) * 0.5)),
         )
+        delivery_window = min(300.0, max(120.0, float(total) * 0.1))
+        candidate_reserve = min(
+            protocol_reserve + delivery_window,
+            max(0.0, float(total) - min(0.1, float(total) * 0.5)),
+        )
         return replace(
             policy,
             finalization_reserve_seconds=protocol_reserve,
+            candidate_decision_reserve_seconds=candidate_reserve,
         )
 
     def _long_horizon_skill_active(self) -> bool:
@@ -1031,8 +1035,138 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         }
 
     @staticmethod
-    def _long_horizon_plan_update_schema() -> dict[str, Any]:
-        return {
+    def _bounded_tool_argument_contract(parameters: Any) -> str | None:
+        """Describe top-level Tool arguments without copying recursive schemas."""
+
+        if not isinstance(parameters, dict):
+            return "{}"
+        properties = parameters.get("properties")
+        if not isinstance(properties, dict):
+            return "{}"
+        required = {
+            name for name in parameters.get("required", ()) if isinstance(name, str)
+        }
+        eligible: list[tuple[str, Any]] = []
+        for name, field_schema in properties.items():
+            if not isinstance(name, str) or not name or len(name) > 64:
+                if name in required:
+                    return None
+                continue
+            eligible.append((name, field_schema))
+        eligible.sort(key=lambda item: (item[0] not in required, item[0]))
+        if len(required) > 16:
+            return None
+        fields: list[str] = []
+        for name, field_schema in eligible[:16]:
+            schema = field_schema if isinstance(field_schema, dict) else {}
+            raw_type = schema.get("type")
+            if isinstance(raw_type, str):
+                kind = (
+                    raw_type
+                    if raw_type
+                    in {
+                        "array",
+                        "boolean",
+                        "integer",
+                        "null",
+                        "number",
+                        "object",
+                        "string",
+                    }
+                    else "value"
+                )
+            elif isinstance(raw_type, list):
+                kinds = [
+                    item
+                    for item in raw_type[:4]
+                    if isinstance(item, str)
+                    and item
+                    in {
+                        "array",
+                        "boolean",
+                        "integer",
+                        "null",
+                        "number",
+                        "object",
+                        "string",
+                    }
+                ]
+                kind = "|".join(dict.fromkeys(kinds)) or "value"
+            else:
+                kind = "value"
+            fields.append(
+                f"{json.dumps(name, ensure_ascii=False)}:{kind}"
+                + ("!" if name in required else "")
+            )
+        if not required.issubset({name for name, _ in eligible[:16]}):
+            return None
+        if len(eligible) > len(fields):
+            fields.append("…")
+        contract = "{" + ",".join(fields) + "}"
+        return contract if len(contract) <= 1024 else None
+
+    @classmethod
+    def _long_horizon_plan_update_schema(
+        cls,
+        available_tools: Sequence[Dict[str, Any]] = (),
+    ) -> dict[str, Any]:
+        catalog_names: list[str] = []
+        contract_candidates: list[tuple[str, str]] = []
+        seen_names: set[str] = set()
+        for schema in available_tools:
+            function = schema.get("function") if isinstance(schema, dict) else None
+            name = function.get("name") if isinstance(function, dict) else None
+            if (
+                not isinstance(name, str)
+                or not name.strip()
+                or len(name.strip()) > 256
+                or name == _LONG_HORIZON_DECISION_TOOL
+                or name.strip() in seen_names
+            ):
+                continue
+            normalized_name = name.strip()
+            seen_names.add(normalized_name)
+            catalog_names.append(normalized_name)
+            contract = cls._bounded_tool_argument_contract(function.get("parameters"))
+            if contract is None:
+                continue
+            contract_candidates.append((normalized_name, contract))
+        catalog_names.sort()
+        tool_contracts = sorted(contract_candidates)
+        next_action_tool_schema: dict[str, Any] = {
+            "anyOf": [{"type": "null"}],
+            "description": (
+                "Exact available Tool function expected for the next action, "
+                "or null only when no Tool action is planned. AWorld compares "
+                "this typed identity without parsing next_action prose."
+            ),
+        }
+        if catalog_names:
+            next_action_tool_schema["anyOf"].insert(
+                0,
+                {"type": "string", "enum": catalog_names},
+            )
+        argument_description = (
+            "JSON object string containing the exact arguments for "
+            "next_action_tool, or null only for submit_current or "
+            "submit_uncertain. AWorld "
+            "stores only a fingerprint and compares it with the next observed "
+            "Tool action. Bounded top-level contracts keyed by exact Tool name "
+            "(! means required): "
+        )
+        next_action_arguments_schema: dict[str, Any] = {
+            "anyOf": [
+                {"type": "string", "maxLength": 4096},
+                {"type": "null"},
+            ],
+            "description": argument_description
+            + json.dumps(
+                dict(tool_contracts),
+                ensure_ascii=False,
+                separators=(",", ":"),
+            ),
+        }
+        schema = {
             "type": "object",
             "description": (
                 "Required model-owned decision at an AWorld planning checkpoint. "
@@ -1051,10 +1185,36 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                 },
                 "milestone": {"type": "string", "maxLength": 512},
                 "next_action": {"type": "string", "maxLength": 1024},
+                "next_action_tool": next_action_tool_schema,
+                "next_action_arguments": next_action_arguments_schema,
                 "verification_plan": {"type": "string", "maxLength": 1024},
                 "completion_assessment": {
                     "type": "string",
                     "enum": ["in_progress", "uncertain", "candidate_ready"],
+                },
+                "delivery_intent": {
+                    "type": "string",
+                    "enum": [
+                        "continue_exploration",
+                        "produce_candidate",
+                        "validate_candidate",
+                        "submit_current",
+                        "submit_uncertain",
+                    ],
+                    "description": (
+                        "The model-owned delivery choice for the next bounded "
+                        "step. AWorld records later alignment but does not "
+                        "select a command or decide correctness."
+                    ),
+                },
+                "delivery_rationale": {
+                    "type": "string",
+                    "maxLength": 1024,
+                    "description": (
+                        "Evidence-linked reason for the delivery choice, "
+                        "including why further exploration is justified when "
+                        "a candidate is deferred."
+                    ),
                 },
                 "assumptions": {
                     "type": "array",
@@ -1083,14 +1243,43 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                 "horizon",
                 "milestone",
                 "next_action",
+                "next_action_tool",
+                "next_action_arguments",
                 "verification_plan",
                 "completion_assessment",
+                "delivery_intent",
+                "delivery_rationale",
                 "assumptions",
                 "retired_approaches",
                 "evidence_refs",
                 "selected_candidate_id",
             ],
         }
+
+        def serialized_size() -> int:
+            return len(
+                json.dumps(
+                    schema,
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                )
+            )
+
+        while serialized_size() >= 8_000 and tool_contracts:
+            tool_contracts.pop()
+            next_action_arguments_schema["description"] = (
+                argument_description
+                + json.dumps(
+                    dict(tool_contracts),
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                )
+            )
+        if serialized_size() >= 8_000:
+            raise _LongHorizonDecisionSchemaOverflow(
+                "complete decision Tool catalog exceeds the bounded schema"
+            )
+        return schema
 
     @staticmethod
     def _public_probe_schema() -> dict[str, Any]:
@@ -1139,9 +1328,7 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                 function.get("parameters") if isinstance(function, dict) else None
             )
             properties = (
-                parameters.get("properties")
-                if isinstance(parameters, dict)
-                else None
+                parameters.get("properties") if isinstance(parameters, dict) else None
             )
             name = function.get("name") if isinstance(function, dict) else None
             if (
@@ -1157,7 +1344,9 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                 if "terminal" in normalized
                 and any(token in normalized for token in ("execute", "run", "shell"))
                 else 1
-                if any(token in normalized for token in ("execute", "run", "write", "edit"))
+                if any(
+                    token in normalized for token in ("execute", "run", "write", "edit")
+                )
                 else 2
             )
             candidates.append((priority, index, name))
@@ -1196,17 +1385,38 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             # selects no task strategy. The model must own both classification
             # and next-step choice before ordinary Tool execution resumes.
             if any(
-                schema.get("function", {}).get("name")
-                == _LONG_HORIZON_DECISION_TOOL
+                schema.get("function", {}).get("name") == _LONG_HORIZON_DECISION_TOOL
                 for schema in tools
                 if isinstance(schema, dict)
             ):
                 return tools, empty_offer
-            properties = {
-                _LONG_HORIZON_PLAN_UPDATE_PARAM: (
-                    self._long_horizon_plan_update_schema()
+            decision_tool_names = frozenset(
+                name.strip()
+                for schema in tools
+                if isinstance(schema, dict)
+                for function in (schema.get("function", {}),)
+                if isinstance(function, dict)
+                for name in (function.get("name"),)
+                if isinstance(name, str)
+                and name.strip()
+                and len(name.strip()) <= 256
+                and name != _LONG_HORIZON_DECISION_TOOL
+            )
+            try:
+                plan_update_schema = self._long_horizon_plan_update_schema(tools)
+            except _LongHorizonDecisionSchemaOverflow:
+                from aworld.runners.execution_protocol import (
+                    record_model_decision_unavailable,
                 )
-            }
+
+                record_model_decision_unavailable(
+                    context,
+                    self.id(),
+                    boundary=boundary,
+                    reason="decision_schema_overflow",
+                )
+                return tools, empty_offer
+            properties = {_LONG_HORIZON_PLAN_UPDATE_PARAM: plan_update_schema}
             required = [_LONG_HORIZON_PLAN_UPDATE_PARAM]
             injected = {_LONG_HORIZON_PLAN_UPDATE_PARAM}
             if boundary == "initial":
@@ -1239,6 +1449,7 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                 injected_parameters=frozenset(injected),
                 profile_schema_offered=boundary == "initial",
                 decision_boundary=boundary,
+                decision_tool_names=decision_tool_names,
             )
 
         augmented = copy.deepcopy(tools)
@@ -1296,10 +1507,7 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                 _LONG_HORIZON_EXECUTION_PROFILE_PARAM in offer.owned_parameters
             ):
                 value = params.pop(_LONG_HORIZON_EXECUTION_PROFILE_PARAM)
-                if (
-                    _LONG_HORIZON_EXECUTION_PROFILE_PARAM
-                    in offer.injected_parameters
-                ):
+                if _LONG_HORIZON_EXECUTION_PROFILE_PARAM in offer.injected_parameters:
                     profiles.append(value)
             if _LONG_HORIZON_PLAN_UPDATE_PARAM in params and (
                 _LONG_HORIZON_PLAN_UPDATE_PARAM in offer.owned_parameters
@@ -1355,6 +1563,7 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             boundary=offer.decision_boundary,
             execution_profile=(profiles[0] if profiles else None),
             plan_update=plan_updates[0],
+            available_tool_names=offer.decision_tool_names,
         )
         if acknowledged:
             return "acknowledged"
@@ -1461,9 +1670,7 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                 function.get("parameters") if isinstance(function, dict) else None
             )
             properties = (
-                parameters.get("properties")
-                if isinstance(parameters, dict)
-                else None
+                parameters.get("properties") if isinstance(parameters, dict) else None
             )
             if isinstance(properties, dict):
                 properties[_ACCEPTANCE_PROBE_PARAM] = self._acceptance_probe_schema()
@@ -1516,9 +1723,7 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                 if not isinstance(properties, dict):
                     properties = {}
                     parameters["properties"] = properties
-                properties[_REVIEW_DECISION_PARAM] = (
-                    self._review_decision_schema()
-                )
+                properties[_REVIEW_DECISION_PARAM] = self._review_decision_schema()
             augmented.append(candidate)
         return augmented
 
@@ -1539,9 +1744,7 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             record_review_repair_decision,
         )
 
-        transition = record_review_repair_decision(
-            context, self.id(), values[0]
-        )
+        transition = record_review_repair_decision(context, self.id(), values[0])
         return bool(
             transition is not None
             and transition.decision.action is ControllerAction.REQUEST_REPAIR
@@ -1593,9 +1796,7 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
 
         fallback = load_candidate_fallback(context, self.id()) or ()
         candidate = (
-            str(getattr(fallback[0], "policy_info", "") or "")
-            if fallback
-            else ""
+            str(getattr(fallback[0], "policy_info", "") or "") if fallback else ""
         )
         critic_state = load_acceptance_critic_state(context, self.id())
         receipt = None
@@ -1663,7 +1864,10 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         """Return validated advisory output declarations from public task text."""
 
         value = context.context_info.get("public_deliverable_contract")
-        if not isinstance(value, dict) or value.get("schema_version") != _PUBLIC_DELIVERABLE_SCHEMA:
+        if (
+            not isinstance(value, dict)
+            or value.get("schema_version") != _PUBLIC_DELIVERABLE_SCHEMA
+        ):
             return ()
         if (
             value.get("authority") != _PUBLIC_DELIVERABLE_AUTHORITY
@@ -1915,6 +2119,75 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         if getattr(self.conf, "llm_provider", None):
             return self.conf.llm_provider
         return "openai"
+
+    def _apply_reasoning_phase_policy(
+        self,
+        request_kwargs: Dict[str, Any],
+        *,
+        phase: str,
+    ) -> tuple[Dict[str, Any], dict[str, Any]]:
+        """Resolve one immutable AWorld-owned reasoning selection.
+
+        Static caller/provider parameters establish precedence only. The
+        returned request is per-call and never mutates shared ModelConfig state.
+        """
+
+        from aworld.models.reasoning_policy import (
+            ReasoningPhasePolicy,
+            resolve_reasoning_request,
+        )
+
+        llm_config = getattr(self.conf, "llm_config", None)
+        policy = ReasoningPhasePolicy.from_value(
+            getattr(llm_config, "reasoning_phase_policy", None)
+        )
+        configured = getattr(llm_config, "params", None)
+        selection_input = dict(configured) if isinstance(configured, dict) else {}
+        selection_input.update(dict(request_kwargs))
+        provider_adapter = getattr(self.llm, "provider", None)
+        capability_resolver = getattr(
+            provider_adapter, "reasoning_transport_capability", None
+        )
+        transport_capability = (
+            capability_resolver() if callable(capability_resolver) else None
+        )
+        resolved, receipt = resolve_reasoning_request(
+            phase=phase,
+            model_name=getattr(llm_config, "llm_model_name", None) or self.model_name,
+            provider=getattr(llm_config, "llm_provider", None)
+            or self._current_provider_name(),
+            request_kwargs=selection_input,
+            policy=policy,
+            reasoning_transport=getattr(llm_config, "reasoning_transport", "auto"),
+            transport_capability=transport_capability,
+        )
+        updated = dict(request_kwargs)
+        if receipt.applied:
+            for alias in ("thinking", "enable_thinking", "chat_template_kwargs"):
+                updated.pop(alias, None)
+            updated["reasoning_effort"] = resolved["reasoning_effort"]
+            if "extra_body" in resolved:
+                updated["extra_body"] = resolved["extra_body"]
+        return updated, receipt.to_dict()
+
+    @staticmethod
+    def _reasoning_phase_for_turn(
+        *,
+        decision_boundary: str | None,
+        independent_acceptance_review: bool,
+        model_owned_review: bool,
+        tool_free_finalization: bool,
+        role_reasoning_phase: str | None = None,
+    ) -> str:
+        if decision_boundary is not None:
+            return "plan"
+        if independent_acceptance_review or model_owned_review:
+            return "review"
+        if tool_free_finalization:
+            return "finalize"
+        if role_reasoning_phase in {"plan", "execute", "review", "finalize"}:
+            return role_reasoning_phase
+        return "execute"
 
     def _context_compiler_mode_value(self) -> str:
         """Read optional compiler capability without assuming an LLMModel."""
@@ -2391,9 +2664,7 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                             and (
                                 lambda server, action: action
                                 in self.black_tool_actions.get(server, ())
-                            )(
-                                *tool["function"]["name"].split("__", 1)
-                            )
+                            )(*tool["function"]["name"].split("__", 1))
                         )
                     ]
 
@@ -3307,7 +3578,8 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                 messages,
                 continuation_capsule,
                 keep_recent=(
-                    None if policy_name == "budget_pressure"
+                    None
+                    if policy_name == "budget_pressure"
                     else AdaptiveCheckpointPolicy().keep_recent_messages
                 ),
             )
@@ -3570,15 +3842,14 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         try:
             task = get_task() if callable(get_task) else None
             remaining = task.remaining_seconds() if task is not None else None
-            external_reserve = getattr(
-                task, "completion_reserve_seconds", 0.0
-            ) if task is not None else 0.0
+            external_reserve = (
+                getattr(task, "completion_reserve_seconds", 0.0)
+                if task is not None
+                else 0.0
+            )
         except Exception:
             return max(0.1, float(cap_seconds or 3600.0))
-        if (
-            isinstance(remaining, bool)
-            or not isinstance(remaining, (int, float))
-        ):
+        if isinstance(remaining, bool) or not isinstance(remaining, (int, float)):
             return max(0.1, float(cap_seconds or 3600.0))
         if (
             isinstance(external_reserve, bool)
@@ -3615,9 +3886,9 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             final_result = await self.async_post_run(
                 policy_result, message.payload, message
             )
-            message.context.context_info[
-                f"agent_loop_budget_finalized:{self.id()}"
-            ] = True
+            message.context.context_info[f"agent_loop_budget_finalized:{self.id()}"] = (
+                True
+            )
             return final_result
         except asyncio.CancelledError:
             raise
@@ -3643,8 +3914,7 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             return {
                 "status_code": exc.status_code,
                 "error_code": exc.error_code,
-                "source_error_type": exc.source_error_type
-                or type(exc).__name__,
+                "source_error_type": exc.source_error_type or type(exc).__name__,
             }
 
         status_codes: list[int] = []
@@ -3703,11 +3973,7 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             None,
         )
         transient_code = next(
-            (
-                code
-                for code in error_codes
-                if code in _TRANSIENT_MODEL_ERROR_CODES
-            ),
+            (code for code in error_codes if code in _TRANSIENT_MODEL_ERROR_CODES),
             None,
         )
         transient_type = next(
@@ -3718,7 +3984,11 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             ),
             None,
         )
-        if transient_status is None and transient_code is None and transient_type is None:
+        if (
+            transient_status is None
+            and transient_code is None
+            and transient_type is None
+        ):
             return None
         # An explicit deterministic status wins over a generic transport class.
         if status_codes and transient_status is None:
@@ -3793,14 +4063,14 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             metrics = {}
         metrics["last_outcome"] = outcome
         metrics["last_reason"] = reason
-        metrics[f"outcome:{outcome}"] = int(
-            metrics.get(f"outcome:{outcome}", 0) or 0
-        ) + 1
+        metrics[f"outcome:{outcome}"] = (
+            int(metrics.get(f"outcome:{outcome}", 0) or 0) + 1
+        )
         if outcome == "scheduled":
             metrics["attempt_count"] = int(metrics.get("attempt_count", 0) or 0) + 1
-            metrics["consecutive_failure_count"] = int(
-                metrics.get("consecutive_failure_count", 0) or 0
-            ) + 1
+            metrics["consecutive_failure_count"] = (
+                int(metrics.get("consecutive_failure_count", 0) or 0) + 1
+            )
         elif outcome == "recovered":
             metrics["consecutive_failure_count"] = 0
         if isinstance(details, dict):
@@ -4014,9 +4284,7 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
     def _long_horizon_review_deadline_context_key(self) -> str:
         return f"{_LONG_HORIZON_REVIEW_DEADLINE_KEY}:{self.id()}"
 
-    def _long_horizon_review_deadline_scope(
-        self, context: Context
-    ) -> dict[str, Any]:
+    def _long_horizon_review_deadline_scope(self, context: Context) -> dict[str, Any]:
         from aworld.core.context.execution_state import state_context
 
         owner = state_context(context) or context
@@ -4030,9 +4298,7 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             "process_id": os.getpid(),
         }
 
-    def _clear_long_horizon_review_deadline(
-        self, context: Context | None
-    ) -> None:
+    def _clear_long_horizon_review_deadline(self, context: Context | None) -> None:
         if context is None:
             return
         from aworld.core.context.execution_state import state_context
@@ -4067,10 +4333,8 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         deadline = value.get("deadline") if isinstance(value, dict) else None
         valid = bool(
             isinstance(value, dict)
-            and value.get("schema_version")
-            == _LONG_HORIZON_REVIEW_DEADLINE_SCHEMA
-            and value.get("scope")
-            == self._long_horizon_review_deadline_scope(context)
+            and value.get("schema_version") == _LONG_HORIZON_REVIEW_DEADLINE_SCHEMA
+            and value.get("scope") == self._long_horizon_review_deadline_scope(context)
             and isinstance(deadline, (int, float))
             and not isinstance(deadline, bool)
             and math.isfinite(float(deadline))
@@ -4214,16 +4478,19 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         }
         capsule: List[Dict[str, str]] = []
         if system:
-            capsule.append({"role": "system", "content": bounded(system, allocations["system"])})
+            capsule.append(
+                {"role": "system", "content": bounded(system, allocations["system"])}
+            )
         if task:
-            capsule.append({"role": "user", "content": bounded(task, allocations["task"])})
+            capsule.append(
+                {"role": "user", "content": bounded(task, allocations["task"])}
+            )
         if latest_observation:
             capsule.append(
                 {
                     "role": "user",
-                    "content": "Latest accepted observation:\n" + bounded(
-                        latest_observation, allocations["observation"]
-                    ),
+                    "content": "Latest accepted observation:\n"
+                    + bounded(latest_observation, allocations["observation"]),
                 }
             )
         if recovery_context:
@@ -4233,9 +4500,8 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                     "content": (
                         "Non-executable incomplete action context; not a final "
                         "answer or executable action:\n"
-                    ) + bounded(
-                        recovery_context, allocations["recovery"]
-                    ),
+                    )
+                    + bounded(recovery_context, allocations["recovery"]),
                 }
             )
         return capsule
@@ -4291,7 +4557,11 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             value.get("reason"),
         )
         content = value.get("content")
-        return content if observed_scope == expected_scope and isinstance(content, str) else ""
+        return (
+            content
+            if observed_scope == expected_scope and isinstance(content, str)
+            else ""
+        )
 
     def _clear_model_response_recovery_context(
         self,
@@ -4329,9 +4599,11 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         long_horizon_fallback = load_candidate_fallback(message.context, self.id())
         if long_horizon_fallback is not None:
             policy = execution_protocol_policy(message.context, self.id())
-            review_pending = ExecutionProtocolStore(
-                message.context, self.id(), policy
-            ).load().review_pending
+            review_pending = (
+                ExecutionProtocolStore(message.context, self.id(), policy)
+                .load()
+                .review_pending
+            )
             if not review_pending:
                 # A fallback is meaningful only while its exact review episode
                 # is pending.  Never let a stale candidate wrap a later repair
@@ -4341,8 +4613,8 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         if long_horizon_fallback is None:
             self._clear_long_horizon_review_deadline(message.context)
         else:
-            long_horizon_review_deadline = (
-                self._load_long_horizon_review_deadline(message.context)
+            long_horizon_review_deadline = self._load_long_horizon_review_deadline(
+                message.context
             )
         while True:
             try:
@@ -4492,9 +4764,8 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                 automatic_timeout = self._is_long_horizon_auto_generation_timeout(
                     exc, message.context
                 )
-                if (
-                    not loop_budget_finalization
-                    and (transient_details is not None or automatic_timeout)
+                if not loop_budget_finalization and (
+                    transient_details is not None or automatic_timeout
                 ):
                     recovery_reason = (
                         "transient_provider_failure"
@@ -4510,21 +4781,17 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                             record_model_decision_unavailable,
                         )
 
-                        decision_fail_open_recorded = (
-                            record_model_decision_unavailable(
-                                message.context,
-                                self.id(),
-                                boundary=decision_boundary,
-                                reason="provider_unavailable",
-                            )
+                        decision_fail_open_recorded = record_model_decision_unavailable(
+                            message.context,
+                            self.id(),
+                            boundary=decision_boundary,
+                            reason="provider_unavailable",
                         )
                     if await self._schedule_transient_model_recovery(
                         message.context,
                         reason=recovery_reason,
                         details=transient_details,
-                        allow_unarmed_decision_fail_open=(
-                            decision_fail_open_recorded
-                        ),
+                        allow_unarmed_decision_fail_open=(decision_fail_open_recorded),
                     ):
                         transient_recovery_turn = True
                         kwargs = dict(kwargs)
@@ -4549,17 +4816,23 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                         message=message,
                         kwargs=kwargs,
                     )
-                if repair_feedback is None or not self._should_degrade_result_validation_retry_error(exc):
+                if (
+                    repair_feedback is None
+                    or not self._should_degrade_result_validation_retry_error(exc)
+                ):
                     raise
-                return await self._degrade_result_validation_retry(message, repair_feedback, exc)
-            if (
-                long_horizon_fallback is not None
-                and not isinstance(result, _LongHorizonReviewContinuation)
+                return await self._degrade_result_validation_retry(
+                    message, repair_feedback, exc
+                )
+            if long_horizon_fallback is not None and not isinstance(
+                result, _LongHorizonReviewContinuation
             ):
                 policy = execution_protocol_policy(message.context, self.id())
-                review_pending = ExecutionProtocolStore(
-                    message.context, self.id(), policy
-                ).load().review_pending
+                review_pending = (
+                    ExecutionProtocolStore(message.context, self.id(), policy)
+                    .load()
+                    .review_pending
+                )
                 if not review_pending:
                     # A typed review decision may return a validation-repair
                     # continuation.  Synchronize the outer loop immediately so
@@ -4674,8 +4947,7 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                         "call that advances the task. When the request names a "
                         "concrete deliverable and its core format is known, "
                         "create or update an inspectable candidate now, then "
-                        "validate and refine it."
-                        + retained_guidance
+                        "validate and refine it." + retained_guidance
                     ),
                 )
                 kwargs = self._model_response_recovery_kwargs(kwargs)
@@ -4753,15 +5025,24 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                 continue
             if not isinstance(result, _ValidationRepairContinuation):
                 return result
-            repair_feedback = result.validation_feedback or str(result.observation.content)
-            await self._raise_if_task_interrupted(message.context, reason="completion repair interrupted")
+            repair_feedback = result.validation_feedback or str(
+                result.observation.content
+            )
+            await self._raise_if_task_interrupted(
+                message.context, reason="completion repair interrupted"
+            )
             if await self.should_terminate_loop(message):
                 await self._resolve_completion_at_loop_budget(message)
                 self._finished = True
-                return [ActionModel(agent_name=self.id(), policy_info=(
-                    "The configured maximum number of attempts was reached before delivery validation passed. "
-                    "Work remains incomplete; retained progress is available for continuation."
-                ))]
+                return [
+                    ActionModel(
+                        agent_name=self.id(),
+                        policy_info=(
+                            "The configured maximum number of attempts was reached before delivery validation passed. "
+                            "Work remains incomplete; retained progress is available for continuation."
+                        ),
+                    )
+                ]
             message.context.update_agent_step(self.id())
             self.loop_step += 1
             observation, kwargs = result.observation, result.kwargs
@@ -4947,28 +5228,40 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         self._install_runtime_completion_contract(message.context)
         from aworld.runners.execution_protocol import configure_execution_protocol
 
+        resolved_execution_policy = self._resolve_execution_protocol_policy(
+            message.context
+        )
         configure_execution_protocol(
             message.context,
             self.id(),
-            self._resolve_execution_protocol_policy(message.context),
+            resolved_execution_policy,
         )
         from aworld.runners.execution_protocol import (
             acceptance_critic_active,
             execution_protocol_requires_tool_free_finalization,
+            model_owned_review_active,
+            record_pre_generation_delivery_decision,
+        )
+
+        # Before ordinary Tool time gives way to the later finalization-only
+        # reserve, expose one typed choice owned by the model. This call is
+        # inert for unarmed/short work and does not select a command.
+        record_pre_generation_delivery_decision(
+            message.context,
+            self.id(),
+            policy=resolved_execution_policy,
         )
 
         independent_acceptance_review = acceptance_critic_active(
             message.context, self.id()
         )
+        model_owned_review = model_owned_review_active(message.context, self.id())
 
-        protocol_tool_free_finalization = (
-            not loop_budget_finalization
-            and (
-                execution_protocol_requires_tool_free_finalization(
-                    message.context, self.id()
-                )
-                or self._pre_generation_caller_reserve_reached(message.context)
+        protocol_tool_free_finalization = not loop_budget_finalization and (
+            execution_protocol_requires_tool_free_finalization(
+                message.context, self.id()
             )
+            or self._pre_generation_caller_reserve_reached(message.context)
         )
         tool_free_finalization = (
             loop_budget_finalization or protocol_tool_free_finalization
@@ -5014,7 +5307,11 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         raw_messages = await self.build_llm_input(
             observation, info, message=message, **kwargs
         )
-        from aworld.core.context.work_progress import retain_work_progress, checkpoint_work_progress
+        from aworld.core.context.work_progress import (
+            retain_work_progress,
+            checkpoint_work_progress,
+        )
+
         retain_work_progress(message.context, self.id())
         await checkpoint_work_progress(message.context, self.id())
         raw_messages = await self._apply_adaptive_context_policy(
@@ -5027,11 +5324,6 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             # reasoning, self-claims, and prior assistant/tool transcript do
             # not enter the critic provider request.
             raw_messages = self._fresh_acceptance_messages(message.context)
-        public_delivery_reserve_guidance = None
-        if not tool_free_finalization and not independent_acceptance_review:
-            public_delivery_reserve_guidance = (
-                self._public_delivery_reserve_guidance(message.context)
-            )
         if not tool_free_finalization:
             from aworld.runners.execution_protocol import (
                 consume_execution_protocol_guidance,
@@ -5043,14 +5335,6 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             if execution_guidance:
                 raw_messages = list(raw_messages)
                 raw_messages.append({"role": "user", "content": execution_guidance})
-            if public_delivery_reserve_guidance:
-                raw_messages = list(raw_messages)
-                raw_messages.append(
-                    {
-                        "role": "user",
-                        "content": public_delivery_reserve_guidance,
-                    }
-                )
         if transient_model_recovery_turn and not tool_free_finalization:
             raw_messages = list(raw_messages)
             raw_messages.append(
@@ -5100,31 +5384,26 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             tools = None
         else:
             tools = await self._filter_tools(message.context)
-            tools, execution_control_offer = (
-                self._with_long_horizon_execution_profile(
-                    tools,
-                    message.context,
-                )
+            tools, execution_control_offer = self._with_long_horizon_execution_profile(
+                tools,
+                message.context,
             )
             if execution_control_offer.decision_boundary is not None:
                 kwargs = dict(kwargs)
                 kwargs["tool_choice"] = "required"
             tools = self._with_model_review_control(tools, message.context)
             tools = self._with_acceptance_probe_control(tools, message.context)
-            if (
-                public_delivery_reserve_guidance
-                and self._public_delivery_write_tool_available(tools)
-            ):
-                kwargs = dict(kwargs)
-                kwargs["tool_choice"] = "required"
             if independent_acceptance_review:
                 from aworld.runners.execution_protocol import (
                     load_acceptance_critic_state,
                 )
 
-                if load_acceptance_critic_state(
-                    message.context, self.id()
-                ).get("status") == "observed":
+                if (
+                    load_acceptance_critic_state(message.context, self.id()).get(
+                        "status"
+                    )
+                    == "observed"
+                ):
                     tools = None
         progressive_tool_base_tools = getattr(
             self.llm, "_context_progressive_tool_base_tools", None
@@ -5133,13 +5412,42 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             getattr(self.llm, "_context_progressive_tools", True)
             and progressive_tool_base_tools is not None
         )
+        pending_exact_action_tool = None
+        if (
+            explicit_progressive_catalog
+            and execution_control_offer.decision_boundary is None
+        ):
+            try:
+                from aworld.runners.execution_protocol import (
+                    load_execution_protocol_state,
+                )
+
+                protocol_state = load_execution_protocol_state(
+                    message.context, self.id()
+                )
+                if (
+                    protocol_state.next_action_alignment_pending
+                    and protocol_state.model_plan_update is not None
+                ):
+                    pending_exact_action_tool = (
+                        protocol_state.model_plan_update.next_action_tool
+                    )
+            except Exception:
+                # Progressive projection remains fail-open; the controller
+                # will classify an unavailable next action from observations.
+                pending_exact_action_tool = None
         # Keep the bounded readback action stable from the first request. A
         # recovery must not have to expand the progressive catalog mid-task.
         if explicit_progressive_catalog:
             from aworld.core.context.budget_recovery import READ_TOOL
 
-            if any(tool.get("function", {}).get("name") == READ_TOOL for tool in (tools or ())):
-                progressive_tool_base_tools = tuple(dict.fromkeys((*progressive_tool_base_tools, READ_TOOL)))
+            if any(
+                tool.get("function", {}).get("name") == READ_TOOL
+                for tool in (tools or ())
+            ):
+                progressive_tool_base_tools = tuple(
+                    dict.fromkeys((*progressive_tool_base_tools, READ_TOOL))
+                )
         available_tool_ids = tuple(
             str(function.get("name"))
             for schema in (tools or ())
@@ -5265,6 +5573,19 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                         if progressive_skill_proposal is not None
                         else ()
                     )
+                    if pending_exact_action_tool in available_tool_ids:
+                        # A decision turn sees the permission-filtered catalog
+                        # before progressive projection. Retain exactly the
+                        # declared Tool until its first observed action, then
+                        # normal projection contracts the catalog again.
+                        skill_requested_tools = tuple(
+                            dict.fromkeys(
+                                (
+                                    *skill_requested_tools,
+                                    pending_exact_action_tool,
+                                )
+                            )
+                        )
                     if (
                         getattr(
                             self.llm,
@@ -5300,7 +5621,9 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                     self.id(),
                     candidate_catalog,
                     action=(
-                        CatalogChangeAction.DEFER_NEXT_EPOCH
+                        CatalogChangeAction.ACCEPT_CURRENT_EPOCH
+                        if pending_exact_action_tool in available_tool_ids
+                        else CatalogChangeAction.DEFER_NEXT_EPOCH
                         if (
                             getattr(self.llm, "_context_progressive_tools", True)
                             and context_compiler_mode == "enforce"
@@ -5346,6 +5669,18 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                     "Task Tool Catalog tracking failed; "
                     f"error_type={type(exc).__name__}"
                 )
+        reasoning_phase = self._reasoning_phase_for_turn(
+            decision_boundary=execution_control_offer.decision_boundary,
+            independent_acceptance_review=independent_acceptance_review,
+            model_owned_review=model_owned_review,
+            tool_free_finalization=tool_free_finalization,
+            role_reasoning_phase=getattr(self, "reasoning_phase_override", None),
+        )
+        kwargs, reasoning_selection = self._apply_reasoning_phase_policy(
+            kwargs,
+            phase=reasoning_phase,
+        )
+
         prompt_assembly_plan, messages, prompt_assembly_observability = (
             self._build_prompt_assembly_state(
                 context=message.context,
@@ -5357,9 +5692,7 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         # Retain the owner that produced the plan.  The transport provider
         # below has a different responsibility and cannot attest prompt
         # section stability.
-        prompt_assembly_provider = self._get_prompt_assembly_provider(
-            message.context
-        )
+        prompt_assembly_provider = self._get_prompt_assembly_provider(message.context)
 
         # Provider structural lowering is part of the final compiler input,
         # not an unobserved post-compile mutation. The LLM model boundary runs
@@ -5402,6 +5735,7 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                 "temperature": float(self.conf.llm_config.llm_temperature),
                 "max_tokens": kwargs.get("max_tokens"),
                 "stop": kwargs.get("stop"),
+                "reasoning_selection": reasoning_selection,
             },
         )
         self._safe_update_llm_call_observability(
@@ -5429,6 +5763,11 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             }
             kwargs["response_parse_args"] = response_parse_args
             kwargs["prepared_tools"] = tools
+            from aworld.models.reasoning_policy import (
+                AWORLD_REASONING_SELECTION_KWARG,
+            )
+
+            kwargs[AWORLD_REASONING_SELECTION_KWARG] = reasoning_selection
             if context_compiler_mode != "off":
                 try:
                     from aworld.agents.final_context_adapter import (
@@ -5624,11 +5963,25 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                             # continuation would multiply the two retry loops.
                             execution_decision_feedback = None
                         elif execution_decision_outcome == "acknowledged":
-                            execution_decision_feedback = (
-                                "AWorld recorded the model-owned execution checkpoint. "
-                                "Resume with ordinary Tools and execute the bounded "
-                                "next action from that checkpoint."
+                            from aworld.runners.execution_protocol import (
+                                execution_protocol_requires_tool_free_finalization,
                             )
+
+                            if execution_protocol_requires_tool_free_finalization(
+                                message.context, self.id()
+                            ):
+                                execution_decision_feedback = (
+                                    "AWorld recorded the model-owned terminal delivery "
+                                    "intent. Continue into Tool-free finalization and "
+                                    "return the best current result without inventing "
+                                    "verification or uncertainty."
+                                )
+                            else:
+                                execution_decision_feedback = (
+                                    "AWorld recorded the model-owned execution checkpoint. "
+                                    "Resume with ordinary Tools and execute the bounded "
+                                    "next action from that checkpoint."
+                                )
                         elif execution_decision_outcome == "retry":
                             execution_decision_feedback = (
                                 "The required AWorld execution checkpoint was missing, "
@@ -5647,10 +6000,8 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                                 "review bypass."
                             )
                     if agent_result.is_call_tool:
-                        review_repair_requested = (
-                            self._consume_model_review_control(
-                                agent_result, message.context
-                            )
+                        review_repair_requested = self._consume_model_review_control(
+                            agent_result, message.context
                         )
                         if not independent_acceptance_review:
                             self._consume_public_probe_controls(
@@ -5793,9 +6144,9 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                             if isinstance(llm_response.message, dict):
                                 llm_response.message = dict(llm_response.message)
                                 llm_response.message["content"] = incomplete_text
-                                llm_response.message[
-                                    "aworld_incomplete_reason"
-                                ] = "acceptance_evidence_missing"
+                                llm_response.message["aworld_incomplete_reason"] = (
+                                    "acceptance_evidence_missing"
+                                )
                             agent_result = AgentResult(
                                 actions=[
                                     ActionModel(
@@ -5851,9 +6202,9 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                             if isinstance(llm_response.message, dict):
                                 llm_response.message = dict(llm_response.message)
                                 llm_response.message["content"] = incomplete_text
-                                llm_response.message[
-                                    "aworld_incomplete_reason"
-                                ] = "acceptance_evidence_missing"
+                                llm_response.message["aworld_incomplete_reason"] = (
+                                    "acceptance_evidence_missing"
+                                )
                             agent_result = AgentResult(
                                 actions=[
                                     ActionModel(
@@ -5966,9 +6317,9 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                         if isinstance(llm_response.message, dict):
                             llm_response.message = dict(llm_response.message)
                             llm_response.message["content"] = final_text
-                            llm_response.message[
-                                "aworld_incomplete_reason"
-                            ] = "delivery_validation_unsatisfied"
+                            llm_response.message["aworld_incomplete_reason"] = (
+                                "delivery_validation_unsatisfied"
+                            )
                             llm_response.message["aworld_recoverable"] = False
                         agent_result = AgentResult(
                             actions=[
@@ -6015,7 +6366,30 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                 logger.error(f"{self.id()} failed to get LLM response")
                 raise AWorldRuntimeException(f"{self.id()} failed to get LLM response")
 
-        logger.info(f"agent_result: {agent_result}")
+        result_actions = tuple(getattr(agent_result, "actions", ()) or ())
+        logger.info(
+            "agent_result summary: "
+            + json.dumps(
+                {
+                    "action_count": len(result_actions),
+                    "tool_action_count": sum(
+                        bool(
+                            getattr(action, "tool_name", None)
+                            or getattr(action, "action_name", None)
+                        )
+                        for action in result_actions
+                    ),
+                    "policy_info_chars": sum(
+                        len(value)
+                        for action in result_actions
+                        for value in (getattr(action, "policy_info", None),)
+                        if isinstance(value, str)
+                    ),
+                    "is_call_tool": bool(getattr(agent_result, "is_call_tool", False)),
+                },
+                sort_keys=True,
+            )
+        )
 
         if execution_decision_feedback:
             recursive_kwargs = {
@@ -6507,8 +6881,18 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         contract = getattr(message.context, "completion_contract", None)
         maximum_repairs = contract.max_repairs if contract is not None else 1
         if maximum_repairs is not None and retry_count >= maximum_repairs:
-            from aworld.core.context.execution_state import record_execution_state, checkpoint_execution_state
-            record_execution_state(message.context, self.id(), "incomplete", "validation_repair_exhausted", recoverable=False)
+            from aworld.core.context.execution_state import (
+                record_execution_state,
+                checkpoint_execution_state,
+            )
+
+            record_execution_state(
+                message.context,
+                self.id(),
+                "incomplete",
+                "validation_repair_exhausted",
+                recoverable=False,
+            )
             await checkpoint_execution_state(message.context)
             self._finished = True
             return [
@@ -6556,7 +6940,9 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             }
         }
         if iterative:
-            return _ValidationRepairContinuation(followup_observation, recursive_kwargs, validation_feedback)
+            return _ValidationRepairContinuation(
+                followup_observation, recursive_kwargs, validation_feedback
+            )
         try:
             return await self.async_policy(
                 followup_observation,
@@ -6567,27 +6953,44 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         except Exception as exc:
             if not self._should_degrade_result_validation_retry_error(exc):
                 raise
-            return await self._degrade_result_validation_retry(message, validation_feedback, exc)
+            return await self._degrade_result_validation_retry(
+                message, validation_feedback, exc
+            )
 
     async def _degrade_result_validation_retry(self, message, validation_feedback, exc):
         logger.warning(
             "Result validation follow-up degraded for agent %s after LLM retry failure: %s",
-            self.id(), exc,
+            self.id(),
+            exc,
         )
-        message.context.context_info.pop(self._result_validation_retry_key(self.id()), None)
-        from aworld.core.context.execution_state import record_execution_state, checkpoint_execution_state
-        record_execution_state(message.context, self.id(), "incomplete", "validation_repair_unavailable", recoverable=False)
+        message.context.context_info.pop(
+            self._result_validation_retry_key(self.id()), None
+        )
+        from aworld.core.context.execution_state import (
+            record_execution_state,
+            checkpoint_execution_state,
+        )
+
+        record_execution_state(
+            message.context,
+            self.id(),
+            "incomplete",
+            "validation_repair_unavailable",
+            recoverable=False,
+        )
         await checkpoint_execution_state(message.context)
         self._finished = True
-        return [ActionModel(
-            agent_name=self.id(),
-            policy_info=(
-                f"{validation_feedback}\n"
-                "The follow-up validation round failed because the model returned an empty or invalid "
-                "response. I cannot confirm the task is complete with the current evidence, so I am not "
-                "claiming success."
-            ),
-        )]
+        return [
+            ActionModel(
+                agent_name=self.id(),
+                policy_info=(
+                    f"{validation_feedback}\n"
+                    "The follow-up validation round failed because the model returned an empty or invalid "
+                    "response. I cannot confirm the task is complete with the current evidence, so I am not "
+                    "claiming success."
+                ),
+            )
+        ]
 
     async def execution_tools(
         self, actions: List[ActionModel], message: Message = None, **kwargs
@@ -6791,6 +7194,12 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         executables = self._public_executable_hints(context)
         if not artifacts and not executables:
             return messages
+        if artifacts:
+            from aworld.runners.post_tool_progress import (
+                capture_public_deliverable_baseline,
+            )
+
+            capture_public_deliverable_baseline(context)
         if any(
             item.get("role") == "system"
             and _PUBLIC_DELIVERABLE_PROMPT_MARKER in str(item.get("content", ""))
@@ -6798,8 +7207,7 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         ):
             return messages
         paths = "\n".join(
-            f"- {item['display_path']} (resolved: {item['path']})"
-            for item in artifacts
+            f"- {item['display_path']} (resolved: {item['path']})" for item in artifacts
         )
         deliverable_guidance = (
             "The public task text explicitly names the following output file(s):\n"
@@ -6861,83 +7269,6 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         )
         context.context_info["pre_generation_reserve_metrics"] = metrics
         return True
-
-    def _public_delivery_reserve_guidance(self, context: Context) -> str | None:
-        """Reserve a final Tool-capable window for named public outputs."""
-
-        artifacts = self._public_deliverable_artifacts(context)
-        missing = [
-            item for item in artifacts if not os.path.isfile(item["path"])
-        ]
-        if not missing:
-            return None
-        try:
-            policy = self._resolve_execution_protocol_policy(context)
-            task = context.get_task()
-            remaining = task.remaining_seconds() if task is not None else None
-            total = getattr(task, "timeout", None) if task is not None else None
-        except Exception:
-            return None
-        if (
-            isinstance(remaining, bool)
-            or not isinstance(remaining, (int, float))
-            or not math.isfinite(float(remaining))
-        ):
-            return None
-        delivery_window = 180.0
-        if isinstance(total, (int, float)) and not isinstance(total, bool):
-            delivery_window = min(300.0, max(120.0, float(total) * 0.1))
-        threshold = float(policy.finalization_reserve_seconds) + delivery_window
-        if float(remaining) > threshold:
-            return None
-        metrics = context.context_info.get("public_delivery_reserve_metrics")
-        if not isinstance(metrics, dict):
-            metrics = {}
-        metrics["guidance_count"] = int(metrics.get("guidance_count", 0) or 0) + 1
-        metrics["last_remaining_seconds"] = max(0.0, float(remaining))
-        metrics["delivery_window_seconds"] = delivery_window
-        context.context_info["public_delivery_reserve_metrics"] = metrics
-        names = ", ".join(item["display_path"] for item in missing)
-        return (
-            "AWorld public-delivery reserve: caller time is approaching the "
-            f"tool-free finalization boundary, and named output(s) are still "
-            f"missing: {names}. Stop open-ended exploration. Your next response "
-            "should create or update the smallest honest inspectable candidate "
-            "at the declared path when a write-capable Tool is available. If no "
-            "such Tool is exposed, report that concrete limitation instead of "
-            "claiming delivery. Use any later time to validate and refine the "
-            "candidate. Do not spend this delivery window on another read-only "
-            "probe or dependency installation."
-        )
-
-    @staticmethod
-    def _public_delivery_write_tool_available(
-        tools: Sequence[Dict[str, Any]] | None,
-    ) -> bool:
-        """Conservatively recognize a Tool surface that can create a file."""
-
-        mutation_tokens = {
-            "bash",
-            "copy",
-            "create",
-            "edit",
-            "move",
-            "patch",
-            "save",
-            "shell",
-            "terminal",
-            "upload",
-            "write",
-        }
-        for schema in tools or ():
-            function = schema.get("function") if isinstance(schema, dict) else None
-            name = function.get("name") if isinstance(function, dict) else None
-            if not isinstance(name, str):
-                continue
-            normalized = re.sub(r"[^a-z0-9]+", " ", name.casefold()).split()
-            if mutation_tokens.intersection(normalized):
-                return True
-        return False
 
     def _automatic_generation_budget_policy(
         self,
@@ -7091,9 +7422,7 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             partial_response_context_chars=configured(
                 "generation_partial_response_context_chars", 8192
             ),
-            action_repair_enabled=configured(
-                "generation_action_repair_enabled", False
-            ),
+            action_repair_enabled=configured("generation_action_repair_enabled", False),
         )
         source = (
             "explicit_config"
@@ -7349,9 +7678,7 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             "PoolTimeout",
             "APITimeoutError",
         }
-        return any(
-            cls.__name__ in timeout_type_names for cls in type(exc).__mro__
-        )
+        return any(cls.__name__ in timeout_type_names for cls in type(exc).__mro__)
 
     async def _await_generation_operation(
         self,
@@ -7386,9 +7713,7 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                 except Exception as exc:
                     if self._is_provider_timeout_exception(exc):
                         raise GenerationBudgetExceeded(
-                            controller.receipt(
-                                GenerationStopReason.PROVIDER_TIMEOUT
-                            ),
+                            controller.receipt(GenerationStopReason.PROVIDER_TIMEOUT),
                             source_exception=exc,
                         ) from exc
                     raise
@@ -7397,9 +7722,7 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                 done, _ = await asyncio.wait({operation}, timeout=remaining)
             if operation not in done:
                 await self._cancel_generation_task(operation)
-                raise GenerationBudgetExceeded(
-                    controller.receipt(deadline.reason)
-                )
+                raise GenerationBudgetExceeded(controller.receipt(deadline.reason))
             try:
                 return operation.result()
             except Exception as exc:
@@ -7411,8 +7734,10 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                 raise
         except asyncio.CancelledError:
             current_task = asyncio.current_task()
-            if operation.done() and operation.cancelled() and not (
-                current_task and current_task.cancelling()
+            if (
+                operation.done()
+                and operation.cancelled()
+                and not (current_task and current_task.cancelling())
             ):
                 raise GenerationBudgetExceeded(
                     controller.receipt(GenerationStopReason.PROVIDER_CANCELLED)
@@ -7478,7 +7803,9 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                     continue
 
                 logger.info(
-                    f"llm_agent chunk [agent_name={self.name()}, agent_id={self.id()}]: {chunk}"
+                    "llm_agent chunk summary "
+                    f"[agent_name={self.name()}, agent_id={self.id()}]: "
+                    f"{json.dumps(summarize_llm_payload_for_log(chunk), sort_keys=True)}"
                 )
                 if chunk.content:
                     llm_response.content += chunk.content
@@ -7626,14 +7953,28 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         return None
 
     @staticmethod
-    def _incomplete_model_response(response: ModelResponse | None, reason: str) -> ModelResponse:
+    def _incomplete_model_response(
+        response: ModelResponse | None, reason: str
+    ) -> ModelResponse:
         # Preserve usage/finish metadata for diagnostics; discard executable and
         # unfinished prose rather than presenting a truncated plan as completion.
-        result = copy.copy(response) if response is not None else ModelResponse(id="", model="")
-        result.content = "Work remains incomplete after bounded model-response recovery (" + reason + "). Progress is retained for continuation."
+        result = (
+            copy.copy(response)
+            if response is not None
+            else ModelResponse(id="", model="")
+        )
+        result.content = (
+            "Work remains incomplete after bounded model-response recovery ("
+            + reason
+            + "). Progress is retained for continuation."
+        )
         result.tool_calls = []
-        result.message = {"role": "assistant", "content": result.content,
-                          "aworld_incomplete_reason": reason, "aworld_recoverable": True}
+        result.message = {
+            "role": "assistant",
+            "content": result.content,
+            "aworld_incomplete_reason": reason,
+            "aworld_recoverable": True,
+        }
         return result
 
     @staticmethod
@@ -7819,9 +8160,7 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         self, messages: List[Dict[str, str]] = [], message: Message = None, **kwargs
     ) -> ModelResponse:
         """Run one LLM turn under typed, composable generation deadlines."""
-        finalization_turn = bool(
-            kwargs.pop("_long_horizon_finalization_turn", False)
-        )
+        finalization_turn = bool(kwargs.pop("_long_horizon_finalization_turn", False))
         controller = GenerationBudgetController(
             self._resolve_generation_budget_policy(
                 message.context if message is not None else None,
@@ -7986,15 +8325,24 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                     # A non-empty provider response is not necessarily a completed
                     # action. In particular length-stop batches must be discarded
                     # atomically even if an early call happens to be valid JSON.
-                    incomplete_reason = self._incomplete_model_response_reason(llm_response)
+                    incomplete_reason = self._incomplete_model_response_reason(
+                        llm_response
+                    )
                     if incomplete_reason:
                         if llm_response:
                             usage_process(llm_response.usage, message.context)
-                        from aworld.core.context.execution_state import record_execution_state
-                        record_execution_state(context, self.id(), "incomplete", incomplete_reason)
-                        recovery_context = self._bounded_model_response_recovery_context(
-                            llm_response,
-                            limit=controller.policy.partial_response_context_chars,
+                        from aworld.core.context.execution_state import (
+                            record_execution_state,
+                        )
+
+                        record_execution_state(
+                            context, self.id(), "incomplete", incomplete_reason
+                        )
+                        recovery_context = (
+                            self._bounded_model_response_recovery_context(
+                                llm_response,
+                                limit=controller.policy.partial_response_context_chars,
+                            )
                         )
                         if (
                             attempt < self.llm_max_attempts
@@ -8015,19 +8363,21 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                                 recovery_context=recovery_context,
                                 limit=capsule_limit,
                             )
-                            messages.append({
-                                "role": "user",
-                                "content": (
-                                    "Runtime response recovery: the previous model response was "
-                                    + incomplete_reason
-                                    + ". No tool calls from that response were executed. "
-                                    "Continue from the retained working context without recomputing "
-                                    "it. Return one complete, minimal Tool call that advances the "
-                                    "task. If a concrete deliverable and its core format are already "
-                                    "known, create or update an inspectable candidate now. Provide a "
-                                    "final answer only when the task is actually complete."
-                                ),
-                            })
+                            messages.append(
+                                {
+                                    "role": "user",
+                                    "content": (
+                                        "Runtime response recovery: the previous model response was "
+                                        + incomplete_reason
+                                        + ". No tool calls from that response were executed. "
+                                        "Continue from the retained working context without recomputing "
+                                        "it. Return one complete, minimal Tool call that advances the "
+                                        "task. If a concrete deliverable and its core format are already "
+                                        "known, create or update an inspectable candidate now. Provide a "
+                                        "final answer only when the task is actually complete."
+                                    ),
+                                }
+                            )
                             if tools:
                                 # This retry is an action projection of reasoning
                                 # the model already performed, not another open-
@@ -8051,9 +8401,16 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                             reason=incomplete_reason,
                             content=recovery_context,
                         )
-                        return self._incomplete_model_response(llm_response, incomplete_reason)
-                    from aworld.core.context.execution_state import record_execution_state
-                    record_execution_state(context, self.id(), "running", "model_response_accepted")
+                        return self._incomplete_model_response(
+                            llm_response, incomplete_reason
+                        )
+                    from aworld.core.context.execution_state import (
+                        record_execution_state,
+                    )
+
+                    record_execution_state(
+                        context, self.id(), "running", "model_response_accepted"
+                    )
                     # Check if we got a valid response
                     if llm_response and (
                         llm_response.content
@@ -8061,7 +8418,11 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                         or llm_response.reasoning_content
                     ):
                         logger.info(
-                            f"LLM Execute response: {json.dumps(llm_response.to_dict(), ensure_ascii=False, default=str)}"
+                            "LLM Execute response summary: "
+                            + json.dumps(
+                                summarize_llm_payload_for_log(llm_response),
+                                sort_keys=True,
+                            )
                         )
                         if llm_response:
                             usage_process(llm_response.usage, message.context)
@@ -8093,8 +8454,7 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                 except Exception as e:
                     if isinstance(e, GenerationBudgetExceeded):
                         can_repair = (
-                            e.reason
-                            is GenerationStopReason.ACTIVE_STREAM_OVER_BUDGET
+                            e.reason is GenerationStopReason.ACTIVE_STREAM_OVER_BUDGET
                             and controller.phase is GenerationPhase.PRIMARY
                             and bool(tools)
                             and not controller.repair_attempted
@@ -8110,9 +8470,7 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                                 partial_response=e.partial_response,
                                 source_exception=e.source_exception,
                             )
-                            self._record_generation_budget_exception(
-                                context, scheduled
-                            )
+                            self._record_generation_budget_exception(context, scheduled)
                             if not controller.begin_action_repair():
                                 raise e
                             schedule_turn_cause = getattr(
@@ -8211,7 +8569,10 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                                 headers={"context": message.context},
                             )
                         )
-                        from aworld.core.context.execution_state import record_execution_state
+                        from aworld.core.context.execution_state import (
+                            record_execution_state,
+                        )
+
                         record_execution_state(
                             context,
                             self.id(),
@@ -8491,7 +8852,10 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
     ) -> bool:
         if not agent_result.is_call_tool:
             from aworld.core.context.execution_state import record_execution_state
-            response_metadata = llm_response.message if isinstance(llm_response.message, dict) else {}
+
+            response_metadata = (
+                llm_response.message if isinstance(llm_response.message, dict) else {}
+            )
             reason = response_metadata.get("aworld_incomplete_reason")
             recoverable_reason = bool(
                 reason and response_metadata.get("aworld_recoverable", False)
@@ -8500,18 +8864,35 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             if raw_reason and not reason:
                 self._finished = False
                 if getattr(self, "context", None) is not None:
-                    record_execution_state(self.context, self.id(), "incomplete", raw_reason)
+                    record_execution_state(
+                        self.context, self.id(), "incomplete", raw_reason
+                    )
                 return False
             if not reason and getattr(self, "context", None) is not None:
-                from aworld.core.context.compiler import CompletionMode, CompletionStatus
-                assessment = self.context.assess_completion_contract(agent_claimed_finished=True)
-                if (assessment is not None and assessment.mode is CompletionMode.ENFORCE
-                        and self.context.context_info.get(
-                            "completion_enforcement_explicit", True
-                        ) is not False
-                        and assessment.status is not CompletionStatus.SATISFIED):
+                from aworld.core.context.compiler import (
+                    CompletionMode,
+                    CompletionStatus,
+                )
+
+                assessment = self.context.assess_completion_contract(
+                    agent_claimed_finished=True
+                )
+                if (
+                    assessment is not None
+                    and assessment.mode is CompletionMode.ENFORCE
+                    and self.context.context_info.get(
+                        "completion_enforcement_explicit", True
+                    )
+                    is not False
+                    and assessment.status is not CompletionStatus.SATISFIED
+                ):
                     self._finished = False
-                    record_execution_state(self.context, self.id(), "incomplete", "completion_contract_unsatisfied")
+                    record_execution_state(
+                        self.context,
+                        self.id(),
+                        "incomplete",
+                        "completion_contract_unsatisfied",
+                    )
                     return False
             if recoverable_reason:
                 self._finished = False
@@ -8526,9 +8907,13 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                 return False
             if getattr(self, "context", None) is not None:
                 record_execution_state(
-                    self.context, self.id(), "incomplete" if reason else "succeeded",
+                    self.context,
+                    self.id(),
+                    "incomplete" if reason else "succeeded",
                     reason or "agent_final_response",
-                    recoverable=bool(reason and response_metadata.get("aworld_recoverable", False)),
+                    recoverable=bool(
+                        reason and response_metadata.get("aworld_recoverable", False)
+                    ),
                 )
             self._finished = True
         return self.finished
@@ -8539,18 +8924,29 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             return None
         if (
             self._context_compiler_mode_value() != "enforce"
-            or getattr(self.llm, "_context_checkpoint_policy", "explicit") not in {"adaptive", "budget_pressure"}
+            or getattr(self.llm, "_context_checkpoint_policy", "explicit")
+            not in {"adaptive", "budget_pressure"}
             or not getattr(self.llm, "_context_artifact_offload", True)
         ):
             return None
-        from aworld.core.context.amni.tool.context_knowledge_tool import CONTEXT_KNOWLEDGE
+        from aworld.core.context.amni.tool.context_knowledge_tool import (
+            CONTEXT_KNOWLEDGE,
+        )
         from aworld.core.context.budget_recovery import READ_TOOL
 
         schemas = tool_desc_transform(
-            get_tool_desc(), tools=[CONTEXT_KNOWLEDGE],
+            get_tool_desc(),
+            tools=[CONTEXT_KNOWLEDGE],
             black_tool_actions=getattr(self, "black_tool_actions", {}) or {},
         )
-        return next((schema for schema in schemas if schema.get("function", {}).get("name") == READ_TOOL), None)
+        return next(
+            (
+                schema
+                for schema in schemas
+                if schema.get("function", {}).get("name") == READ_TOOL
+            ),
+            None,
+        )
 
     async def _filter_tools(self, context: Context) -> List[Dict[str, Any]]:
         from aworld.core.context.amni import AmniContext

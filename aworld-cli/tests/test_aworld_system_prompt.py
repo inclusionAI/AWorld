@@ -14,6 +14,7 @@ from aworld_cli.builtin_agents.smllc.agents.aworld_agent import (
     render_aworld_system_prompt,
     resolve_aworld_builtin_subagents,
     resolve_aworld_generation_budget,
+    resolve_aworld_reasoning_configuration,
     resolve_aworld_max_completion_tokens,
     resolve_aworld_max_loop_steps,
     resolve_aworld_tool_surface_enforcement,
@@ -27,6 +28,66 @@ def test_default_aworld_context_enables_knowledge_without_planning_orchestrator(
     assert config.agent_config.automated_cognitive_ingestion is True
     assert config.agent_config.automated_reasoning_orchestrator is False
     assert config.agent_config.neuron_names == ["task_grounding", "skills"]
+
+
+def test_reasoning_configuration_is_inert_unless_explicit(monkeypatch):
+    for name in (
+        "AWORLD_REASONING_PHASE_POLICY",
+        "AWORLD_REASONING_TRANSPORT",
+        "LLM_REASONING_EFFORT",
+        "LLM_ENABLE_THINKING",
+    ):
+        monkeypatch.delenv(name, raising=False)
+
+    policy, params = resolve_aworld_reasoning_configuration()
+
+    assert policy is None
+    assert params == {}
+
+
+def test_reasoning_configuration_preserves_pin_over_balanced_policy(monkeypatch):
+    monkeypatch.setenv("AWORLD_REASONING_PHASE_POLICY", "balanced")
+    monkeypatch.setenv("LLM_REASONING_EFFORT", "max")
+    monkeypatch.setenv("LLM_ENABLE_THINKING", "true")
+
+    policy, params = resolve_aworld_reasoning_configuration()
+
+    assert policy.policy_id == "balanced/v1"
+    assert params == {"reasoning_effort": "max"}
+
+
+def test_reasoning_configuration_mirrors_only_for_explicit_chat_template_transport(
+    monkeypatch,
+):
+    monkeypatch.setenv("LLM_REASONING_EFFORT", "max")
+    monkeypatch.setenv("LLM_ENABLE_THINKING", "true")
+    monkeypatch.setenv("AWORLD_REASONING_TRANSPORT", "openai_chat_template")
+
+    _, params = resolve_aworld_reasoning_configuration()
+
+    assert params == {
+        "reasoning_effort": "max",
+        "extra_body": {
+            "chat_template_kwargs": {
+                "reasoning_effort": "max",
+                "thinking": True,
+            }
+        },
+    }
+
+
+@pytest.mark.parametrize(
+    ("effort", "thinking"),
+    [("off", "true"), ("max", "false")],
+)
+def test_reasoning_configuration_rejects_conflicting_pin(
+    monkeypatch, effort, thinking
+):
+    monkeypatch.setenv("LLM_REASONING_EFFORT", effort)
+    monkeypatch.setenv("LLM_ENABLE_THINKING", thinking)
+
+    with pytest.raises(ValueError, match="conflict"):
+        resolve_aworld_reasoning_configuration()
 
 
 def test_render_aworld_system_prompt_injects_beijing_datetime() -> None:

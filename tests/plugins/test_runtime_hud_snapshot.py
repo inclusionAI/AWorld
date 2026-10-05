@@ -8,10 +8,15 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "aworld-cli" / "src"))
 
-from aworld_cli.executors.local import LocalAgentExecutor
+from aworld_cli.executors.local import (
+    LocalAgentExecutor,
+    _message_output_log_summary,
+    _stream_buffer_log_summary,
+)
 from aworld_cli.executors.stats import (
     StreamTokenStats,
     build_complete_llm_usage_summary,
+    build_llm_diagnostics_summary,
     build_llm_usage_observability,
     resolve_stream_context_window,
 )
@@ -40,6 +45,36 @@ class DummyRuntime(BaseCliRuntime):
 
     def _get_source_location(self):
         return "test://runtime"
+
+
+def test_stream_buffer_log_summary_never_copies_content_or_arguments() -> None:
+    secret = "private-output"
+    summary = _stream_buffer_log_summary(
+        secret * 10_000,
+        [
+            {
+                "function": {
+                    "name": "terminal",
+                    "arguments": secret * 5_000,
+                }
+            }
+        ],
+    )
+
+    assert summary == {
+        "content_chars": len(secret) * 10_000,
+        "tool_call_count": 1,
+        "tool_argument_chars": len(secret) * 5_000,
+    }
+    assert secret not in str(summary)
+
+    message_summary = _message_output_log_summary(
+        SimpleNamespace(data=SimpleNamespace(content=secret)), secret * 3
+    )
+    assert message_summary["output_type"] == "SimpleNamespace"
+    assert message_summary["answer_chars"] == len(secret) * 3
+    assert message_summary["payload"]["content_chars"] == len(secret)
+    assert secret not in str(message_summary)
 
 
 def _get_builtin_steering_plugin_root() -> Path:
@@ -499,6 +534,143 @@ def test_complete_llm_usage_summary_marks_partial_provider_usage_incomplete() ->
     assert usage["usage_call_count"] == 1
     assert usage["total_tokens"] == 12
     assert usage["coverage_complete"] is False
+
+
+def test_llm_diagnostics_summary_keeps_partial_usage_and_timing_explicit() -> None:
+    diagnostics = build_llm_diagnostics_summary(
+        [
+            {
+                "request_id": "root-1",
+                "record_kind": "model_attempt",
+                "status": "success",
+                "usage_reported": True,
+                "usage_normalized": {
+                    "prompt_tokens": 10,
+                    "completion_tokens": 2,
+                    "total_tokens": 12,
+                },
+                "diagnostics": {
+                    "schema_version": "aworld.llm_call_diagnostics.v1",
+                    "usage": {
+                        "reported": True,
+                        "input_tokens": 10,
+                        "output_tokens": 2,
+                        "total_tokens": 12,
+                    },
+                    "timing": {
+                        "reported": True,
+                        "source": "framework",
+                        "duration_ms": 250,
+                    },
+                    "stream": {
+                        "reported": True,
+                        "chunk_count": 3,
+                        "content_chars_observed": 20,
+                        "reasoning_chars_observed": 50,
+                        "tool_call_chunks": 1,
+                        "tool_argument_chars_observed": 8,
+                        "first_chunk_latency_ms": 100,
+                    },
+                },
+            },
+            {
+                "request_id": "root-2",
+                "record_kind": "model_attempt",
+                "status": "cancelled",
+                "usage_reported": False,
+                "usage_normalized": {},
+            },
+        ]
+    )
+
+    assert diagnostics == {
+        "schema_version": "aworld.llm_diagnostics.v1",
+        "call_count": 2,
+        "ledger_consistent": True,
+        "usage": {
+            "reported": False,
+            "reported_call_count": 1,
+            "unreported_call_count": 1,
+            "token_totals_complete": False,
+            "input_tokens": 10,
+            "output_tokens": 2,
+            "total_tokens": 12,
+        },
+        "timing": {
+            "reported": False,
+            "reported_call_count": 1,
+            "unreported_call_count": 1,
+            "total_duration_ms": 250,
+            "max_duration_ms": 250,
+            "first_chunk_reported_call_count": 1,
+            "max_first_chunk_latency_ms": 100,
+        },
+        "stream": {
+            "reported": False,
+            "reported_call_count": 1,
+            "unreported_call_count": 1,
+            "chunk_count": 3,
+            "content_chars_observed": 20,
+            "reasoning_chars_observed": 50,
+            "tool_call_chunks": 1,
+            "tool_argument_chars_observed": 8,
+        },
+    }
+
+
+def test_llm_diagnostics_summary_conflicting_request_id_never_reports_complete() -> None:
+    first = {
+        "request_id": "request-1",
+        "record_kind": "model_attempt",
+        "usage_reported": True,
+        "usage_normalized": {
+            "prompt_tokens": 10,
+            "completion_tokens": 2,
+            "total_tokens": 12,
+        },
+        "diagnostics": {
+            "usage": {
+                "reported": True,
+                "input_tokens": 10,
+                "output_tokens": 2,
+                "total_tokens": 12,
+            },
+            "timing": {"reported": True, "duration_ms": 250},
+            "stream": {
+                "reported": True,
+                "chunk_count": 3,
+                "content_chars_observed": 20,
+            },
+        },
+    }
+    conflicting = {
+        **first,
+        "usage_normalized": {
+            "prompt_tokens": 10,
+            "completion_tokens": 3,
+            "total_tokens": 13,
+        },
+    }
+
+    diagnostics = build_llm_diagnostics_summary([first, conflicting])
+
+    assert diagnostics["call_count"] == 1
+    assert diagnostics["ledger_consistent"] is False
+    assert diagnostics["usage"] == {
+        "reported": False,
+        "reported_call_count": 1,
+        "unreported_call_count": 0,
+        "token_totals_complete": False,
+        "input_tokens": 10,
+        "output_tokens": 2,
+        "total_tokens": 12,
+    }
+    assert diagnostics["timing"]["reported"] is False
+    assert diagnostics["timing"]["reported_call_count"] == 1
+    assert diagnostics["timing"]["total_duration_ms"] == 250
+    assert diagnostics["stream"]["reported"] is False
+    assert diagnostics["stream"]["reported_call_count"] == 1
+    assert diagnostics["stream"]["chunk_count"] == 3
 
 
 def test_complete_llm_usage_summary_deduplicates_identical_request_records() -> None:

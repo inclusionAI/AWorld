@@ -138,6 +138,7 @@ def test_typed_outcome_exports_bounded_execution_protocol_telemetry() -> None:
         "phase": "complete",
         "armed": True,
         "event_count": 4,
+        "last_delivery_intent": "produce_candidate",
     }
     outcome = DirectRunOutcome.from_summary(
         {"results": [{"success": True, "execution_protocol": telemetry}]},
@@ -1177,6 +1178,81 @@ def test_live_partial_summary_uses_reconciled_calls_and_projects_atif_steps() ->
         step["tool_calls"][0]["function_name"]
         for step in trajectory["steps"][1:]
     ] == ["CONTEXT_TOOL", "terminal"]
+
+
+def test_direct_outcome_and_atif_expose_bounded_llm_diagnostics() -> None:
+    from aworld_cli.atif import build_atif_trajectory
+
+    llm_calls = [
+        {
+            "request_id": "request-1",
+            "record_kind": "model_attempt",
+            "status": "success",
+            "usage_reported": False,
+            "usage_normalized": {},
+            "diagnostics": {
+                "schema_version": "aworld.llm_call_diagnostics.v1",
+                "usage": {
+                    "reported": False,
+                    "reason_code": "provider_usage_unreported",
+                },
+                "timing": {
+                    "reported": True,
+                    "source": "framework",
+                    "duration_ms": 1_500,
+                },
+                "stream": {
+                    "reported": True,
+                    "chunk_count": 40,
+                    "content_chars_observed": 500,
+                    "reasoning_chars_observed": 40_000,
+                    "tool_call_chunks": 4,
+                    "tool_argument_chars_observed": 900,
+                    "first_chunk_latency_ms": 300,
+                },
+            },
+        }
+    ]
+    summary = {
+        "results": [
+            {
+                "success": False,
+                "semantic_status": "incomplete",
+                "llm_calls": llm_calls,
+            }
+        ]
+    }
+
+    outcome = DirectRunOutcome.from_summary(
+        summary, status=DirectRunStatus.INCOMPLETE
+    )
+    outcome_payload = outcome.to_dict()
+    atif = build_atif_trajectory(
+        {"llm_calls": llm_calls},
+        prompt="test",
+        agent_name="Aworld",
+        agent_version="dev",
+        run_outcome=outcome_payload,
+    )
+
+    assert outcome_payload["llm_diagnostics"]["usage"]["reported"] is False
+    assert outcome_payload["llm_diagnostics"]["timing"] == {
+        "reported": True,
+        "reported_call_count": 1,
+        "unreported_call_count": 0,
+        "total_duration_ms": 1_500,
+        "max_duration_ms": 1_500,
+        "first_chunk_reported_call_count": 1,
+        "max_first_chunk_latency_ms": 300,
+    }
+    assert (
+        atif["final_metrics"]["extra"]["llm_diagnostics"]
+        == outcome_payload["llm_diagnostics"]
+    )
+    serialized = json.dumps(outcome_payload["llm_diagnostics"], ensure_ascii=False)
+    assert "reasoning_content" not in serialized
+    assert '"arguments"' not in serialized
+    assert len(serialized) < 1_500
 
 
 def test_live_atif_checkpoint_replaces_startup_checkpoint(tmp_path) -> None:
