@@ -167,7 +167,13 @@ class SubagentManager:
         result = await manager.spawn('researcher', 'Search for X')
     """
 
-    def __init__(self, agent: 'Agent', agent_md_search_paths: List[str] = None):
+    def __init__(
+        self,
+        agent: 'Agent',
+        agent_md_search_paths: List[str] = None,
+        *,
+        enable_agent_md_discovery: bool = True,
+    ):
         """
         Initialize SubagentManager for a parent agent.
 
@@ -175,6 +181,8 @@ class SubagentManager:
             agent: The parent Agent instance that owns this manager
             agent_md_search_paths: Optional search paths for agent.md files.
                                    If provided, will be used for lazy scanning on first spawn.
+            enable_agent_md_discovery: Explicitly disable filesystem discovery
+                                       for private, pre-registered managers.
         """
         self.agent = agent
         self._available_subagents: Dict[str, SubagentInfo] = {}
@@ -183,7 +191,10 @@ class SubagentManager:
         self._spawn_tool_instance = None  # Lazy-initialized spawn_subagent tool (per-agent instance)
 
         # Lazy initialization support for agent.md scanning
-        self._scanned_agent_md_files = False  # Whether agent.md files have been scanned
+        if not isinstance(enable_agent_md_discovery, bool):
+            raise TypeError("enable_agent_md_discovery must be a boolean")
+        self._agent_md_discovery_enabled = enable_agent_md_discovery
+        self._scanned_agent_md_files = not enable_agent_md_discovery
         self._agent_md_search_paths = agent_md_search_paths  # Paths to scan (deferred until first spawn)
         self._agent_md_scan_task: Optional[asyncio.Task] = None  # Shared in-flight lazy scan task
 
@@ -405,6 +416,11 @@ class SubagentManager:
         """
         # Fast path: already scanned
         if self._scanned_agent_md_files:
+            return
+        if not self._agent_md_discovery_enabled:
+            # Defensive against callers restoring older serialized state or
+            # tests toggling the compatibility marker directly.
+            self._scanned_agent_md_files = True
             return
 
         async with self._registry_lock:

@@ -161,6 +161,33 @@ class TestLazyInitialization:
             expected_paths = ['./.aworld/agents', '~/.aworld/agents', './agents']
             assert mock_scan.call_args == call(search_paths=expected_paths)
 
+    @pytest.mark.asyncio
+    async def test_private_manager_can_explicitly_disable_agent_md_discovery(self):
+        agent = Mock(spec=Agent)
+        agent.name.return_value = "root"
+        agent.tool_names = []
+        manager = SubagentManager(
+            agent=agent,
+            agent_md_search_paths=[],
+            enable_agent_md_discovery=False,
+        )
+
+        with patch.object(
+            manager, "scan_agent_md_files", new_callable=AsyncMock
+        ) as mock_scan:
+            await manager._ensure_agent_md_scanned()
+
+        assert manager._agent_md_discovery_enabled is False
+        assert manager._scanned_agent_md_files is True
+        mock_scan.assert_not_awaited()
+
+    def test_agent_md_discovery_flag_is_typed(self):
+        agent = Mock(spec=Agent)
+        agent.name.return_value = "root"
+
+        with pytest.raises(TypeError, match="must be a boolean"):
+            SubagentManager(agent=agent, enable_agent_md_discovery="no")
+
 
 if __name__ == '__main__':
     """Run tests directly with pytest"""

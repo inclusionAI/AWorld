@@ -25,6 +25,12 @@ from aworld.core.common import (
     ToolActionInfo,
 )
 from aworld.core.context.generation_budget import GenerationBudgetPolicy
+from aworld.core.context.compiler import (
+    ChildResult,
+    ChildStatus,
+    DelegationSpec,
+    MergePolicy,
+)
 from aworld.core.tool.action import ToolAction
 from aworld.core.tool.base import AsyncTool, ToolFactory
 from aworld.logs.util import logger
@@ -33,7 +39,7 @@ from aworld.logs.util import logger
 ADVISORY_VERIFIER_TOOL = "AWORLD_ADVISORY_VERIFIER"
 ADVISORY_REVIEW_SCHEMA_VERSION = "aworld.advisory-review/v1"
 _VERIFIER_MODULE = (
-    "aworld_cli.builtin_agents.smllc.optional_agents.verifier.verifier"
+    "aworld_cli.builtin_agents.smllc.optional_agents.verifier.builder"
 )
 _MAX_TASK_CHARS = 32_768
 _MAX_CANDIDATE_CHARS = 16_384
@@ -41,6 +47,8 @@ _MAX_EVIDENCE_CHARS = 12_288
 _MAX_DELIVERABLES = 32
 _MAX_DELIVERABLE_CHARS = 1_024
 _MAX_REPORT_CHARS = 16_384
+_REVIEW_TOKEN_BUDGET = 131_072
+_REVIEW_MAX_TURNS = 16
 _READ_ONLY_FILESYSTEM_ACTIONS = frozenset(
     {
         "list_allowed_directories",
@@ -213,9 +221,7 @@ class AdvisoryReviewResult:
 
 
 BuilderLoader = Callable[[], Callable[..., Any]]
-ReviewRunner = Callable[
-    [BaseAgent, BaseAgent, str, Any], Awaitable[str] | str
-]
+ReviewRunner = Callable[[BaseAgent, BaseAgent, str, Any], Awaitable[Any] | Any]
 
 
 class LazyVerifierFactory:
@@ -254,6 +260,12 @@ class LazyVerifierFactory:
         """Expose content-free lifecycle telemetry for tests and diagnostics."""
 
         return self._construction_count
+
+    @property
+    def parent_agent(self) -> BaseAgent:
+        """Return the caller identity this factory is permanently bound to."""
+
+        return self._parent_agent
 
     @staticmethod
     def _load_builder() -> Callable[..., Any]:
@@ -329,6 +341,11 @@ class LazyVerifierFactory:
             )
             if inspect.isawaitable(result):
                 result = await result
+            child_failure = _child_failure_result(result)
+            if child_failure is not None:
+                return child_failure
+            if isinstance(result, ChildResult):
+                result = result.answer
             report = str(result or "").strip()[:_MAX_REPORT_CHARS]
             if not report:
                 return AdvisoryReviewResult(
@@ -383,12 +400,15 @@ class LazyVerifierFactory:
         verifier: BaseAgent,
         directive: str,
         context: Any,
-    ) -> str:
+    ) -> ChildResult:
         """Use the existing fresh-child lifecycle and caller deadline plumbing."""
 
         from aworld.core.agent.subagent_manager import SubagentManager
 
-        manager = SubagentManager(parent_agent, agent_md_search_paths=[])
+        manager = SubagentManager(
+            parent_agent,
+            enable_agent_md_discovery=False,
+        )
         # Registration only publishes this just-created verifier to the private
         # per-invocation manager.  It does not mutate the root swarm or enable
         # the generic spawn-subagent Tool.
@@ -403,12 +423,28 @@ class LazyVerifierFactory:
             },
         )()
         await manager.register_team_members(ephemeral_swarm)
-        return str(
-            await manager.spawn(
-                name="verifier",
-                directive=directive,
-                context=context,
-            )
+        return await manager.spawn(
+            name="verifier",
+            directive=directive,
+            context=context,
+            delegation_spec=DelegationSpec(
+                objective=directive,
+                context_item_ids=(),
+                allowed_tools=(),
+                token_budget=_REVIEW_TOKEN_BUDGET,
+                max_output_tokens=_MAX_REPORT_CHARS,
+                max_turns=_REVIEW_MAX_TURNS,
+                max_depth=1,
+                deadline=None,
+                expected_output_schema={
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": _MAX_REPORT_CHARS,
+                },
+                inference_profile=None,
+                stop_conditions=(),
+                merge_policy=MergePolicy.ANSWER_ONLY,
+            ),
         )
 
 
@@ -454,10 +490,22 @@ class AdvisoryVerifierTool(AsyncTool):
         except ValueError as exc:
             return self._invalid(str(exc))
 
-        factory = self._factory
-        if factory is None:
-            current_agent = BaseAgent._get_current_agent()
-            factory = getattr(current_agent, "lazy_verifier_factory", None)
+        message = kwargs.get("message")
+        context = (
+            getattr(message, "context", None)
+            if message is not None
+            else None
+        )
+        if context is None:
+            context = kwargs.get("context")
+        factory, resolution_error = self._resolve_bound_factory(
+            action_model,
+            context=context,
+        )
+        if resolution_error is not None:
+            return self._invalid(
+                f"advisory verifier caller identity rejected: {resolution_error}"
+            )
         if not isinstance(factory, LazyVerifierFactory):
             result = AdvisoryReviewResult(
                 status="unavailable",
@@ -469,10 +517,6 @@ class AdvisoryVerifierTool(AsyncTool):
                 reason_code="factory_unavailable",
             )
         else:
-            context = kwargs.get("context")
-            message = kwargs.get("message")
-            if context is None and message is not None:
-                context = getattr(message, "context", None)
             if context is None:
                 context = BaseAgent._get_current_context()
             if context is None:
@@ -496,6 +540,77 @@ class AdvisoryVerifierTool(AsyncTool):
             False,
             {"advisory_review": {key: value for key, value in payload.items() if key != "report"}},
         )
+
+    @staticmethod
+    def _agent_info_value(agent_info: Any, key: str) -> Any:
+        if isinstance(agent_info, Mapping):
+            return agent_info.get(key)
+        return getattr(agent_info, key, None)
+
+    @staticmethod
+    def _agent_id(agent: Any) -> str | None:
+        getter = getattr(agent, "id", None)
+        try:
+            value = getter() if callable(getter) else None
+        except Exception:
+            return None
+        return str(value) if value else None
+
+    def _resolve_bound_factory(
+        self,
+        action_model: ActionModel,
+        *,
+        context: Any,
+    ) -> tuple[LazyVerifierFactory | None, str | None]:
+        """Bind a factory to the authoritative caller in the message Context."""
+
+        swarm = getattr(context, "swarm", None) if context is not None else None
+        agents = getattr(swarm, "agents", None)
+        caller = None
+        if isinstance(agents, Mapping) and agents:
+            action_agent_id = str(action_model.agent_name or "").strip()
+            current_agent_id = str(
+                self._agent_info_value(
+                    getattr(context, "agent_info", None),
+                    "current_agent_id",
+                )
+                or ""
+            ).strip()
+            caller_ids = tuple(
+                dict.fromkeys(
+                    value for value in (action_agent_id, current_agent_id) if value
+                )
+            )
+            resolved = []
+            for caller_id in caller_ids:
+                candidate = agents.get(caller_id)
+                if candidate is None:
+                    return None, f"caller_not_in_context_swarm:{caller_id}"
+                resolved.append(candidate)
+            if resolved and any(candidate is not resolved[0] for candidate in resolved):
+                return None, "action_and_context_caller_mismatch"
+            if resolved:
+                caller = resolved[0]
+            else:
+                # Only when the message carries no caller id may the active
+                # contextvar identify a member of this exact authoritative swarm.
+                fallback = BaseAgent._get_current_agent()
+                fallback_id = self._agent_id(fallback)
+                if fallback_id and agents.get(fallback_id) is fallback:
+                    caller = fallback
+                else:
+                    return None, "caller_identity_unavailable"
+        else:
+            # Compatibility path for direct Tool calls without a message swarm.
+            caller = BaseAgent._get_current_agent()
+            if caller is None and self._factory is not None:
+                caller = self._factory.parent_agent
+
+        factory = self._factory or getattr(caller, "lazy_verifier_factory", None)
+        if isinstance(factory, LazyVerifierFactory):
+            if caller is None or factory.parent_agent is not caller:
+                return None, "factory_parent_mismatch"
+        return factory, None
 
     @staticmethod
     def _invalid(message: str):
@@ -526,6 +641,38 @@ def _bounded_optional_text(value: Any, name: str, limit: int) -> str:
     if len(normalized) > limit:
         raise ValueError(f"{name} must not exceed {limit} characters")
     return normalized
+
+
+def _child_failure_result(value: Any) -> AdvisoryReviewResult | None:
+    """Translate structured child lifecycle status without parsing error text."""
+
+    if not isinstance(value, ChildResult):
+        return None
+    if (
+        value.status is ChildStatus.SUCCEEDED
+        and value.schema_validated
+        and isinstance(value.answer, str)
+    ):
+        return None
+    reason_codes = {
+        ChildStatus.DEADLINE_EXCEEDED: "deadline_exceeded",
+        ChildStatus.BUDGET_EXCEEDED: "reviewer_budget_exceeded",
+        ChildStatus.CANCELLED: "reviewer_cancelled",
+        ChildStatus.DEPTH_EXCEEDED: "reviewer_depth_exceeded",
+        ChildStatus.PARTIAL: "reviewer_output_invalid",
+        ChildStatus.FAILED: "reviewer_execution_failed",
+        ChildStatus.SUCCEEDED: "reviewer_output_invalid",
+    }
+    reason_code = reason_codes[value.status]
+    return AdvisoryReviewResult(
+        status="unavailable",
+        decision="uncertain",
+        report=(
+            "The advisory verifier did not produce a usable bounded report "
+            f"({reason_code}). The root agent retains completion authority."
+        ),
+        reason_code=reason_code,
+    )
 
 
 def _authoritative_public_task(context: Any) -> tuple[str, str | None]:
