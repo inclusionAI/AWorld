@@ -15,7 +15,7 @@ import stat
 from typing import Mapping
 from uuid import uuid4
 
-from aworld._version import __version__
+from aworld import __version__
 from aworld.core.agent import Agent
 from aworld.core.agent.messages import AssistantMessage, ToolCall, ToolResultMessage
 from aworld.core.context import BudgetPolicy, Context, ContextBudget

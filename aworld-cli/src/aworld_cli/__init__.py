@@ -1,16 +1,40 @@
 
 
-from importlib.metadata import PackageNotFoundError, version
+from importlib.metadata import PackageNotFoundError, distribution
+from pathlib import Path
 
 
-try:
-    # Resolve the version from the artifact that is actually installed.  The
-    # repository publishes both the synchronized v1 distribution and a
-    # separately versioned Runtime-compatibility CLI wheel.
-    __version__ = version("aworld-cli")
-except PackageNotFoundError:
-    # A source checkout follows the synchronized v1 package version.
-    from aworld._version import __version__
+def _is_source_checkout() -> bool:
+    return (Path(__file__).resolve().parents[2] / "pyproject.toml").is_file()
+
+
+def _resolve_version() -> str:
+    """Return metadata only when it belongs to this imported package tree."""
+
+    if _is_source_checkout():
+        from aworld._version import __version__ as source_version
+
+        return source_version
+
+    try:
+        installed = distribution("aworld-cli")
+        installed_init = Path(
+            installed.locate_file("aworld_cli/__init__.py")
+        ).resolve()
+        if installed_init == Path(__file__).resolve():
+            return installed.version
+    except (OSError, PackageNotFoundError):
+        pass
+
+    # A source or editable checkout follows the synchronized v1 source
+    # version.  In particular, do not trust an unrelated legacy CLI that is
+    # installed elsewhere on sys.path.
+    from aworld._version import __version__ as source_version
+
+    return source_version
+
+
+__version__ = _resolve_version()
 
 
 def __getattr__(name):

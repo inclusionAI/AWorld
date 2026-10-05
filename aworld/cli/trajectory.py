@@ -5,7 +5,7 @@ import os
 from pathlib import Path
 import tempfile
 
-from aworld._version import __version__
+from aworld import __version__
 from aworld.core.agent.usage import summarize_usage
 
 
