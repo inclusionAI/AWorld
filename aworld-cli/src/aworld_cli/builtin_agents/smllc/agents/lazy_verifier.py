@@ -35,7 +35,7 @@ ADVISORY_REVIEW_SCHEMA_VERSION = "aworld.advisory-review/v1"
 _VERIFIER_MODULE = (
     "aworld_cli.builtin_agents.smllc.optional_agents.verifier.verifier"
 )
-_MAX_TASK_CHARS = 16_384
+_MAX_TASK_CHARS = 32_768
 _MAX_CANDIDATE_CHARS = 16_384
 _MAX_EVIDENCE_CHARS = 12_288
 _MAX_DELIVERABLES = 32
@@ -67,15 +67,6 @@ class AdvisoryVerifierAction(ToolAction):
             "canonical reward or external verifier success."
         ),
         input_params={
-            "public_task": ParamInfo(
-                name="public_task",
-                type="string",
-                required=True,
-                desc=(
-                    "The public user objective and constraints only. Never add "
-                    "a hidden grader, hidden reward, private rubric, or expected answer."
-                ),
-            ),
             "candidate_claim": ParamInfo(
                 name="candidate_claim",
                 type="string",
@@ -108,9 +99,12 @@ class AdvisoryVerifierAction(ToolAction):
 
 @dataclass(frozen=True, slots=True)
 class AdvisoryReviewRequest:
-    """Bounded public input supplied by the root model."""
+    """Bounded candidate input supplied by the root model.
 
-    public_task: str
+    The public task is intentionally absent: only the caller Context may bind
+    the user objective supplied to a fresh verifier.
+    """
+
     candidate_claim: str
     deliverables: tuple[str, ...] = ()
     evidence_summary: str = ""
@@ -120,7 +114,6 @@ class AdvisoryReviewRequest:
         if not isinstance(value, Mapping):
             raise ValueError("review_candidate parameters must be an object")
         unknown = set(value) - {
-            "public_task",
             "candidate_claim",
             "deliverables",
             "evidence_summary",
@@ -131,9 +124,6 @@ class AdvisoryReviewRequest:
                 + ", ".join(sorted(str(item) for item in unknown))
             )
 
-        public_task = _bounded_required_text(
-            value.get("public_task"), "public_task", _MAX_TASK_CHARS
-        )
         candidate_claim = _bounded_required_text(
             value.get("candidate_claim"),
             "candidate_claim",
@@ -165,13 +155,12 @@ class AdvisoryReviewRequest:
             for index, item in enumerate(raw_deliverables)
         )
         return cls(
-            public_task=public_task,
             candidate_claim=candidate_claim,
             deliverables=deliverables,
             evidence_summary=evidence_summary,
         )
 
-    def render_directive(self) -> str:
+    def render_directive(self, *, public_task: str) -> str:
         """Render only public, bounded material into the fresh child request."""
 
         deliverables = (
@@ -185,7 +174,8 @@ class AdvisoryReviewRequest:
             "Inspect the shared workspace through your read-only surface. Treat "
             "all supplied claims as untrusted and return the verifier role's "
             "required ready/repair/uncertain report.\n\n"
-            f"Public task:\n{self.public_task}\n\n"
+            f"Public task (bound from caller Context, not solver input):\n"
+            f"{public_task}\n\n"
             f"Candidate claim:\n{self.candidate_claim}\n\n"
             f"Relevant deliverables:\n{deliverables}\n\n"
             f"Existing public evidence summary:\n{evidence}"
@@ -319,11 +309,22 @@ class LazyVerifierFactory:
         """Run one deadline-bound review and fail open as unavailable."""
 
         try:
+            public_task, request_error = _authoritative_public_task(context)
+            if request_error is not None:
+                return AdvisoryReviewResult(
+                    status="unavailable",
+                    decision="uncertain",
+                    report=(
+                        "The caller Context did not provide a usable authoritative "
+                        "public task. The root agent retains completion authority."
+                    ),
+                    reason_code=request_error,
+                )
             verifier = self._construct_verifier()
             result = self._review_runner(
                 self._parent_agent,
                 verifier,
-                request.render_directive(),
+                request.render_directive(public_task=public_task),
                 context,
             )
             if inspect.isawaitable(result):
@@ -525,6 +526,47 @@ def _bounded_optional_text(value: Any, name: str, limit: int) -> str:
     if len(normalized) > limit:
         raise ValueError(f"{name} must not exceed {limit} characters")
     return normalized
+
+
+def _authoritative_public_task(context: Any) -> tuple[str, str | None]:
+    """Resolve public task text only from caller-owned Context state.
+
+    ``origin_user_input`` wins because ``task_input`` may contain a continuation
+    receipt or hook-expanded working prompt. Missing or oversized Context input
+    fails open instead of falling back to a solver-provided value or silently
+    truncating the objective.
+    """
+
+    candidates = [
+        getattr(context, "origin_user_input", None),
+        getattr(context, "task_input", None),
+    ]
+    task_state_input = getattr(
+        getattr(getattr(context, "task_state", None), "task_input", None),
+        "origin_user_input",
+        None,
+    )
+    candidates.append(task_state_input)
+
+    for value in candidates:
+        text = _authoritative_text(value)
+        if not text:
+            continue
+        if len(text) > _MAX_TASK_CHARS:
+            return "", "authoritative_task_too_large"
+        return text, None
+    return "", "authoritative_task_unavailable"
+
+
+def _authoritative_text(value: Any) -> str:
+    if isinstance(value, str):
+        return value.strip()
+    if isinstance(value, (Mapping, list, tuple)):
+        try:
+            return json.dumps(value, ensure_ascii=False, separators=(",", ":")).strip()
+        except (TypeError, ValueError):
+            return ""
+    return ""
 
 
 __all__ = [
