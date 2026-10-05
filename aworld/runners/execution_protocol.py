@@ -1006,6 +1006,14 @@ def project_execution_protocol_telemetry(value: Any) -> dict[str, Any] | None:
             "acknowledged",
             "fail_open_unacknowledged",
         },
+        "initial_decision_fail_open_reason": {
+            "provider_unavailable",
+            "model_response_incomplete",
+        },
+        "replan_decision_fail_open_reason": {
+            "provider_unavailable",
+            "model_response_incomplete",
+        },
         "acceptance_disposition": {"complete", "continue", "limit_reached"},
         "acceptance_reason": {
             "acceptance_satisfied",
@@ -1034,7 +1042,9 @@ def project_execution_protocol_telemetry(value: Any) -> dict[str, Any] | None:
         "replan_requested_count",
         "replan_applied_count",
         "initial_decision_attempt_count",
+        "initial_decision_unavailable_count",
         "replan_decision_attempt_count",
+        "replan_decision_unavailable_count",
         "candidate_final_count",
         "final_review_count",
         "repair_count",
@@ -1095,9 +1105,21 @@ def build_execution_protocol_telemetry(context, agent_id: str) -> dict[str, Any]
         "initial_decision_attempt_count": int(
             decisions["initial"].get("attempt_count", 0) or 0
         ),
+        "initial_decision_unavailable_count": int(
+            decisions["initial"].get("unavailable_count", 0) or 0
+        ),
+        "initial_decision_fail_open_reason": decisions["initial"].get(
+            "fail_open_reason"
+        ),
         "replan_decision_status": decisions["replan"].get("status"),
         "replan_decision_attempt_count": int(
             decisions["replan"].get("attempt_count", 0) or 0
+        ),
+        "replan_decision_unavailable_count": int(
+            decisions["replan"].get("unavailable_count", 0) or 0
+        ),
+        "replan_decision_fail_open_reason": decisions["replan"].get(
+            "fail_open_reason"
         ),
         "candidate_final_count": state.candidate_final_count,
         "final_review_count": state.final_review_count,
@@ -1340,6 +1362,75 @@ def record_model_decision_attempt_failure(
             ExecutionProtocolEvent(kind=EventKind.REPLAN_UNACKNOWLEDGED),
         )
     return retry
+
+
+def record_model_decision_unavailable(
+    context,
+    agent_id: str,
+    *,
+    boundary: str,
+    reason: str,
+) -> bool:
+    """Fail open when infrastructure cannot carry a decision boundary.
+
+    Provider transport failures and exhausted incomplete-response recovery are
+    not model-owned semantic choices.  They therefore must not consume the
+    malformed-decision retry loop or keep ordinary task Tools hidden.  The
+    boundary remains explicitly unacknowledged/unknown and never becomes
+    evidence for completion or a short-task bypass.
+    """
+    if boundary not in {"initial", "replan"}:
+        return False
+    if reason not in {"provider_unavailable", "model_response_incomplete"}:
+        return False
+    if execution_protocol_model_decision_boundary(context, agent_id) != boundary:
+        return False
+    state = load_execution_protocol_state(context, agent_id)
+    request_sequence = state.replan_requested_count if boundary == "replan" else 0
+    expected_scope = _model_decision_scope(context, agent_id)
+
+    def update(current):
+        attempts = _normalized_decision_attempts(
+            current, expected_scope=expected_scope
+        )
+        previous = attempts[boundary]
+        if (
+            boundary == "replan"
+            and previous.get("request_sequence") != request_sequence
+        ):
+            previous = {}
+        attempts[boundary] = {
+            # Only complete-but-malformed structured decisions consume the
+            # bounded semantic retry counter. Transport and incomplete-output
+            # failures have their own causal counter.
+            "attempt_count": min(
+                _MAX_DECISION_ATTEMPTS,
+                int(previous.get("attempt_count", 0) or 0),
+            ),
+            "unavailable_count": min(
+                _MAX_TELEMETRY_COUNTER,
+                int(previous.get("unavailable_count", 0) or 0) + 1,
+            ),
+            "request_sequence": request_sequence,
+            "status": (
+                "fail_open_unknown"
+                if boundary == "initial"
+                else "fail_open_unacknowledged"
+            ),
+            "fail_open_reason": reason,
+        }
+        return attempts
+
+    _update_runtime_value(
+        context, agent_id, EXECUTION_PROTOCOL_MODEL_DECISIONS_KEY, update
+    )
+    if boundary == "replan":
+        _apply_event(
+            context,
+            agent_id,
+            ExecutionProtocolEvent(kind=EventKind.REPLAN_UNACKNOWLEDGED),
+        )
+    return True
 
 
 def record_model_execution_profile(
@@ -1795,6 +1886,7 @@ __all__ = [
     "record_model_execution_profile",
     "record_model_decision_boundary",
     "record_model_decision_attempt_failure",
+    "record_model_decision_unavailable",
     "record_model_plan_update",
     "record_public_probe_observations",
     "record_public_probe_plan",

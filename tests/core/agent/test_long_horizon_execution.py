@@ -40,6 +40,7 @@ from aworld.runners.execution_protocol import (
     load_public_probe_receipts,
     record_model_execution_profile,
     record_model_decision_attempt_failure,
+    record_model_decision_unavailable,
     record_public_probe_observations,
     record_public_probe_plan,
     record_tool_protocol_event,
@@ -1089,6 +1090,7 @@ def test_malformed_initial_decision_retries_once_then_fails_open_unknown():
     telemetry = build_execution_protocol_telemetry(context, agent.id())
     assert telemetry["initial_decision_status"] == "fail_open_unknown"
     assert telemetry["initial_decision_attempt_count"] == 2
+    assert telemetry["initial_decision_unavailable_count"] == 0
     assert telemetry.get("model_horizon") is None
 
 
@@ -1136,6 +1138,7 @@ def test_unacknowledged_replan_checkpoint_fails_open_without_claiming_applied():
     telemetry = build_execution_protocol_telemetry(context, agent.id())
     assert telemetry["replan_decision_status"] == "fail_open_unacknowledged"
     assert telemetry["replan_decision_attempt_count"] == 2
+    assert telemetry["replan_decision_unavailable_count"] == 0
 
     record_tool_protocol_event(
         context,
@@ -1156,6 +1159,54 @@ def test_unacknowledged_replan_checkpoint_fails_open_without_claiming_applied():
     assert execution_protocol_model_decision_boundary(context, agent.id()) == (
         "replan"
     )
+
+
+def test_unavailable_replan_fails_open_without_consuming_malformed_retry():
+    context = Context(task_id="replan-provider-unavailable")
+    context.set_task(Task(id="replan-provider-unavailable", timeout=600))
+    policy = ExecutionProtocolPolicy(
+        mode=ProtocolMode.GUIDE,
+        repetition_threshold=1,
+    )
+    agent = _agent(context, policy)
+    agent.skill_configs = {"long-running-agent": {"active": True}}
+    configure_execution_protocol(context, agent.id(), policy)
+    record_model_execution_profile(
+        context,
+        agent.id(),
+        {
+            "horizon": "unknown",
+            "confidence": 0.0,
+            "milestone_count": 1,
+            "expected_tool_actions": 0,
+            "verification_required": True,
+        },
+    )
+    transition = record_tool_protocol_event(
+        context,
+        agent.id(),
+        {"repetition_count": 1, "current_agent_step": 2},
+    )
+
+    assert transition is not None
+    assert execution_protocol_model_decision_boundary(context, agent.id()) == "replan"
+    assert record_model_decision_unavailable(
+        context,
+        agent.id(),
+        boundary="replan",
+        reason="provider_unavailable",
+    )
+    assert execution_protocol_model_decision_boundary(context, agent.id()) is None
+
+    state = ExecutionProtocolStore(context, agent.id(), policy).load()
+    assert state.decision_checkpoint_pending is False
+    assert state.replan_requested_count == 1
+    assert state.replan_applied_count == 0
+    telemetry = build_execution_protocol_telemetry(context, agent.id())
+    assert telemetry["replan_decision_status"] == "fail_open_unacknowledged"
+    assert telemetry["replan_decision_attempt_count"] == 0
+    assert telemetry["replan_decision_unavailable_count"] == 1
+    assert telemetry["replan_decision_fail_open_reason"] == "provider_unavailable"
 
 
 def test_pending_stagnation_checkpoint_exposes_only_required_model_decision():

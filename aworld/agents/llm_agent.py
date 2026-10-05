@@ -167,6 +167,7 @@ _GENERATION_TASKS_LOCK = threading.Lock()
 _LONG_HORIZON_EXECUTION_PROFILE_PARAM = "__aworld_execution_profile"
 _LONG_HORIZON_PLAN_UPDATE_PARAM = "__aworld_plan_update"
 _LONG_HORIZON_DECISION_TOOL = "aworld__execution_decision"
+_LONG_HORIZON_DECISION_BOUNDARY_ATTR = "_aworld_execution_decision_boundary"
 _LONG_HORIZON_HYPOTHESIS_PARAM = "__aworld_hypothesis_id"
 _PUBLIC_PROBE_PARAM = "__aworld_public_probe"
 _ACCEPTANCE_PROBE_PARAM = "__aworld_acceptance_probe"
@@ -4489,6 +4490,20 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                         if transient_details is not None
                         else exc.reason.value
                     )
+                    decision_boundary = getattr(
+                        exc, _LONG_HORIZON_DECISION_BOUNDARY_ATTR, None
+                    )
+                    if decision_boundary is not None:
+                        from aworld.runners.execution_protocol import (
+                            record_model_decision_unavailable,
+                        )
+
+                        record_model_decision_unavailable(
+                            message.context,
+                            self.id(),
+                            boundary=decision_boundary,
+                            reason="provider_unavailable",
+                        )
                     if await self._schedule_transient_model_recovery(
                         message.context,
                         reason=recovery_reason,
@@ -5479,10 +5494,16 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         except asyncio.CancelledError:
             logger.info(f"{self.id()} LLM flow interrupted during invoke_model")
             raise
-        except GenerationBudgetExceeded:
+        except GenerationBudgetExceeded as exc:
             # Preserve typed liveness stops for the outer Agent policy. Auto
             # long-horizon timeouts fail open there; explicit watchdogs keep
             # their existing fail-closed behavior.
+            if execution_control_offer.decision_boundary is not None:
+                setattr(
+                    exc,
+                    _LONG_HORIZON_DECISION_BOUNDARY_ATTR,
+                    execution_control_offer.decision_boundary,
+                )
             raise
         except Exception as e:
             await self._raise_if_task_interrupted(
@@ -5491,7 +5512,14 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                 source_exception=e,
             )
             logger.warn(f"{self.id()} result error: {e}")
-            raise AWorldRuntimeException(str(e)) from e
+            runtime_error = AWorldRuntimeException(str(e))
+            if execution_control_offer.decision_boundary is not None:
+                setattr(
+                    runtime_error,
+                    _LONG_HORIZON_DECISION_BOUNDARY_ATTR,
+                    execution_control_offer.decision_boundary,
+                )
+            raise runtime_error from e
         finally:
             self._safe_record_llm_call_response(message, llm_call_id, llm_response)
             if tool_free_finalization and llm_response:
@@ -5546,15 +5574,39 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                             + ",".join(issue.code.value for issue in exc.issues)
                         )
                         agent_result = AgentResult(actions=[], is_call_tool=False)
-                    execution_decision_outcome = (
-                        self._consume_long_horizon_execution_profile(
-                            agent_result,
-                            message.context,
-                            offer=execution_control_offer,
-                        )
+                    incomplete_decision_state = (
+                        self._recoverable_model_response_state(message.context)
+                        if execution_control_offer.decision_boundary is not None
+                        else None
                     )
+                    if incomplete_decision_state is not None:
+                        from aworld.runners.execution_protocol import (
+                            record_model_decision_unavailable,
+                        )
+
+                        record_model_decision_unavailable(
+                            message.context,
+                            self.id(),
+                            boundary=execution_control_offer.decision_boundary,
+                            reason="model_response_incomplete",
+                        )
+                        execution_decision_outcome = "fail_open"
+                    else:
+                        execution_decision_outcome = (
+                            self._consume_long_horizon_execution_profile(
+                                agent_result,
+                                message.context,
+                                offer=execution_control_offer,
+                            )
+                        )
                     if execution_control_offer.decision_boundary is not None:
-                        if execution_decision_outcome == "acknowledged":
+                        if incomplete_decision_state is not None:
+                            # Let the normal typed model-response recovery path
+                            # retain the incomplete action and resume with the
+                            # ordinary task Tool catalog.  A separate decision
+                            # continuation would multiply the two retry loops.
+                            execution_decision_feedback = None
+                        elif execution_decision_outcome == "acknowledged":
                             execution_decision_feedback = (
                                 "AWorld recorded the model-owned execution checkpoint. "
                                 "Resume with ordinary Tools and execute the bounded "

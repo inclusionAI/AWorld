@@ -24,6 +24,7 @@ from aworld.core.exceptions import AWorldTransientModelError
 from aworld.core.execution_protocol import ExecutionProtocolStore
 from aworld.core.task import Task
 from aworld.models.model_response import Function, ModelResponse, ToolCall
+from aworld.runners.execution_protocol import build_execution_protocol_telemetry
 
 
 class _ToolAgent(Agent):
@@ -489,6 +490,11 @@ async def test_exhausted_transient_provider_retries_resume_with_normal_tools(
 
     assert len(provider_calls) == 4
     assert all(call.get("tools") for call in provider_calls)
+    assert all(
+        call["tools"][0]["function"]["name"] == "aworld__execution_decision"
+        for call in provider_calls[:3]
+    )
+    assert provider_calls[-1]["tools"][0]["function"]["name"] == "workspace__write"
     assert any(
         "transient model-provider interruption" in str(item.get("content", ""))
         for item in provider_calls[-1]["messages"]
@@ -501,6 +507,11 @@ async def test_exhausted_transient_provider_retries_resume_with_normal_tools(
     assert metrics["attempt_count"] == 1
     assert metrics["outcome:recovered"] == 1
     assert metrics["consecutive_failure_count"] == 0
+    protocol = build_execution_protocol_telemetry(agent.context, agent.id())
+    assert protocol["initial_decision_status"] == "fail_open_unknown"
+    assert protocol["initial_decision_attempt_count"] == 0
+    assert protocol["initial_decision_unavailable_count"] == 1
+    assert protocol["initial_decision_fail_open_reason"] == "provider_unavailable"
 
 
 @pytest.mark.asyncio
@@ -581,11 +592,21 @@ async def test_truncated_model_actions_continue_with_tools_until_task_boundary(
     assert all(call.get("tools") for call in provider_calls)
     assert all(
         provider_calls[index].get("tool_choice") == "required"
-        for index in (1, 3, 5)
+        for index in (0, 1, 3, 5)
     )
     assert all(
         "tool_choice" not in provider_calls[index]
-        for index in (0, 2, 4, 6)
+        for index in (2, 4, 6)
+    )
+    assert all(
+        provider_calls[index]["tools"][0]["function"]["name"]
+        == "aworld__execution_decision"
+        for index in (0, 1)
+    )
+    assert all(
+        provider_calls[index]["tools"][0]["function"]["name"]
+        == "workspace__write"
+        for index in (2, 3, 4, 5, 6)
     )
     assert any(
         "Runtime response recovery" in str(item.get("content", ""))
@@ -606,6 +627,14 @@ async def test_truncated_model_actions_continue_with_tools_until_task_boundary(
     metrics = agent.context.context_info["model_response_recovery_metrics"]
     assert metrics["continuation_count"] == 3
     assert metrics["outcome:recovered"] == 1
+    protocol = build_execution_protocol_telemetry(agent.context, agent.id())
+    assert protocol["initial_decision_status"] == "fail_open_unknown"
+    assert protocol["initial_decision_attempt_count"] == 0
+    assert protocol["initial_decision_unavailable_count"] == 1
+    assert (
+        protocol["initial_decision_fail_open_reason"]
+        == "model_response_incomplete"
+    )
     assert (
         agent._model_response_recovery_context_key()
         not in agent.context.context_info
