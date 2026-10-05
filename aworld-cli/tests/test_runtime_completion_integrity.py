@@ -282,6 +282,122 @@ async def test_team_handler_preserves_recoverable_stop_through_direct_outcome(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("foreign_status", "runner_status", "expected_status", "expected_success"),
+    (
+        ("succeeded", "incomplete", "incomplete", False),
+        ("incomplete", "succeeded", "succeeded", True),
+    ),
+)
+async def test_task_handler_rejects_foreign_terminal_execution_state(
+    foreign_status,
+    runner_status,
+    expected_status,
+    expected_success,
+):
+    task = Task(id="runner-task", name="runner-task", input="work")
+    runner_context = Context(task_id=task.id, task_epoch=3)
+    runner_context.set_task(task)
+    record_execution_state(
+        runner_context,
+        "root-agent",
+        runner_status,
+        "runner-state",
+        recoverable=runner_status != "succeeded",
+    )
+    foreign_context = Context(task_id="other-task", task_epoch=3)
+    foreign_context.set_task(
+        Task(id="other-task", name="other-task", input="other")
+    )
+    record_execution_state(
+        foreign_context,
+        "root-agent",
+        foreign_status,
+        "foreign-state",
+        recoverable=foreign_status != "succeeded",
+    )
+
+    class TaskRunner:
+        def __init__(self):
+            self.task = task
+            self.context = runner_context
+            self.start_time = time.time()
+            self._task_response = None
+
+        async def stop(self):
+            return None
+
+    handler = DefaultTaskHandler(TaskRunner())
+    events = [
+        event
+        async for event in handler._do_handle(
+            Message(
+                category=Constants.TASK,
+                payload="foreign terminal answer",
+                headers={"context": foreign_context},
+                topic=TopicType.FINISHED,
+            )
+        )
+    ]
+    response = events[-1].payload
+    assert response.success is expected_success
+    assert response.semantic_status == expected_status
+    assert response.completion_reason == (
+        "runner-state" if expected_status != "succeeded" else None
+    )
+
+
+@pytest.mark.asyncio
+async def test_task_handler_rejects_wrong_epoch_terminal_execution_state():
+    task = Task(id="runner-task", name="runner-task", input="work")
+    runner_context = Context(task_id=task.id, task_epoch=7)
+    runner_context.set_task(task)
+    record_execution_state(
+        runner_context,
+        "root-agent",
+        "incomplete",
+        "runner-state",
+        recoverable=True,
+    )
+    stale_context = Context(task_id=task.id, task_epoch=6)
+    stale_context.set_task(task)
+    record_execution_state(
+        stale_context,
+        "root-agent",
+        "succeeded",
+        "stale-success",
+        recoverable=False,
+    )
+
+    class TaskRunner:
+        def __init__(self):
+            self.task = task
+            self.context = runner_context
+            self.start_time = time.time()
+            self._task_response = None
+
+        async def stop(self):
+            return None
+
+    handler = DefaultTaskHandler(TaskRunner())
+    events = [
+        event
+        async for event in handler._do_handle(
+            Message(
+                category=Constants.TASK,
+                payload="stale terminal answer",
+                headers={"context": stale_context},
+                topic=TopicType.FINISHED,
+            )
+        )
+    ]
+    response = events[-1].payload
+    assert response.success is False
+    assert response.semantic_status == "incomplete"
+    assert response.completion_reason == "runner-state"
+
+
+@pytest.mark.asyncio
 async def test_repeated_prose_is_not_completion():
     async def chat(*args, **kwargs):
         return "I need to continue fixing this."

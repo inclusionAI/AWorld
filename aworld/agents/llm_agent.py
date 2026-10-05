@@ -6830,10 +6830,12 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             "AWorld public-delivery reserve: caller time is approaching the "
             f"tool-free finalization boundary, and named output(s) are still "
             f"missing: {names}. Stop open-ended exploration. Your next response "
-            "must be one complete Tool call that creates or updates the smallest "
-            "honest inspectable candidate at the declared path. Use any later "
-            "time to validate and refine it. Do not spend this delivery window "
-            "on another read-only probe or dependency installation."
+            "should create or update the smallest honest inspectable candidate "
+            "at the declared path when a write-capable Tool is available. If no "
+            "such Tool is exposed, report that concrete limitation instead of "
+            "claiming delivery. Use any later time to validate and refine the "
+            "candidate. Do not spend this delivery window on another read-only "
+            "probe or dependency installation."
         )
 
     def _automatic_generation_budget_policy(

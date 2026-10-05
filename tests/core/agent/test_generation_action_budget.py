@@ -257,7 +257,8 @@ def test_public_delivery_reserve_forces_tool_action_for_missing_output(
     guidance = agent._public_delivery_reserve_guidance(context)
     assert guidance is not None
     assert "result.json" in guidance
-    assert "must be one complete Tool call" in guidance
+    assert "when a write-capable Tool is available" in guidance
+    assert "report that concrete limitation" in guidance
 
     output.write_text("{}")
     assert agent._public_delivery_reserve_guidance(context) is None

@@ -103,11 +103,23 @@ class DefaultTaskHandler(TaskHandler):
         # terminal event before the broader, best-effort Context merge: a
         # transport copy can carry the authoritative incomplete/budget stop
         # even when unrelated ContextState data cannot be merged.
-        terminal_execution_state = (
-            get_execution_state(message.context)
+        runner_execution_state = (
+            get_execution_state(self.runner.context)
             if topic == TopicType.FINISHED
             else None
         )
+        terminal_execution_state = None
+        if topic == TopicType.FINISHED:
+            candidate_execution_state = get_execution_state(message.context)
+            expected_task_id = getattr(self.runner.task, "id", None)
+            expected_task_epoch = getattr(self.runner.context, "task_epoch", None)
+            if (
+                isinstance(candidate_execution_state, dict)
+                and candidate_execution_state.get("task_id") == expected_task_id
+                and candidate_execution_state.get("task_epoch")
+                == expected_task_epoch
+            ):
+                terminal_execution_state = candidate_execution_state
         self.runner.context.merge_context(message.context)
         task_item: TaskItem = message.payload
         if topic == TopicType.SUBSCRIBE_TOOL:
@@ -210,9 +222,12 @@ class DefaultTaskHandler(TaskHandler):
                 ) is not False
                 and completion.status is not CompletionStatus.SATISFIED
             )
-            execution_state = terminal_execution_state or get_execution_state(
-                self.runner.context
-            ) or {}
+            execution_state = (
+                terminal_execution_state
+                or runner_execution_state
+                or get_execution_state(self.runner.context)
+                or {}
+            )
             semantic_status = execution_state.get("status")
             if semantic_status == "running":
                 semantic_status = "incomplete"

@@ -201,6 +201,28 @@ def test_side_effect_filter_applies_to_noun_form_but_keeps_user_imperative(
     assert [item.display_path for item in hints] == ["/app/driver.py"]
 
 
+@pytest.mark.parametrize(
+    "request_text",
+    (
+        "Do not create a file forbidden.txt.",
+        "Never write a file secret.json.",
+        "If you create a file debug.log while investigating, delete it.",
+        "Unless explicitly requested, create a file optional.txt only locally.",
+        "The tests create a file /tmp/test-output.bin while they run.",
+        "The renderer must write a file /tmp/frame.bmp for each frame.",
+        "Example: create a file sample.json to illustrate the format.",
+    ),
+)
+def test_negated_conditional_or_component_outputs_are_not_deliverables(
+    request_text: str,
+    tmp_path: Path,
+) -> None:
+    assert infer_public_deliverable_hints(
+        request_text,
+        workspace_path=tmp_path,
+    ) == ()
+
+
 def test_explicit_output_directory_list_becomes_advisory_deliverables(
     tmp_path: Path,
 ) -> None:

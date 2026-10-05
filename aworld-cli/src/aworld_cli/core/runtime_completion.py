@@ -136,7 +136,38 @@ def _is_described_runtime_side_effect(request: str, match: re.Match[str]) -> boo
     observable.
     """
 
-    prefix = request[max(0, match.start() - 80) : match.start()]
+    prefix = request[max(0, match.start() - 160) : match.start()]
+    clause_start = max(
+        prefix.rfind("\n"),
+        prefix.rfind("."),
+        prefix.rfind("!"),
+        prefix.rfind("?"),
+        prefix.rfind(";"),
+    )
+    clause_prefix = prefix[clause_start + 1 :].strip()
+    # Never manufacture a delivery obligation from a prohibition or a
+    # hypothetical branch.  These advisory hints may trigger required Tool
+    # use near the deadline, so false positives are more harmful than misses.
+    if re.search(
+        r"(?i)(?:\bdo\s+not\b|\bdon['’]?t\b|\bmust\s+not\b|"
+        r"\bshould\s+not\b|\bnever\b|\bwithout\b|\bavoid\b|"
+        r"\bprohibit(?:ed|s)?\b)[^\r\n.!?;]{0,96}$",
+        clause_prefix,
+    ):
+        return True
+    if re.match(r"(?i)^(?:if|unless)\b", clause_prefix):
+        return True
+    # Tests, examples, and supplied components often describe files they
+    # create while running.  Such observations are not instructions to the
+    # Agent, even when the prose uses a bare present-tense verb.
+    if re.search(
+        r"(?i)(?:^|\b)(?:the\s+|this\s+|an?\s+)?"
+        r"(?:tests?|test\s+cases?|examples?|samples?|renderer|program|script|"
+        r"component|application|binary|command|tool)\s*:?\s*"
+        r"(?:(?:will|would|can|could|may|might|should|must)\b\s*)?$",
+        clause_prefix,
+    ):
+        return True
     # A modal directed at the Agent/user is still an explicit task imperative;
     # a modal whose subject is a supplied component describes runtime behavior.
     if re.search(
