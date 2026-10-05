@@ -4218,7 +4218,10 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             capsule.append(
                 {
                     "role": "assistant",
-                    "content": "Non-executable incomplete action context:\n" + bounded(
+                    "content": (
+                        "Non-executable incomplete action context; not a final "
+                        "answer or executable action:\n"
+                    ) + bounded(
                         recovery_context, allocations["recovery"]
                     ),
                 }
@@ -6794,20 +6797,17 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         missing = [
             item for item in artifacts if not os.path.isfile(item["path"])
         ]
-        if not missing or not self._long_horizon_skill_active():
+        if not missing:
             return None
         try:
             policy = self._resolve_execution_protocol_policy(context)
-            state = ExecutionProtocolStore(context, self.id(), policy).load()
             task = context.get_task()
             remaining = task.remaining_seconds() if task is not None else None
             total = getattr(task, "timeout", None) if task is not None else None
         except Exception:
             return None
         if (
-            not state.long_horizon_armed
-            or state.phase not in {ProtocolPhase.EXECUTE, ProtocolPhase.REPAIR}
-            or isinstance(remaining, bool)
+            isinstance(remaining, bool)
             or not isinstance(remaining, (int, float))
             or not math.isfinite(float(remaining))
         ):

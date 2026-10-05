@@ -45,6 +45,33 @@ _PUBLIC_DELIVERABLE_PATTERNS = (
         r"(?:named|called|titled|saved|written|created|generated|exported|stored)"
         r"(?:\s+(?:as|to|at))?\s*[:=]?\s*" + _DELIVERABLE_TOKEN
     ),
+    # Imperative task clauses often put the concrete name immediately after a
+    # file/program noun rather than after "to/as/named", e.g. "Create a
+    # python file /app/filter.py" or "Write a c program image.c".
+    re.compile(
+        r"(?i)\b(?:save|write|create|generate|export|store|produce|implement|build|make)\b"
+        r"\s+(?:me\s+)?(?:an?\s+|the\s+)?"
+        r"(?:[a-z0-9_+#.-]+\s+){0,4}?"
+        r"(?:file|script|program|executable|interpreter)\s+"
+        r"(?:(?:named|called|titled)\s+)?"
+        + _DELIVERABLE_TOKEN
+    ),
+    re.compile(
+        r"(?i)\b(?:write|create|generate|produce|export|store)\s+me\s+"
+        + _DELIVERABLE_TOKEN
+    ),
+    re.compile(
+        r"(?i)\b(?:write|create|generate|produce|implement|build|make)\b"
+        r"[^\r\n.!?]{0,120}?\b(?:named|called|titled)\s+"
+        + _DELIVERABLE_TOKEN
+    ),
+    re.compile(
+        r"(?i)\b(?:call|name)\s+(?:your|the)\s+"
+        r"(?:file|script|program|executable|interpreter)\s+"
+        + _DELIVERABLE_TOKEN
+    ),
+)
+_PUBLIC_DELIVERABLE_IMPERATIVE_TO_PATTERNS = (
     re.compile(
         r"(?i)\b(?:save|write|create|generate|export|store|produce)\b"
         r"[^\r\n.!?]{0,80}?\b(?:to|as|at|named|called|titled)\s+"
@@ -96,6 +123,34 @@ def _matched_deliverable_token(match: re.Match[str]) -> str:
             if isinstance(value, str) and value.strip()
         ),
         "",
+    )
+
+
+def _is_described_runtime_side_effect(request: str, match: re.Match[str]) -> bool:
+    """Reject a component's described side effect as the primary deliverable.
+
+    Public tasks frequently mention files produced *when* a supplied program
+    runs.  A delivery reserve must not tell the model to fabricate that runtime
+    by-product in place of implementing the requested program. Explicit
+    output declarations and imperatives directed at the Agent remain
+    observable.
+    """
+
+    prefix = request[max(0, match.start() - 80) : match.start()]
+    # A modal directed at the Agent/user is still an explicit task imperative;
+    # a modal whose subject is a supplied component describes runtime behavior.
+    if re.search(
+        r"(?i)\b(?:you|the\s+agent)\s+"
+        r"(?:will|would|can|could|may|might|should|must)\s+$",
+        prefix,
+    ):
+        return False
+    return bool(
+        re.search(
+            r"(?i)(?:\b(?:will|would|can|could|may|might|should)\s+|"
+            r"\b(?:is|are|was|were)\s+(?:expected|going|required)\s+to\s+)$",
+            prefix,
+        )
     )
 
 
@@ -163,6 +218,27 @@ def infer_public_deliverable_hints(
     seen: set[str] = set()
     for pattern in _PUBLIC_DELIVERABLE_PATTERNS:
         for match in pattern.finditer(request[:256_000]):
+            if _is_described_runtime_side_effect(request, match):
+                continue
+            resolved = _resolve_public_deliverable(
+                _matched_deliverable_token(match), workspace_path=workspace_path
+            )
+            if resolved is None:
+                continue
+            path, display = resolved
+            key = os.path.normcase(path)
+            if key in seen:
+                continue
+            seen.add(key)
+            discovered.append((path, display))
+            if len(discovered) >= _MAX_PUBLIC_DELIVERABLES:
+                break
+        if len(discovered) >= _MAX_PUBLIC_DELIVERABLES:
+            break
+    for pattern in _PUBLIC_DELIVERABLE_IMPERATIVE_TO_PATTERNS:
+        for match in pattern.finditer(request[:256_000]):
+            if _is_described_runtime_side_effect(request, match):
+                continue
             resolved = _resolve_public_deliverable(
                 _matched_deliverable_token(match), workspace_path=workspace_path
             )
@@ -188,6 +264,8 @@ def infer_public_deliverable_hints(
     for directory_match in _PUBLIC_DELIVERABLE_DIRECTORY_PATTERN.finditer(
         request[:256_000]
     ):
+        if _is_described_runtime_side_effect(request, directory_match):
+            continue
         resolved_directory = _resolve_public_deliverable(
             _matched_deliverable_token(directory_match),
             workspace_path=workspace_path,

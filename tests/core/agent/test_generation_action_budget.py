@@ -223,11 +223,13 @@ def test_pre_generation_check_keeps_solve_window_open_before_reserve(
     assert "pre_generation_reserve_metrics" not in context.context_info
 
 
+@pytest.mark.parametrize("armed", [False, True])
 def test_public_delivery_reserve_forces_tool_action_for_missing_output(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path,
+    armed: bool,
 ) -> None:
-    agent = _long_running_generation_agent(armed=True)
+    agent = _long_running_generation_agent(armed=armed)
     context = agent.context
     context.get_task().timeout = 1800
     output = tmp_path / "result.json"

@@ -131,6 +131,30 @@ class WorkSpace(BaseModel):
             logger.warning(f"Error loading workspace data: {traceback.print_exc()}")
             return None
 
+    async def query_artifacts(
+        self,
+        search_filter: Optional[Dict[str, Any]] = None,
+    ) -> Optional[List[Artifact]]:
+        """Return artifacts whose public metadata matches every filter field.
+
+        ``ApplicationWorkspace`` historically exposed this method while the
+        base ``WorkSpace`` did not. Context transport/deserialization can
+        legitimately restore the base type, so prompt neurons and knowledge
+        services need the same bounded metadata query on both variants.
+        """
+
+        if not search_filter:
+            return None
+        return [
+            artifact
+            for artifact in self.artifacts
+            if isinstance(artifact.metadata, dict)
+            and all(
+                artifact.metadata.get(key) == value
+                for key, value in search_filter.items()
+            )
+        ]
+
     @classmethod
     def from_local_storages(cls, workspace_id: Optional[str] = None,
                             name: Optional[str] = None,

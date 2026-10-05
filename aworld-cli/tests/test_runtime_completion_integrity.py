@@ -15,6 +15,7 @@ from aworld.core.task import Task, TaskResponse
 from aworld.runners.handler.agent import DefaultAgentHandler
 from aworld.runners.handler.task import DefaultTaskHandler
 from aworld_cli import main as main_module
+from aworld_cli.atif import build_atif_trajectory
 from aworld_cli.core.runtime_completion import configure_runtime_completion, resolve_runtime_completion_evidence
 from aworld_cli.executors.continuous import ContinuousExecutor
 from aworld_cli.run_outcome import DirectRunOutcome, DirectRunStatus
@@ -113,8 +114,20 @@ async def test_team_handler_preserves_recoverable_stop_through_direct_outcome(
     expected_outcome,
 ):
     task = Task(id="recoverable", name="recoverable", input="finish work")
-    context = Context(task_id=task.id)
+    # Event processing may clone or fan in contexts. The terminal execution
+    # state is written on the event context, while TaskHandler owns the runner
+    # context. This is the shape that exposed truncated responses as success in
+    # a real direct run.
+    class NonMergingContext(Context):
+        def merge_context(self, other_context):
+            # Completion truth must survive independently from best-effort
+            # merging of the broader data plane.
+            return None
+
+    context = NonMergingContext(task_id=task.id)
     context.set_task(task)
+    event_context = Context(task_id=task.id)
+    event_context.set_task(task)
 
     class RootAgent:
         finished = False
@@ -154,7 +167,7 @@ async def test_team_handler_preserves_recoverable_stop_through_direct_outcome(
         agent_handler = DefaultAgentHandler(agent_runner)
         agent_handler.agent_calls.append(root.id())
         record_execution_state(
-            context,
+            event_context,
             root.id(),
             semantic_status,
             completion_reason,
@@ -164,7 +177,7 @@ async def test_team_handler_preserves_recoverable_stop_through_direct_outcome(
             category=Constants.AGENT,
             sender=root.id(),
             receiver=root.id(),
-            headers={"context": context},
+            headers={"context": event_context},
         )
         routed = [
             event
@@ -254,6 +267,18 @@ async def test_team_handler_preserves_recoverable_stop_through_direct_outcome(
     serialized_summary = json.dumps(outcome.summary, default=str)
     assert "runtime_exception" not in serialized_summary
     assert "infrastructure_failed" not in serialized_summary
+    atif = build_atif_trajectory(
+        projected,
+        prompt="finish work",
+        agent_name="Aworld",
+        agent_version="test",
+        run_outcome=outcome.to_dict(),
+    )
+    assert atif["extra"]["aworld"]["completion_state"] == "incomplete"
+    assert (
+        atif["extra"]["aworld"]["run_outcome"]["semantic_status"]
+        == expected_outcome.value
+    )
 
 
 @pytest.mark.asyncio

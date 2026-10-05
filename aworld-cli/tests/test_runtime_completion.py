@@ -139,6 +139,68 @@ def test_explicit_public_output_filename_becomes_advisory_deliverable(
     assert hints[0].authority == "public_task_advisory"
 
 
+@pytest.mark.parametrize(
+    ("request_text", "expected_display_path"),
+    (
+        (
+            "Create a python file /app/filter.py that removes scripts.",
+            "/app/filter.py",
+        ),
+        ("Write a file eval.scm that evaluates the language.", "eval.scm"),
+        ("Write a c program image.c that produces the requested image.", "image.c"),
+        ("Write me data.comp that's compressed for the supplied decoder.", "data.comp"),
+        (
+            "Implement a MIPS interpreter complete with handling system calls "
+            "called vm.js so I can run it.",
+            "vm.js",
+        ),
+        (
+            "Call your program /app/gpt2.c; I will compile it with gcc.",
+            "/app/gpt2.c",
+        ),
+        (
+            "Create the file /app/pipeline_parallel.py and implement train_step.",
+            "/app/pipeline_parallel.py",
+        ),
+    ),
+)
+def test_common_imperative_output_forms_become_advisory_deliverables(
+    request_text: str,
+    expected_display_path: str,
+    tmp_path: Path,
+) -> None:
+    hints = infer_public_deliverable_hints(
+        request_text,
+        workspace_path=tmp_path,
+    )
+
+    assert [item.display_path for item in hints] == [expected_display_path]
+
+
+def test_described_runtime_side_effect_is_not_a_primary_deliverable(
+    tmp_path: Path,
+) -> None:
+    hints = infer_public_deliverable_hints(
+        "I provided doomgeneric_img.c, which will write each drawn frame to "
+        "/tmp/frame.bmp. Build the doomgeneric_mips ELF for me.",
+        workspace_path=tmp_path,
+    )
+
+    assert all(item.display_path != "/tmp/frame.bmp" for item in hints)
+
+
+def test_side_effect_filter_applies_to_noun_form_but_keeps_user_imperative(
+    tmp_path: Path,
+) -> None:
+    hints = infer_public_deliverable_hints(
+        "The supplied renderer will write a file /tmp/frame.bmp while it runs. "
+        "You should create a python file /app/driver.py to control it.",
+        workspace_path=tmp_path,
+    )
+
+    assert [item.display_path for item in hints] == ["/app/driver.py"]
+
+
 def test_explicit_output_directory_list_becomes_advisory_deliverables(
     tmp_path: Path,
 ) -> None:

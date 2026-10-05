@@ -18,6 +18,7 @@ from aworld.runners.hook.hook_factory import HookFactory
 from aworld.runners.hook.hooks import HookPoint
 from aworld.utils.serialized_util import to_serializable
 from aworld.core.context.compiler import CompletionMode, CompletionStatus
+from aworld.core.context.execution_state import get_execution_state
 
 if TYPE_CHECKING:
     from aworld.runners.event_runner import TaskEventRunner
@@ -97,8 +98,17 @@ class DefaultTaskHandler(TaskHandler):
         logger.debug(f"task handler receive message: {message}")
 
         headers = {"context": message.context}
-        self.runner.context.merge_context(message.context)
         topic = message.topic
+        # Completion state is a typed control-plane record. Read it from the
+        # terminal event before the broader, best-effort Context merge: a
+        # transport copy can carry the authoritative incomplete/budget stop
+        # even when unrelated ContextState data cannot be merged.
+        terminal_execution_state = (
+            get_execution_state(message.context)
+            if topic == TopicType.FINISHED
+            else None
+        )
+        self.runner.context.merge_context(message.context)
         task_item: TaskItem = message.payload
         if topic == TopicType.SUBSCRIBE_TOOL:
             new_tools = message.payload.data
@@ -200,13 +210,9 @@ class DefaultTaskHandler(TaskHandler):
                 ) is not False
                 and completion.status is not CompletionStatus.SATISFIED
             )
-            execution_state = self.runner.context.context_info.get("agent_execution_state", {})
-            if not isinstance(execution_state, dict) or (
-                execution_state.get("schema_version") != "aworld.agent.execution-state/v1"
-                or execution_state.get("task_id") != self.runner.context.task_id
-                or execution_state.get("task_epoch") != getattr(self.runner.context, "task_epoch", None)
-            ):
-                execution_state = {}
+            execution_state = terminal_execution_state or get_execution_state(
+                self.runner.context
+            ) or {}
             semantic_status = execution_state.get("status")
             if semantic_status == "running":
                 semantic_status = "incomplete"
