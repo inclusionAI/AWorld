@@ -13,6 +13,29 @@ from aworld.core.context.compiler.work_state import ADAPTIVE_WORK_STATE_KEY
 from aworld.core.context.execution_state import state_context, checkpoint_execution_state
 
 
+_MAX_OBJECTIVE_CHARS = 8_192
+_MAX_OBLIGATIONS = 32
+
+
+def _bounded_text(value, *, maximum: int):
+    if not isinstance(value, str) or not value.strip():
+        return None
+    return value.strip()[:maximum]
+
+
+def _save(context, agent_id: str, state: dict):
+    """Project one scoped work ledger through all checkpoint surfaces."""
+    key = f"{ADAPTIVE_WORK_STATE_KEY}:{agent_id}"
+    context.context_info[key] = deepcopy(state)
+    writer = getattr(context, "write_task_runtime_state", None)
+    if callable(writer):
+        writer(agent_id, ADAPTIVE_WORK_STATE_KEY, state)
+    put = getattr(context, "put", None)
+    if callable(put):
+        put(key, deepcopy(state))
+    return state
+
+
 def _load(context, agent_id):
     key = f"{ADAPTIVE_WORK_STATE_KEY}:{agent_id}"
     reader = getattr(context, "read_task_runtime_state", None)
@@ -74,6 +97,7 @@ def retain_work_progress(context, agent_id: str, *, plan: str | None = None):
         preserved = {key: value for key, value in state.items() if key in {
             "scope", "carried_from", "public_requirements", "current_task_request", "current_plan",
             "candidate_submission", "pending_artifacts", "validation_evidence",
+            "model_work_checkpoint",
         }}
         def merge_current(current):
             if not isinstance(current, dict) or current.get("scope") not in (None, state["scope"]):
@@ -90,6 +114,113 @@ def retain_work_progress(context, agent_id: str, *, plan: str | None = None):
     if callable(put):
         put(key, deepcopy(state))
     return state
+
+
+def retain_model_work_checkpoint(context, agent_id: str, update):
+    """Persist one bounded model-owned resume decision beside observed evidence.
+
+    The plan fields and candidate id remain explicitly labelled claims.  A
+    workspace candidate evidence block is emitted only when the framework has
+    observed an artifact, artifact requirement, or validation receipt; a model
+    supplied id/reference can never manufacture that snapshot.
+    """
+    owner = state_context(context)
+    state = _load(owner, agent_id)
+    value = dict(update) if isinstance(update, dict) else {}
+    objective_value = (
+        (state.get("public_requirements") or {}).get("text")
+        or getattr(context, "origin_user_input", None)
+        or getattr(context, "task_input", None)
+        or ""
+    )
+    objective_text = _bounded_text(objective_value, maximum=_MAX_OBJECTIVE_CHARS)
+    objective = {
+        "source": "task_input",
+        "content_hash": semantic_fingerprint(objective_value),
+    }
+    if objective_text:
+        objective["text"] = objective_text
+
+    unresolved_obligations = []
+    for item in state.get("pending_artifacts") or ():
+        text = _bounded_text(item, maximum=512)
+        if text and text not in unresolved_obligations:
+            unresolved_obligations.append(text)
+        if len(unresolved_obligations) >= _MAX_OBLIGATIONS:
+            break
+
+    model_plan = {
+        key: deepcopy(value.get(key))
+        for key in (
+            "decision",
+            "horizon",
+            "milestone",
+            "next_action",
+            "verification_plan",
+            "completion_assessment",
+            "assumptions",
+            "retired_approaches",
+            "evidence_refs",
+        )
+        if value.get(key) is not None
+    }
+    checkpoint = {
+        "schema_version": "aworld.model-work-checkpoint/v1",
+        "scope": deepcopy(state["scope"]),
+        "objective": objective,
+        "unresolved_obligations": unresolved_obligations,
+        "model_plan": model_plan,
+        "next_action": _bounded_text(value.get("next_action"), maximum=1024),
+        "candidate_claim": {
+            "authority": "agent_claim",
+            "selected_candidate_id": _bounded_text(
+                value.get("selected_candidate_id"), maximum=128
+            ),
+            "evidence_refs": [
+                text
+                for item in (value.get("evidence_refs") or ())[:16]
+                if (text := _bounded_text(item, maximum=256)) is not None
+            ],
+        },
+    }
+    observed_submissions = [
+        {
+            key: deepcopy(item.get(key))
+            for key in ("path", "requirement_id", "exists", "observed_hash")
+            if item.get(key) is not None
+        }
+        for item in (state.get("candidate_submission") or ())[-16:]
+        if isinstance(item, dict)
+        and (item.get("exists") is True or item.get("observed_hash") is not None)
+    ]
+    validations = [
+        {
+            key: deepcopy(item.get(key))
+            for key in ("command_id", "exit_code", "output_hash", "source")
+            if item.get(key) is not None
+        }
+        for item in (state.get("validation_evidence") or ())[-8:]
+        if isinstance(item, dict)
+    ]
+    artifact_fingerprint = state.get("artifact_fingerprint")
+    if isinstance(artifact_fingerprint, str) or observed_submissions:
+        checkpoint["observed_candidate_evidence"] = {
+            "authority": "framework_observation",
+            "artifact_fingerprint": (
+                artifact_fingerprint[:512]
+                if isinstance(artifact_fingerprint, str)
+                else None
+            ),
+            "candidate_submission": observed_submissions,
+            "validation_evidence": validations,
+        }
+    state["model_work_checkpoint"] = checkpoint
+    _save(owner, agent_id, state)
+    if owner is not context:
+        context.context_info[f"{ADAPTIVE_WORK_STATE_KEY}:{agent_id}"] = deepcopy(
+            state
+        )
+    return deepcopy(checkpoint)
 
 
 async def checkpoint_work_progress(context, agent_id: str, *, force: bool = False):
@@ -136,6 +267,11 @@ def carry_goal_work_state(old_context, new_context, *, agent_id_mapping=None) ->
             evidence["historical"] = True
         for candidate in state.get("candidate_submission", []):
             candidate["historical"] = True
+        observed = (state.get("model_work_checkpoint") or {}).get(
+            "observed_candidate_evidence"
+        )
+        if isinstance(observed, dict):
+            observed["historical"] = True
         key = f"{ADAPTIVE_WORK_STATE_KEY}:{agent_id}"
         new.context_info[key] = deepcopy(state)
         writer = getattr(new, "write_task_runtime_state", None)

@@ -318,7 +318,7 @@ def advance_adaptive_work_state(
                    "sequences": [item["sequence"] for item in repeated]}
                   if len(repeated) >= 3 else None)
     return {
-        **{key: state[key] for key in ("scope", "carried_from", "budget_handoff", "public_requirements", "current_task_request", "current_plan", "candidate_submission", "pending_artifacts", "validation_evidence") if key in state},
+        **{key: state[key] for key in ("scope", "carried_from", "budget_handoff", "public_requirements", "current_task_request", "current_plan", "candidate_submission", "pending_artifacts", "validation_evidence", "model_work_checkpoint") if key in state},
         "failed_operations": failed[-4:],
         "repeated_read_evidence": repetition,
         "schema_version": "aworld.context.adaptive-work-state/v1",
@@ -547,7 +547,7 @@ def _fit_work_state_payload(
             "task_progress": {
                 key: _bounded_projection(state_value, depth=3)
                 for key, state_value in payload.get("task_progress", {}).items()
-                if key in {"pending_artifacts", "repeated_read_evidence", "public_requirements", "public_probe_receipts"}
+                if key in {"pending_artifacts", "repeated_read_evidence", "public_requirements", "public_probe_receipts", "model_work_checkpoint"}
             },
             "projection": {
                 "budget_tokens": ADAPTIVE_WORK_STATE_MAX_TOKENS,
@@ -594,7 +594,7 @@ def adaptive_work_state_message(state: Any) -> dict[str, Any] | None:
         "observed_work": visible_entries,
         "task_progress": {
             key: _bounded_projection(state[key])
-            for key in ("public_requirements", "current_task_request", "current_plan", "candidate_submission", "pending_artifacts", "validation_evidence", "public_probe_receipts", "repeated_read_evidence", "failed_operations")
+            for key in ("public_requirements", "current_task_request", "current_plan", "candidate_submission", "pending_artifacts", "validation_evidence", "model_work_checkpoint", "public_probe_receipts", "repeated_read_evidence", "failed_operations")
             if key in state
         },
     }

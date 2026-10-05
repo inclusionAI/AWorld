@@ -112,6 +112,21 @@ def test_model_execution_profile_has_a_stable_typed_round_trip():
     assert ModelExecutionProfile.from_mapping(profile.to_dict()) == profile
 
 
+def test_model_execution_profile_can_explicitly_remain_unknown():
+    profile = ModelExecutionProfile.from_mapping(
+        {
+            "horizon": "unknown",
+            "confidence": 0.0,
+            "milestone_count": 1,
+            "expected_tool_actions": 0,
+            "verification_required": True,
+        }
+    )
+
+    assert profile.horizon is ExecutionHorizon.UNKNOWN
+    assert ModelExecutionProfile.from_mapping(profile.to_dict()) == profile
+
+
 def test_model_execution_profile_rejects_unknown_fields():
     with pytest.raises(ValueError, match="unknown fields"):
         ModelExecutionProfile.from_mapping(
@@ -261,6 +276,25 @@ def test_state_round_trip_contains_no_raw_task_or_tool_text():
     assert "operation-hash" in payload
     assert "task_input" not in payload
     assert "tool_output" not in payload
+
+
+def test_state_round_trip_distinguishes_requested_and_applied_replans():
+    state = replace(
+        ExecutionProtocolState.initial(
+            ProtocolScope(task_id="task", task_epoch=3, agent_id="agent")
+        ),
+        replan_count=2,
+        replan_requested_count=2,
+        replan_applied_count=1,
+        decision_checkpoint_pending=True,
+    )
+
+    restored = ExecutionProtocolState.from_dict(state.to_dict())
+
+    assert restored.replan_count == 2
+    assert restored.replan_requested_count == 2
+    assert restored.replan_applied_count == 1
+    assert restored.decision_checkpoint_pending is True
 
 
 def test_state_round_trip_preserves_content_free_model_profile():

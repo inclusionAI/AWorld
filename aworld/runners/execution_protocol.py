@@ -35,6 +35,7 @@ EXECUTION_PROTOCOL_PENDING_KEY = "execution_protocol_pending_guidance"
 EXECUTION_PROTOCOL_METRICS_KEY = "execution_protocol_metrics"
 EXECUTION_PROTOCOL_FALLBACK_KEY = "execution_protocol_candidate_fallback"
 EXECUTION_PROTOCOL_MODEL_PROFILE_KEY = "execution_protocol_model_profile_attempt"
+EXECUTION_PROTOCOL_MODEL_DECISIONS_KEY = "execution_protocol_model_decisions"
 EXECUTION_PROTOCOL_HYPOTHESES_KEY = "execution_protocol_hypotheses"
 EXECUTION_PROTOCOL_CRITIC_KEY = "execution_protocol_acceptance_critic"
 EXECUTION_PROTOCOL_PUBLIC_PROBES_KEY = "execution_protocol_public_probes"
@@ -44,6 +45,38 @@ _MAX_FALLBACK_CHARS = 64_000
 _MAX_TELEMETRY_COUNTER = 1_000_000
 _PUBLIC_DELIVERABLE_SCHEMA = "aworld.public-deliverables/v1"
 _PUBLIC_DELIVERABLE_AUTHORITY = "public_task_advisory"
+_MAX_DECISION_ATTEMPTS = 2
+
+
+def _model_decision_scope(context, agent_id: str) -> dict[str, Any]:
+    owner = state_context(context)
+    return {
+        "task_id": getattr(owner, "task_id", None),
+        "task_epoch": getattr(owner, "task_epoch", None),
+        "agent_id": agent_id,
+    }
+
+
+def _normalized_decision_attempts(
+    value: Any, *, expected_scope: Mapping[str, Any]
+) -> dict[str, Any]:
+    if (
+        not isinstance(value, Mapping)
+        or value.get("schema_version") != "aworld.model-decision-attempts/v1"
+        or value.get("scope") != dict(expected_scope)
+    ):
+        return {
+            "schema_version": "aworld.model-decision-attempts/v1",
+            "scope": dict(expected_scope),
+            "initial": {},
+            "replan": {},
+        }
+    return {
+        "schema_version": "aworld.model-decision-attempts/v1",
+        "scope": dict(expected_scope),
+        "initial": dict(value.get("initial") or {}),
+        "replan": dict(value.get("replan") or {}),
+    }
 
 
 def _missing_public_deliverable_names(context) -> tuple[str, ...]:
@@ -962,7 +995,17 @@ def project_execution_protocol_telemetry(value: Any) -> dict[str, Any] | None:
     enums = {
         "mode": {"off", "observe", "guide"},
         "phase": {"execute", "finalize", "review", "repair", "complete"},
-        "model_horizon": {"short", "long"},
+        "model_horizon": {"unknown", "short", "long"},
+        "initial_decision_status": {
+            "retry_required",
+            "acknowledged",
+            "fail_open_unknown",
+        },
+        "replan_decision_status": {
+            "retry_required",
+            "acknowledged",
+            "fail_open_unacknowledged",
+        },
         "acceptance_disposition": {"complete", "continue", "limit_reached"},
         "acceptance_reason": {
             "acceptance_satisfied",
@@ -981,12 +1024,17 @@ def project_execution_protocol_telemetry(value: Any) -> dict[str, Any] | None:
         "implicit_acceptance_created",
         "acceptance_satisfied",
         "legacy_activation_fields_ignored",
+        "decision_checkpoint_pending",
     }
     counters = {
         "event_count",
         "tool_observation_count",
         "stagnant_observations",
         "replan_count",
+        "replan_requested_count",
+        "replan_applied_count",
+        "initial_decision_attempt_count",
+        "replan_decision_attempt_count",
         "candidate_final_count",
         "final_review_count",
         "repair_count",
@@ -1024,6 +1072,12 @@ def build_execution_protocol_telemetry(context, agent_id: str) -> dict[str, Any]
     """Project bounded, content-free protocol state for run diagnostics."""
     policy = execution_protocol_policy(context, agent_id)
     state = ExecutionProtocolStore(context, agent_id, policy).load()
+    decisions = _normalized_decision_attempts(
+        _read_runtime_value(
+            context, agent_id, EXECUTION_PROTOCOL_MODEL_DECISIONS_KEY
+        ),
+        expected_scope=_model_decision_scope(context, agent_id),
+    )
     telemetry = {
         "schema_version": "aworld.execution-protocol-telemetry/v1",
         "mode": policy.mode.value,
@@ -1034,6 +1088,17 @@ def build_execution_protocol_telemetry(context, agent_id: str) -> dict[str, Any]
         "tool_observation_count": state.tool_observation_count,
         "stagnant_observations": state.stagnant_observations,
         "replan_count": state.replan_count,
+        "replan_requested_count": state.replan_requested_count,
+        "replan_applied_count": state.replan_applied_count,
+        "decision_checkpoint_pending": state.decision_checkpoint_pending,
+        "initial_decision_status": decisions["initial"].get("status"),
+        "initial_decision_attempt_count": int(
+            decisions["initial"].get("attempt_count", 0) or 0
+        ),
+        "replan_decision_status": decisions["replan"].get("status"),
+        "replan_decision_attempt_count": int(
+            decisions["replan"].get("attempt_count", 0) or 0
+        ),
         "candidate_final_count": state.candidate_final_count,
         "final_review_count": state.final_review_count,
         "repair_count": state.repair_count,
@@ -1079,6 +1144,11 @@ def _record_transition_metrics(context, transition: ProtocolTransition) -> None:
     metrics["event_count"] = transition.state.event_count
     metrics["tool_observation_count"] = transition.state.tool_observation_count
     metrics["replan_count"] = transition.state.replan_count
+    metrics["replan_requested_count"] = transition.state.replan_requested_count
+    metrics["replan_applied_count"] = transition.state.replan_applied_count
+    metrics["decision_checkpoint_pending"] = (
+        transition.state.decision_checkpoint_pending
+    )
     metrics["final_review_count"] = transition.state.final_review_count
     metrics["repair_count"] = transition.state.repair_count
     metrics["long_horizon_armed"] = transition.state.long_horizon_armed
@@ -1162,21 +1232,89 @@ def record_tool_protocol_event(
 
 
 def execution_protocol_accepts_model_profile(context, agent_id: str) -> bool:
-    """Return whether one optional model profile may still be offered."""
+    """Return whether the initial model-owned decision is still unresolved."""
     policy = execution_protocol_policy(context, agent_id)
     if policy.mode is ProtocolMode.OFF:
         return False
     state = ExecutionProtocolStore(context, agent_id, policy).load()
-    return (
-        not state.long_horizon_armed
-        and state.model_execution_profile is None
-        and _read_runtime_value(
-            context,
-            agent_id,
-            EXECUTION_PROTOCOL_MODEL_PROFILE_KEY,
-        )
-        is None
+    return state.model_execution_profile is None
+
+
+def execution_protocol_model_decision_boundary(
+    context, agent_id: str
+) -> str | None:
+    """Return the pending framework boundary, never a semantic decision."""
+    policy = execution_protocol_policy(context, agent_id)
+    if policy.mode is ProtocolMode.OFF:
+        return None
+    state = ExecutionProtocolStore(context, agent_id, policy).load()
+    attempts = _normalized_decision_attempts(
+        _read_runtime_value(
+            context, agent_id, EXECUTION_PROTOCOL_MODEL_DECISIONS_KEY
+        ),
+        expected_scope=_model_decision_scope(context, agent_id),
     )
+    if state.model_execution_profile is None:
+        if attempts["initial"].get("status") == "fail_open_unknown":
+            return None
+        return "initial"
+    if state.decision_checkpoint_pending:
+        replan = attempts["replan"]
+        if (
+            replan.get("checkpoint_revision") == state.revision
+            and replan.get("status") == "fail_open_unacknowledged"
+        ):
+            return None
+        return "replan"
+    return None
+
+
+def record_model_decision_attempt_failure(
+    context, agent_id: str, *, boundary: str
+) -> bool:
+    """Record a malformed decision and return whether one retry remains."""
+    if boundary not in {"initial", "replan"}:
+        return False
+    if execution_protocol_model_decision_boundary(context, agent_id) != boundary:
+        return False
+    state = load_execution_protocol_state(context, agent_id)
+    checkpoint_revision = state.revision
+    expected_scope = _model_decision_scope(context, agent_id)
+    retry = False
+
+    def update(current):
+        nonlocal retry
+        attempts = _normalized_decision_attempts(
+            current, expected_scope=expected_scope
+        )
+        previous = attempts[boundary]
+        if (
+            boundary == "replan"
+            and previous.get("checkpoint_revision") != checkpoint_revision
+        ):
+            previous = {}
+        count = min(
+            _MAX_DECISION_ATTEMPTS,
+            int(previous.get("attempt_count", 0) or 0) + 1,
+        )
+        retry = count < _MAX_DECISION_ATTEMPTS
+        attempts[boundary] = {
+            "attempt_count": count,
+            "checkpoint_revision": checkpoint_revision,
+            "status": (
+                "retry_required"
+                if retry
+                else "fail_open_unknown"
+                if boundary == "initial"
+                else "fail_open_unacknowledged"
+            ),
+        }
+        return attempts
+
+    _update_runtime_value(
+        context, agent_id, EXECUTION_PROTOCOL_MODEL_DECISIONS_KEY, update
+    )
+    return retry
 
 
 def record_model_execution_profile(
@@ -1186,9 +1324,9 @@ def record_model_execution_profile(
 ) -> ProtocolTransition | None:
     """Validate and record one content-free model activation assessment.
 
-    Malformed or repeated assessments fail open and never block ordinary Tool
-    execution. The attempt marker prevents a bad model response from injecting
-    the same control metadata on every later turn.
+    Malformed or repeated assessments never become a short classification.
+    The explicit decision boundary may offer the schema again until a valid
+    model-owned choice is recorded or the caller deadline enters finalization.
     """
     if not execution_protocol_accepts_model_profile(context, agent_id):
         return None
@@ -1199,7 +1337,7 @@ def record_model_execution_profile(
             context,
             agent_id,
             EXECUTION_PROTOCOL_MODEL_PROFILE_KEY,
-            {"status": "invalid"},
+            {"status": "invalid", "classification": "unknown"},
         )
         return None
     _write_runtime_value(
@@ -1244,6 +1382,15 @@ def record_model_plan_update(
             model_plan_update=update,
         ),
     )
+    if transition.decision.reason.value == "invalid_event":
+        return transition
+    try:
+        from aworld.core.context.work_progress import retain_model_work_checkpoint
+
+        retain_model_work_checkpoint(context, agent_id, update.to_dict())
+    except Exception:
+        # Recovery bookkeeping is advisory and must not revoke normal tools.
+        pass
     try:
         from aworld.runners.post_tool_progress import (
             acknowledge_semantic_checkpoint,
@@ -1255,6 +1402,91 @@ def record_model_plan_update(
     except Exception:
         pass
     return transition
+
+
+def record_model_decision_boundary(
+    context,
+    agent_id: str,
+    *,
+    boundary: str,
+    execution_profile: Mapping[str, Any] | None,
+    plan_update: Mapping[str, Any] | None,
+) -> bool:
+    """Validate and record an explicit model-owned decision acknowledgement.
+
+    The framework chooses neither the horizon nor the plan action.  It only
+    validates a bounded structured response for the currently pending boundary.
+    A malformed or contradictory response leaves the boundary pending and the
+    classification unknown.
+    """
+    if boundary not in {"initial", "replan"}:
+        return False
+    if execution_protocol_model_decision_boundary(context, agent_id) != boundary:
+        return False
+    checkpoint_revision = load_execution_protocol_state(context, agent_id).revision
+    try:
+        update = ModelPlanUpdate.from_mapping(plan_update)
+        profile = (
+            ModelExecutionProfile.from_mapping(execution_profile)
+            if boundary == "initial"
+            else None
+        )
+    except (TypeError, ValueError, KeyError):
+        if boundary == "initial":
+            _write_runtime_value(
+                context,
+                agent_id,
+                EXECUTION_PROTOCOL_MODEL_PROFILE_KEY,
+                {"status": "invalid", "classification": "unknown"},
+            )
+        return False
+    if profile is not None and profile.horizon is not update.horizon:
+        _write_runtime_value(
+            context,
+            agent_id,
+            EXECUTION_PROTOCOL_MODEL_PROFILE_KEY,
+            {"status": "invalid", "classification": "unknown"},
+        )
+        return False
+    if profile is not None:
+        profile_transition = record_model_execution_profile(
+            context, agent_id, profile.to_dict()
+        )
+        if profile_transition is None:
+            return False
+    update_transition = record_model_plan_update(
+        context, agent_id, update.to_dict()
+    )
+    acknowledged = bool(
+        update_transition is not None
+        and update_transition.decision.reason.value != "invalid_event"
+        and execution_protocol_model_decision_boundary(context, agent_id) is None
+    )
+    if acknowledged:
+        expected_scope = _model_decision_scope(context, agent_id)
+
+        def mark_acknowledged(current):
+            attempts = _normalized_decision_attempts(
+                current, expected_scope=expected_scope
+            )
+            previous = attempts[boundary]
+            attempts[boundary] = {
+                "attempt_count": min(
+                    _MAX_DECISION_ATTEMPTS,
+                    max(1, int(previous.get("attempt_count", 0) or 0) + 1),
+                ),
+                "checkpoint_revision": checkpoint_revision,
+                "status": "acknowledged",
+            }
+            return attempts
+
+        _update_runtime_value(
+            context,
+            agent_id,
+            EXECUTION_PROTOCOL_MODEL_DECISIONS_KEY,
+            mark_acknowledged,
+        )
+    return acknowledged
 
 
 def load_model_plan_update(context, agent_id: str) -> dict[str, Any]:
@@ -1513,6 +1745,7 @@ __all__ = [
     "EXECUTION_PROTOCOL_METRICS_KEY",
     "EXECUTION_PROTOCOL_FALLBACK_KEY",
     "EXECUTION_PROTOCOL_MODEL_PROFILE_KEY",
+    "EXECUTION_PROTOCOL_MODEL_DECISIONS_KEY",
     "EXECUTION_PROTOCOL_HYPOTHESES_KEY",
     "EXECUTION_PROTOCOL_CRITIC_KEY",
     "EXECUTION_PROTOCOL_PENDING_KEY",
@@ -1526,11 +1759,14 @@ __all__ = [
     "build_execution_protocol_telemetry",
     "execution_protocol_policy",
     "execution_protocol_accepts_model_profile",
+    "execution_protocol_model_decision_boundary",
     "execution_protocol_requires_tool_free_finalization",
     "final_review_guidance",
     "model_owned_review_active",
     "record_candidate_final",
     "record_model_execution_profile",
+    "record_model_decision_boundary",
+    "record_model_decision_attempt_failure",
     "record_model_plan_update",
     "record_public_probe_observations",
     "record_public_probe_plan",

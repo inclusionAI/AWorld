@@ -166,6 +166,7 @@ _ACTIVE_GENERATION_TASKS: set[asyncio.Task] = set()
 _GENERATION_TASKS_LOCK = threading.Lock()
 _LONG_HORIZON_EXECUTION_PROFILE_PARAM = "__aworld_execution_profile"
 _LONG_HORIZON_PLAN_UPDATE_PARAM = "__aworld_plan_update"
+_LONG_HORIZON_DECISION_TOOL = "aworld__execution_decision"
 _LONG_HORIZON_HYPOTHESIS_PARAM = "__aworld_hypothesis_id"
 _PUBLIC_PROBE_PARAM = "__aworld_public_probe"
 _ACCEPTANCE_PROBE_PARAM = "__aworld_acceptance_probe"
@@ -180,6 +181,7 @@ class _LongHorizonControlOffer:
     owned_parameters: frozenset[str] = frozenset()
     injected_parameters: frozenset[str] = frozenset()
     profile_schema_offered: bool = False
+    decision_boundary: str | None = None
 
     def matches(self, action: ActionModel) -> bool:
         carrier = self.carrier_function_name
@@ -299,6 +301,12 @@ class _ValidationRepairContinuation:
     observation: Observation
     kwargs: dict
     validation_feedback: str = ""
+
+
+@dataclass(frozen=True)
+class _ExecutionDecisionContinuation:
+    observation: Observation
+    kwargs: dict
 
 
 @dataclass(frozen=True)
@@ -989,16 +997,16 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         return {
             "type": "object",
             "description": (
-                "One-time optional AWorld control-plane assessment. On the first "
-                "real Tool call, include it when your current plan credibly needs "
-                "multiple dependent milestones or at least 6 Tool actions. It is "
-                "removed before Tool execution. Omit it only when the work is "
-                "direct or the horizon is genuinely uncertain; never add a Tool "
-                "call solely to classify the task."
+                "Required model-owned horizon choice at AWorld's initial decision "
+                "boundary. Choose unknown when evidence is insufficient; the "
+                "framework does not infer or override this classification."
             ),
             "additionalProperties": False,
             "properties": {
-                "horizon": {"type": "string", "enum": ["short", "long"]},
+                "horizon": {
+                    "type": "string",
+                    "enum": ["unknown", "short", "long"],
+                },
                 "confidence": {"type": "number", "minimum": 0, "maximum": 1},
                 "milestone_count": {
                     "type": "integer",
@@ -1026,11 +1034,9 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         return {
             "type": "object",
             "description": (
-                "Optional AWorld model-owned checkpoint attached to a real Tool "
-                "call. Use it when establishing or revising a milestone, after "
-                "an advisory checkpoint, when changing the task horizon, or when "
-                "selecting a candidate. Its statements are planning claims, not "
-                "verification evidence, and AWorld removes it before execution."
+                "Required model-owned decision at an AWorld planning checkpoint. "
+                "Choose continue or replan and state the next bounded action. Its "
+                "statements are planning claims, never verification evidence."
             ),
             "additionalProperties": False,
             "properties": {
@@ -1038,7 +1044,10 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                     "type": "string",
                     "enum": ["continue", "replan"],
                 },
-                "horizon": {"type": "string", "enum": ["short", "long"]},
+                "horizon": {
+                    "type": "string",
+                    "enum": ["unknown", "short", "long"],
+                },
                 "milestone": {"type": "string", "maxLength": 512},
                 "next_action": {"type": "string", "maxLength": 1024},
                 "verification_plan": {"type": "string", "maxLength": 1024},
@@ -1161,14 +1170,13 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         tools: List[Dict[str, Any]] | None,
         context: Context,
     ) -> tuple[List[Dict[str, Any]] | None, _LongHorizonControlOffer]:
-        """Offer controls on one collision-free real Tool schema."""
+        """Expose an explicit planning boundary or optional per-Tool probes."""
         empty_offer = _LongHorizonControlOffer()
         if not tools or not self._long_horizon_skill_active():
             return tools, empty_offer
         from aworld.runners.execution_protocol import (
             acceptance_critic_active,
-            execution_protocol_accepts_model_profile,
-            load_execution_protocol_state,
+            execution_protocol_model_decision_boundary,
         )
 
         # Strict acceptance uses a fresh, independently constrained request.
@@ -1176,14 +1184,56 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         if acceptance_critic_active(context, self.id()):
             return tools, empty_offer
 
-        offer_profile = execution_protocol_accepts_model_profile(
-            context, self.id()
-        )
-        protocol_state = load_execution_protocol_state(context, self.id())
-        offer_plan_update = (
-            protocol_state.phase in {ProtocolPhase.EXECUTE, ProtocolPhase.REPAIR}
-            and not protocol_state.review_pending
-        )
+        boundary = execution_protocol_model_decision_boundary(context, self.id())
+        if boundary is not None:
+            # This internal control action consumes no user Tool authority and
+            # selects no task strategy. The model must own both classification
+            # and next-step choice before ordinary Tool execution resumes.
+            if any(
+                schema.get("function", {}).get("name")
+                == _LONG_HORIZON_DECISION_TOOL
+                for schema in tools
+                if isinstance(schema, dict)
+            ):
+                return tools, empty_offer
+            properties = {
+                _LONG_HORIZON_PLAN_UPDATE_PARAM: (
+                    self._long_horizon_plan_update_schema()
+                )
+            }
+            required = [_LONG_HORIZON_PLAN_UPDATE_PARAM]
+            injected = {_LONG_HORIZON_PLAN_UPDATE_PARAM}
+            if boundary == "initial":
+                properties[_LONG_HORIZON_EXECUTION_PROFILE_PARAM] = (
+                    self._long_horizon_execution_profile_schema()
+                )
+                required.insert(0, _LONG_HORIZON_EXECUTION_PROFILE_PARAM)
+                injected.add(_LONG_HORIZON_EXECUTION_PROFILE_PARAM)
+            return [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": _LONG_HORIZON_DECISION_TOOL,
+                        "description": (
+                            "AWorld internal model-owned execution checkpoint. "
+                            "Record the requested bounded decision; no user Tool "
+                            "is executed by this action."
+                        ),
+                        "parameters": {
+                            "type": "object",
+                            "additionalProperties": False,
+                            "properties": properties,
+                            "required": required,
+                        },
+                    },
+                }
+            ], _LongHorizonControlOffer(
+                carrier_function_name=_LONG_HORIZON_DECISION_TOOL,
+                owned_parameters=frozenset(injected),
+                injected_parameters=frozenset(injected),
+                profile_schema_offered=boundary == "initial",
+                decision_boundary=boundary,
+            )
 
         augmented = copy.deepcopy(tools)
         carrier = self._long_horizon_control_carrier(augmented)
@@ -1192,16 +1242,6 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         carrier_index, carrier_name = carrier
         properties = augmented[carrier_index]["function"]["parameters"]["properties"]
         injected: set[str] = set()
-        if offer_profile:
-            properties[_LONG_HORIZON_EXECUTION_PROFILE_PARAM] = (
-                self._long_horizon_execution_profile_schema()
-            )
-            injected.add(_LONG_HORIZON_EXECUTION_PROFILE_PARAM)
-        if offer_plan_update:
-            properties[_LONG_HORIZON_PLAN_UPDATE_PARAM] = (
-                self._long_horizon_plan_update_schema()
-            )
-            injected.add(_LONG_HORIZON_PLAN_UPDATE_PARAM)
         properties[_PUBLIC_PROBE_PARAM] = self._public_probe_schema()
         injected.add(_PUBLIC_PROBE_PARAM)
         properties[_LONG_HORIZON_HYPOTHESIS_PARAM] = {
@@ -1224,7 +1264,6 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                 }
             ),
             injected_parameters=frozenset(injected),
-            profile_schema_offered=offer_profile,
         )
 
     def _consume_long_horizon_execution_profile(
@@ -1233,16 +1272,17 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         context: Context,
         *,
         offer: _LongHorizonControlOffer,
-    ) -> None:
-        """Strip control metadata before Tool dispatch and record it once."""
+    ) -> str:
+        """Consume a decision boundary or strip optional per-Tool metadata."""
         if not self._long_horizon_skill_active():
-            return
+            return "not_offered"
         profiles: list[Any] = []
         plan_updates: list[Any] = []
         hypotheses: dict[str, str] = {}
-        for action in result.actions or ():
-            if not offer.matches(action):
-                continue
+        matched_actions = [
+            action for action in (result.actions or ()) if offer.matches(action)
+        ]
+        for action in matched_actions:
             params = getattr(action, "params", None)
             if not isinstance(params, dict):
                 continue
@@ -1276,14 +1316,51 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             from aworld.runners.execution_protocol import record_tool_hypotheses
 
             record_tool_hypotheses(context, self.id(), hypotheses)
-        if profiles and offer.profile_schema_offered:
-            from aworld.runners.execution_protocol import record_model_execution_profile
+        if offer.decision_boundary is None:
+            return "not_offered"
+        if (
+            len(matched_actions) != 1
+            or len(result.actions or ()) != 1
+            or len(plan_updates) != 1
+            or (offer.profile_schema_offered and len(profiles) != 1)
+            or (not offer.profile_schema_offered and profiles)
+        ):
+            from aworld.runners.execution_protocol import (
+                record_model_decision_attempt_failure,
+            )
 
-            record_model_execution_profile(context, self.id(), profiles[0])
-        if len(plan_updates) == 1:
-            from aworld.runners.execution_protocol import record_model_plan_update
+            return (
+                "retry"
+                if record_model_decision_attempt_failure(
+                    context,
+                    self.id(),
+                    boundary=offer.decision_boundary,
+                )
+                else "fail_open"
+            )
+        from aworld.runners.execution_protocol import (
+            record_model_decision_attempt_failure,
+            record_model_decision_boundary,
+        )
 
-            record_model_plan_update(context, self.id(), plan_updates[0])
+        acknowledged = record_model_decision_boundary(
+            context,
+            self.id(),
+            boundary=offer.decision_boundary,
+            execution_profile=(profiles[0] if profiles else None),
+            plan_update=plan_updates[0],
+        )
+        if acknowledged:
+            return "acknowledged"
+        return (
+            "retry"
+            if record_model_decision_attempt_failure(
+                context,
+                self.id(),
+                boundary=offer.decision_boundary,
+            )
+            else "fail_open"
+        )
 
     def _consume_public_probe_controls(
         self,
@@ -4470,7 +4547,11 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                 and not loop_budget_finalization
                 and not isinstance(
                     result,
-                    (_LongHorizonReviewContinuation, _ValidationRepairContinuation),
+                    (
+                        _ExecutionDecisionContinuation,
+                        _LongHorizonReviewContinuation,
+                        _ValidationRepairContinuation,
+                    ),
                 )
             ):
                 reason = str(recoverable_model_state["reason"])
@@ -4616,6 +4697,17 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                     return list(review_fallback)
                 message.context.update_agent_step(self.id())
                 self.loop_step += 1
+                observation, kwargs = result.observation, result.kwargs
+                await asyncio.sleep(0)
+                continue
+            if isinstance(result, _ExecutionDecisionContinuation):
+                await self._raise_if_task_interrupted(
+                    message.context,
+                    reason="model-owned execution checkpoint interrupted",
+                )
+                # This is an internal planning boundary, not a user Tool step.
+                # Caller time/deadline finalization remains the liveness bound;
+                # do not consume the task's semantic Tool-loop allowance.
                 observation, kwargs = result.observation, result.kwargs
                 await asyncio.sleep(0)
                 continue
@@ -4974,6 +5066,9 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                     message.context,
                 )
             )
+            if execution_control_offer.decision_boundary is not None:
+                kwargs = dict(kwargs)
+                kwargs["tool_choice"] = "required"
             tools = self._with_model_review_control(tools, message.context)
             tools = self._with_acceptance_probe_control(tools, message.context)
             if public_delivery_reserve_guidance and tools:
@@ -5240,6 +5335,7 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         agent_result = None
         validation_feedback = None
         long_horizon_review_feedback = None
+        execution_decision_feedback = None
         critic_probe_planned = False
         critic_decision_handled = False
         review_repair_requested = False
@@ -5435,11 +5531,37 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                             + ",".join(issue.code.value for issue in exc.issues)
                         )
                         agent_result = AgentResult(actions=[], is_call_tool=False)
-                    self._consume_long_horizon_execution_profile(
-                        agent_result,
-                        message.context,
-                        offer=execution_control_offer,
+                    execution_decision_outcome = (
+                        self._consume_long_horizon_execution_profile(
+                            agent_result,
+                            message.context,
+                            offer=execution_control_offer,
+                        )
                     )
+                    if execution_control_offer.decision_boundary is not None:
+                        if execution_decision_outcome == "acknowledged":
+                            execution_decision_feedback = (
+                                "AWorld recorded the model-owned execution checkpoint. "
+                                "Resume with ordinary Tools and execute the bounded "
+                                "next action from that checkpoint."
+                            )
+                        elif execution_decision_outcome == "retry":
+                            execution_decision_feedback = (
+                                "The required AWorld execution checkpoint was missing, "
+                                "malformed, duplicated, or internally contradictory. "
+                                "No user Tool was executed. One bounded retry remains: "
+                                "emit exactly one structured checkpoint decision and "
+                                "choose horizon=unknown when classification is uncertain."
+                            )
+                        else:
+                            execution_decision_feedback = (
+                                "The bounded AWorld execution-checkpoint attempts were "
+                                "not acknowledged. Resume with ordinary Tools. The "
+                                "initial horizon remains unknown or the replan request "
+                                "remains explicitly unacknowledged; neither condition is "
+                                "evidence of completion or authorization for a short-task "
+                                "review bypass."
+                            )
                     if agent_result.is_call_tool:
                         review_repair_requested = (
                             self._consume_model_review_control(
@@ -5493,7 +5615,10 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                             current_state=agent_result.current_state,
                             is_call_tool=False,
                         )
-                    candidate_finished = not agent_result.is_call_tool
+                    candidate_finished = (
+                        not agent_result.is_call_tool
+                        and execution_control_offer.decision_boundary is None
+                    )
                     if (
                         protocol_tool_free_finalization
                         and candidate_finished
@@ -5807,6 +5932,37 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                 raise AWorldRuntimeException(f"{self.id()} failed to get LLM response")
 
         logger.info(f"agent_result: {agent_result}")
+
+        if execution_decision_feedback:
+            recursive_kwargs = {
+                key: value
+                for key, value in kwargs.items()
+                if key
+                not in {
+                    "response_parse_args",
+                    "prepared_tools",
+                    "prompt_assembly_plan",
+                    "provider_native_prompt_cache",
+                    "tool_choice",
+                }
+            }
+            return _ExecutionDecisionContinuation(
+                observation=Observation(
+                    observer=self.id(),
+                    from_agent_name=self.id(),
+                    to_agent_name=self.id(),
+                    content=execution_decision_feedback,
+                    action_result=[
+                        ActionResult(
+                            content=execution_decision_feedback,
+                            success=execution_decision_outcome == "acknowledged",
+                            tool_name="aworld",
+                            action_name="execution_decision",
+                        )
+                    ],
+                ),
+                kwargs=recursive_kwargs,
+            )
 
         if long_horizon_review_feedback:
             recursive_kwargs = {

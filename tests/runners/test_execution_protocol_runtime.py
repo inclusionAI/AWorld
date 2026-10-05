@@ -294,6 +294,11 @@ def test_scoped_state_and_bounded_telemetry_are_public_read_only_views() -> None
         "tool_observation_count": 1,
         "stagnant_observations": 0,
         "replan_count": 0,
+        "replan_requested_count": 0,
+        "replan_applied_count": 0,
+        "decision_checkpoint_pending": False,
+        "initial_decision_attempt_count": 0,
+        "replan_decision_attempt_count": 0,
         "candidate_final_count": 0,
         "final_review_count": 0,
         "repair_count": 0,
@@ -346,7 +351,7 @@ def test_evidence_fingerprint_change_alone_does_not_reset_stagnation() -> None:
     assert transition.state.stagnant_observations == 1
 
 
-def test_invalid_model_profile_fails_open_and_does_not_repeat() -> None:
+def test_invalid_model_profile_stays_unknown_and_can_be_reoffered() -> None:
     context = _context("invalid-model-profile")
     policy = ExecutionProtocolPolicy(mode=ProtocolMode.GUIDE)
     configure_execution_protocol(context, "agent", policy)
@@ -356,7 +361,7 @@ def test_invalid_model_profile_fails_open_and_does_not_repeat() -> None:
         "agent",
         {"horizon": "long", "confidence": "certain"},
     ) is None
-    assert execution_protocol_accepts_model_profile(context, "agent") is False
+    assert execution_protocol_accepts_model_profile(context, "agent") is True
     state = ExecutionProtocolStore(context, "agent", policy).load()
     assert state.long_horizon_armed is False
 
@@ -395,6 +400,17 @@ def test_short_task_candidate_final_bypasses_review() -> None:
     context = _context("short")
     policy = ExecutionProtocolPolicy(mode=ProtocolMode.GUIDE)
     configure_execution_protocol(context, "agent", policy)
+    record_model_execution_profile(
+        context,
+        "agent",
+        {
+            "horizon": "short",
+            "confidence": 0.9,
+            "milestone_count": 1,
+            "expected_tool_actions": 1,
+            "verification_required": False,
+        },
+    )
 
     transition = record_candidate_final(context, "agent")
 

@@ -686,7 +686,7 @@ def test_probe_receipt_cannot_be_reused_for_changed_candidate():
     assert transition.decision.action is ControllerAction.REQUEST_REPAIR
 
 
-def test_independent_acceptance_can_be_explicitly_disabled():
+def test_disabling_independent_acceptance_keeps_unknown_candidate_self_review():
     context = Context(task_id="critic-off")
     context.set_task(Task(id="critic-off", input="small task", timeout=60))
     configure_execution_protocol(
@@ -700,10 +700,10 @@ def test_independent_acceptance_can_be_explicitly_disabled():
 
     transition = record_candidate_final(context, "agent")
 
-    assert transition.decision.action is ControllerAction.SUBMIT_CURRENT_RESULT
+    assert transition.decision.action is ControllerAction.REQUEST_FINAL_REVIEW
 
 
-def test_independent_acceptance_env_opt_out_overrides_enabled_config(monkeypatch):
+def test_independent_acceptance_env_opt_out_keeps_unknown_candidate_self_review(monkeypatch):
     monkeypatch.setenv("AWORLD_INDEPENDENT_ACCEPTANCE_CRITIC", "false")
     context = Context(task_id="critic-env-off")
     context.set_task(Task(id="critic-env-off", input="small task", timeout=60))
@@ -718,4 +718,4 @@ def test_independent_acceptance_env_opt_out_overrides_enabled_config(monkeypatch
 
     transition = record_candidate_final(context, "agent")
 
-    assert transition.decision.action is ControllerAction.SUBMIT_CURRENT_RESULT
+    assert transition.decision.action is ControllerAction.REQUEST_FINAL_REVIEW

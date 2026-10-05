@@ -29,6 +29,7 @@ class ProtocolPhase(str, Enum):
 
 
 class ExecutionHorizon(str, Enum):
+    UNKNOWN = "unknown"
     SHORT = "short"
     LONG = "long"
 
@@ -119,7 +120,7 @@ class ModelExecutionProfile:
             try:
                 object.__setattr__(self, "horizon", ExecutionHorizon(self.horizon))
             except (TypeError, ValueError) as exc:
-                raise ValueError("horizon must be short or long") from exc
+                raise ValueError("horizon must be unknown, short, or long") from exc
         if (
             isinstance(self.confidence, bool)
             or not isinstance(self.confidence, (int, float))
@@ -812,6 +813,12 @@ class ExecutionProtocolState:
     attempt_epoch: int = 0
     stagnant_observations: int = 0
     replan_count: int = 0
+    # ``replan_count`` is the v1 compatibility projection of requested
+    # checkpoints.  Keep explicit requested/applied counters so telemetry never
+    # claims that advisory guidance changed the model's plan.
+    replan_requested_count: int = 0
+    replan_applied_count: int = 0
+    decision_checkpoint_pending: bool = False
     last_replan_attempt_epoch: int | None = None
     final_review_count: int = 0
     repair_count: int = 0
@@ -839,6 +846,8 @@ class ExecutionProtocolState:
             "attempt_epoch",
             "stagnant_observations",
             "replan_count",
+            "replan_requested_count",
+            "replan_applied_count",
             "final_review_count",
             "repair_count",
             "candidate_final_count",
@@ -850,6 +859,7 @@ class ExecutionProtocolState:
             )
         if (
             not isinstance(self.review_pending, bool)
+            or not isinstance(self.decision_checkpoint_pending, bool)
             or not isinstance(self.finalization_entered, bool)
             or not isinstance(self.long_horizon_armed, bool)
             or not isinstance(self.acceptance_confirmed, bool)
@@ -910,6 +920,9 @@ class ExecutionProtocolState:
             "attempt_epoch": self.attempt_epoch,
             "stagnant_observations": self.stagnant_observations,
             "replan_count": self.replan_count,
+            "replan_requested_count": self.replan_requested_count,
+            "replan_applied_count": self.replan_applied_count,
+            "decision_checkpoint_pending": self.decision_checkpoint_pending,
             "last_replan_attempt_epoch": self.last_replan_attempt_epoch,
             "final_review_count": self.final_review_count,
             "repair_count": self.repair_count,
@@ -958,6 +971,18 @@ class ExecutionProtocolState:
             ),
             replan_count=_non_negative_int(
                 value.get("replan_count", 0), "replan_count"
+            ),
+            replan_requested_count=_non_negative_int(
+                value.get(
+                    "replan_requested_count", value.get("replan_count", 0)
+                ),
+                "replan_requested_count",
+            ),
+            replan_applied_count=_non_negative_int(
+                value.get("replan_applied_count", 0), "replan_applied_count"
+            ),
+            decision_checkpoint_pending=value.get(
+                "decision_checkpoint_pending", False
             ),
             last_replan_attempt_epoch=value.get("last_replan_attempt_epoch"),
             final_review_count=_non_negative_int(

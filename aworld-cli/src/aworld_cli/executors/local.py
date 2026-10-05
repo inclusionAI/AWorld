@@ -1450,6 +1450,10 @@ class LocalAgentExecutor(BaseAgentExecutor):
                 "tool_observation_count",
                 "stagnant_observations",
                 "replan_count",
+                "replan_requested_count",
+                "replan_applied_count",
+                "initial_decision_attempt_count",
+                "replan_decision_attempt_count",
                 "candidate_final_count",
                 "final_review_count",
                 "repair_count",
@@ -1469,6 +1473,16 @@ class LocalAgentExecutor(BaseAgentExecutor):
             telemetry["phase"] = current_telemetry.get(
                 "phase", telemetry.get("phase")
             )
+            telemetry["decision_checkpoint_pending"] = bool(
+                current_telemetry.get("decision_checkpoint_pending")
+            )
+            for key in (
+                "model_horizon",
+                "initial_decision_status",
+                "replan_decision_status",
+            ):
+                if current_telemetry.get(key) is not None:
+                    telemetry[key] = current_telemetry[key]
         telemetry.update(
             {
                 "implicit_acceptance_created": True,

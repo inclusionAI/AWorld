@@ -90,6 +90,68 @@ def test_short_model_profile_does_not_arm_long_horizon_protocol():
     assert transition.state.model_execution_profile is not None
 
 
+def test_unknown_model_profile_cannot_authorize_short_task_review_bypass():
+    policy = ExecutionProtocolPolicy(
+        mode="guide",
+        review_unarmed_candidates=False,
+        independent_acceptance_enabled=False,
+    )
+    profiled = transition_execution_protocol(
+        _state(),
+        _profile(horizon=ExecutionHorizon.UNKNOWN),
+        policy,
+    )
+
+    candidate = transition_execution_protocol(
+        profiled.state,
+        ExecutionProtocolEvent(kind=EventKind.CANDIDATE_FINAL),
+        policy,
+    )
+
+    assert profiled.state.long_horizon_armed is False
+    assert candidate.decision.action is ControllerAction.REQUEST_FINAL_REVIEW
+    assert candidate.decision.reason is DecisionReason.FINAL_REVIEW_REQUIRED
+
+
+def test_missing_model_profile_cannot_authorize_short_task_review_bypass():
+    policy = ExecutionProtocolPolicy(
+        mode="guide",
+        review_unarmed_candidates=False,
+        independent_acceptance_enabled=False,
+    )
+
+    candidate = transition_execution_protocol(
+        _state(),
+        ExecutionProtocolEvent(kind=EventKind.CANDIDATE_FINAL),
+        policy,
+    )
+
+    assert candidate.decision.action is ControllerAction.REQUEST_FINAL_REVIEW
+    assert candidate.decision.reason is DecisionReason.FINAL_REVIEW_REQUIRED
+
+
+def test_explicit_short_model_profile_retains_fast_candidate_bypass():
+    policy = ExecutionProtocolPolicy(
+        mode="guide",
+        review_unarmed_candidates=False,
+        independent_acceptance_enabled=False,
+    )
+    profiled = transition_execution_protocol(
+        _state(),
+        _profile(horizon=ExecutionHorizon.SHORT),
+        policy,
+    )
+
+    candidate = transition_execution_protocol(
+        profiled.state,
+        ExecutionProtocolEvent(kind=EventKind.CANDIDATE_FINAL),
+        policy,
+    )
+
+    assert candidate.decision.action is ControllerAction.SUBMIT_CURRENT_RESULT
+    assert candidate.decision.reason is DecisionReason.SHORT_TASK_BYPASS
+
+
 @pytest.mark.parametrize(
     "event",
     [
@@ -170,7 +232,48 @@ def test_model_plan_update_can_reclassify_horizon_and_acknowledge_checkpoint():
     assert applied.state.model_plan_update == update
     assert applied.state.attempt_epoch == 1
     assert applied.state.stagnant_observations == 0
+    assert applied.state.replan_requested_count == 1
+    assert applied.state.replan_applied_count == 1
+    assert applied.state.decision_checkpoint_pending is False
     assert applied.decision.reason is DecisionReason.MODEL_REPLAN_APPLIED
+
+
+def test_continue_checkpoint_acknowledges_request_without_claiming_replan_applied():
+    policy = ExecutionProtocolPolicy(mode="guide", repetition_threshold=1)
+    requested = transition_execution_protocol(
+        _state(), _tool(current_step=1, repetition_count=1), policy
+    )
+    update = ModelPlanUpdate.from_mapping(
+        {
+            "decision": "continue",
+            "horizon": "unknown",
+            "milestone": "inspect current candidate",
+            "next_action": "run one discriminating check",
+            "verification_plan": "use the observed result to decide whether to replan",
+            "completion_assessment": "in_progress",
+            "assumptions": [],
+            "retired_approaches": [],
+            "evidence_refs": [],
+            "selected_candidate_id": None,
+        }
+    )
+
+    acknowledged = transition_execution_protocol(
+        requested.state,
+        ExecutionProtocolEvent(
+            kind=EventKind.MODEL_PLAN_UPDATE,
+            model_plan_update=update,
+        ),
+        policy,
+    )
+
+    assert requested.state.replan_requested_count == 1
+    assert requested.state.replan_applied_count == 0
+    assert requested.state.decision_checkpoint_pending is True
+    assert acknowledged.state.replan_requested_count == 1
+    assert acknowledged.state.replan_applied_count == 0
+    assert acknowledged.state.decision_checkpoint_pending is False
+    assert acknowledged.decision.reason is DecisionReason.MODEL_PLAN_CHECKPOINT
 
 
 def test_model_plan_update_cannot_escape_pending_review_phase():
@@ -456,7 +559,7 @@ def test_tool_event_threshold_never_overrides_model_horizon_ownership():
     assert state.long_horizon_armed is False
 
 
-def test_default_threshold_does_not_classify_or_force_review() -> None:
+def test_default_threshold_does_not_classify_but_unknown_requires_review() -> None:
     policy = ExecutionProtocolPolicy(
         mode="guide", independent_acceptance_enabled=False
     )
@@ -475,10 +578,10 @@ def test_default_threshold_does_not_classify_or_force_review() -> None:
     )
 
     assert state.long_horizon_armed is False
-    assert transition.decision.action is ControllerAction.SUBMIT_CURRENT_RESULT
+    assert transition.decision.action is ControllerAction.REQUEST_FINAL_REVIEW
 
 
-def test_candidate_final_before_arming_bypasses_review_without_consuming_it():
+def test_candidate_final_without_classification_cannot_consume_short_bypass():
     policy = ExecutionProtocolPolicy(
         mode="guide",
         activation_event_threshold=12,
@@ -498,10 +601,10 @@ def test_candidate_final_before_arming_bypasses_review_without_consuming_it():
         policy,
     )
 
-    assert transition.decision.action is ControllerAction.SUBMIT_CURRENT_RESULT
-    assert transition.decision.reason is DecisionReason.SHORT_TASK_BYPASS
+    assert transition.decision.action is ControllerAction.REQUEST_FINAL_REVIEW
+    assert transition.decision.reason is DecisionReason.FINAL_REVIEW_REQUIRED
     assert transition.state.long_horizon_armed is False
-    assert transition.state.final_review_count == 0
+    assert transition.state.final_review_count == 1
 
 
 def test_candidate_final_after_threshold_requests_review():

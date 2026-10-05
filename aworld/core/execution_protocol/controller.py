@@ -68,6 +68,15 @@ def _is_stagnant(
     )
 
 
+def _model_horizon(state: ExecutionProtocolState) -> ExecutionHorizon:
+    """Return only the model's latest explicit horizon classification."""
+    if state.model_plan_update is not None:
+        return state.model_plan_update.horizon
+    if state.model_execution_profile is not None:
+        return state.model_execution_profile.horizon
+    return ExecutionHorizon.UNKNOWN
+
+
 def transition_execution_protocol(
     state: ExecutionProtocolState,
     event: ExecutionProtocolEvent,
@@ -142,6 +151,13 @@ def transition_execution_protocol(
             phase=ProtocolPhase.EXECUTE,
             attempt_epoch=next_state.attempt_epoch + 1,
             stagnant_observations=0,
+            decision_checkpoint_pending=False,
+            replan_applied_count=(
+                next_state.replan_applied_count + 1
+                if update is not None
+                and update.decision is PlanUpdateDecision.REPLAN
+                else next_state.replan_applied_count
+            ),
         )
         reason = (
             DecisionReason.MODEL_REPLAN_APPLIED
@@ -211,6 +227,8 @@ def transition_execution_protocol(
                 next_state = replace(
                     next_state,
                     replan_count=next_state.replan_count + 1,
+                    replan_requested_count=next_state.replan_requested_count + 1,
+                    decision_checkpoint_pending=True,
                     last_replan_attempt_epoch=next_state.attempt_epoch,
                 )
                 action = _observed_action(
@@ -233,6 +251,8 @@ def transition_execution_protocol(
             phase=ProtocolPhase.EXECUTE,
             attempt_epoch=next_state.attempt_epoch + 1,
             stagnant_observations=0,
+            decision_checkpoint_pending=False,
+            replan_applied_count=next_state.replan_applied_count + 1,
         )
         return ProtocolTransition(
             next_state,
@@ -275,6 +295,7 @@ def transition_execution_protocol(
             not next_state.long_horizon_armed
             and not policy.review_unarmed_candidates
             and not policy.independent_acceptance_enabled
+            and _model_horizon(next_state) is ExecutionHorizon.SHORT
         ):
             next_state = replace(
                 next_state,

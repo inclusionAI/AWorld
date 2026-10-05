@@ -11,7 +11,12 @@ from aworld.core.context.compiler import (ArtifactRequirement, CompletionContrac
 from aworld.core.context.compiler.work_state import (advance_adaptive_work_state,
     build_adaptive_work_state_entry, adaptive_work_state_message)
 from aworld.core.context.execution_state import record_execution_state, get_execution_state
-from aworld.core.context.work_progress import retain_work_progress, carry_goal_work_state, checkpoint_work_progress
+from aworld.core.context.work_progress import (
+    carry_goal_work_state,
+    checkpoint_work_progress,
+    retain_model_work_checkpoint,
+    retain_work_progress,
+)
 
 
 def observed(code="cat report.txt", content="pending", success=True):
@@ -96,6 +101,97 @@ async def test_checkpoint_restores_intent_without_transcript():
     assert result["public_requirements"]["text"] == "Save output.csv"
     assert result["current_plan"]["text"].startswith("Validation failed")
     assert calls == [{"checkpoint_only":True, "cache_boundary":False}]
+
+
+def test_model_work_checkpoint_retains_bounded_resume_decisions_and_obligations():
+    context = Context(task_id="recover-model-plan", task_epoch=4)
+    context.set_task(
+        Task(
+            id="recover-model-plan",
+            input="Create report.csv and validate every public requirement",
+        )
+    )
+    state = retain_work_progress(context, "agent")
+    state.update(
+        {
+            "pending_artifacts": ["report.csv"],
+            "artifact_fingerprint": "artifact-sha256",
+            "candidate_submission": [
+                {
+                    "path": "report.csv",
+                    "exists": True,
+                    "observed_hash": "report-sha256",
+                }
+            ],
+            "validation_evidence": [
+                {"command_id": "public-smoke", "exit_code": 0, "output_hash": "ok"}
+            ],
+        }
+    )
+    context.write_task_runtime_state("agent", "adaptive_work_state", state)
+    context.context_info["adaptive_work_state:agent"] = deepcopy(state)
+
+    checkpoint = retain_model_work_checkpoint(
+        context,
+        "agent",
+        {
+            "decision": "continue",
+            "horizon": "long",
+            "milestone": "runnable report candidate",
+            "next_action": "run the independent public smoke check",
+            "verification_plan": "inspect the observed exit code and report bytes",
+            "completion_assessment": "in_progress",
+            "assumptions": ["the supplied rows are authoritative"],
+            "retired_approaches": ["repeat discovery"],
+            "evidence_refs": ["artifact:report-sha256"],
+            "selected_candidate_id": "candidate-report-1",
+        },
+    )
+
+    assert checkpoint["scope"] == {
+        "task_id": "recover-model-plan",
+        "task_epoch": 4,
+    }
+    assert checkpoint["objective"]["source"] == "task_input"
+    assert checkpoint["unresolved_obligations"] == ["report.csv"]
+    assert checkpoint["next_action"] == "run the independent public smoke check"
+    assert checkpoint["candidate_claim"]["authority"] == "agent_claim"
+    assert checkpoint["observed_candidate_evidence"]["artifact_fingerprint"] == (
+        "artifact-sha256"
+    )
+    assert checkpoint["observed_candidate_evidence"]["validation_evidence"][0][
+        "command_id"
+    ] == "public-smoke"
+
+
+def test_model_work_checkpoint_never_invents_workspace_candidate_snapshot():
+    context = Context(task_id="no-candidate", task_epoch=1)
+    context.set_task(Task(id="no-candidate", input="Create output.txt"))
+    retain_work_progress(context, "agent")
+
+    checkpoint = retain_model_work_checkpoint(
+        context,
+        "agent",
+        {
+            "decision": "continue",
+            "horizon": "unknown",
+            "milestone": "understand the required format",
+            "next_action": "inspect one public example",
+            "verification_plan": "validate the eventual output",
+            "completion_assessment": "in_progress",
+            "assumptions": [],
+            "retired_approaches": [],
+            "evidence_refs": ["agent-claim:not-observed"],
+            "selected_candidate_id": "candidate-claimed-only",
+        },
+    )
+
+    assert checkpoint["candidate_claim"]["selected_candidate_id"] == (
+        "candidate-claimed-only"
+    )
+    assert "observed_candidate_evidence" not in checkpoint
+    state = retain_work_progress(context, "agent")
+    assert state["model_work_checkpoint"] == checkpoint
 
 
 def test_repeated_exhausted_segment_pauses_but_new_evidence_can_resume():
