@@ -47,7 +47,7 @@ from aworld.core.agent.swarm import TeamSwarm, Swarm
 from aworld.core.agent.base import BaseAgent
 from aworld_cli.core import agent
 
-from aworld.config import AgentConfig, ModelConfig
+from aworld.config import AgentConfig, ContextCacheConfig, ModelConfig
 
 CAST_ANALYSIS = "CAST_ANALYSIS"
 CAST_CODER = "CAST_CODER"
@@ -262,6 +262,62 @@ def resolve_aworld_native_filesystem_tools() -> bool:
     raise ValueError(
         "AWORLD_NATIVE_FILESYSTEM_TOOLS must be one of "
         "off/terminal or on/native"
+    )
+
+
+def resolve_aworld_provider_cache() -> tuple[ContextCacheConfig, str]:
+    """Resolve an explicit, endpoint-scoped provider cache contract.
+
+    Stable-prefix assembly remains enabled by default, but sending provider
+    routing controls is an operator decision. Runtime supplies one isolated
+    namespace per model-proxy route after that endpoint has been qualified.
+    """
+
+    raw_enabled = os.environ.get("AWORLD_PROVIDER_NATIVE_CACHE", "off")
+    mode = raw_enabled.strip().lower()
+    if mode in {"", "0", "false", "no", "off"}:
+        enabled = False
+    elif mode in {"1", "true", "yes", "on"}:
+        enabled = True
+    else:
+        raise ValueError(
+            "AWORLD_PROVIDER_NATIVE_CACHE must be either off or on"
+        )
+
+    capability = os.environ.get(
+        "AWORLD_PROVIDER_NATIVE_CACHE_CAPABILITY", "auto"
+    ).strip().lower()
+    if capability not in {"auto", "supported", "unsupported"}:
+        raise ValueError(
+            "AWORLD_PROVIDER_NATIVE_CACHE_CAPABILITY must be one of "
+            "auto/supported/unsupported"
+        )
+
+    namespace = os.environ.get("AWORLD_PROVIDER_CACHE_NAMESPACE", "").strip()
+    if enabled:
+        if not namespace:
+            raise ValueError(
+                "AWORLD_PROVIDER_CACHE_NAMESPACE is required when provider "
+                "native cache is enabled"
+            )
+        if len(namespace) > 64 or any(
+            character not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._:-"
+            for character in namespace
+        ):
+            raise ValueError(
+                "AWORLD_PROVIDER_CACHE_NAMESPACE must be at most 64 characters "
+                "and contain only letters, digits, '.', '_', ':', or '-'"
+            )
+    else:
+        namespace = ""
+
+    return (
+        ContextCacheConfig(
+            enabled=True,
+            allow_provider_native_cache=True if enabled else None,
+            provider_cache_namespace=namespace or None,
+        ),
+        capability,
     )
 
 
@@ -670,13 +726,15 @@ def _build_aworld_sub_agents(
 
 
 def build_context_config(debug_mode):
+    context_cache, _ = resolve_aworld_provider_cache()
     config = get_default_config()
     config.debug_mode = debug_mode
     config.agent_config = AgentContextConfig(
         enable_system_prompt_augment=True,
         neuron_names=["task_grounding", "skills"],
         automated_cognitive_ingestion=True,
-        history_scope='session'
+        history_scope='session',
+        context_cache=context_cache,
     )
     config.env_config = ContextEnvConfig()
     return config
@@ -733,6 +791,9 @@ def build_aworld_agent(include_skills: Optional[str] = None):
     reasoning_phase_policy, reasoning_params = (
         resolve_aworld_reasoning_configuration()
     )
+    context_cache, provider_native_cache_capability = (
+        resolve_aworld_provider_cache()
+    )
 
     # Configure agent: provider/base_url use getenv defaults; model_name/api_key may be None (ModelConfig accepts Optional[str])
     agent_config = AgentConfig(
@@ -743,6 +804,8 @@ def build_aworld_agent(include_skills: Optional[str] = None):
             llm_base_url=os.getenv("LLM_BASE_URL", "https://api.openai.com/v1"),
             llm_temperature=float(os.environ.get("LLM_TEMPERATURE", "0.1")),
             max_model_len=resolve_context_window_env(),
+            context_cache=context_cache,
+            provider_native_cache_capability=provider_native_cache_capability,
             context_compiler={
                 # The built-in autonomous agent already records semantic
                 # repetition, low-information observations, and durable goal

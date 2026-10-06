@@ -596,6 +596,12 @@ def test_llm_diagnostics_summary_keeps_partial_usage_and_timing_explicit() -> No
             "output_tokens": 2,
             "total_tokens": 12,
         },
+        "cache": {
+            "reported": False,
+            "reported_call_count": 0,
+            "unreported_call_count": 2,
+            "write_reported_call_count": 0,
+        },
         "timing": {
             "reported": False,
             "reported_call_count": 1,
@@ -665,12 +671,61 @@ def test_llm_diagnostics_summary_conflicting_request_id_never_reports_complete()
         "output_tokens": 2,
         "total_tokens": 12,
     }
+    assert diagnostics["cache"] == {
+        "reported": False,
+        "reported_call_count": 0,
+        "unreported_call_count": 1,
+        "write_reported_call_count": 0,
+    }
     assert diagnostics["timing"]["reported"] is False
     assert diagnostics["timing"]["reported_call_count"] == 1
     assert diagnostics["timing"]["total_duration_ms"] == 250
     assert diagnostics["stream"]["reported"] is False
     assert diagnostics["stream"]["reported_call_count"] == 1
     assert diagnostics["stream"]["chunk_count"] == 3
+
+
+def test_llm_diagnostics_summary_reports_exact_provider_cache_usage() -> None:
+    diagnostics = build_llm_diagnostics_summary(
+        [
+            {
+                "request_id": "cached-1",
+                "record_kind": "model_attempt",
+                "status": "success",
+                "usage_reported": True,
+                "usage_raw": {
+                    "prompt_tokens": 100,
+                    "completion_tokens": 5,
+                    "total_tokens": 105,
+                    "prompt_tokens_details": {"cached_tokens": 80},
+                },
+                "usage_normalized": {
+                    "prompt_tokens": 100,
+                    "completion_tokens": 5,
+                    "total_tokens": 105,
+                    "cache_hit_tokens": 80,
+                },
+                "diagnostics": {
+                    "usage": {
+                        "reported": True,
+                        "input_tokens": 100,
+                        "output_tokens": 5,
+                        "total_tokens": 105,
+                    }
+                },
+            }
+        ]
+    )
+
+    assert diagnostics["cache"] == {
+        "reported": True,
+        "reported_call_count": 1,
+        "unreported_call_count": 0,
+        "write_reported_call_count": 0,
+        "measured_cache_read_tokens": 80,
+        "cache_read_tokens": 80,
+        "cache_read_ratio": 0.8,
+    }
 
 
 def test_complete_llm_usage_summary_deduplicates_identical_request_records() -> None:

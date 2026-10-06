@@ -176,7 +176,13 @@ def _complete_usage_totals(
         calls[request_id] = call
     if not calls or len(calls) != llm_call_count:
         return {}
-    prompt = completion = 0
+    from aworld.models.usage import (
+        CacheUsageFidelity,
+        reconcile_cache_usage_receipt,
+    )
+
+    prompt = completion = cached = 0
+    cache_read_complete = True
     for call in calls.values():
         if call.get("status") not in (None, "success"):
             return {}
@@ -211,10 +217,22 @@ def _complete_usage_totals(
                 return {}
         prompt += input_tokens
         completion += output_tokens
-    return {
+        cache_receipt = reconcile_cache_usage_receipt(
+            captured_receipt=call.get("cache_usage_receipt"),
+            raw_usage=raw,
+            normalized_usage=normalized,
+        )
+        if cache_receipt.fidelity is CacheUsageFidelity.EXACT:
+            cached += cache_receipt.cache_read_tokens or 0
+        else:
+            cache_read_complete = False
+    totals = {
         "total_prompt_tokens": prompt,
         "total_completion_tokens": completion,
     }
+    if cache_read_complete:
+        totals["total_cached_tokens"] = cached
+    return totals
 
 
 class AtifExportStatus(str, Enum):
@@ -364,6 +382,10 @@ def build_atif_trajectory(
             "action_count": action_count,
         },
     }
+    # Keep the ATIF shape stable without manufacturing cache misses. An exact
+    # provider receipt produces an integer (including a genuine zero); missing
+    # or partial provider cache usage remains JSON null.
+    final_metrics.setdefault("total_cached_tokens", None)
     from aworld_cli.executors.stats import build_llm_diagnostics_summary
 
     llm_diagnostics = build_llm_diagnostics_summary(

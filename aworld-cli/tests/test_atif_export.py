@@ -26,6 +26,83 @@ def test_atif_exports_complete_provider_usage_without_counting_mirrored_calls():
     )
     assert trajectory["final_metrics"]["total_prompt_tokens"] == 7
     assert trajectory["final_metrics"]["total_completion_tokens"] == 3
+    assert trajectory["final_metrics"]["total_cached_tokens"] is None
+
+
+def test_atif_exports_exact_cached_tokens_without_fabricating_missing_usage():
+    trajectory = build_atif_trajectory(
+        {
+            "llm_calls": [
+                {
+                    "request_id": "r1",
+                    "usage_available": True,
+                    "usage_reported": True,
+                    "usage_raw": {
+                        "prompt_tokens": 100,
+                        "completion_tokens": 3,
+                        "total_tokens": 103,
+                        "prompt_tokens_details": {"cached_tokens": 80},
+                    },
+                    "usage_normalized": {
+                        "prompt_tokens": 100,
+                        "completion_tokens": 3,
+                        "total_tokens": 103,
+                        "cache_hit_tokens": 80,
+                    },
+                }
+            ]
+        },
+        prompt="work",
+        agent_name="Aworld",
+        agent_version="dev",
+        run_outcome={"llm_call_count": 1},
+    )
+
+    assert trajectory["final_metrics"]["total_cached_tokens"] == 80
+    assert trajectory["final_metrics"]["extra"]["llm_diagnostics"]["cache"] == {
+        "reported": True,
+        "reported_call_count": 1,
+        "unreported_call_count": 0,
+        "write_reported_call_count": 0,
+        "measured_cache_read_tokens": 80,
+        "cache_read_tokens": 80,
+        "cache_read_ratio": 0.8,
+    }
+
+
+def test_atif_preserves_provider_reported_zero_cache_hit() -> None:
+    trajectory = build_atif_trajectory(
+        {
+            "llm_calls": [
+                {
+                    "request_id": "r1",
+                    "usage_available": True,
+                    "usage_reported": True,
+                    "usage_raw": {
+                        "prompt_tokens": 10,
+                        "completion_tokens": 2,
+                        "total_tokens": 12,
+                        "prompt_tokens_details": {"cached_tokens": 0},
+                    },
+                    "usage_normalized": {
+                        "prompt_tokens": 10,
+                        "completion_tokens": 2,
+                        "total_tokens": 12,
+                        "cache_hit_tokens": 0,
+                    },
+                }
+            ]
+        },
+        prompt="work",
+        agent_name="Aworld",
+        agent_version="dev",
+        run_outcome={"llm_call_count": 1},
+    )
+
+    assert trajectory["final_metrics"]["total_cached_tokens"] == 0
+    assert trajectory["final_metrics"]["extra"]["llm_diagnostics"]["cache"][
+        "reported"
+    ] is True
 
 
 @pytest.mark.parametrize(
@@ -62,6 +139,7 @@ def test_atif_does_not_turn_partial_or_missing_usage_into_run_totals(missing):
     )
     assert "total_prompt_tokens" not in trajectory["final_metrics"]
     assert "total_completion_tokens" not in trajectory["final_metrics"]
+    assert trajectory["final_metrics"]["total_cached_tokens"] is None
 
 
 def test_atif_keeps_explicit_zero_usage_distinct_from_unknown():
@@ -82,6 +160,7 @@ def test_atif_keeps_explicit_zero_usage_distinct_from_unknown():
     )
     assert trajectory["final_metrics"]["total_prompt_tokens"] == 0
     assert trajectory["final_metrics"]["total_completion_tokens"] == 0
+    assert trajectory["final_metrics"]["total_cached_tokens"] is None
 
 
 def test_atif_exports_bounded_execution_protocol_telemetry():

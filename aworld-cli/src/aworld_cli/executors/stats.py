@@ -7,6 +7,10 @@ from typing import Any, Dict, List, Optional
 from rich.console import Console
 
 from aworld.models.context_window import ContextWindowResolution, resolve_model_context_window
+from aworld.models.usage import (
+    CacheUsageFidelity,
+    reconcile_cache_usage_receipt,
+)
 
 
 def _record_context_window(record: Dict[str, Any]) -> Optional[ContextWindowResolution]:
@@ -306,6 +310,8 @@ def build_llm_diagnostics_summary(
     usage_reported = 0
     input_token_calls = output_token_calls = total_token_calls = 0
     input_tokens = output_tokens = total_tokens = 0
+    cache_exact_calls = cache_write_calls = 0
+    cache_read_tokens = cache_write_tokens = 0
     timing_reported = 0
     total_duration_ms = max_duration_ms = 0
     first_chunk_reported = 0
@@ -359,6 +365,28 @@ def build_llm_diagnostics_summary(
             if call_total is not None:
                 total_token_calls += 1
                 total_tokens = min(total_tokens + call_total, 2_147_483_647)
+
+            cache_receipt = reconcile_cache_usage_receipt(
+                captured_receipt=call.get("cache_usage_receipt"),
+                raw_usage=(
+                    call.get("usage_raw")
+                    if isinstance(call.get("usage_raw"), dict)
+                    else None
+                ),
+                normalized_usage=normalized,
+            )
+            if cache_receipt.fidelity is CacheUsageFidelity.EXACT:
+                cache_exact_calls += 1
+                cache_read_tokens = min(
+                    cache_read_tokens + (cache_receipt.cache_read_tokens or 0),
+                    2_147_483_647,
+                )
+                if cache_receipt.cache_write_tokens is not None:
+                    cache_write_calls += 1
+                    cache_write_tokens = min(
+                        cache_write_tokens + cache_receipt.cache_write_tokens,
+                        2_147_483_647,
+                    )
 
         timing = diagnostics.get("timing")
         timing = timing if isinstance(timing, dict) else {}
@@ -434,6 +462,23 @@ def build_llm_diagnostics_summary(
         usage_summary["output_tokens"] = output_tokens
     if total_token_calls:
         usage_summary["total_tokens"] = total_tokens
+    cache_summary: Dict[str, Any] = {
+        "reported": bool(
+            ledger_consistent and call_count and cache_exact_calls == call_count
+        ),
+        "reported_call_count": cache_exact_calls,
+        "unreported_call_count": max(call_count - cache_exact_calls, 0),
+        "write_reported_call_count": cache_write_calls,
+    }
+    if cache_exact_calls:
+        cache_summary["measured_cache_read_tokens"] = cache_read_tokens
+    if ledger_consistent and call_count and cache_exact_calls == call_count:
+        cache_summary["cache_read_tokens"] = cache_read_tokens
+        cache_summary["cache_read_ratio"] = (
+            cache_read_tokens / input_tokens if input_tokens > 0 else 0.0
+        )
+    if ledger_consistent and call_count and cache_write_calls == call_count:
+        cache_summary["cache_write_tokens"] = cache_write_tokens
     timing_summary: Dict[str, Any] = {
         "reported": bool(
             ledger_consistent and call_count and timing_reported == call_count
@@ -462,6 +507,7 @@ def build_llm_diagnostics_summary(
         "call_count": call_count,
         "ledger_consistent": ledger_consistent,
         "usage": usage_summary,
+        "cache": cache_summary,
         "timing": timing_summary,
         "stream": stream_summary,
     }

@@ -18,6 +18,7 @@ from aworld_cli.builtin_agents.smllc.agents.aworld_agent import (
     resolve_aworld_max_completion_tokens,
     resolve_aworld_max_loop_steps,
     resolve_aworld_native_filesystem_tools,
+    resolve_aworld_provider_cache,
     resolve_aworld_tool_surface_enforcement,
     resolve_aworld_tool_surface_profile,
 )
@@ -260,6 +261,47 @@ def test_native_filesystem_tools_are_explicit_opt_in(
         resolve_aworld_native_filesystem_tools()
 
 
+def test_provider_native_cache_requires_explicit_namespace(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    for name in (
+        "AWORLD_PROVIDER_NATIVE_CACHE",
+        "AWORLD_PROVIDER_NATIVE_CACHE_CAPABILITY",
+        "AWORLD_PROVIDER_CACHE_NAMESPACE",
+    ):
+        monkeypatch.delenv(name, raising=False)
+
+    cache, capability = resolve_aworld_provider_cache()
+    assert cache.enabled is True
+    assert cache.allow_provider_native_cache is None
+    assert cache.provider_cache_namespace is None
+    assert capability == "auto"
+
+    monkeypatch.setenv("AWORLD_PROVIDER_NATIVE_CACHE", "on")
+    with pytest.raises(ValueError, match="NAMESPACE is required"):
+        resolve_aworld_provider_cache()
+
+
+def test_provider_native_cache_uses_runtime_route_namespace(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("AWORLD_PROVIDER_NATIVE_CACHE", "1")
+    monkeypatch.setenv(
+        "AWORLD_PROVIDER_NATIVE_CACHE_CAPABILITY", "supported"
+    )
+    monkeypatch.setenv(
+        "AWORLD_PROVIDER_CACHE_NAMESPACE", "aworld:route-123"
+    )
+
+    cache, capability = resolve_aworld_provider_cache()
+    context = aworld_agent.build_context_config(debug_mode=False)
+
+    assert cache.allow_provider_native_cache is True
+    assert cache.provider_cache_namespace == "aworld:route-123"
+    assert capability == "supported"
+    assert context.agent_config.context_cache == cache
+
+
 def test_generation_budget_env_is_opt_in(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -471,6 +513,29 @@ def test_agent_can_explicitly_enable_native_filesystem_tools(
     }
     assert root.native_filesystem_tools is True
     assert "filesystem" in root.system_prompt
+
+
+def test_agent_forwards_runtime_provider_cache_contract(
+    monkeypatch, tmp_path
+) -> None:
+    monkeypatch.setenv("AWORLD_PROVIDER_NATIVE_CACHE", "on")
+    monkeypatch.setenv(
+        "AWORLD_PROVIDER_NATIVE_CACHE_CAPABILITY", "supported"
+    )
+    monkeypatch.setenv(
+        "AWORLD_PROVIDER_CACHE_NAMESPACE", "aworld:route-cache"
+    )
+    monkeypatch.setenv("LLM_MODEL_NAME", "gpt-4")
+    monkeypatch.setenv("LLM_API_KEY", "offline")
+    monkeypatch.chdir(tmp_path)
+
+    swarm = aworld_agent.build_aworld_agent()
+    root = next(agent for agent in swarm.agents.values() if agent.name() == "Aworld")
+    cache = root.conf.llm_config.context_cache
+
+    assert cache.allow_provider_native_cache is True
+    assert cache.provider_cache_namespace == "aworld:route-cache"
+    assert root.conf.llm_config.provider_native_cache_capability == "supported"
 
 
 def test_verifier_remains_an_explicit_fresh_context_opt_in(
