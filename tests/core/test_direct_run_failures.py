@@ -581,6 +581,9 @@ def test_run_command_returns_caller_deadline_attempt_to_verifier(
     aworld = trajectory["extra"]["aworld"]
     assert aworld["completion_state"] == "incomplete"
     assert aworld["run_outcome"]["semantic_status"] == "budget_exhausted"
+    assert aworld["run_outcome"]["completion_reason"] == (
+        "task_deadline_exhausted"
+    )
     assert aworld["run_outcome"]["process_exit_code"] == 0
     assert aworld["trajectory_fidelity"] == "partial"
     assert aworld["llm_call_count"] == 2

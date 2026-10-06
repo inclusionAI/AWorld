@@ -387,8 +387,15 @@ def transition_execution_protocol(
             )
 
         model_long = next_state.long_horizon_armed
+        # A named public deliverable is an observable delivery obligation even
+        # when the model classified the task as short.  Activate the existing
+        # delivery checkpoints without changing the model-owned horizon or
+        # introducing task- or benchmark-specific validation rules.
+        delivery_protocol_active = bool(
+            model_long or event.public_deliverable_declared
+        )
         candidate_decision_due = bool(
-            model_long
+            delivery_protocol_active
             and next_state.candidate_decision_count == 0
             and not next_state.decision_checkpoint_pending
             and not next_state.next_action_alignment_pending
@@ -428,7 +435,7 @@ def transition_execution_protocol(
             )
 
         delivery_debt = bool(
-            model_long
+            delivery_protocol_active
             and not (
                 next_state.last_action_alignment is NextActionAlignment.MATCHED
                 and next_state.last_action_alignment_observation_sequence

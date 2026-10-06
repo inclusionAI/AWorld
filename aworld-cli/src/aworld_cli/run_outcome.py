@@ -82,6 +82,25 @@ def _unfinished_status_from_summary(
     return None
 
 
+def _completion_reason_from_summary(
+    summary: Mapping[str, Any] | None,
+) -> str | None:
+    """Return the latest bounded semantic termination reason, when present."""
+
+    if not isinstance(summary, Mapping):
+        return None
+    results = summary.get("results")
+    if not isinstance(results, (list, tuple)):
+        return None
+    for result in reversed(results):
+        if not isinstance(result, Mapping):
+            continue
+        reason = result.get("completion_reason")
+        if isinstance(reason, str) and _CONTROL_IDENTIFIER.fullmatch(reason):
+            return reason
+    return None
+
+
 def task_failure_exit_code() -> int:
     """Return an optional caller-owned exit code for typed task failures.
 
@@ -375,6 +394,7 @@ class DirectRunOutcome(Mapping[str, Any]):
     failure_record: dict[str, Any] | None = None
     execution_protocol: dict[str, Any] | None = None
     llm_diagnostics: dict[str, Any] | None = None
+    completion_reason: str | None = None
 
     SCHEMA_VERSION = "aworld.run.outcome.v1"
 
@@ -386,6 +406,10 @@ class DirectRunOutcome(Mapping[str, Any]):
             value = getattr(self, field_name)
             if isinstance(value, bool) or not isinstance(value, int) or value < 0:
                 raise ValueError(f"{field_name} must be a non-negative integer")
+        if self.completion_reason is not None and not _CONTROL_IDENTIFIER.fullmatch(
+            self.completion_reason
+        ):
+            raise ValueError("completion_reason must be a bounded control identifier")
 
     @property
     def succeeded(self) -> bool:
@@ -399,6 +423,7 @@ class DirectRunOutcome(Mapping[str, Any]):
         status: DirectRunStatus | str,
         failure_record: Mapping[str, Any] | None = None,
         process_exit_code: int | None = None,
+        completion_reason: str | None = None,
     ) -> "DirectRunOutcome":
         requested_status = DirectRunStatus(status)
         unfinished_status = _unfinished_status_from_summary(summary)
@@ -439,6 +464,9 @@ class DirectRunOutcome(Mapping[str, Any]):
             action_count=metrics["action_count"],
             execution_protocol=metrics["execution_protocol"],
             llm_diagnostics=metrics["llm_diagnostics"],
+            completion_reason=(
+                completion_reason or _completion_reason_from_summary(summary)
+            ),
             last_successful_checkpoint=metrics["last_successful_checkpoint"],
             failure_record=dict(failure_record) if failure_record is not None else None,
         )
@@ -469,6 +497,8 @@ class DirectRunOutcome(Mapping[str, Any]):
                     if isinstance(value, str) and _CONTROL_IDENTIFIER.fullmatch(value):
                         failure[key] = value
             payload["failure"] = failure
+        if self.completion_reason is not None:
+            payload["completion_reason"] = self.completion_reason
         if self.execution_protocol is not None:
             payload["execution_protocol"] = dict(self.execution_protocol)
         if self.llm_diagnostics is not None:
@@ -526,6 +556,10 @@ def coerce_direct_run_outcome(value: Any) -> DirectRunOutcome:
             return replace(
                 value,
                 status=unfinished_status,
+                completion_reason=(
+                    value.completion_reason
+                    or _completion_reason_from_summary(value.summary)
+                ),
                 trajectory_fidelity=_derive_fidelity(
                     value.summary,
                     status=unfinished_status,

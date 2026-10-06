@@ -749,7 +749,13 @@ def build_aworld_agent(include_skills: Optional[str] = None):
     # Use the packaged Sandbox providers rather than coupling the CLI agent to
     # a benchmark example MCP server.
     builtin_tools = augment_aworld_agent_builtin_tools(["filesystem", "terminal"])
-    aworld_mcp_servers = augment_aworld_agent_mcp_servers(["terminal"])
+    # The shared sandbox registers both providers. Keep the root ACL aligned
+    # with that advertised capability set so the model can actually call the
+    # bounded read/write/edit schemas instead of routing every filesystem
+    # operation through an opaque terminal command.
+    aworld_mcp_servers = augment_aworld_agent_mcp_servers(
+        ["filesystem", "terminal"]
+    )
     sandbox = create_agent_sandbox(builtin_tools)
 
     tool_surface_profile = resolve_aworld_tool_surface_profile()
@@ -806,11 +812,17 @@ def build_aworld_agent(include_skills: Optional[str] = None):
             available_tools=prompt_capabilities,
             available_subagents=subagent_names,
         ),
-        mcp_servers=aworld_mcp_servers,  # Keep default terminal access and opt-in macOS UI automation when enabled
+        mcp_servers=aworld_mcp_servers,
         sandbox=sandbox,  # Shared sandbox (tools filtered by agent's mcp_servers config)
         tool_names=root_tool_names,
         black_tool_actions=black_tool_actions,
         tool_surface_specs=(
+            ToolCapabilitySpec(
+                capability_id="filesystem",
+                schema_ids=("read_file", "write_file", "edit_file"),
+                lifecycle=ToolLifecycle.IMMEDIATE,
+                required=enforce_tool_surface,
+            ),
             ToolCapabilitySpec(
                 capability_id="terminal",
                 schema_ids=("run_code",),

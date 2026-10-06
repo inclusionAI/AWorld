@@ -32,6 +32,8 @@ def test_runtime_exception_summary_cannot_be_promoted_to_success() -> None:
     assert outcome.status is DirectRunStatus.INCOMPLETE
     assert outcome.process_exit_code == 0
     assert outcome.trajectory_fidelity == "partial"
+    assert outcome.completion_reason == "runtime_exception"
+    assert outcome.to_dict()["completion_reason"] == "runtime_exception"
 
 
 def test_legacy_task_status_is_preserved_by_outcome_coercion() -> None:

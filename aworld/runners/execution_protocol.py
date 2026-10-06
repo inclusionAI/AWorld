@@ -1417,8 +1417,9 @@ def record_pre_generation_delivery_decision(
         return None
     state = ExecutionProtocolStore(context, agent_id, policy).load()
     remaining = _remaining_task_seconds(context)
+    status = _public_delivery_status(state_context(context))
     if (
-        not state.long_horizon_armed
+        not (state.long_horizon_armed or status["public_deliverable_declared"])
         or state.phase.value not in {"execute", "repair"}
         or state.decision_checkpoint_pending
         or state.candidate_decision_count > 0
@@ -1426,7 +1427,6 @@ def record_pre_generation_delivery_decision(
         or remaining > policy.candidate_decision_reserve_seconds
     ):
         return None
-    status = _public_delivery_status(state_context(context))
     transition = _apply_event(
         context,
         agent_id,

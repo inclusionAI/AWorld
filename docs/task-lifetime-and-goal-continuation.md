@@ -35,6 +35,12 @@ stop rule. Reaching the optional attempt limit preserves the unsuccessful outcom
 (the existing persisted status name is `budget_limited`). User stop always wins
 over a late completion or error hook.
 
+Direct-run `aworld.run.outcome.v1` also projects the bounded
+`completion_reason`. The compatibility status `budget_exhausted` therefore no
+longer hides whether termination came from `task_deadline_exhausted`, an agent
+loop limit, or another typed reserve; supervisors may display the specific
+reason without parsing logs or model prose.
+
 Typed success completes a goal without a promise. When a promise is specified it
 must match and the control plane must also report success. Explicit `--verify`
 commands execute with real exit codes and `bash` pipefail; their results must be

@@ -594,7 +594,7 @@ def test_terminal_delivery_intent_enters_tool_free_finalization(intent):
     assert unexpected_tool.state.action_alignment_mismatch_count == 0
 
 
-def test_explicit_short_horizon_bypasses_delivery_debt_and_candidate_reserve():
+def test_explicit_short_horizon_still_protects_named_public_deliverable():
     policy = ExecutionProtocolPolicy(
         mode="guide",
         delivery_debt_observation_threshold=1,
@@ -618,9 +618,9 @@ def test_explicit_short_horizon_bypasses_delivery_debt_and_candidate_reserve():
         policy,
     )
 
-    assert debt.decision.action is ControllerAction.CONTINUE
-    assert debt.state.delivery_checkpoint_count == 0
-    assert debt.state.candidate_decision_count == 0
+    assert debt.decision.action is ControllerAction.REQUEST_REPLAN
+    assert debt.decision.reason is DecisionReason.CANDIDATE_DECISION_RESERVE
+    assert debt.state.candidate_decision_count == 1
 
 
 def test_explicit_zero_replan_limit_suppresses_all_new_checkpoint_paths():

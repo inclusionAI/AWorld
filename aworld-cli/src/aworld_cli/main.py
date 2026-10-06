@@ -2193,6 +2193,7 @@ async def _run_direct_mode(
                 if semantic == "budget_exhausted"
                 else DirectRunStatus.INCOMPLETE
             ),
+            completion_reason=reason,
         )
     if not _direct_run_succeeded(summary):
         if require_explicit_failure_origin and not _direct_run_has_explicit_task_failure(

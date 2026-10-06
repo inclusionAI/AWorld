@@ -412,19 +412,25 @@ def test_default_agent_is_strictly_single_main_agent(
     assert collaborators == {}
     assert root.name() == "Aworld"
     assert root.enable_subagent is False
+    assert root.mcp_servers[:2] == ["filesystem", "terminal"]
     assert "WORKBENCH" not in root.tool_names
     root_schema_names = {
         item["function"]["name"]
         for item in tool_desc_transform(get_tool_desc(), tools=root.tool_names)
     }
     assert all(not name.startswith("WORKBENCH__") for name in root_schema_names)
-    assert {spec.capability_id for spec in root._tool_surface_specs} == {"terminal"}
+    assert {spec.capability_id for spec in root._tool_surface_specs} == {
+        "filesystem",
+        "terminal",
+    }
     assert not hasattr(root, "_task_workspace_local_path")
     assert not hasattr(root, "_completion_workspace_local_path")
     assert "WORKBENCH" not in root.system_prompt
     assert "Configured tool capabilities:" in root.system_prompt
     assert "filesystem" in root.system_prompt
     assert "terminal" in root.system_prompt
+    assert "do not emulate that operation with `cat`, heredocs" in root.system_prompt
+    assert "Treat an exact requested output format as a closed contract" in root.system_prompt
     assert "Available subagents: none" in root.system_prompt
     assert "do not attempt delegation" in root.system_prompt
     tools, _ = _aworld_root_tool_policy(

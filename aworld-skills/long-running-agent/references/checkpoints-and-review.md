@@ -62,6 +62,15 @@ were compacted.
 
 ## Final review contract
 
+Every candidate produced while this Skill is active receives the same final
+review, even when the initial model-owned horizon choice was `short` or
+`unknown`. An explicit public deliverable also participates in the existing
+candidate-decision reserve without being reclassified as long-horizon work.
+These are generic delivery boundaries: they do not add benchmark-specific
+acceptance rules. Named-file presence is only an inspectable milestone;
+content correctness still comes from a registered completion validator when
+one exists, otherwise from the model-owned review with accurate uncertainty.
+
 Review the candidate result against the public charter and return one of these
 semantic outcomes:
 

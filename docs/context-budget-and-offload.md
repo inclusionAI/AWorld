@@ -7,6 +7,8 @@
 3. Adaptive checkpoint 的历史压缩清理较早的轮次，保留系统指令、原始任务、近期消息和最新完整 assistant/tool 组。它不是任意长消息的通用摘要器，也不会改写工具调用参数。
 4. Final compiler 汇总模型请求并分配总输入预算，可选项按策略选择。默认 enforce/adaptive 模式下，如果扣除输出、协议和安全预留后的必需项仍超预算，模型运行层启动有界恢复，再重新编译完整请求；纯预算分配器不执行 I/O。
 
+AMNI offload 解决的是“单个结果过大”，并不自动解决“许多中等大小、内容相同的读取结果累计进入历史”。CLI 内置 Aworld Agent 因此默认使用 `checkpoint_policy: adaptive`：重复操作、低信息增益和长期无目标进展会在达到总窗口硬压力前触发 checkpoint。Provider-bound 历史还会把较早的、字节完全相同且不少于 512 字符的 Tool observation 替换为 content-addressed receipt，同时保留最新完整副本和全部 assistant/tool 因果配对；相似但不完全相同的结果不会被合并，也不会据此跳过 Tool 执行。
+
 `context_compiler.max_item_tokens` 默认从 `10000` 改为 `null`。旧默认与上面的保护策略冲突：最新 assistant 消息含有超过 10K tokens 的工具参数时，工具结果 offload 无法缩短它，历史压缩也不能丢掉它，但 final compiler 会在总预算充足时依然拒绝发送。现在这类消息在总预算内完整保留，tool-call ID、参数和配对结果不变。
 
 需要单项硬契约的调用方仍可显式设置正整数，例如：

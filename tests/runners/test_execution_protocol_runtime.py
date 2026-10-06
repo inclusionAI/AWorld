@@ -13,6 +13,7 @@ from aworld.core.context.compiler import (
 from aworld.core.execution_protocol import (
     action_signature,
     ControllerAction,
+    DecisionReason,
     ExecutionProtocolPolicy,
     ExecutionProtocolStore,
     ProtocolMode,
@@ -271,6 +272,50 @@ def test_pre_generation_candidate_decision_is_typed_and_one_shot(tmp_path) -> No
     assert (
         record_pre_generation_delivery_decision(context, "agent", policy=policy) is None
     )
+
+
+def test_short_profile_gets_candidate_decision_for_public_deliverable(tmp_path) -> None:
+    context = _context("short-public-candidate-reserve")
+    context.context_info["public_deliverable_contract"] = {
+        "schema_version": "aworld.public-deliverables/v1",
+        "authority": "public_task_advisory",
+        "source": "public_task_text",
+        "artifacts": [
+            {
+                "deliverable_id": "public-output-1",
+                "path": str(tmp_path / "result.json"),
+                "display_path": "result.json",
+                "kind": "file",
+                "authority": "public_task_advisory",
+            }
+        ],
+    }
+    policy = ExecutionProtocolPolicy(
+        mode=ProtocolMode.GUIDE,
+        finalization_reserve_seconds=60,
+        candidate_decision_reserve_seconds=180,
+    )
+    configure_execution_protocol(context, "agent", policy)
+    record_model_execution_profile(
+        context,
+        "agent",
+        {
+            "horizon": "short",
+            "confidence": 0.9,
+            "milestone_count": 1,
+            "expected_tool_actions": 2,
+            "verification_required": True,
+        },
+    )
+    context.get_task().remaining_seconds = lambda: 150
+
+    transition = record_pre_generation_delivery_decision(
+        context, "agent", policy=policy
+    )
+
+    assert transition is not None
+    assert transition.decision.action is ControllerAction.REQUEST_REPLAN
+    assert transition.decision.reason is DecisionReason.CANDIDATE_DECISION_RESERVE
 
 
 def test_pre_generation_candidate_decision_fails_open_on_unavailable_provider() -> None:

@@ -624,6 +624,7 @@ class RunTopLevelCommand:
                 outcome = DirectRunOutcome.from_summary(
                     summary,
                     status=DirectRunStatus.BUDGET_EXHAUSTED,
+                    completion_reason="task_deadline_exhausted",
                 )
         except Exception as exc:
             outcome = _direct_run_failure_outcome(
