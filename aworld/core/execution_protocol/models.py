@@ -113,6 +113,7 @@ class DecisionReason(str, Enum):
     MODEL_PLAN_CHECKPOINT = "model_plan_checkpoint"
     MODEL_REPLAN_APPLIED = "model_replan_applied"
     MODEL_REPLAN_UNACKNOWLEDGED = "model_replan_unacknowledged"
+    OBSERVED_LONG_HORIZON = "observed_long_horizon"
     STAGNATION_DETECTED = "stagnation_detected"
     DELIVERY_DEBT_DETECTED = "delivery_debt_detected"
     NEXT_ACTION_MISMATCH = "next_action_mismatch"
@@ -554,9 +555,9 @@ class ExecutionProtocolPolicy:
     independent_acceptance_enabled: bool = True
     semantic_progress_enabled: bool = True
     history_limit: int = 32
-    # Legacy compatibility knobs retained in the v1 wire format. They no
-    # longer classify or arm a task: horizon ownership belongs to the model's
-    # execution profile and later plan updates.
+    # Runtime observation thresholds provide an operational fallback when an
+    # initially short/unknown model estimate grows into sustained tool work.
+    # Explicit model-owned long-horizon classification may still arm earlier.
     activation_event_threshold: int = 6
     model_activation_confidence_threshold: float = 0.7
     model_activation_min_milestones: int = 2

@@ -265,7 +265,8 @@ def transition_execution_protocol(
             next_state,
             model_plan_update=update,
             long_horizon_armed=(
-                update is not None and update.horizon is ExecutionHorizon.LONG
+                next_state.long_horizon_armed
+                or (update is not None and update.horizon is ExecutionHorizon.LONG)
             ),
             phase=(
                 ProtocolPhase.FINALIZE if terminal_intent else ProtocolPhase.EXECUTE
@@ -305,6 +306,19 @@ def transition_execution_protocol(
         )
 
     if event.kind in {EventKind.TOOL_OBSERVATION, EventKind.DELIVERY_STATUS}:
+        observed_long_horizon = bool(
+            event.kind is EventKind.TOOL_OBSERVATION
+            and not next_state.long_horizon_armed
+            and next_state.tool_observation_count
+            >= policy.activation_event_threshold
+            and event.current_step >= policy.model_activation_min_tool_actions
+        )
+        if observed_long_horizon:
+            # Runtime behavior is authoritative for operational horizon. A task
+            # that has already crossed the configured observation/action
+            # thresholds is long-running even when the initial model estimate
+            # was short or unknown. Arming is sticky for the task epoch.
+            next_state = replace(next_state, long_horizon_armed=True)
         if event.kind is EventKind.DELIVERY_STATUS:
             reason = DecisionReason.OBSERVATION_RECORDED
         else:
@@ -358,7 +372,11 @@ def transition_execution_protocol(
                 )
                 reason = DecisionReason.OBSERVATION_RECORDED
             else:
-                reason = DecisionReason.OBSERVATION_RECORDED
+                reason = (
+                    DecisionReason.OBSERVED_LONG_HORIZON
+                    if observed_long_horizon
+                    else DecisionReason.OBSERVATION_RECORDED
+                )
 
         stagnant = (
             _is_stagnant(next_state, event, policy)

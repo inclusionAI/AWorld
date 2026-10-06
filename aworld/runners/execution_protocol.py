@@ -24,6 +24,7 @@ from aworld.core.execution_protocol import (
     ExecutionProtocolStore,
     ModelExecutionProfile,
     ModelPlanUpdate,
+    PlanUpdateDecision,
     ProtocolMode,
     ProtocolTransition,
     ReviewOutcome,
@@ -39,6 +40,7 @@ EXECUTION_PROTOCOL_MODEL_DECISIONS_KEY = "execution_protocol_model_decisions"
 EXECUTION_PROTOCOL_HYPOTHESES_KEY = "execution_protocol_hypotheses"
 EXECUTION_PROTOCOL_CRITIC_KEY = "execution_protocol_acceptance_critic"
 EXECUTION_PROTOCOL_PUBLIC_PROBES_KEY = "execution_protocol_public_probes"
+EXECUTION_PROTOCOL_DEADLINE_GUIDANCE_KEY = "execution_protocol_deadline_guidance"
 INDEPENDENT_ACCEPTANCE_CRITIC_ENV = "AWORLD_INDEPENDENT_ACCEPTANCE_CRITIC"
 SEMANTIC_PROGRESS_LEDGER_ENV = "AWORLD_SEMANTIC_PROGRESS_LEDGER"
 _MAX_FALLBACK_CHARS = 64_000
@@ -46,6 +48,22 @@ _MAX_TELEMETRY_COUNTER = 1_000_000
 _PUBLIC_DELIVERABLE_SCHEMA = "aworld.public-deliverables/v1"
 _PUBLIC_DELIVERABLE_AUTHORITY = "public_task_advisory"
 _MAX_DECISION_ATTEMPTS = 2
+_MAX_CONSECUTIVE_UNAPPLIED_REPLANS = 2
+_DEADLINE_STAGE_THRESHOLDS = (
+    ("candidate_due", 0.40),
+    ("validation_due", 0.65),
+    ("delivery_only", 0.80),
+)
+
+
+def _bounded_counter(value: Any) -> int:
+    if isinstance(value, bool):
+        return 0
+    try:
+        parsed = int(value or 0)
+    except (TypeError, ValueError, OverflowError):
+        return 0
+    return min(_MAX_TELEMETRY_COUNTER, max(0, parsed))
 
 
 def _model_decision_scope(context, agent_id: str) -> dict[str, Any]:
@@ -70,12 +88,20 @@ def _normalized_decision_attempts(
             "scope": dict(expected_scope),
             "initial": {},
             "replan": {},
+            "consecutive_unapplied_replans": 0,
+            "suppressed_replan_boundaries": 0,
         }
     return {
         "schema_version": "aworld.model-decision-attempts/v1",
         "scope": dict(expected_scope),
         "initial": dict(value.get("initial") or {}),
         "replan": dict(value.get("replan") or {}),
+        "consecutive_unapplied_replans": _bounded_counter(
+            value.get("consecutive_unapplied_replans")
+        ),
+        "suppressed_replan_boundaries": _bounded_counter(
+            value.get("suppressed_replan_boundaries")
+        ),
     }
 
 
@@ -1082,6 +1108,8 @@ def project_execution_protocol_telemetry(value: Any) -> dict[str, Any] | None:
         "initial_decision_unavailable_count",
         "replan_decision_attempt_count",
         "replan_decision_unavailable_count",
+        "consecutive_unapplied_replans",
+        "suppressed_replan_boundaries",
         "candidate_final_count",
         "final_review_count",
         "repair_count",
@@ -1134,7 +1162,7 @@ def build_execution_protocol_telemetry(context, agent_id: str) -> dict[str, Any]
         "mode": policy.mode.value,
         "phase": state.phase.value,
         "armed": state.long_horizon_armed,
-        "legacy_activation_fields_ignored": True,
+        "legacy_activation_fields_ignored": False,
         "event_count": state.event_count,
         "tool_observation_count": state.tool_observation_count,
         "stagnant_observations": state.stagnant_observations,
@@ -1182,6 +1210,12 @@ def build_execution_protocol_telemetry(context, agent_id: str) -> dict[str, Any]
             decisions["replan"].get("unavailable_count", 0) or 0
         ),
         "replan_decision_fail_open_reason": decisions["replan"].get("fail_open_reason"),
+        "consecutive_unapplied_replans": decisions[
+            "consecutive_unapplied_replans"
+        ],
+        "suppressed_replan_boundaries": decisions[
+            "suppressed_replan_boundaries"
+        ],
         "candidate_final_count": state.candidate_final_count,
         "final_review_count": state.final_review_count,
         "repair_count": state.repair_count,
@@ -1218,6 +1252,89 @@ def _remaining_task_seconds(context) -> float | None:
     if isinstance(remaining, bool) or not isinstance(remaining, (int, float)):
         return None
     return max(0.0, float(remaining))
+
+
+def _task_deadline_progress(context) -> tuple[float, float, float] | None:
+    """Return ``(total, remaining, consumed_fraction)`` for caller-owned time."""
+
+    owner = state_context(context)
+    get_task = getattr(owner, "get_task", None)
+    if not callable(get_task):
+        return None
+    try:
+        task = get_task()
+        total = getattr(task, "timeout", None) if task is not None else None
+        remaining = task.remaining_seconds() if task is not None else None
+    except Exception:
+        return None
+    if (
+        isinstance(total, bool)
+        or not isinstance(total, (int, float))
+        or total <= 0
+        or isinstance(remaining, bool)
+        or not isinstance(remaining, (int, float))
+    ):
+        return None
+    bounded_remaining = min(float(total), max(0.0, float(remaining)))
+    consumed = min(1.0, max(0.0, 1.0 - bounded_remaining / float(total)))
+    return float(total), bounded_remaining, consumed
+
+
+def _record_deadline_guidance(
+    context,
+    agent_id: str,
+    transition: ProtocolTransition,
+) -> None:
+    """Publish each generic convergence stage at most once per task."""
+
+    if execution_protocol_policy(context, agent_id).mode is not ProtocolMode.GUIDE:
+        return
+    progress = _task_deadline_progress(context)
+    if progress is None:
+        return
+    total, remaining, consumed = progress
+    selected = None
+    for stage, threshold in _DEADLINE_STAGE_THRESHOLDS:
+        if consumed >= threshold:
+            selected = stage
+    if selected is None:
+        return
+    if (
+        selected == "candidate_due"
+        and not (
+            transition.state.workspace_mutation_absent_observations > 0
+            or transition.state.decision_checkpoint_candidate_present is False
+        )
+    ):
+        return
+    rank = {stage: index for index, (stage, _) in enumerate(_DEADLINE_STAGE_THRESHOLDS)}
+    current = _read_runtime_value(
+        context, agent_id, EXECUTION_PROTOCOL_DEADLINE_GUIDANCE_KEY
+    )
+    previous_stage = current.get("last_stage") if isinstance(current, Mapping) else None
+    if previous_stage in rank and rank[previous_stage] >= rank[selected]:
+        return
+    _write_runtime_value(
+        context,
+        agent_id,
+        EXECUTION_PROTOCOL_DEADLINE_GUIDANCE_KEY,
+        {
+            "schema_version": "aworld.deadline-guidance/v1",
+            "last_stage": selected,
+            "pending_stage": selected,
+            "total_seconds": total,
+            "remaining_seconds": remaining,
+            "consumed_fraction": consumed,
+        },
+    )
+    owner = state_context(context)
+    metrics = getattr(owner, "context_info", {}).get(EXECUTION_PROTOCOL_METRICS_KEY)
+    if isinstance(metrics, dict):
+        metrics["deadline_stage"] = selected
+        metrics["deadline_guidance_count"] = min(
+            _MAX_TELEMETRY_COUNTER,
+            _bounded_counter(metrics.get("deadline_guidance_count")) + 1,
+        )
 
 
 def _record_transition_metrics(context, transition: ProtocolTransition) -> None:
@@ -1346,6 +1463,7 @@ def record_tool_protocol_event(
     )
     transition = _apply_event(context, agent_id, event)
     _record_pending_checkpoint(context, agent_id, transition)
+    _record_deadline_guidance(context, agent_id, transition)
     return transition
 
 
@@ -1358,6 +1476,37 @@ def _record_pending_checkpoint(
 
     if transition.decision.action is ControllerAction.REQUEST_REPLAN:
         expected_scope = _model_decision_scope(context, agent_id)
+        attempts = _normalized_decision_attempts(
+            _read_runtime_value(
+                context, agent_id, EXECUTION_PROTOCOL_MODEL_DECISIONS_KEY
+            ),
+            expected_scope=expected_scope,
+        )
+        if (
+            attempts["consecutive_unapplied_replans"]
+            >= _MAX_CONSECUTIVE_UNAPPLIED_REPLANS
+        ):
+            attempts["suppressed_replan_boundaries"] = min(
+                _MAX_TELEMETRY_COUNTER,
+                attempts["suppressed_replan_boundaries"] + 1,
+            )
+            attempts["replan"] = {
+                "attempt_count": 0,
+                "request_sequence": transition.state.replan_requested_count,
+                "status": "fail_open_unacknowledged",
+            }
+            _write_runtime_value(
+                context,
+                agent_id,
+                EXECUTION_PROTOCOL_MODEL_DECISIONS_KEY,
+                attempts,
+            )
+            _apply_event(
+                context,
+                agent_id,
+                ExecutionProtocolEvent(kind=EventKind.REPLAN_UNACKNOWLEDGED),
+            )
+            return
 
         def begin_replan_decision(current):
             attempts = _normalized_decision_attempts(
@@ -1519,6 +1668,11 @@ def record_model_decision_attempt_failure(
                 else "fail_open_unacknowledged"
             ),
         }
+        if boundary == "replan" and not retry:
+            attempts["consecutive_unapplied_replans"] = min(
+                _MAX_TELEMETRY_COUNTER,
+                attempts["consecutive_unapplied_replans"] + 1,
+            )
         return attempts
 
     _update_runtime_value(
@@ -1590,6 +1744,11 @@ def record_model_decision_unavailable(
             ),
             "fail_open_reason": reason,
         }
+        if boundary == "replan":
+            attempts["consecutive_unapplied_replans"] = min(
+                _MAX_TELEMETRY_COUNTER,
+                attempts["consecutive_unapplied_replans"] + 1,
+            )
         return attempts
 
     _update_runtime_value(
@@ -1792,6 +1951,14 @@ def record_model_decision_boundary(
                 "request_sequence": request_sequence,
                 "status": "acknowledged",
             }
+            if boundary == "replan":
+                if update.decision is PlanUpdateDecision.REPLAN:
+                    attempts["consecutive_unapplied_replans"] = 0
+                else:
+                    attempts["consecutive_unapplied_replans"] = min(
+                        _MAX_TELEMETRY_COUNTER,
+                        attempts["consecutive_unapplied_replans"] + 1,
+                    )
             return attempts
 
         _update_runtime_value(
@@ -1814,6 +1981,40 @@ def consume_execution_protocol_guidance(context, agent_id: str) -> str | None:
     policy = execution_protocol_policy(context, agent_id)
     if policy.mode is not ProtocolMode.GUIDE:
         return None
+    deadline = _read_runtime_value(
+        context, agent_id, EXECUTION_PROTOCOL_DEADLINE_GUIDANCE_KEY
+    )
+    if isinstance(deadline, Mapping) and deadline.get("pending_stage"):
+        stage = deadline.get("pending_stage")
+        _write_runtime_value(
+            context,
+            agent_id,
+            EXECUTION_PROTOCOL_DEADLINE_GUIDANCE_KEY,
+            {**dict(deadline), "pending_stage": None},
+        )
+        remaining = float(deadline.get("remaining_seconds", 0.0) or 0.0)
+        if stage == "candidate_due":
+            return (
+                "AWorld deadline checkpoint: about 40% of caller-owned task time "
+                "has elapsed without durable delivery progress. Stop broad source "
+                "discovery and create the smallest honest inspectable candidate "
+                "before further optimization. Reuse existing observations instead "
+                f"of rereading unchanged inputs. Remaining time: {remaining:.0f}s."
+            )
+        if stage == "validation_due":
+            return (
+                "AWorld deadline checkpoint: about 65% of caller-owned task time "
+                "has elapsed. Converge now: stop expanding exploration, validate "
+                "the best current candidate against the public contract, and make "
+                f"only evidence-driven repairs. Remaining time: {remaining:.0f}s."
+            )
+        if stage == "delivery_only":
+            return (
+                "AWorld deadline checkpoint: about 80% of caller-owned task time "
+                "has elapsed. Use remaining actions only for delivery-impacting "
+                "repairs and final validation; do not restart discovery or reread "
+                f"unchanged inputs. Remaining time: {remaining:.0f}s."
+            )
     pending = _read_runtime_value(context, agent_id, EXECUTION_PROTOCOL_PENDING_KEY)
     if not isinstance(pending, Mapping):
         return None

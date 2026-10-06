@@ -1076,7 +1076,7 @@ def test_observed_progress_resets_stagnation_counter():
     assert transition.decision.reason is DecisionReason.PROGRESS_OBSERVED
 
 
-def test_unknown_progress_does_not_accumulate_stagnation_or_request_replan():
+def test_unknown_progress_arms_observed_horizon_without_requesting_replan():
     policy = ExecutionProtocolPolicy(
         mode="guide",
         activation_event_threshold=12,
@@ -1097,7 +1097,7 @@ def test_unknown_progress_does_not_accumulate_stagnation_or_request_replan():
         state = transition.state
         decisions.append(transition.decision.action)
 
-    assert state.long_horizon_armed is False
+    assert state.long_horizon_armed is True
     assert state.stagnant_observations == 0
     assert state.replan_count == 0
     assert ControllerAction.REQUEST_REPLAN not in decisions
@@ -1182,7 +1182,7 @@ def test_tool_event_threshold_never_overrides_model_horizon_ownership():
     assert state.long_horizon_armed is False
 
 
-def test_default_threshold_does_not_classify_but_unknown_requires_review() -> None:
+def test_default_threshold_arms_observed_horizon_and_requires_review() -> None:
     policy = ExecutionProtocolPolicy(mode="guide", independent_acceptance_enabled=False)
     state = _state()
     for step in range(1, 7):
@@ -1198,7 +1198,7 @@ def test_default_threshold_does_not_classify_but_unknown_requires_review() -> No
         policy,
     )
 
-    assert state.long_horizon_armed is False
+    assert state.long_horizon_armed is True
     assert transition.decision.action is ControllerAction.REQUEST_FINAL_REVIEW
 
 

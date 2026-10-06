@@ -432,7 +432,7 @@ def test_scoped_state_and_bounded_telemetry_are_public_read_only_views() -> None
         "mode": "guide",
         "phase": "execute",
         "armed": False,
-        "legacy_activation_fields_ignored": True,
+        "legacy_activation_fields_ignored": False,
         "event_count": 1,
         "tool_observation_count": 1,
         "stagnant_observations": 0,
@@ -451,11 +451,162 @@ def test_scoped_state_and_bounded_telemetry_are_public_read_only_views() -> None
         "initial_decision_unavailable_count": 0,
         "replan_decision_attempt_count": 0,
         "replan_decision_unavailable_count": 0,
+        "consecutive_unapplied_replans": 0,
+        "suppressed_replan_boundaries": 0,
         "candidate_final_count": 0,
         "final_review_count": 0,
         "repair_count": 0,
         "finalization_entered": False,
     }
+
+
+def test_observed_work_arms_long_horizon_even_after_short_initial_estimate() -> None:
+    context = _context("observed-long-horizon")
+    policy = ExecutionProtocolPolicy(
+        mode=ProtocolMode.GUIDE,
+        activation_event_threshold=3,
+        model_activation_min_tool_actions=3,
+        repetition_threshold=99,
+        low_information_gain_threshold=99,
+        no_goal_progress_threshold=99,
+        stagnation_event_threshold=99,
+    )
+    configure_execution_protocol(context, "agent", policy)
+    record_model_execution_profile(
+        context,
+        "agent",
+        {
+            "horizon": "short",
+            "confidence": 0.9,
+            "milestone_count": 1,
+            "expected_tool_actions": 2,
+            "verification_required": True,
+        },
+    )
+
+    for step in range(1, 4):
+        record_tool_protocol_event(
+            context,
+            "agent",
+            _semantic_state(current_agent_step=step),
+        )
+
+    state = load_execution_protocol_state(context, "agent")
+    assert state.long_horizon_armed is True
+
+
+def test_two_unapplied_replans_suppress_later_decision_tool_boundaries() -> None:
+    context = _context("bounded-replan-decisions")
+    policy = ExecutionProtocolPolicy(
+        mode=ProtocolMode.GUIDE,
+        activation_event_threshold=1,
+        model_activation_min_tool_actions=1,
+        repetition_threshold=1,
+        stagnation_event_threshold=1,
+    )
+    configure_execution_protocol(context, "agent", policy)
+    _declare_long_horizon(context)
+
+    def acknowledge_without_replan(sequence: int) -> None:
+        transition = record_tool_protocol_event(
+            context,
+            "agent",
+            _semantic_state(
+                repetition_count=1,
+                current_agent_step=sequence,
+                operation_hash=f"sha256:operation-{sequence}",
+                result_hash=f"sha256:result-{sequence}",
+            ),
+        )
+        assert transition.decision.action is ControllerAction.REQUEST_REPLAN
+        assert execution_protocol_model_decision_boundary(context, "agent") == "replan"
+        assert record_model_decision_boundary(
+            context,
+            "agent",
+            boundary="replan",
+            execution_profile=None,
+            plan_update={
+                "decision": "continue",
+                "horizon": "long",
+                "milestone": f"continue-{sequence}",
+                "next_action": "run one bounded check",
+                "next_action_tool": "terminal__execute",
+                "next_action_arguments": '{"command":"true"}',
+                "verification_plan": "inspect the result",
+                "completion_assessment": "in_progress",
+                "delivery_intent": "continue_exploration",
+                "delivery_rationale": "one more check may add evidence",
+                "assumptions": [],
+                "retired_approaches": [],
+                "evidence_refs": [],
+                "selected_candidate_id": None,
+            },
+            available_tool_names=frozenset({"terminal__execute"}),
+        )
+
+    acknowledge_without_replan(1)
+    acknowledge_without_replan(2)
+    third = record_tool_protocol_event(
+        context,
+        "agent",
+        _semantic_state(
+            repetition_count=1,
+            current_agent_step=3,
+            operation_hash="sha256:operation-3",
+            result_hash="sha256:result-3",
+        ),
+    )
+
+    assert third.decision.action is ControllerAction.REQUEST_REPLAN
+    assert execution_protocol_model_decision_boundary(context, "agent") is None
+    assert load_execution_protocol_state(context, "agent").decision_checkpoint_pending is False
+    telemetry = build_execution_protocol_telemetry(context, "agent")
+    assert telemetry["consecutive_unapplied_replans"] == 2
+    assert telemetry["suppressed_replan_boundaries"] == 1
+
+
+def test_deadline_guidance_moves_from_candidate_to_delivery_only() -> None:
+    context = _context("deadline-convergence")
+    policy = ExecutionProtocolPolicy(
+        mode=ProtocolMode.GUIDE,
+        delivery_debt_observation_threshold=99,
+        repetition_threshold=99,
+        low_information_gain_threshold=99,
+        no_goal_progress_threshold=99,
+        stagnation_event_threshold=99,
+    )
+    configure_execution_protocol(context, "agent", policy)
+    task = context.get_task()
+
+    task.remaining_seconds = lambda: 350
+    record_tool_protocol_event(
+        context,
+        "agent",
+        _semantic_state(
+            current_agent_step=1,
+            public_deliverable_declared=True,
+            candidate_present=False,
+            workspace_mutated=False,
+        ),
+    )
+    assert "40%" in consume_execution_protocol_guidance(context, "agent")
+
+    task.remaining_seconds = lambda: 200
+    record_tool_protocol_event(
+        context,
+        "agent",
+        _semantic_state(current_agent_step=2),
+    )
+    assert "65%" in consume_execution_protocol_guidance(context, "agent")
+
+    task.remaining_seconds = lambda: 100
+    record_tool_protocol_event(
+        context,
+        "agent",
+        _semantic_state(current_agent_step=3),
+    )
+    assert "80%" in consume_execution_protocol_guidance(context, "agent")
+    assert consume_execution_protocol_guidance(context, "agent") is None
 
 
 def test_delivery_intent_is_bounded_in_telemetry_and_transition_metrics() -> None:

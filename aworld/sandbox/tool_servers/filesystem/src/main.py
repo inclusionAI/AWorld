@@ -1,6 +1,8 @@
 """Filesystem MCP Server - powered by FastMCP"""
 
 import asyncio
+from collections import OrderedDict
+import hashlib
 import os
 import sys
 import json
@@ -73,12 +75,95 @@ except ImportError:  # Direct execution by the stdio MCP launcher.
 
 # List of allowed directories for all tools
 allowed_directories: list[str] = []
+_READ_OBSERVATION_CACHE: "OrderedDict[tuple, dict]" = OrderedDict()
+_DEFAULT_FULL_READ_MAX_BYTES = 64 * 1024
+_DEFAULT_HEAD_LINES = 400
+
+
+def _env_bounded_int(name: str, default: int, *, minimum: int, maximum: int) -> int:
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return default
+    try:
+        value = int(raw)
+    except ValueError:
+        return default
+    return min(max(value, minimum), maximum)
+
+
+def _read_cache_capacity() -> int:
+    return _env_bounded_int(
+        "AWORLD_FILESYSTEM_OBSERVATION_CACHE_ENTRIES",
+        256,
+        minimum=1,
+        maximum=4096,
+    )
+
+
+def _file_epoch(path: str) -> tuple[int, int, int, int]:
+    stat = os.stat(path, follow_symlinks=False)
+    return (stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns)
+
+
+def _cache_observation(
+    key: tuple,
+    *,
+    path: str,
+    payload_text: str,
+    epoch: tuple[int, int, int, int],
+) -> str:
+    digest = "sha256:" + hashlib.sha256(payload_text.encode("utf-8")).hexdigest()
+    observation_id = "sha256:" + hashlib.sha256(
+        repr((key, epoch, digest)).encode("utf-8")
+    ).hexdigest()
+    _READ_OBSERVATION_CACHE[key] = {
+        "path": path,
+        "epoch": epoch,
+        "content_sha256": digest,
+        "observation_id": observation_id,
+    }
+    _READ_OBSERVATION_CACHE.move_to_end(key)
+    capacity = _read_cache_capacity()
+    while len(_READ_OBSERVATION_CACHE) > capacity:
+        _READ_OBSERVATION_CACHE.popitem(last=False)
+    return observation_id
+
+
+def _unchanged_observation(key: tuple, epoch: tuple[int, int, int, int]) -> dict | None:
+    cached = _READ_OBSERVATION_CACHE.get(key)
+    if not cached or cached.get("epoch") != epoch:
+        return None
+    _READ_OBSERVATION_CACHE.move_to_end(key)
+    return {
+        "type": "unchanged",
+        "path": cached["path"],
+        "observationId": cached["observation_id"],
+        "contentSha256": cached["content_sha256"],
+        "fileEpoch": {
+            "device": epoch[0],
+            "inode": epoch[1],
+            "size": epoch[2],
+            "mtimeNs": epoch[3],
+        },
+        "message": (
+            "unchanged since the referenced observation; reuse the previously "
+            "observed content or set refresh=true when a fresh payload is required"
+        ),
+    }
+
+
+def _invalidate_read_cache(path: str) -> None:
+    normalized = os.path.realpath(path)
+    stale = [key for key in _READ_OBSERVATION_CACHE if key[0] == normalized]
+    for key in stale:
+        _READ_OBSERVATION_CACHE.pop(key, None)
 
 
 async def set_allowed_directories(dirs: list[str]) -> None:
     """Configure the directories that filesystem tools are allowed to access."""
     global allowed_directories
     allowed_directories = [normalize_path(d) for d in dirs]
+    _READ_OBSERVATION_CACHE.clear()
 
 
 def get_allowed_directories() -> list[str]:
@@ -155,7 +240,9 @@ mcp = FastMCP(
 @mcp.tool(
     description="Read file content. Use output='text' for text (supports head/tail); use output='base64' for binary. "
     "head: first N lines; tail: last N lines; both: lines head to tail (1-based inclusive). "
-    "Binary reads support offset/limit paging. Large results include completeness metadata. "
+    "Binary reads support offset/limit paging. Large text reads without an explicit range default to a bounded head window. "
+    "Repeated reads of an unchanged file/range return a compact unchanged receipt; set refresh=true to bypass the cache. "
+    "Large results include completeness metadata. "
     "Returns JSON: {\"type\":\"text\",\"content\":\"...\"} or {\"type\":\"base64\",\"base64\":\"...\",\"mimeType\":\"...\",\"fileName\":\"...\"}."
 )
 async def read_file(
@@ -166,22 +253,76 @@ async def read_file(
     output: str = Field("text", description="Output format: 'text' or 'base64'"),
     offset: Annotated[int, Field(description="Binary byte offset; only used with output='base64'")] = 0,
     limit: Annotated[Optional[int], Field(description="Binary bytes to return; capped by server policy")] = None,
+    refresh: bool = Field(False, description="Return a fresh payload even when this file/range is unchanged"),
 ) -> TextContent:
     """Read file as text or base64; head/tail apply only when file is text (content-based detection)."""
     import base64 as b64
+    if not isinstance(refresh, bool):
+        refresh = False
     valid_path = await validate_path(path, allowed_directories)
     require_regular_file(valid_path)
     if output not in ("text", "base64"):
         raise ValueError("output must be 'text' or 'base64'")
+    epoch = _file_epoch(valid_path)
+    effective_head = head
+    default_bounded = False
+    if output == "text" and head is None and tail is None:
+        full_read_max = _env_bounded_int(
+            "AWORLD_FILESYSTEM_FULL_READ_MAX_BYTES",
+            _DEFAULT_FULL_READ_MAX_BYTES,
+            minimum=4096,
+            maximum=16 * 1024 * 1024,
+        )
+        if epoch[2] > full_read_max:
+            effective_head = _env_bounded_int(
+                "AWORLD_FILESYSTEM_DEFAULT_HEAD_LINES",
+                _DEFAULT_HEAD_LINES,
+                minimum=1,
+                maximum=20_000,
+            )
+            default_bounded = True
+    cache_key = (
+        os.path.realpath(valid_path),
+        output,
+        effective_head,
+        tail,
+        offset,
+        limit,
+    )
+    if not refresh:
+        unchanged = _unchanged_observation(cache_key, epoch)
+        if unchanged is not None:
+            return TextContent(type="text", text=json.dumps(unchanged))
 
     if output == "text":
         if offset != 0 or limit is not None:
             raise ValueError("offset and limit are only supported with output='base64'")
         if not await is_text_file(valid_path):
             raise ValueError("File is not valid UTF-8 text; use output='base64' for binary files")
-        read_result = await read_text_bounded(valid_path, head=head, tail=tail)
+        read_result = await read_text_bounded(
+            valid_path, head=effective_head, tail=tail
+        )
         payload = {"type": "text", "content": read_result.content}
         payload.update(_partial_read_metadata(read_result))
+        if default_bounded:
+            payload.update(
+                {
+                    "complete": False,
+                    "returnedBytes": len(read_result.content.encode("utf-8")),
+                    "totalBytes": epoch[2],
+                    "truncationReason": "default_head",
+                    "nextLine": effective_head + 1,
+                }
+            )
+            payload["defaultBounded"] = True
+            payload["requestedHead"] = effective_head
+        payload_text = json.dumps(payload)
+        payload["observationId"] = _cache_observation(
+            cache_key,
+            path=path,
+            payload_text=payload_text,
+            epoch=epoch,
+        )
         return TextContent(type="text", text=json.dumps(payload))
 
     # output == "base64"
@@ -201,10 +342,14 @@ async def read_file(
         mime_type, file_name = get_mime_and_filename(valid_path)
         payload = {"type": "base64", "base64": b64_data, "mimeType": mime_type, "fileName": file_name}
         payload.update(_binary_read_metadata(binary_result))
-    return TextContent(
-        type="text",
-        text=json.dumps(payload),
+    payload_text = json.dumps(payload)
+    payload["observationId"] = _cache_observation(
+        cache_key,
+        path=path,
+        payload_text=payload_text,
+        epoch=epoch,
     )
+    return TextContent(type="text", text=json.dumps(payload))
 
 
 @mcp.tool(description="Create or overwrite a file. Completely replaces existing file content. Automatically creates parent directories if they don't exist.")
@@ -216,6 +361,7 @@ async def write_file(
     """Create or overwrite a file"""
     valid_path = await validate_path(path, allowed_directories)
     await write_file_content(valid_path, content)
+    _invalidate_read_cache(valid_path)
     return TextContent(type="text", text=f"Successfully wrote to {path}")
 
 
@@ -233,6 +379,7 @@ async def write_file_base64(
     """Create or overwrite a file from base64-encoded bytes."""
     valid_path = await validate_path(path, allowed_directories)
     await write_file_base64_content(valid_path, content_base64)
+    _invalidate_read_cache(valid_path)
     return TextContent(type="text", text=f"Successfully wrote binary content to {path}")
 
 
@@ -276,6 +423,8 @@ async def move_file(
     valid_source = await validate_path(source, allowed_directories)
     valid_dest = await validate_path(destination, allowed_directories)
     Path(valid_source).rename(valid_dest)
+    _invalidate_read_cache(valid_source)
+    _invalidate_read_cache(valid_dest)
     return TextContent(type="text", text=f"Successfully moved {source} to {destination}")
 
 
@@ -320,6 +469,8 @@ async def edit_file(
         new_content=new_content,
         dry_run=dryRun,
     )
+    if not dryRun:
+        _invalidate_read_cache(valid_path)
     return TextContent(type="text", text=diff_text)
 
 @mcp.tool(
@@ -337,6 +488,7 @@ async def upload_file(
     if Path(valid_target).exists() and Path(valid_target).is_dir():
         raise ValueError(f"Target path is a directory: {target_path}")
     await copy_file_binary(source_resolved, valid_target)
+    _invalidate_read_cache(valid_target)
     return TextContent(type="text", text=f"Successfully uploaded {source_path} to {target_path}")
 
 

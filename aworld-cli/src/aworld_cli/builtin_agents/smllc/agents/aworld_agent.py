@@ -244,6 +244,27 @@ def resolve_aworld_tool_surface_enforcement() -> bool:
     raise ValueError("AWORLD_TOOL_SURFACE_MODE must be either 'observe' or 'enforce'")
 
 
+def resolve_aworld_native_filesystem_tools() -> bool:
+    """Return whether direct filesystem schemas are exposed to the root model.
+
+    The filesystem provider remains installed in the shared sandbox for trusted
+    framework operations.  Direct model exposure is opt-in because presenting
+    both terminal and fine-grained filesystem schemas can fragment one useful
+    action into hundreds of repeated reads on long-running tasks.
+    """
+
+    raw_value = os.environ.get("AWORLD_NATIVE_FILESYSTEM_TOOLS", "off")
+    mode = raw_value.strip().lower()
+    if mode in {"", "0", "false", "no", "off", "terminal"}:
+        return False
+    if mode in {"1", "true", "yes", "on", "native"}:
+        return True
+    raise ValueError(
+        "AWORLD_NATIVE_FILESYSTEM_TOOLS must be one of "
+        "off/terminal or on/native"
+    )
+
+
 def resolve_aworld_generation_budget() -> Optional[GenerationBudgetPolicy]:
     """Resolve explicitly enabled generation watchdogs.
 
@@ -749,12 +770,12 @@ def build_aworld_agent(include_skills: Optional[str] = None):
     # Use the packaged Sandbox providers rather than coupling the CLI agent to
     # a benchmark example MCP server.
     builtin_tools = augment_aworld_agent_builtin_tools(["filesystem", "terminal"])
-    # The shared sandbox registers both providers. Keep the root ACL aligned
-    # with that advertised capability set so the model can actually call the
-    # bounded read/write/edit schemas instead of routing every filesystem
-    # operation through an opaque terminal command.
+    native_filesystem_tools = resolve_aworld_native_filesystem_tools()
+    # Keep filesystem installed for framework-owned operations, while exposing
+    # its fine-grained schemas to the model only after an explicit opt-in.
+    # The terminal transport remains the stable aggregate execution surface.
     aworld_mcp_servers = augment_aworld_agent_mcp_servers(
-        ["filesystem", "terminal"]
+        ["terminal", *(["filesystem"] if native_filesystem_tools else [])]
     )
     sandbox = create_agent_sandbox(builtin_tools)
 
@@ -786,15 +807,33 @@ def build_aworld_agent(include_skills: Optional[str] = None):
         tool_surface_profile,
         has_subagents=bool(sub_agents),
     )
-    # Advertise every provider the root agent can actually use. The schemas
-    # remain authoritative for callable names, but omitting filesystem here
-    # biases the model toward analysis through the terminal instead of direct
-    # read/write/edit actions.
+    # Advertise only providers the root model can actually call. Framework-only
+    # sandbox providers must not bias model tool selection.
     prompt_capabilities = [
-        *builtin_tools,
         *root_tool_names,
         *aworld_mcp_servers,
     ]
+
+    tool_surface_specs = (
+        *(
+            (
+                ToolCapabilitySpec(
+                    capability_id="filesystem",
+                    schema_ids=("read_file", "write_file", "edit_file"),
+                    lifecycle=ToolLifecycle.IMMEDIATE,
+                    required=enforce_tool_surface,
+                ),
+            )
+            if native_filesystem_tools
+            else ()
+        ),
+        ToolCapabilitySpec(
+            capability_id="terminal",
+            schema_ids=("run_code",),
+            lifecycle=ToolLifecycle.IMMEDIATE,
+            required=enforce_tool_surface,
+        ),
+    )
 
     # Create the root as a direct executor. Delegation is an optional capability,
     # not its identity, and is exposed only when collaborators were initialized.
@@ -816,20 +855,7 @@ def build_aworld_agent(include_skills: Optional[str] = None):
         sandbox=sandbox,  # Shared sandbox (tools filtered by agent's mcp_servers config)
         tool_names=root_tool_names,
         black_tool_actions=black_tool_actions,
-        tool_surface_specs=(
-            ToolCapabilitySpec(
-                capability_id="filesystem",
-                schema_ids=("read_file", "write_file", "edit_file"),
-                lifecycle=ToolLifecycle.IMMEDIATE,
-                required=enforce_tool_surface,
-            ),
-            ToolCapabilitySpec(
-                capability_id="terminal",
-                schema_ids=("run_code",),
-                lifecycle=ToolLifecycle.IMMEDIATE,
-                required=enforce_tool_surface,
-            ),
-        ),
+        tool_surface_specs=tool_surface_specs,
         tool_surface_profile=tool_surface_profile,
         enable_subagent=bool(sub_agents),
         llm_max_attempts=3,
@@ -840,6 +866,7 @@ def build_aworld_agent(include_skills: Optional[str] = None):
         **budgeted_agent_kwargs,
     )
     aworld_agent.tool_surface_profile = tool_surface_profile
+    aworld_agent.native_filesystem_tools = native_filesystem_tools
     # Keep the default swarm strictly main-only.  This factory stores immutable
     # construction inputs but imports and constructs the verifier only after an
     # explicit model Tool call.

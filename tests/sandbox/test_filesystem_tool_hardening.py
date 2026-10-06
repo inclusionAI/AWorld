@@ -68,17 +68,24 @@ async def test_small_file_contract_and_existing_parameters_remain_compatible(tmp
     text_path = tmp_path / "small.txt"
     text_path.write_text("alpha\nbeta\n", encoding="utf-8")
 
-    assert _json(
+    full_payload = _json(
         await filesystem.read_file(
             None, str(text_path), head=None, tail=None, output="text"
         )
-    ) == {"type": "text", "content": "alpha\nbeta\n"}
-    assert _json(
+    )
+    assert full_payload["type"] == "text"
+    assert full_payload["content"] == "alpha\nbeta\n"
+    assert full_payload["observationId"].startswith("sha256:")
+    head_payload = _json(
         await filesystem.read_file(
             None, str(text_path), head=1, tail=None, output="text"
         )
-    ) == {"type": "text", "content": "alpha"}
-    assert _json(await filesystem.download_file(None, str(text_path))) == {
+    )
+    assert head_payload["type"] == "text"
+    assert head_payload["content"] == "alpha"
+    assert head_payload["observationId"].startswith("sha256:")
+    download_payload = _json(await filesystem.download_file(None, str(text_path)))
+    assert download_payload == {
         "type": "base64",
         "base64": base64.b64encode(b"alpha\nbeta\n").decode("ascii"),
         "mimeType": "text/plain",
@@ -87,6 +94,74 @@ async def test_small_file_contract_and_existing_parameters_remain_compatible(tmp
 
     signature = inspect.signature(filesystem.read_file)
     assert list(signature.parameters)[:5] == ["ctx", "path", "head", "tail", "output"]
+
+
+@pytest.mark.asyncio
+async def test_repeated_unchanged_read_returns_receipt_and_refresh_bypasses_cache(
+    tmp_path: Path,
+) -> None:
+    await filesystem.set_allowed_directories([str(tmp_path)])
+    path = tmp_path / "cached.txt"
+    path.write_text("alpha\nbeta\n", encoding="utf-8")
+
+    first = _json(
+        await filesystem.read_file(
+            None, str(path), head=None, tail=None, output="text"
+        )
+    )
+    repeated = _json(
+        await filesystem.read_file(
+            None, str(path), head=None, tail=None, output="text"
+        )
+    )
+    refreshed = _json(
+        await filesystem.read_file(
+            None,
+            str(path),
+            head=None,
+            tail=None,
+            output="text",
+            refresh=True,
+        )
+    )
+
+    assert repeated["type"] == "unchanged"
+    assert repeated["observationId"] == first["observationId"]
+    assert "content" not in repeated
+    assert refreshed["type"] == "text"
+    assert refreshed["content"] == first["content"]
+
+    path.write_text("changed\n", encoding="utf-8")
+    changed = _json(
+        await filesystem.read_file(
+            None, str(path), head=None, tail=None, output="text"
+        )
+    )
+    assert changed["type"] == "text"
+    assert changed["content"] == "changed\n"
+
+
+@pytest.mark.asyncio
+async def test_large_implicit_text_read_defaults_to_bounded_head(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("AWORLD_FILESYSTEM_FULL_READ_MAX_BYTES", "4096")
+    monkeypatch.setenv("AWORLD_FILESYSTEM_DEFAULT_HEAD_LINES", "3")
+    await filesystem.set_allowed_directories([str(tmp_path)])
+    path = tmp_path / "large.txt"
+    path.write_text("".join(f"line-{index:04d}\n" for index in range(1000)), encoding="utf-8")
+
+    payload = _json(
+        await filesystem.read_file(
+            None, str(path), head=None, tail=None, output="text"
+        )
+    )
+
+    assert payload["content"] == "line-0000\nline-0001\nline-0002"
+    assert payload["complete"] is False
+    assert payload["defaultBounded"] is True
+    assert payload["requestedHead"] == 3
+    assert payload["nextLine"] == 4
 
 
 @pytest.mark.asyncio

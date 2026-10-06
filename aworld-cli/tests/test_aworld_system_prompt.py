@@ -17,6 +17,7 @@ from aworld_cli.builtin_agents.smllc.agents.aworld_agent import (
     resolve_aworld_reasoning_configuration,
     resolve_aworld_max_completion_tokens,
     resolve_aworld_max_loop_steps,
+    resolve_aworld_native_filesystem_tools,
     resolve_aworld_tool_surface_enforcement,
     resolve_aworld_tool_surface_profile,
 )
@@ -245,6 +246,20 @@ def test_tool_surface_enforcement_rejects_unknown_mode(
         resolve_aworld_tool_surface_enforcement()
 
 
+def test_native_filesystem_tools_are_explicit_opt_in(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("AWORLD_NATIVE_FILESYSTEM_TOOLS", raising=False)
+    assert resolve_aworld_native_filesystem_tools() is False
+
+    monkeypatch.setenv("AWORLD_NATIVE_FILESYSTEM_TOOLS", "native")
+    assert resolve_aworld_native_filesystem_tools() is True
+
+    monkeypatch.setenv("AWORLD_NATIVE_FILESYSTEM_TOOLS", "sometimes")
+    with pytest.raises(ValueError, match="off/terminal.*on/native"):
+        resolve_aworld_native_filesystem_tools()
+
+
 def test_generation_budget_env_is_opt_in(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -396,6 +411,7 @@ def test_default_agent_is_strictly_single_main_agent(
     from aworld.agents.llm_agent import get_tool_desc, tool_desc_transform
 
     monkeypatch.delenv("AWORLD_BUILTIN_SUBAGENTS", raising=False)
+    monkeypatch.delenv("AWORLD_NATIVE_FILESYSTEM_TOOLS", raising=False)
     monkeypatch.setenv("LLM_MODEL_NAME", "gpt-4")
     monkeypatch.setenv("LLM_API_KEY", "offline")
     monkeypatch.chdir(tmp_path)
@@ -412,22 +428,20 @@ def test_default_agent_is_strictly_single_main_agent(
     assert collaborators == {}
     assert root.name() == "Aworld"
     assert root.enable_subagent is False
-    assert root.mcp_servers[:2] == ["filesystem", "terminal"]
+    assert root.mcp_servers == ["terminal"]
     assert "WORKBENCH" not in root.tool_names
     root_schema_names = {
         item["function"]["name"]
         for item in tool_desc_transform(get_tool_desc(), tools=root.tool_names)
     }
     assert all(not name.startswith("WORKBENCH__") for name in root_schema_names)
-    assert {spec.capability_id for spec in root._tool_surface_specs} == {
-        "filesystem",
-        "terminal",
-    }
+    assert {spec.capability_id for spec in root._tool_surface_specs} == {"terminal"}
+    assert root.native_filesystem_tools is False
     assert not hasattr(root, "_task_workspace_local_path")
     assert not hasattr(root, "_completion_workspace_local_path")
     assert "WORKBENCH" not in root.system_prompt
     assert "Configured tool capabilities:" in root.system_prompt
-    assert "filesystem" in root.system_prompt
+    assert "filesystem" not in root.system_prompt
     assert "terminal" in root.system_prompt
     assert "do not emulate that operation with `cat`, heredocs" in root.system_prompt
     assert "Treat an exact requested output format as a closed contract" in root.system_prompt
@@ -437,6 +451,26 @@ def test_default_agent_is_strictly_single_main_agent(
         resolve_aworld_tool_surface_profile(), has_subagents=False,
     )
     assert "async_spawn_subagent" not in tools
+
+
+def test_agent_can_explicitly_enable_native_filesystem_tools(
+    monkeypatch, tmp_path
+) -> None:
+    monkeypatch.setenv("AWORLD_NATIVE_FILESYSTEM_TOOLS", "native")
+    monkeypatch.setenv("LLM_MODEL_NAME", "gpt-4")
+    monkeypatch.setenv("LLM_API_KEY", "offline")
+    monkeypatch.chdir(tmp_path)
+
+    swarm = aworld_agent.build_aworld_agent()
+    root = next(agent for agent in swarm.agents.values() if agent.name() == "Aworld")
+
+    assert root.mcp_servers[:2] == ["terminal", "filesystem"]
+    assert {spec.capability_id for spec in root._tool_surface_specs} == {
+        "filesystem",
+        "terminal",
+    }
+    assert root.native_filesystem_tools is True
+    assert "filesystem" in root.system_prompt
 
 
 def test_verifier_remains_an_explicit_fresh_context_opt_in(
