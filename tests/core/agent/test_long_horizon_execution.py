@@ -808,8 +808,28 @@ def test_agent_uses_existing_skill_activation_as_protocol_switch() -> None:
     agent.skill_configs = {"long-running-agent": {"active": True}}
 
     assert agent._resolve_execution_protocol_policy().mode is ProtocolMode.GUIDE
+    assert agent._resolve_execution_protocol_policy().review_unarmed_candidates is True
     agent.skill_configs["long-running-agent"]["active"] = False
     assert agent._resolve_execution_protocol_policy().mode is ProtocolMode.OFF
+
+
+def test_long_running_skill_can_disable_review_for_unarmed_candidates(
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv(
+        "AWORLD_EXECUTION_PROTOCOL_REVIEW_UNARMED_CANDIDATES", "false"
+    )
+    agent = Agent(
+        name="Aworld",
+        conf=AgentConfig(
+            llm_provider="openai",
+            llm_model_name="offline",
+            llm_api_key="offline",
+        ),
+    )
+    agent.skill_configs = {"long-running-agent": {"active": True}}
+
+    assert agent._resolve_execution_protocol_policy().review_unarmed_candidates is False
 
 
 def test_runtime_can_enable_model_review_for_every_candidate(monkeypatch) -> None:

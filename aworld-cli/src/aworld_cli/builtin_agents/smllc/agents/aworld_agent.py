@@ -722,7 +722,15 @@ def build_aworld_agent(include_skills: Optional[str] = None):
             llm_base_url=os.getenv("LLM_BASE_URL", "https://api.openai.com/v1"),
             llm_temperature=float(os.environ.get("LLM_TEMPERATURE", "0.1")),
             max_model_len=resolve_context_window_env(),
-            context_compiler=resolve_context_compiler_env(),
+            context_compiler={
+                # The built-in autonomous agent already records semantic
+                # repetition, low-information observations, and durable goal
+                # progress. Use those signals before the prompt reaches hard
+                # budget pressure so long-running work does not repeatedly
+                # replay the same source/log observations for dozens of turns.
+                "checkpoint_policy": "adaptive",
+                **resolve_context_compiler_env(),
+            },
             params={
                 "max_completion_tokens": max_completion_tokens,
                 **reasoning_params,

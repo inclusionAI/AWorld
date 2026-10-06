@@ -40,6 +40,7 @@ def test_builtin_agent_receives_explicit_deployment_capacity_without_extra_input
     agent = next(iter(swarm.agents.values()))
     assert agent.conf.llm_config.max_model_len == 1000000
     assert agent.conf.max_input_tokens is None
+    assert agent.conf.llm_config.context_compiler.checkpoint_policy == "adaptive"
 
 
 def test_named_profile_retains_window_and_compiler_override(monkeypatch):

@@ -271,6 +271,71 @@ def semantic_result_fingerprint(value: Any) -> str:
 
     return canonical_json_hash(remove_command_echo(projection))
 
+_DUPLICATE_TOOL_RESULT_MIN_CHARS = 512
+_DUPLICATE_TOOL_RESULT_MARKER = "AWorld cached duplicate tool observation"
+
+
+def compact_duplicate_tool_results(
+    messages: Sequence[Mapping[str, Any]],
+    *,
+    minimum_chars: int = _DUPLICATE_TOOL_RESULT_MIN_CHARS,
+) -> tuple[list[dict[str, Any]], dict[str, Any] | None]:
+    """Replace older byte-identical Tool observations with bounded receipts.
+
+    Amni offload protects the prompt from one oversized Tool result, while a
+    long-running agent can still accumulate many medium-sized copies of the
+    same file range, log, or command output. Keep the newest complete copy and
+    preserve every assistant/Tool causal pair; only older identical string
+    payloads become content-addressed receipts.
+
+    This is deliberately semantic-free. It does not infer that a command was
+    safe, skip Tool execution, or treat similarity as equality.
+    """
+    if (isinstance(minimum_chars, bool) or not isinstance(minimum_chars, int)
+            or minimum_chars < 1):
+        raise ValueError("minimum_chars must be a positive integer")
+
+    values = [dict(message) for message in messages]
+    occurrences: dict[str, list[tuple[int, str]]] = {}
+    for index, message in enumerate(values):
+        content = message.get("content")
+        if (message.get("role") != "tool" or not isinstance(content, str)
+                or len(content) < minimum_chars
+                or content.startswith(_DUPLICATE_TOOL_RESULT_MARKER)):
+            continue
+        content_hash = canonical_json_hash({"content": content})
+        occurrences.setdefault(content_hash, []).append((index, content))
+
+    compacted_count = saved_chars = duplicate_groups = 0
+    hashes: list[str] = []
+    for content_hash, copies in occurrences.items():
+        if len(copies) < 2:
+            continue
+        duplicate_groups += 1
+        hashes.append(content_hash)
+        # The newest occurrence remains complete, so no observed information
+        # is lost from the provider-bound request.
+        for occurrence, (index, content) in enumerate(copies[:-1], start=1):
+            receipt = (
+                f"{_DUPLICATE_TOOL_RESULT_MARKER} omitted. "
+                "An identical complete result is retained in a later Tool "
+                f"message. content_hash={content_hash}; "
+                f"original_chars={len(content)}; occurrence={occurrence}/{len(copies)}."
+            )
+            values[index]["content"] = receipt
+            compacted_count += 1
+            saved_chars += max(0, len(content) - len(receipt))
+
+    if not compacted_count:
+        return values, None
+    return values, {
+        "schema_version": "aworld.context.duplicate-tool-compaction/v1",
+        "duplicate_group_count": duplicate_groups,
+        "compacted_message_count": compacted_count,
+        "saved_chars": saved_chars,
+        "content_hashes": sorted(hashes),
+    }
+
 
 def compact_message_history(
     messages: Sequence[Mapping[str, Any]], *, keep_recent: int = 8
@@ -468,6 +533,7 @@ __all__ = [
     "AdaptiveEscalationStage",
     "adaptive_escalation_message",
     "advance_adaptive_escalation",
+    "compact_duplicate_tool_results",
     "compact_message_history",
     "restore_adaptive_continuation",
     "evaluate_adaptive_checkpoint",

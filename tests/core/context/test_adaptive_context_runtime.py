@@ -22,6 +22,7 @@ from aworld.core.context.compiler import (
     advance_adaptive_escalation,
     advance_adaptive_work_state,
     attach_adaptive_work_state,
+    compact_duplicate_tool_results,
     compact_message_history,
     evaluate_adaptive_checkpoint,
     semantic_fingerprint,
@@ -908,6 +909,46 @@ def test_budget_pressure_does_not_manufacture_no_progress_escalation():
     assert decision.stage is AdaptiveEscalationStage.DIVERSIFY
     assert decision.no_progress_checkpoint_count == 2
     assert decision.progress_reset is False
+
+
+def test_duplicate_tool_compaction_keeps_newest_complete_observation():
+    repeated = "same file range\n" * 80
+    messages = [
+        {"role": "system", "content": "policy"},
+        {"role": "user", "content": "task"},
+        {"role": "assistant", "content": "",
+         "tool_calls": [{"id": "read-1", "type": "function"}]},
+        {"role": "tool", "tool_call_id": "read-1", "content": repeated},
+        {"role": "assistant", "content": "",
+         "tool_calls": [{"id": "read-2", "type": "function"}]},
+        {"role": "tool", "tool_call_id": "read-2", "content": repeated},
+    ]
+
+    compacted, receipt = compact_duplicate_tool_results(messages)
+
+    assert receipt is not None
+    assert receipt["duplicate_group_count"] == 1
+    assert receipt["compacted_message_count"] == 1
+    assert receipt["saved_chars"] > 0
+    assert compacted[3]["content"].startswith(
+        "AWorld cached duplicate tool observation"
+    )
+    assert compacted[5]["content"] == repeated
+    assert messages[3]["content"] == repeated
+
+
+def test_duplicate_tool_compaction_requires_exact_substantial_content():
+    messages = [
+        {"role": "tool", "tool_call_id": "short-1", "content": "same"},
+        {"role": "tool", "tool_call_id": "short-2", "content": "same"},
+        {"role": "tool", "tool_call_id": "long-1", "content": "a" * 600},
+        {"role": "tool", "tool_call_id": "long-2", "content": "b" * 600},
+    ]
+
+    compacted, receipt = compact_duplicate_tool_results(messages)
+
+    assert receipt is None
+    assert compacted == messages
 
 
 def test_compaction_retains_task_system_policy_and_recent_turns():

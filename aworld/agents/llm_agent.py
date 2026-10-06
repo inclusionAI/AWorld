@@ -931,9 +931,12 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             return self._explicit_execution_protocol_policy
         skill = (self.skill_configs or {}).get("long-running-agent")
         active = isinstance(skill, dict) and skill.get("active") is True
-        review_unarmed_candidates = os.environ.get(
-            EXECUTION_PROTOCOL_REVIEW_UNARMED_ENV, ""
-        ).strip().lower() in {"1", "true", "yes", "on"}
+        # A model-owned short/unknown horizon classification must not suppress
+        # the existing completion review.  The long-running Skill is the
+        # capability boundary; callers retain an explicit rollback flag.
+        review_unarmed_candidates = _default_on_env(
+            EXECUTION_PROTOCOL_REVIEW_UNARMED_ENV
+        )
         policy = ExecutionProtocolPolicy(
             mode=ProtocolMode.GUIDE if active else ProtocolMode.OFF,
             review_unarmed_candidates=(review_unarmed_candidates if active else False),
@@ -3479,12 +3482,26 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             adaptive_escalation_message,
             advance_adaptive_escalation,
             attach_adaptive_work_state,
+            compact_duplicate_tool_results,
             compact_message_history,
             estimate_canonical_json_tokens,
             evaluate_adaptive_checkpoint,
             LifecycleAction,
             restore_adaptive_continuation,
         )
+
+        messages, duplicate_receipt = compact_duplicate_tool_results(messages)
+        if duplicate_receipt is not None:
+            increment_watchdog_metric(
+                context,
+                "duplicate_tool_result_compaction_count",
+                int(duplicate_receipt["compacted_message_count"]),
+            )
+            increment_watchdog_metric(
+                context,
+                "duplicate_tool_result_saved_chars",
+                int(duplicate_receipt["saved_chars"]),
+            )
 
         progress = semantic_progress_for_agent(context, agent_id=self.id())
         prompt_tokens = int(estimate_canonical_json_tokens(messages).value or 0)
