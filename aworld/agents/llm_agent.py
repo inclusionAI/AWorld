@@ -16,7 +16,7 @@ from collections import OrderedDict
 from dataclasses import dataclass, replace
 from datetime import datetime
 from enum import Enum
-from typing import Dict, Any, List, Callable, Optional, Sequence, Union
+from typing import Dict, Any, List, Callable, Mapping, Optional, Sequence, Union
 
 import aworld.trace as trace
 from aworld.config.conf import (
@@ -252,8 +252,9 @@ _TRANSIENT_MODEL_EXCEPTION_TYPES = frozenset(
 # action executable.  These reasons are produced only by
 # ``_incomplete_model_response_reason`` and remain task/model-owned: a normal
 # tool-capable turn may repair them while caller time and Agent step budget
-# remain.  There is intentionally no count/cost ceiling here; the Task deadline
-# and the existing Agent step policy are the liveness boundaries.
+# remain.  Recovery is nevertheless bounded per unchanged observation so a
+# provider that repeatedly spends its entire output allowance on reasoning
+# cannot consume the caller deadline without producing an executable action.
 _RECOVERABLE_MODEL_RESPONSE_REASONS = frozenset(
     {
         "incomplete_tool_arguments",
@@ -266,6 +267,7 @@ _RECOVERABLE_MODEL_RESPONSE_REASONS = frozenset(
     }
 )
 _MODEL_RESPONSE_RECOVERY_CONTEXT_KEY = "model_response_recovery_context"
+_MODEL_RESPONSE_RECOVERY_MAX_CONTINUATIONS = 3
 _LONG_HORIZON_REVIEW_DEADLINE_KEY = "long_horizon_review_deadline"
 _LONG_HORIZON_REVIEW_DEADLINE_SCHEMA = "aworld.review-deadline/v1"
 _PUBLIC_DELIVERABLE_SCHEMA = "aworld.public-deliverables/v1"
@@ -4261,7 +4263,69 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                 1_000_000,
                 int(metrics.get("continuation_count", 0) or 0) + 1,
             )
+            metrics["consecutive_continuation_count"] = min(
+                _MODEL_RESPONSE_RECOVERY_MAX_CONTINUATIONS,
+                int(metrics.get("consecutive_continuation_count", 0) or 0) + 1,
+            )
+        elif outcome == "recovered":
+            metrics["consecutive_continuation_count"] = 0
         context.context_info[key] = metrics
+
+    @staticmethod
+    def _model_response_recovery_continuations(context: Context) -> int:
+        metrics = context.context_info.get("model_response_recovery_metrics")
+        if not isinstance(metrics, Mapping):
+            return 0
+        value = metrics.get("consecutive_continuation_count", 0)
+        if isinstance(value, bool) or not isinstance(value, int):
+            return 0
+        return max(0, value)
+
+    @staticmethod
+    def _incomplete_action_recovery_kwargs(
+        kwargs: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Bound reasoning on a forced action retry without inventing support.
+
+        Only an already-declared reasoning transport is changed. Providers
+        without such a declaration retain their original request unchanged.
+        """
+
+        updated = dict(kwargs)
+        from aworld.models.reasoning_policy import (
+            AWORLD_REASONING_SELECTION_KWARG,
+        )
+
+        updated.pop(AWORLD_REASONING_SELECTION_KWARG, None)
+        declared = isinstance(updated.get("reasoning_effort"), str)
+        top_template = updated.get("chat_template_kwargs")
+        if isinstance(top_template, Mapping) and isinstance(
+            top_template.get("reasoning_effort"), str
+        ):
+            declared = True
+            template = dict(top_template)
+            template["reasoning_effort"] = "low"
+            template["thinking"] = True
+            updated["chat_template_kwargs"] = template
+        extra_body = updated.get("extra_body")
+        if isinstance(extra_body, Mapping):
+            extra = dict(extra_body)
+            if isinstance(extra.get("reasoning_effort"), str):
+                declared = True
+                extra["reasoning_effort"] = "low"
+            nested_template = extra.get("chat_template_kwargs")
+            if isinstance(nested_template, Mapping) and isinstance(
+                nested_template.get("reasoning_effort"), str
+            ):
+                declared = True
+                nested = dict(nested_template)
+                nested["reasoning_effort"] = "low"
+                nested["thinking"] = True
+                extra["chat_template_kwargs"] = nested
+            updated["extra_body"] = extra
+        if declared:
+            updated["reasoning_effort"] = "low"
+        return updated
 
     @staticmethod
     def _model_response_recovery_kwargs(kwargs: dict[str, Any]) -> dict[str, Any]:
@@ -4886,6 +4950,17 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                     # The typed incomplete state remains authoritative. Mark the
                     # Agent finished only so the event runner publishes that
                     # task-owned state instead of trying to synthesize success.
+                    self._finished = True
+                    return result
+                if (
+                    self._model_response_recovery_continuations(message.context)
+                    >= _MODEL_RESPONSE_RECOVERY_MAX_CONTINUATIONS
+                ):
+                    self._record_model_response_recovery(
+                        message.context,
+                        outcome="continuation_exhausted",
+                        reason=reason,
+                    )
                     self._finished = True
                     return result
 
@@ -8390,6 +8465,7 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                                 # the caller-owned deadline.
                                 kwargs = dict(kwargs)
                                 kwargs["tool_choice"] = "required"
+                            kwargs = self._incomplete_action_recovery_kwargs(kwargs)
                             continue
                         record_execution_state(
                             context,

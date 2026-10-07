@@ -704,8 +704,8 @@ async def test_truncated_model_actions_continue_with_tools_until_task_boundary(
 
     actions = await agent.async_policy(message.payload, message=message, stream=False)
 
-    # Three exhausted two-attempt response batches do not impose an overall
-    # retry limit. The next normal turn still receives the full Tool catalog.
+    # Three bounded continuation batches may recover on the final allowed
+    # turn, and every normal turn still receives the full Tool catalog.
     assert len(provider_calls) == 7
     assert all(call.get("tools") for call in provider_calls)
     assert all(
@@ -744,6 +744,7 @@ async def test_truncated_model_actions_continue_with_tools_until_task_boundary(
     ).load().long_horizon_armed
     metrics = agent.context.context_info["model_response_recovery_metrics"]
     assert metrics["continuation_count"] == 3
+    assert metrics["consecutive_continuation_count"] == 0
     assert metrics["outcome:recovered"] == 1
     protocol = build_execution_protocol_telemetry(agent.context, agent.id())
     assert protocol["initial_decision_status"] == "fail_open_unknown"
@@ -757,6 +758,77 @@ async def test_truncated_model_actions_continue_with_tools_until_task_boundary(
         agent._model_response_recovery_context_key()
         not in agent.context.context_info
     )
+
+
+def test_incomplete_action_recovery_downgrades_only_declared_reasoning() -> None:
+    updated = Agent._incomplete_action_recovery_kwargs(
+        {
+            "reasoning_effort": "max",
+            "extra_body": {
+                "chat_template_kwargs": {
+                    "thinking": True,
+                    "reasoning_effort": "max",
+                    "preserved": "value",
+                }
+            },
+            "tool_choice": "required",
+            "_aworld_reasoning_selection": {"reasoning_effort": "max"},
+        }
+    )
+
+    assert updated["reasoning_effort"] == "low"
+    assert updated["tool_choice"] == "required"
+    assert "_aworld_reasoning_selection" not in updated
+    assert updated["extra_body"]["chat_template_kwargs"] == {
+        "thinking": True,
+        "reasoning_effort": "low",
+        "preserved": "value",
+    }
+    assert Agent._incomplete_action_recovery_kwargs({"stream": False}) == {
+        "stream": False
+    }
+
+
+@pytest.mark.asyncio
+async def test_truncated_model_action_has_bounded_outer_recovery() -> None:
+    agent = _long_running_generation_agent(armed=False)
+    agent.context.set_task(
+        Task(
+            id="bounded-model-response-recovery",
+            name="bounded-model-response-recovery",
+            input="create /app/result.json",
+            timeout=600,
+            completion_reserve_seconds=60,
+        )
+    )
+    calls = 0
+
+    async def attempt(observation, **kwargs):
+        nonlocal calls
+        calls += 1
+        from aworld.core.context.execution_state import record_execution_state
+
+        record_execution_state(
+            agent.context,
+            agent.id(),
+            "incomplete",
+            "model_output_truncated",
+            recoverable=True,
+        )
+        return [ActionModel(agent_name=agent.id(), policy_info="Incomplete.")]
+
+    agent._async_policy_once = attempt
+    message = Message(category=Constants.AGENT, headers={"context": agent.context})
+
+    result = await agent.async_policy(Observation(content="continue"), message=message)
+
+    assert calls == 4
+    assert result[0].policy_info == "Incomplete."
+    assert agent.finished is True
+    metrics = agent.context.context_info["model_response_recovery_metrics"]
+    assert metrics["continuation_count"] == 3
+    assert metrics["consecutive_continuation_count"] == 3
+    assert metrics["last_outcome"] == "continuation_exhausted"
 
 
 @pytest.mark.asyncio
