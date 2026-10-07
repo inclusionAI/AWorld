@@ -69,6 +69,12 @@ def terminal():
     return SimpleNamespace(**{name: namespace[name] for name in names})
 
 
+def test_shell_parser_contract_is_owned_by_aworld():
+    source = TERMINAL.read_text(encoding="utf-8")
+    assert "AWORLD_SHELL_PARSER_VERSION = 1" in source
+    assert "RUNTIME_SHELL_PARSER_VERSION" not in source
+
+
 @pytest.mark.parametrize("delimiter", ["'EOF'", '"EOF"', r"\EOF", "E'O'F", "'E O F'"])
 def test_quoted_heredoc_data_is_not_shell_code(terminal, delimiter):
     end = shlex.split(delimiter)[0]

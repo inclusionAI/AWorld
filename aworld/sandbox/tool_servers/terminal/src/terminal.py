@@ -74,7 +74,7 @@ _ARTIFACT_REF_PREFIX = "aworld-terminal-output://sha256/"
 _ENV_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*\Z")
 _MAX_ENV_OVERRIDES = 128
 _MAX_ENV_OVERRIDE_BYTES = 64 * 1024
-RUNTIME_SHELL_PARSER_VERSION = 1
+AWORLD_SHELL_PARSER_VERSION = 1
 
 # Keep strong references to drain-only tasks for background children that retain
 # inherited stdout/stderr descriptors after their launching shell has exited.
