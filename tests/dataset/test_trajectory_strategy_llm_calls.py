@@ -1,5 +1,8 @@
+from types import SimpleNamespace
+
 import pytest
 
+from aworld.core.common import ActionModel
 from aworld.core.context.base import Context
 from aworld.core.event.base import Message
 from aworld.dataset.trajectory_strategy import DefaultTrajectoryStrategy
@@ -14,6 +17,62 @@ def _build_message(*, timestamp: float = 20.0, receiver: str = "agent-1") -> Mes
     )
     message.context = context
     return message
+
+
+def _state_manager_with_action(action: ActionModel):
+    result_message = Message(payload=[action])
+    node = SimpleNamespace(results=[SimpleNamespace(result=result_message)])
+    return SimpleNamespace(_find_node=lambda _message_id: node)
+
+
+@pytest.mark.asyncio
+async def test_task_response_trajectory_preserves_model_visible_tool_name():
+    strategy = DefaultTrajectoryStrategy()
+    message = _build_message()
+    action = await strategy.build_trajectory_action(
+        message,
+        state_manager=_state_manager_with_action(
+            ActionModel(
+                tool_name="mcp",
+                action_name="terminal__run_code",
+                model_visible_tool_name="run_code",
+                tool_call_id="call-1",
+                agent_name="agent-1",
+                params={"code": "pwd"},
+            )
+        ),
+    )
+
+    assert action.tool_calls == [
+        {
+            "id": "call-1",
+            "type": "function",
+            "function": {
+                "name": "run_code",
+                "arguments": '{"code": "pwd"}',
+            },
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_task_response_trajectory_recovers_legacy_mcp_action_name():
+    strategy = DefaultTrajectoryStrategy()
+    message = _build_message()
+    action = await strategy.build_trajectory_action(
+        message,
+        state_manager=_state_manager_with_action(
+            ActionModel(
+                tool_name="mcp",
+                action_name="terminal__run_code",
+                tool_call_id="call-1",
+                agent_name="agent-1",
+                params={"code": "pwd"},
+            )
+        ),
+    )
+
+    assert action.tool_calls[0]["function"]["name"] == "run_code"
 
 
 @pytest.mark.asyncio

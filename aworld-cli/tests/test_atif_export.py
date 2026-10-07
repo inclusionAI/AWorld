@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+from types import SimpleNamespace
+
 import pytest
 
 from aworld_cli.atif import (
@@ -9,6 +11,7 @@ from aworld_cli.atif import (
     try_write_atif_trajectory,
     write_atif_trajectory,
 )
+from aworld_cli.main import _live_trajectory_from_llm_calls
 
 
 def test_atif_exports_complete_provider_usage_without_counting_mirrored_calls():
@@ -231,7 +234,7 @@ def test_build_atif_trajectory_preserves_tools_and_observations():
                         {
                             "id": "call-1",
                             "function": {
-                                "name": "mcp",
+                                "name": "run_code",
                                 "arguments": '{"command": "ls"}',
                             },
                         }
@@ -280,7 +283,7 @@ def test_build_atif_trajectory_preserves_tools_and_observations():
     assert first_agent_step["reasoning_content"] == "inspect the workspace"
     assert first_agent_step["tool_calls"][0] == {
         "tool_call_id": "call-1",
-        "function_name": "mcp",
+        "function_name": "run_code",
         "arguments": {"command": "ls"},
     }
     assert first_agent_step["observation"]["results"][0] == {
@@ -288,6 +291,63 @@ def test_build_atif_trajectory_preserves_tools_and_observations():
         "content": "report.json",
     }
     assert trajectory["final_metrics"]["total_steps"] == 3
+
+
+def test_task_response_and_live_recovery_export_the_same_tool_name():
+    raw_call = {
+        "id": "call-1",
+        "function": {
+            "name": "run_code",
+            "arguments": '{"code": "pwd"}',
+        },
+    }
+    task_response_payload = {
+        "trajectory_capture_mode": "task_response",
+        "trajectory": [
+            {
+                "meta": {
+                    "session_id": "session-1",
+                    "task_id": "task-1",
+                    "agent_id": "Aworld",
+                    "step": 1,
+                },
+                "action": {"content": "", "tool_calls": [raw_call]},
+            }
+        ],
+    }
+    live_payload = {
+        "trajectory_capture_mode": "live_context",
+        "trajectory": _live_trajectory_from_llm_calls(
+            [
+                {
+                    "task_id": "task-1",
+                    "agent_id": "Aworld",
+                    "response": {
+                        "message": {"content": "", "tool_calls": [raw_call]}
+                    },
+                }
+            ],
+            context=SimpleNamespace(task_id="task-1", session_id="session-1"),
+        ),
+    }
+
+    task_response = build_atif_trajectory(
+        task_response_payload,
+        prompt="Inspect the workspace",
+        agent_name="Aworld",
+        agent_version="dev",
+    )
+    live_recovery = build_atif_trajectory(
+        live_payload,
+        prompt="Inspect the workspace",
+        agent_name="Aworld",
+        agent_version="dev",
+    )
+
+    assert task_response["steps"][1]["tool_calls"] == live_recovery["steps"][1][
+        "tool_calls"
+    ]
+    assert task_response["steps"][1]["tool_calls"][0]["function_name"] == "run_code"
 
 
 def test_build_atif_trajectory_has_valid_fallback_step():

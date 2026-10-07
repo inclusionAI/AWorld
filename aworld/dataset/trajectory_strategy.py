@@ -298,6 +298,42 @@ class DefaultTrajectoryStrategy(TrajectoryStrategy):
             return [self._strip_cache_usage_fields(item) for item in value]
         return value
 
+    @staticmethod
+    def _trajectory_tool_name(action: Any) -> Optional[str]:
+        """Return the function identity that was exposed to the model.
+
+        MCP actions execute internally through the ``mcp`` dispatcher, but the
+        model calls a friendly function such as ``run_code`` or ``read_file``.
+        Live provider recovery already preserves that friendly name.  Persist
+        the same identity in normal TaskResponse trajectories so ATIF output
+        does not change tool names solely because the run ended differently.
+
+        Older ActionModel values may not carry ``model_visible_tool_name``.
+        For those values, recover only the well-defined MCP
+        ``server__action`` form; do not rewrite arbitrary tool identities.
+        """
+
+        def get_attr(name: str, default: Any = None) -> Any:
+            if isinstance(action, dict):
+                return action.get(name, default)
+            return getattr(action, name, default)
+
+        model_visible = get_attr("model_visible_tool_name")
+        if isinstance(model_visible, str) and model_visible.strip():
+            return model_visible.strip()
+
+        tool_name = get_attr("tool_name")
+        action_name = get_attr("action_name")
+        if (
+            tool_name == "mcp"
+            and isinstance(action_name, str)
+            and "__" in action_name
+        ):
+            _server_name, friendly_name = action_name.split("__", 1)
+            if friendly_name:
+                return friendly_name
+        return tool_name
+
     async def build_trajectory_action(self, source: Any, **kwargs) -> Optional[TrajectoryAction]:
         from aworld.core.event.base import Message
         if not isinstance(source, Message):
@@ -340,7 +376,7 @@ class DefaultTrajectoryStrategy(TrajectoryStrategy):
                         "id": tool_call_id,
                         "type": "function",
                         "function": {
-                            "name": _get_attr_from_action(action, "tool_name"),
+                            "name": self._trajectory_tool_name(action),
                             "arguments": json.dumps(_get_attr_from_action(action, "params"), ensure_ascii=False),
                         }
                     })
