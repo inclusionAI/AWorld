@@ -26,6 +26,7 @@ json_repair~=0.49.0
 rich~=14.0.0
 bs4~=0.0.2
 pillow~=12.1.0
+bashlex==0.18
 
 grep_ast~=0.9.0
 tree-sitter-python~=0.25.0

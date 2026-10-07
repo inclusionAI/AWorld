@@ -17,7 +17,9 @@ from aworld.core.common import ActionResult
 from aworld.core.event.base import Message
 
 
-def test_stdio_boundary_is_the_current_process_environment_and_cwd(tmp_path: Path) -> None:
+def test_stdio_boundary_is_the_current_process_environment_and_cwd(
+    tmp_path: Path,
+) -> None:
     receipt = resolve_tool_execution_boundary(
         server_name="terminal",
         server_config={"type": "stdio", "command": "python", "args": ["server.py"]},
@@ -163,9 +165,9 @@ async def test_mcp_factory_passes_the_pinned_cwd_to_the_stdio_process(
     monkeypatch.setattr(mcp_utils, "MCPServerStdio", _Server)
     workspace = tmp_path / "task"
     workspace.mkdir()
-    config = ToolConfigManager(mode="local", workspaces=[str(workspace)]).get_mcp_config(
-        ["filesystem"]
-    )
+    config = ToolConfigManager(
+        mode="local", workspaces=[str(workspace)]
+    ).get_mcp_config(["filesystem"])
 
     await mcp_utils.get_server_instance("filesystem", mcp_config=config)
 
@@ -327,7 +329,9 @@ async def test_sandbox_compacts_exact_repeated_read_across_one_control_plane() -
 
 
 @pytest.mark.asyncio
-async def test_sandbox_mutation_invalidates_repeated_read_without_claiming_unknown_progress() -> None:
+async def test_sandbox_mutation_invalidates_repeated_read_without_claiming_unknown_progress() -> (
+    None
+):
     calls = []
 
     class _McpServers:
@@ -444,3 +448,46 @@ async def test_sandbox_materializes_typed_pre_tool_hook_interception() -> None:
     receipt = results[0].metadata["sandbox_observation"]
     assert receipt["effect"] == "blocked_read_only"
     assert receipt["workspace_mutated"] is False
+
+
+@pytest.mark.asyncio
+async def test_sandbox_routes_context_artifact_reads_before_remote_transport(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _McpServers:
+        async def call_tool(self, **_kwargs):
+            pytest.fail("context-owned artifact must not reach remote transport")
+
+    expected = ActionResult(
+        success=True,
+        tool_name="terminal",
+        action_name="read_output_artifact",
+        content={"content": "bounded evidence"},
+    )
+    monkeypatch.setattr(
+        "aworld.core.context.tool_output_runtime.is_context_output_artifact_read",
+        lambda _action: True,
+    )
+    monkeypatch.setattr(
+        "aworld.core.context.tool_output_runtime.read_context_output_artifact",
+        lambda _context, _action: expected,
+    )
+    sandbox = object.__new__(Sandbox)
+    sandbox._sandbox_id = "sandbox-1"
+    sandbox._env_type = SandboxEnvType.LOCAL
+    sandbox._metadata = {}
+    sandbox._mcpservers = _McpServers()
+
+    (result,) = await sandbox.call_tool(
+        action_list=[
+            {
+                "tool_name": "terminal",
+                "action_name": "read_output_artifact",
+                "tool_call_id": "context-read",
+                "params": {"artifact_ref": "aworld-tool-output://" + "a" * 64},
+            }
+        ],
+        context=_sandbox_context(),
+    )
+
+    assert result is expected

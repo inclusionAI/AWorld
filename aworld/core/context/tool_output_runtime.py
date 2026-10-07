@@ -7,6 +7,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import stat
 import tempfile
 from typing import Any, Iterable
 
@@ -30,6 +31,9 @@ from aworld.core.context.compiler import (
 
 _RETRIEVAL_PLAN_DIAGNOSTICS: dict[str, dict[str, Any]] = {}
 _MAX_MODEL_VISIBLE_RETRIEVAL_BYTES = 64 * 1024
+_CONTEXT_ARTIFACT_PREFIX = "aworld-tool-output://"
+_CONTEXT_ARTIFACT_READER_TOOL = "terminal"
+_CONTEXT_ARTIFACT_READER_ACTION = "read_output_artifact"
 
 
 def _canonical_sha256(value: Any) -> str | None:
@@ -75,11 +79,7 @@ def _extract_upstream_artifacts(
         visited += 1
         if isinstance(value, str):
             stripped = value.strip()
-            if (
-                len(stripped) >= 2
-                and stripped[0] in "[{"
-                and stripped[-1] in "]}"
-            ):
+            if len(stripped) >= 2 and stripped[0] in "[{" and stripped[-1] in "]}":
                 try:
                     visit(json.loads(stripped), depth + 1)
                 except (TypeError, ValueError, json.JSONDecodeError):
@@ -141,7 +141,9 @@ def _raw_bytes(value: Any) -> bytes:
         return str(value).encode("utf-8", errors="replace")
 
 
-def prepare_tool_output_plans(context, actions: Iterable[Any]) -> dict[str, ToolOutputPlan]:
+def prepare_tool_output_plans(
+    context, actions: Iterable[Any]
+) -> dict[str, ToolOutputPlan]:
     """Freeze output limits before the Tool is invoked."""
     policy = getattr(context, "_tool_output_policy", None) if context else None
     plans: dict[str, ToolOutputPlan] = {}
@@ -184,12 +186,30 @@ def _prepare_artifact_retrieval(
             owner_tool, action_name = routed_owner, routed_action
     direct_records = context.get_tool_output_records()
     direct_artifacts = [
-        receipt
+        receipt for record in direct_records for receipt in record.upstream_artifacts
+    ]
+    # Context snapshots are owned by the parent runtime, not the terminal
+    # server. The existing terminal reader schema is their transport-facing
+    # entry point; BaseSandbox resolves these requests before MCP dispatch.
+    # Only registered task records grant a read capability. A URI found in
+    # model text, a file on disk, or another task's workspace does not.
+    requested_ref = (getattr(action, "params", None) or {}).get("artifact_ref")
+    context_artifacts = [
+        UpstreamToolArtifactReceipt(
+            ref=record.artifact.ref,
+            content_hash=record.artifact.content_hash,
+            byte_count=record.artifact.byte_count,
+            owner_tool=_CONTEXT_ARTIFACT_READER_TOOL,
+            retrieval_action=_CONTEXT_ARTIFACT_READER_ACTION,
+        )
         for record in direct_records
-        for receipt in record.upstream_artifacts
+        if isinstance(requested_ref, str)
+        and requested_ref.startswith(_CONTEXT_ARTIFACT_PREFIX)
+        and record.artifact is not None
+        and record.artifact.ref.startswith(_CONTEXT_ARTIFACT_PREFIX)
     ]
     declared: list[UpstreamToolArtifactReceipt] = []
-    for receipt in direct_artifacts:
+    for receipt in (*direct_artifacts, *context_artifacts):
         if (
             receipt.owner_tool == owner_tool
             and receipt.retrieval_action == action_name
@@ -203,6 +223,7 @@ def _prepare_artifact_retrieval(
         "reason_code": "declared_artifact_not_found",
         "direct_record_count": len(direct_records),
         "direct_artifact_count": len(direct_artifacts),
+        "context_artifact_count": len(context_artifacts),
         "direct_owner_match_count": sum(
             receipt.owner_tool == owner_tool for receipt in direct_artifacts
         ),
@@ -222,9 +243,7 @@ def _prepare_artifact_retrieval(
     agent_name = getattr(action, "agent_name", None)
     event_manager = getattr(context, "event_manager", None)
     runtime_context = (
-        getattr(event_manager, "context", None)
-        if event_manager is not None
-        else None
+        getattr(event_manager, "context", None) if event_manager is not None else None
     ) or context
     shared_reader = getattr(runtime_context, "read_task_runtime_state", None)
     if isinstance(agent_name, str) and agent_name:
@@ -306,8 +325,10 @@ def _prepare_artifact_retrieval(
     # boundary; arbitrary strings still fail closed in ArtifactRetrievalPlan.
     if isinstance(offset, str) and offset.isdecimal():
         offset = int(offset)
+        params["offset"] = offset
     if isinstance(limit, str) and limit.isdecimal():
         limit = int(limit)
+        params["limit"] = limit
     if limit is None and isinstance(offset, int) and not isinstance(offset, bool):
         limit = max(1, source.byte_count - offset)
     requested_limit = limit
@@ -348,6 +369,164 @@ def _prepare_artifact_retrieval(
     return True
 
 
+def is_context_output_artifact_read(action: Any) -> bool:
+    """Match only the declared reader route and Context-owned URI scheme."""
+    value = (
+        action.get
+        if isinstance(action, dict)
+        else lambda key: getattr(action, key, None)
+    )
+    params = value("params") or {}
+    return (
+        _canonical_identity(value("tool_name")) == _CONTEXT_ARTIFACT_READER_TOOL
+        and _canonical_identity(value("action_name")) == _CONTEXT_ARTIFACT_READER_ACTION
+        and isinstance(params, dict)
+        and isinstance(params.get("artifact_ref"), str)
+        and params["artifact_ref"].startswith(_CONTEXT_ARTIFACT_PREFIX)
+    )
+
+
+def _read_context_artifact_range(context, plan: ArtifactRetrievalPlan) -> bytes:
+    """Verify one registered regular file while retaining only the requested range."""
+    receipt = next(
+        (
+            record.artifact
+            for record in context.get_tool_output_records()
+            if record.artifact is not None and record.artifact.ref == plan.artifact_ref
+        ),
+        None,
+    )
+    if (
+        receipt is None
+        or receipt.content_hash != plan.artifact_content_hash
+        or receipt.byte_count != plan.artifact_byte_count
+    ):
+        raise ValueError("context_artifact_receipt_unavailable")
+    state = context.read_task_runtime_state(
+        "context.tool-output-runtime.v1", f"epoch:{context.task_epoch}"
+    )
+    path = dict((state or {}).get("artifact_paths") or {}).get(
+        plan.artifact_ref,
+        getattr(context, "_tool_output_artifact_paths", {}).get(plan.artifact_ref),
+    )
+    if path is None:
+        raise ValueError("context_artifact_path_unavailable")
+    if not hasattr(os, "O_NOFOLLOW") or not hasattr(os, "O_NONBLOCK"):
+        raise ValueError("context_artifact_safe_open_unavailable")
+    # A task can replace a previously registered path with a FIFO or symlink.
+    # Open nonblocking before inspecting its type, and never follow symlinks.
+    descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    try:
+        info = os.fstat(descriptor)
+        if not stat.S_ISREG(info.st_mode):
+            raise ValueError("context_artifact_not_regular")
+        if info.st_size != receipt.byte_count:
+            raise ValueError("context_artifact_size_mismatch")
+        end = plan.offset + min(plan.limit, _MAX_MODEL_VISIBLE_RETRIEVAL_BYTES)
+        position = 0
+        selected = bytearray()
+        digest = hashlib.sha256()
+        while True:
+            # Read at most one byte beyond the registered size. A file growing
+            # concurrently cannot extend the verification loop without bound.
+            chunk = os.read(
+                descriptor, min(64 * 1024, receipt.byte_count - position + 1)
+            )
+            if not chunk:
+                break
+            following = position + len(chunk)
+            if following > receipt.byte_count:
+                raise ValueError("context_artifact_size_mismatch")
+            digest.update(chunk)
+            start_in_chunk = max(0, plan.offset - position)
+            end_in_chunk = min(len(chunk), end - position)
+            if end_in_chunk > start_in_chunk:
+                selected.extend(chunk[start_in_chunk:end_in_chunk])
+            position = following
+        if (
+            position != receipt.byte_count
+            or os.fstat(descriptor).st_size != receipt.byte_count
+        ):
+            raise ValueError("context_artifact_size_mismatch")
+        if f"sha256:{digest.hexdigest()}" != receipt.content_hash:
+            raise ValueError("Tool output artifact checksum mismatch")
+        return bytes(selected)
+    finally:
+        os.close(descriptor)
+
+
+def read_context_output_artifact(context, action: Any):
+    """Read a planned byte range through the current Context's receipt registry.
+
+    The terminal subprocess cannot resolve these parent-owned snapshots. Keep
+    the action inside the sandbox journal while using Context's checksum and
+    task-scope checks. A failed lookup is an ordinary tool error, never a
+    fallback to an arbitrary filesystem path or remote MCP reader.
+    """
+    from aworld.core.common import ActionResult
+
+    value = (
+        action.get
+        if isinstance(action, dict)
+        else lambda key: getattr(action, key, None)
+    )
+    result_fields = {
+        "tool_name": _CONTEXT_ARTIFACT_READER_TOOL,
+        "action_name": _CONTEXT_ARTIFACT_READER_ACTION,
+        "tool_call_id": value("tool_call_id"),
+    }
+    try:
+        if not is_context_output_artifact_read(action) or context is None:
+            raise ValueError("context_artifact_reader_unavailable")
+        params = value("params") or {}
+        artifact_ref = params["artifact_ref"]
+        digest = artifact_ref[len(_CONTEXT_ARTIFACT_PREFIX) :]
+        if _canonical_sha256(digest) != f"sha256:{digest}":
+            raise ValueError("context_artifact_ref_invalid")
+        plan = context.get_artifact_retrieval_plan(value("tool_call_id"))
+        if (
+            plan is None
+            or plan.artifact_ref != artifact_ref
+            or plan.artifact_content_hash != f"sha256:{digest}"
+            or plan.owner_tool != _CONTEXT_ARTIFACT_READER_TOOL
+            or plan.retrieval_action != _CONTEXT_ARTIFACT_READER_ACTION
+        ):
+            raise ValueError("context_artifact_retrieval_plan_missing")
+        output = params.get("output", "text")
+        if output not in {"text", "base64"}:
+            raise ValueError("output must be 'text' or 'base64'")
+        chunk = _read_context_artifact_range(context, plan)
+        if output == "text":
+            try:
+                content = chunk.decode("utf-8")
+            except UnicodeDecodeError:
+                # Arbitrary byte offsets may split UTF-8. Preserve exact
+                # bytes and the receipt instead of inserting replacement chars.
+                output = "base64"
+        if output == "base64":
+            content = base64.b64encode(chunk).decode("ascii")
+        next_offset = plan.offset + len(chunk)
+        return ActionResult(
+            success=True,
+            content={
+                "type": output,
+                "content": content,
+                "artifact_ref": artifact_ref,
+                "offset": plan.offset,
+                "next_offset": next_offset,
+                "returned_bytes": len(chunk),
+                "total_bytes": plan.artifact_byte_count,
+                "complete": next_offset >= plan.artifact_byte_count,
+                "content_sha256": digest,
+                "chunk_sha256": hashlib.sha256(chunk).hexdigest(),
+            },
+            **result_fields,
+        )
+    except (KeyError, OSError, TypeError, ValueError) as exc:
+        error = f"Context output artifact read failed: {exc}"
+        return ActionResult(success=False, content=error, error=error, **result_fields)
+
+
 def _retrieval_result_fields(value: Any) -> dict[str, Any] | None:
     visited = 0
 
@@ -373,8 +552,14 @@ def _retrieval_result_fields(value: Any) -> dict[str, Any] | None:
         if not isinstance(current, dict):
             return None
         required = {
-            "artifact_ref", "offset", "next_offset", "returned_bytes",
-            "total_bytes", "content_sha256", "chunk_sha256", "complete",
+            "artifact_ref",
+            "offset",
+            "next_offset",
+            "returned_bytes",
+            "total_bytes",
+            "content_sha256",
+            "chunk_sha256",
+            "complete",
         }
         if required.issubset(current):
             return current
@@ -495,9 +680,7 @@ def _observe_unbounded_tool_output(context, action: Any, action_result: Any) -> 
         or getattr(action, "tool_name", None)
         or "unknown"
     )
-    upstream = _extract_upstream_artifacts(
-        action_result.content, owner_tool=owner_tool
-    )
+    upstream = _extract_upstream_artifacts(action_result.content, owner_tool=owner_tool)
     metadata = dict(getattr(action_result, "metadata", None) or {})
     metadata["tool_output_policy"] = {
         "policy_version": "off-v1",
@@ -506,7 +689,8 @@ def _observe_unbounded_tool_output(context, action: Any, action_result: Any) -> 
         "raw_checksum": f"sha256:{hashlib.sha256(raw).hexdigest()}",
         "inline_tokens": estimate_canonical_json_tokens(
             raw.decode("utf-8", errors="replace")
-        ).value or 0,
+        ).value
+        or 0,
         "offloaded_tokens": 0,
         "artifact_ref": upstream[0].ref if upstream else None,
         "context_artifact_ref": None,
@@ -569,7 +753,7 @@ def _persist_artifact(context, raw: bytes) -> tuple[ArtifactReceipt, Path]:
                 temporary.unlink()
     return (
         ArtifactReceipt(
-            ref=f"aworld-tool-output://{digest}",
+            ref=f"{_CONTEXT_ARTIFACT_PREFIX}{digest}",
             content_hash=checksum,
             byte_count=len(raw),
             media_type="application/octet-stream",
@@ -592,7 +776,9 @@ def _bounded_inline(
     text = raw.decode("utf-8", errors="replace")
     mode = plan.policy.mode
     upstream = upstream_artifacts[0] if upstream_artifacts else None
-    primary_artifact_ref = upstream.ref if upstream is not None else context_artifact_ref
+    primary_artifact_ref = (
+        upstream.ref if upstream is not None else context_artifact_ref
+    )
     artifact_fields: dict[str, Any] = {"artifact_ref": primary_artifact_ref}
     if upstream is not None:
         artifact_fields["artifact_retrieval"] = {
@@ -601,6 +787,14 @@ def _bounded_inline(
             "artifact_ref": upstream.ref,
             "content_hash": upstream.content_hash,
             "byte_count": upstream.byte_count,
+        }
+    elif context_artifact_ref is not None:
+        artifact_fields["artifact_retrieval"] = {
+            "tool": _CONTEXT_ARTIFACT_READER_TOOL,
+            "action": _CONTEXT_ARTIFACT_READER_ACTION,
+            "artifact_ref": context_artifact_ref,
+            "content_hash": f"sha256:{hashlib.sha256(raw).hexdigest()}",
+            "byte_count": len(raw),
         }
     if mode is ToolOutputMode.ARTIFACT_STREAM:
         payload: Any = {**artifact_fields, "byte_count": len(raw)}
@@ -612,9 +806,7 @@ def _bounded_inline(
         }
     elif mode is ToolOutputMode.STRUCTURED and isinstance(original, dict):
         preserved = {
-            key: original[key]
-            for key in plan.policy.preserve_fields
-            if key in original
+            key: original[key] for key in plan.policy.preserve_fields if key in original
         }
         payload = {
             **artifact_fields,
@@ -625,8 +817,7 @@ def _bounded_inline(
             payload["preserved"] = {
                 key: {
                     "content_hash": (
-                        "sha256:"
-                        + hashlib.sha256(_raw_bytes(value)).hexdigest()
+                        "sha256:" + hashlib.sha256(_raw_bytes(value)).hexdigest()
                     ),
                     "byte_count": len(_raw_bytes(value)),
                 }
@@ -744,9 +935,10 @@ def enforce_tool_output_boundary(
             action_result.content,
             owner_tool=owner_tool,
         )
-        raw_tokens = estimate_canonical_json_tokens(
-            raw.decode("utf-8", errors="replace")
-        ).value or 0
+        raw_tokens = (
+            estimate_canonical_json_tokens(raw.decode("utf-8", errors="replace")).value
+            or 0
+        )
         artifact = None
         artifact_path = None
         explicitly_retrieved_inline = bool(
@@ -759,10 +951,7 @@ def enforce_tool_output_boundary(
                 inline = freeze_json(action_result.content)
             except TypeError:
                 inline = raw.decode("utf-8", errors="replace")
-        elif (
-            raw_tokens <= plan.policy.max_inline_tokens
-            and not plan.artifact_required
-        ):
+        elif raw_tokens <= plan.policy.max_inline_tokens and not plan.artifact_required:
             try:
                 inline = freeze_json(action_result.content)
             except TypeError:
@@ -771,9 +960,7 @@ def enforce_tool_output_boundary(
             if getattr(context, "_tool_output_artifact_offload", True):
                 artifact, artifact_path = _persist_artifact(context, raw)
             else:
-                raise ValueError(
-                    "oversized Tool output requires artifact offload"
-                )
+                raise ValueError("oversized Tool output requires artifact offload")
             inline = _bounded_inline(
                 raw,
                 original=action_result.content,
@@ -864,5 +1051,7 @@ def enforce_tool_output_boundary(
 
 __all__ = [
     "enforce_tool_output_boundary",
+    "is_context_output_artifact_read",
     "prepare_tool_output_plans",
+    "read_context_output_artifact",
 ]

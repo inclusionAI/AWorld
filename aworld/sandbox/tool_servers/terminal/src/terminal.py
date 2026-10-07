@@ -19,6 +19,13 @@ from pathlib import Path
 from typing import Any, Mapping, Optional, Union
 import os
 
+import bashlex
+from bashlex import ast as shell_ast
+from bashlex import flags as shell_flags
+from bashlex import parser as shell_parser
+from bashlex import subst as shell_subst
+from bashlex import tokenizer as shell_tokenizer
+from bashlex import utils as shell_utils
 from dotenv import load_dotenv
 from pydantic.fields import FieldInfo
 from mcp.server.fastmcp import Context
@@ -67,6 +74,7 @@ _ARTIFACT_REF_PREFIX = "aworld-terminal-output://sha256/"
 _ENV_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*\Z")
 _MAX_ENV_OVERRIDES = 128
 _MAX_ENV_OVERRIDE_BYTES = 64 * 1024
+RUNTIME_SHELL_PARSER_VERSION = 1
 
 # Keep strong references to drain-only tasks for background children that retain
 # inherited stdout/stderr descriptors after their launching shell has exited.
@@ -338,7 +346,9 @@ def _resolve_environment(
         if not isinstance(raw_name, str) or not _ENV_NAME.fullmatch(raw_name):
             raise ValueError(f"invalid environment variable name: {raw_name!r}")
         if not isinstance(raw_value, str) or "\x00" in raw_value:
-            raise ValueError(f"environment variable {raw_name!r} must be a NUL-free string")
+            raise ValueError(
+                f"environment variable {raw_name!r} must be a NUL-free string"
+            )
         total_bytes += len(raw_name.encode()) + len(raw_value.encode())
         if total_bytes > _MAX_ENV_OVERRIDE_BYTES:
             raise ValueError(
@@ -860,8 +870,161 @@ async def run_code(
         )
 
 
-def _shell_command_segments(command: str) -> list[list[str]]:
-    """Return shell command words without treating quoted examples as actions."""
+class _HeredocRedirects(list):
+    """Supply the delimiter quote removal missing from bashlex 0.18.
+
+    The parser has already identified the delimiter token and its redirect.
+    Only that token is unquoted; bashlex still reads and delimits the body.
+    This per-parser adapter does not change bashlex's process-global state.
+    """
+
+    def append(self, item):
+        redirect, _ = item
+        raw = redirect.output.word
+        if "$'" in raw or '$"' in raw:
+            raise ValueError(
+                "ANSI-C/localized here-document delimiters are unsupported"
+            )
+        words = shlex.split(raw, posix=True)
+        if len(words) != 1 or "\n" in words[0]:
+            raise ValueError("Invalid here-document delimiter")
+        redirect.heredoc_quoted = words[0] != raw
+        redirect.output.word = words[0]
+        super().append(item)
+
+
+class _SafetyShellTokenizer(shell_tokenizer.tokenizer):
+    """Treat the unsupported bashlex timing prefix as a command wrapper.
+
+    This changes only tokens recognized as the shell's time keyword, not
+    quoted data or here-document bodies. The command following time remains
+    visible to the same safety checks through _command_words().
+    """
+
+    def token(self):
+        token = super().token()
+        if token.ttype in {
+            shell_tokenizer.tokentype.TIME,
+            shell_tokenizer.tokentype.TIMEOPT,
+        }:
+            token.ttype = shell_tokenizer.tokentype.WORD
+            token.flags = shell_utils.typedset(shell_flags.word, token.flags)
+        return token
+
+
+def _shell_child_nodes(node):
+    for value in vars(node).values():
+        if isinstance(value, shell_ast.node):
+            yield value
+        elif isinstance(value, list):
+            yield from (child for child in value if isinstance(child, shell_ast.node))
+
+
+def _parse_shell_nodes(command: str):
+    """Parse complete input, including commands following a here-document.
+
+    These small adapters use bashlex 0.18's parser interfaces because its
+    public parse() does not expose the redirect stack. Keep the dependency
+    pinned and exercise delimiter/expansion behavior when upgrading it.
+    """
+
+    offset = 0
+    while offset < len(command):
+        parser = shell_parser._parser(command[offset:], expansionlimit=32)
+        parser.tok = _SafetyShellTokenizer(parser.s, parserstate=parser.parserstate)
+        parser.redirstack = parser.tok.redirstack = _HeredocRedirects()
+        node = parser.parse()
+        if node is None:
+            break
+        shell_ast.posshifter(offset).visit(node)
+        pending = [node]
+        end = offset
+        while pending:
+            child = pending.pop()
+            end = max(end, child.pos[1])
+            pending.extend(_shell_child_nodes(child))
+        if end <= offset:
+            raise ValueError("Shell parser made no progress")
+        yield node
+        offset = end + 1
+
+
+def _heredoc_expansions(body: str):
+    """Parse executable expansions in an unquoted here-document.
+
+    Shell quotes in this body are data, even around $(...). bashlex's word
+    expander has a here-document mode for that distinction. It does not
+    implement nested brace/arithmetic expansion: reject those when we cannot
+    inspect them instead of silently losing executable substitutions.
+    """
+
+    # Simple brace substitutions contain no nested executable expansion.
+    body = re.sub(r"\$\{[^${}`]*\}", "", body)
+    if "${" in body:
+        raise ValueError(
+            "Cannot inspect nested here-document parameter expansion safely"
+        )
+    # A prefix avoids bashlex's whole-single-quoted-word shortcut: quotes in
+    # here-document data never disable its command substitutions.
+    text = " " + body
+    parser = shell_parser._parser(text, expansionlimit=32)
+    token = shell_tokenizer.token(
+        shell_tokenizer.tokentype.WORD,
+        text,
+        (0, len(text)),
+        shell_utils.typedset(shell_flags.word),
+    )
+    parts, _ = shell_subst._expandwordinternal(parser, token, True, True, True, False)
+    pending = list(parts)
+    while pending:
+        node = pending.pop()
+        if node.kind == "commandsubstitution":
+            source = text[node.pos[0] : node.pos[1]]
+            closing = ")" if source.startswith("$(") else "`"
+            if not source.endswith(closing):
+                raise ValueError("Unterminated here-document command substitution")
+        pending.extend(_shell_child_nodes(node))
+    return parts
+
+
+def _shell_reads_stdin(executable: str, args: list[str]) -> bool:
+    if executable not in {"sh", "bash", "dash", "ash", "ksh", "zsh"}:
+        return False
+    index = 0
+    while index < len(args):
+        value = args[index]
+        if value in {"-", "--"}:
+            return value == "-" or index + 1 == len(args)
+        if not value.startswith("-"):
+            return False
+        if not value.startswith("--") and "c" in value[1:]:
+            return False
+        if not value.startswith("--") and "s" in value[1:]:
+            return True
+        index += 2 if value in {"-o", "-O", "--rcfile", "--init-file"} else 1
+    return True
+
+
+def _has_heredoc(command: str) -> bool:
+    """Identify a real redirect token without inspecting its literal body."""
+
+    tokenizer = shell_parser._parser(command).tok
+    try:
+        for token in tokenizer:
+            if token.ttype in {
+                shell_tokenizer.tokentype.LESS_LESS,
+                shell_tokenizer.tokentype.LESS_LESS_MINUS,
+            }:
+                return True
+    except (bashlex.errors.ParsingError, NotImplementedError, AssertionError):
+        # The original lexer will report malformed quoting. Do not impose
+        # bashlex's grammar limitations on commands without a here-document.
+        pass
+    return False
+
+
+def _shlex_command_segments(command: str) -> list[list[str]]:
+    """Keep the existing behavior for shell syntax unrelated to this fix."""
 
     lexer = shlex.shlex(command, posix=True, punctuation_chars=";&|()\n")
     lexer.whitespace = " \t\r"
@@ -881,14 +1044,162 @@ def _shell_command_segments(command: str) -> list[list[str]]:
     return segments
 
 
+def _shell_command_segments(command: str, _depth: int = 0) -> list[list[str]]:
+    """Return executable shell words, excluding literal here-document data."""
+
+    if _depth > 16:
+        raise ValueError("Shell nesting exceeds the safety inspection limit")
+    if not _has_heredoc(command):
+        segments = _shlex_command_segments(command)
+        compact = "".join(command.split())
+        if ":(){:|:&};:" in compact and any(
+            _command_words(segment)[0] == ":" for segment in segments
+        ):
+            raise ValueError("Command contains a shell fork bomb")
+        # Here-document shell consumers can themselves invoke sh -c. Check
+        # that explicit script without changing ordinary quoted data words.
+        if _depth:
+            for segment in list(segments):
+                executable, args = _command_words(segment)
+                if executable in {"sh", "bash", "dash", "ash", "ksh", "zsh"}:
+                    for index, arg in enumerate(args):
+                        if (
+                            arg.startswith("-")
+                            and not arg.startswith("--")
+                            and "c" in arg[1:]
+                        ):
+                            if index + 1 < len(args):
+                                segments.extend(
+                                    _shell_command_segments(args[index + 1], _depth + 1)
+                                )
+                            break
+                        if not arg.startswith("-"):
+                            break
+        return segments
+    segments: list[list[str]] = []
+    # Retain nodes as well as their ids: expansion trees are created during
+    # traversal and Python may otherwise reuse ids after a tree is released.
+    seen = {}
+
+    def visit(node, shell_input=False):
+        if id(node) in seen:
+            return
+        seen[id(node)] = node
+        if node.kind == "function" and node.name.word == ":":
+            pending = [node.body]
+            recursive_pipeline = background = False
+            while pending:
+                part = pending.pop()
+                if part.kind == "operator" and part.op == "&":
+                    background = True
+                if part.kind == "pipeline":
+                    recursive_pipeline = (
+                        recursive_pipeline
+                        or sum(
+                            child.kind == "command"
+                            and [
+                                word.word for word in child.parts if word.kind == "word"
+                            ]
+                            == [":"]
+                            for child in part.parts
+                        )
+                        >= 2
+                    )
+                pending.extend(_shell_child_nodes(part))
+            if recursive_pipeline and background:
+                raise ValueError("Command contains a shell fork bomb")
+        if node.kind == "parameter" and any(
+            marker in getattr(node, "value", "") for marker in ("$", "`")
+        ):
+            raise ValueError("Cannot inspect nested shell parameter expansion safely")
+        if node.kind == "command":
+            words = [part.word for part in node.parts if part.kind == "word"]
+            segments.append(words)
+            executable, args = _command_words(words)
+            shell_input = shell_input or _shell_reads_stdin(executable, args)
+            if executable in {"sh", "bash", "dash", "ash", "ksh", "zsh"}:
+                for index, arg in enumerate(args):
+                    if (
+                        arg.startswith("-")
+                        and not arg.startswith("--")
+                        and "c" in arg[1:]
+                    ):
+                        if index + 1 < len(args):
+                            segments.extend(
+                                _shell_command_segments(args[index + 1], _depth + 1)
+                            )
+                        break
+                    if not arg.startswith("-"):
+                        break
+        if node.kind == "compound" and getattr(node, "redirects", None):
+            # A redirected group such as { bash; } inherits the same stdin as
+            # its child commands. Its here-document is code for that child.
+            pending = list(getattr(node, "list", []))
+            while pending:
+                child = pending.pop()
+                if child.kind == "command":
+                    words = [part.word for part in child.parts if part.kind == "word"]
+                    shell_input = shell_input or _shell_reads_stdin(
+                        *_command_words(words)
+                    )
+                if child.kind != "redirect":
+                    pending.extend(_shell_child_nodes(child))
+        if node.kind == "pipeline":
+            # A literal here-document piped into a shell becomes shell code.
+            downstream_shell = False
+            for part in reversed(node.parts):
+                visit(part, downstream_shell)
+                if part.kind == "command":
+                    words = [item.word for item in part.parts if item.kind == "word"]
+                    downstream_shell = downstream_shell or _shell_reads_stdin(
+                        *_command_words(words)
+                    )
+            return
+        if node.kind == "redirect" and getattr(node, "heredoc", None) is not None:
+            delimiter = node.output.word
+            body = node.heredoc.value
+            if delimiter:
+                body = body[: -len(delimiter)]
+            if not getattr(node, "heredoc_quoted", False):
+                for expansion in _heredoc_expansions(body):
+                    visit(expansion)
+            if shell_input:
+                segments.extend(_shell_command_segments(body, _depth + 1))
+            return
+        for child in _shell_child_nodes(node):
+            visit(child, shell_input)
+
+    try:
+        for root in _parse_shell_nodes(command):
+            visit(root)
+    except (
+        bashlex.errors.ParsingError,
+        NotImplementedError,
+        RecursionError,
+        IndexError,
+        AssertionError,
+        TypeError,
+    ) as exc:
+        raise ValueError(str(exc)) from exc
+    return segments
+
+
 def _command_words(segment: list[str]) -> tuple[str, list[str]]:
     """Strip common execution wrappers and return executable plus arguments."""
 
     words = list(segment)
     while words:
+        if re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", words[0]):
+            words.pop(0)
+            continue
         executable = Path(words[0]).name.lower()
         if executable in {"command", "builtin"}:
             words.pop(0)
+            continue
+        if executable == "time":
+            words.pop(0)
+            while words and words[0] in {"-p", "--portability", "--"}:
+                words.pop(0)
             continue
         if executable == "sudo":
             words.pop(0)
@@ -965,9 +1276,6 @@ def _check_command_safety(command: str) -> tuple[bool, str | None]:
 
     if not isinstance(command, str) or not command.strip():
         return False, "Command must be a non-empty string"
-    compact = "".join(command.split())
-    if ":(){:|:&};:" in compact:
-        return False, "Command contains a shell fork bomb"
     try:
         segments = _shell_command_segments(command)
     except ValueError as exc:
@@ -977,9 +1285,15 @@ def _check_command_safety(command: str) -> tuple[bool, str | None]:
         if not executable:
             continue
         if executable == "rm" and _rm_recurses(args):
-            target = next((value for value in _rm_targets(args) if _is_broad_rm_target(value)), None)
+            target = next(
+                (value for value in _rm_targets(args) if _is_broad_rm_target(value)),
+                None,
+            )
             if target is not None:
-                return False, f"Recursive removal of broad target is not allowed: {target}"
+                return (
+                    False,
+                    f"Recursive removal of broad target is not allowed: {target}",
+                )
         if executable == "mkfs" or executable.startswith("mkfs."):
             return False, f"Filesystem formatting command is not allowed: {executable}"
         if executable == "diskpart":
@@ -987,7 +1301,10 @@ def _check_command_safety(command: str) -> tuple[bool, str | None]:
         if executable == "dd":
             target = _dangerous_device_output(args)
             if target is not None:
-                return False, f"Writing directly to a block device is not allowed: {target}"
+                return (
+                    False,
+                    f"Writing directly to a block device is not allowed: {target}",
+                )
         if executable in {"del", "erase"} and any(
             value.lower() in {"c:\\", "c:\\*", "c:/*"} for value in args
         ):
@@ -1020,9 +1337,7 @@ def _has_background_operator(command: str) -> bool:
             continue
         if single_quoted or double_quoted:
             continue
-        if character == "#" and (
-            index == 0 or command[index - 1].isspace()
-        ):
+        if character == "#" and (index == 0 or command[index - 1].isspace()):
             break
         if character != "&":
             continue
@@ -1140,9 +1455,7 @@ def _format_command_output(
             output_parts.extend(["\n## Errors/Warnings", "```", stderr.strip(), "```"])
 
         return "\n".join(output_parts)
-    raise ValueError(
-        "output_format must be one of: structured, markdown, json, text"
-    )
+    raise ValueError("output_format must be one of: structured, markdown, json, text")
 
 
 async def _drain_stream(
@@ -1539,7 +1852,9 @@ def _resolve_artifact_ref(artifact_ref: str) -> tuple[Path, str]:
     ):
         raise ValueError("artifact_ref is not a terminal output artifact")
     digest = artifact_ref[len(_ARTIFACT_REF_PREFIX) :]
-    if len(digest) != 64 or any(character not in "0123456789abcdef" for character in digest):
+    if len(digest) != 64 or any(
+        character not in "0123456789abcdef" for character in digest
+    ):
         raise ValueError("artifact_ref has an invalid checksum")
     root = _artifact_directory()
     path = (root / f"{digest}.bin").resolve()

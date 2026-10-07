@@ -1,5 +1,6 @@
 import pytest
 from mcp.types import CallToolResult, TextContent
+from types import SimpleNamespace
 
 from aworld.sandbox.run.mcp_servers import (
     McpServers,
@@ -14,7 +15,10 @@ def test_coalesce_tool_result_content_returns_plain_string_for_single_item():
 
 
 def test_coalesce_tool_result_content_preserves_multiple_items():
-    assert _coalesce_tool_result_content(["line one", "line two"]) == ["line one", "line two"]
+    assert _coalesce_tool_result_content(["line one", "line two"]) == [
+        "line one",
+        "line two",
+    ]
 
 
 def test_coalesce_tool_result_content_returns_empty_string_for_no_items():
@@ -50,6 +54,45 @@ def test_build_tool_call_failure_result_preserves_typed_infrastructure_error():
     assert result.metadata == {
         "failure_category": "infrastructure",
         "failure_code": "docker_checkpoint_create_failed",
+    }
+
+
+def test_hidden_env_content_keeps_framework_task_scope_authoritative():
+    servers = object.__new__(McpServers)
+    servers._env_content_param_mapping = {"terminal__run_code": "env_content"}
+    servers.sandbox = SimpleNamespace(
+        env_content={
+            "task_id": "stale-sandbox-task",
+            "session_id": "stale-sandbox-session",
+            "task_epoch": "stale-sandbox-epoch",
+            "sandbox_only": "kept",
+        }
+    )
+    parameter = {
+        "env_content": {
+            "task_id": "caller-task",
+            "session_id": "caller-session",
+            "task_epoch": "caller-epoch",
+            "caller_only": "kept",
+        }
+    }
+
+    servers._inject_env_content_parameter(
+        "terminal__run_code",
+        parameter,
+        SimpleNamespace(
+            task_id="trusted-task",
+            session_id="trusted-session",
+            task_epoch=37,
+        ),
+    )
+
+    assert parameter["env_content"] == {
+        "task_id": "trusted-task",
+        "session_id": "trusted-session",
+        "task_epoch": 37,
+        "caller_only": "kept",
+        "sandbox_only": "kept",
     }
 
 

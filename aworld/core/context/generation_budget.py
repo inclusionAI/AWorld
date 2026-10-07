@@ -9,6 +9,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
+import math
+import os
 import time
 from typing import Any, Callable
 
@@ -65,6 +67,7 @@ class GenerationBudgetPolicy:
             if value is not None and (
                 isinstance(value, bool)
                 or not isinstance(value, (int, float))
+                or not math.isfinite(value)
                 or value <= 0
             ):
                 raise ValueError(f"{name} must be positive or None")
@@ -96,6 +99,11 @@ class GenerationBudgetReceipt:
     tool_call_count: int
     repair_attempted: bool
     repair_scheduled: bool = False
+    requested_total_timeout_seconds: float | None = None
+    effective_total_timeout_seconds: float | None = None
+    task_remaining_seconds_at_start: float | None = None
+    completion_reserve_seconds: float = 0.0
+    budget_source: str = "policy"
 
     SCHEMA_VERSION = "aworld.context.generation-budget/v1"
 
@@ -111,7 +119,7 @@ class GenerationBudgetReceipt:
             if isinstance(value, bool) or not isinstance(value, int) or value < 0:
                 raise ValueError(f"{name} must be a non-negative integer")
 
-    def to_dict(self) -> dict[str, str | float | int | bool]:
+    def to_dict(self) -> dict[str, str | float | int | bool | None]:
         return {
             "schema_version": self.SCHEMA_VERSION,
             "reason": self.reason.value,
@@ -123,6 +131,11 @@ class GenerationBudgetReceipt:
             "tool_call_count": self.tool_call_count,
             "repair_attempted": self.repair_attempted,
             "repair_scheduled": self.repair_scheduled,
+            "requested_total_timeout_seconds": self.requested_total_timeout_seconds,
+            "effective_total_timeout_seconds": self.effective_total_timeout_seconds,
+            "task_remaining_seconds_at_start": self.task_remaining_seconds_at_start,
+            "completion_reserve_seconds": self.completion_reserve_seconds,
+            "budget_source": self.budget_source,
         }
 
 
@@ -155,12 +168,62 @@ class GenerationBudgetController:
         policy: GenerationBudgetPolicy,
         *,
         clock: Callable[[], float] = time.monotonic,
+        wall_clock: Callable[[], float] = time.time,
+        environ: dict[str, str] | None = None,
     ) -> None:
         if not isinstance(policy, GenerationBudgetPolicy):
             raise TypeError("policy must be a GenerationBudgetPolicy")
         self.policy = policy
         self._clock = clock
         self.started_at = clock()
+        self.task_deadline: float | None = None
+        self.task_remaining_seconds_at_start: float | None = None
+        self.completion_reserve_seconds = 0.0
+        self.effective_total_timeout_seconds = policy.total_timeout_seconds
+        self.budget_source = "policy"
+        environment = os.environ if environ is None else environ
+        task_deadline = environment.get("AWORLD_TASK_DEADLINE_EPOCH_SECONDS")
+        if task_deadline is not None:
+
+            def finite_number(
+                value: Any, name: str, *, zero_allowed: bool = False
+            ) -> float:
+                if isinstance(value, bool):
+                    raise ValueError(f"{name} must be finite")
+                try:
+                    number = float(value)
+                except (TypeError, ValueError, OverflowError) as exc:
+                    raise ValueError(f"{name} must be finite") from exc
+                if (
+                    not math.isfinite(number)
+                    or number < 0
+                    or (number == 0 and not zero_allowed)
+                ):
+                    raise ValueError(f"{name} must be positive and finite")
+                return number
+
+            deadline_epoch = finite_number(
+                task_deadline, "AWORLD_TASK_DEADLINE_EPOCH_SECONDS"
+            )
+            self.completion_reserve_seconds = finite_number(
+                environment.get("AWORLD_TERMINAL_COMPLETION_RESERVE_SECONDS", "0"),
+                "AWORLD_TERMINAL_COMPLETION_RESERVE_SECONDS",
+                zero_allowed=True,
+            )
+            remaining = max(
+                0.0, deadline_epoch - wall_clock() - self.completion_reserve_seconds
+            )
+            self.task_remaining_seconds_at_start = remaining
+            # Convert once to the same monotonic clock as the call and repair.
+            # Progress, retries, later calls and wall-clock adjustments cannot
+            # extend the supervisor's task allowance.
+            self.task_deadline = self.started_at + remaining
+            if (
+                policy.total_timeout_seconds is None
+                or remaining < policy.total_timeout_seconds
+            ):
+                self.effective_total_timeout_seconds = remaining
+                self.budget_source = "task_deadline"
         self.phase = GenerationPhase.PRIMARY
         self.phase_started_at = self.started_at
         self.last_stream_activity_at = self.started_at
@@ -206,6 +269,13 @@ class GenerationBudgetController:
 
     def _deadlines(self, *, streaming: bool) -> tuple[GenerationDeadline, ...]:
         deadlines: list[GenerationDeadline] = []
+        if self.task_deadline is not None:
+            deadlines.append(
+                GenerationDeadline(
+                    GenerationStopReason.CALL_DEADLINE_EXCEEDED,
+                    self.task_deadline,
+                )
+            )
         if self.policy.total_timeout_seconds is not None:
             deadlines.append(
                 GenerationDeadline(
@@ -243,8 +313,7 @@ class GenerationBudgetController:
             deadlines.append(
                 GenerationDeadline(
                     GenerationStopReason.ACTION_REPAIR_TIMEOUT,
-                    self.phase_started_at
-                    + self.policy.action_repair_timeout_seconds,
+                    self.phase_started_at + self.policy.action_repair_timeout_seconds,
                 )
             )
         return tuple(deadlines)
@@ -283,6 +352,11 @@ class GenerationBudgetController:
             tool_call_count=tool_call_count,
             repair_attempted=self.repair_attempted,
             repair_scheduled=repair_scheduled,
+            requested_total_timeout_seconds=self.policy.total_timeout_seconds,
+            effective_total_timeout_seconds=self.effective_total_timeout_seconds,
+            task_remaining_seconds_at_start=self.task_remaining_seconds_at_start,
+            completion_reserve_seconds=self.completion_reserve_seconds,
+            budget_source=self.budget_source,
         )
 
 

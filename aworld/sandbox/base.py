@@ -219,8 +219,7 @@ class BaseSandbox(SandboxSetup):
             blocked_call_ids = set(
                 interception.get("tool_call_ids") or ()
                 if isinstance(interception, dict)
-                and interception.get("schema_version")
-                == "aworld.tool-interception/v1"
+                and interception.get("schema_version") == "aworld.tool-interception/v1"
                 and interception.get("kind") == "block"
                 else ()
             )
@@ -229,9 +228,7 @@ class BaseSandbox(SandboxSetup):
             # this method. Sequential execution also makes workspace generation
             # ordering deterministic for a model-emitted action batch.
             for action in actions:
-                action_value = (
-                    action if isinstance(action, dict) else vars(action)
-                )
+                action_value = action if isinstance(action, dict) else vars(action)
                 server_name = action_value.get("tool_name") or ""
                 action_name = action_value.get("action_name") or ""
                 tool_call_id = str(action_value.get("tool_call_id") or "")
@@ -258,7 +255,9 @@ class BaseSandbox(SandboxSetup):
                         "cache_hit": False,
                         "changed": False,
                         "workspace_mutated": False,
-                        "workspace_generation": self._sandbox_tool_observations().current_generation(context),
+                        "workspace_generation": self._sandbox_tool_observations().current_generation(
+                            context
+                        ),
                         "operation_hash": effect.operation_hash,
                         "hook_interception": dict(interception),
                     }
@@ -296,9 +295,7 @@ class BaseSandbox(SandboxSetup):
                         )
                     )
                     continue
-                if action_name in (black_tool_actions or {}).get(
-                    server_name, ()
-                ):
+                if action_name in (black_tool_actions or {}).get(server_name, ()):
                     results.append(
                         ActionResult(
                             success=False,
@@ -312,16 +309,21 @@ class BaseSandbox(SandboxSetup):
                     )
                     continue
                 cached = (
-                    self._sandbox_tool_observations().lookup(
-                        action, context=context
-                    )
+                    self._sandbox_tool_observations().lookup(action, context=context)
                     if context is not None
                     else None
                 )
                 if cached is not None:
                     results.append(cached)
                     continue
-                if hasattr(self, "mcpservers") and self.mcpservers is not None:
+                from aworld.core.context.tool_output_runtime import (
+                    is_context_output_artifact_read,
+                    read_context_output_artifact,
+                )
+
+                if is_context_output_artifact_read(action):
+                    observed = [read_context_output_artifact(context, action)]
+                elif hasattr(self, "mcpservers") and self.mcpservers is not None:
                     observed = await self.mcpservers.call_tool(
                         action_list=[action],
                         task_id=task_id,
@@ -387,7 +389,9 @@ class BaseSandbox(SandboxSetup):
         try:
             try:
                 asyncio.get_running_loop()
-                logging.warning("Cannot clean up sandbox in __del__ when event loop is already running")
+                logging.warning(
+                    "Cannot clean up sandbox in __del__ when event loop is already running"
+                )
                 return
             except RuntimeError:
                 loop = asyncio.new_event_loop()
@@ -395,4 +399,6 @@ class BaseSandbox(SandboxSetup):
                 loop.run_until_complete(self.cleanup())
                 loop.close()
         except Exception as e:
-            logging.debug(f"Failed to cleanup sandbox resources during garbage collection: {e}")
+            logging.debug(
+                f"Failed to cleanup sandbox resources during garbage collection: {e}"
+            )
