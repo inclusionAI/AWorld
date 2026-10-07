@@ -286,6 +286,10 @@ def _apply_hook_headers_to_message(target_message: Message, hook_events: List[Me
                 f"{existing_context}\n{additional_context}".strip()
             )
 
+        tool_interception = headers.get('tool_interception')
+        if isinstance(tool_interception, dict):
+            target_message.headers['tool_interception'] = tool_interception
+
 
 def _coerce_updated_input(updated_input: Any) -> List[ActionModel] | None:
     if isinstance(updated_input, list):

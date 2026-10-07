@@ -1,5 +1,6 @@
 import abc
 import asyncio
+import json
 import logging
 import os
 import threading
@@ -17,7 +18,11 @@ from aworld.core.tool_action_journal import (
     tool_action_batch_id,
 )
 from aworld.core.common import ActionResult
-from aworld.sandbox.tool_observation import SandboxToolObservationRuntime
+from aworld.sandbox.tool_observation import (
+    SandboxToolObservationRuntime,
+    canonical_tool_identity,
+    classify_tool_effect,
+)
 
 
 class BaseSandbox(SandboxSetup):
@@ -205,6 +210,20 @@ class BaseSandbox(SandboxSetup):
         )
         try:
             results = []
+            interception = (
+                event_message.headers.get("tool_interception")
+                if event_message is not None
+                and isinstance(getattr(event_message, "headers", None), dict)
+                else None
+            )
+            blocked_call_ids = set(
+                interception.get("tool_call_ids") or ()
+                if isinstance(interception, dict)
+                and interception.get("schema_version")
+                == "aworld.tool-interception/v1"
+                and interception.get("kind") == "block"
+                else ()
+            )
             # Preserve one canonical execution boundary for every capability.
             # Existing MCP/local/docker details remain private transports below
             # this method. Sequential execution also makes workspace generation
@@ -215,6 +234,53 @@ class BaseSandbox(SandboxSetup):
                 )
                 server_name = action_value.get("tool_name") or ""
                 action_name = action_value.get("action_name") or ""
+                tool_call_id = str(action_value.get("tool_call_id") or "")
+                if tool_call_id and tool_call_id in blocked_call_ids:
+                    effect = classify_tool_effect(action)
+                    canonical_tool, canonical_action = canonical_tool_identity(action)
+                    error_code = str(
+                        interception.get("error_code") or "tool_call_intercepted"
+                    )
+                    content_type = str(
+                        interception.get("content_type") or "tool_call_intercepted"
+                    )
+                    message = str(
+                        interception.get("message") or "Tool call intercepted by Hook"
+                    )
+                    receipt = {
+                        "schema_version": "aworld.sandbox-tool-observation/v1",
+                        "canonical_tool": effect.identity,
+                        "effect": (
+                            "blocked_read_only"
+                            if effect.effect == "read_only"
+                            else "blocked"
+                        ),
+                        "cache_hit": False,
+                        "changed": False,
+                        "workspace_mutated": False,
+                        "workspace_generation": self._sandbox_tool_observations().current_generation(context),
+                        "operation_hash": effect.operation_hash,
+                        "hook_interception": dict(interception),
+                    }
+                    results.append(
+                        ActionResult(
+                            success=False,
+                            tool_name=canonical_tool,
+                            action_name=canonical_action,
+                            content=json.dumps(
+                                {
+                                    "type": content_type,
+                                    "message": message,
+                                },
+                                ensure_ascii=False,
+                            ),
+                            error=error_code,
+                            keep=True,
+                            metadata={"sandbox_observation": receipt},
+                            parameter=action_value.get("params") or {},
+                        )
+                    )
+                    continue
                 if allowed_servers is not None and server_name not in set(
                     allowed_servers
                 ):

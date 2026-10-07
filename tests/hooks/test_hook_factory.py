@@ -237,7 +237,11 @@ class TestHookFactoryMerging:
 
         # 验证 before_tool_call 有配置中的 hooks
         assert 'before_tool_call' in all_hooks
-        assert len(all_hooks['before_tool_call']) == 2  # 2 个配置 hooks
+        config_hooks = [
+            hook for hook in all_hooks['before_tool_call']
+            if isinstance(hook, (CommandHookWrapper, CallbackHookWrapper))
+        ]
+        assert len(config_hooks) == 2  # 2 个配置 hooks
 
     def test_hooks_python_hooks_first(self, configs_dir, monkeypatch):
         """测试 Python hooks 在配置 hooks 之前执行"""

@@ -4,6 +4,7 @@ import pytest
 
 from aworld.core.context.base import Context
 from aworld.core.common import ActionModel
+from aworld.core.event.base import Message
 from aworld.core.context.compiler import (
     CompletionContract,
     CompletionMode,
@@ -33,6 +34,7 @@ from aworld.runners.execution_protocol import (
     load_execution_protocol_state,
     load_model_plan_update,
     model_owned_review_active,
+    mutation_gate_interception,
     record_candidate_final,
     record_model_execution_profile,
     record_model_decision_boundary,
@@ -43,6 +45,7 @@ from aworld.runners.execution_protocol import (
     record_tool_protocol_event,
     store_candidate_fallback,
 )
+from aworld.runners.hook.agent_hooks import MutationGatePreToolHook
 
 
 @pytest.fixture(autouse=True)
@@ -84,6 +87,22 @@ def _declare_long_horizon(context: Context, agent_id: str = "agent") -> None:
             "milestone_count": 3,
             "expected_tool_actions": 8,
             "verification_required": True,
+        },
+    )
+    assert transition is not None
+
+
+def _declare_mutation_required(context: Context, agent_id: str = "agent") -> None:
+    transition = record_model_execution_profile(
+        context,
+        agent_id,
+        {
+            "horizon": "long",
+            "confidence": 0.9,
+            "milestone_count": 3,
+            "expected_tool_actions": 8,
+            "verification_required": True,
+            "workspace_mutation_required": True,
         },
     )
     assert transition is not None
@@ -457,6 +476,10 @@ def test_scoped_state_and_bounded_telemetry_are_public_read_only_views() -> None
         "final_review_count": 0,
         "repair_count": 0,
         "finalization_entered": False,
+        "mutation_gate_active": False,
+        "mutation_gate_activation_count": 0,
+        "mutation_gate_blocked_read_only_call_count": 0,
+        "consecutive_read_only_observations": 0,
     }
 
 
@@ -607,6 +630,246 @@ def test_deadline_guidance_moves_from_candidate_to_delivery_only() -> None:
     )
     assert "80%" in consume_execution_protocol_guidance(context, "agent")
     assert consume_execution_protocol_guidance(context, "agent") is None
+
+
+def test_mutation_gate_activates_after_repeated_read_only_observations() -> None:
+    context = _context("mutation-gate")
+    configure_execution_protocol(
+        context,
+        "agent",
+        ExecutionProtocolPolicy(
+            mode=ProtocolMode.GUIDE,
+            repetition_threshold=99,
+            low_information_gain_threshold=99,
+            no_goal_progress_threshold=99,
+            stagnation_event_threshold=99,
+        ),
+    )
+    _declare_mutation_required(context)
+    record_tool_protocol_event(
+        context,
+        "agent",
+        _semantic_state(
+            consecutive_read_only_observations=8,
+            workspace_mutation_observed=False,
+            candidate_present=False,
+        ),
+    )
+
+    guidance = consume_execution_protocol_guidance(context, "agent")
+    assert guidance is not None
+    assert guidance.startswith("AWorld mutation gate:")
+    assert "8 consecutive read-only observations" in guidance
+
+
+def test_mutation_gate_does_not_intercept_in_observe_mode() -> None:
+    context = _context("mutation-gate-observe")
+    configure_execution_protocol(
+        context,
+        "agent",
+        ExecutionProtocolPolicy(
+            mode=ProtocolMode.OBSERVE,
+            repetition_threshold=99,
+            low_information_gain_threshold=99,
+            no_goal_progress_threshold=99,
+            stagnation_event_threshold=99,
+        ),
+    )
+    _declare_mutation_required(context)
+    record_tool_protocol_event(
+        context,
+        "agent",
+        _semantic_state(
+            consecutive_read_only_observations=20,
+            workspace_mutation_observed=False,
+            candidate_present=False,
+        ),
+    )
+    read = ActionModel(
+        tool_name="terminal",
+        action_name="run_code",
+        params={"code": "cat README.md"},
+        tool_call_id="call-read",
+        agent_name="agent",
+    )
+
+    assert mutation_gate_interception(context, [read]) is None
+    assert consume_execution_protocol_guidance(context, "agent") is None
+
+
+def test_named_deliverable_gate_ignores_unrelated_workspace_mutation(
+    tmp_path,
+) -> None:
+    context = _context("mutation-gate-deliverable")
+    context.context_info["public_deliverable_contract"] = {
+        "schema_version": "aworld.public-deliverables/v1",
+        "authority": "public_task_advisory",
+        "source": "public_task_text",
+        "artifacts": [
+            {
+                "deliverable_id": "public-output-1",
+                "path": str(tmp_path / "result.json"),
+                "display_path": "result.json",
+                "kind": "file",
+                "authority": "public_task_advisory",
+            }
+        ],
+    }
+    configure_execution_protocol(
+        context,
+        "agent",
+        ExecutionProtocolPolicy(
+            mode=ProtocolMode.GUIDE,
+            repetition_threshold=99,
+            low_information_gain_threshold=99,
+            no_goal_progress_threshold=99,
+            stagnation_event_threshold=99,
+        ),
+    )
+    record_tool_protocol_event(
+        context,
+        "agent",
+        _semantic_state(
+            consecutive_read_only_observations=8,
+            workspace_mutation_observed=True,
+            candidate_present=False,
+        ),
+    )
+
+    guidance = consume_execution_protocol_guidance(context, "agent")
+    assert guidance is not None
+    assert guidance.startswith("AWorld mutation gate:")
+
+
+def test_named_deliverable_gate_reopens_reads_after_candidate_changes(
+    tmp_path,
+) -> None:
+    context = _context("mutation-gate-candidate")
+    context.context_info["public_deliverable_contract"] = {
+        "schema_version": "aworld.public-deliverables/v1",
+        "authority": "public_task_advisory",
+        "source": "public_task_text",
+        "artifacts": [
+            {
+                "deliverable_id": "public-output-1",
+                "path": str(tmp_path / "result.json"),
+                "display_path": "result.json",
+                "kind": "file",
+                "authority": "public_task_advisory",
+            }
+        ],
+    }
+    configure_execution_protocol(
+        context,
+        "agent",
+        ExecutionProtocolPolicy(
+            mode=ProtocolMode.GUIDE,
+            repetition_threshold=99,
+            low_information_gain_threshold=99,
+            no_goal_progress_threshold=99,
+            stagnation_event_threshold=99,
+        ),
+    )
+    record_tool_protocol_event(
+        context,
+        "agent",
+        _semantic_state(
+            consecutive_read_only_observations=8,
+            public_candidate_mutated=False,
+        ),
+    )
+    read = ActionModel(
+        tool_name="terminal",
+        action_name="run_code",
+        params={"code": "cat result.json"},
+        tool_call_id="call-read",
+        agent_name="agent",
+    )
+    assert mutation_gate_interception(context, [read]) is not None
+
+    record_tool_protocol_event(
+        context,
+        "agent",
+        _semantic_state(
+            consecutive_read_only_observations=0,
+            public_candidate_mutated=True,
+            candidate_present=True,
+        ),
+    )
+
+    assert mutation_gate_interception(context, [read]) is None
+
+
+@pytest.mark.asyncio
+async def test_mutation_gate_pre_tool_hook_intercepts_only_read_only_batches() -> None:
+    context = _context("mutation-gate-hook")
+    configure_execution_protocol(
+        context,
+        "agent",
+        ExecutionProtocolPolicy(
+            mode=ProtocolMode.GUIDE,
+            repetition_threshold=99,
+            low_information_gain_threshold=99,
+            no_goal_progress_threshold=99,
+            stagnation_event_threshold=99,
+        ),
+    )
+    _declare_mutation_required(context)
+    record_tool_protocol_event(
+        context,
+        "agent",
+        _semantic_state(
+            consecutive_read_only_observations=8,
+            workspace_mutation_observed=False,
+            candidate_present=False,
+        ),
+    )
+    read = ActionModel(
+        tool_name="terminal",
+        action_name="run_code",
+        params={"code": "cat README.md"},
+        tool_call_id="call-read",
+        agent_name="agent",
+    )
+    write = ActionModel(
+        tool_name="filesystem",
+        action_name="write_file",
+        params={"path": "result.txt", "content": "candidate"},
+        tool_call_id="call-write",
+        agent_name="agent",
+    )
+    hook = MutationGatePreToolHook()
+
+    intercepted = await hook.exec(
+        Message(category="tool_call", payload=[read], sender="agent"),
+        context,
+    )
+    allowed = await hook.exec(
+        Message(category="tool_call", payload=[write], sender="agent"),
+        context,
+    )
+
+    assert intercepted is not None
+    tool_interception = intercepted.headers["tool_interception"]
+    assert tool_interception["schema_version"] == "aworld.tool-interception/v1"
+    assert tool_interception["kind"] == "block"
+    assert tool_interception["tool_call_ids"] == ["call-read"]
+    assert tool_interception["error_code"] == "candidate_mutation_required"
+    assert tool_interception["source_receipt"] == {
+        "schema_version": "aworld.mutation-gate/v1",
+        "kind": "candidate_mutation_required",
+        "agent_id": "agent",
+        "tool_call_ids": ["call-read"],
+        "reason": "read_only_limit",
+        "consecutive_read_only_observations": 8,
+    }
+    assert "Create or modify" in intercepted.headers["additional_context"]
+    assert allowed is None
+    telemetry = build_execution_protocol_telemetry(context, "agent")
+    assert telemetry["mutation_gate_active"] is True
+    assert telemetry["mutation_gate_activation_count"] == 1
+    assert telemetry["mutation_gate_blocked_read_only_call_count"] == 1
+    assert telemetry["consecutive_read_only_observations"] == 8
 
 
 def test_delivery_intent_is_bounded_in_telemetry_and_transition_metrics() -> None:

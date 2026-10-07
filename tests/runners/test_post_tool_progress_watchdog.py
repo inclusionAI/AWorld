@@ -185,3 +185,57 @@ def test_repeated_operations_do_not_inject_instructions_into_tool_results():
     assert state["followup_observation"]["content"] == "private-tool-result-a"
     from aworld.runners.post_tool_progress import semantic_progress_for_agent
     assert semantic_progress_for_agent(context, agent_id="agent")["repetition_count"] == 3
+
+
+def test_sandbox_receipts_track_consecutive_reads_until_real_mutation():
+    from aworld.runners.post_tool_progress import semantic_progress_for_agent
+
+    context = Context(task_id="mutation-gate-progress")
+    action = ActionModel(
+        tool_name="terminal",
+        action_name="run_code",
+        tool_call_id="call-1",
+        params={"code": "cat README.md"},
+    )
+
+    def observe(effect: str, *, workspace_mutated=False, index: int):
+        observation = Observation(
+            content=f"result-{index}",
+            action_result=[
+                ActionResult(
+                    content=f"result-{index}",
+                    success=effect != "blocked_read_only",
+                    metadata={
+                        "sandbox_observation": {
+                            "effect": effect,
+                            "workspace_mutated": workspace_mutated,
+                            "workspace_generation": int(bool(workspace_mutated)),
+                        }
+                    },
+                )
+            ],
+        )
+        arm_post_tool_progress_watchdog(
+            context,
+            tool_name="terminal",
+            agent_id="agent",
+            actions=[action],
+            followup_observation=observation,
+            followup_sender="terminal",
+        )
+
+    observe("read_only", index=1)
+    observe("read_only", index=2)
+    state = semantic_progress_for_agent(context, agent_id="agent")
+    assert state["consecutive_read_only_observations"] == 2
+    assert state["workspace_mutation_observed"] is False
+
+    observe("blocked_read_only", index=3)
+    assert semantic_progress_for_agent(
+        context, agent_id="agent"
+    )["consecutive_read_only_observations"] == 2
+
+    observe("mutating", workspace_mutated=True, index=4)
+    state = semantic_progress_for_agent(context, agent_id="agent")
+    assert state["consecutive_read_only_observations"] == 0
+    assert state["workspace_mutation_observed"] is True

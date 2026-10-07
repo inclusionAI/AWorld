@@ -486,6 +486,13 @@ def _record_semantic_tool_progress_locked(
         receipt.get("workspace_mutated") is True
         for receipt in sandbox_receipts
     )
+    sandbox_read_only_observed = bool(sandbox_receipts) and all(
+        receipt.get("effect") == "read_only" for receipt in sandbox_receipts
+    )
+    sandbox_read_only_blocked = any(
+        receipt.get("effect") == "blocked_read_only"
+        for receipt in sandbox_receipts
+    )
     artifact_changed = any(
         receipt.get("artifact_changed") is True for receipt in artifact_receipts
     ) or sandbox_workspace_mutated
@@ -747,6 +754,13 @@ def _record_semantic_tool_progress_locked(
         if public_delivery_projection is not None
         else {}
     )
+    public_candidate_mutated = bool(
+        public_delivery_projection is not None
+        and any(
+            version is not None and version != baseline_versions.get(deliverable_id)
+            for deliverable_id, version in public_delivery_versions.items()
+        )
+    )
     previous_public_delivery_high_water = int(
         previous.get("public_delivery_high_water_count", 0) or 0
     )
@@ -951,6 +965,22 @@ def _record_semantic_tool_progress_locked(
         repetition_count >= _PROGRESS_GUARD_REPEAT_THRESHOLD
         and not progress_guard_reset
     )
+    workspace_mutation_observed = bool(
+        previous.get("workspace_mutation_observed") or sandbox_workspace_mutated
+    )
+    previous_read_only_observations = int(
+        previous.get("consecutive_read_only_observations", 0) or 0
+    )
+    if sandbox_read_only_blocked:
+        consecutive_read_only_observations = previous_read_only_observations
+    elif (
+        sandbox_read_only_observed
+        and not sandbox_workspace_mutated
+        and not candidate_present
+    ):
+        consecutive_read_only_observations = previous_read_only_observations + 1
+    else:
+        consecutive_read_only_observations = 0
     if artifact_fingerprint:
         recent_artifact_fingerprints.append(artifact_fingerprint)
     state = {
@@ -972,6 +1002,11 @@ def _record_semantic_tool_progress_locked(
         "workspace_mutated": bool(
             (artifact_changed or sandbox_workspace_mutated)
             and not rollback_performed
+        ),
+        "workspace_mutation_observed": workspace_mutation_observed,
+        "read_only_observed": sandbox_read_only_observed,
+        "consecutive_read_only_observations": (
+            consecutive_read_only_observations
         ),
         "workspace_generation": workspace_generation,
         "diagnostic_progress_observable": diagnostic_progress_observable,
@@ -1000,6 +1035,7 @@ def _record_semantic_tool_progress_locked(
         "public_deliverable_declared": public_deliverable_declared,
         "missing_public_deliverable_count": missing_public_deliverable_count,
         "candidate_present": candidate_present,
+        "public_candidate_mutated": public_candidate_mutated,
         # Exact plan/action alignment needs to know whether the declared
         # candidate changed on this Tool turn. Durable goal progress below is
         # stricter: an A→B→A oscillation is not a new milestone.

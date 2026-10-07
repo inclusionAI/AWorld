@@ -580,6 +580,11 @@ class SandboxToolObservationRuntime:
     def _current_generation(self, context: Any) -> int:
         return self._generation.get(_scope(context), 0)
 
+    def current_generation(self, context: Any) -> int:
+        """Return the bounded workspace generation for control-plane receipts."""
+
+        return self._current_generation(context)
+
     def lookup(self, action: Any, *, context: Any) -> ActionResult | None:
         effect = classify_tool_effect(action)
         if not effect.cacheable:

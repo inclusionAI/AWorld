@@ -14,6 +14,7 @@ from aworld.sandbox.implementations.sandbox import Sandbox
 from aworld.sandbox.models import SandboxEnvType
 from aworld.mcp_client import utils as mcp_utils
 from aworld.core.common import ActionResult
+from aworld.core.event.base import Message
 
 
 def test_stdio_boundary_is_the_current_process_environment_and_cwd(tmp_path: Path) -> None:
@@ -396,3 +397,50 @@ async def test_sandbox_enforces_agent_capability_allowlist_at_execution() -> Non
 
     assert results[0].success is False
     assert results[0].error == "sandbox_capability_denied"
+
+
+@pytest.mark.asyncio
+async def test_sandbox_materializes_typed_pre_tool_hook_interception() -> None:
+    class _McpServers:
+        async def call_tool(self, **_kwargs):
+            pytest.fail("intercepted read-only action must not reach the transport")
+
+    sandbox = object.__new__(Sandbox)
+    sandbox._sandbox_id = "sandbox-1"
+    sandbox._env_type = SandboxEnvType.LOCAL
+    sandbox._metadata = {}
+    sandbox._mcpservers = _McpServers()
+    action = {
+        "tool_name": "terminal",
+        "action_name": "run_code",
+        "params": {"code": "cat README.md"},
+        "tool_call_id": "call-read",
+        "agent_name": "agent",
+    }
+    event_message = Message(
+        category="tool_call",
+        payload=[action],
+        headers={
+            "tool_interception": {
+                "schema_version": "aworld.tool-interception/v1",
+                "kind": "block",
+                "tool_call_ids": ["call-read"],
+                "error_code": "candidate_mutation_required",
+                "content_type": "candidate_mutation_required",
+                "message": "Create a candidate now.",
+            }
+        },
+    )
+
+    results = await sandbox.call_tool(
+        action_list=[action],
+        context=_sandbox_context(),
+        event_message=event_message,
+    )
+
+    assert len(results) == 1
+    assert results[0].success is False
+    assert results[0].error == "candidate_mutation_required"
+    receipt = results[0].metadata["sandbox_observation"]
+    assert receipt["effect"] == "blocked_read_only"
+    assert receipt["workspace_mutated"] is False

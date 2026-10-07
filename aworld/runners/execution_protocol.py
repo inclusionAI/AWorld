@@ -29,6 +29,7 @@ from aworld.core.execution_protocol import (
     ProtocolTransition,
     ReviewOutcome,
 )
+from aworld.sandbox.tool_observation import actions_are_provably_read_only
 
 
 EXECUTION_PROTOCOL_POLICY_KEY = "execution_protocol_policy"
@@ -41,6 +42,8 @@ EXECUTION_PROTOCOL_HYPOTHESES_KEY = "execution_protocol_hypotheses"
 EXECUTION_PROTOCOL_CRITIC_KEY = "execution_protocol_acceptance_critic"
 EXECUTION_PROTOCOL_PUBLIC_PROBES_KEY = "execution_protocol_public_probes"
 EXECUTION_PROTOCOL_DEADLINE_GUIDANCE_KEY = "execution_protocol_deadline_guidance"
+MUTATION_GATE_SCHEMA = "aworld.mutation-gate/v1"
+MUTATION_GATE_STATE_KEY = "execution_protocol_mutation_gate"
 INDEPENDENT_ACCEPTANCE_CRITIC_ENV = "AWORLD_INDEPENDENT_ACCEPTANCE_CRITIC"
 SEMANTIC_PROGRESS_LEDGER_ENV = "AWORLD_SEMANTIC_PROGRESS_LEDGER"
 _MAX_FALLBACK_CHARS = 64_000
@@ -49,6 +52,9 @@ _PUBLIC_DELIVERABLE_SCHEMA = "aworld.public-deliverables/v1"
 _PUBLIC_DELIVERABLE_AUTHORITY = "public_task_advisory"
 _MAX_DECISION_ATTEMPTS = 2
 _MAX_CONSECUTIVE_UNAPPLIED_REPLANS = 2
+_MUTATION_GATE_READ_ONLY_THRESHOLD = 8
+_MUTATION_GATE_DEADLINE_MIN_READS = 3
+_MUTATION_GATE_DEADLINE_FRACTION = 0.20
 _DEADLINE_STAGE_THRESHOLDS = (
     ("candidate_due", 0.40),
     ("validation_due", 0.65),
@@ -1096,6 +1102,7 @@ def project_execution_protocol_telemetry(value: Any) -> dict[str, Any] | None:
         "decision_checkpoint_pending",
         "candidate_decision_recorded",
         "decision_checkpoint_candidate_present",
+        "mutation_gate_active",
     }
     counters = {
         "event_count",
@@ -1122,6 +1129,9 @@ def project_execution_protocol_telemetry(value: Any) -> dict[str, Any] | None:
         "acceptance_attempt",
         "acceptance_continuation_count",
         "acceptance_controller_error_count",
+        "mutation_gate_activation_count",
+        "mutation_gate_blocked_read_only_call_count",
+        "consecutive_read_only_observations",
     }
     allowed = {"schema_version", *enums, *booleans, *counters}
     if set(value) - allowed:
@@ -1157,6 +1167,11 @@ def build_execution_protocol_telemetry(context, agent_id: str) -> dict[str, Any]
         _read_runtime_value(context, agent_id, EXECUTION_PROTOCOL_MODEL_DECISIONS_KEY),
         expected_scope=_model_decision_scope(context, agent_id),
     )
+    mutation_gate = _read_runtime_value(
+        context, agent_id, MUTATION_GATE_STATE_KEY
+    )
+    if not isinstance(mutation_gate, Mapping):
+        mutation_gate = {}
     telemetry = {
         "schema_version": "aworld.execution-protocol-telemetry/v1",
         "mode": policy.mode.value,
@@ -1220,6 +1235,16 @@ def build_execution_protocol_telemetry(context, agent_id: str) -> dict[str, Any]
         "final_review_count": state.final_review_count,
         "repair_count": state.repair_count,
         "finalization_entered": state.finalization_entered,
+        "mutation_gate_active": mutation_gate.get("active") is True,
+        "mutation_gate_activation_count": _bounded_counter(
+            mutation_gate.get("activation_count")
+        ),
+        "mutation_gate_blocked_read_only_call_count": _bounded_counter(
+            mutation_gate.get("blocked_read_only_call_count")
+        ),
+        "consecutive_read_only_observations": _bounded_counter(
+            mutation_gate.get("consecutive_read_only_observations")
+        ),
         "model_horizon": (
             state.model_plan_update.horizon.value
             if state.model_plan_update is not None
@@ -1278,6 +1303,166 @@ def _task_deadline_progress(context) -> tuple[float, float, float] | None:
     bounded_remaining = min(float(total), max(0.0, float(remaining)))
     consumed = min(1.0, max(0.0, 1.0 - bounded_remaining / float(total)))
     return float(total), bounded_remaining, consumed
+
+
+def _update_mutation_gate(
+    context,
+    agent_id: str,
+    transition: ProtocolTransition,
+    semantic_state: Mapping[str, Any],
+) -> None:
+    """Project a persistent, task-scoped gate for mutation-required work."""
+
+    owner = state_context(context)
+    if owner is None:
+        return
+    profile = transition.state.model_execution_profile
+    delivery_status = _public_delivery_status(owner)
+    public_deliverable_declared = bool(
+        delivery_status["public_deliverable_declared"]
+    )
+    mutation_required = bool(
+        public_deliverable_declared
+        or (profile is not None and profile.workspace_mutation_required)
+    )
+    candidate_present = semantic_state.get("candidate_present") is True
+    public_candidate_mutated = bool(
+        semantic_state.get("public_candidate_mutated")
+    )
+    mutation_observed = bool(
+        semantic_state.get("workspace_mutation_observed")
+    )
+    read_only_count = _bounded_counter(
+        semantic_state.get("consecutive_read_only_observations")
+    )
+    progress = _task_deadline_progress(context)
+    consumed_fraction = progress[2] if progress is not None else None
+    due_to_read_limit = read_only_count >= _MUTATION_GATE_READ_ONLY_THRESHOLD
+    due_to_deadline = bool(
+        consumed_fraction is not None
+        and consumed_fraction >= _MUTATION_GATE_DEADLINE_FRACTION
+        and read_only_count >= _MUTATION_GATE_DEADLINE_MIN_READS
+    )
+    previous = _read_runtime_value(context, agent_id, MUTATION_GATE_STATE_KEY)
+    previous_active = bool(
+        isinstance(previous, Mapping)
+        and previous.get("schema_version") == MUTATION_GATE_SCHEMA
+        and previous.get("agent_id") == agent_id
+        and previous.get("active") is True
+    )
+    # When the public task names a concrete output, an unrelated setup write
+    # must not discharge delivery debt. For mutation-required tasks without a
+    # named artifact, the first observed mutation is the strongest generic
+    # candidate signal available to the controller.
+    resolved = (
+        public_candidate_mutated
+        if public_deliverable_declared
+        else candidate_present or mutation_observed
+    )
+    activation_count = _bounded_counter(
+        previous.get("activation_count") if isinstance(previous, Mapping) else 0
+    )
+    active = bool(
+        execution_protocol_policy(context, agent_id).mode is ProtocolMode.GUIDE
+        and mutation_required
+        and not resolved
+        and (previous_active or due_to_read_limit or due_to_deadline)
+    )
+    if active and not previous_active:
+        activation_count = min(_MAX_TELEMETRY_COUNTER, activation_count + 1)
+    reason = (
+        "deadline_without_mutation"
+        if due_to_deadline
+        else "read_only_limit"
+        if due_to_read_limit
+        else previous.get("reason")
+        if isinstance(previous, Mapping) and previous_active
+        else None
+    )
+    payload = {
+        "schema_version": MUTATION_GATE_SCHEMA,
+        "task_id": getattr(owner, "task_id", None),
+        "task_epoch": getattr(owner, "task_epoch", None),
+        "agent_id": agent_id,
+        "active": active,
+        "activation_count": activation_count,
+        "reason": reason,
+        "workspace_mutation_required": mutation_required,
+        "public_deliverable_declared": public_deliverable_declared,
+        "candidate_present": candidate_present,
+        "public_candidate_mutated": public_candidate_mutated,
+        "workspace_mutation_observed": mutation_observed,
+        "consecutive_read_only_observations": read_only_count,
+        "read_only_threshold": _MUTATION_GATE_READ_ONLY_THRESHOLD,
+        "deadline_consumed_fraction": consumed_fraction,
+    }
+    owner.context_info[MUTATION_GATE_STATE_KEY] = payload
+    _write_runtime_value(context, agent_id, MUTATION_GATE_STATE_KEY, payload)
+    metrics = owner.context_info.get(EXECUTION_PROTOCOL_METRICS_KEY)
+    if isinstance(metrics, dict):
+        if active and not previous_active:
+            metrics["mutation_gate_activation_count"] = activation_count
+        metrics["mutation_gate_active"] = active
+        metrics["consecutive_read_only_observations"] = read_only_count
+
+
+def mutation_gate_interception(
+    context,
+    actions: list[Any],
+) -> dict[str, Any] | None:
+    """Return a Hook interception receipt for one all-read-only action batch."""
+
+    if context is None or not actions or not actions_are_provably_read_only(actions):
+        return None
+    def action_value(action: Any, name: str) -> Any:
+        return action.get(name) if isinstance(action, Mapping) else getattr(action, name, None)
+
+    agent_ids = {
+        str(action_value(action, "agent_name") or "")
+        for action in actions
+    }
+    if len(agent_ids) != 1 or not next(iter(agent_ids)):
+        return None
+    agent_id = next(iter(agent_ids))
+    if execution_protocol_policy(context, agent_id).mode is not ProtocolMode.GUIDE:
+        return None
+    gate = _read_runtime_value(context, agent_id, MUTATION_GATE_STATE_KEY)
+    if (
+        not isinstance(gate, Mapping)
+        or gate.get("schema_version") != MUTATION_GATE_SCHEMA
+        or gate.get("active") is not True
+    ):
+        return None
+    call_ids = [
+        str(action_value(action, "tool_call_id") or "")
+        for action in actions
+    ]
+    if not all(call_ids):
+        return None
+    owner = state_context(context)
+    updated = dict(gate)
+    updated["blocked_read_only_call_count"] = min(
+        _MAX_TELEMETRY_COUNTER,
+        _bounded_counter(gate.get("blocked_read_only_call_count")) + len(call_ids),
+    )
+    if owner is not None:
+        owner.context_info[MUTATION_GATE_STATE_KEY] = updated
+        metrics = owner.context_info.get(EXECUTION_PROTOCOL_METRICS_KEY)
+        if isinstance(metrics, dict):
+            metrics["mutation_gate_blocked_read_only_call_count"] = updated[
+                "blocked_read_only_call_count"
+            ]
+    _write_runtime_value(context, agent_id, MUTATION_GATE_STATE_KEY, updated)
+    return {
+        "schema_version": MUTATION_GATE_SCHEMA,
+        "kind": "candidate_mutation_required",
+        "agent_id": agent_id,
+        "tool_call_ids": call_ids,
+        "reason": updated.get("reason"),
+        "consecutive_read_only_observations": updated.get(
+            "consecutive_read_only_observations", 0
+        ),
+    }
 
 
 def _record_deadline_guidance(
@@ -1462,6 +1647,7 @@ def record_tool_protocol_event(
         result_hash=semantic_state.get("result_hash"),
     )
     transition = _apply_event(context, agent_id, event)
+    _update_mutation_gate(context, agent_id, transition, semantic_state)
     _record_pending_checkpoint(context, agent_id, transition)
     _record_deadline_guidance(context, agent_id, transition)
     return transition
@@ -1981,6 +2167,21 @@ def consume_execution_protocol_guidance(context, agent_id: str) -> str | None:
     policy = execution_protocol_policy(context, agent_id)
     if policy.mode is not ProtocolMode.GUIDE:
         return None
+    mutation_gate = _read_runtime_value(
+        context, agent_id, MUTATION_GATE_STATE_KEY
+    )
+    if isinstance(mutation_gate, Mapping) and mutation_gate.get("active") is True:
+        count = _bounded_counter(
+            mutation_gate.get("consecutive_read_only_observations")
+        )
+        return (
+            "AWorld mutation gate: this task was classified as requiring a "
+            "workspace mutation, but no inspectable candidate or mutation has "
+            f"been observed after {count} consecutive read-only observations. "
+            "Create or modify the smallest relevant candidate now. Further "
+            "provably read-only calls are gated until a mutation or candidate "
+            "is observed; do not restart broad exploration."
+        )
     deadline = _read_runtime_value(
         context, agent_id, EXECUTION_PROTOCOL_DEADLINE_GUIDANCE_KEY
     )
@@ -2343,6 +2544,7 @@ __all__ = [
     "load_candidate_fallback",
     "load_execution_protocol_state",
     "load_model_plan_update",
+    "mutation_gate_interception",
     "load_public_probe_receipts",
     "load_acceptance_critic_state",
     "project_execution_protocol_telemetry",

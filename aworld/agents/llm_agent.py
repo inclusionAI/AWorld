@@ -654,10 +654,11 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             generation_budget_policy: Optional typed model-generation deadline
                                       policy. By default it is resolved from
                                       ``llm_config.context_compiler``.
-            execution_protocol_policy: Optional domain-independent long-horizon
-                                       supervision policy. When omitted, the
-                                       existing ``long-running-agent`` Skill
-                                       activation determines guide/off behavior.
+            execution_protocol_policy: Optional developer override for AWorld's
+                                       default domain-independent convergence
+                                       policy. Ordinary callers should omit it;
+                                       explicit off/observe policies are retained
+                                       for rollback and controlled experiments.
             enable_subagent: Enable subagent delegation capability. When True, agent can spawn specialized subagents
                              to handle subtasks autonomously. Automatically adds spawn_subagent tool and scans for
                              available subagents (TeamSwarm members + agent.md files). Default: False.
@@ -927,28 +928,29 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
     def _resolve_execution_protocol_policy(
         self, context: Context | None = None
     ) -> ExecutionProtocolPolicy:
-        """Use explicit framework policy or derive it from normal Skill activation."""
+        """Use an explicit override or AWorld's default convergence policy."""
         if self._explicit_execution_protocol_policy is not None:
             return self._explicit_execution_protocol_policy
         skill = (self.skill_configs or {}).get("long-running-agent")
         active = isinstance(skill, dict) and skill.get("active") is True
-        # A model-owned short/unknown horizon classification must not suppress
-        # the existing completion review.  The long-running Skill is the
-        # capability boundary; callers retain an explicit rollback flag.
+        # Convergence is a baseline AWorld capability, not a Skill toggle.
+        # The long-running Skill retains only its broader review behavior;
+        # callers may still pass an explicit OFF/OBSERVE policy for rollback or
+        # controlled experiments.
         review_unarmed_candidates = _default_on_env(
             EXECUTION_PROTOCOL_REVIEW_UNARMED_ENV
         )
         policy = ExecutionProtocolPolicy(
-            mode=ProtocolMode.GUIDE if active else ProtocolMode.OFF,
+            mode=ProtocolMode.GUIDE,
             review_unarmed_candidates=(review_unarmed_candidates if active else False),
-            independent_acceptance_enabled=(
-                _default_on_env(INDEPENDENT_ACCEPTANCE_CRITIC_ENV) if active else False
+            independent_acceptance_enabled=_default_on_env(
+                INDEPENDENT_ACCEPTANCE_CRITIC_ENV
             ),
-            semantic_progress_enabled=(
-                _default_on_env(SEMANTIC_PROGRESS_LEDGER_ENV) if active else False
+            semantic_progress_enabled=_default_on_env(
+                SEMANTIC_PROGRESS_LEDGER_ENV
             ),
         )
-        if not active or context is None:
+        if context is None:
             return policy
 
         # Derive a stable three-part deadline once from typed Task budget:
@@ -1028,6 +1030,14 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                     "maximum": 1024,
                 },
                 "verification_required": {"type": "boolean"},
+                "workspace_mutation_required": {
+                    "type": "boolean",
+                    "description": (
+                        "True only when satisfying the public task requires creating "
+                        "or modifying workspace state; false for inspection, diagnosis, "
+                        "explanation, or other read-only outcomes."
+                    ),
+                },
             },
             "required": [
                 "horizon",
@@ -1035,6 +1045,7 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                 "milestone_count",
                 "expected_tool_actions",
                 "verification_required",
+                "workspace_mutation_required",
             ],
         }
 
@@ -5410,7 +5421,16 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             )
             if execution_guidance:
                 raw_messages = list(raw_messages)
-                raw_messages.append({"role": "user", "content": execution_guidance})
+                raw_messages.append(
+                    {
+                        "role": (
+                            "system"
+                            if execution_guidance.startswith("AWorld mutation gate:")
+                            else "user"
+                        ),
+                        "content": execution_guidance,
+                    }
+                )
         if transient_model_recovery_turn and not tool_free_finalization:
             raw_messages = list(raw_messages)
             raw_messages.append(

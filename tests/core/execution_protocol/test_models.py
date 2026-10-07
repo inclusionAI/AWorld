@@ -236,10 +236,12 @@ def test_model_execution_profile_has_a_stable_typed_round_trip():
             "milestone_count": 4,
             "expected_tool_actions": 12,
             "verification_required": True,
+            "workspace_mutation_required": True,
         }
     )
 
     assert profile.horizon is ExecutionHorizon.LONG
+    assert profile.workspace_mutation_required is True
     assert ModelExecutionProfile.from_mapping(profile.to_dict()) == profile
 
 

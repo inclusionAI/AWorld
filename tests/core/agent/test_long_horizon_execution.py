@@ -796,7 +796,7 @@ def test_agent_rejects_untyped_execution_protocol_policy() -> None:
         )
 
 
-def test_agent_uses_existing_skill_activation_as_protocol_switch() -> None:
+def test_agent_uses_default_convergence_with_skill_specific_review() -> None:
     agent = Agent(
         name="Aworld",
         conf=AgentConfig(
@@ -810,6 +810,22 @@ def test_agent_uses_existing_skill_activation_as_protocol_switch() -> None:
     assert agent._resolve_execution_protocol_policy().mode is ProtocolMode.GUIDE
     assert agent._resolve_execution_protocol_policy().review_unarmed_candidates is True
     agent.skill_configs["long-running-agent"]["active"] = False
+    assert agent._resolve_execution_protocol_policy().mode is ProtocolMode.GUIDE
+    assert agent._resolve_execution_protocol_policy().review_unarmed_candidates is False
+
+
+def test_explicit_off_policy_remains_a_developer_rollback() -> None:
+    agent = Agent(
+        name="Aworld",
+        conf=AgentConfig(
+            llm_provider="openai",
+            llm_model_name="offline",
+            llm_api_key="offline",
+        ),
+        execution_protocol_policy=ExecutionProtocolPolicy(mode=ProtocolMode.OFF),
+    )
+    agent.skill_configs = {"long-running-agent": {"active": True}}
+
     assert agent._resolve_execution_protocol_policy().mode is ProtocolMode.OFF
 
 
@@ -873,7 +889,7 @@ def test_runtime_canary_flags_can_disable_new_protocol_features(monkeypatch) -> 
     assert policy.semantic_progress_enabled is False
 
 
-def test_review_every_candidate_env_does_not_activate_disabled_skill(
+def test_review_every_candidate_env_does_not_expand_disabled_skill_review(
     monkeypatch,
 ) -> None:
     monkeypatch.setenv("AWORLD_EXECUTION_PROTOCOL_REVIEW_UNARMED_CANDIDATES", "true")
@@ -889,7 +905,7 @@ def test_review_every_candidate_env_does_not_activate_disabled_skill(
 
     policy = agent._resolve_execution_protocol_policy()
 
-    assert policy.mode is ProtocolMode.OFF
+    assert policy.mode is ProtocolMode.GUIDE
     assert policy.review_unarmed_candidates is False
 
 
@@ -936,6 +952,7 @@ def test_agent_offers_required_initial_model_decision_before_real_tools() -> Non
         "milestone_count",
         "expected_tool_actions",
         "verification_required",
+        "workspace_mutation_required",
     }
     plan = augmented[0]["function"]["parameters"]["properties"]["__aworld_plan_update"]
     assert plan["type"] == "object"
@@ -1599,7 +1616,7 @@ def test_agent_strips_stale_profile_schema_value_without_recording_again() -> No
     assert state.long_horizon_armed is False
 
 
-def test_disabled_skill_does_not_offer_model_profile() -> None:
+def test_default_convergence_avoids_extra_profile_turn_without_skill() -> None:
     context = Context(task_id="profile-disabled")
     context.set_task(Task(id="profile-disabled", timeout=600))
     policy = ExecutionProtocolPolicy(mode=ProtocolMode.GUIDE)

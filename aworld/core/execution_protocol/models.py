@@ -143,6 +143,7 @@ class ModelExecutionProfile:
     milestone_count: int
     expected_tool_actions: int
     verification_required: bool
+    workspace_mutation_required: bool = False
 
     def __post_init__(self) -> None:
         if not isinstance(self.horizon, ExecutionHorizon):
@@ -173,8 +174,9 @@ class ModelExecutionProfile:
                 raise ValueError(
                     f"{name} must be an integer in the range [{minimum}, {maximum}]"
                 )
-        if not isinstance(self.verification_required, bool):
-            raise ValueError("verification_required must be a boolean")
+        for name in ("verification_required", "workspace_mutation_required"):
+            if not isinstance(getattr(self, name), bool):
+                raise ValueError(f"{name} must be a boolean")
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -183,6 +185,7 @@ class ModelExecutionProfile:
             "milestone_count": self.milestone_count,
             "expected_tool_actions": self.expected_tool_actions,
             "verification_required": self.verification_required,
+            "workspace_mutation_required": self.workspace_mutation_required,
         }
 
     @classmethod
@@ -195,6 +198,7 @@ class ModelExecutionProfile:
             "milestone_count",
             "expected_tool_actions",
             "verification_required",
+            "workspace_mutation_required",
         }
         unknown = set(value) - expected
         if unknown:
@@ -205,6 +209,7 @@ class ModelExecutionProfile:
             milestone_count=value.get("milestone_count"),
             expected_tool_actions=value.get("expected_tool_actions"),
             verification_required=value.get("verification_required"),
+            workspace_mutation_required=value.get("workspace_mutation_required", False),
         )
 
 
@@ -541,7 +546,12 @@ class ModelPlanUpdate:
 
 @dataclass(frozen=True, slots=True)
 class ExecutionProtocolPolicy:
-    """Validated limits for one task-scoped execution protocol."""
+    """Validated internal controls for one task-scoped execution protocol.
+
+    LLMAgent supplies AWorld's active default when callers omit this object.
+    ``mode`` remains available for framework tests, shadow evaluation, and
+    rollback; it is not a required end-user choice.
+    """
 
     SCHEMA_VERSION: ClassVar[str] = "aworld.execution-protocol-policy/v1"
 
