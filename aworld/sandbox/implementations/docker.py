@@ -774,11 +774,23 @@ class DockerSandbox(Sandbox):
         session_id: str = None,
         context: Any = None,
         event_message: Any = None,
+        allowed_servers: List[str] | None = None,
+        black_tool_actions: Dict[str, List[str]] | None = None,
     ) -> List[Any]:
         actions = action_list or []
         if not self.destructive_checkpoint or not self.tracked_artifact_paths:
+            if allowed_servers is None and black_tool_actions is None:
+                return await super().call_tool(
+                    actions, task_id, session_id, context, event_message
+                )
             return await super().call_tool(
-                actions, task_id, session_id, context, event_message
+                actions,
+                task_id,
+                session_id,
+                context,
+                event_message,
+                allowed_servers=allowed_servers,
+                black_tool_actions=black_tool_actions,
             )
         async with self._checkpoint_lock:
             transaction_started_at = time.monotonic()
@@ -805,9 +817,20 @@ class DockerSandbox(Sandbox):
             rollback_reason = None
             rollback_skipped_reason = None
             try:
-                results = await super().call_tool(
-                    actions, task_id, session_id, context, event_message
-                )
+                if allowed_servers is None and black_tool_actions is None:
+                    results = await super().call_tool(
+                        actions, task_id, session_id, context, event_message
+                    )
+                else:
+                    results = await super().call_tool(
+                        actions,
+                        task_id,
+                        session_id,
+                        context,
+                        event_message,
+                        allowed_servers=allowed_servers,
+                        black_tool_actions=black_tool_actions,
+                    )
                 if results is None:
                     results = []
                 tool_failed = self._results_failed(results)

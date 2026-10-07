@@ -104,7 +104,6 @@ from aworld.mcp_client.utils import (
     mcp_tool_desc_transform,
     process_mcp_tools,
     skill_translate_tools,
-    filter_mcp_tools_by_servers,
 )
 from aworld.memory.main import MemoryFactory
 from aworld.memory.tool_call_compaction import collect_replay_message_metrics
@@ -2647,29 +2646,14 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                 and hasattr(self.sandbox, "mcpservers")
                 and self.sandbox.mcpservers
             ):
-                # Get all available MCP tools from shared sandbox
-                all_mcp_tools = await self.sandbox.mcpservers.list_tools(context)
-
-                # ✅ Filter tools based on agent's mcp_servers configuration
-                # This enforces principle of least privilege:
-                # - Each agent only sees tools from allowed MCP servers
-                # - Shared sandbox doesn't expose all tools to all agents
-                # - Agent's mcp_servers acts as access control list
-                filtered_mcp_tools = filter_mcp_tools_by_servers(
-                    all_mcp_tools, allowed_servers=self.mcp_servers
+                # Sandbox owns provider discovery, capability filtering, and
+                # transport details. Agent ``mcp_servers`` is retained only as
+                # a compatibility capability allowlist during this migration.
+                filtered_mcp_tools = await self.sandbox.list_tools(
+                    context,
+                    server_names=self.mcp_servers,
+                    black_tool_actions=self.black_tool_actions,
                 )
-                if self.black_tool_actions:
-                    filtered_mcp_tools = [
-                        tool
-                        for tool in filtered_mcp_tools
-                        if not (
-                            "__" in tool.get("function", {}).get("name", "")
-                            and (
-                                lambda server, action: action
-                                in self.black_tool_actions.get(server, ())
-                            )(*tool["function"]["name"].split("__", 1))
-                        )
-                    ]
 
                 processed_tools, tool_mapping = await process_mcp_tools(
                     filtered_mcp_tools

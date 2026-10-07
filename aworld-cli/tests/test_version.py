@@ -31,7 +31,7 @@ def test_source_checkout_ignores_unrelated_installed_metadata(monkeypatch) -> No
 
 def test_installed_cli_uses_its_own_distribution_metadata(monkeypatch) -> None:
     class CurrentDistribution:
-        version = "0.1.6"
+        version = "0.1.7"
 
         @staticmethod
         def locate_file(_path: str) -> Path:
@@ -40,4 +40,4 @@ def test_installed_cli_uses_its_own_distribution_metadata(monkeypatch) -> None:
     monkeypatch.setattr(aworld_cli, "_is_source_checkout", lambda: False)
     monkeypatch.setattr(aworld_cli, "distribution", lambda _name: CurrentDistribution())
 
-    assert aworld_cli._resolve_version() == "0.1.6"
+    assert aworld_cli._resolve_version() == "0.1.7"

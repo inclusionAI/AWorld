@@ -474,9 +474,21 @@ def _record_semantic_tool_progress_locked(
         if isinstance(metadata, dict)
         and isinstance(metadata.get("context_management"), dict)
     ]
+    sandbox_receipts = [
+        metadata.get("sandbox_observation")
+        for result in action_results
+        if isinstance(result, dict)
+        for metadata in (result.get("metadata"),)
+        if isinstance(metadata, dict)
+        and isinstance(metadata.get("sandbox_observation"), dict)
+    ]
+    sandbox_workspace_mutated = any(
+        receipt.get("workspace_mutated") is True
+        for receipt in sandbox_receipts
+    )
     artifact_changed = any(
         receipt.get("artifact_changed") is True for receipt in artifact_receipts
-    )
+    ) or sandbox_workspace_mutated
     rollback_performed = any(
         receipt.get("rollback_performed") is True for receipt in artifact_receipts
     )
@@ -491,6 +503,15 @@ def _record_semantic_tool_progress_locked(
             if isinstance(receipt.get("artifact_fingerprint_after"), str)
         ),
         None,
+    )
+    workspace_generation = max(
+        (
+            receipt.get("workspace_generation", 0)
+            for receipt in sandbox_receipts
+            if isinstance(receipt.get("workspace_generation"), int)
+            and not isinstance(receipt.get("workspace_generation"), bool)
+        ),
+        default=0,
     )
     raw_feature = os.environ.get(SEMANTIC_PROGRESS_LEDGER_ENV)
     semantic_ledger_enabled = not (
@@ -948,7 +969,11 @@ def _record_semantic_tool_progress_locked(
         "artifact_changed": artifact_changed,
         "artifact_fingerprint": artifact_fingerprint,
         "artifact_advanced": artifact_advanced,
-        "workspace_mutated": bool(artifact_changed and not rollback_performed),
+        "workspace_mutated": bool(
+            (artifact_changed or sandbox_workspace_mutated)
+            and not rollback_performed
+        ),
+        "workspace_generation": workspace_generation,
         "diagnostic_progress_observable": diagnostic_progress_observable,
         "failure_signature": failure_signature,
         "recent_failure_signatures": recent_failure_signatures[-8:],

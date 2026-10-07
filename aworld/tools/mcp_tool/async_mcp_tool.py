@@ -116,6 +116,8 @@ class McpTool(AsyncTool):
                     session_id=session_id,
                     context=message.context,
                     event_message=message,
+                    allowed_servers=getattr(agent, "mcp_servers", None),
+                    black_tool_actions=getattr(agent, "black_tool_actions", None),
                 )
             else:
                 action_results, ignore = await self.action_executor.async_execute_action(mcp_actions)

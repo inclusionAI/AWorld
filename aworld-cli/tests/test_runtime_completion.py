@@ -304,6 +304,35 @@ def test_incidental_or_unsafe_paths_are_not_public_deliverables(
     assert infer_public_deliverable_hints(request_text, workspace_path=tmp_path) == ()
 
 
+@pytest.mark.parametrize(
+    "request_text",
+    (
+        "Create a directory at `/app/ssl/` to store all certificate files.",
+        "Create a Flask API that responds to POST requests at /sentiment.",
+        "Run the development server and expose the endpoint at /health.",
+    ),
+)
+def test_directories_and_http_routes_are_not_misclassified_as_files(
+    request_text: str,
+    tmp_path: Path,
+) -> None:
+    assert infer_public_deliverable_hints(
+        request_text,
+        workspace_path=tmp_path,
+    ) == ()
+
+
+def test_explicit_extensionless_executable_remains_a_deliverable(
+    tmp_path: Path,
+) -> None:
+    hints = infer_public_deliverable_hints(
+        "Create an executable named /app/release and verify it runs.",
+        workspace_path=tmp_path,
+    )
+
+    assert [item.display_path for item in hints] == ["/app/release"]
+
+
 def test_default_completion_publishes_advisory_deliverable_without_authority(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

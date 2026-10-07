@@ -16,6 +16,8 @@ from aworld.core.tool_action_journal import (
     append_tool_action_event,
     tool_action_batch_id,
 )
+from aworld.core.common import ActionResult
+from aworld.sandbox.tool_observation import SandboxToolObservationRuntime
 
 
 class BaseSandbox(SandboxSetup):
@@ -73,6 +75,9 @@ class BaseSandbox(SandboxSetup):
         self._timeout = timeout or self.default_sandbox_timeout
         self._metadata = metadata or {}
         self._env_type = env_type or SandboxEnvType.LOCAL
+        # Tool execution state belongs to the Sandbox control plane, not to an
+        # individual terminal/filesystem provider or transport implementation.
+        self._tool_observation_runtime = SandboxToolObservationRuntime()
         # create = Sandbox object constructed; bound (in manager) = first time this sandbox_id gets a worker/loop
         logger.info(
             f"[sandbox create] sandbox_id={self._sandbox_id} pid={os.getpid()} tid={threading.get_ident()} at={datetime.now().isoformat(timespec='milliseconds')}"
@@ -115,11 +120,46 @@ class BaseSandbox(SandboxSetup):
             logger.warning(f"Sandbox cleanup during async with exit failed: {e}")
         return False
 
-    async def list_tools(self, context: Any = None) -> List[Dict[str, Any]]:
-        """List all available tools from MCP servers. Delegates to mcpservers.list_tools()."""
+    async def list_tools(
+        self,
+        context: Any = None,
+        *,
+        server_names: List[str] | None = None,
+        black_tool_actions: Dict[str, List[str]] | None = None,
+    ) -> List[Dict[str, Any]]:
+        """Return one Sandbox-owned capability catalog.
+
+        ``server_names`` is a compatibility spelling for an Agent capability
+        allowlist. Transport discovery remains private to the Sandbox.
+        """
         if hasattr(self, "mcpservers") and self.mcpservers is not None:
-            return await self.mcpservers.list_tools(context=context)
+            tools = await self.mcpservers.list_tools(context=context)
+            if server_names is not None:
+                from aworld.mcp_client.utils import filter_mcp_tools_by_servers
+
+                tools = filter_mcp_tools_by_servers(
+                    tools,
+                    allowed_servers=server_names,
+                )
+            if black_tool_actions:
+                filtered = []
+                for tool in tools:
+                    identity = tool.get("function", {}).get("name", "")
+                    if "__" in identity:
+                        server, action = identity.split("__", 1)
+                        if action in black_tool_actions.get(server, ()):
+                            continue
+                    filtered.append(tool)
+                tools = filtered
+            return tools
         return []
+
+    def _sandbox_tool_observations(self) -> SandboxToolObservationRuntime:
+        runtime = getattr(self, "_tool_observation_runtime", None)
+        if not isinstance(runtime, SandboxToolObservationRuntime):
+            runtime = SandboxToolObservationRuntime()
+            self._tool_observation_runtime = runtime
+        return runtime
 
     async def call_tool(
         self,
@@ -128,6 +168,8 @@ class BaseSandbox(SandboxSetup):
         session_id: str = None,
         context: Any = None,
         event_message: Any = None,
+        allowed_servers: List[str] | None = None,
+        black_tool_actions: Dict[str, List[str]] | None = None,
     ) -> List[Any]:
         """Call a tool on MCP servers. Delegates to mcpservers.call_tool()."""
         actions = action_list or []
@@ -162,16 +204,75 @@ class BaseSandbox(SandboxSetup):
             },
         )
         try:
-            if hasattr(self, "mcpservers") and self.mcpservers is not None:
-                results = await self.mcpservers.call_tool(
-                    action_list=actions,
-                    task_id=task_id,
-                    session_id=session_id,
-                    context=context,
-                    event_message=event_message,
+            results = []
+            # Preserve one canonical execution boundary for every capability.
+            # Existing MCP/local/docker details remain private transports below
+            # this method. Sequential execution also makes workspace generation
+            # ordering deterministic for a model-emitted action batch.
+            for action in actions:
+                action_value = (
+                    action if isinstance(action, dict) else vars(action)
                 )
-            else:
-                results = []
+                server_name = action_value.get("tool_name") or ""
+                action_name = action_value.get("action_name") or ""
+                if allowed_servers is not None and server_name not in set(
+                    allowed_servers
+                ):
+                    results.append(
+                        ActionResult(
+                            success=False,
+                            tool_name=server_name,
+                            action_name=action_name,
+                            content="Sandbox capability is not available to this Agent",
+                            error="sandbox_capability_denied",
+                            keep=True,
+                            parameter=action_value.get("params") or {},
+                        )
+                    )
+                    continue
+                if action_name in (black_tool_actions or {}).get(
+                    server_name, ()
+                ):
+                    results.append(
+                        ActionResult(
+                            success=False,
+                            tool_name=server_name,
+                            action_name=action_name,
+                            content="Sandbox capability action is denied",
+                            error="sandbox_capability_action_denied",
+                            keep=True,
+                            parameter=action_value.get("params") or {},
+                        )
+                    )
+                    continue
+                cached = (
+                    self._sandbox_tool_observations().lookup(
+                        action, context=context
+                    )
+                    if context is not None
+                    else None
+                )
+                if cached is not None:
+                    results.append(cached)
+                    continue
+                if hasattr(self, "mcpservers") and self.mcpservers is not None:
+                    observed = await self.mcpservers.call_tool(
+                        action_list=[action],
+                        task_id=task_id,
+                        session_id=session_id,
+                        context=context,
+                        event_message=event_message,
+                    )
+                else:
+                    observed = []
+                for result in observed or []:
+                    if context is not None:
+                        result = self._sandbox_tool_observations().record(
+                            action,
+                            result,
+                            context=context,
+                        )
+                    results.append(result)
         except BaseException as exc:
             journal(
                 "sandbox_call_failed",

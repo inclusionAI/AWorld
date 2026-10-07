@@ -273,3 +273,126 @@ async def test_sandbox_action_journal_carries_redacted_boundary_receipt(
     assert boundary["working_directory_present"] is True
     assert boundary["working_directory_hash"].startswith("sha256:")
     assert str(tmp_path) not in repr(boundary)
+
+
+def _sandbox_context():
+    return SimpleNamespace(
+        task_id="task-1",
+        task_epoch=1,
+        session_id="session-1",
+    )
+
+
+@pytest.mark.asyncio
+async def test_sandbox_compacts_exact_repeated_read_across_one_control_plane() -> None:
+    calls = []
+
+    class _McpServers:
+        async def call_tool(self, **kwargs):
+            calls.append(kwargs["action_list"])
+            action = kwargs["action_list"][0]
+            return [
+                ActionResult(
+                    success=True,
+                    tool_name=action["tool_name"],
+                    action_name=action["action_name"],
+                    content="alpha\nbeta\n",
+                )
+            ]
+
+    sandbox = object.__new__(Sandbox)
+    sandbox._sandbox_id = "sandbox-1"
+    sandbox._env_type = SandboxEnvType.LOCAL
+    sandbox._metadata = {}
+    sandbox._mcpservers = _McpServers()
+    action = {
+        "tool_name": "filesystem",
+        "action_name": "read_file",
+        "params": {"path": "/app/a.txt", "head": 20},
+    }
+    context = _sandbox_context()
+
+    first = await sandbox.call_tool(action_list=[action], context=context)
+    repeated = await sandbox.call_tool(action_list=[action], context=context)
+
+    assert len(calls) == 1
+    assert first[0].content == "alpha\nbeta\n"
+    assert repeated[0].content != first[0].content
+    receipt = repeated[0].metadata["sandbox_observation"]
+    assert receipt["canonical_tool"] == "filesystem.read_file"
+    assert receipt["effect"] == "read_only"
+    assert receipt["cache_hit"] is True
+    assert receipt["changed"] is False
+
+
+@pytest.mark.asyncio
+async def test_sandbox_mutation_invalidates_repeated_read_without_claiming_unknown_progress() -> None:
+    calls = []
+
+    class _McpServers:
+        async def call_tool(self, **kwargs):
+            action = kwargs["action_list"][0]
+            calls.append(action["action_name"])
+            return [
+                ActionResult(
+                    success=True,
+                    tool_name=action["tool_name"],
+                    action_name=action["action_name"],
+                    content="ok",
+                )
+            ]
+
+    sandbox = object.__new__(Sandbox)
+    sandbox._sandbox_id = "sandbox-1"
+    sandbox._env_type = SandboxEnvType.LOCAL
+    sandbox._metadata = {}
+    sandbox._mcpservers = _McpServers()
+    context = _sandbox_context()
+    read = {
+        "tool_name": "filesystem",
+        "action_name": "read_file",
+        "params": {"path": "/app/a.txt"},
+    }
+    write = {
+        "tool_name": "filesystem",
+        "action_name": "write_file",
+        "params": {"path": "/app/a.txt", "content": "changed"},
+    }
+
+    await sandbox.call_tool(action_list=[read], context=context)
+    mutation = await sandbox.call_tool(action_list=[write], context=context)
+    await sandbox.call_tool(action_list=[read], context=context)
+
+    assert calls == ["read_file", "write_file", "read_file"]
+    receipt = mutation[0].metadata["sandbox_observation"]
+    assert receipt["effect"] == "mutating"
+    assert receipt["workspace_mutated"] is True
+    assert receipt["workspace_generation"] == 1
+
+
+@pytest.mark.asyncio
+async def test_sandbox_enforces_agent_capability_allowlist_at_execution() -> None:
+    class _McpServers:
+        async def call_tool(self, **_kwargs):
+            pytest.fail("denied capability must not reach the transport")
+
+    sandbox = object.__new__(Sandbox)
+    sandbox._sandbox_id = "sandbox-1"
+    sandbox._env_type = SandboxEnvType.LOCAL
+    sandbox._metadata = {}
+    sandbox._mcpservers = _McpServers()
+
+    results = await sandbox.call_tool(
+        action_list=[
+            {
+                "tool_name": "filesystem",
+                "action_name": "read_file",
+                "params": {"path": "/app/a.txt"},
+            }
+        ],
+        context=_sandbox_context(),
+        allowed_servers=["terminal"],
+    )
+
+    assert results[0].success is False
+    assert results[0].error == "sandbox_capability_denied"

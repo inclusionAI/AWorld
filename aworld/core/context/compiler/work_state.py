@@ -10,8 +10,6 @@ only framework-observed evidence and never interprets benchmark semantics.
 from __future__ import annotations
 
 import json
-import re
-import shlex
 from typing import Any, Mapping, Sequence
 
 from .adaptive import semantic_fingerprint
@@ -84,50 +82,11 @@ def _bounded_projection(
 
 
 def _read_only_actions(actions: Sequence[Mapping[str, Any]]) -> bool:
-    """Conservative recognition for advisory repetition evidence, never a gate."""
-    if not actions:
-        return False
-    for action in actions:
-        params = action.get("params") or {}
-        if action.get("action_name") in {"read_file", "read_output_artifact", "get_knowledge_by_lines"}:
-            continue
-        code = params.get("code") if isinstance(params, Mapping) else None
-        if not isinstance(code, str):
-            return False
-        # A read-looking executable does not make arbitrary shell text read-only.
-        # Decline expansions rather than trying to interpret shell semantics.
-        if any(character in code for character in "$`\n\r"):
-            return False
-        try:
-            lexer = shlex.shlex(code, posix=True, punctuation_chars=";&|><")
-            lexer.whitespace_split = True
-            tokens = list(lexer)
-        except ValueError:
-            return False
-        if not tokens or any(
-            token != "&&" and any(character in token for character in ";&|><")
-            for token in tokens
-        ):
-            return False
-        segments = [[]]
-        for token in tokens:
-            if token == "&&":
-                segments.append([])
-            else:
-                segments[-1].append(token)
-        for segment in segments:
-            if not segment or segment[0] not in {"cat", "head", "tail", "sed", "ls", "wc", "rg", "pwd", "echo"}:
-                return False
-            if segment[0] == "rg" and any(token.startswith("--pre") for token in segment[1:]):
-                return False
-            if segment[0] == "sed":
-                # Recognize only direct line-range printing. sed scripts can
-                # write files or execute commands even with -n and without -i.
-                if (len(segment) < 3 or segment[1] != "-n"
-                        or re.fullmatch(r"\d+(?:,\d+)?p", segment[2]) is None
-                        or any(token.startswith("-") for token in segment[3:])):
-                    return False
-    return True
+    """Use the Sandbox-owned classifier for adaptive repetition evidence."""
+
+    from aworld.sandbox.tool_observation import actions_are_provably_read_only
+
+    return actions_are_provably_read_only(actions)
 
 
 def build_adaptive_work_state_entry(
@@ -157,6 +116,7 @@ def build_adaptive_work_state_entry(
     available_artifacts: list[dict[str, Any]] = []
     artifact_changed = rollback_performed = implicit_artifact_loss = False
     artifact_fingerprint = None
+    workspace_generation = None
     for result in result_values:
         if not isinstance(result, Mapping):
             continue
@@ -179,6 +139,27 @@ def build_adaptive_work_state_entry(
             candidate_fingerprint = context_management.get("artifact_fingerprint_after")
             if isinstance(candidate_fingerprint, str):
                 artifact_fingerprint = candidate_fingerprint
+        sandbox_observation = (
+            metadata.get("sandbox_observation")
+            if isinstance(metadata, Mapping)
+            else None
+        )
+        if isinstance(sandbox_observation, Mapping):
+            artifact_changed = artifact_changed or (
+                sandbox_observation.get("workspace_mutated") is True
+            )
+            candidate_generation = sandbox_observation.get(
+                "workspace_generation"
+            )
+            if (
+                isinstance(candidate_generation, int)
+                and not isinstance(candidate_generation, bool)
+                and candidate_generation >= 0
+            ):
+                workspace_generation = max(
+                    workspace_generation or 0,
+                    candidate_generation,
+                )
         output_policy = (
             metadata.get("tool_output_policy")
             if isinstance(metadata, Mapping)
@@ -243,6 +224,7 @@ def build_adaptive_work_state_entry(
         "results": projected_results,
         "artifact_changed": artifact_changed,
         "artifact_fingerprint": artifact_fingerprint,
+        "workspace_generation": workspace_generation,
         "rollback_performed": rollback_performed,
         "implicit_artifact_loss": implicit_artifact_loss,
         "goal_progress": progress.get("goal_progress") is True,
@@ -326,6 +308,11 @@ def advance_adaptive_work_state(
         "observation_count": int(state.get("observation_count", 0) or 0) + 1,
         "artifact_fingerprint": value.get("artifact_fingerprint")
         or state.get("artifact_fingerprint"),
+        "workspace_generation": (
+            value.get("workspace_generation")
+            if value.get("workspace_generation") is not None
+            else state.get("workspace_generation")
+        ),
         "recent_operations": recent[-8:],
         "milestones": milestones[-4:],
         "attempted_operation_hashes": hashes[-24:],
@@ -387,6 +374,7 @@ def _compact_work_entry(entry: Mapping[str, Any]) -> dict[str, Any]:
         ],
         "artifact_changed": entry.get("artifact_changed") is True,
         "artifact_fingerprint": _stable_identifier(entry.get("artifact_fingerprint")),
+        "workspace_generation": entry.get("workspace_generation"),
         "rollback_performed": entry.get("rollback_performed") is True,
         "implicit_artifact_loss": entry.get("implicit_artifact_loss") is True,
         "goal_progress": entry.get("goal_progress") is True,
@@ -404,6 +392,7 @@ def _minimal_work_entry(entry: Mapping[str, Any]) -> dict[str, Any]:
         "result_count": len(entry.get("results") or []),
         "artifact_changed": entry.get("artifact_changed") is True,
         "artifact_fingerprint": _stable_identifier(entry.get("artifact_fingerprint")),
+        "workspace_generation": entry.get("workspace_generation"),
         "rollback_performed": entry.get("rollback_performed") is True,
         "implicit_artifact_loss": entry.get("implicit_artifact_loss") is True,
         "goal_progress": entry.get("goal_progress") is True,
@@ -587,6 +576,7 @@ def adaptive_work_state_message(state: Any) -> dict[str, Any] | None:
         "current_artifact_fingerprint": _stable_identifier(
             state.get("artifact_fingerprint")
         ),
+        "workspace_generation": state.get("workspace_generation"),
         "attempted_operation_hashes": list(
             state.get("attempted_operation_hashes") or []
         )[-12:],

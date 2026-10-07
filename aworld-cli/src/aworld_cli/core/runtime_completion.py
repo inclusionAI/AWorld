@@ -189,15 +189,26 @@ def _is_described_runtime_side_effect(request: str, match: re.Match[str]) -> boo
 
 
 def _resolve_public_deliverable(
-    value: str, *, workspace_path: str | os.PathLike[str]
+    value: str,
+    *,
+    workspace_path: str | os.PathLike[str],
+    kind: str = "file",
 ) -> tuple[str, str] | None:
     display = value.strip().strip("`'\"").rstrip(").]}")
     if not display or len(display) > 512 or "://" in display or "\x00" in display:
         return None
+    if kind == "file" and display.endswith(("/", "\\")):
+        return None
     candidate = Path(display).expanduser()
-    # A bare natural-language word is not a file declaration. Extensionless
-    # absolute/relative paths remain valid when the task explicitly names one.
-    if not candidate.is_absolute() and "/" not in display and "." not in candidate.name:
+    # A bare natural-language word is not a file declaration.  Keep
+    # extensionless path-like values such as /app/release, but reject words
+    # captured from prose such as "interpreter complete with ...".
+    if (
+        kind == "file"
+        and "." not in candidate.name
+        and "/" not in display
+        and "\\" not in display
+    ):
         return None
     workspace = Path(workspace_path).expanduser().resolve()
     if candidate.is_absolute():
@@ -255,7 +266,8 @@ def infer_public_deliverable_hints(
             if _is_described_runtime_side_effect(request, match):
                 continue
             resolved = _resolve_public_deliverable(
-                _matched_deliverable_token(match), workspace_path=workspace_path
+                _matched_deliverable_token(match),
+                workspace_path=workspace_path,
             )
             if resolved is None:
                 continue
@@ -274,7 +286,8 @@ def infer_public_deliverable_hints(
             if _is_described_runtime_side_effect(request, match):
                 continue
             resolved = _resolve_public_deliverable(
-                _matched_deliverable_token(match), workspace_path=workspace_path
+                _matched_deliverable_token(match),
+                workspace_path=workspace_path,
             )
             if resolved is None:
                 continue
@@ -303,6 +316,7 @@ def infer_public_deliverable_hints(
         resolved_directory = _resolve_public_deliverable(
             _matched_deliverable_token(directory_match),
             workspace_path=workspace_path,
+            kind="directory",
         )
         if resolved_directory is None:
             continue
