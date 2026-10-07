@@ -29,7 +29,8 @@ def test_shell_classifier_fails_closed_for_pipeline_and_dynamic_code() -> None:
     for code in (
         "cat /app/a.py | head",
         "cat $TARGET",
-        "python -c 'print(1)'",
+        "python -c \"__import__('os').remove('/app/a.py')\"",
+        "python -c 'print(1)'\nrm /app/a.py",
     ):
         effect = classify_tool_effect(
             {
@@ -40,6 +41,56 @@ def test_shell_classifier_fails_closed_for_pipeline_and_dynamic_code() -> None:
         )
         assert effect.effect == "unknown"
         assert effect.cacheable is False
+
+
+def test_shell_classifier_accepts_provably_read_only_inline_python() -> None:
+    for code in (
+        "python -c 'print(1)'",
+        "cd /app && python3 -c \"from pathlib import Path; print(Path('a').read_text())\"",
+        "cd /app && python -c \"\nimport cv2, numpy as np\ncap = cv2.VideoCapture('example.mp4')\nprint(np.array([cap.get(1)]).max())\n\"",
+        "cd /app && python -c \"print(1 > 0)\" 2>&1 | head -20",
+        "cd /app && python -c \"print(1)\" 2>/dev/null",
+    ):
+        effect = classify_tool_effect(
+            {
+                "tool_name": "terminal",
+                "action_name": "run_code",
+                "params": {"code": code},
+            }
+        )
+        assert effect.effect == "read_only"
+        assert effect.cacheable is True
+
+
+def test_shell_classifier_rejects_inline_python_file_mutation() -> None:
+    for code in (
+        "python -c \"open('/app/a.py', 'w').write('x')\"",
+        "python -c \"from pathlib import Path; Path('/app/a.py').write_text('x')\"",
+        "python -c \"import os; os.remove('/app/a.py')\"",
+        "python -c \"import numpy as np; np.save('/app/a.npy', np.array([1]))\"",
+    ):
+        effect = classify_tool_effect(
+            {
+                "tool_name": "terminal",
+                "action_name": "run_code",
+                "params": {"code": code},
+            }
+        )
+        assert effect.effect == "unknown"
+        assert effect.cacheable is False
+
+
+def test_shell_classifier_does_not_treat_fd_redirection_as_file_mutation() -> None:
+    effect = classify_tool_effect(
+        {
+            "tool_name": "terminal",
+            "action_name": "run_code",
+            "params": {"code": "python inspect.py 2>&1 | head -20"},
+        }
+    )
+
+    assert effect.effect == "unknown"
+    assert effect.cacheable is False
 
 
 def test_known_mutation_advances_generation_but_unknown_does_not_claim_progress() -> None:

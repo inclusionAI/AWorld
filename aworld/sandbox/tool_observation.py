@@ -7,6 +7,7 @@ Only exact, provably read-only core workspace operations can be compacted.
 
 from __future__ import annotations
 
+import ast
 from collections import OrderedDict
 from copy import deepcopy
 from dataclasses import dataclass
@@ -46,7 +47,19 @@ _FILESYSTEM_MUTATION_ACTIONS = frozenset(
     }
 )
 _SHELL_READ_COMMANDS = frozenset(
-    {"cat", "head", "tail", "sed", "ls", "wc", "rg", "pwd", "echo", "stat"}
+    {
+        "cat",
+        "cd",
+        "echo",
+        "head",
+        "ls",
+        "pwd",
+        "rg",
+        "sed",
+        "stat",
+        "tail",
+        "wc",
+    }
 )
 _SHELL_MUTATION_COMMANDS = frozenset(
     {
@@ -63,6 +76,329 @@ _SHELL_MUTATION_COMMANDS = frozenset(
         "truncate",
     }
 )
+_SAFE_PYTHON_IMPORT_ROOTS = frozenset(
+    {
+        "base64",
+        "collections",
+        "csv",
+        "cv2",
+        "datetime",
+        "functools",
+        "hashlib",
+        "itertools",
+        "json",
+        "math",
+        "numpy",
+        "pathlib",
+        "re",
+        "statistics",
+        "struct",
+        "sys",
+        "toml",
+        "typing",
+    }
+)
+_SAFE_PYTHON_CALL_NAMES = frozenset(
+    {
+        "abs",
+        "all",
+        "any",
+        "bool",
+        "bytearray",
+        "bytes",
+        "dict",
+        "enumerate",
+        "filter",
+        "float",
+        "format",
+        "frozenset",
+        "getattr",
+        "hasattr",
+        "hex",
+        "int",
+        "isinstance",
+        "issubclass",
+        "iter",
+        "len",
+        "list",
+        "map",
+        "max",
+        "memoryview",
+        "min",
+        "next",
+        "oct",
+        "open",
+        "ord",
+        "print",
+        "range",
+        "repr",
+        "reversed",
+        "round",
+        "set",
+        "slice",
+        "sorted",
+        "str",
+        "sum",
+        "super",
+        "tuple",
+        "type",
+        "zip",
+    }
+)
+_UNSAFE_PYTHON_CALL_NAMES = frozenset(
+    {"__import__", "breakpoint", "compile", "eval", "exec", "input"}
+)
+_SAFE_PYTHON_FROM_IMPORTS = {
+    "collections": frozenset({"Counter", "defaultdict", "deque"}),
+    "datetime": frozenset({"date", "datetime", "time", "timedelta", "timezone"}),
+    "functools": frozenset({"partial", "reduce"}),
+    "itertools": frozenset(
+        {
+            "chain",
+            "combinations",
+            "count",
+            "groupby",
+            "islice",
+            "permutations",
+            "product",
+            "repeat",
+            "starmap",
+            "takewhile",
+            "zip_longest",
+        }
+    ),
+    "pathlib": frozenset({"Path", "PurePath", "PurePosixPath"}),
+}
+_SAFE_PYTHON_METHOD_NAMES = frozenset(
+    {
+        "Canny",
+        "Sobel",
+        "VideoCapture",
+        "abs",
+        "absdiff",
+        "all",
+        "any",
+        "append",
+        "argmax",
+        "argmin",
+        "argsort",
+        "array",
+        "asarray",
+        "astype",
+        "connectedComponentsWithStats",
+        "cvtColor",
+        "diff",
+        "endswith",
+        "exists",
+        "find",
+        "full",
+        "get",
+        "group",
+        "groups",
+        "is_dir",
+        "is_file",
+        "isOpened",
+        "isnan",
+        "items",
+        "join",
+        "keys",
+        "load",
+        "loads",
+        "match",
+        "max",
+        "mean",
+        "median",
+        "min",
+        "morphologyEx",
+        "nonzero",
+        "ones",
+        "percentile",
+        "read",
+        "read_bytes",
+        "read_text",
+        "release",
+        "reshape",
+        "resize",
+        "round",
+        "search",
+        "sort",
+        "split",
+        "sqrt",
+        "stack",
+        "startswith",
+        "std",
+        "strip",
+        "sum",
+        "tolist",
+        "values",
+        "var",
+        "where",
+    }
+)
+
+
+def _newlines_are_quoted(code: str) -> bool:
+    quote: str | None = None
+    escaped = False
+    for character in code:
+        if escaped:
+            escaped = False
+            continue
+        if character == "\\" and quote != "'":
+            escaped = True
+            continue
+        if character in {"'", '"'}:
+            if quote is None:
+                quote = character
+            elif quote == character:
+                quote = None
+            continue
+        if character in "\n\r" and quote is None:
+            return False
+    return quote is None
+
+
+def _python_open_is_read_only(call: ast.Call) -> bool:
+    mode: ast.AST | None = None
+    if len(call.args) >= 2:
+        mode = call.args[1]
+    for keyword in call.keywords:
+        if keyword.arg == "mode":
+            mode = keyword.value
+    if mode is None:
+        return True
+    return (
+        isinstance(mode, ast.Constant)
+        and isinstance(mode.value, str)
+        and mode.value.startswith("r")
+        and "+" not in mode.value
+    )
+
+
+def _python_is_provably_read_only(source: str) -> bool:
+    try:
+        tree = ast.parse(source, mode="exec")
+    except (SyntaxError, ValueError, TypeError):
+        return False
+    local_functions = {
+        node.name
+        for node in tree.body
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    }
+    imported_names: set[str] = set()
+    for node in tree.body:
+        if isinstance(node, ast.Import):
+            imported_names.update(
+                alias.asname or alias.name.split(".", 1)[0] for alias in node.names
+            )
+        elif isinstance(node, ast.ImportFrom):
+            imported_names.update(alias.asname or alias.name for alias in node.names)
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            if any(
+                alias.name.split(".", 1)[0] not in _SAFE_PYTHON_IMPORT_ROOTS
+                for alias in node.names
+            ):
+                return False
+        elif isinstance(node, ast.ImportFrom):
+            root = node.module.split(".", 1)[0] if node.module else ""
+            allowed = _SAFE_PYTHON_FROM_IMPORTS.get(root, frozenset())
+            if (
+                node.level
+                or not node.module
+                or root not in _SAFE_PYTHON_IMPORT_ROOTS
+                or any(alias.name not in allowed for alias in node.names)
+            ):
+                return False
+        elif isinstance(node, (ast.ClassDef, ast.Delete)):
+            return False
+        elif isinstance(node, ast.Call):
+            function = node.func
+            if isinstance(function, ast.Name):
+                if function.id in _UNSAFE_PYTHON_CALL_NAMES:
+                    return False
+                if (
+                    function.id not in _SAFE_PYTHON_CALL_NAMES
+                    and function.id not in local_functions
+                    and function.id not in imported_names
+                ):
+                    return False
+                if function.id == "open" and not _python_open_is_read_only(node):
+                    return False
+            elif isinstance(function, ast.Attribute):
+                if function.attr == "open":
+                    if not _python_open_is_read_only(node):
+                        return False
+                elif function.attr not in _SAFE_PYTHON_METHOD_NAMES:
+                    return False
+            else:
+                return False
+    return True
+
+
+def _shell_python_inline_is_provably_read_only(code: str) -> bool:
+    if not _newlines_are_quoted(code) or any(value in code for value in ("$", "`")):
+        return False
+    try:
+        lexer = shlex.shlex(code, posix=True, punctuation_chars=";&|><")
+        lexer.whitespace_split = True
+        tokens = list(lexer)
+    except ValueError:
+        return False
+    normalized: list[str] = []
+    position = 0
+    while position < len(tokens):
+        token = tokens[position]
+        if token in {">", ">>", "<>"}:
+            if position + 1 >= len(tokens) or tokens[position + 1] != "/dev/null":
+                return False
+            if normalized and normalized[-1].isdigit():
+                normalized.pop()
+            position += 2
+            continue
+        if token == ">&":
+            if position + 1 >= len(tokens) or not tokens[position + 1].isdigit():
+                return False
+            if normalized and normalized[-1].isdigit():
+                normalized.pop()
+            position += 2
+            continue
+        normalized.append(token)
+        position += 1
+    segments: list[list[str]] = [[]]
+    separators: list[str] = []
+    for token in normalized:
+        if token in {"&&", "|"}:
+            if not segments[-1]:
+                return False
+            separators.append(token)
+            segments.append([])
+            continue
+        if token in {";", "||", "&", "<"}:
+            return False
+        segments[-1].append(token)
+    if not segments[-1]:
+        return False
+    if segments[0][0] == "cd":
+        if len(segments[0]) != 2 or not separators or separators[0] != "&&":
+            return False
+        segments = segments[1:]
+        separators = separators[1:]
+    if not segments or len(segments[0]) != 3 or segments[0][1] != "-c":
+        return False
+    executable = segments[0][0].rsplit("/", 1)[-1]
+    if executable not in {"python", "python3"}:
+        return False
+    if not _python_is_provably_read_only(segments[0][2]):
+        return False
+    if any(separator != "|" for separator in separators):
+        return False
+    return all(
+        segment
+        and segment[0] in _SHELL_READ_COMMANDS
+        and segment[0] != "cd"
+        for segment in segments[1:]
+    )
 
 
 def _value(action: Any, name: str, default: Any = None) -> Any:
@@ -131,8 +467,13 @@ def _shell_is_known_mutation(code: str) -> bool:
         tokens = list(lexer)
     except ValueError:
         return False
-    if any(token in {">", ">>", "<>", ">&"} for token in tokens):
-        return True
+    for position, token in enumerate(tokens):
+        if token in {">", ">>", "<>"}:
+            if position + 1 >= len(tokens) or tokens[position + 1] != "/dev/null":
+                return True
+        elif token == ">&":
+            if position + 1 >= len(tokens) or not tokens[position + 1].isdigit():
+                return True
     command_start = True
     for token in tokens:
         if token in {";", "&&", "||", "|", "&"}:
@@ -172,7 +513,10 @@ def classify_tool_effect(action: Any) -> ToolEffect:
             effect = "mutating"
     elif tool == "terminal" and operation == "run_code":
         code = params.get("code")
-        if isinstance(code, str) and _shell_is_provably_read_only(code):
+        if isinstance(code, str) and (
+            _shell_is_provably_read_only(code)
+            or _shell_python_inline_is_provably_read_only(code)
+        ):
             effect = "read_only"
             cacheable = True
         elif isinstance(code, str) and _shell_is_known_mutation(code):
