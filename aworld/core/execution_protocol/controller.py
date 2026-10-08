@@ -324,12 +324,29 @@ def transition_execution_protocol(
         )
 
     if event.kind in {EventKind.TOOL_OBSERVATION, EventKind.DELIVERY_STATUS}:
-        observed_long_horizon = bool(
+        latest_horizon = _model_horizon(next_state)
+        profile = next_state.model_execution_profile
+        explicit_short_overrun = bool(
             event.kind is EventKind.TOOL_OBSERVATION
             and not next_state.long_horizon_armed
+            and latest_horizon is ExecutionHorizon.SHORT
+            and profile is not None
+            and next_state.tool_observation_count
+            > max(
+                policy.model_activation_min_tool_actions,
+                2 * profile.expected_tool_actions,
+            )
+        )
+        generic_observed_long_horizon = bool(
+            event.kind is EventKind.TOOL_OBSERVATION
+            and not next_state.long_horizon_armed
+            and latest_horizon is not ExecutionHorizon.SHORT
             and next_state.tool_observation_count
             >= policy.activation_event_threshold
             and event.current_step >= policy.model_activation_min_tool_actions
+        )
+        observed_long_horizon = (
+            explicit_short_overrun or generic_observed_long_horizon
         )
         if observed_long_horizon:
             # Runtime behavior is authoritative for operational horizon. A task

@@ -16,6 +16,7 @@ from aworld.core.execution_protocol import (
     ControllerAction,
     DecisionReason,
     ExecutionProtocolPolicy,
+    ExecutionProtocolState,
     ExecutionProtocolStore,
     ProtocolMode,
     ProtocolPhase,
@@ -570,7 +571,7 @@ def test_telemetry_v2_is_explicit_and_new_reader_still_accepts_v1() -> None:
     assert project_execution_protocol_telemetry(current) == current
 
 
-def test_observed_work_arms_long_horizon_even_after_short_initial_estimate() -> None:
+def test_short_estimate_arms_only_after_strict_double_action_overrun() -> None:
     context = _context("observed-long-horizon")
     policy = ExecutionProtocolPolicy(
         mode=ProtocolMode.GUIDE,
@@ -594,6 +595,92 @@ def test_observed_work_arms_long_horizon_even_after_short_initial_estimate() -> 
         },
     )
 
+    for step in range(1, 5):
+        record_tool_protocol_event(
+            context,
+            "agent",
+            _semantic_state(current_agent_step=step),
+        )
+
+    state = load_execution_protocol_state(context, "agent")
+    assert state.long_horizon_armed is False
+
+    record_tool_protocol_event(
+        context,
+        "agent",
+        _semantic_state(current_agent_step=5),
+    )
+
+    state = load_execution_protocol_state(context, "agent")
+    assert state.long_horizon_armed is True
+    telemetry = build_execution_protocol_telemetry(context, "agent")
+    assert telemetry["long_horizon_activation_source"] == "model_estimate_overrun"
+    assert telemetry["model_expected_tool_actions"] == 2
+    assert telemetry["model_expected_tool_actions_overrun_count"] == 3
+
+
+def test_large_short_estimate_is_not_overridden_by_generic_threshold() -> None:
+    context = _context("large-short-estimate")
+    policy = ExecutionProtocolPolicy(
+        mode=ProtocolMode.GUIDE,
+        activation_event_threshold=3,
+        model_activation_min_tool_actions=3,
+        repetition_threshold=99,
+        low_information_gain_threshold=99,
+        no_goal_progress_threshold=99,
+        stagnation_event_threshold=99,
+    )
+    configure_execution_protocol(context, "agent", policy)
+    record_model_execution_profile(
+        context,
+        "agent",
+        {
+            "horizon": "short",
+            "confidence": 0.9,
+            "milestone_count": 1,
+            "expected_tool_actions": 20,
+            "verification_required": True,
+        },
+    )
+
+    for step in range(1, 7):
+        record_tool_protocol_event(
+            context,
+            "agent",
+            _semantic_state(current_agent_step=step),
+        )
+
+    state = load_execution_protocol_state(context, "agent")
+    assert state.long_horizon_armed is False
+    telemetry = build_execution_protocol_telemetry(context, "agent")
+    assert "long_horizon_activation_source" not in telemetry
+    assert telemetry["model_expected_tool_actions_overrun_count"] == 0
+
+
+def test_unknown_horizon_uses_generic_observation_threshold_and_stays_armed() -> None:
+    context = _context("unknown-observed-horizon")
+    policy = ExecutionProtocolPolicy(
+        mode=ProtocolMode.GUIDE,
+        activation_event_threshold=3,
+        model_activation_min_tool_actions=3,
+        repetition_threshold=99,
+        low_information_gain_threshold=99,
+        no_goal_progress_threshold=99,
+        stagnation_event_threshold=99,
+    )
+    configure_execution_protocol(context, "agent", policy)
+    record_model_execution_profile(
+        context,
+        "agent",
+        {
+            "horizon": "unknown",
+            "confidence": 0.2,
+            "milestone_count": 1,
+            "expected_tool_actions": 20,
+            "verification_required": True,
+        },
+    )
+
     for step in range(1, 4):
         record_tool_protocol_event(
             context,
@@ -603,6 +690,13 @@ def test_observed_work_arms_long_horizon_even_after_short_initial_estimate() -> 
 
     state = load_execution_protocol_state(context, "agent")
     assert state.long_horizon_armed is True
+    restored = ExecutionProtocolState.from_dict(state.to_dict())
+    assert restored.long_horizon_armed is True
+    telemetry = build_execution_protocol_telemetry(context, "agent")
+    assert (
+        telemetry["long_horizon_activation_source"]
+        == "generic_observation_threshold"
+    )
 
 
 def test_two_unapplied_replans_activate_one_executable_convergence_phase() -> None:

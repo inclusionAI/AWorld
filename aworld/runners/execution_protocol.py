@@ -1279,6 +1279,11 @@ def project_execution_protocol_telemetry(value: Any) -> dict[str, Any] | None:
         "mode": {"off", "observe", "guide"},
         "phase": {"execute", "finalize", "review", "repair", "complete"},
         "model_horizon": {"unknown", "short", "long"},
+        "long_horizon_activation_source": {
+            "model_declared_long",
+            "model_estimate_overrun",
+            "generic_observation_threshold",
+        },
         "initial_decision_status": {
             "retry_required",
             "acknowledged",
@@ -1377,6 +1382,8 @@ def project_execution_protocol_telemetry(value: Any) -> dict[str, Any] | None:
         "consecutive_read_only_observations",
         "post_candidate_read_only_observations",
         "convergence_constraint_activation_count",
+        "model_expected_tool_actions",
+        "model_expected_tool_actions_overrun_count",
     }
     allowed = {"schema_version", *enums, *booleans, *counters}
     if set(value) - allowed:
@@ -1391,6 +1398,9 @@ def project_execution_protocol_telemetry(value: Any) -> dict[str, Any] | None:
         "convergence_constraint_activation_count",
         "post_candidate_read_only_observations",
         "mutation_gate_validation_window_open",
+        "long_horizon_activation_source",
+        "model_expected_tool_actions",
+        "model_expected_tool_actions_overrun_count",
     }
     if (
         value.get("schema_version") == "aworld.execution-protocol-telemetry/v1"
@@ -1433,11 +1443,26 @@ def build_execution_protocol_telemetry(context, agent_id: str) -> dict[str, Any]
     )
     if not isinstance(mutation_gate, Mapping):
         mutation_gate = {}
+    owner = state_context(context)
+    runtime_metrics = getattr(owner, "context_info", {}).get(
+        EXECUTION_PROTOCOL_METRICS_KEY
+    )
+    if not isinstance(runtime_metrics, Mapping):
+        runtime_metrics = {}
     telemetry = {
         "schema_version": "aworld.execution-protocol-telemetry/v2",
         "mode": policy.mode.value,
         "phase": state.phase.value,
         "armed": state.long_horizon_armed,
+        "long_horizon_activation_source": runtime_metrics.get(
+            "long_horizon_activation_source"
+        ),
+        "model_expected_tool_actions": runtime_metrics.get(
+            "model_expected_tool_actions"
+        ),
+        "model_expected_tool_actions_overrun_count": runtime_metrics.get(
+            "model_expected_tool_actions_overrun_count"
+        ),
         "legacy_activation_fields_ignored": False,
         "event_count": state.event_count,
         "tool_observation_count": state.tool_observation_count,
@@ -1918,6 +1943,7 @@ def _record_transition_metrics(context, transition: ProtocolTransition) -> None:
     metrics = owner.context_info.get(EXECUTION_PROTOCOL_METRICS_KEY)
     if not isinstance(metrics, dict):
         metrics = {}
+    previously_armed = metrics.get("long_horizon_armed") is True
     action = transition.decision.action.value
     reason = transition.decision.reason.value
     metrics["event_count"] = transition.state.event_count
@@ -1981,6 +2007,14 @@ def _record_transition_metrics(context, transition: ProtocolTransition) -> None:
     metrics["repair_count"] = transition.state.repair_count
     metrics["long_horizon_armed"] = transition.state.long_horizon_armed
     if transition.state.model_execution_profile is not None:
+        expected_tool_actions = (
+            transition.state.model_execution_profile.expected_tool_actions
+        )
+        metrics["model_expected_tool_actions"] = expected_tool_actions
+        metrics["model_expected_tool_actions_overrun_count"] = max(
+            0,
+            transition.state.tool_observation_count - expected_tool_actions,
+        )
         metrics["model_horizon"] = (
             transition.state.model_execution_profile.horizon.value
         )
@@ -1998,6 +2032,25 @@ def _record_transition_metrics(context, transition: ProtocolTransition) -> None:
         metrics["last_delivery_intent"] = (
             transition.state.model_plan_update.delivery_intent.value
         )
+    if transition.state.long_horizon_armed and not previously_armed:
+        latest_horizon = (
+            transition.state.model_plan_update.horizon
+            if transition.state.model_plan_update is not None
+            else transition.state.model_execution_profile.horizon
+            if transition.state.model_execution_profile is not None
+            else None
+        )
+        if latest_horizon is not None and latest_horizon.value == "long":
+            activation_source = "model_declared_long"
+        elif (
+            latest_horizon is not None
+            and latest_horizon.value == "short"
+            and transition.state.model_execution_profile is not None
+        ):
+            activation_source = "model_estimate_overrun"
+        else:
+            activation_source = "generic_observation_threshold"
+        metrics["long_horizon_activation_source"] = activation_source
     metrics["last_action"] = action
     metrics["last_reason"] = reason
     metrics[f"action:{action}"] = int(metrics.get(f"action:{action}", 0) or 0) + 1
