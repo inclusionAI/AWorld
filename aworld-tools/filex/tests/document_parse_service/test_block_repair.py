@@ -9,6 +9,8 @@ import pytest
 from document_parse_service.pdf.block_repair import (
     BlockRepairError,
     StructuredTable,
+    _estimate_evidence_declared,
+    _validated_model_table,
     apply_structured_repair,
     repair_parse_output,
 )
@@ -225,6 +227,46 @@ def test_chart_table_preserves_visible_caption_and_declared_labels() -> None:
 
     assert table.labels == ("Annual results", "Year", "Revenue", "2024")
     assert table.to_html().startswith("<table><caption>Annual results</caption><thead>")
+
+
+def test_chart_retry_cannot_launder_estimate_evidence() -> None:
+    unmarked_estimate = (
+        '{"labels":["Year","Value","2024"],"estimated":true,'
+        '"value_columns":[1],"columns":["Year","Value"],'
+        '"rows":[["2024","42"]]}'
+    )
+    laundered_exact = (
+        '{"labels":["Year","Value","2024"],"estimated":false,'
+        '"value_columns":[1],"columns":["Year","Value"],'
+        '"rows":[["2024","42"]]}'
+    )
+    corrected = (
+        '{"labels":["Year","Value","2024"],"estimated":true,'
+        '"value_columns":[1],"columns":["Year","Value"],'
+        '"rows":[["2024","≈42"]]}'
+    )
+    structured_marked_estimate = (
+        '{"labels":["Year","Value","2024"],"estimated":false,'
+        '"value_columns":[1],"columns":["Year","Value"],'
+        '"rows":[["2024",{"text":"~42"}]]}'
+    )
+
+    assert _estimate_evidence_declared(unmarked_estimate)
+    assert _estimate_evidence_declared(structured_marked_estimate)
+    with pytest.raises(
+        BlockRepairError,
+        match="filex_chart_repair_estimated_value_unverified",
+    ):
+        _validated_model_table(
+            laundered_exact,
+            require_numeric=True,
+            estimate_evidence_seen=True,
+        )
+    assert _validated_model_table(
+        corrected,
+        require_numeric=True,
+        estimate_evidence_seen=True,
+    ).estimated is True
 
 
 def test_chart_table_rejects_declared_label_that_was_not_preserved() -> None:
@@ -1183,8 +1225,29 @@ def test_empty_chart_page_in_multi_page_document_uses_neighbor_page_anchor() -> 
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("second_payload", "expect_repaired"),
+    [
+        (
+            '{"caption":"Estimated chart","labels":["Country","Gender",'
+            '"Value","Germany","Women"],"estimated":true,'
+            '"value_columns":[2],"columns":["Country","Gender","Value"],'
+            '"rows":[["Germany","Women","~42"]]}',
+            True,
+        ),
+        (
+            '{"caption":"Estimated chart","labels":["Country","Gender",'
+            '"Value","Germany","Women"],"estimated":false,'
+            '"value_columns":[2],"columns":["Country","Gender","Value"],'
+            '"rows":[["Germany","Women","42"]]}',
+            False,
+        ),
+    ],
+)
 async def test_axis_bounded_estimated_chart_value_is_applied_with_marker(
     tmp_path: Path,
+    second_payload: str,
+    expect_repaired: bool,
 ) -> None:
     @dataclass
     class _Response:
@@ -1200,7 +1263,9 @@ async def test_axis_bounded_estimated_chart_value_is_applied_with_marker(
                 '{"caption":"Estimated chart","labels":["Country","Gender",'
                 '"Value","Germany","Women"],"estimated":true,'
                 '"value_columns":[2],"columns":["Country","Gender","Value"],'
-                '"rows":[["Germany","Women","~42"]]}'
+                '"rows":[["Germany","Women","42"]]}'
+                if self.calls == 1
+                else second_payload
             )
 
     def render(_source_path, **kwargs):
@@ -1260,6 +1325,15 @@ async def test_axis_bounded_estimated_chart_value_is_applied_with_marker(
         crop_renderer=render,
     )
 
+    if not expect_repaired:
+        assert result["repaired"] == []
+        assert result["failures"][0]["reason"] == (
+            "filex_chart_repair_estimated_value_unverified"
+        )
+        assert result["document"] == "Chart prose"
+        assert backend.calls == 2
+        return
+
     assert result["failures"] == []
     assert result["repaired"] == [
         {
@@ -1274,7 +1348,7 @@ async def test_axis_bounded_estimated_chart_value_is_applied_with_marker(
     repaired_item = result["layout"]["layout_pages"][0]["items"][0]
     assert repaired_item["html"] in result["document"]
     assert repaired_item["filex_chart_value_columns"] == [2]
-    assert backend.calls == 1
+    assert backend.calls == 2
 
 
 @pytest.mark.asyncio

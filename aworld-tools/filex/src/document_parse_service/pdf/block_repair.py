@@ -244,6 +244,54 @@ class StructuredTable:
         )
 
 
+def _estimate_evidence_declared(content: str) -> bool:
+    """Detect an estimate flag or marker without trusting the response shape."""
+
+    value = content.strip()
+    if value.startswith("```"):
+        value = _FENCE.sub("", value).strip()
+    try:
+        payload = json.loads(value)
+    except (json.JSONDecodeError, TypeError, ValueError, RecursionError):
+        return False
+    if not isinstance(payload, dict):
+        return False
+    if payload.get("estimated") is True:
+        return True
+    rows = payload.get("rows")
+
+    def cell_declares_estimate(cell: Any) -> bool:
+        if isinstance(cell, str):
+            text = cell
+        elif isinstance(cell, dict) and isinstance(cell.get("text"), str):
+            text = cell["text"]
+        else:
+            return False
+        return text.strip().startswith(("~", "≈"))
+
+    return isinstance(rows, list) and any(
+        cell_declares_estimate(cell)
+        for row in rows
+        if isinstance(row, list)
+        for cell in row
+    )
+
+
+def _validated_model_table(
+    content: str,
+    *,
+    require_numeric: bool,
+    estimate_evidence_seen: bool = False,
+) -> StructuredTable:
+    table = StructuredTable.from_model_output(
+        content,
+        require_numeric=require_numeric,
+    )
+    if require_numeric and estimate_evidence_seen and not table.estimated:
+        raise BlockRepairError("filex_chart_repair_estimated_value_unverified")
+    return table
+
+
 def _cell_text(value: Any) -> str:
     if value is None:
         return ""
@@ -1304,6 +1352,7 @@ async def repair_parse_output(
                 prompt = _TABLE_PROMPT if kind == "tables" else _CHART_PROMPT
                 table = None
                 last_reason = "filex_block_repair_failed"
+                estimate_evidence_seen = False
                 for attempt in range(MAX_REPAIR_ATTEMPTS):
                     remaining_seconds = (
                         deadline - loop.time() if deadline is not None else None
@@ -1332,6 +1381,13 @@ async def repair_parse_output(
                             "\nCORRECTION: the prior response violated the JSON or rectangular "
                             "table contract. Read the image again and return only valid JSON."
                         )
+                        if estimate_evidence_seen:
+                            attempt_prompt += (
+                                " The prior response disclosed a visually estimated value; "
+                                "retain estimated=true and a ~ or ≈ marker on every estimated "
+                                "cell. Do not launder it into an unmarked exact value."
+                            )
+                    response_text = ""
                     try:
                         response = await asyncio.wait_for(
                             backend.transcribe(
@@ -1347,13 +1403,22 @@ async def repair_parse_output(
                             ),
                             timeout=call_timeout,
                         )
-                        table = StructuredTable.from_model_output(
-                            str(getattr(response, "text", "") or ""),
+                        response_text = str(getattr(response, "text", "") or "")
+                        table = _validated_model_table(
+                            response_text,
                             require_numeric=kind == "charts",
+                            estimate_evidence_seen=estimate_evidence_seen,
                         )
                         break
                     except BlockRepairError as exc:
                         last_reason = str(exc)
+                        if (
+                            kind == "charts"
+                            and last_reason
+                            == "filex_chart_repair_estimated_value_unverified"
+                            and _estimate_evidence_declared(response_text)
+                        ):
+                            estimate_evidence_seen = True
                     except TimeoutError:
                         last_reason = "filex_block_repair_backend_timeout"
                     except Exception:
