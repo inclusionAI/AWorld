@@ -4,6 +4,7 @@ import json
 import pytest
 
 from aworld.core.execution_protocol import (
+    ActionSemanticReceipt,
     action_signature,
     ConvergenceStage,
     ControllerAction,
@@ -111,6 +112,236 @@ def _plan_update(
     )
 
 
+def _semantic_receipt(
+    *,
+    effect: str,
+    target: str | None,
+    capability: str = "workspace.execute",
+    executed: bool | None = None,
+    succeeded: bool | None = None,
+    timed_out: bool | None = None,
+    validation_kind: str | None = None,
+    declared: bool | None = None,
+) -> ActionSemanticReceipt:
+    return ActionSemanticReceipt(
+        capability_aliases=(capability,),
+        effect=effect,
+        target_ids=((target,) if target is not None else ()),
+        executed=executed,
+        succeeded=succeeded,
+        timed_out=timed_out,
+        validation_kind=validation_kind,
+        declared_deliverable_targeted=declared,
+    )
+
+
+def _semantic_plan(*, intent: str, receipt: ActionSemanticReceipt) -> ModelPlanUpdate:
+    return replace(_plan_update(intent=intent), next_action_semantics=receipt)
+
+
+def _semantic_tool(receipt: ActionSemanticReceipt, **kwargs) -> ExecutionProtocolEvent:
+    kwargs.setdefault("observed_action_names", ())
+    kwargs.setdefault("observed_action_signatures", ())
+    kwargs["observed_action_semantics"] = (receipt,)
+    return _tool(**kwargs)
+
+
+def test_semantically_equivalent_commands_on_declared_target_align() -> None:
+    target = "sha256:" + "1" * 64
+    policy = ExecutionProtocolPolicy(mode="guide")
+    planned = transition_execution_protocol(
+        _armed_state(),
+        ExecutionProtocolEvent(
+            kind=EventKind.MODEL_PLAN_UPDATE,
+            model_plan_update=_semantic_plan(
+                intent="produce_candidate",
+                receipt=_semantic_receipt(
+                    effect="mutating", target=target, declared=True
+                ),
+            ),
+        ),
+        policy,
+    )
+
+    observed = transition_execution_protocol(
+        planned.state,
+        _semantic_tool(
+            _semantic_receipt(
+                effect="mutating",
+                target=target,
+                executed=True,
+                succeeded=True,
+                timed_out=False,
+                declared=True,
+            ),
+            candidate_present=True,
+            candidate_advanced=True,
+        ),
+        policy,
+    )
+
+    assert observed.state.last_action_alignment is NextActionAlignment.MATCHED
+    assert observed.state.action_alignment_match_count == 1
+
+
+@pytest.mark.parametrize(
+    ("capability", "target"),
+    [
+        ("filesystem.write", "sha256:" + "1" * 64),
+        ("workspace.execute", "sha256:" + "2" * 64),
+    ],
+)
+def test_semantic_alignment_rejects_unrelated_capability_or_target(
+    capability, target
+) -> None:
+    declared_target = "sha256:" + "1" * 64
+    policy = ExecutionProtocolPolicy(mode="guide")
+    planned = transition_execution_protocol(
+        _armed_state(),
+        ExecutionProtocolEvent(
+            kind=EventKind.MODEL_PLAN_UPDATE,
+            model_plan_update=_semantic_plan(
+                intent="produce_candidate",
+                receipt=_semantic_receipt(
+                    effect="mutating", target=declared_target, declared=True
+                ),
+            ),
+        ),
+        policy,
+    )
+
+    observed = transition_execution_protocol(
+        planned.state,
+        _semantic_tool(
+            _semantic_receipt(
+                capability=capability,
+                effect="mutating",
+                target=target,
+                executed=True,
+                succeeded=True,
+                timed_out=False,
+                declared=target == declared_target,
+            ),
+            candidate_present=False,
+            candidate_advanced=False,
+        ),
+        policy,
+    )
+
+    assert observed.state.last_action_alignment is NextActionAlignment.MISMATCHED
+
+
+@pytest.mark.parametrize("receipt", [None, "unknown"])
+def test_missing_or_unknown_semantic_receipt_is_unobservable(receipt) -> None:
+    target = "sha256:" + "3" * 64
+    policy = ExecutionProtocolPolicy(mode="guide")
+    planned = transition_execution_protocol(
+        _armed_state(),
+        ExecutionProtocolEvent(
+            kind=EventKind.MODEL_PLAN_UPDATE,
+            model_plan_update=_semantic_plan(
+                intent="continue_exploration",
+                receipt=_semantic_receipt(effect="read_only", target=target),
+            ),
+        ),
+        policy,
+    )
+    semantics = ()
+    if receipt == "unknown":
+        semantics = (
+            _semantic_receipt(
+                effect="unknown",
+                target=target,
+                executed=True,
+                succeeded=True,
+                timed_out=False,
+            ),
+        )
+
+    observed = transition_execution_protocol(
+        planned.state,
+        _tool(
+            observed_action_names=(),
+            observed_action_signatures=(),
+            observed_action_semantics=semantics,
+            new_information_observed=True,
+        ),
+        policy,
+    )
+
+    assert observed.state.last_action_alignment is NextActionAlignment.UNOBSERVABLE
+    assert observed.state.action_alignment_match_count == 0
+    assert observed.state.action_alignment_mismatch_count == 0
+
+
+@pytest.mark.parametrize("timed_out", [False, True])
+def test_failed_or_timed_out_semantic_action_never_matches(timed_out) -> None:
+    target = "sha256:" + "b" * 64
+    policy = ExecutionProtocolPolicy(mode="guide")
+    planned = transition_execution_protocol(
+        _armed_state(),
+        ExecutionProtocolEvent(
+            kind=EventKind.MODEL_PLAN_UPDATE,
+            model_plan_update=_semantic_plan(
+                intent="continue_exploration",
+                receipt=_semantic_receipt(effect="read_only", target=target),
+            ),
+        ),
+        policy,
+    )
+
+    observed = transition_execution_protocol(
+        planned.state,
+        _semantic_tool(
+            _semantic_receipt(
+                effect="read_only",
+                target=target,
+                executed=True,
+                succeeded=False,
+                timed_out=timed_out,
+            ),
+            new_information_observed=True,
+        ),
+        policy,
+    )
+
+    assert observed.state.last_action_alignment is NextActionAlignment.MISMATCHED
+    assert observed.state.action_alignment_match_count == 0
+
+
+def test_exploration_semantics_require_fresh_information() -> None:
+    target = "sha256:" + "c" * 64
+    policy = ExecutionProtocolPolicy(mode="guide")
+    planned = transition_execution_protocol(
+        _armed_state(),
+        ExecutionProtocolEvent(
+            kind=EventKind.MODEL_PLAN_UPDATE,
+            model_plan_update=_semantic_plan(
+                intent="continue_exploration",
+                receipt=_semantic_receipt(effect="read_only", target=target),
+            ),
+        ),
+        policy,
+    )
+
+    observed = transition_execution_protocol(
+        planned.state,
+        _semantic_tool(
+            _semantic_receipt(
+                effect="read_only",
+                target=target,
+                executed=True,
+                succeeded=True,
+                timed_out=False,
+            ),
+            new_information_observed=False,
+        ),
+        policy,
+    )
+
+    assert observed.state.last_action_alignment is NextActionAlignment.MISMATCHED
+
+
 def test_missing_candidate_without_mutation_requests_model_owned_delivery_decision():
     policy = ExecutionProtocolPolicy(
         mode="guide",
@@ -175,13 +406,25 @@ def test_delivery_debt_allows_explicit_exploration_deferral_and_tracks_alignment
         requested.state,
         ExecutionProtocolEvent(
             kind=EventKind.MODEL_PLAN_UPDATE,
-            model_plan_update=_plan_update(intent="continue_exploration"),
+            model_plan_update=_semantic_plan(
+                intent="continue_exploration",
+                receipt=_semantic_receipt(
+                    effect="read_only", target="sha256:" + "4" * 64
+                ),
+            ),
         ),
         policy,
     )
     observed = transition_execution_protocol(
         deferred.state,
-        _tool(
+        _semantic_tool(
+            _semantic_receipt(
+                effect="read_only",
+                target="sha256:" + "4" * 64,
+                executed=True,
+                succeeded=True,
+                timed_out=False,
+            ),
             public_deliverable_declared=True,
             candidate_present=False,
             workspace_mutated=False,
@@ -214,13 +457,28 @@ def test_declared_candidate_action_mismatch_requests_fresh_decision():
         _armed_state(),
         ExecutionProtocolEvent(
             kind=EventKind.MODEL_PLAN_UPDATE,
-            model_plan_update=_plan_update(intent="produce_candidate"),
+            model_plan_update=_semantic_plan(
+                intent="produce_candidate",
+                receipt=_semantic_receipt(
+                    effect="mutating",
+                    target="sha256:" + "5" * 64,
+                    declared=True,
+                ),
+            ),
         ),
         policy,
     )
     mismatched = transition_execution_protocol(
         planned.state,
-        _tool(
+        _semantic_tool(
+            _semantic_receipt(
+                effect="mutating",
+                target="sha256:" + "6" * 64,
+                executed=True,
+                succeeded=True,
+                timed_out=False,
+                declared=False,
+            ),
             public_deliverable_declared=True,
             candidate_present=False,
             workspace_mutated=False,
@@ -242,13 +500,28 @@ def test_declared_candidate_action_mismatch_requests_fresh_decision():
         mismatched.state,
         ExecutionProtocolEvent(
             kind=EventKind.MODEL_PLAN_UPDATE,
-            model_plan_update=_plan_update(intent="produce_candidate"),
+            model_plan_update=_semantic_plan(
+                intent="produce_candidate",
+                receipt=_semantic_receipt(
+                    effect="mutating",
+                    target="sha256:" + "5" * 64,
+                    declared=True,
+                ),
+            ),
         ),
         policy,
     )
     repeated = transition_execution_protocol(
         replanned.state,
-        _tool(
+        _semantic_tool(
+            _semantic_receipt(
+                effect="mutating",
+                target="sha256:" + "6" * 64,
+                executed=True,
+                succeeded=True,
+                timed_out=False,
+                declared=False,
+            ),
             candidate_present=False,
             candidate_advanced=False,
             observed_action_names=("terminal",),
@@ -267,9 +540,13 @@ def test_exploration_alignment_requires_the_declared_tool_identity():
         _armed_state(),
         ExecutionProtocolEvent(
             kind=EventKind.MODEL_PLAN_UPDATE,
-            model_plan_update=_plan_update(
+            model_plan_update=_semantic_plan(
                 intent="continue_exploration",
-                tool="filesystem__read_file",
+                receipt=_semantic_receipt(
+                    capability="filesystem.read",
+                    effect="read_only",
+                    target="sha256:" + "7" * 64,
+                ),
             ),
         ),
         policy,
@@ -277,7 +554,15 @@ def test_exploration_alignment_requires_the_declared_tool_identity():
 
     different_action = transition_execution_protocol(
         planned.state,
-        _tool(
+        _semantic_tool(
+            _semantic_receipt(
+                capability="workspace.execute",
+                effect="read_only",
+                target="sha256:" + "7" * 64,
+                executed=True,
+                succeeded=True,
+                timed_out=False,
+            ),
             new_information_observed=True,
             observed_action_names=("terminal", "terminal__run_code"),
         ),
@@ -290,7 +575,7 @@ def test_exploration_alignment_requires_the_declared_tool_identity():
     )
 
 
-def test_alignment_rejects_same_tool_with_different_arguments():
+def test_exact_argument_signature_is_compatibility_telemetry_only():
     policy = ExecutionProtocolPolicy(mode="guide")
     planned = transition_execution_protocol(
         _armed_state(),
@@ -313,26 +598,40 @@ def test_alignment_rejects_same_tool_with_different_arguments():
         policy,
     )
 
-    assert different_arguments.decision.reason is DecisionReason.NEXT_ACTION_MISMATCH
+    assert different_arguments.decision.reason is DecisionReason.OBSERVATION_RECORDED
     assert (
         different_arguments.state.last_action_alignment
-        is NextActionAlignment.MISMATCHED
+        is NextActionAlignment.UNOBSERVABLE
     )
 
 
-def test_declared_candidate_action_requires_observed_candidate_not_unrelated_mutation():
+def test_declared_candidate_action_requires_observed_candidate_progress():
+    target = "sha256:" + "8" * 64
     policy = ExecutionProtocolPolicy(mode="guide")
     planned = transition_execution_protocol(
         _armed_state(),
         ExecutionProtocolEvent(
             kind=EventKind.MODEL_PLAN_UPDATE,
-            model_plan_update=_plan_update(intent="produce_candidate"),
+            model_plan_update=_semantic_plan(
+                intent="produce_candidate",
+                receipt=_semantic_receipt(
+                    effect="mutating", target=target, declared=True
+                ),
+            ),
         ),
         policy,
     )
     matched = transition_execution_protocol(
         planned.state,
-        _tool(
+        _semantic_tool(
+            _semantic_receipt(
+                effect="mutating",
+                target=target,
+                executed=True,
+                succeeded=True,
+                timed_out=False,
+                declared=True,
+            ),
             workspace_mutated=True,
             candidate_present=False,
             observed_action_names=("terminal",),
@@ -345,16 +644,29 @@ def test_declared_candidate_action_requires_observed_candidate_not_unrelated_mut
     assert matched.state.action_alignment_match_count == 0
 
     replanned = transition_execution_protocol(
-        matched.state,
+        _armed_state(),
         ExecutionProtocolEvent(
             kind=EventKind.MODEL_PLAN_UPDATE,
-            model_plan_update=_plan_update(intent="produce_candidate"),
+            model_plan_update=_semantic_plan(
+                intent="produce_candidate",
+                receipt=_semantic_receipt(
+                    effect="mutating", target=target, declared=True
+                ),
+            ),
         ),
         policy,
     )
     candidate = transition_execution_protocol(
         replanned.state,
-        _tool(
+        _semantic_tool(
+            _semantic_receipt(
+                effect="mutating",
+                target=target,
+                executed=True,
+                succeeded=True,
+                timed_out=False,
+                declared=True,
+            ),
             workspace_mutated=True,
             candidate_present=True,
             candidate_advanced=True,
@@ -663,13 +975,28 @@ def test_explicit_zero_replan_limit_suppresses_all_new_checkpoint_paths():
         _armed_state(),
         ExecutionProtocolEvent(
             kind=EventKind.MODEL_PLAN_UPDATE,
-            model_plan_update=_plan_update(intent="produce_candidate"),
+            model_plan_update=_semantic_plan(
+                intent="produce_candidate",
+                receipt=_semantic_receipt(
+                    effect="mutating",
+                    target="sha256:" + "9" * 64,
+                    declared=True,
+                ),
+            ),
         ),
         policy,
     )
     mismatch = transition_execution_protocol(
         planned.state,
-        _tool(
+        _semantic_tool(
+            _semantic_receipt(
+                effect="mutating",
+                target="sha256:" + "a" * 64,
+                executed=True,
+                succeeded=True,
+                timed_out=False,
+                declared=False,
+            ),
             candidate_present=False,
             observed_action_names=("terminal",),
         ),

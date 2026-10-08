@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from copy import deepcopy
 from dataclasses import replace
+import json
 import os
 import re
 import secrets
@@ -17,6 +18,7 @@ from typing import Any, Mapping
 
 from aworld.core.context.execution_state import state_context
 from aworld.core.execution_protocol import (
+    ActionSemanticReceipt,
     ConvergenceStage,
     ControllerAction,
     DeliveryIntent,
@@ -2186,6 +2188,21 @@ def record_tool_protocol_event(
     # Upgrade persisted v1 fail-open counters before processing another Tool
     # observation so a legacy task cannot increment requested replans again.
     _activate_convergence_after_unapplied_limit(context, agent_id)
+    observed_action_semantics: list[ActionSemanticReceipt] = []
+    raw_action_semantics = semantic_state.get("observed_action_semantics") or ()
+    if isinstance(raw_action_semantics, (list, tuple)):
+        for value in raw_action_semantics[:16]:
+            try:
+                receipt = (
+                    value
+                    if isinstance(value, ActionSemanticReceipt)
+                    else ActionSemanticReceipt.from_dict(value)
+                )
+            except (TypeError, ValueError):
+                continue
+            if receipt.executed is None:
+                continue
+            observed_action_semantics.append(receipt)
     event = ExecutionProtocolEvent(
         kind=EventKind.TOOL_OBSERVATION,
         repetition_count=int(semantic_state.get("repetition_count", 0) or 0),
@@ -2232,6 +2249,7 @@ def record_tool_protocol_event(
         observed_action_signatures=tuple(
             semantic_state.get("observed_action_signatures") or ()
         ),
+        observed_action_semantics=tuple(observed_action_semantics),
         current_step=int(semantic_state.get("current_agent_step", 0) or 0),
         remaining_seconds=_remaining_task_seconds(context),
         operation_hash=semantic_state.get("operation_hash"),
@@ -2582,10 +2600,37 @@ def record_model_plan_update(
     if policy.mode is ProtocolMode.OFF:
         return None
     try:
-        update = ModelPlanUpdate.from_model_mapping(value)
+        update = _model_plan_update_with_semantics(context, value)
     except (TypeError, ValueError, KeyError):
         return None
     return _record_validated_model_plan_update(context, agent_id, update)
+
+
+def _model_plan_update_with_semantics(
+    context,
+    value: Mapping[str, Any],
+) -> ModelPlanUpdate:
+    """Validate model data, then discard raw args behind a typed receipt."""
+
+    update = ModelPlanUpdate.from_model_mapping(value)
+    tool_name = update.next_action_tool
+    raw_arguments = value.get("next_action_arguments")
+    if tool_name is None or not isinstance(raw_arguments, str):
+        return update
+    parsed_arguments = json.loads(raw_arguments)
+    if not isinstance(parsed_arguments, dict):
+        return update
+    from aworld.sandbox.tool_observation import (
+        build_planned_action_semantic_receipt,
+    )
+
+    semantics = build_planned_action_semantic_receipt(
+        context=context,
+        tool_name=tool_name,
+        arguments=parsed_arguments,
+        delivery_intent=update.delivery_intent.value,
+    )
+    return replace(update, next_action_semantics=semantics)
 
 
 def _record_validated_model_plan_update(
@@ -2652,7 +2697,7 @@ def record_model_decision_boundary(
         boundary_state.replan_requested_count if boundary == "replan" else 0
     )
     try:
-        update = ModelPlanUpdate.from_model_mapping(plan_update)
+        update = _model_plan_update_with_semantics(context, plan_update)
         profile = (
             ModelExecutionProfile.from_mapping(execution_profile)
             if boundary == "initial"

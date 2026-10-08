@@ -4,6 +4,7 @@ import json
 import pytest
 
 from aworld.core.execution_protocol import (
+    ActionSemanticReceipt,
     action_signature,
     ConvergenceStage,
     DeliveryIntent,
@@ -58,6 +59,65 @@ def test_model_plan_update_has_a_strict_bounded_round_trip():
     )
     assert "pytest -q" not in json.dumps(persisted)
     assert ModelPlanUpdate.from_persisted_mapping(persisted) == update
+
+
+def test_action_semantic_receipt_is_bounded_and_never_persists_raw_paths() -> None:
+    target = "sha256:" + "a" * 64
+    receipt = ActionSemanticReceipt(
+        capability_aliases=("workspace.execute", "terminal.run_code"),
+        effect="mutating",
+        target_ids=(target,),
+        executed=None,
+        succeeded=None,
+        timed_out=None,
+        validation_kind=None,
+        declared_deliverable_targeted=True,
+    )
+    update = replace(
+        ModelPlanUpdate.from_model_mapping(_plan_update()),
+        next_action_semantics=receipt,
+    )
+
+    persisted = update.to_dict()
+
+    assert persisted["next_action_semantics"]["target_ids"] == [target]
+    assert "/app/result.txt" not in json.dumps(persisted)
+    assert ModelPlanUpdate.from_persisted_mapping(persisted) == update
+
+
+def test_legacy_persisted_model_plan_update_loads_without_semantic_receipt() -> None:
+    persisted = ModelPlanUpdate.from_model_mapping(_plan_update()).to_dict()
+    persisted.pop("next_action_semantics", None)
+
+    restored = ModelPlanUpdate.from_persisted_mapping(persisted)
+
+    assert restored.next_action_semantics is None
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"target_ids": ("/app/raw.txt",)},
+        {"capability_aliases": ("x" * 129,)},
+        {"effect": "maybe"},
+        {"validation_kind": "x" * 129},
+    ],
+)
+def test_action_semantic_receipt_rejects_unbounded_or_raw_evidence(overrides) -> None:
+    values = {
+        "capability_aliases": ("workspace.execute",),
+        "effect": "read_only",
+        "target_ids": ("sha256:" + "b" * 64,),
+        "executed": True,
+        "succeeded": True,
+        "timed_out": False,
+        "validation_kind": "artifact_inspection",
+        "declared_deliverable_targeted": True,
+    }
+    values.update(overrides)
+
+    with pytest.raises(ValueError):
+        ActionSemanticReceipt(**values)
 
 
 def test_model_plan_update_rejects_a_model_supplied_action_signature():

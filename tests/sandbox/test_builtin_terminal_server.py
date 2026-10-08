@@ -8,6 +8,7 @@ import time
 
 import pytest
 
+from aworld.sandbox.tool_servers.terminal.src import terminal as terminal_module
 from aworld.sandbox.tool_servers.terminal.src.terminal import (
     CommandResult,
     _BoundedStreamCapture,
@@ -138,7 +139,7 @@ async def test_run_code_emits_compact_terminal_execution_receipt() -> None:
     assert payload["success"] is True
     assert receipt == {
         "schema_version": "aworld.terminal-execution-receipt/v2",
-        "parser_version": 2,
+        "parser_version": 3,
         "language_contract_version": 1,
         "command_sha256": terminal_command_sha256(command),
         "requested_language": "shell",
@@ -182,6 +183,45 @@ async def test_run_code_executes_explicit_raw_python_without_shell_inference() -
     assert receipt["effective_language"] == "python"
     assert receipt["language_contract_version"] == 1
     assert receipt["effect"] == "read_only"
+
+
+@pytest.mark.asyncio
+async def test_run_code_emits_authoritative_nested_python_heredoc_receipt(
+    tmp_path: Path,
+) -> None:
+    command = """python3 <<'PY'\nfrom pathlib import Path\nPath('result.txt').write_text('done')\nPY\n"""
+
+    response = await run_code(None, command, timeout=10, cwd=str(tmp_path))
+    payload = json.loads(response.text)
+    receipt = payload["metadata"]["terminal_execution_receipt"]
+
+    assert payload["success"] is True
+    assert receipt["effect"] == "mutating"
+    assert receipt["write_paths"] == ["result.txt"]
+    assert receipt["mutation_observed"] is True
+    assert receipt["nested_language_evidence"][0]["language"] == "python"
+    assert command not in json.dumps(receipt)
+    assert (tmp_path / "result.txt").read_text(encoding="utf-8") == "done"
+
+
+@pytest.mark.asyncio
+async def test_run_code_keeps_static_python_heredoc_read_authoritative(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(terminal_module, "workspace", tmp_path)
+    (tmp_path / "input.txt").write_text("stable", encoding="utf-8")
+    command = """python3 <<'PY'\nfrom pathlib import Path\nprint(Path('input.txt').read_text())\nPY\n"""
+
+    response = await run_code(None, command, timeout=10, cwd=str(tmp_path))
+    payload = json.loads(response.text)
+    receipt = payload["metadata"]["terminal_execution_receipt"]
+
+    assert payload["success"] is True
+    assert receipt["effect"] == "read_only"
+    assert receipt["effect_source"] == "trusted_command_contract"
+    assert receipt["read_paths"] == ["input.txt"]
+    assert receipt["nested_language_evidence"][0]["language"] == "python"
 
 
 @pytest.mark.asyncio

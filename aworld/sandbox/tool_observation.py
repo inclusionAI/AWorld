@@ -12,10 +12,14 @@ from copy import deepcopy
 from dataclasses import dataclass
 import hashlib
 import json
+import posixpath
 from pathlib import Path
+import re
+import shlex
 from typing import Any, Mapping, Sequence
 
 from aworld.core.common import ActionResult
+from aworld.core.execution_protocol.models import ActionSemanticReceipt
 from aworld.sandbox.terminal_receipt import (
     TERMINAL_CACHEABLE_EFFECT_SOURCES,
     TERMINAL_EFFECTS,
@@ -31,6 +35,7 @@ from aworld.utils.serialized_util import to_serializable
 
 
 OBSERVATION_SCHEMA = "aworld.sandbox-tool-observation/v1"
+ACTION_SEMANTIC_RECEIPT_KEY = "action_semantic_receipt"
 _MAX_CACHE_ENTRIES = 256
 # Exact replay keeps the original Tool body in the Sandbox control plane so a
 # checkpoint that discarded it can be hydrated without executing the Tool
@@ -96,6 +101,297 @@ def canonical_tool_identity(action: Any) -> tuple[str, str]:
     if tool == "mcp" and "__" in operation:
         tool, operation = operation.split("__", 1)
     return tool, operation
+
+
+def semantic_target_sha256(path: str) -> str:
+    """Hash one lexical workspace target without resolving or retaining it."""
+
+    if not isinstance(path, str) or not path.strip() or len(path) > 4096:
+        raise ValueError("semantic target must be a bounded nonempty path")
+    normalized = posixpath.normpath(path.strip().replace("\\", "/"))
+    if normalized.startswith("./"):
+        normalized = normalized[2:]
+    return (
+        "sha256:"
+        + hashlib.sha256(
+            ("workspace-target/v1\0" + normalized).encode("utf-8")
+        ).hexdigest()
+    )
+
+
+def _semantic_tool_parts(action: Any) -> tuple[str, str]:
+    tool, operation = canonical_tool_identity(action)
+    if not operation and "__" in tool:
+        tool, operation = tool.split("__", 1)
+    return tool.strip(), operation.strip()
+
+
+def _semantic_capability_aliases(
+    action: Any,
+    *,
+    effect: str,
+) -> tuple[str, ...]:
+    tool, operation = _semantic_tool_parts(action)
+    normalized_tool = tool.casefold().replace("_", "-")
+    normalized_operation = operation.casefold().replace("_", "-")
+    aliases: list[str] = []
+    if normalized_tool and normalized_operation:
+        aliases.append(f"{normalized_tool}.{normalized_operation}")
+    terminal_capability = normalized_tool in {
+        "terminal",
+        "terminal-server",
+        "docker",
+        "docker-sandbox",
+        "docker-sandbox-server",
+    } and normalized_operation in {"execute", "run-code"}
+    workspace_capability = terminal_capability or normalized_tool in {
+        "filesystem",
+        "docker",
+        "docker-sandbox",
+        "docker-sandbox-server",
+    }
+    if terminal_capability:
+        aliases.append("workspace.execute")
+    if workspace_capability and effect == "read_only":
+        aliases.append("workspace.read")
+    elif workspace_capability and effect == "mutating":
+        aliases.append("workspace.mutate")
+    elif workspace_capability and effect == "validation":
+        aliases.append("workspace.validate")
+    return tuple(dict.fromkeys(aliases))[:8] or ("unknown.capability",)
+
+
+def _completion_contract(context: Any) -> Any:
+    contract = getattr(context, "completion_contract", None)
+    if contract is not None:
+        return contract
+    owner_resolver = getattr(context, "_task_runtime_registry_owner", None)
+    owner = owner_resolver() if callable(owner_resolver) else None
+    return getattr(owner, "completion_contract", None)
+
+
+def _declared_target_ids(context: Any) -> frozenset[str]:
+    contract = _completion_contract(context)
+    targets: set[str] = set()
+    for requirement in getattr(contract, "required_artifacts", ()) or ():
+        path = getattr(requirement, "path", None)
+        if not isinstance(path, str):
+            continue
+        try:
+            targets.add(semantic_target_sha256(path))
+        except ValueError:
+            continue
+    owners = [context]
+    owner_resolver = getattr(context, "_task_runtime_registry_owner", None)
+    owner = owner_resolver() if callable(owner_resolver) else None
+    if owner is not None and owner is not context:
+        owners.append(owner)
+    for candidate_owner in owners:
+        context_info = getattr(candidate_owner, "context_info", None)
+        public_contract = (
+            context_info.get("public_deliverable_contract")
+            if isinstance(context_info, Mapping)
+            else None
+        )
+        if (
+            not isinstance(public_contract, Mapping)
+            or public_contract.get("schema_version")
+            != "aworld.public-deliverables/v1"
+            or public_contract.get("authority") != "public_task_advisory"
+            or public_contract.get("source") != "public_task_text"
+        ):
+            continue
+        artifacts = (
+            public_contract.get("artifacts")
+            if isinstance(public_contract, Mapping)
+            else None
+        )
+        if not isinstance(artifacts, list) or len(artifacts) > 16:
+            continue
+        for artifact in artifacts:
+            if (
+                not isinstance(artifact, Mapping)
+                or artifact.get("kind") != "file"
+                or artifact.get("authority") != "public_task_advisory"
+            ):
+                continue
+            path = artifact.get("path") if isinstance(artifact, Mapping) else None
+            if not isinstance(path, str):
+                continue
+            try:
+                targets.add(semantic_target_sha256(path))
+            except ValueError:
+                continue
+    return frozenset(targets)
+
+
+def _registered_validation_kind(
+    context: Any,
+    *,
+    code: str | None,
+) -> str | None:
+    if not isinstance(code, str) or not code.strip():
+        return None
+    contract = _completion_contract(context)
+    for validation in getattr(contract, "validation_commands", ()) or ():
+        argv = tuple(getattr(validation, "argv", ()) or ())
+        if not argv:
+            continue
+        registered = (
+            str(argv[-1])
+            if len(argv) >= 2 and argv[-2] == "-c"
+            else shlex.join(str(item) for item in argv)
+        )
+        if code.strip() != registered.strip():
+            continue
+        command_id = str(getattr(validation, "command_id", "") or "")
+        return "registered:" + hashlib.sha256(command_id.encode("utf-8")).hexdigest()
+    return None
+
+
+def _action_target_paths(
+    action: Any,
+    *,
+    terminal_receipt: Mapping[str, Any] | None = None,
+) -> tuple[str, ...]:
+    if terminal_receipt is not None:
+        values = (
+            *(terminal_receipt.get("read_paths") or ()),
+            *(terminal_receipt.get("write_paths") or ()),
+        )
+        return tuple(value for value in values if isinstance(value, str))[:16]
+    tool, operation = _semantic_tool_parts(action)
+    params = _value(action, "params", {})
+    params = params if isinstance(params, Mapping) else {}
+    normalized_tool = tool.casefold().replace("_", "-")
+    if normalized_tool in _TERMINAL_CAPABILITY_TOOLS and operation in {
+        "execute",
+        "run_code",
+    }:
+        code = params.get("code", params.get("command"))
+        language = params.get("language", "shell")
+        if isinstance(code, str) and language in TERMINAL_LANGUAGES:
+            plan = plan_terminal_execution(code, language=language)
+            return (*plan.read_paths, *plan.write_paths)[:16]
+        return ()
+    values: list[str] = []
+    for key in ("path", "source", "destination", "target", "file"):
+        value = params.get(key)
+        if isinstance(value, str):
+            values.append(value)
+    return tuple(dict.fromkeys(values))[:16]
+
+
+def _target_ids(paths: Sequence[str]) -> tuple[str, ...]:
+    identities: list[str] = []
+    for path in paths:
+        try:
+            identity = semantic_target_sha256(path)
+        except ValueError:
+            continue
+        if identity not in identities:
+            identities.append(identity)
+    return tuple(identities[:16])
+
+
+def build_planned_action_semantic_receipt(
+    *,
+    context: Any,
+    tool_name: str,
+    arguments: Mapping[str, Any],
+    delivery_intent: str,
+) -> ActionSemanticReceipt:
+    """Derive path-free planned semantics before raw model arguments vanish."""
+
+    action = {"tool_name": tool_name, "action_name": "", "params": arguments}
+    tool, operation = _semantic_tool_parts(action)
+    action = {"tool_name": tool, "action_name": operation, "params": arguments}
+    fallback = classify_tool_effect(action)
+    code = arguments.get("code", arguments.get("command"))
+    validation_kind = _registered_validation_kind(
+        context,
+        code=code if isinstance(code, str) else None,
+    )
+    paths = _action_target_paths(action)
+    target_ids = _target_ids(paths)
+    declared_targets = _declared_target_ids(context)
+    declared = bool(declared_targets.intersection(target_ids)) if target_ids else False
+    effect = fallback.effect
+    normalized_tool = tool.casefold().replace("_", "-")
+    normalized_operation = operation.casefold().replace("-", "_")
+    if (
+        normalized_tool in _TERMINAL_CAPABILITY_TOOLS
+        and normalized_operation in {"execute", "run_code"}
+        and isinstance(code, str)
+    ):
+        language = arguments.get("language", "shell")
+        if language in TERMINAL_LANGUAGES:
+            effect = plan_terminal_execution(code, language=language).effect
+    if validation_kind is not None:
+        effect = "validation"
+    elif delivery_intent == "validate_candidate" and effect == "read_only" and declared:
+        validation_kind = "declared_artifact_read"
+    return ActionSemanticReceipt(
+        capability_aliases=_semantic_capability_aliases(action, effect=effect),
+        effect=effect,
+        target_ids=target_ids,
+        validation_kind=validation_kind,
+        declared_deliverable_targeted=declared,
+    )
+
+
+def _observed_action_semantic_receipt(
+    action: Any,
+    result: Any,
+    *,
+    context: Any,
+    effect: ToolEffect,
+    terminal_receipt: Mapping[str, Any] | None,
+) -> ActionSemanticReceipt:
+    params = _value(action, "params", {})
+    params = params if isinstance(params, Mapping) else {}
+    code = params.get("code", params.get("command"))
+    validation_kind = _registered_validation_kind(
+        context,
+        code=code if isinstance(code, str) else None,
+    )
+    semantic_effect = effect.effect
+    if validation_kind is not None and (
+        terminal_receipt is not None or not _trusted_terminal_receipt_identity(action)
+    ):
+        semantic_effect = "validation"
+    elif terminal_receipt is None and _trusted_terminal_receipt_identity(action):
+        validation_kind = None
+    paths = _action_target_paths(action, terminal_receipt=terminal_receipt)
+    target_ids = _target_ids(paths)
+    declared_targets = _declared_target_ids(context)
+    declared = bool(declared_targets.intersection(target_ids)) if target_ids else False
+    if validation_kind is None and semantic_effect == "read_only" and declared:
+        validation_kind = "declared_artifact_read"
+    timed_out = bool(terminal_receipt.get("timed_out")) if terminal_receipt else False
+    executed = bool(terminal_receipt.get("executed")) if terminal_receipt else True
+    success = bool(_result_success(result) and not timed_out)
+    action_call_id = _value(action, "tool_call_id")
+    result_call_id = _value(result, "tool_call_id")
+    call_id = result_call_id or action_call_id
+    if (
+        isinstance(action_call_id, str)
+        and isinstance(result_call_id, str)
+        and action_call_id != result_call_id
+    ):
+        semantic_effect = "unknown"
+        call_id = None
+    return ActionSemanticReceipt(
+        capability_aliases=_semantic_capability_aliases(action, effect=semantic_effect),
+        effect=semantic_effect,
+        target_ids=target_ids,
+        executed=executed,
+        succeeded=success,
+        timed_out=timed_out,
+        validation_kind=validation_kind,
+        declared_deliverable_targeted=declared,
+        tool_call_id=call_id if isinstance(call_id, str) and call_id else None,
+    )
 
 
 def _trusted_terminal_receipt_identity(action: Any) -> bool:
@@ -309,6 +605,18 @@ def _validated_terminal_execution_receipt(
             not isinstance(paths, list)
             or len(paths) > 16
             or any(not isinstance(path, str) or len(path) > 512 for path in paths)
+        ):
+            return None, True
+    nested_evidence = receipt.get("nested_language_evidence", [])
+    if not isinstance(nested_evidence, list) or len(nested_evidence) > 4:
+        return None, True
+    for item in nested_evidence:
+        if (
+            not isinstance(item, Mapping)
+            or set(item) != {"language", "source_sha256"}
+            or item.get("language") not in TERMINAL_LANGUAGES
+            or not isinstance(item.get("source_sha256"), str)
+            or re.fullmatch(r"sha256:[0-9a-f]{64}", item["source_sha256"]) is None
         ):
             return None, True
     read_paths = receipt["read_paths"]
@@ -690,6 +998,21 @@ class SandboxToolObservationRuntime:
             "exact_replay_cached": replay_stored,
             "scope_volatile": scope in self._volatile_scopes,
         }
+        try:
+            action_semantics = _observed_action_semantic_receipt(
+                action,
+                result,
+                context=context,
+                effect=effect,
+                terminal_receipt=terminal_receipt,
+            )
+        except (TypeError, ValueError):
+            # Semantic alignment is advisory before convergence.  An
+            # unrepresentable receipt must never invalidate the Tool result or
+            # be guessed from raw arguments downstream.
+            action_semantics = None
+        if action_semantics is not None:
+            receipt[ACTION_SEMANTIC_RECEIPT_KEY] = action_semantics.to_dict()
         if replay_content_bytes is not None:
             receipt["replay_content_bytes"] = replay_content_bytes
         if replay_bypass_reason is not None:
@@ -725,10 +1048,13 @@ class SandboxToolObservationRuntime:
 
 
 __all__ = [
+    "ACTION_SEMANTIC_RECEIPT_KEY",
     "OBSERVATION_SCHEMA",
     "SandboxToolObservationRuntime",
     "ToolEffect",
     "actions_are_provably_read_only",
+    "build_planned_action_semantic_receipt",
     "canonical_tool_identity",
     "classify_tool_effect",
+    "semantic_target_sha256",
 ]

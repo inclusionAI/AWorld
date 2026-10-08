@@ -1385,7 +1385,11 @@ def _terminal_execution_plan(
         AssertionError,
         TypeError,
     ):
-        return TerminalExecutionPlan("shell", "unknown", False, False)
+        # ``bashlex`` cannot parse some otherwise valid quoted heredocs.  The
+        # shared receipt parser has a deliberately narrow, non-executing
+        # Python-heredoc recognizer, so delegate the parse failure instead of
+        # discarding authoritative nested-language evidence here.
+        return plan_terminal_execution(command, language="shell")
     return plan_terminal_execution(
         command,
         language="shell",
@@ -1446,12 +1450,21 @@ def _trusted_read_execution_context(
             for key in overrides
         ):
             return False
+        if plan.nested_languages and any(
+            environment.get(key) for key in _PYTHON_STARTUP_ENVIRONMENT_KEYS
+        ):
+            return False
+        if plan.nested_languages and any(
+            key == "AWORLD_PYTHON_EXECUTABLE"
+            or key in _PYTHON_STARTUP_ENVIRONMENT_KEYS
+            for key in overrides
+        ):
+            return False
     elif plan.language == "python":
         if any(environment.get(key) for key in _PYTHON_STARTUP_ENVIRONMENT_KEYS):
             return False
         if any(
-            key == "AWORLD_PYTHON_EXECUTABLE"
-            or key in _PYTHON_STARTUP_ENVIRONMENT_KEYS
+            key == "AWORLD_PYTHON_EXECUTABLE" or key in _PYTHON_STARTUP_ENVIRONMENT_KEYS
             for key in overrides
         ):
             return False
@@ -1489,6 +1502,28 @@ def _trusted_read_execution_context(
             resolved = executable.resolve()
         except OSError:
             return False
+        return (
+            not _path_within(resolved, workspace_root)
+            and not _path_within(resolved, Path("/tmp").resolve())
+            and resolved.is_file()
+            and os.access(resolved, os.X_OK)
+        )
+
+    if plan.nested_languages == ("python",):
+        token_match = re.match(r"\s*(?P<token>[^\s<]+)", command)
+        token = token_match.group("token") if token_match is not None else ""
+        if not token:
+            return False
+        if "/" in token:
+            executable = Path(token).expanduser()
+            if not executable.is_absolute():
+                executable = resolved_working_directory / executable
+            resolved = executable.resolve()
+        else:
+            resolved_text = shutil.which(token, path=environment.get("PATH"))
+            if not resolved_text:
+                return False
+            resolved = Path(resolved_text).resolve()
         return (
             not _path_within(resolved, workspace_root)
             and not _path_within(resolved, Path("/tmp").resolve())

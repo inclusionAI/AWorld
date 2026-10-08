@@ -67,6 +67,149 @@ class NextActionAlignment(str, Enum):
     UNOBSERVABLE = "unobservable"
 
 
+_ACTION_SEMANTIC_EFFECTS = frozenset({"read_only", "mutating", "validation", "unknown"})
+_SHA256_ID = re.compile(r"sha256:[0-9a-f]{64}")
+
+
+@dataclass(frozen=True, slots=True)
+class ActionSemanticReceipt:
+    """Bounded, path-free semantics for one planned or observed Tool action.
+
+    Planned receipts leave execution outcome fields unset.  Observed receipts
+    carry the Sandbox-authoritative outcome.  Target identities are hashes of
+    normalized paths; raw Tool arguments and paths never cross this boundary.
+    """
+
+    SCHEMA_VERSION: ClassVar[str] = "aworld.action-semantic-receipt/v1"
+
+    capability_aliases: tuple[str, ...]
+    effect: str
+    target_ids: tuple[str, ...] = field(default_factory=tuple)
+    executed: bool | None = None
+    succeeded: bool | None = None
+    timed_out: bool | None = None
+    validation_kind: str | None = None
+    declared_deliverable_targeted: bool | None = None
+    tool_call_id: str | None = None
+
+    def __post_init__(self) -> None:
+        aliases = _bounded_text_tuple(
+            self.capability_aliases,
+            name="capability_aliases",
+            maximum_items=8,
+            maximum_chars=128,
+        )
+        if any(
+            re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}", item) is None
+            for item in aliases
+        ):
+            raise ValueError("capability_aliases must contain stable identities")
+        object.__setattr__(self, "capability_aliases", tuple(dict.fromkeys(aliases)))
+        if self.effect not in _ACTION_SEMANTIC_EFFECTS:
+            raise ValueError("unsupported action semantic effect")
+        targets = self.target_ids
+        if (
+            not isinstance(targets, (list, tuple))
+            or len(targets) > 16
+            or any(
+                not isinstance(item, str) or _SHA256_ID.fullmatch(item) is None
+                for item in targets
+            )
+        ):
+            raise ValueError(
+                "target_ids must contain at most 16 canonical sha256 identities"
+            )
+        object.__setattr__(self, "target_ids", tuple(dict.fromkeys(targets)))
+        outcomes = (self.executed, self.succeeded, self.timed_out)
+        if any(value is not None and not isinstance(value, bool) for value in outcomes):
+            raise ValueError("execution outcome fields must be booleans or null")
+        if self.executed is None and any(value is not None for value in outcomes[1:]):
+            raise ValueError("planned semantics cannot claim an execution outcome")
+        if self.executed is not None and any(value is None for value in outcomes[1:]):
+            raise ValueError("observed semantics require a complete execution outcome")
+        if self.succeeded is True and self.executed is not True:
+            raise ValueError("a successful action must have executed")
+        if self.succeeded is True and self.timed_out is True:
+            raise ValueError("a timed-out action cannot be successful")
+        validation_kind = self.validation_kind
+        if validation_kind is not None and (
+            not isinstance(validation_kind, str)
+            or not validation_kind.strip()
+            or len(validation_kind.strip()) > 128
+            or re.fullmatch(
+                r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}", validation_kind.strip()
+            )
+            is None
+        ):
+            raise ValueError(
+                "validation_kind must be null or a nonempty string of at most 128 characters"
+            )
+        if validation_kind is not None:
+            object.__setattr__(self, "validation_kind", validation_kind.strip())
+        declared = self.declared_deliverable_targeted
+        if declared is not None and not isinstance(declared, bool):
+            raise ValueError("declared_deliverable_targeted must be boolean or null")
+        call_id = self.tool_call_id
+        if call_id is not None and (
+            not isinstance(call_id, str)
+            or not call_id.strip()
+            or len(call_id.strip()) > 256
+        ):
+            raise ValueError("tool_call_id must be null or a bounded nonempty string")
+        if call_id is not None:
+            object.__setattr__(self, "tool_call_id", call_id.strip())
+
+    @property
+    def observable(self) -> bool:
+        return self.effect != "unknown" and self.executed is not False
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "schema_version": self.SCHEMA_VERSION,
+            "capability_aliases": list(self.capability_aliases),
+            "effect": self.effect,
+            "target_ids": list(self.target_ids),
+            "executed": self.executed,
+            "succeeded": self.succeeded,
+            "timed_out": self.timed_out,
+            "validation_kind": self.validation_kind,
+            "declared_deliverable_targeted": self.declared_deliverable_targeted,
+            "tool_call_id": self.tool_call_id,
+        }
+
+    @classmethod
+    def from_dict(cls, value: Mapping[str, Any]) -> "ActionSemanticReceipt":
+        if not isinstance(value, Mapping):
+            raise ValueError("action semantic receipt must be an object")
+        expected = {
+            "schema_version",
+            "capability_aliases",
+            "effect",
+            "target_ids",
+            "executed",
+            "succeeded",
+            "timed_out",
+            "validation_kind",
+            "declared_deliverable_targeted",
+            "tool_call_id",
+        }
+        if set(value) - expected:
+            raise ValueError("action semantic receipt contains unknown fields")
+        if value.get("schema_version") != cls.SCHEMA_VERSION:
+            raise ValueError("unsupported action semantic receipt schema")
+        return cls(
+            capability_aliases=value.get("capability_aliases"),
+            effect=value.get("effect"),
+            target_ids=value.get("target_ids") or (),
+            executed=value.get("executed"),
+            succeeded=value.get("succeeded"),
+            timed_out=value.get("timed_out"),
+            validation_kind=value.get("validation_kind"),
+            declared_deliverable_targeted=value.get("declared_deliverable_targeted"),
+            tool_call_id=value.get("tool_call_id"),
+        )
+
+
 class ConvergenceStage(str, Enum):
     """Framework-owned phase constraint after advisory replanning stalls.
 
@@ -312,6 +455,7 @@ class ModelPlanUpdate:
     delivery_rationale: str = ""
     next_action_tool: str | None = None
     next_action_signature: str | None = None
+    next_action_semantics: ActionSemanticReceipt | None = None
 
     def __post_init__(self) -> None:
         for name, enum_type in (
@@ -360,6 +504,21 @@ class ModelPlanUpdate:
             raise ValueError(
                 "next_action_signature must be a sha256 fingerprint or null"
             )
+        next_action_semantics = self.next_action_semantics
+        if next_action_semantics is not None and not isinstance(
+            next_action_semantics, ActionSemanticReceipt
+        ):
+            if not isinstance(next_action_semantics, Mapping):
+                raise ValueError(
+                    "next_action_semantics must be ActionSemanticReceipt or null"
+                )
+            try:
+                next_action_semantics = ActionSemanticReceipt.from_dict(
+                    next_action_semantics
+                )
+            except (TypeError, ValueError) as exc:
+                raise ValueError("invalid next_action_semantics") from exc
+            object.__setattr__(self, "next_action_semantics", next_action_semantics)
         tool_required_intents = {
             DeliveryIntent.CONTINUE_EXPLORATION,
             DeliveryIntent.PRODUCE_CANDIDATE,
@@ -376,10 +535,13 @@ class ModelPlanUpdate:
             DeliveryIntent.SUBMIT_UNCERTAIN,
         }
         if self.delivery_intent in terminal_intents and (
-            next_action_tool is not None or next_action_signature is not None
+            next_action_tool is not None
+            or next_action_signature is not None
+            or next_action_semantics is not None
         ):
             raise ValueError(
-                "next_action_tool and next_action_signature must be null for a terminal delivery intent"
+                "next_action_tool, next_action_signature, and next_action_semantics "
+                "must be null for a terminal delivery intent"
             )
         rationale = self.delivery_rationale
         if not isinstance(rationale, str) or len(rationale.strip()) > 1024:
@@ -427,6 +589,11 @@ class ModelPlanUpdate:
             "next_action": self.next_action,
             "next_action_tool": self.next_action_tool,
             "next_action_signature": self.next_action_signature,
+            "next_action_semantics": (
+                self.next_action_semantics.to_dict()
+                if self.next_action_semantics is not None
+                else None
+            ),
             "verification_plan": self.verification_plan,
             "completion_assessment": self.completion_assessment.value,
             "delivery_intent": self.delivery_intent.value,
@@ -451,6 +618,7 @@ class ModelPlanUpdate:
             next_action=value.get("next_action"),
             next_action_tool=value.get("next_action_tool"),
             next_action_signature=next_action_signature,
+            next_action_semantics=value.get("next_action_semantics"),
             verification_plan=value.get("verification_plan"),
             completion_assessment=value.get("completion_assessment"),
             delivery_intent=value.get("delivery_intent", DeliveryIntent.UNKNOWN.value),
@@ -546,6 +714,7 @@ class ModelPlanUpdate:
             "delivery_rationale",
             "next_action_tool",
             "next_action_signature",
+            "next_action_semantics",
         }
         unknown = set(value) - required - optional
         if unknown:
@@ -852,6 +1021,9 @@ class ExecutionProtocolEvent:
     new_information_observed: bool = False
     observed_action_names: tuple[str, ...] = field(default_factory=tuple)
     observed_action_signatures: tuple[str, ...] = field(default_factory=tuple)
+    observed_action_semantics: tuple[ActionSemanticReceipt, ...] = field(
+        default_factory=tuple
+    )
     current_step: int = 0
     remaining_seconds: float | None = None
     operation_hash: str | None = None
@@ -921,6 +1093,23 @@ class ExecutionProtocolEvent:
                 "observed_action_signatures must contain at most 32 sha256 fingerprints"
             )
         object.__setattr__(self, "observed_action_signatures", tuple(signatures))
+        raw_semantics = self.observed_action_semantics
+        if not isinstance(raw_semantics, (list, tuple)) or len(raw_semantics) > 16:
+            raise ValueError(
+                "observed_action_semantics must contain at most 16 receipts"
+            )
+        semantics: list[ActionSemanticReceipt] = []
+        for value in raw_semantics:
+            try:
+                receipt = (
+                    value
+                    if isinstance(value, ActionSemanticReceipt)
+                    else ActionSemanticReceipt.from_dict(value)
+                )
+            except (TypeError, ValueError) as exc:
+                raise ValueError("invalid observed action semantic receipt") from exc
+            semantics.append(receipt)
+        object.__setattr__(self, "observed_action_semantics", tuple(semantics))
         if self.remaining_seconds is not None:
             value = self.remaining_seconds
             if (
@@ -1029,6 +1218,7 @@ class ExecutionProtocolEvent:
             new_information_observed=self.new_information_observed,
             observed_action_names=self.observed_action_names,
             observed_action_signatures=self.observed_action_signatures,
+            observed_action_semantics=self.observed_action_semantics,
             current_step=self.current_step,
             remaining_seconds=self.remaining_seconds,
             operation_hash=self.operation_hash,
@@ -1063,6 +1253,9 @@ class ProtocolEventRecord:
     new_information_observed: bool = False
     observed_action_names: tuple[str, ...] = field(default_factory=tuple)
     observed_action_signatures: tuple[str, ...] = field(default_factory=tuple)
+    observed_action_semantics: tuple[ActionSemanticReceipt, ...] = field(
+        default_factory=tuple
+    )
     current_step: int = 0
     remaining_seconds: float | None = None
     operation_hash: str | None = None
@@ -1130,6 +1323,23 @@ class ProtocolEventRecord:
                 "observed_action_signatures must contain at most 32 sha256 fingerprints"
             )
         object.__setattr__(self, "observed_action_signatures", tuple(signatures))
+        raw_semantics = self.observed_action_semantics
+        if not isinstance(raw_semantics, (list, tuple)) or len(raw_semantics) > 16:
+            raise ValueError(
+                "observed_action_semantics must contain at most 16 receipts"
+            )
+        semantics: list[ActionSemanticReceipt] = []
+        for value in raw_semantics:
+            try:
+                receipt = (
+                    value
+                    if isinstance(value, ActionSemanticReceipt)
+                    else ActionSemanticReceipt.from_dict(value)
+                )
+            except (TypeError, ValueError) as exc:
+                raise ValueError("invalid observed action semantic receipt") from exc
+            semantics.append(receipt)
+        object.__setattr__(self, "observed_action_semantics", tuple(semantics))
         if self.remaining_seconds is not None and (
             isinstance(self.remaining_seconds, bool)
             or not isinstance(self.remaining_seconds, (int, float))
@@ -1224,6 +1434,9 @@ class ProtocolEventRecord:
             "new_information_observed": self.new_information_observed,
             "observed_action_names": list(self.observed_action_names),
             "observed_action_signatures": list(self.observed_action_signatures),
+            "observed_action_semantics": [
+                receipt.to_dict() for receipt in self.observed_action_semantics
+            ],
             "current_step": self.current_step,
             "remaining_seconds": self.remaining_seconds,
             "operation_hash": self.operation_hash,
@@ -1285,6 +1498,7 @@ class ProtocolEventRecord:
             new_information_observed=value.get("new_information_observed", False),
             observed_action_names=value.get("observed_action_names") or (),
             observed_action_signatures=value.get("observed_action_signatures") or (),
+            observed_action_semantics=value.get("observed_action_semantics") or (),
             current_step=_non_negative_int(
                 value.get("current_step", 0), "current_step"
             ),
@@ -1742,6 +1956,7 @@ class ProtocolTransition:
 
 
 __all__ = [
+    "ActionSemanticReceipt",
     "CompletionAssessment",
     "ConvergenceStage",
     "ControllerAction",

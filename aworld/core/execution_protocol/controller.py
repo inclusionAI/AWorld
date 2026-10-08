@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import replace
 
 from .models import (
+    ActionSemanticReceipt,
     CompletionAssessment,
     ConvergenceStage,
     ControllerAction,
@@ -23,6 +24,49 @@ from .models import (
     ProtocolTransition,
     ReviewOutcome,
 )
+
+
+def _semantic_pair_alignment(
+    expected: ActionSemanticReceipt,
+    observed: ActionSemanticReceipt,
+    *,
+    intent: DeliveryIntent,
+) -> NextActionAlignment:
+    """Compare bounded action meaning without consulting raw Tool arguments."""
+
+    if not expected.observable or not observed.observable:
+        return NextActionAlignment.UNOBSERVABLE
+    if observed.executed is not True:
+        return NextActionAlignment.UNOBSERVABLE
+    if observed.succeeded is not True or observed.timed_out is not False:
+        return NextActionAlignment.MISMATCHED
+    if not set(expected.capability_aliases).intersection(observed.capability_aliases):
+        return NextActionAlignment.MISMATCHED
+    if expected.effect != observed.effect:
+        return NextActionAlignment.MISMATCHED
+    expected_targets = set(expected.target_ids)
+    observed_targets = set(observed.target_ids)
+    if expected_targets:
+        if not observed_targets:
+            return NextActionAlignment.UNOBSERVABLE
+        if expected_targets.isdisjoint(observed_targets):
+            return NextActionAlignment.MISMATCHED
+    elif observed_targets:
+        return NextActionAlignment.MISMATCHED
+    if expected.declared_deliverable_targeted is True:
+        if observed.declared_deliverable_targeted is None:
+            return NextActionAlignment.UNOBSERVABLE
+        if observed.declared_deliverable_targeted is not True:
+            return NextActionAlignment.MISMATCHED
+    if intent is DeliveryIntent.PRODUCE_CANDIDATE:
+        if expected.effect != "mutating":
+            return NextActionAlignment.UNOBSERVABLE
+    elif intent is DeliveryIntent.VALIDATE_CANDIDATE:
+        if expected.validation_kind is None or observed.validation_kind is None:
+            return NextActionAlignment.UNOBSERVABLE
+        if expected.validation_kind != observed.validation_kind:
+            return NextActionAlignment.MISMATCHED
+    return NextActionAlignment.MATCHED
 
 
 def _decision(action: ControllerAction, reason: DecisionReason) -> ControllerDecision:
@@ -97,38 +141,44 @@ def _next_action_alignment(
     intent = state.model_plan_update.delivery_intent
     if intent is DeliveryIntent.UNKNOWN:
         return None
-    expected_tool = state.model_plan_update.next_action_tool
-    expected_signature = state.model_plan_update.next_action_signature
     if intent is DeliveryIntent.SUBMIT_UNCERTAIN:
         # Any Tool observation contradicts the model's declared terminal step.
         return NextActionAlignment.MISMATCHED
-    if (
-        expected_tool is None
-        or expected_signature is None
-        or not event.observed_action_names
-        or not event.observed_action_signatures
-    ):
+    expected = state.model_plan_update.next_action_semantics
+    observed = event.observed_action_semantics
+    if expected is None or not observed:
         return NextActionAlignment.UNOBSERVABLE
-    if expected_tool not in event.observed_action_names:
-        return NextActionAlignment.MISMATCHED
-    if expected_signature not in event.observed_action_signatures:
-        return NextActionAlignment.MISMATCHED
-    if intent is DeliveryIntent.CONTINUE_EXPLORATION:
-        matched = event.new_information_observed
-    elif intent is DeliveryIntent.PRODUCE_CANDIDATE:
-        if event.candidate_present is None:
-            return NextActionAlignment.UNOBSERVABLE
-        matched = event.candidate_advanced
-    elif intent is DeliveryIntent.VALIDATE_CANDIDATE:
-        # An ordinary Tool result may be a valid model-authored check without
-        # carrying AWorld's optional public-probe receipt. Absence of that
-        # receipt is not evidence that validation failed.
-        if not event.validation_observed:
-            return NextActionAlignment.UNOBSERVABLE
-        matched = True
-    else:
+    comparisons = tuple(
+        _semantic_pair_alignment(expected, item, intent=intent) for item in observed
+    )
+    if NextActionAlignment.MATCHED in comparisons:
+        if intent is DeliveryIntent.CONTINUE_EXPLORATION:
+            return (
+                NextActionAlignment.MATCHED
+                if event.new_information_observed
+                else NextActionAlignment.MISMATCHED
+            )
+        if intent is DeliveryIntent.PRODUCE_CANDIDATE:
+            if event.candidate_present is None:
+                return NextActionAlignment.UNOBSERVABLE
+            return (
+                NextActionAlignment.MATCHED
+                if event.candidate_advanced
+                else NextActionAlignment.MISMATCHED
+            )
+        if intent is DeliveryIntent.VALIDATE_CANDIDATE:
+            typed_validation = any(
+                item.validation_kind is not None
+                for item, alignment in zip(observed, comparisons)
+                if alignment is NextActionAlignment.MATCHED
+            )
+            if not event.validation_observed and not typed_validation:
+                return NextActionAlignment.UNOBSERVABLE
+            return NextActionAlignment.MATCHED
         return NextActionAlignment.UNOBSERVABLE
-    return NextActionAlignment.MATCHED if matched else NextActionAlignment.MISMATCHED
+    if NextActionAlignment.UNOBSERVABLE in comparisons:
+        return NextActionAlignment.UNOBSERVABLE
+    return NextActionAlignment.MISMATCHED
 
 
 def _checkpoint_transition(

@@ -244,6 +244,65 @@ def _observed_action_signatures(
     return tuple(signatures)
 
 
+def _observed_action_semantics(
+    actions: list[ActionModel],
+    action_results: list[Any],
+) -> tuple[dict[str, Any], ...]:
+    """Project only Sandbox-authenticated receipts paired to their Tool call."""
+
+    from aworld.core.execution_protocol import ActionSemanticReceipt
+    from aworld.sandbox.tool_observation import ACTION_SEMANTIC_RECEIPT_KEY
+
+    actions_by_call_id = {
+        action.tool_call_id: action
+        for action in actions
+        if isinstance(action.tool_call_id, str) and action.tool_call_id
+    }
+    receipts: list[dict[str, Any]] = []
+    for result in action_results:
+        if not isinstance(result, Mapping):
+            continue
+        metadata = result.get("metadata")
+        sandbox_receipt = (
+            metadata.get("sandbox_observation")
+            if isinstance(metadata, Mapping)
+            else None
+        )
+        candidate = (
+            sandbox_receipt.get(ACTION_SEMANTIC_RECEIPT_KEY)
+            if isinstance(sandbox_receipt, Mapping)
+            else None
+        )
+        if not isinstance(candidate, Mapping):
+            continue
+        try:
+            receipt = ActionSemanticReceipt.from_dict(candidate)
+        except (TypeError, ValueError):
+            continue
+        if (
+            receipt.executed is None
+            or receipt.succeeded is None
+            or receipt.timed_out is None
+        ):
+            continue
+        call_id = receipt.tool_call_id
+        result_call_id = result.get("tool_call_id")
+        if (
+            not isinstance(call_id, str)
+            or call_id not in actions_by_call_id
+            or (
+                isinstance(result_call_id, str)
+                and result_call_id
+                and result_call_id != call_id
+            )
+        ):
+            continue
+        receipts.append(receipt.to_dict())
+        if len(receipts) >= 16:
+            break
+    return tuple(receipts)
+
+
 def _select_semantic_state(shared: Any, local: Any) -> dict[str, Any] | None:
     """Choose the newest typed state while retaining ContextState compatibility."""
     shared_state = shared if isinstance(shared, dict) else None
@@ -482,6 +541,7 @@ def _record_semantic_tool_progress_locked(
         if isinstance(metadata, dict)
         and isinstance(metadata.get("sandbox_observation"), dict)
     ]
+    observed_action_semantics = _observed_action_semantics(actions, action_results)
     known_mutation_executed = any(
         isinstance(receipt.get("terminal_execution_receipt"), dict)
         and receipt["terminal_execution_receipt"].get("effect") == "mutating"
@@ -1057,6 +1117,7 @@ def _record_semantic_tool_progress_locked(
         "new_information_observed": new_information_observed,
         "observed_action_names": _observed_action_names(tool_name, actions),
         "observed_action_signatures": _observed_action_signatures(actions),
+        "observed_action_semantics": observed_action_semantics,
         "durable_milestone_advanced": durable_milestone_advanced,
         "progress_guard_reset": progress_guard_reset,
         "progress_guard_required": progress_guard_required,

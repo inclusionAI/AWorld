@@ -12,6 +12,7 @@ from aworld.sandbox.terminal_receipt import (
     TERMINAL_EXECUTION_RECEIPT_KEY,
     TerminalExecutionPlan,
     build_terminal_execution_receipt,
+    plan_terminal_execution,
 )
 
 
@@ -194,6 +195,46 @@ def test_shell_classifier_recognizes_inline_python_file_mutation() -> None:
         )
         assert effect.effect == "mutating"
         assert effect.cacheable is False
+
+
+def test_shell_classifier_types_quoted_python_heredoc_read_and_write() -> None:
+    read_source = """python3 <<'PY'\nfrom pathlib import Path\nprint(Path('/app/input.txt').read_text())\nPY\n"""
+    write_source = """python <<'PY'\nfrom pathlib import Path\nPath('/app/result.txt').write_text('done')\nPY\n"""
+
+    read_plan = plan_terminal_execution(read_source)
+    write_plan = plan_terminal_execution(write_source)
+
+    assert read_plan.effect == "read_only"
+    assert read_plan.read_paths == ("/app/input.txt",)
+    assert read_plan.nested_languages == ("python",)
+    assert write_plan.effect == "mutating"
+    assert write_plan.write_paths == ("/app/result.txt",)
+    assert write_plan.nested_languages == ("python",)
+
+    receipt = build_terminal_execution_receipt(
+        code=write_source,
+        plan=write_plan,
+        executed=True,
+        exit_code=0,
+        timed_out=False,
+    )
+    assert receipt["nested_language_evidence"] == [
+        {
+            "language": "python",
+            "source_sha256": write_plan.nested_source_sha256[0],
+        }
+    ]
+    assert write_source not in str(receipt)
+
+
+def test_shell_classifier_keeps_dynamic_python_heredoc_unknown() -> None:
+    plan = plan_terminal_execution(
+        """python <<PY\nfrom pathlib import Path\nprint(Path('$TARGET').read_text())\nPY\n"""
+    )
+
+    assert plan.effect == "unknown"
+    assert plan.read_paths == ()
+    assert plan.nested_languages == ("python",)
 
 
 def test_shell_classifier_does_not_treat_fd_redirection_as_file_mutation() -> None:

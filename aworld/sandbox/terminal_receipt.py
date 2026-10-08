@@ -20,7 +20,7 @@ import bashlex
 
 TERMINAL_EXECUTION_RECEIPT_SCHEMA = "aworld.terminal-execution-receipt/v2"
 TERMINAL_EXECUTION_RECEIPT_KEY = "terminal_execution_receipt"
-TERMINAL_EXECUTION_ANALYZER_VERSION = 2
+TERMINAL_EXECUTION_ANALYZER_VERSION = 3
 TERMINAL_LANGUAGE_CONTRACT_VERSION = 1
 TERMINAL_LANGUAGES = frozenset({"shell", "python"})
 TERMINAL_EFFECTS = frozenset({"read_only", "mutating", "unknown"})
@@ -278,6 +278,8 @@ class TerminalExecutionPlan:
     write_paths: tuple[str, ...] = ()
     background: bool = False
     read_set_complete: bool = True
+    nested_languages: tuple[str, ...] = ()
+    nested_source_sha256: tuple[str, ...] = ()
 
 
 def terminal_command_sha256(code: str) -> str:
@@ -660,6 +662,38 @@ def _parse_shell_nodes(source: str) -> list[Any] | None:
         return None
 
 
+_PYTHON_HEREDOC = re.compile(
+    r"\A[ \t]*(?P<executable>(?:/[^\s]+/)?(?:python(?:3(?:\.\d+)*)?|py))"
+    r"(?:[ \t]+-)?[ \t]+<<(?P<strip>-?)[ \t]*"
+    r"(?P<quote>['\"]?)(?P<delimiter>[A-Za-z_][A-Za-z0-9_]*)"
+    r"(?P=quote)[ \t]*\r?\n"
+    r"(?P<body>.*?)"
+    r"(?:\r?\n)(?P<closing_tabs>\t*)(?P=delimiter)[ \t]*(?:\r?\n)?\Z",
+    re.DOTALL | re.IGNORECASE,
+)
+
+
+def _python_heredoc_source(source: str) -> tuple[str, bool] | None:
+    """Return one Python heredoc body and whether its bytes are static.
+
+    Quoted delimiters are byte-stable.  An unquoted delimiter is accepted only
+    when the body contains no Shell interpolation markers; otherwise the
+    executed Python source is not statically knowable and must stay unknown.
+    The intentionally narrow whole-command match prevents adjacent Shell
+    commands, substitutions, or pipelines from inheriting the nested result.
+    """
+
+    match = _PYTHON_HEREDOC.fullmatch(source)
+    if match is None:
+        return None
+    body = match.group("body")
+    literal = match.group("strip") != "-" and not (
+        match.group("quote") == ""
+        and any(marker in body for marker in ("$", "`", "\\"))
+    )
+    return body, literal
+
+
 def plan_terminal_execution(
     code: str,
     *,
@@ -690,6 +724,34 @@ def plan_terminal_execution(
             writes,
             False,
             read_set_complete,
+        )
+    nested_heredoc = _python_heredoc_source(code)
+    if nested_heredoc is not None:
+        nested_python, literal = nested_heredoc
+        if literal:
+            effect, reads, writes, read_set_complete = _python_effect_and_paths(
+                nested_python
+            )
+        else:
+            effect, reads, writes, read_set_complete = "unknown", (), (), False
+        try:
+            ast.parse(nested_python, mode="exec")
+        except (SyntaxError, ValueError, TypeError):
+            parsed = False
+            effect = "unknown"
+        else:
+            parsed = True
+        return TerminalExecutionPlan(
+            "shell",
+            effect,
+            effect == "read_only",
+            parsed,
+            reads,
+            writes,
+            False,
+            read_set_complete,
+            ("python",),
+            (terminal_command_sha256(nested_python),),
         )
     if _looks_like_bare_python(code):
         # run_code is a shell contract.  Recognizing Python-looking input here
@@ -875,7 +937,18 @@ def build_terminal_execution_receipt(
     )
     read_epochs = [dict(epoch) for epoch in read_path_epochs][:_MAX_RECEIPT_PATHS]
     read_epochs_complete = not plan.read_paths or len(read_epochs) == len(plan.read_paths)
-    return {
+    nested_language_evidence = (
+        [
+            {"language": language, "source_sha256": source_sha256}
+            for language, source_sha256 in zip(
+                plan.nested_languages,
+                plan.nested_source_sha256,
+            )
+        ][:4]
+        if len(plan.nested_languages) == len(plan.nested_source_sha256)
+        else []
+    )
+    receipt = {
         "schema_version": TERMINAL_EXECUTION_RECEIPT_SCHEMA,
         "parser_version": TERMINAL_EXECUTION_ANALYZER_VERSION,
         "language_contract_version": TERMINAL_LANGUAGE_CONTRACT_VERSION,
@@ -910,6 +983,9 @@ def build_terminal_execution_receipt(
         "timed_out": bool(timed_out),
         "exit_code": exit_code,
     }
+    if nested_language_evidence:
+        receipt["nested_language_evidence"] = nested_language_evidence
+    return receipt
 
 
 __all__ = [

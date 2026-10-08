@@ -11,6 +11,7 @@ from .acceptance import (
     fresh_acceptance_critic_messages,
 )
 from .models import (
+    ActionSemanticReceipt,
     action_signature,
     CompletionAssessment,
     ConvergenceStage,
@@ -41,6 +42,7 @@ from .store import (
 )
 
 __all__ = [
+    "ActionSemanticReceipt",
     "action_signature",
     "AcceptanceCriticDecision",
     "AcceptanceDecision",

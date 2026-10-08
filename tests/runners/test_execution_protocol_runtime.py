@@ -6,6 +6,7 @@ from aworld.core.context.base import Context
 from aworld.core.common import ActionModel, ActionResult, Observation
 from aworld.core.event.base import Message
 from aworld.core.context.compiler import (
+    ArtifactRequirement,
     CompletionContract,
     CompletionMode,
     LifecycleAction,
@@ -54,6 +55,12 @@ from aworld.runners.execution_protocol import (
 )
 from aworld.runners.hook.agent_hooks import MutationGatePreToolHook
 from aworld.runners.post_tool_progress import record_semantic_tool_progress
+from aworld.sandbox.terminal_receipt import (
+    TERMINAL_EXECUTION_RECEIPT_KEY,
+    build_terminal_execution_receipt,
+    plan_terminal_execution,
+)
+from aworld.sandbox.tool_observation import SandboxToolObservationRuntime
 
 
 @pytest.fixture(autouse=True)
@@ -1316,8 +1323,10 @@ async def test_post_candidate_read_only_loop_converges_to_validate_repair_or_sub
     telemetry = build_execution_protocol_telemetry(context, "agent")
     assert telemetry["post_candidate_read_only_observations"] == 0
     assert telemetry["mutation_gate_blocked_read_only_call_count"] == 2
+    # This synthetic Tool result predates Sandbox semantic receipts.  Exact
+    # arguments remain compatibility telemetry and cannot manufacture a match.
     assert load_execution_protocol_state(context, "agent").last_action_alignment.value == (
-        "matched"
+        "unobservable"
     )
 
 
@@ -1826,6 +1835,144 @@ def test_delivery_intent_is_bounded_in_telemetry_and_transition_metrics() -> Non
         context.context_info["execution_protocol_metrics"]["last_delivery_intent"]
         == "validate_candidate"
     )
+
+
+def test_runtime_aligns_alternate_terminal_commands_by_authoritative_semantics() -> None:
+    context = _context("semantic-action-alignment")
+    context.configure_completion_contract(
+        CompletionContract(
+            required_artifacts=(ArtifactRequirement("result", "/app/result.txt"),),
+            immutable_inputs=(),
+            validation_commands=(),
+            max_evidence_age_seconds=None,
+            required_final_evidence=(),
+        ),
+        mode=CompletionMode.ENFORCE,
+    )
+    configure_execution_protocol(
+        context,
+        "agent",
+        ExecutionProtocolPolicy(mode=ProtocolMode.GUIDE),
+    )
+    assert (
+        record_model_plan_update(
+            context,
+            "agent",
+            {
+                "decision": "continue",
+                "horizon": "long",
+                "milestone": "inspect the declared result",
+                "next_action": "read the result with Python",
+                "next_action_tool": "terminal__run_code",
+                "next_action_arguments": (
+                    '{"code":"from pathlib import Path; '
+                    "Path('/app/result.txt').read_text()\","
+                    '"language":"python"}'
+                ),
+                "verification_plan": "inspect the resulting artifact",
+                "completion_assessment": "in_progress",
+                "delivery_intent": "continue_exploration",
+                "delivery_rationale": "one declared-artifact fact remains unknown",
+                "assumptions": [],
+                "retired_approaches": [],
+                "evidence_refs": [],
+                "selected_candidate_id": None,
+            },
+        )
+        is not None
+    )
+
+    action = ActionModel(
+        tool_name="terminal",
+        action_name="run_code",
+        params={"code": "cat /app/result.txt"},
+        tool_call_id="call-semantic-alignment",
+        agent_name="agent",
+    )
+    terminal_receipt = build_terminal_execution_receipt(
+        code=action.params["code"],
+        plan=plan_terminal_execution(action.params["code"]),
+        executed=True,
+        exit_code=0,
+        timed_out=False,
+        mutation_observed=False,
+    )
+    result = SandboxToolObservationRuntime().record(
+        action,
+        ActionResult(
+            tool_call_id=action.tool_call_id,
+            content="done",
+            success=True,
+            parameter=action.params,
+            metadata={TERMINAL_EXECUTION_RECEIPT_KEY: terminal_receipt},
+        ),
+        context=context,
+    )
+
+    record_semantic_tool_progress(
+        context,
+        tool_name="terminal",
+        agent_id="agent",
+        actions=[action],
+        observation=Observation(content="done", action_result=[result]),
+    )
+
+    state = load_execution_protocol_state(context, "agent")
+    assert state.last_action_alignment.value == "matched"
+    assert state.action_alignment_match_count == 1
+    persisted = state.to_dict()
+    assert "/app/result.txt" not in str(persisted)
+
+
+def test_runtime_treats_malformed_semantic_receipt_as_unobservable() -> None:
+    context = _context("malformed-semantic-action")
+    configure_execution_protocol(
+        context,
+        "agent",
+        ExecutionProtocolPolicy(mode=ProtocolMode.GUIDE),
+    )
+    assert (
+        record_model_plan_update(
+            context,
+            "agent",
+            {
+                "decision": "continue",
+                "horizon": "long",
+                "milestone": "inspect one file",
+                "next_action": "read the file",
+                "next_action_tool": "terminal__run_code",
+                "next_action_arguments": '{"code":"cat input.txt"}',
+                "verification_plan": "use the bounded observation",
+                "completion_assessment": "in_progress",
+                "delivery_intent": "continue_exploration",
+                "delivery_rationale": "one fact remains unknown",
+                "assumptions": [],
+                "retired_approaches": [],
+                "evidence_refs": [],
+                "selected_candidate_id": None,
+            },
+        )
+        is not None
+    )
+
+    record_tool_protocol_event(
+        context,
+        "agent",
+        _semantic_state(
+            observed_action_semantics=(
+                {
+                    "schema_version": "aworld.action-semantic-receipt/v1",
+                    "capability_aliases": ["workspace.execute"],
+                    "effect": "read_only",
+                    "target_ids": ["/raw/path/must-not-persist"],
+                },
+            ),
+        ),
+    )
+
+    state = load_execution_protocol_state(context, "agent")
+    assert state.last_action_alignment.value == "unobservable"
+    assert "/raw/path/must-not-persist" not in str(state.to_dict())
 
 
 def test_invalid_model_plan_update_fails_open_without_acknowledging_checkpoint():
