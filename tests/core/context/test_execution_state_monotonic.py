@@ -25,6 +25,44 @@ def _context(task_id: str = "task", *, epoch: int | None = None) -> Context:
     return context
 
 
+def test_resolution_persistence_failure_rolls_back_local_projection(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    context = _context("resolution-persistence-rollback")
+    blocked = record_execution_state(
+        context,
+        "solver",
+        "incomplete",
+        "validation_failed",
+        recoverable=True,
+    )
+    observation = execution_resolution_observation(context, "solver")
+    authoritative_before = context.read_task_runtime_state(
+        "solver", "execution_state"
+    )
+
+    def fail_write(*_args, **_kwargs):
+        raise OSError("execution-state persistence unavailable")
+
+    monkeypatch.setattr(context, "write_task_runtime_state", fail_write)
+    with pytest.raises(OSError, match="persistence unavailable"):
+        record_execution_resolution(
+            context,
+            "solver",
+            evidence_kind="validation_passed",
+            status="running",
+            reason="validation_passed",
+            observation=observation,
+        )
+
+    assert context.read_task_runtime_state(
+        "solver", "execution_state"
+    ) == authoritative_before
+    current = get_execution_state(context, agent_id="solver")
+    assert current["status"] == "incomplete"
+    assert current["unresolved_blockers"] == blocked["unresolved_blockers"]
+
+
 def test_generic_running_and_success_cannot_erase_truncated_action() -> None:
     context = _context("regex-like")
 

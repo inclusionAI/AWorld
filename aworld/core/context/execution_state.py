@@ -803,7 +803,12 @@ def _context_records(context, agent_id: str | None) -> list[dict[str, Any]]:
     return values
 
 
-def project_execution_state(context, record: dict[str, Any]) -> dict[str, Any]:
+def project_execution_state(
+    context,
+    record: dict[str, Any],
+    *,
+    persist: bool = True,
+) -> dict[str, Any]:
     normalized = _normalize_record(record)
     if normalized is None:
         raise ValueError("invalid execution state")
@@ -812,23 +817,53 @@ def project_execution_state(context, record: dict[str, Any]) -> dict[str, Any]:
     if scope != expected:
         raise ValueError("execution state scope mismatch")
     owner = state_context(context)
+    projection_keys = (
+        EXECUTION_STATE_KEY,
+        f"{EXECUTION_STATE_KEY}:{scope['agent_id']}",
+    )
+    targets = []
     for target in (context, owner):
-        if target is None:
+        if target is None or any(target is existing for existing in targets):
             continue
-        target_scope = _scope_for(target, scope.get("agent_id"))
-        if target_scope != scope:
-            continue
-        target.context_info[EXECUTION_STATE_KEY] = deepcopy(normalized)
-        target.context_info[f"{EXECUTION_STATE_KEY}:{scope['agent_id']}"] = deepcopy(
-            normalized
-        )
+        if _scope_for(target, scope.get("agent_id")) == scope:
+            targets.append(target)
+    context_snapshots = {
+        id(target): {
+            key: (
+                key in target.context_info,
+                deepcopy(target.context_info.get(key)),
+            )
+            for key in projection_keys
+        }
+        for target in targets
+    }
+    reader = getattr(context, "read_task_runtime_state", None)
     writer = getattr(context, "write_task_runtime_state", None)
-    if callable(writer):
+    previous_shared = (
+        reader(scope["agent_id"], EXECUTION_STATE_KEY)
+        if persist and callable(reader)
+        else None
+    )
+    if persist and callable(writer):
         writer(scope["agent_id"], EXECUTION_STATE_KEY, normalized)
-    put = getattr(context, "put", None)
-    if callable(put):
-        put(EXECUTION_STATE_KEY, deepcopy(normalized))
-        put(f"{EXECUTION_STATE_KEY}:{scope['agent_id']}", deepcopy(normalized))
+    try:
+        for target in targets:
+            for key in projection_keys:
+                target.context_info[key] = deepcopy(normalized)
+        put = getattr(context, "put", None)
+        if callable(put):
+            for key in projection_keys:
+                put(key, deepcopy(normalized))
+    except Exception:
+        for target in targets:
+            for key, (existed, previous) in context_snapshots[id(target)].items():
+                if not existed:
+                    target.context_info.pop(key, None)
+                else:
+                    target.context_info[key] = previous
+        if persist and callable(writer):
+            writer(scope["agent_id"], EXECUTION_STATE_KEY, previous_shared)
+        raise
     return deepcopy(normalized)
 
 
