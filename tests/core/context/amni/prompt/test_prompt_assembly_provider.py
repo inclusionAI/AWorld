@@ -4,6 +4,8 @@ from aworld.core.context.amni import ApplicationContext
 from aworld.core.context.amni.prompt.assembly import (
     CacheAwarePromptAssemblyProvider,
     DefaultPromptAssemblyProvider,
+    PROMPT_SECTION_NAME_HINT_KEY,
+    PROMPT_STABILITY_HINT_KEY,
     PromptAssemblyPlan,
 )
 
@@ -27,7 +29,7 @@ def test_default_prompt_assembly_provider_preserves_existing_message_order():
     assert plan.observability["stable_prefix_hash"]
 
 
-def test_default_prompt_assembly_provider_stable_hash_changes_with_system_or_tools():
+def test_default_prompt_assembly_provider_separates_prefix_and_tool_identity():
     provider = DefaultPromptAssemblyProvider()
 
     plan_a = provider.build_plan(
@@ -53,7 +55,9 @@ def test_default_prompt_assembly_provider_stable_hash_changes_with_system_or_too
     )
 
     assert plan_a.observability["stable_prefix_hash"] != plan_b.observability["stable_prefix_hash"]
-    assert plan_a.observability["stable_prefix_hash"] != plan_c.observability["stable_prefix_hash"]
+    assert plan_a.observability["stable_prefix_hash"] == plan_c.observability["stable_prefix_hash"]
+    assert plan_a.observability["tool_catalog_hash"] != plan_c.observability["tool_catalog_hash"]
+    assert plan_a.tool_section.tool_fingerprint != plan_c.tool_section.tool_fingerprint
 
 
 def test_cache_aware_prompt_assembly_provider_classifies_stable_and_dynamic_sections():
@@ -115,6 +119,55 @@ def test_cache_aware_prompt_assembly_provider_marks_runtime_stable_prefix_reuse(
     assert first_plan.observability["stable_prefix_reused"] is False
     assert second_plan.observability["stable_prefix_reused"] is True
     assert second_plan.metadata["stable_prefix_reused"] is True
+
+
+def test_cache_aware_prompt_assembly_keeps_dynamic_control_state_out_of_prefix():
+    provider = CacheAwarePromptAssemblyProvider()
+    base = {
+        "role": "system",
+        "content": "base rules",
+        PROMPT_SECTION_NAME_HINT_KEY: "system_prompt",
+        PROMPT_STABILITY_HINT_KEY: "stable",
+    }
+
+    first = provider.build_plan(
+        messages=[
+            base,
+            {
+                "role": "system",
+                "content": "produce a candidate now",
+                PROMPT_SECTION_NAME_HINT_KEY: "execution_protocol_guidance",
+                PROMPT_STABILITY_HINT_KEY: "dynamic",
+            },
+            {"role": "user", "content": "task"},
+        ],
+        tools=[{"function": {"name": "run_code"}}],
+    )
+    second = provider.build_plan(
+        messages=[
+            base,
+            {
+                "role": "system",
+                "content": "validate or submit now",
+                PROMPT_SECTION_NAME_HINT_KEY: "execution_protocol_guidance",
+                PROMPT_STABILITY_HINT_KEY: "dynamic",
+            },
+            {"role": "user", "content": "task"},
+        ],
+        tools=[{"function": {"name": "execution_decision"}}],
+    )
+
+    assert first.stable_hash == second.stable_hash
+    assert second.observability["stable_prefix_reused"] is True
+    assert second.observability["stable_prefix_changed"] is False
+    assert second.observability["tool_catalog_changed"] is True
+    assert first.tool_section.tool_fingerprint != second.tool_section.tool_fingerprint
+    assert first.to_model_messages()[1] == {
+        "role": "system",
+        "content": "produce a candidate now",
+    }
+    assert PROMPT_STABILITY_HINT_KEY not in first.to_model_messages()[0]
+    assert PROMPT_SECTION_NAME_HINT_KEY not in first.to_model_messages()[0]
 
 
 def test_prompt_assembly_provider_observability_stays_provider_neutral():

@@ -1,5 +1,6 @@
 import abc
 import asyncio
+from copy import deepcopy
 import json
 import logging
 import os
@@ -324,8 +325,14 @@ class BaseSandbox(SandboxSetup):
                 if is_context_output_artifact_read(action):
                     observed = [read_context_output_artifact(context, action)]
                 elif hasattr(self, "mcpservers") and self.mcpservers is not None:
+                    # MCP parameter validation injects framework-only fields
+                    # such as env_content in place.  Keep the model action
+                    # immutable so observation hashes remain stable; the
+                    # lowered ActionResult still carries the actual dispatched
+                    # parameters for receipt validation.
+                    transport_action = deepcopy(action_value)
                     observed = await self.mcpservers.call_tool(
-                        action_list=[action],
+                        action_list=[transport_action],
                         task_id=task_id,
                         session_id=session_id,
                         context=context,

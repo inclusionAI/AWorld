@@ -7,17 +7,24 @@ Only exact, provably read-only core workspace operations can be compacted.
 
 from __future__ import annotations
 
-import ast
 from collections import OrderedDict
 from copy import deepcopy
 from dataclasses import dataclass
 import hashlib
 import json
-import re
-import shlex
+from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 from aworld.core.common import ActionResult
+from aworld.sandbox.terminal_receipt import (
+    TERMINAL_CACHEABLE_EFFECT_SOURCES,
+    TERMINAL_EFFECTS,
+    TERMINAL_EXECUTION_ANALYZER_VERSION,
+    TERMINAL_EXECUTION_RECEIPT_KEY,
+    TERMINAL_EXECUTION_RECEIPT_SCHEMA,
+    plan_terminal_execution,
+    terminal_command_sha256,
+)
 from aworld.utils.serialized_util import to_serializable
 
 
@@ -30,6 +37,8 @@ _FILESYSTEM_READ_ACTIONS = frozenset(
         "list_allowed_directories",
         "list_directory",
         "read_file",
+        "read_media_file",
+        "read_output_artifact",
         "search_content",
         "search_files",
     }
@@ -46,359 +55,23 @@ _FILESYSTEM_MUTATION_ACTIONS = frozenset(
         "write_file_base64",
     }
 )
-_SHELL_READ_COMMANDS = frozenset(
+_FILESYSTEM_CAPABILITY_TOOLS = frozenset(
     {
-        "cat",
-        "cd",
-        "echo",
-        "head",
-        "ls",
-        "pwd",
-        "rg",
-        "sed",
-        "stat",
-        "tail",
-        "wc",
+        "filesystem",
+        "docker",
+        "docker-sandbox",
+        "docker-sandbox-server",
     }
 )
-_SHELL_MUTATION_COMMANDS = frozenset(
+_TERMINAL_CAPABILITY_TOOLS = frozenset(
     {
-        "chmod",
-        "chown",
-        "cp",
-        "install",
-        "ln",
-        "mkdir",
-        "mv",
-        "rm",
-        "rmdir",
-        "touch",
-        "truncate",
+        "terminal",
+        "terminal-server",
+        "docker",
+        "docker-sandbox",
+        "docker-sandbox-server",
     }
 )
-_SAFE_PYTHON_IMPORT_ROOTS = frozenset(
-    {
-        "base64",
-        "collections",
-        "csv",
-        "cv2",
-        "datetime",
-        "functools",
-        "hashlib",
-        "itertools",
-        "json",
-        "math",
-        "numpy",
-        "pathlib",
-        "re",
-        "statistics",
-        "struct",
-        "sys",
-        "toml",
-        "typing",
-    }
-)
-_SAFE_PYTHON_CALL_NAMES = frozenset(
-    {
-        "abs",
-        "all",
-        "any",
-        "bool",
-        "bytearray",
-        "bytes",
-        "dict",
-        "enumerate",
-        "filter",
-        "float",
-        "format",
-        "frozenset",
-        "getattr",
-        "hasattr",
-        "hex",
-        "int",
-        "isinstance",
-        "issubclass",
-        "iter",
-        "len",
-        "list",
-        "map",
-        "max",
-        "memoryview",
-        "min",
-        "next",
-        "oct",
-        "open",
-        "ord",
-        "print",
-        "range",
-        "repr",
-        "reversed",
-        "round",
-        "set",
-        "slice",
-        "sorted",
-        "str",
-        "sum",
-        "super",
-        "tuple",
-        "type",
-        "zip",
-    }
-)
-_UNSAFE_PYTHON_CALL_NAMES = frozenset(
-    {"__import__", "breakpoint", "compile", "eval", "exec", "input"}
-)
-_SAFE_PYTHON_FROM_IMPORTS = {
-    "collections": frozenset({"Counter", "defaultdict", "deque"}),
-    "datetime": frozenset({"date", "datetime", "time", "timedelta", "timezone"}),
-    "functools": frozenset({"partial", "reduce"}),
-    "itertools": frozenset(
-        {
-            "chain",
-            "combinations",
-            "count",
-            "groupby",
-            "islice",
-            "permutations",
-            "product",
-            "repeat",
-            "starmap",
-            "takewhile",
-            "zip_longest",
-        }
-    ),
-    "pathlib": frozenset({"Path", "PurePath", "PurePosixPath"}),
-}
-_SAFE_PYTHON_METHOD_NAMES = frozenset(
-    {
-        "Canny",
-        "Sobel",
-        "VideoCapture",
-        "abs",
-        "absdiff",
-        "all",
-        "any",
-        "append",
-        "argmax",
-        "argmin",
-        "argsort",
-        "array",
-        "asarray",
-        "astype",
-        "connectedComponentsWithStats",
-        "cvtColor",
-        "diff",
-        "endswith",
-        "exists",
-        "find",
-        "full",
-        "get",
-        "group",
-        "groups",
-        "is_dir",
-        "is_file",
-        "isOpened",
-        "isnan",
-        "items",
-        "join",
-        "keys",
-        "load",
-        "loads",
-        "match",
-        "max",
-        "mean",
-        "median",
-        "min",
-        "morphologyEx",
-        "nonzero",
-        "ones",
-        "percentile",
-        "read",
-        "read_bytes",
-        "read_text",
-        "release",
-        "reshape",
-        "resize",
-        "round",
-        "search",
-        "sort",
-        "split",
-        "sqrt",
-        "stack",
-        "startswith",
-        "std",
-        "strip",
-        "sum",
-        "tolist",
-        "values",
-        "var",
-        "where",
-    }
-)
-
-
-def _newlines_are_quoted(code: str) -> bool:
-    quote: str | None = None
-    escaped = False
-    for character in code:
-        if escaped:
-            escaped = False
-            continue
-        if character == "\\" and quote != "'":
-            escaped = True
-            continue
-        if character in {"'", '"'}:
-            if quote is None:
-                quote = character
-            elif quote == character:
-                quote = None
-            continue
-        if character in "\n\r" and quote is None:
-            return False
-    return quote is None
-
-
-def _python_open_is_read_only(call: ast.Call) -> bool:
-    mode: ast.AST | None = None
-    if len(call.args) >= 2:
-        mode = call.args[1]
-    for keyword in call.keywords:
-        if keyword.arg == "mode":
-            mode = keyword.value
-    if mode is None:
-        return True
-    return (
-        isinstance(mode, ast.Constant)
-        and isinstance(mode.value, str)
-        and mode.value.startswith("r")
-        and "+" not in mode.value
-    )
-
-
-def _python_is_provably_read_only(source: str) -> bool:
-    try:
-        tree = ast.parse(source, mode="exec")
-    except (SyntaxError, ValueError, TypeError):
-        return False
-    local_functions = {
-        node.name
-        for node in tree.body
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
-    }
-    imported_names: set[str] = set()
-    for node in tree.body:
-        if isinstance(node, ast.Import):
-            imported_names.update(
-                alias.asname or alias.name.split(".", 1)[0] for alias in node.names
-            )
-        elif isinstance(node, ast.ImportFrom):
-            imported_names.update(alias.asname or alias.name for alias in node.names)
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Import):
-            if any(
-                alias.name.split(".", 1)[0] not in _SAFE_PYTHON_IMPORT_ROOTS
-                for alias in node.names
-            ):
-                return False
-        elif isinstance(node, ast.ImportFrom):
-            root = node.module.split(".", 1)[0] if node.module else ""
-            allowed = _SAFE_PYTHON_FROM_IMPORTS.get(root, frozenset())
-            if (
-                node.level
-                or not node.module
-                or root not in _SAFE_PYTHON_IMPORT_ROOTS
-                or any(alias.name not in allowed for alias in node.names)
-            ):
-                return False
-        elif isinstance(node, (ast.ClassDef, ast.Delete)):
-            return False
-        elif isinstance(node, ast.Call):
-            function = node.func
-            if isinstance(function, ast.Name):
-                if function.id in _UNSAFE_PYTHON_CALL_NAMES:
-                    return False
-                if (
-                    function.id not in _SAFE_PYTHON_CALL_NAMES
-                    and function.id not in local_functions
-                    and function.id not in imported_names
-                ):
-                    return False
-                if function.id == "open" and not _python_open_is_read_only(node):
-                    return False
-            elif isinstance(function, ast.Attribute):
-                if function.attr == "open":
-                    if not _python_open_is_read_only(node):
-                        return False
-                elif function.attr not in _SAFE_PYTHON_METHOD_NAMES:
-                    return False
-            else:
-                return False
-    return True
-
-
-def _shell_python_inline_is_provably_read_only(code: str) -> bool:
-    if not _newlines_are_quoted(code) or any(value in code for value in ("$", "`")):
-        return False
-    try:
-        lexer = shlex.shlex(code, posix=True, punctuation_chars=";&|><")
-        lexer.whitespace_split = True
-        tokens = list(lexer)
-    except ValueError:
-        return False
-    normalized: list[str] = []
-    position = 0
-    while position < len(tokens):
-        token = tokens[position]
-        if token in {">", ">>", "<>"}:
-            if position + 1 >= len(tokens) or tokens[position + 1] != "/dev/null":
-                return False
-            if normalized and normalized[-1].isdigit():
-                normalized.pop()
-            position += 2
-            continue
-        if token == ">&":
-            if position + 1 >= len(tokens) or not tokens[position + 1].isdigit():
-                return False
-            if normalized and normalized[-1].isdigit():
-                normalized.pop()
-            position += 2
-            continue
-        normalized.append(token)
-        position += 1
-    segments: list[list[str]] = [[]]
-    separators: list[str] = []
-    for token in normalized:
-        if token in {"&&", "|"}:
-            if not segments[-1]:
-                return False
-            separators.append(token)
-            segments.append([])
-            continue
-        if token in {";", "||", "&", "<"}:
-            return False
-        segments[-1].append(token)
-    if not segments[-1]:
-        return False
-    if segments[0][0] == "cd":
-        if len(segments[0]) != 2 or not separators or separators[0] != "&&":
-            return False
-        segments = segments[1:]
-        separators = separators[1:]
-    if not segments or len(segments[0]) != 3 or segments[0][1] != "-c":
-        return False
-    executable = segments[0][0].rsplit("/", 1)[-1]
-    if executable not in {"python", "python3"}:
-        return False
-    if not _python_is_provably_read_only(segments[0][2]):
-        return False
-    if any(separator != "|" for separator in separators):
-        return False
-    return all(
-        segment
-        and segment[0] in _SHELL_READ_COMMANDS
-        and segment[0] != "cd"
-        for segment in segments[1:]
-    )
 
 
 def _value(action: Any, name: str, default: Any = None) -> Any:
@@ -417,75 +90,16 @@ def canonical_tool_identity(action: Any) -> tuple[str, str]:
     return tool, operation
 
 
-def _shell_segments(code: str) -> list[list[str]] | None:
-    if any(character in code for character in "$`\n\r"):
-        return None
-    try:
-        lexer = shlex.shlex(code, posix=True, punctuation_chars=";&|><")
-        lexer.whitespace_split = True
-        tokens = list(lexer)
-    except ValueError:
-        return None
-    if not tokens:
-        return None
-    segments: list[list[str]] = [[]]
-    for token in tokens:
-        if token == "&&":
-            segments.append([])
-            continue
-        if any(character in token for character in ";&|><"):
-            return None
-        segments[-1].append(token)
-    return segments if all(segments) else None
-
-
-def _shell_is_provably_read_only(code: str) -> bool:
-    segments = _shell_segments(code)
-    if not segments:
-        return False
-    for segment in segments:
-        executable = segment[0]
-        if executable not in _SHELL_READ_COMMANDS:
-            return False
-        if executable == "rg" and any(value.startswith("--pre") for value in segment[1:]):
-            return False
-        if executable == "sed":
-            if (
-                len(segment) < 3
-                or segment[1] != "-n"
-                or re.fullmatch(r"\d+(?:,\d+)?p", segment[2]) is None
-                or any(value.startswith("-") for value in segment[3:])
-            ):
-                return False
-    return True
-
-
-def _shell_is_known_mutation(code: str) -> bool:
-    try:
-        lexer = shlex.shlex(code, posix=True, punctuation_chars=";&|><")
-        lexer.whitespace_split = True
-        tokens = list(lexer)
-    except ValueError:
-        return False
-    for position, token in enumerate(tokens):
-        if token in {">", ">>", "<>"}:
-            if position + 1 >= len(tokens) or tokens[position + 1] != "/dev/null":
-                return True
-        elif token == ">&":
-            if position + 1 >= len(tokens) or not tokens[position + 1].isdigit():
-                return True
-    command_start = True
-    for token in tokens:
-        if token in {";", "&&", "||", "|", "&"}:
-            command_start = True
-            continue
-        if command_start:
-            command_start = False
-            if token in _SHELL_MUTATION_COMMANDS:
-                return True
-            if token == "sed" and any(value == "-i" or value.startswith("-i") for value in tokens):
-                return True
-    return False
+def _trusted_terminal_receipt_identity(action: Any) -> bool:
+    tool, operation = canonical_tool_identity(action)
+    normalized = tool.strip().lower().replace("_", "-")
+    return operation == "run_code" and normalized in {
+        "terminal",
+        "docker",
+        "terminal-server",
+        "docker-sandbox",
+        "docker-sandbox-server",
+    }
 
 
 @dataclass(frozen=True, slots=True)
@@ -505,25 +119,44 @@ def classify_tool_effect(action: Any) -> ToolEffect:
     identity = f"{tool}.{operation}" if operation else tool
     effect = "unknown"
     cacheable = False
-    if tool == "filesystem":
-        if operation in _FILESYSTEM_READ_ACTIONS:
-            effect = "read_only"
-            cacheable = params.get("refresh") is not True
-        elif operation in _FILESYSTEM_MUTATION_ACTIONS:
-            effect = "mutating"
-    elif tool == "terminal" and operation == "run_code":
+    normalized_tool = tool.strip().lower().replace("_", "-")
+    if (
+        normalized_tool in _FILESYSTEM_CAPABILITY_TOOLS
+        and operation in _FILESYSTEM_READ_ACTIONS
+    ):
+        effect = "read_only"
+        # Filesystem providers own their fileEpoch/range validation.  An outer
+        # replay here would bypass that provider-side recheck.
+        cacheable = False
+    elif (
+        normalized_tool in _FILESYSTEM_CAPABILITY_TOOLS
+        and operation in _FILESYSTEM_MUTATION_ACTIONS
+    ):
+        effect = "mutating"
+    elif normalized_tool in _TERMINAL_CAPABILITY_TOOLS and operation == "run_code":
         code = params.get("code")
-        if isinstance(code, str) and (
-            _shell_is_provably_read_only(code)
-            or _shell_python_inline_is_provably_read_only(code)
-        ):
-            effect = "read_only"
-            cacheable = True
-        elif isinstance(code, str) and _shell_is_known_mutation(code):
-            effect = "mutating"
+        if isinstance(code, str):
+            execution_plan = plan_terminal_execution(code)
+            effect = execution_plan.effect
+            # Terminal replay is enabled only after a provider receipt binds
+            # the parser decision to the actual execution environment.
+            cacheable = False
+    operation_params = dict(params)
+    if "env_content" in operation_params:
+        encoded_env_content = json.dumps(
+            operation_params["env_content"],
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+            default=str,
+        ).encode("utf-8")
+        operation_params["env_content"] = {
+            "sha256": hashlib.sha256(encoded_env_content).hexdigest(),
+            "type": type(params["env_content"]).__name__,
+        }
     operation_hash = "sha256:" + hashlib.sha256(
         json.dumps(
-            {"identity": identity, "params": params},
+            {"identity": identity, "params": operation_params},
             ensure_ascii=False,
             sort_keys=True,
             separators=(",", ":"),
@@ -557,6 +190,126 @@ def _metadata(result: Any) -> dict[str, Any]:
     return dict(value) if isinstance(value, Mapping) else {}
 
 
+def _validated_terminal_execution_receipt(
+    action: Any,
+    result: Any,
+) -> tuple[dict[str, Any] | None, bool]:
+    """Return a validated provider receipt and whether one was supplied."""
+
+    if not _trusted_terminal_receipt_identity(action):
+        return None, False
+    metadata = _metadata(result)
+    if TERMINAL_EXECUTION_RECEIPT_KEY not in metadata:
+        return None, False
+    candidate = metadata.get(TERMINAL_EXECUTION_RECEIPT_KEY)
+    if not isinstance(candidate, Mapping):
+        return None, True
+    receipt = dict(candidate)
+    if receipt.get("schema_version") != TERMINAL_EXECUTION_RECEIPT_SCHEMA:
+        return None, True
+    if receipt.get("parser_version") != TERMINAL_EXECUTION_ANALYZER_VERSION:
+        return None, True
+    result_params = _value(result, "parameter", {})
+    action_params = _value(action, "params", {})
+    params = (
+        result_params
+        if isinstance(result_params, Mapping) and isinstance(result_params.get("code"), str)
+        else action_params
+    )
+    code = params.get("code") if isinstance(params, Mapping) else None
+    if not isinstance(code, str):
+        return None, True
+    if receipt.get("command_sha256") != terminal_command_sha256(code):
+        return None, True
+    effect = receipt.get("effect")
+    potential_effect = receipt.get("potential_effect")
+    effect_source = receipt.get("effect_source")
+    executed = receipt.get("executed")
+    cacheable = receipt.get("cacheable")
+    generation_delta = receipt.get("workspace_generation_delta")
+    if effect not in TERMINAL_EFFECTS:
+        return None, True
+    if potential_effect not in TERMINAL_EFFECTS:
+        return None, True
+    if not isinstance(effect_source, str) or not effect_source:
+        return None, True
+    if not isinstance(executed, bool) or not isinstance(cacheable, bool):
+        return None, True
+    if isinstance(generation_delta, bool) or not isinstance(generation_delta, int):
+        return None, True
+    if generation_delta < 0 or generation_delta > 1:
+        return None, True
+    if not executed and generation_delta != 0:
+        return None, True
+    if effect == "read_only" and generation_delta != 0:
+        return None, True
+    if executed and effect != "read_only" and generation_delta != 1:
+        return None, True
+    if cacheable and (not executed or effect != "read_only"):
+        return None, True
+    if cacheable and effect_source not in TERMINAL_CACHEABLE_EFFECT_SOURCES:
+        return None, True
+    if not isinstance(receipt.get("language"), str):
+        return None, True
+    if not isinstance(receipt.get("parsed"), bool):
+        return None, True
+    if not isinstance(receipt.get("read_set_complete"), bool):
+        return None, True
+    if cacheable and receipt.get("read_set_complete") is not True:
+        return None, True
+    if not isinstance(receipt.get("timed_out"), bool):
+        return None, True
+    if not isinstance(receipt.get("scope_volatile"), bool):
+        return None, True
+    mutation_observed = receipt.get("mutation_observed")
+    if not isinstance(mutation_observed, (bool, type(None))):
+        return None, True
+    if not executed and mutation_observed is not None:
+        return None, True
+    if effect == "read_only" and mutation_observed is True:
+        return None, True
+    exit_code = receipt.get("exit_code")
+    if isinstance(exit_code, bool) or not isinstance(exit_code, (int, type(None))):
+        return None, True
+    for key in ("read_paths", "write_paths"):
+        paths = receipt.get(key)
+        if (
+            not isinstance(paths, list)
+            or len(paths) > 16
+            or any(not isinstance(path, str) or len(path) > 512 for path in paths)
+        ):
+            return None, True
+    read_paths = receipt["read_paths"]
+    read_path_epochs = receipt.get("read_path_epochs")
+    if not isinstance(read_path_epochs, list) or len(read_path_epochs) > 16:
+        return None, True
+    if cacheable and read_paths and len(read_path_epochs) != len(read_paths):
+        return None, True
+    for epoch in read_path_epochs:
+        if not isinstance(epoch, Mapping):
+            return None, True
+        if any(
+            isinstance(epoch.get(key), bool)
+            or not isinstance(epoch.get(key), int)
+            for key in (
+                "link_inode",
+                "link_mtime_ns",
+                "mode",
+                "size",
+                "mtime_ns",
+                "ctime_ns",
+                "inode",
+            )
+        ):
+            return None, True
+        if any(
+            not isinstance(epoch.get(key), str) or len(epoch.get(key)) > 1024
+            for key in ("path", "resolved_path")
+        ):
+            return None, True
+    return receipt, True
+
+
 def _result_content_hash(result: Any) -> str:
     value = to_serializable(_value(result, "content"))
     encoded = json.dumps(
@@ -569,6 +322,30 @@ def _result_content_hash(result: Any) -> str:
     return "sha256:" + hashlib.sha256(encoded).hexdigest()
 
 
+def _read_epoch_matches(epoch: Mapping[str, Any]) -> bool:
+    path = Path(str(epoch.get("path") or ""))
+    if not path.is_absolute():
+        return False
+    try:
+        link_stat = path.lstat()
+        resolved = path.resolve()
+        target_stat = resolved.stat()
+    except OSError:
+        return False
+    current = {
+        "path": str(path),
+        "resolved_path": str(resolved),
+        "link_inode": link_stat.st_ino,
+        "link_mtime_ns": link_stat.st_mtime_ns,
+        "mode": target_stat.st_mode,
+        "size": target_stat.st_size,
+        "mtime_ns": target_stat.st_mtime_ns,
+        "ctime_ns": target_stat.st_ctime_ns,
+        "inode": target_stat.st_ino,
+    }
+    return all(current.get(key) == value for key, value in epoch.items())
+
+
 class SandboxToolObservationRuntime:
     """Task-scoped observation cache owned by one Sandbox control plane."""
 
@@ -576,6 +353,8 @@ class SandboxToolObservationRuntime:
         self._max_cache_entries = max(1, max_cache_entries)
         self._generation: dict[tuple[str, str, str], int] = {}
         self._cache: "OrderedDict[tuple[tuple[str, str, str], int, str], dict[str, Any]]" = OrderedDict()
+        self._authoritative_effects: "OrderedDict[tuple[tuple[str, str, str], str], ToolEffect]" = OrderedDict()
+        self._volatile_scopes: set[tuple[str, str, str]] = set()
 
     def _current_generation(self, context: Any) -> int:
         return self._generation.get(_scope(context), 0)
@@ -586,14 +365,28 @@ class SandboxToolObservationRuntime:
         return self._current_generation(context)
 
     def lookup(self, action: Any, *, context: Any) -> ActionResult | None:
-        effect = classify_tool_effect(action)
+        fallback_effect = classify_tool_effect(action)
+        scope = _scope(context)
+        if scope in self._volatile_scopes:
+            return None
+        learned_key = (scope, fallback_effect.operation_hash)
+        effect = self._authoritative_effects.get(learned_key, fallback_effect)
         if not effect.cacheable:
             return None
-        scope = _scope(context)
+        if learned_key in self._authoritative_effects:
+            self._authoritative_effects.move_to_end(learned_key)
         generation = self._current_generation(context)
         key = (scope, generation, effect.operation_hash)
         cached = self._cache.get(key)
         if cached is None:
+            return None
+        if not all(
+            _read_epoch_matches(epoch)
+            for epoch in cached.get("read_path_epochs", ())
+        ):
+            self._cache.pop(key, None)
+            generation += 1
+            self._generation[scope] = generation
             return None
         self._cache.move_to_end(key)
         receipt = {
@@ -626,26 +419,84 @@ class SandboxToolObservationRuntime:
         )
 
     def record(self, action: Any, result: Any, *, context: Any) -> Any:
-        effect = classify_tool_effect(action)
+        fallback_effect = classify_tool_effect(action)
+        terminal_receipt, terminal_receipt_supplied = (
+            _validated_terminal_execution_receipt(action, result)
+        )
+        effect = fallback_effect
+        if terminal_receipt is not None:
+            effect = ToolEffect(
+                identity=fallback_effect.identity,
+                effect=str(terminal_receipt["effect"]),
+                cacheable=bool(terminal_receipt["cacheable"]),
+                operation_hash=fallback_effect.operation_hash,
+            )
+        elif terminal_receipt_supplied:
+            # A malformed or future-version provider claim is not evidence.
+            # Execute fail-open semantics and conservatively invalidate replay.
+            effect = ToolEffect(
+                identity=fallback_effect.identity,
+                effect="unknown",
+                cacheable=False,
+                operation_hash=fallback_effect.operation_hash,
+            )
+        elif _trusted_terminal_receipt_identity(action):
+            # A legacy/mismatched terminal cannot establish replay safety from
+            # Sandbox-side source parsing alone.
+            effect = ToolEffect(
+                identity=fallback_effect.identity,
+                effect="unknown",
+                cacheable=False,
+                operation_hash=fallback_effect.operation_hash,
+            )
         scope = _scope(context)
+        result_metadata = _metadata(result)
+        scope_volatile = bool(
+            terminal_receipt is not None
+            and terminal_receipt.get("scope_volatile") is True
+        ) or result_metadata.get("background_output_detached") is True
+        if result_metadata.get("capture_complete") is False:
+            scope_volatile = True
+        if scope_volatile:
+            self._volatile_scopes.add(scope)
         generation = self._current_generation(context)
         success = _result_success(result)
         effective_effect = effect.effect
         workspace_mutated: bool | None = None
-        if effect.effect == "mutating":
-            # A failed shell may have partially changed state, so every known
-            # mutation invalidates prior reads while only a successful result
-            # becomes positive mutation evidence.
-            generation += 1
+        generation_delta = (
+            int(terminal_receipt["workspace_generation_delta"])
+            if terminal_receipt is not None
+            else (0 if effect.effect == "read_only" else 1)
+        )
+        if generation_delta:
+            generation += generation_delta
             self._generation[scope] = generation
+        if terminal_receipt is not None:
+            observed_mutation = terminal_receipt.get("mutation_observed")
+            if effect.effect == "read_only":
+                workspace_mutated = False
+            elif isinstance(observed_mutation, bool):
+                workspace_mutated = observed_mutation
+            else:
+                workspace_mutated = None
+            if effect.effect == "mutating" and not success:
+                effective_effect = "unknown"
+        elif effect.effect == "mutating":
+            # Legacy providers have no filesystem-diff evidence.  Preserve
+            # the former successful-known-mutation signal for compatibility.
             workspace_mutated = True if success else None
             if not success:
                 effective_effect = "unknown"
         elif effect.effect == "unknown":
             # Unknown calls must execute and conservatively invalidate replay,
             # but do not claim progress merely because a command ran.
-            generation += 1
-            self._generation[scope] = generation
+            workspace_mutated = None
+        if terminal_receipt is not None:
+            learned_key = (scope, effect.operation_hash)
+            self._authoritative_effects[learned_key] = effect
+            self._authoritative_effects.move_to_end(learned_key)
+            while len(self._authoritative_effects) > self._max_cache_entries:
+                self._authoritative_effects.popitem(last=False)
         content_sha256 = _result_content_hash(result)
         observation_id = "sha256:" + hashlib.sha256(
             json.dumps(
@@ -670,7 +521,10 @@ class SandboxToolObservationRuntime:
             "operation_hash": effect.operation_hash,
             "observation_id": observation_id,
             "content_sha256": content_sha256,
+            "scope_volatile": scope in self._volatile_scopes,
         }
+        if terminal_receipt is not None:
+            receipt["terminal_execution_receipt"] = terminal_receipt
         metadata = _metadata(result)
         metadata["sandbox_observation"] = receipt
         try:
@@ -678,11 +532,16 @@ class SandboxToolObservationRuntime:
         except (AttributeError, TypeError):
             if isinstance(result, dict):
                 result["metadata"] = metadata
-        if effect.cacheable and success:
+        if effect.cacheable and success and scope not in self._volatile_scopes:
             key = (scope, generation, effect.operation_hash)
             self._cache[key] = {
                 "observation_id": observation_id,
                 "content_sha256": content_sha256,
+                "read_path_epochs": deepcopy(
+                    terminal_receipt.get("read_path_epochs", ())
+                    if terminal_receipt is not None
+                    else ()
+                ),
             }
             self._cache.move_to_end(key)
             while len(self._cache) > self._max_cache_entries:

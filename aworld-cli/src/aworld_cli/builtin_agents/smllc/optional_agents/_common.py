@@ -25,6 +25,7 @@ READ_ONLY_FILESYSTEM_ACTIONS = frozenset(
     {
         "list_allowed_directories",
         "list_directory",
+        "get_file_info",
         "read_file",
         "read_media_file",
         "search_content",

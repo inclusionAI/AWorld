@@ -15,6 +15,11 @@ from aworld.sandbox.models import SandboxEnvType
 from aworld.mcp_client import utils as mcp_utils
 from aworld.core.common import ActionResult
 from aworld.core.event.base import Message
+from aworld.sandbox.terminal_receipt import (
+    TERMINAL_EXECUTION_RECEIPT_KEY,
+    TerminalExecutionPlan,
+    build_terminal_execution_receipt,
+)
 
 
 def test_stdio_boundary_is_the_current_process_environment_and_cwd(
@@ -287,7 +292,7 @@ def _sandbox_context():
 
 
 @pytest.mark.asyncio
-async def test_sandbox_compacts_exact_repeated_read_across_one_control_plane() -> None:
+async def test_sandbox_delegates_repeated_filesystem_read_epoch_checks_to_provider() -> None:
     calls = []
 
     class _McpServers:
@@ -318,14 +323,62 @@ async def test_sandbox_compacts_exact_repeated_read_across_one_control_plane() -
     first = await sandbox.call_tool(action_list=[action], context=context)
     repeated = await sandbox.call_tool(action_list=[action], context=context)
 
-    assert len(calls) == 1
+    assert len(calls) == 2
     assert first[0].content == "alpha\nbeta\n"
-    assert repeated[0].content != first[0].content
+    assert repeated[0].content == first[0].content
     receipt = repeated[0].metadata["sandbox_observation"]
     assert receipt["canonical_tool"] == "filesystem.read_file"
     assert receipt["effect"] == "read_only"
-    assert receipt["cache_hit"] is True
-    assert receipt["changed"] is False
+    assert receipt["cache_hit"] is False
+
+
+@pytest.mark.asyncio
+async def test_sandbox_uses_terminal_receipt_then_replays_from_observation_cache() -> None:
+    calls = []
+    code = "if depth > 3:\n    print(depth)"
+    terminal_receipt = build_terminal_execution_receipt(
+        code=code,
+        plan=TerminalExecutionPlan("python", "read_only", True, True),
+        executed=True,
+        exit_code=0,
+        timed_out=False,
+        effect_source="trusted_command_contract",
+    )
+
+    class _McpServers:
+        async def call_tool(self, **kwargs):
+            action = kwargs["action_list"][0]
+            calls.append(action)
+            return [
+                ActionResult(
+                    success=True,
+                    tool_name=action["tool_name"],
+                    action_name=action["action_name"],
+                    content="4\n",
+                    metadata={TERMINAL_EXECUTION_RECEIPT_KEY: terminal_receipt},
+                    parameter=action["params"],
+                )
+            ]
+
+    sandbox = object.__new__(Sandbox)
+    sandbox._sandbox_id = "sandbox-1"
+    sandbox._env_type = SandboxEnvType.LOCAL
+    sandbox._metadata = {}
+    sandbox._mcpservers = _McpServers()
+    action = {
+        "tool_name": "terminal",
+        "action_name": "run_code",
+        "params": {"code": code},
+    }
+    context = _sandbox_context()
+
+    first = await sandbox.call_tool(action_list=[action], context=context)
+    repeated = await sandbox.call_tool(action_list=[action], context=context)
+
+    assert len(calls) == 1
+    assert first[0].metadata["sandbox_observation"]["effect"] == "read_only"
+    assert first[0].metadata["sandbox_observation"]["workspace_generation"] == 0
+    assert repeated[0].metadata["sandbox_observation"]["cache_hit"] is True
 
 
 @pytest.mark.asyncio

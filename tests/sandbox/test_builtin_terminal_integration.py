@@ -2,6 +2,7 @@ import asyncio
 from pathlib import Path
 import shlex
 import sys
+from types import SimpleNamespace
 
 import pytest
 
@@ -53,6 +54,15 @@ async def test_builtin_terminal_discovers_and_executes_in_workspace(
         assert payload["metadata"]["output_data"] is None
         assert str(tmp_path.resolve()) in payload["message"]["stdout"]
         assert payload["metadata"]["timeout_seconds"] == 300
+        terminal_receipt = payload["metadata"]["terminal_execution_receipt"]
+        assert terminal_receipt["schema_version"] == (
+            "aworld.terminal-execution-receipt/v1"
+        )
+        assert terminal_receipt["language"] == "shell"
+        assert terminal_receipt["effect"] == "read_only"
+        assert terminal_receipt["workspace_generation_delta"] == 0
+        assert terminal_receipt["executed"] is True
+        assert terminal_receipt["exit_code"] == 0
     finally:
         await sandbox.cleanup()
 
@@ -92,5 +102,57 @@ async def test_builtin_terminal_artifact_survives_non_reuse_stdio_calls(
         assert artifact["data"]["content"] == original
         assert artifact["data"]["complete"] is True
         assert artifact["data"]["content_sha256"] == policy["content_sha256"]
+    finally:
+        await sandbox.cleanup()
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_builtin_terminal_receipt_drives_sandbox_observation_cache(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "evidence.txt"
+    source.write_text("alpha\nbeta\n", encoding="utf-8")
+    sandbox = Sandbox(
+        builtin_tools=["terminal"],
+        workspaces=[str(tmp_path)],
+        reuse=False,
+    )
+    action = {
+        "tool_name": "terminal",
+        "action_name": "run_code",
+        "params": {
+            "code": "cat evidence.txt | head -1; wc -l evidence.txt",
+        },
+    }
+    context = SimpleNamespace(
+        task_id="receipt-task",
+        task_epoch=1,
+        session_id="receipt-session",
+    )
+    try:
+        first = await asyncio.wait_for(
+            sandbox.call_tool(action_list=[action], context=context),
+            timeout=30,
+        )
+        repeated = await asyncio.wait_for(
+            sandbox.call_tool(action_list=[action], context=context),
+            timeout=30,
+        )
+        source.write_text("gamma\n", encoding="utf-8")
+        changed = await asyncio.wait_for(
+            sandbox.call_tool(action_list=[action], context=context),
+            timeout=30,
+        )
+
+        assert first[0].metadata["terminal_execution_receipt"]["effect"] == (
+            "read_only"
+        )
+        assert first[0].metadata["sandbox_observation"]["workspace_generation"] == 0
+        assert repeated[0].metadata["sandbox_observation"]["cache_hit"] is True
+        assert repeated[0].metadata["sandbox_observation"]["changed"] is False
+        assert changed[0].metadata["sandbox_observation"]["cache_hit"] is False
+        assert "gamma" in changed[0].content
+        assert "env_content" not in action["params"]
     finally:
         await sandbox.cleanup()

@@ -339,10 +339,24 @@ async def test_system_prompt_augment_persists_ordered_stable_dynamic_sections(
         "amni.system_sections",
     ]
     from aworld.agents.llm_agent import Agent
+    from aworld.core.context.amni.prompt.assembly import (
+        PROMPT_SECTION_NAME_HINT_KEY,
+        PROMPT_STABILITY_HINT_KEY,
+    )
 
     assert Agent._amni_system_section_messages(command.item) == [
-        {"role": "system", "content": "stable rules"},
-        {"role": "system", "content": "dynamic memory"},
+        {
+            "role": "system",
+            "content": "stable rules",
+            PROMPT_SECTION_NAME_HINT_KEY: "system_prompt",
+            PROMPT_STABILITY_HINT_KEY: "stable",
+        },
+        {
+            "role": "system",
+            "content": "dynamic memory",
+            PROMPT_SECTION_NAME_HINT_KEY: "relevant_memory",
+            PROMPT_STABILITY_HINT_KEY: "dynamic",
+        },
     ]
     command.item.content = "tampered"
     assert Agent._amni_system_section_messages(command.item) is None

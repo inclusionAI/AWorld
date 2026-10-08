@@ -20,9 +20,11 @@ from aworld.sandbox.tool_servers.terminal.src.terminal import (
     _get_total_capture_limit_bytes,
     _has_background_operator,
     _resolve_command_timeout,
+    _terminal_execution_plan,
     read_output_artifact,
     run_code,
 )
+from aworld.sandbox.terminal_receipt import terminal_command_sha256
 
 
 def _result(*, stdout: str = "", stderr: str = "") -> CommandResult:
@@ -35,6 +37,259 @@ def _result(*, stdout: str = "", stderr: str = "") -> CommandResult:
         duration="0:00:00.001000",
         timestamp="2026-09-15T12:00:00",
     )
+
+
+@pytest.mark.parametrize(
+    ("command", "effect"),
+    (
+        ("cat a; wc -l b", "read_only"),
+        ("cat a | head -1", "read_only"),
+        ("cat a\nwc -l b", "read_only"),
+        ("cat a >/dev/null", "read_only"),
+        ("cat a 2>&1 | head", "read_only"),
+        ("cat < input.txt", "read_only"),
+        ("cat a > output.txt", "mutating"),
+        ("echo x >> output.txt", "mutating"),
+        ('echo x > "$OUT"', "mutating"),
+        ("cat <> shared.txt", "mutating"),
+        ("python -c 'print(1 > 0)'", "read_only"),
+        ("python -c \"open('x', 'w').write('x')\"", "mutating"),
+        ("python -c 'import sys; sys.stdout.write(\"x\")'", "unknown"),
+        ("python script.py", "unknown"),
+        ("if depth > 3:\n    print(depth)", "unknown"),
+        ("sort -o out.txt input.txt", "unknown"),
+        ("uniq input.txt output.txt", "unknown"),
+        ("file -C -m magic", "unknown"),
+        ("sed -n '1w out.txt' input.txt", "unknown"),
+        ("sed -e 'e touch out.txt' input.txt", "unknown"),
+        ("sort --compress-program='sh -c touch out.txt' input.txt", "unknown"),
+        ('echo "$VALUE"', "unknown"),
+        ("printf '%s' \"$VALUE\"", "unknown"),
+        ("echo $(touch out.txt)", "mutating"),
+        ("PATH=/tmp cat input.txt", "unknown"),
+        ("env PATH=/tmp cat input.txt", "unknown"),
+        ("sudo cat input.txt", "unknown"),
+        ("command cat input.txt", "unknown"),
+        ("time cat input.txt", "unknown"),
+    ),
+)
+def test_terminal_execution_plan_preserves_shell_composition_effect(
+    command: str,
+    effect: str,
+) -> None:
+    plan = _terminal_execution_plan(command)
+
+    assert plan.language == "shell"
+    assert plan.effect == effect
+    assert plan.cacheable is (effect == "read_only")
+
+
+@pytest.mark.parametrize(
+    "command",
+    (
+        "cat /proc/u?time",
+        "rg pattern /*",
+        "python -c \"p='/proc/uptime'; print(open(p).read())\"",
+        "cat " + " ".join(f"file-{index}" for index in range(17)),
+    ),
+)
+def test_terminal_execution_plan_marks_unresolved_read_set(command: str) -> None:
+    plan = _terminal_execution_plan(command)
+
+    assert plan.effect == "read_only"
+    assert plan.read_set_complete is False
+
+
+@pytest.mark.parametrize(
+    ("command", "expected_path"),
+    (
+        ("test -f /app/input.txt", "/app/input.txt"),
+        ("readlink -f /app/input.txt", "/app/input.txt"),
+        ("realpath -m /app/input.txt", "/app/input.txt"),
+        (
+            "python -c \"import numpy as np; print(np.load('/app/x.npy'))\"",
+            "/app/x.npy",
+        ),
+        (
+            "python -c \"import toml; print(toml.load('/app/x.toml'))\"",
+            "/app/x.toml",
+        ),
+    ),
+)
+def test_terminal_execution_plan_captures_read_operand(
+    command: str,
+    expected_path: str,
+) -> None:
+    plan = _terminal_execution_plan(command)
+
+    assert plan.effect == "read_only"
+    assert plan.read_set_complete is True
+    assert expected_path in plan.read_paths
+
+
+@pytest.mark.asyncio
+async def test_run_code_emits_compact_terminal_execution_receipt() -> None:
+    command = "printf alpha; printf beta | wc -c"
+
+    response = await run_code(None, command, timeout=10)
+    payload = json.loads(response.text)
+    receipt = payload["metadata"]["terminal_execution_receipt"]
+
+    assert payload["success"] is True
+    assert receipt == {
+        "schema_version": "aworld.terminal-execution-receipt/v1",
+        "parser_version": 1,
+        "command_sha256": terminal_command_sha256(command),
+        "language": "shell",
+        "parsed": True,
+        "potential_effect": "read_only",
+        "effect": "read_only",
+        "effect_source": "trusted_command_contract",
+        "cacheable": True,
+        "read_paths": [],
+        "write_paths": [],
+        "read_set_complete": True,
+        "read_path_epochs": [],
+        "workspace_generation_delta": 0,
+        "mutation_observed": None,
+        "scope_volatile": False,
+        "executed": True,
+        "timed_out": False,
+        "exit_code": 0,
+    }
+    assert command not in json.dumps(receipt)
+
+
+@pytest.mark.asyncio
+async def test_rejected_command_receipt_says_execution_did_not_start() -> None:
+    command = "rm -rf /"
+
+    response = await run_code(None, command, timeout=10)
+    payload = json.loads(response.text)
+    receipt = payload["metadata"]["terminal_execution_receipt"]
+
+    assert payload["success"] is False
+    assert payload["metadata"]["safety_check_passed"] is False
+    assert receipt["effect"] == "mutating"
+    assert receipt["executed"] is False
+    assert receipt["workspace_generation_delta"] == 0
+    assert receipt["exit_code"] is None
+
+
+@pytest.mark.asyncio
+async def test_run_code_reports_observed_change_for_literal_write_target(
+    tmp_path: Path,
+) -> None:
+    response = await run_code(
+        None,
+        "printf changed > result.txt",
+        timeout=10,
+        cwd=str(tmp_path),
+    )
+    payload = json.loads(response.text)
+    receipt = payload["metadata"]["terminal_execution_receipt"]
+
+    assert payload["success"] is True
+    assert receipt["effect"] == "mutating"
+    assert receipt["write_paths"] == ["result.txt"]
+    assert receipt["workspace_generation_delta"] == 1
+    assert receipt["mutation_observed"] is True
+    assert (tmp_path / "result.txt").read_text() == "changed"
+
+
+@pytest.mark.asyncio
+async def test_run_code_does_not_cache_reads_outside_workspace(
+    tmp_path: Path,
+) -> None:
+    response = await run_code(
+        None,
+        "cat /etc/hosts",
+        timeout=10,
+        cwd=str(tmp_path),
+    )
+    payload = json.loads(response.text)
+    receipt = payload["metadata"]["terminal_execution_receipt"]
+
+    assert payload["success"] is True
+    assert receipt["potential_effect"] == "read_only"
+    assert receipt["effect"] == "unknown"
+    assert receipt["effect_source"] == "untrusted_execution_context"
+    assert receipt["cacheable"] is False
+    assert receipt["workspace_generation_delta"] == 1
+
+
+@pytest.mark.asyncio
+async def test_run_code_does_not_trust_per_call_path_override(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "input.txt"
+    source.write_text("value", encoding="utf-8")
+    response = await run_code(
+        None,
+        "cat input.txt",
+        timeout=10,
+        cwd=str(tmp_path),
+        env={"PATH": "/bin:/usr/bin"},
+    )
+    payload = json.loads(response.text)
+    receipt = payload["metadata"]["terminal_execution_receipt"]
+
+    assert payload["success"] is True
+    assert receipt["potential_effect"] == "read_only"
+    assert receipt["effect"] == "unknown"
+    assert receipt["cacheable"] is False
+
+
+@pytest.mark.asyncio
+async def test_run_code_does_not_cache_when_input_changes_during_read(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = tmp_path / "input.txt"
+    source.write_text("before", encoding="utf-8")
+    monkeypatch.setattr(
+        "aworld.sandbox.tool_servers.terminal.src.terminal.workspace",
+        tmp_path,
+    )
+
+    async def changing_read(*_args, **_kwargs):
+        source.write_text("after", encoding="utf-8")
+        return _result(stdout="before")
+
+    monkeypatch.setattr(
+        "aworld.sandbox.tool_servers.terminal.src.terminal._execute_command_async",
+        changing_read,
+    )
+
+    response = await run_code(
+        None,
+        "cat input.txt",
+        timeout=10,
+        cwd=str(tmp_path),
+    )
+    receipt = json.loads(response.text)["metadata"]["terminal_execution_receipt"]
+
+    assert receipt["effect"] == "read_only"
+    assert receipt["read_paths"] == ["input.txt"]
+    assert receipt["read_path_epochs"] == []
+    assert receipt["cacheable"] is False
+
+
+@pytest.mark.asyncio
+async def test_run_code_anchors_explicit_cwd_to_configured_workspace() -> None:
+    response = await run_code(
+        None,
+        "cat etc/hosts",
+        timeout=10,
+        cwd="/",
+    )
+    payload = json.loads(response.text)
+    receipt = payload["metadata"]["terminal_execution_receipt"]
+
+    assert payload["success"] is True
+    assert receipt["potential_effect"] == "read_only"
+    assert receipt["effect"] == "unknown"
+    assert receipt["cacheable"] is False
 
 
 def test_bounded_inline_stream_preserves_head_and_tail() -> None:

@@ -1,7 +1,7 @@
 import asyncio
 import base64
 from collections import deque
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import hashlib
 import json
 import logging
@@ -9,8 +9,11 @@ import math
 import platform
 import re
 import shlex
+import shutil
 import signal
+import stat as stat_module
 import subprocess
+import sys
 import tempfile
 import time
 import traceback
@@ -32,6 +35,12 @@ from mcp.server.fastmcp import Context
 from mcp.server import FastMCP
 from mcp.types import TextContent
 from pydantic import Field, BaseModel
+
+from aworld.sandbox.terminal_receipt import (
+    TerminalExecutionPlan,
+    build_terminal_execution_receipt,
+    plan_terminal_execution,
+)
 
 try:
     from .background_keywords import LONG_RUNNING_KEYWORDS
@@ -151,6 +160,7 @@ class TerminalMetadata(BaseModel):
     capture_strategy: str = "bounded_head_tail_drain"
     environment_keys: list[str] = Field(default_factory=list)
     output_policy: dict[str, dict[str, Any]] = Field(default_factory=dict)
+    terminal_execution_receipt: dict[str, Any] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -692,12 +702,27 @@ async def run_code(
     if isinstance(env_content, FieldInfo):
         env_content = env_content.default
 
+    execution_plan = _terminal_execution_plan(command)
+    receipt_plan = execution_plan
+    receipt_effect_source = "parser_contract"
+    execution_started = False
+    execution_result: CommandResult | None = None
+    mutation_snapshot: dict[Path, tuple[Any, ...]] | None = None
+    read_epochs_before: list[dict[str, Any]] = []
+
     try:
         timeout_decision = _resolve_command_timeout(timeout)
         working_directory = _resolve_working_directory(cwd)
         command_environment = _resolve_environment(
             env,
             framework_scope=env_content,
+        )
+        receipt_plan, receipt_effect_source = _terminal_receipt_plan(
+            command=str(command),
+            potential_plan=execution_plan,
+            working_directory=working_directory,
+            environment=command_environment,
+            environment_overrides=env,
         )
         environment_keys = sorted(
             {
@@ -731,6 +756,15 @@ async def run_code(
                     safety_check_passed=True,
                     error_type="task_budget_exhausted",
                     environment_keys=environment_keys,
+                    terminal_execution_receipt=build_terminal_execution_receipt(
+                        code=str(command),
+                        plan=receipt_plan,
+                        executed=False,
+                        exit_code=None,
+                        timed_out=False,
+                        potential_effect=execution_plan.effect,
+                        effect_source=receipt_effect_source,
+                    ),
                 ).model_dump(),
             )
             return TextContent(
@@ -755,6 +789,15 @@ async def run_code(
                     safety_check_passed=False,
                     error_type="security_violation",
                     environment_keys=environment_keys,
+                    terminal_execution_receipt=build_terminal_execution_receipt(
+                        code=str(command),
+                        plan=receipt_plan,
+                        executed=False,
+                        exit_code=None,
+                        timed_out=False,
+                        potential_effect=execution_plan.effect,
+                        effect_source=receipt_effect_source,
+                    ),
                 ).model_dump(),
             )
             # await send_command_card(
@@ -775,14 +818,42 @@ async def run_code(
         logging.info(f"🔧 Executing command: {command}")
 
         # Execute command
+        mutation_snapshot = _snapshot_known_write_paths(
+            command=str(command),
+            plan=execution_plan,
+            working_directory=working_directory,
+        )
+        if receipt_plan.effect == "read_only":
+            read_epochs_before = _read_path_epochs(
+                plan=receipt_plan,
+                working_directory=working_directory,
+            )
         start_time = time.time()
+        execution_started = True
         result = await _execute_command_async(
             command,
             timeout_decision.effective_seconds,
             cwd=working_directory,
             env=command_environment,
         )
+        execution_result = result
         execution_time = time.time() - start_time
+        read_epochs_after = (
+            _read_path_epochs(
+                plan=receipt_plan,
+                working_directory=working_directory,
+            )
+            if result.success and receipt_plan.effect == "read_only"
+            else []
+        )
+        # A replay receipt must bind the bytes just returned to one stable file
+        # epoch. If any input changed while the command was reading it, execute
+        # normally but do not seed the observation cache.
+        read_path_epochs = (
+            read_epochs_after
+            if read_epochs_before == read_epochs_after
+            else []
+        )
 
         # Format output
         formatted_output = _format_command_output(result, output_format)
@@ -812,6 +883,20 @@ async def run_code(
                 "stdout": result.stdout_output_policy,
                 "stderr": result.stderr_output_policy,
             },
+            terminal_execution_receipt=build_terminal_execution_receipt(
+                code=str(command),
+                plan=receipt_plan,
+                executed=True,
+                exit_code=result.return_code,
+                timed_out=result.timed_out,
+                capture_complete=result.capture_complete,
+                mutation_observed=_mutation_observed_from_snapshot(
+                    mutation_snapshot
+                ),
+                potential_effect=execution_plan.effect,
+                effect_source=receipt_effect_source,
+                read_path_epochs=read_path_epochs,
+            ),
         )
 
         if result.success:
@@ -859,6 +944,33 @@ async def run_code(
                 timeout_seconds=0,
                 safety_check_passed=True,
                 error_type="internal_error",
+                terminal_execution_receipt=build_terminal_execution_receipt(
+                    code=str(command),
+                    plan=receipt_plan,
+                    executed=execution_started,
+                    exit_code=(
+                        execution_result.return_code
+                        if execution_result is not None
+                        else None
+                    ),
+                    timed_out=(
+                        execution_result.timed_out
+                        if execution_result is not None
+                        else False
+                    ),
+                    capture_complete=(
+                        execution_result.capture_complete
+                        if execution_result is not None
+                        else True
+                    ),
+                    mutation_observed=(
+                        _mutation_observed_from_snapshot(mutation_snapshot)
+                        if execution_started
+                        else None
+                    ),
+                    potential_effect=execution_plan.effect,
+                    effect_source=receipt_effect_source,
+                ),
             ).model_dump(),
         )
         return TextContent(
@@ -1215,6 +1327,257 @@ def _command_words(segment: list[str]) -> tuple[str, list[str]]:
             continue
         return executable, words[1:]
     return "", []
+
+
+def _terminal_execution_plan(command: Any) -> TerminalExecutionPlan:
+    """Analyze exactly what this terminal will hand to its platform shell."""
+
+    if not isinstance(command, str) or platform_info["system"] == "Windows":
+        return TerminalExecutionPlan("unknown", "unknown", False, False)
+    try:
+        shell_nodes = list(_parse_shell_nodes(command))
+    except (
+        bashlex.errors.ParsingError,
+        NotImplementedError,
+        RecursionError,
+        ValueError,
+        IndexError,
+        AssertionError,
+        TypeError,
+    ):
+        return TerminalExecutionPlan("shell", "unknown", False, False)
+    return plan_terminal_execution(
+        command,
+        shell_nodes=shell_nodes,
+        trusted_executable_paths=(sys.executable,),
+    )
+
+
+_CACHE_SAFE_SHELL_BUILTINS = frozenset(
+    {":", "cd", "echo", "false", "printf", "pwd", "test", "true", "type"}
+)
+_SHELL_STARTUP_ENVIRONMENT_KEYS = frozenset(
+    {"BASH_ENV", "CDPATH", "ENV", "SHELLOPTS"}
+)
+
+
+def _command_executable_token(segment: list[str]) -> str | None:
+    words = list(segment)
+    while words and re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", words[0]):
+        words.pop(0)
+    return words[0] if words else None
+
+
+def _path_within(path: Path, root: Path) -> bool:
+    try:
+        return os.path.commonpath((str(path), str(root))) == str(root)
+    except ValueError:
+        return False
+
+
+def _trusted_read_execution_context(
+    *,
+    command: str,
+    plan: TerminalExecutionPlan,
+    working_directory: Path,
+    environment: Mapping[str, str],
+    environment_overrides: Mapping[str, str] | None,
+) -> bool:
+    if (
+        plan.effect != "read_only"
+        or not plan.parsed
+        or not plan.read_set_complete
+    ):
+        return False
+    if any(environment.get(key) for key in _SHELL_STARTUP_ENVIRONMENT_KEYS):
+        return False
+    if any(str(key).startswith("BASH_FUNC_") for key in environment):
+        return False
+    overrides = environment_overrides or {}
+    if any(
+        key == "PATH"
+        or key in _SHELL_STARTUP_ENVIRONMENT_KEYS
+        or str(key).startswith("BASH_FUNC_")
+        for key in overrides
+    ):
+        return False
+
+    workspace_root = workspace.resolve()
+    resolved_working_directory = working_directory.resolve()
+    if not _path_within(resolved_working_directory, workspace_root):
+        return False
+    for raw_path in plan.read_paths:
+        candidate = Path(raw_path).expanduser()
+        if not candidate.is_absolute():
+            candidate = resolved_working_directory / candidate
+        try:
+            resolved_candidate = candidate.resolve()
+            stat_result = resolved_candidate.stat()
+        except OSError:
+            return False
+        if not _path_within(resolved_candidate, workspace_root):
+            return False
+        if not stat_module.S_ISREG(stat_result.st_mode):
+            return False
+
+    try:
+        segments = _shell_command_segments(command)
+    except ValueError:
+        return False
+    for segment in segments:
+        executable, _ = _command_words(segment)
+        if not executable or executable in _CACHE_SAFE_SHELL_BUILTINS:
+            continue
+        token = _command_executable_token(segment)
+        if token is None:
+            return False
+        if "/" in token:
+            candidate = Path(token).expanduser()
+            if not candidate.is_absolute():
+                candidate = resolved_working_directory / candidate
+            resolved = candidate.resolve()
+        else:
+            resolved_text = shutil.which(token, path=environment.get("PATH"))
+            if not resolved_text:
+                return False
+            resolved = Path(resolved_text).resolve()
+        if _path_within(resolved, workspace_root) or _path_within(
+            resolved, Path("/tmp").resolve()
+        ):
+            return False
+        if not resolved.is_file() or not os.access(resolved, os.X_OK):
+            return False
+    return True
+
+
+def _read_path_epochs(
+    *,
+    plan: TerminalExecutionPlan,
+    working_directory: Path,
+) -> list[dict[str, Any]]:
+    epochs: list[dict[str, Any]] = []
+    for raw_path in plan.read_paths:
+        candidate = Path(raw_path).expanduser()
+        if not candidate.is_absolute():
+            candidate = working_directory / candidate
+        absolute = Path(os.path.abspath(candidate))
+        try:
+            link_stat = absolute.lstat()
+            resolved = absolute.resolve()
+            target_stat = resolved.stat()
+        except OSError:
+            return []
+        if not stat_module.S_ISREG(target_stat.st_mode):
+            return []
+        epochs.append(
+            {
+                "path": str(absolute),
+                "resolved_path": str(resolved),
+                "link_inode": link_stat.st_ino,
+                "link_mtime_ns": link_stat.st_mtime_ns,
+                "mode": target_stat.st_mode,
+                "size": target_stat.st_size,
+                "mtime_ns": target_stat.st_mtime_ns,
+                "ctime_ns": target_stat.st_ctime_ns,
+                "inode": target_stat.st_ino,
+            }
+        )
+    return epochs
+
+
+def _terminal_receipt_plan(
+    *,
+    command: str,
+    potential_plan: TerminalExecutionPlan,
+    working_directory: Path,
+    environment: Mapping[str, str],
+    environment_overrides: Mapping[str, str] | None,
+) -> tuple[TerminalExecutionPlan, str]:
+    if potential_plan.effect != "read_only":
+        return potential_plan, "parser_contract"
+    if _trusted_read_execution_context(
+        command=command,
+        plan=potential_plan,
+        working_directory=working_directory,
+        environment=environment,
+        environment_overrides=environment_overrides,
+    ):
+        return potential_plan, "trusted_command_contract"
+    return replace(
+        potential_plan,
+        effect="unknown",
+        cacheable=False,
+    ), "untrusted_execution_context"
+
+
+def _path_state(path: Path) -> tuple[Any, ...]:
+    try:
+        stat_result = path.lstat()
+    except FileNotFoundError:
+        return ("missing",)
+    except OSError as exc:
+        return ("error", type(exc).__name__)
+    symlink_target: str | None = None
+    if path.is_symlink():
+        try:
+            symlink_target = os.readlink(path)
+        except OSError:
+            symlink_target = None
+    return (
+        "present",
+        stat_result.st_mode,
+        stat_result.st_size,
+        stat_result.st_mtime_ns,
+        stat_result.st_ctime_ns,
+        stat_result.st_ino,
+        symlink_target,
+    )
+
+
+def _snapshot_known_write_paths(
+    *,
+    command: str,
+    plan: TerminalExecutionPlan,
+    working_directory: Path,
+) -> dict[Path, tuple[Any, ...]] | None:
+    """Capture cheap pre-execution evidence for literal write targets."""
+
+    if plan.effect != "mutating" or not plan.write_paths:
+        return None
+    try:
+        if any(
+            _command_words(segment)[0] == "cd"
+            for segment in _shell_command_segments(command)
+        ):
+            # Relative paths following a shell-local cd cannot be resolved
+            # safely without interpreting shell control flow.
+            if any(not Path(value).expanduser().is_absolute() for value in plan.write_paths):
+                return None
+    except ValueError:
+        return None
+    snapshot: dict[Path, tuple[Any, ...]] = {}
+    for value in plan.write_paths:
+        candidate = Path(value).expanduser()
+        if not candidate.is_absolute():
+            candidate = working_directory / candidate
+        normalized = Path(os.path.abspath(candidate))
+        snapshot[normalized] = _path_state(normalized)
+    return snapshot or None
+
+
+def _mutation_observed_from_snapshot(
+    before: dict[Path, tuple[Any, ...]] | None,
+) -> bool | None:
+    if before is None:
+        return None
+    observed_change = False
+    for path, prior_state in before.items():
+        current_state = _path_state(path)
+        if "error" in {prior_state[0], current_state[0]}:
+            continue
+        if current_state != prior_state:
+            observed_change = True
+    return observed_change
 
 
 def _is_broad_rm_target(target: str) -> bool:

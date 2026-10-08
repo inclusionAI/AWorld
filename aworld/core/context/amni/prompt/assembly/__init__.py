@@ -6,6 +6,9 @@ from .plan import (
     validated_amni_system_sections,
 )
 from .provider import (
+    PROMPT_SECTION_NAME_HINT_KEY,
+    PROMPT_STABILITY_HINT_KEY,
+    sanitize_prompt_messages,
     PromptAssemblyProvider,
     DefaultPromptAssemblyProvider,
     CacheAwarePromptAssemblyProvider,
@@ -27,6 +30,9 @@ __all__ = [
     "PromptSection",
     "validated_amni_system_sections",
     "ToolSectionHint",
+    "PROMPT_SECTION_NAME_HINT_KEY",
+    "PROMPT_STABILITY_HINT_KEY",
+    "sanitize_prompt_messages",
     "PromptAssemblyProvider",
     "DefaultPromptAssemblyProvider",
     "CacheAwarePromptAssemblyProvider",

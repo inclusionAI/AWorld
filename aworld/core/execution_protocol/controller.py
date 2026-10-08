@@ -5,6 +5,8 @@ from __future__ import annotations
 from dataclasses import replace
 
 from .models import (
+    CompletionAssessment,
+    ConvergenceStage,
     ControllerAction,
     ControllerDecision,
     DeliveryIntent,
@@ -261,6 +263,18 @@ def transition_execution_protocol(
             and update.delivery_intent is not DeliveryIntent.UNKNOWN
             and not terminal_intent
         )
+        candidate_checkpoint_recorded = bool(
+            update is not None
+            and (
+                update.completion_assessment is CompletionAssessment.CANDIDATE_READY
+                or update.delivery_intent
+                in {
+                    DeliveryIntent.VALIDATE_CANDIDATE,
+                    DeliveryIntent.SUBMIT_CURRENT,
+                }
+                or update.selected_candidate_id is not None
+            )
+        )
         next_state = replace(
             next_state,
             model_plan_update=update,
@@ -280,6 +294,10 @@ def transition_execution_protocol(
             candidate_decision_recorded=(
                 next_state.candidate_decision_recorded
                 or candidate_decision_acknowledged
+            ),
+            candidate_checkpoint_recorded=(
+                next_state.candidate_checkpoint_recorded
+                or candidate_checkpoint_recorded
             ),
             next_action_alignment_pending=alignment_pending,
             pending_next_action_plan_sequence=(
@@ -319,6 +337,93 @@ def transition_execution_protocol(
             # thresholds is long-running even when the initial model estimate
             # was short or unknown. Arming is sticky for the task epoch.
             next_state = replace(next_state, long_horizon_armed=True)
+        candidate_present = (
+            event.candidate_present
+            if event.candidate_present is not None
+            else next_state.candidate_present
+        )
+        public_deliverable_declared = bool(
+            next_state.public_deliverable_declared
+            or event.public_deliverable_declared
+        )
+        public_candidate_mutated = (
+            event.public_candidate_mutated
+            if event.kind is EventKind.TOOL_OBSERVATION
+            and event.public_deliverable_declared
+            else next_state.public_candidate_mutated
+        )
+        candidate_epoch_advanced = bool(
+            next_state.candidate_epoch_advanced or event.candidate_advanced
+        )
+        candidate_checkpoint_recorded = next_state.candidate_checkpoint_recorded
+        if event.candidate_present is False:
+            # Explicit public absence invalidates both high-water and model
+            # checkpoint claims. Contractless ``None`` deliberately preserves
+            # an explicit candidate checkpoint.
+            candidate_epoch_advanced = False
+            candidate_checkpoint_recorded = False
+            public_candidate_mutated = False
+        elif (
+            public_deliverable_declared
+            and candidate_present is True
+            and not public_candidate_mutated
+        ):
+            # A candidate that has returned to its pre-task baseline is only
+            # inspectable presence, not current task-epoch candidate evidence.
+            candidate_checkpoint_recorded = False
+        candidate_convergence_ready = bool(
+            candidate_checkpoint_recorded
+            or (
+                candidate_present is True
+                and (
+                    public_candidate_mutated
+                    if public_deliverable_declared
+                    else candidate_epoch_advanced
+                )
+            )
+        )
+        post_candidate_read_only_observations = (
+            next_state.post_candidate_read_only_observations
+        )
+        if event.kind is EventKind.TOOL_OBSERVATION:
+            if (
+                candidate_convergence_ready
+                and event.read_only_observed
+                and not event.workspace_mutated
+                and not event.candidate_advanced
+                and not event.validation_observed
+            ):
+                post_candidate_read_only_observations = min(
+                    policy.post_candidate_read_only_threshold,
+                    post_candidate_read_only_observations + 1,
+                )
+            elif (
+                not candidate_convergence_ready
+                or event.workspace_mutated
+                or event.known_mutation_executed
+                or event.candidate_advanced
+                or event.validation_observed
+            ):
+                post_candidate_read_only_observations = 0
+        convergence_stage = next_state.convergence_stage
+        if next_state.convergence_constraint_active:
+            convergence_stage = (
+                ConvergenceStage.VALIDATE_REPAIR_OR_SUBMIT
+                if candidate_convergence_ready
+                else ConvergenceStage.PRODUCE_CANDIDATE
+            )
+        next_state = replace(
+            next_state,
+            candidate_present=candidate_present,
+            public_deliverable_declared=public_deliverable_declared,
+            public_candidate_mutated=public_candidate_mutated,
+            candidate_epoch_advanced=candidate_epoch_advanced,
+            candidate_checkpoint_recorded=candidate_checkpoint_recorded,
+            post_candidate_read_only_observations=(
+                post_candidate_read_only_observations
+            ),
+            convergence_stage=convergence_stage,
+        )
         if event.kind is EventKind.DELIVERY_STATUS:
             reason = DecisionReason.OBSERVATION_RECORDED
         else:
@@ -402,6 +507,49 @@ def transition_execution_protocol(
             return ProtocolTransition(
                 next_state,
                 _decision(action, DecisionReason.FINALIZATION_RESERVE),
+            )
+
+        post_candidate_constraint_due = bool(
+            event.kind is EventKind.TOOL_OBSERVATION
+            and candidate_convergence_ready
+            and not next_state.convergence_constraint_active
+            and post_candidate_read_only_observations
+            >= policy.post_candidate_read_only_threshold
+        )
+        if post_candidate_constraint_due:
+            next_state = replace(
+                next_state,
+                convergence_constraint_active=True,
+                convergence_stage=ConvergenceStage.VALIDATE_REPAIR_OR_SUBMIT,
+                convergence_constraint_activation_count=(
+                    next_state.convergence_constraint_activation_count + 1
+                ),
+                decision_checkpoint_pending=False,
+                decision_checkpoint_reason=None,
+                decision_checkpoint_candidate_present=None,
+                last_replan_attempt_epoch=next_state.attempt_epoch,
+                stagnant_observations=0,
+            )
+            action = _observed_action(
+                policy.mode,
+                guide=ControllerAction.APPLY_CONVERGENCE_CONSTRAINT,
+                observe=ControllerAction.WOULD_APPLY_CONVERGENCE_CONSTRAINT,
+            )
+            return ProtocolTransition(
+                next_state,
+                _decision(action, DecisionReason.POST_CANDIDATE_STAGNATION),
+            )
+
+        # A phase constraint replaces further advisory replan boundaries.  It
+        # remains active while ordinary Tools are available, and finalization
+        # reserve above still has precedence.
+        if next_state.convergence_constraint_active:
+            return ProtocolTransition(
+                next_state,
+                _decision(
+                    ControllerAction.CONTINUE,
+                    DecisionReason.CONVERGENCE_CONSTRAINT_ACTIVE,
+                ),
             )
 
         model_long = next_state.long_horizon_armed
@@ -531,6 +679,32 @@ def transition_execution_protocol(
         )
 
     if event.kind is EventKind.REPLAN_UNACKNOWLEDGED:
+        if event.convergence_stage is not None:
+            newly_active = not next_state.convergence_constraint_active
+            next_state = replace(
+                next_state,
+                phase=ProtocolPhase.EXECUTE,
+                convergence_constraint_active=True,
+                convergence_stage=event.convergence_stage,
+                convergence_constraint_activation_count=(
+                    next_state.convergence_constraint_activation_count
+                    + int(newly_active)
+                ),
+                decision_checkpoint_pending=False,
+                decision_checkpoint_reason=None,
+                decision_checkpoint_candidate_present=None,
+                last_replan_attempt_epoch=next_state.attempt_epoch,
+                stagnant_observations=0,
+            )
+            action = _observed_action(
+                policy.mode,
+                guide=ControllerAction.APPLY_CONVERGENCE_CONSTRAINT,
+                observe=ControllerAction.WOULD_APPLY_CONVERGENCE_CONSTRAINT,
+            )
+            return ProtocolTransition(
+                next_state,
+                _decision(action, DecisionReason.REPLAN_ACK_LIMIT_REACHED),
+            )
         next_state = replace(
             next_state,
             phase=ProtocolPhase.EXECUTE,
@@ -552,6 +726,8 @@ def transition_execution_protocol(
         next_state = replace(
             next_state,
             candidate_final_count=next_state.candidate_final_count + 1,
+            candidate_present=True,
+            candidate_checkpoint_recorded=True,
             finalization_entered=True,
         )
         if next_state.phase is ProtocolPhase.FINALIZE:

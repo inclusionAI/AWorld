@@ -35,8 +35,10 @@ from aworld.runners.execution_protocol import (
     load_model_plan_update,
     model_owned_review_active,
     mutation_gate_interception,
+    project_execution_protocol_telemetry,
     record_candidate_final,
     record_model_execution_profile,
+    record_model_decision_attempt_failure,
     record_model_decision_boundary,
     record_model_plan_update,
     record_pre_generation_delivery_decision,
@@ -447,7 +449,7 @@ def test_scoped_state_and_bounded_telemetry_are_public_read_only_views() -> None
     assert state.scope.task_id == "telemetry"
     assert state.long_horizon_armed is False
     assert telemetry == {
-        "schema_version": "aworld.execution-protocol-telemetry/v1",
+        "schema_version": "aworld.execution-protocol-telemetry/v2",
         "mode": "guide",
         "phase": "execute",
         "armed": False,
@@ -460,6 +462,10 @@ def test_scoped_state_and_bounded_telemetry_are_public_read_only_views() -> None
         "replan_applied_count": 0,
         "decision_checkpoint_pending": False,
         "candidate_decision_recorded": False,
+        "candidate_epoch_advanced": False,
+        "candidate_checkpoint_recorded": False,
+        "public_deliverable_declared": False,
+        "public_candidate_mutated": False,
         "delivery_debt_observations": 0,
         "workspace_mutation_absent_observations": 0,
         "delivery_checkpoint_count": 0,
@@ -477,10 +483,38 @@ def test_scoped_state_and_bounded_telemetry_are_public_read_only_views() -> None
         "repair_count": 0,
         "finalization_entered": False,
         "mutation_gate_active": False,
+        "mutation_gate_validation_window_open": False,
         "mutation_gate_activation_count": 0,
         "mutation_gate_blocked_read_only_call_count": 0,
         "consecutive_read_only_observations": 0,
+        "post_candidate_read_only_observations": 0,
+        "convergence_constraint_active": False,
+        "convergence_constraint_activation_count": 0,
     }
+
+
+def test_telemetry_v2_is_explicit_and_new_reader_still_accepts_v1() -> None:
+    legacy = {
+        "schema_version": "aworld.execution-protocol-telemetry/v1",
+        "mode": "guide",
+        "phase": "execute",
+        "armed": False,
+        "event_count": 1,
+    }
+    assert project_execution_protocol_telemetry(legacy) == legacy
+
+    mislabeled = {
+        **legacy,
+        "convergence_constraint_active": True,
+        "convergence_stage": "produce_candidate",
+    }
+    assert project_execution_protocol_telemetry(mislabeled) is None
+
+    current = {
+        **mislabeled,
+        "schema_version": "aworld.execution-protocol-telemetry/v2",
+    }
+    assert project_execution_protocol_telemetry(current) == current
 
 
 def test_observed_work_arms_long_horizon_even_after_short_initial_estimate() -> None:
@@ -518,7 +552,7 @@ def test_observed_work_arms_long_horizon_even_after_short_initial_estimate() -> 
     assert state.long_horizon_armed is True
 
 
-def test_two_unapplied_replans_suppress_later_decision_tool_boundaries() -> None:
+def test_two_unapplied_replans_activate_one_executable_convergence_phase() -> None:
     context = _context("bounded-replan-decisions")
     policy = ExecutionProtocolPolicy(
         mode=ProtocolMode.GUIDE,
@@ -580,12 +614,101 @@ def test_two_unapplied_replans_suppress_later_decision_tool_boundaries() -> None
         ),
     )
 
-    assert third.decision.action is ControllerAction.REQUEST_REPLAN
+    assert third.decision.action is ControllerAction.CONTINUE
+    assert third.decision.reason is DecisionReason.CONVERGENCE_CONSTRAINT_ACTIVE
     assert execution_protocol_model_decision_boundary(context, "agent") is None
-    assert load_execution_protocol_state(context, "agent").decision_checkpoint_pending is False
+    state = load_execution_protocol_state(context, "agent")
+    assert state.decision_checkpoint_pending is False
+    assert state.replan_requested_count == 2
+    assert state.replan_applied_count == 0
+    assert state.convergence_constraint_active is True
+    assert state.convergence_stage.value == "produce_candidate"
+    guidance = consume_execution_protocol_guidance(context, "agent")
+    assert guidance is not None
+    assert guidance.startswith("AWorld convergence constraint:")
+    assert "smallest honest inspectable candidate" in guidance
     telemetry = build_execution_protocol_telemetry(context, "agent")
     assert telemetry["consecutive_unapplied_replans"] == 2
-    assert telemetry["suppressed_replan_boundaries"] == 1
+    assert telemetry["suppressed_replan_boundaries"] == 0
+    assert telemetry["convergence_constraint_active"] is True
+    assert telemetry["convergence_stage"] == "produce_candidate"
+    assert telemetry["convergence_constraint_activation_count"] == 1
+
+    record_tool_protocol_event(
+        context,
+        "agent",
+        _semantic_state(
+            current_agent_step=4,
+            candidate_present=True,
+            candidate_advanced=True,
+            workspace_mutated=True,
+        ),
+    )
+    state = load_execution_protocol_state(context, "agent")
+    assert state.replan_requested_count == 2
+    assert state.convergence_stage.value == "validate_repair_or_submit"
+    guidance = consume_execution_protocol_guidance(context, "agent")
+    assert guidance is not None
+    assert "an inspectable candidate exists" in guidance
+
+
+def test_two_unacknowledged_replan_boundaries_stop_request_counter_growth() -> None:
+    context = _context("unacknowledged-replan-convergence")
+    configure_execution_protocol(
+        context,
+        "agent",
+        ExecutionProtocolPolicy(
+            mode=ProtocolMode.GUIDE,
+            activation_event_threshold=1,
+            model_activation_min_tool_actions=1,
+            repetition_threshold=1,
+            stagnation_event_threshold=1,
+        ),
+    )
+    _declare_long_horizon(context)
+
+    for sequence in (1, 2):
+        transition = record_tool_protocol_event(
+            context,
+            "agent",
+            _semantic_state(
+                repetition_count=1,
+                current_agent_step=sequence,
+                operation_hash=f"sha256:unack-operation-{sequence}",
+                result_hash=f"sha256:unack-result-{sequence}",
+            ),
+        )
+        assert transition.decision.action is ControllerAction.REQUEST_REPLAN
+        assert record_model_decision_attempt_failure(
+            context, "agent", boundary="replan"
+        )
+        assert not record_model_decision_attempt_failure(
+            context, "agent", boundary="replan"
+        )
+
+    state = load_execution_protocol_state(context, "agent")
+    assert state.replan_requested_count == 2
+    assert state.replan_applied_count == 0
+    assert state.convergence_constraint_active is True
+    telemetry = build_execution_protocol_telemetry(context, "agent")
+    assert telemetry["replan_decision_status"] == "convergence_constraint"
+    assert telemetry["consecutive_unapplied_replans"] == 2
+
+    third = record_tool_protocol_event(
+        context,
+        "agent",
+        _semantic_state(
+            repetition_count=1,
+            current_agent_step=3,
+            operation_hash="sha256:unack-operation-3",
+            result_hash="sha256:unack-result-3",
+        ),
+    )
+    assert third.decision.action is ControllerAction.CONTINUE
+    assert third.decision.reason is DecisionReason.CONVERGENCE_CONSTRAINT_ACTIVE
+    assert load_execution_protocol_state(
+        context, "agent"
+    ).replan_requested_count == 2
 
 
 def test_deadline_guidance_moves_from_candidate_to_delivery_only() -> None:
@@ -660,6 +783,88 @@ def test_mutation_gate_activates_after_repeated_read_only_observations() -> None
     assert guidance is not None
     assert guidance.startswith("AWorld mutation gate:")
     assert "8 consecutive read-only observations" in guidance
+
+
+def test_known_mutation_execution_opens_one_validation_window_without_claiming_progress(
+) -> None:
+    context = _context("mutation-validation-window")
+    configure_execution_protocol(
+        context,
+        "agent",
+        ExecutionProtocolPolicy(
+            mode=ProtocolMode.GUIDE,
+            repetition_threshold=99,
+            low_information_gain_threshold=99,
+            no_goal_progress_threshold=99,
+            stagnation_event_threshold=99,
+        ),
+    )
+    _declare_mutation_required(context)
+    record_tool_protocol_event(
+        context,
+        "agent",
+        _semantic_state(
+            consecutive_read_only_observations=8,
+            workspace_mutation_observed=False,
+            candidate_present=False,
+        ),
+    )
+    read = ActionModel(
+        tool_name="terminal",
+        action_name="run_code",
+        params={"code": "cat candidate.txt"},
+        tool_call_id="call-validation",
+        agent_name="agent",
+    )
+    assert mutation_gate_interception(context, [read]) is not None
+
+    record_tool_protocol_event(
+        context,
+        "agent",
+        _semantic_state(
+            consecutive_read_only_observations=0,
+            workspace_mutation_observed=False,
+            workspace_mutated=False,
+            known_mutation_executed=True,
+            candidate_present=False,
+        ),
+    )
+    telemetry = build_execution_protocol_telemetry(context, "agent")
+    assert telemetry["mutation_gate_active"] is False
+    assert telemetry["mutation_gate_validation_window_open"] is True
+    assert mutation_gate_interception(context, [read]) is None
+    guidance = consume_execution_protocol_guidance(context, "agent")
+    assert guidance is not None
+    assert guidance.startswith("AWorld mutation validation window:")
+    assert "not evidence of progress or completion" in guidance
+
+    # If validation still cannot observe an actual mutation/candidate, the
+    # already-armed pre-candidate gate closes again immediately.
+    record_tool_protocol_event(
+        context,
+        "agent",
+        _semantic_state(
+            consecutive_read_only_observations=1,
+            read_only_observed=True,
+            workspace_mutation_observed=False,
+            candidate_present=False,
+        ),
+    )
+    assert mutation_gate_interception(context, [read]) is not None
+
+    # Actual mutation evidence resolves the gate; it is distinct from the
+    # successful mutating execution receipt used only for validation liveness.
+    record_tool_protocol_event(
+        context,
+        "agent",
+        _semantic_state(
+            consecutive_read_only_observations=0,
+            workspace_mutation_observed=True,
+            workspace_mutated=True,
+            candidate_present=False,
+        ),
+    )
+    assert mutation_gate_interception(context, [read]) is None
 
 
 def test_mutation_gate_does_not_intercept_in_observe_mode() -> None:
@@ -798,6 +1003,270 @@ def test_named_deliverable_gate_reopens_reads_after_candidate_changes(
     )
 
     assert mutation_gate_interception(context, [read]) is None
+    assert build_execution_protocol_telemetry(context, "agent")[
+        "mutation_gate_blocked_read_only_call_count"
+    ] == 1
+
+
+def test_post_candidate_read_only_loop_converges_to_validate_repair_or_submit(
+    tmp_path,
+) -> None:
+    candidate = tmp_path / "result.json"
+    candidate.write_text("{}")
+    context = _context("post-candidate-convergence")
+    context.context_info["public_deliverable_contract"] = {
+        "schema_version": "aworld.public-deliverables/v1",
+        "authority": "public_task_advisory",
+        "source": "public_task_text",
+        "artifacts": [
+            {
+                "deliverable_id": "public-output-1",
+                "path": str(candidate),
+                "display_path": "result.json",
+                "kind": "file",
+                "authority": "public_task_advisory",
+            }
+        ],
+    }
+    configure_execution_protocol(
+        context,
+        "agent",
+        ExecutionProtocolPolicy(
+            mode=ProtocolMode.GUIDE,
+            post_candidate_read_only_threshold=3,
+            repetition_threshold=99,
+            low_information_gain_threshold=99,
+            no_goal_progress_threshold=99,
+            stagnation_event_threshold=99,
+        ),
+    )
+
+    record_tool_protocol_event(
+        context,
+        "agent",
+        _semantic_state(
+            current_agent_step=1,
+            public_deliverable_declared=True,
+            candidate_present=True,
+            candidate_advanced=True,
+            public_candidate_mutated=True,
+            workspace_mutated=True,
+        ),
+    )
+
+    for step in range(2, 5):
+        transition = record_tool_protocol_event(
+            context,
+            "agent",
+            _semantic_state(
+                current_agent_step=step,
+                public_deliverable_declared=True,
+                candidate_present=True,
+                public_candidate_mutated=True,
+                read_only_observed=True,
+                workspace_mutated=False,
+                validation_observed=False,
+            ),
+        )
+
+    assert transition.decision.action is ControllerAction.APPLY_CONVERGENCE_CONSTRAINT
+    assert transition.decision.reason is DecisionReason.POST_CANDIDATE_STAGNATION
+    state = load_execution_protocol_state(context, "agent")
+    assert state.post_candidate_read_only_observations == 3
+    assert state.convergence_constraint_active is True
+    assert state.convergence_stage.value == "validate_repair_or_submit"
+    assert state.replan_requested_count == 0
+
+    read = ActionModel(
+        tool_name="terminal",
+        action_name="run_code",
+        params={"code": "cat result.json"},
+        tool_call_id="call-post-candidate-read",
+        agent_name="agent",
+    )
+    receipt = mutation_gate_interception(context, [read])
+    assert receipt is not None
+    assert receipt["kind"] == "candidate_convergence_required"
+    assert receipt["post_candidate_read_only_observations"] == 3
+    assert receipt["blocked_read_only_call_count"] == 1
+
+    guidance = consume_execution_protocol_guidance(context, "agent")
+    assert guidance is not None
+    assert "validation against the public contract" in guidance
+    assert "Do not return to broad" in guidance
+
+    record_tool_protocol_event(
+        context,
+        "agent",
+        _semantic_state(
+            current_agent_step=4,
+            candidate_present=True,
+            read_only_observed=True,
+            validation_observed=True,
+        ),
+    )
+    assert mutation_gate_interception(context, [read]) is None
+    telemetry = build_execution_protocol_telemetry(context, "agent")
+    assert telemetry["post_candidate_read_only_observations"] == 0
+    assert telemetry["mutation_gate_blocked_read_only_call_count"] == 1
+
+
+@pytest.mark.asyncio
+async def test_post_candidate_gate_does_not_require_mutation_classification_and_allows_repair(
+) -> None:
+    context = _context("contractless-post-candidate-convergence")
+    configure_execution_protocol(
+        context,
+        "agent",
+        ExecutionProtocolPolicy(
+            mode=ProtocolMode.GUIDE,
+            post_candidate_read_only_threshold=2,
+            repetition_threshold=99,
+            low_information_gain_threshold=99,
+            no_goal_progress_threshold=99,
+            stagnation_event_threshold=99,
+        ),
+    )
+    record_tool_protocol_event(
+        context,
+        "agent",
+        _semantic_state(
+            current_agent_step=1,
+            candidate_present=True,
+            candidate_advanced=True,
+            workspace_mutated=True,
+        ),
+    )
+    for step in range(2, 4):
+        record_tool_protocol_event(
+            context,
+            "agent",
+            _semantic_state(
+                current_agent_step=step,
+                candidate_present=True,
+                read_only_observed=True,
+            ),
+        )
+
+    telemetry = build_execution_protocol_telemetry(context, "agent")
+    assert telemetry["convergence_constraint_active"] is True
+    assert telemetry["mutation_gate_active"] is True
+
+    read = ActionModel(
+        tool_name="terminal",
+        action_name="run_code",
+        params={"code": "cat candidate.txt"},
+        tool_call_id="call-read",
+        agent_name="agent",
+    )
+    repair = ActionModel(
+        tool_name="filesystem",
+        action_name="write_file",
+        params={"path": "candidate.txt", "content": "repair"},
+        tool_call_id="call-repair",
+        agent_name="agent",
+    )
+    hook = MutationGatePreToolHook()
+    assert await hook.exec(
+        Message(category="tool_call", payload=[read], sender="agent"), context
+    ) is not None
+    assert await hook.exec(
+        Message(category="tool_call", payload=[repair], sender="agent"), context
+    ) is None
+
+    # A successful known-mutating repair with no observable filesystem diff
+    # opens a validation window without being promoted to candidate progress.
+    record_tool_protocol_event(
+        context,
+        "agent",
+        _semantic_state(
+            current_agent_step=4,
+            candidate_present=True,
+            known_mutation_executed=True,
+            workspace_mutated=False,
+            workspace_mutation_observed=False,
+        ),
+    )
+    telemetry = build_execution_protocol_telemetry(context, "agent")
+    assert telemetry["mutation_gate_active"] is False
+    assert telemetry["mutation_gate_validation_window_open"] is True
+    assert await hook.exec(
+        Message(category="tool_call", payload=[read], sender="agent"), context
+    ) is None
+
+    # A fresh validation receipt resets only the read-only gate. The phase
+    # constraint remains available to steer the model toward repair/submission.
+    record_tool_protocol_event(
+        context,
+        "agent",
+        _semantic_state(
+            current_agent_step=5,
+            candidate_present=True,
+            read_only_observed=True,
+            validation_observed=True,
+        ),
+    )
+    assert mutation_gate_interception(context, [read]) is None
+    state = load_execution_protocol_state(context, "agent")
+    assert state.convergence_constraint_active is True
+    assert state.post_candidate_read_only_observations == 0
+
+
+def test_preexisting_named_file_does_not_arm_post_candidate_convergence(
+    tmp_path,
+) -> None:
+    candidate = tmp_path / "existing.txt"
+    candidate.write_text("pre-task baseline")
+    context = _context("preexisting-candidate")
+    context.context_info["public_deliverable_contract"] = {
+        "schema_version": "aworld.public-deliverables/v1",
+        "authority": "public_task_advisory",
+        "source": "public_task_text",
+        "artifacts": [
+            {
+                "deliverable_id": "public-output-1",
+                "path": str(candidate),
+                "display_path": "existing.txt",
+                "kind": "file",
+                "authority": "public_task_advisory",
+            }
+        ],
+    }
+    configure_execution_protocol(
+        context,
+        "agent",
+        ExecutionProtocolPolicy(
+            mode=ProtocolMode.GUIDE,
+            post_candidate_read_only_threshold=2,
+            repetition_threshold=99,
+            low_information_gain_threshold=99,
+            no_goal_progress_threshold=99,
+            stagnation_event_threshold=99,
+        ),
+    )
+
+    for step in range(1, 4):
+        record_tool_protocol_event(
+            context,
+            "agent",
+            _semantic_state(
+                current_agent_step=step,
+                public_deliverable_declared=True,
+                candidate_present=True,
+                candidate_advanced=False,
+                public_candidate_mutated=False,
+                read_only_observed=True,
+            ),
+        )
+
+    state = load_execution_protocol_state(context, "agent")
+    assert state.candidate_present is True
+    assert state.candidate_epoch_advanced is False
+    assert state.candidate_checkpoint_recorded is False
+    assert state.post_candidate_read_only_observations == 0
+    assert state.convergence_constraint_active is False
+    telemetry = build_execution_protocol_telemetry(context, "agent")
+    assert telemetry["mutation_gate_active"] is False
 
 
 @pytest.mark.asyncio
@@ -856,12 +1325,15 @@ async def test_mutation_gate_pre_tool_hook_intercepts_only_read_only_batches() -
     assert tool_interception["tool_call_ids"] == ["call-read"]
     assert tool_interception["error_code"] == "candidate_mutation_required"
     assert tool_interception["source_receipt"] == {
-        "schema_version": "aworld.mutation-gate/v1",
+        "schema_version": "aworld.mutation-gate/v2",
         "kind": "candidate_mutation_required",
         "agent_id": "agent",
         "tool_call_ids": ["call-read"],
         "reason": "read_only_limit",
         "consecutive_read_only_observations": 8,
+        "post_candidate_read_only_observations": 0,
+        "convergence_stage": None,
+        "blocked_read_only_call_count": 1,
     }
     assert "Create or modify" in intercepted.headers["additional_context"]
     assert allowed is None

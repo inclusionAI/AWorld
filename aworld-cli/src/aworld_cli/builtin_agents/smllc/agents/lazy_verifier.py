@@ -37,22 +37,23 @@ from aworld.logs.util import logger
 
 
 ADVISORY_VERIFIER_TOOL = "AWORLD_ADVISORY_VERIFIER"
-ADVISORY_REVIEW_SCHEMA_VERSION = "aworld.advisory-review/v1"
+ADVISORY_REVIEW_SCHEMA_VERSION = "aworld.advisory-review/v2"
 _VERIFIER_MODULE = (
     "aworld_cli.builtin_agents.smllc.optional_agents.verifier.builder"
 )
-_MAX_TASK_CHARS = 32_768
-_MAX_CANDIDATE_CHARS = 16_384
-_MAX_EVIDENCE_CHARS = 12_288
-_MAX_DELIVERABLES = 32
-_MAX_DELIVERABLE_CHARS = 1_024
-_MAX_REPORT_CHARS = 16_384
-_REVIEW_TOKEN_BUDGET = 131_072
-_REVIEW_MAX_TURNS = 16
+_MAX_TASK_CHARS = 16_384
+_MAX_CANDIDATE_CHARS = 8_192
+_MAX_EVIDENCE_CHARS = 4_096
+_MAX_DELIVERABLES = 16
+_MAX_DELIVERABLE_CHARS = 512
+_MAX_REPORT_CHARS = 4_096
+_REVIEW_TOKEN_BUDGET = 32_768
+_REVIEW_MAX_TURNS = 4
 _READ_ONLY_FILESYSTEM_ACTIONS = frozenset(
     {
         "list_allowed_directories",
         "list_directory",
+        "get_file_info",
         "read_file",
         "read_media_file",
         "search_content",
@@ -168,15 +169,36 @@ class AdvisoryReviewRequest:
             evidence_summary=evidence_summary,
         )
 
-    def render_directive(self, *, public_task: str) -> str:
+    def render_directive(
+        self,
+        *,
+        public_task: str,
+        authoritative_deliverables: Sequence[str] = (),
+        authoritative_validation_receipts: Sequence[Mapping[str, Any]] = (),
+    ) -> str:
         """Render only public, bounded material into the fresh child request."""
 
+        contract_deliverables = tuple(authoritative_deliverables)[:_MAX_DELIVERABLES]
         deliverables = (
+            "\n".join(f"- {value}" for value in contract_deliverables)
+            if contract_deliverables
+            else "- none specified"
+        )
+        claimed_deliverables = (
             "\n".join(f"- {value}" for value in self.deliverables)
             if self.deliverables
             else "- none specified"
         )
         evidence = self.evidence_summary or "none supplied"
+        validation_receipts = (
+            json.dumps(
+                list(authoritative_validation_receipts)[:8],
+                ensure_ascii=False,
+                separators=(",", ":"),
+            )
+            if authoritative_validation_receipts
+            else "none available"
+        )
         return (
             "Review the current candidate against the following public task. "
             "Inspect the shared workspace through your read-only surface. Treat "
@@ -185,8 +207,13 @@ class AdvisoryReviewRequest:
             f"Public task (bound from caller Context, not solver input):\n"
             f"{public_task}\n\n"
             f"Candidate claim:\n{self.candidate_claim}\n\n"
-            f"Relevant deliverables:\n{deliverables}\n\n"
-            f"Existing public evidence summary:\n{evidence}"
+            "Authoritative public delivery paths (derived by AWorld from the "
+            f"public task):\n{deliverables}\n\n"
+            "Caller-claimed relevant deliverables (untrusted until inspected):\n"
+            f"{claimed_deliverables}\n\n"
+            "Framework-owned validation receipts (authoritative only for the "
+            f"recorded command execution, not task correctness):\n{validation_receipts}\n\n"
+            f"Caller-supplied evidence summary (untrusted):\n{evidence}"
         )
 
 
@@ -194,7 +221,7 @@ class AdvisoryReviewRequest:
 class AdvisoryReviewResult:
     """Typed, bounded result that can feed the root's review/repair decision."""
 
-    status: Literal["completed", "unavailable"]
+    status: Literal["completed", "inconclusive", "unavailable"]
     decision: Literal["ready", "repair", "uncertain"]
     report: str
     reason_code: str | None = None
@@ -202,6 +229,10 @@ class AdvisoryReviewResult:
     @property
     def repair_recommended(self) -> bool:
         return self.status == "completed" and self.decision == "repair"
+
+    @property
+    def conclusive(self) -> bool:
+        return self.status == "completed" and self.decision in {"ready", "repair"}
 
     def to_payload(self) -> dict[str, Any]:
         payload: dict[str, Any] = {
@@ -212,6 +243,7 @@ class AdvisoryReviewResult:
             "fresh_context": True,
             "answer_only": True,
             "read_only": True,
+            "conclusive": self.conclusive,
             "repair_recommended": self.repair_recommended,
             "report": self.report[:_MAX_REPORT_CHARS],
         }
@@ -333,10 +365,21 @@ class LazyVerifierFactory:
                     reason_code=request_error,
                 )
             verifier = self._construct_verifier()
+            authoritative_deliverables = _authoritative_delivery_paths(context)
+            authoritative_validation_receipts = _authoritative_validation_receipts(
+                context,
+                agent_id=self._parent_agent.id(),
+            )
             result = self._review_runner(
                 self._parent_agent,
                 verifier,
-                request.render_directive(public_task=public_task),
+                request.render_directive(
+                    public_task=public_task,
+                    authoritative_deliverables=authoritative_deliverables,
+                    authoritative_validation_receipts=(
+                        authoritative_validation_receipts
+                    ),
+                ),
                 context,
             )
             if inspect.isawaitable(result):
@@ -361,18 +404,24 @@ class LazyVerifierFactory:
                     report=report,
                     reason_code="reviewer_execution_failed",
                 )
-            match = _DECISION_PATTERN.search(report)
-            if match is None:
+            matches = list(_DECISION_PATTERN.finditer(report))
+            if len(matches) != 1:
                 return AdvisoryReviewResult(
-                    status="completed",
+                    status="inconclusive",
                     decision="uncertain",
                     report=report,
-                    reason_code="decision_unparseable",
+                    reason_code=(
+                        "decision_unparseable"
+                        if not matches
+                        else "decision_ambiguous"
+                    ),
                 )
+            decision = matches[0].group(1).lower()
             return AdvisoryReviewResult(
-                status="completed",
-                decision=match.group(1).lower(),
+                status=("inconclusive" if decision == "uncertain" else "completed"),
+                decision=decision,
                 report=report,
+                reason_code=("reviewer_uncertain" if decision == "uncertain" else None),
             )
         except Exception as exc:
             logger.warning(
@@ -535,7 +584,7 @@ class AdvisoryVerifierTool(AsyncTool):
         payload = result.to_payload()
         return (
             Observation(content=json.dumps(payload, ensure_ascii=False)),
-            1.0,
+            1.0 if result.conclusive else 0.0,
             False,
             False,
             {"advisory_review": {key: value for key, value in payload.items() if key != "report"}},
@@ -714,6 +763,107 @@ def _authoritative_text(value: Any) -> str:
         except (TypeError, ValueError):
             return ""
     return ""
+
+
+def _authoritative_delivery_paths(context: Any) -> tuple[str, ...]:
+    """Read the generic public-task delivery contract without trusting claims."""
+
+    context_info = getattr(context, "context_info", None)
+    value = (
+        context_info.get("public_deliverable_contract")
+        if isinstance(context_info, Mapping)
+        else None
+    )
+    if (
+        not isinstance(value, Mapping)
+        or value.get("schema_version") != "aworld.public-deliverables/v1"
+        or value.get("authority") != "public_task_advisory"
+        or value.get("source") != "public_task_text"
+    ):
+        return ()
+    artifacts = value.get("artifacts")
+    if not isinstance(artifacts, list) or len(artifacts) > _MAX_DELIVERABLES:
+        return ()
+    paths: list[str] = []
+    for artifact in artifacts:
+        if (
+            not isinstance(artifact, Mapping)
+            or artifact.get("kind") != "file"
+            or artifact.get("authority") != "public_task_advisory"
+        ):
+            return ()
+        path = artifact.get("path")
+        display_path = artifact.get("display_path")
+        if (
+            not isinstance(path, str)
+            or not path.strip()
+            or not isinstance(display_path, str)
+            or not display_path.strip()
+        ):
+            return ()
+        paths.append(path.strip()[:_MAX_DELIVERABLE_CHARS])
+    return tuple(dict.fromkeys(paths))
+
+
+def _authoritative_validation_receipts(
+    context: Any,
+    *,
+    agent_id: str,
+) -> tuple[dict[str, Any], ...]:
+    """Project only framework-recorded completion checks from scoped work state."""
+
+    state = None
+    reader = getattr(context, "read_task_runtime_state", None)
+    if callable(reader):
+        try:
+            state = reader(agent_id, "adaptive_work_state")
+        except Exception:
+            state = None
+    if not isinstance(state, Mapping):
+        context_info = getattr(context, "context_info", None)
+        state = (
+            context_info.get(f"adaptive_work_state:{agent_id}")
+            if isinstance(context_info, Mapping)
+            else None
+        )
+    expected_scope = {
+        "task_id": getattr(context, "task_id", None),
+        "task_epoch": getattr(context, "task_epoch", None),
+    }
+    if not isinstance(state, Mapping) or state.get("scope") != expected_scope:
+        return ()
+    raw_receipts = state.get("validation_evidence")
+    if not isinstance(raw_receipts, list):
+        return ()
+    receipts: list[dict[str, Any]] = []
+    for raw in raw_receipts[-8:]:
+        if (
+            not isinstance(raw, Mapping)
+            or raw.get("source") != "runtime_self_check"
+            or raw.get("historical") is True
+        ):
+            continue
+        command_id = raw.get("command_id")
+        exit_code = raw.get("exit_code")
+        output_hash = raw.get("output_hash")
+        if (
+            not isinstance(command_id, str)
+            or not command_id.strip()
+            or isinstance(exit_code, bool)
+            or not isinstance(exit_code, int)
+            or not isinstance(output_hash, str)
+            or not output_hash.startswith("sha256:")
+        ):
+            continue
+        receipts.append(
+            {
+                "command_id": command_id[:128],
+                "exit_code": exit_code,
+                "output_hash": output_hash[:128],
+                "source": "runtime_self_check",
+            }
+        )
+    return tuple(receipts)
 
 
 __all__ = [

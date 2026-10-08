@@ -80,13 +80,19 @@ def test_verifier_inherits_model_generation_budget_and_shared_sandbox() -> None:
     assert verifier.conf.llm_config.llm_model_name == "test-model"
     assert verifier.conf.llm_config.llm_provider == "openai"
     assert verifier.conf.llm_config.max_model_len == 131072
-    assert verifier.conf.llm_config.params == parent_config.llm_config.params
+    assert verifier.conf.llm_config.params == {"max_completion_tokens": 4096}
+    assert verifier.conf.llm_config.max_tokens is None
     assert verifier.conf.llm_config.params is not parent_config.llm_config.params
     assert (
         ReasoningPhasePolicy.from_value(
             verifier.conf.llm_config.reasoning_phase_policy
         )
-        == parent_config.llm_config.reasoning_phase_policy
+        == ReasoningPhasePolicy.from_value(
+            {
+                "policy_id": "bounded-review/v1",
+                "review": {"reasoning_effort": "low"},
+            }
+        )
     )
     assert verifier.conf.skill_configs == {}
     assert verifier._explicit_generation_budget_policy is generation_budget
@@ -101,6 +107,54 @@ def test_verifier_inherits_model_generation_budget_and_shared_sandbox() -> None:
     assert "hidden grader" in verifier.system_prompt
     assert "Decision: `ready`, `repair`, or `uncertain`" in verifier.system_prompt
     assert not any("CAST" in name for name in verifier.tool_names)
+
+
+def test_verifier_preserves_max_tokens_only_provider_contract() -> None:
+    parent_config = AgentConfig(
+        llm_config=ModelConfig(
+            llm_model_name="legacy-output-route",
+            max_tokens=3072,
+            params={},
+        ),
+        skill_configs={},
+    )
+
+    verifier = next(
+        iter(build_verifier_swarm(agent_config=parent_config).agents.values())
+    )
+
+    assert verifier.conf.llm_config.max_tokens == 3072
+    assert "max_completion_tokens" not in verifier.conf.llm_config.params
+
+
+def test_verifier_removes_extra_body_output_limit_overrides() -> None:
+    parent_config = AgentConfig(
+        llm_config=ModelConfig(
+            llm_model_name="reasoning-route",
+            max_tokens=8192,
+            params={
+                "max_completion_tokens": 32000,
+                "max_tokens": 16000,
+                "extra_body": {
+                    "max_completion_tokens": 64000,
+                    "max_tokens": 64000,
+                    "route_hint": "preserve-me",
+                },
+            },
+        ),
+        skill_configs={},
+    )
+
+    verifier = next(
+        iter(build_verifier_swarm(agent_config=parent_config).agents.values())
+    )
+
+    assert verifier.conf.llm_config.max_tokens is None
+    assert verifier.conf.llm_config.params["max_completion_tokens"] == 4096
+    assert "max_tokens" not in verifier.conf.llm_config.params
+    assert verifier.conf.llm_config.params["extra_body"] == {
+        "route_hint": "preserve-me"
+    }
 
 
 def test_default_collaborators_inherit_root_execution_profile() -> None:
@@ -153,7 +207,12 @@ def test_default_collaborators_inherit_root_execution_profile() -> None:
         assert collaborator.conf.llm_config.llm_base_url == "http://localhost/v1"
         assert collaborator.conf.llm_config.llm_temperature == 0.25
         assert collaborator.conf.llm_config.max_model_len == 131072
-        assert collaborator.conf.llm_config.params == parent_config.llm_config.params
+        if expected_name == "verifier":
+            assert collaborator.conf.llm_config.params == {
+                "max_completion_tokens": 4096
+            }
+        else:
+            assert collaborator.conf.llm_config.params == parent_config.llm_config.params
         assert (
             collaborator.conf.llm_config.params is not parent_config.llm_config.params
         )

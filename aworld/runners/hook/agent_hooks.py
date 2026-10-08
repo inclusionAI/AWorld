@@ -53,10 +53,10 @@ class PostLLMTrajectoryHook(PostLLMCallHook):
 
 @HookFactory.register(
     name="MutationGatePreToolHook",
-    desc="Intercept repeated read-only work after the candidate mutation gate arms",
+    desc="Intercept repeated read-only work after a delivery convergence gate arms",
 )
 class MutationGatePreToolHook(PreToolCallHook):
-    """Keep convergence policy above the Sandbox provider boundary."""
+    """Keep pre- and post-candidate convergence above the provider boundary."""
 
     async def exec(self, message: Message, context: Context = None) -> Message | None:
         from aworld.runners.execution_protocol import mutation_gate_interception
@@ -66,10 +66,22 @@ class MutationGatePreToolHook(PreToolCallHook):
         if gate_receipt is None:
             return None
         count = int(gate_receipt.get("consecutive_read_only_observations", 0) or 0)
-        message_text = (
-            "Further provably read-only work is gated. Create or modify the "
-            "smallest relevant inspectable candidate now."
-        )
+        post_candidate = gate_receipt.get("kind") == "candidate_convergence_required"
+        if post_candidate:
+            count = int(
+                gate_receipt.get("post_candidate_read_only_observations", 0) or 0
+            )
+            message_text = (
+                "Further broad read-only exploration is gated after a candidate "
+                "was observed. Validate the candidate, make an evidence-driven "
+                "repair, or submit the current result accurately."
+            )
+        else:
+            message_text = (
+                "Further provably read-only work is gated. Create or modify the "
+                "smallest relevant inspectable candidate now."
+            )
+        error_code = str(gate_receipt["kind"])
         return Message(
             category="agent_hook",
             payload=None,
@@ -80,15 +92,20 @@ class MutationGatePreToolHook(PreToolCallHook):
                     "schema_version": "aworld.tool-interception/v1",
                     "kind": "block",
                     "tool_call_ids": gate_receipt["tool_call_ids"],
-                    "error_code": "candidate_mutation_required",
-                    "content_type": "candidate_mutation_required",
+                    "error_code": error_code,
+                    "content_type": error_code,
                     "message": message_text,
                     "source_receipt": gate_receipt,
                 },
                 "additional_context": (
-                    "AWorld mutation gate intercepted a provably read-only Tool "
-                    f"batch after {count} consecutive read-only observations. "
-                    "Create or modify the smallest relevant candidate now."
+                    "AWorld convergence gate intercepted a provably read-only "
+                    f"Tool batch after {count} consecutive read-only observations. "
+                    + (
+                        "Validate, repair from evidence, or submit; do not restart "
+                        "broad exploration."
+                        if post_candidate
+                        else "Create or modify the smallest relevant candidate now."
+                    )
                 ),
             },
         )

@@ -482,6 +482,14 @@ def _record_semantic_tool_progress_locked(
         if isinstance(metadata, dict)
         and isinstance(metadata.get("sandbox_observation"), dict)
     ]
+    known_mutation_executed = any(
+        isinstance(receipt.get("terminal_execution_receipt"), dict)
+        and receipt["terminal_execution_receipt"].get("effect") == "mutating"
+        and receipt["terminal_execution_receipt"].get("executed") is True
+        and receipt["terminal_execution_receipt"].get("exit_code") == 0
+        and receipt["terminal_execution_receipt"].get("timed_out") is False
+        for receipt in sandbox_receipts
+    )
     sandbox_workspace_mutated = any(
         receipt.get("workspace_mutated") is True
         for receipt in sandbox_receipts
@@ -1004,6 +1012,10 @@ def _record_semantic_tool_progress_locked(
             and not rollback_performed
         ),
         "workspace_mutation_observed": workspace_mutation_observed,
+        # A successful known-mutating terminal execution permits one bounded
+        # validation turn. It is deliberately separate from actual mutation
+        # evidence and never contributes to goal/completion progress.
+        "known_mutation_executed": known_mutation_executed,
         "read_only_observed": sandbox_read_only_observed,
         "consecutive_read_only_observations": (
             consecutive_read_only_observations

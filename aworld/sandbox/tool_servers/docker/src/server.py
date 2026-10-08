@@ -2,6 +2,7 @@
 
 import asyncio
 import base64
+from dataclasses import replace
 import difflib
 import fnmatch
 import hashlib
@@ -9,6 +10,7 @@ import json
 import mimetypes
 import os
 import posixpath
+import re
 import sys
 import time
 from pathlib import Path, PurePosixPath
@@ -18,6 +20,11 @@ from mcp.server import FastMCP
 from mcp.server.fastmcp import Context
 from mcp.types import TextContent
 from pydantic import Field
+
+from aworld.sandbox.terminal_receipt import (
+    build_terminal_execution_receipt,
+    plan_terminal_execution,
+)
 
 
 def _required_env(name: str) -> str:
@@ -222,6 +229,54 @@ def _text(payload: Any) -> TextContent:
     return TextContent(type="text", text=payload)
 
 
+def _literal_container_write_paths(
+    code: str,
+    plan: Any,
+) -> list[str] | None:
+    if plan.effect != "mutating" or not plan.write_paths:
+        return None
+    shell_changes_directory = bool(
+        re.search(r"(?:^|[;&|]\s*)cd\s+", code)
+    )
+    paths: list[str] = []
+    for value in plan.write_paths:
+        if "\n" in value or "\r" in value:
+            return None
+        candidate = value
+        if not PurePosixPath(candidate).is_absolute():
+            if shell_changes_directory:
+                return None
+            candidate = posixpath.join(bridge.workdir, candidate)
+        try:
+            paths.append(bridge.validate_path(candidate))
+        except ValueError:
+            return None
+    return paths or None
+
+
+async def _container_path_states(
+    paths: list[str] | None,
+    *,
+    timeout: int,
+) -> tuple[str, ...] | None:
+    if not paths:
+        return None
+    script = (
+        'for p do if [ -e "$p" ] || [ -L "$p" ]; then '
+        "stat -c '%f|%s|%y|%z|%i|%N' -- \"$p\" || exit 7; "
+        "else printf '%s\\n' missing; fi; done"
+    )
+    return_code, stdout, _stderr, timed_out = await bridge.execute(
+        [bridge.shell, "-c", script, "aworld-stat", *paths],
+        timeout=max(1, min(timeout, 5)),
+        workdir=bridge.workdir,
+    )
+    if timed_out or return_code != 0:
+        return None
+    states = tuple(stdout.decode("utf-8", errors="replace").splitlines())
+    return states if len(states) == len(paths) else None
+
+
 @mcp.tool(description="Execute a shell command inside the attached Docker container.")
 async def run_code(
     ctx: Context,
@@ -231,7 +286,40 @@ async def run_code(
 ) -> TextContent:
     del ctx, output_format
     started = time.monotonic()
+    potential_plan = plan_terminal_execution(code)
+    execution_plan = potential_plan
+    effect_source = "parser_contract"
+    if potential_plan.effect == "read_only":
+        try:
+            for value in potential_plan.read_paths:
+                candidate = value
+                if not PurePosixPath(candidate).is_absolute():
+                    candidate = posixpath.join(bridge.workdir, candidate)
+                bridge.validate_path(candidate)
+        except ValueError:
+            execution_plan = replace(
+                potential_plan,
+                effect="unknown",
+                cacheable=False,
+            )
+            effect_source = "untrusted_execution_context"
+        else:
+            effect_source = "trusted_docker_command_contract"
+    write_paths = _literal_container_write_paths(code, potential_plan)
+    before_write_states = await _container_path_states(
+        write_paths,
+        timeout=timeout,
+    )
     return_code, stdout, stderr, timed_out = await bridge.shell_command(code, timeout=timeout)
+    after_write_states = await _container_path_states(
+        write_paths,
+        timeout=timeout,
+    )
+    mutation_observed = (
+        before_write_states != after_write_states
+        if before_write_states is not None and after_write_states is not None
+        else None
+    )
     stdout, stdout_policy = bridge.bound_output(stdout, label="run-code-stdout")
     stderr, stderr_policy = bridge.bound_output(stderr, label="run-code-stderr")
     stdout_text = bridge.decode_inline_text(stdout, stdout_policy)
@@ -256,6 +344,16 @@ async def run_code(
                     "stdout": stdout_policy,
                     "stderr": stderr_policy,
                 },
+                "terminal_execution_receipt": build_terminal_execution_receipt(
+                    code=code,
+                    plan=execution_plan,
+                    executed=True,
+                    exit_code=return_code,
+                    timed_out=timed_out,
+                    mutation_observed=mutation_observed,
+                    potential_effect=potential_plan.effect,
+                    effect_source=effect_source,
+                ),
             },
         }
     )

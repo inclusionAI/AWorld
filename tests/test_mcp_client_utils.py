@@ -231,6 +231,48 @@ def test_lower_mcp_call_result_honors_explicit_failed_result_envelope():
     }
 
 
+def test_lower_mcp_call_result_preserves_terminal_execution_receipt() -> None:
+    receipt = {
+        "schema_version": "aworld.terminal-execution-receipt/v1",
+        "parser_version": 1,
+        "command_sha256": "sha256:" + "a" * 64,
+        "language": "shell",
+        "parsed": True,
+        "potential_effect": "read_only",
+        "effect": "read_only",
+        "effect_source": "parser_contract",
+        "cacheable": True,
+        "read_paths": ["README.md"],
+        "write_paths": [],
+        "read_set_complete": True,
+        "read_path_epochs": [],
+        "workspace_generation_delta": 0,
+        "mutation_observed": None,
+        "scope_volatile": False,
+        "executed": True,
+        "timed_out": False,
+        "exit_code": 0,
+    }
+    payload = {
+        "success": True,
+        "message": {"stdout": "ok\n", "stderr": ""},
+        "metadata": {"terminal_execution_receipt": receipt},
+    }
+
+    result = utils.lower_mcp_call_result(
+        CallToolResult(
+            content=[TextContent(type="text", text=json.dumps(payload))],
+            isError=False,
+        ),
+        server_name="terminal",
+        tool_name="run_code",
+        parameter={"code": "cat README.md"},
+    )
+
+    assert result.success is True
+    assert result.metadata["terminal_execution_receipt"] == receipt
+
+
 def test_lower_mcp_call_result_does_not_infer_failure_from_nested_domain_data():
     payload = {"rows": [{"success": False, "name": "domain record"}]}
 

@@ -17,6 +17,7 @@ from typing import Any, Mapping
 
 from aworld.core.context.execution_state import state_context
 from aworld.core.execution_protocol import (
+    ConvergenceStage,
     ControllerAction,
     EventKind,
     ExecutionProtocolEvent,
@@ -42,7 +43,8 @@ EXECUTION_PROTOCOL_HYPOTHESES_KEY = "execution_protocol_hypotheses"
 EXECUTION_PROTOCOL_CRITIC_KEY = "execution_protocol_acceptance_critic"
 EXECUTION_PROTOCOL_PUBLIC_PROBES_KEY = "execution_protocol_public_probes"
 EXECUTION_PROTOCOL_DEADLINE_GUIDANCE_KEY = "execution_protocol_deadline_guidance"
-MUTATION_GATE_SCHEMA = "aworld.mutation-gate/v1"
+MUTATION_GATE_SCHEMA = "aworld.mutation-gate/v2"
+_LEGACY_MUTATION_GATE_SCHEMA = "aworld.mutation-gate/v1"
 MUTATION_GATE_STATE_KEY = "execution_protocol_mutation_gate"
 INDEPENDENT_ACCEPTANCE_CRITIC_ENV = "AWORLD_INDEPENDENT_ACCEPTANCE_CRITIC"
 SEMANTIC_PROGRESS_LEDGER_ENV = "AWORLD_SEMANTIC_PROGRESS_LEDGER"
@@ -1035,9 +1037,10 @@ def load_execution_protocol_state(context, agent_id: str):
 
 def project_execution_protocol_telemetry(value: Any) -> dict[str, Any] | None:
     """Validate and bound the only public execution-protocol projection."""
-    if not isinstance(value, Mapping) or value.get("schema_version") != (
-        "aworld.execution-protocol-telemetry/v1"
-    ):
+    if not isinstance(value, Mapping) or value.get("schema_version") not in {
+        "aworld.execution-protocol-telemetry/v1",
+        "aworld.execution-protocol-telemetry/v2",
+    }:
         return None
     required = {"mode", "phase", "armed"}
     if not required.issubset(value):
@@ -1055,6 +1058,7 @@ def project_execution_protocol_telemetry(value: Any) -> dict[str, Any] | None:
             "retry_required",
             "acknowledged",
             "fail_open_unacknowledged",
+            "convergence_constraint",
         },
         "initial_decision_fail_open_reason": {
             "provider_unavailable",
@@ -1081,6 +1085,9 @@ def project_execution_protocol_telemetry(value: Any) -> dict[str, Any] | None:
             "submit_current",
             "submit_uncertain",
         },
+        "convergence_stage": {
+            stage.value for stage in ConvergenceStage
+        },
         "acceptance_disposition": {"complete", "continue", "limit_reached"},
         "acceptance_reason": {
             "acceptance_satisfied",
@@ -1103,6 +1110,12 @@ def project_execution_protocol_telemetry(value: Any) -> dict[str, Any] | None:
         "candidate_decision_recorded",
         "decision_checkpoint_candidate_present",
         "mutation_gate_active",
+        "mutation_gate_validation_window_open",
+        "candidate_epoch_advanced",
+        "candidate_checkpoint_recorded",
+        "public_deliverable_declared",
+        "public_candidate_mutated",
+        "convergence_constraint_active",
     }
     counters = {
         "event_count",
@@ -1132,9 +1145,27 @@ def project_execution_protocol_telemetry(value: Any) -> dict[str, Any] | None:
         "mutation_gate_activation_count",
         "mutation_gate_blocked_read_only_call_count",
         "consecutive_read_only_observations",
+        "post_candidate_read_only_observations",
+        "convergence_constraint_activation_count",
     }
     allowed = {"schema_version", *enums, *booleans, *counters}
     if set(value) - allowed:
+        return None
+    v2_fields = {
+        "candidate_epoch_advanced",
+        "candidate_checkpoint_recorded",
+        "public_deliverable_declared",
+        "public_candidate_mutated",
+        "convergence_constraint_active",
+        "convergence_stage",
+        "convergence_constraint_activation_count",
+        "post_candidate_read_only_observations",
+        "mutation_gate_validation_window_open",
+    }
+    if (
+        value.get("schema_version") == "aworld.execution-protocol-telemetry/v1"
+        and set(value).intersection(v2_fields)
+    ):
         return None
     projected = {"schema_version": value["schema_version"]}
     for key, item in value.items():
@@ -1173,7 +1204,7 @@ def build_execution_protocol_telemetry(context, agent_id: str) -> dict[str, Any]
     if not isinstance(mutation_gate, Mapping):
         mutation_gate = {}
     telemetry = {
-        "schema_version": "aworld.execution-protocol-telemetry/v1",
+        "schema_version": "aworld.execution-protocol-telemetry/v2",
         "mode": policy.mode.value,
         "phase": state.phase.value,
         "armed": state.long_horizon_armed,
@@ -1194,6 +1225,10 @@ def build_execution_protocol_telemetry(context, agent_id: str) -> dict[str, Any]
             state.decision_checkpoint_candidate_present
         ),
         "candidate_decision_recorded": state.candidate_decision_recorded,
+        "candidate_epoch_advanced": state.candidate_epoch_advanced,
+        "candidate_checkpoint_recorded": state.candidate_checkpoint_recorded,
+        "public_deliverable_declared": state.public_deliverable_declared,
+        "public_candidate_mutated": state.public_candidate_mutated,
         "delivery_debt_observations": state.delivery_debt_observations,
         "workspace_mutation_absent_observations": (
             state.workspace_mutation_absent_observations
@@ -1236,6 +1271,9 @@ def build_execution_protocol_telemetry(context, agent_id: str) -> dict[str, Any]
         "repair_count": state.repair_count,
         "finalization_entered": state.finalization_entered,
         "mutation_gate_active": mutation_gate.get("active") is True,
+        "mutation_gate_validation_window_open": (
+            mutation_gate.get("validation_window_open") is True
+        ),
         "mutation_gate_activation_count": _bounded_counter(
             mutation_gate.get("activation_count")
         ),
@@ -1244,6 +1282,18 @@ def build_execution_protocol_telemetry(context, agent_id: str) -> dict[str, Any]
         ),
         "consecutive_read_only_observations": _bounded_counter(
             mutation_gate.get("consecutive_read_only_observations")
+        ),
+        "post_candidate_read_only_observations": (
+            state.post_candidate_read_only_observations
+        ),
+        "convergence_constraint_active": state.convergence_constraint_active,
+        "convergence_stage": (
+            state.convergence_stage.value
+            if state.convergence_stage is not None
+            else None
+        ),
+        "convergence_constraint_activation_count": (
+            state.convergence_constraint_activation_count
         ),
         "model_horizon": (
             state.model_plan_update.horizon.value
@@ -1325,12 +1375,15 @@ def _update_mutation_gate(
         public_deliverable_declared
         or (profile is not None and profile.workspace_mutation_required)
     )
-    candidate_present = semantic_state.get("candidate_present") is True
+    candidate_present = transition.state.candidate_present is True
     public_candidate_mutated = bool(
         semantic_state.get("public_candidate_mutated")
     )
     mutation_observed = bool(
         semantic_state.get("workspace_mutation_observed")
+    )
+    known_mutation_executed = bool(
+        semantic_state.get("known_mutation_executed")
     )
     read_only_count = _bounded_counter(
         semantic_state.get("consecutive_read_only_observations")
@@ -1346,9 +1399,15 @@ def _update_mutation_gate(
     previous = _read_runtime_value(context, agent_id, MUTATION_GATE_STATE_KEY)
     previous_active = bool(
         isinstance(previous, Mapping)
-        and previous.get("schema_version") == MUTATION_GATE_SCHEMA
+        and previous.get("schema_version")
+        in {MUTATION_GATE_SCHEMA, _LEGACY_MUTATION_GATE_SCHEMA}
         and previous.get("agent_id") == agent_id
         and previous.get("active") is True
+    )
+    previous_pre_candidate_latched = bool(
+        isinstance(previous, Mapping)
+        and previous.get("reason") != "post_candidate_read_only_limit"
+        and (previous_active or previous.get("pre_candidate_latched") is True)
     )
     # When the public task names a concrete output, an unrelated setup write
     # must not discharge delivery debt. For mutation-required tasks without a
@@ -1362,21 +1421,65 @@ def _update_mutation_gate(
     activation_count = _bounded_counter(
         previous.get("activation_count") if isinstance(previous, Mapping) else 0
     )
+    convergence_stage = transition.state.convergence_stage
+    convergence_produce_due = bool(
+        transition.state.convergence_constraint_active
+        and convergence_stage is ConvergenceStage.PRODUCE_CANDIDATE
+        and not resolved
+    )
+    post_candidate_convergence_due = bool(
+        transition.state.convergence_constraint_active
+        and convergence_stage is ConvergenceStage.VALIDATE_REPAIR_OR_SUBMIT
+        and not known_mutation_executed
+        and transition.state.post_candidate_read_only_observations
+        >= execution_protocol_policy(
+            context, agent_id
+        ).post_candidate_read_only_threshold
+    )
+    pre_candidate_latched = bool(
+        mutation_required
+        and not resolved
+        and (
+            previous_pre_candidate_latched
+            or due_to_read_limit
+            or due_to_deadline
+            or convergence_produce_due
+        )
+    )
+    validation_window_open = bool(
+        known_mutation_executed
+        and (
+            previous_active
+            or previous_pre_candidate_latched
+            or transition.state.convergence_constraint_active
+        )
+    )
     active = bool(
         execution_protocol_policy(context, agent_id).mode is ProtocolMode.GUIDE
-        and mutation_required
-        and not resolved
-        and (previous_active or due_to_read_limit or due_to_deadline)
+        and (
+            post_candidate_convergence_due
+            or (
+                pre_candidate_latched
+                and convergence_stage
+                is not ConvergenceStage.VALIDATE_REPAIR_OR_SUBMIT
+                and not known_mutation_executed
+            )
+        )
     )
     if active and not previous_active:
         activation_count = min(_MAX_TELEMETRY_COUNTER, activation_count + 1)
     reason = (
-        "deadline_without_mutation"
+        "post_candidate_read_only_limit"
+        if post_candidate_convergence_due
+        else "convergence_candidate_required"
+        if convergence_produce_due
+        else "deadline_without_mutation"
         if due_to_deadline
         else "read_only_limit"
         if due_to_read_limit
         else previous.get("reason")
-        if isinstance(previous, Mapping) and previous_active
+        if isinstance(previous, Mapping)
+        and (previous_active or previous_pre_candidate_latched)
         else None
     )
     payload = {
@@ -1392,9 +1495,31 @@ def _update_mutation_gate(
         "candidate_present": candidate_present,
         "public_candidate_mutated": public_candidate_mutated,
         "workspace_mutation_observed": mutation_observed,
+        "known_mutation_executed": known_mutation_executed,
+        "validation_window_open": validation_window_open,
+        "pre_candidate_latched": pre_candidate_latched,
         "consecutive_read_only_observations": read_only_count,
+        "post_candidate_read_only_observations": (
+            transition.state.post_candidate_read_only_observations
+        ),
         "read_only_threshold": _MUTATION_GATE_READ_ONLY_THRESHOLD,
         "deadline_consumed_fraction": consumed_fraction,
+        "convergence_stage": (
+            convergence_stage.value if convergence_stage is not None else None
+        ),
+        # Preserve interception evidence across subsequent observation
+        # projections; previously this counter was reset on the next Tool
+        # result, making successful gate blocks disappear from telemetry.
+        "blocked_read_only_call_count": _bounded_counter(
+            previous.get("blocked_read_only_call_count")
+            if isinstance(previous, Mapping)
+            else 0
+        ),
+        "last_interception_kind": (
+            previous.get("last_interception_kind")
+            if isinstance(previous, Mapping)
+            else None
+        ),
     }
     owner.context_info[MUTATION_GATE_STATE_KEY] = payload
     _write_runtime_value(context, agent_id, MUTATION_GATE_STATE_KEY, payload)
@@ -1403,7 +1528,16 @@ def _update_mutation_gate(
         if active and not previous_active:
             metrics["mutation_gate_activation_count"] = activation_count
         metrics["mutation_gate_active"] = active
+        metrics["mutation_gate_validation_window_open"] = payload[
+            "validation_window_open"
+        ]
         metrics["consecutive_read_only_observations"] = read_only_count
+        metrics["post_candidate_read_only_observations"] = (
+            transition.state.post_candidate_read_only_observations
+        )
+        metrics["mutation_gate_blocked_read_only_call_count"] = payload[
+            "blocked_read_only_call_count"
+        ]
 
 
 def mutation_gate_interception(
@@ -1429,7 +1563,8 @@ def mutation_gate_interception(
     gate = _read_runtime_value(context, agent_id, MUTATION_GATE_STATE_KEY)
     if (
         not isinstance(gate, Mapping)
-        or gate.get("schema_version") != MUTATION_GATE_SCHEMA
+        or gate.get("schema_version")
+        not in {MUTATION_GATE_SCHEMA, _LEGACY_MUTATION_GATE_SCHEMA}
         or gate.get("active") is not True
     ):
         return None
@@ -1445,6 +1580,12 @@ def mutation_gate_interception(
         _MAX_TELEMETRY_COUNTER,
         _bounded_counter(gate.get("blocked_read_only_call_count")) + len(call_ids),
     )
+    interception_kind = (
+        "candidate_convergence_required"
+        if gate.get("reason") == "post_candidate_read_only_limit"
+        else "candidate_mutation_required"
+    )
+    updated["last_interception_kind"] = interception_kind
     if owner is not None:
         owner.context_info[MUTATION_GATE_STATE_KEY] = updated
         metrics = owner.context_info.get(EXECUTION_PROTOCOL_METRICS_KEY)
@@ -1455,13 +1596,20 @@ def mutation_gate_interception(
     _write_runtime_value(context, agent_id, MUTATION_GATE_STATE_KEY, updated)
     return {
         "schema_version": MUTATION_GATE_SCHEMA,
-        "kind": "candidate_mutation_required",
+        "kind": interception_kind,
         "agent_id": agent_id,
         "tool_call_ids": call_ids,
         "reason": updated.get("reason"),
         "consecutive_read_only_observations": updated.get(
             "consecutive_read_only_observations", 0
         ),
+        "post_candidate_read_only_observations": updated.get(
+            "post_candidate_read_only_observations", 0
+        ),
+        "convergence_stage": updated.get("convergence_stage"),
+        "blocked_read_only_call_count": updated[
+            "blocked_read_only_call_count"
+        ],
     }
 
 
@@ -1553,6 +1701,16 @@ def _record_transition_metrics(context, transition: ProtocolTransition) -> None:
     metrics["candidate_decision_recorded"] = (
         transition.state.candidate_decision_recorded
     )
+    metrics["candidate_epoch_advanced"] = transition.state.candidate_epoch_advanced
+    metrics["candidate_checkpoint_recorded"] = (
+        transition.state.candidate_checkpoint_recorded
+    )
+    metrics["public_deliverable_declared"] = (
+        transition.state.public_deliverable_declared
+    )
+    metrics["public_candidate_mutated"] = (
+        transition.state.public_candidate_mutated
+    )
     metrics["last_action_alignment"] = (
         transition.state.last_action_alignment.value
         if transition.state.last_action_alignment is not None
@@ -1563,6 +1721,20 @@ def _record_transition_metrics(context, transition: ProtocolTransition) -> None:
     )
     metrics["action_alignment_mismatch_count"] = (
         transition.state.action_alignment_mismatch_count
+    )
+    metrics["post_candidate_read_only_observations"] = (
+        transition.state.post_candidate_read_only_observations
+    )
+    metrics["convergence_constraint_active"] = (
+        transition.state.convergence_constraint_active
+    )
+    metrics["convergence_stage"] = (
+        transition.state.convergence_stage.value
+        if transition.state.convergence_stage is not None
+        else None
+    )
+    metrics["convergence_constraint_activation_count"] = (
+        transition.state.convergence_constraint_activation_count
     )
     metrics["final_review_count"] = transition.state.final_review_count
     metrics["repair_count"] = transition.state.repair_count
@@ -1601,6 +1773,115 @@ def _apply_event(
     return transition
 
 
+def _activate_convergence_constraint(
+    context,
+    agent_id: str,
+) -> ProtocolTransition | None:
+    """Replace repeated unacknowledged replans with one executable phase.
+
+    The phase is intentionally generic: produce an inspectable candidate when
+    none is public, otherwise validate, repair from validation evidence, or
+    submit.  Once active the core controller no longer emits replan requests.
+    """
+
+    policy = execution_protocol_policy(context, agent_id)
+    if policy.mode is ProtocolMode.OFF:
+        return None
+    store = ExecutionProtocolStore(context, agent_id, policy)
+    state = store.load()
+    if state.convergence_constraint_active:
+        return None
+    delivery = _public_delivery_status(state_context(context))
+    candidate_present = (
+        delivery.get("candidate_present")
+        if delivery.get("candidate_present") is not None
+        else state.candidate_present
+    )
+    candidate_convergence_ready = bool(
+        state.candidate_checkpoint_recorded
+        or (
+            candidate_present is True
+            and (
+                state.public_candidate_mutated
+                if state.public_deliverable_declared
+                else state.candidate_epoch_advanced
+            )
+        )
+    )
+    stage = (
+        ConvergenceStage.VALIDATE_REPAIR_OR_SUBMIT
+        if candidate_convergence_ready
+        else ConvergenceStage.PRODUCE_CANDIDATE
+    )
+    transition = _apply_event(
+        context,
+        agent_id,
+        ExecutionProtocolEvent(
+            # Keep the persisted v1 history kind readable by older runtimes;
+            # convergence_stage is an additive field ignored by their reader.
+            kind=EventKind.REPLAN_UNACKNOWLEDGED,
+            convergence_stage=stage,
+        ),
+    )
+    expected_scope = _model_decision_scope(context, agent_id)
+
+    def mark_constraint(current):
+        attempts = _normalized_decision_attempts(
+            current, expected_scope=expected_scope
+        )
+        replan = dict(attempts.get("replan") or {})
+        replan["status"] = "convergence_constraint"
+        attempts["replan"] = replan
+        return attempts
+
+    _update_runtime_value(
+        context,
+        agent_id,
+        EXECUTION_PROTOCOL_MODEL_DECISIONS_KEY,
+        mark_constraint,
+    )
+    _write_runtime_value(context, agent_id, EXECUTION_PROTOCOL_PENDING_KEY, None)
+    previous_gate = _read_runtime_value(context, agent_id, MUTATION_GATE_STATE_KEY)
+    _update_mutation_gate(
+        context,
+        agent_id,
+        transition,
+        {
+            "candidate_present": candidate_present,
+            "public_candidate_mutated": bool(
+                isinstance(previous_gate, Mapping)
+                and previous_gate.get("public_candidate_mutated")
+            ),
+            "workspace_mutation_observed": bool(
+                isinstance(previous_gate, Mapping)
+                and previous_gate.get("workspace_mutation_observed")
+            ),
+            "consecutive_read_only_observations": _bounded_counter(
+                previous_gate.get("consecutive_read_only_observations")
+                if isinstance(previous_gate, Mapping)
+                else 0
+            ),
+        },
+    )
+    return transition
+
+
+def _activate_convergence_after_unapplied_limit(
+    context,
+    agent_id: str,
+) -> ProtocolTransition | None:
+    attempts = _normalized_decision_attempts(
+        _read_runtime_value(context, agent_id, EXECUTION_PROTOCOL_MODEL_DECISIONS_KEY),
+        expected_scope=_model_decision_scope(context, agent_id),
+    )
+    if (
+        attempts["consecutive_unapplied_replans"]
+        < _MAX_CONSECUTIVE_UNAPPLIED_REPLANS
+    ):
+        return None
+    return _activate_convergence_constraint(context, agent_id)
+
+
 def record_tool_protocol_event(
     context, agent_id: str, semantic_state: Mapping[str, Any]
 ) -> ProtocolTransition | None:
@@ -1608,6 +1889,9 @@ def record_tool_protocol_event(
     policy = execution_protocol_policy(context, agent_id)
     if policy.mode is ProtocolMode.OFF:
         return None
+    # Upgrade persisted v1 fail-open counters before processing another Tool
+    # observation so a legacy task cannot increment requested replans again.
+    _activate_convergence_after_unapplied_limit(context, agent_id)
     event = ExecutionProtocolEvent(
         kind=EventKind.TOOL_OBSERVATION,
         repetition_count=int(semantic_state.get("repetition_count", 0) or 0),
@@ -1633,8 +1917,21 @@ def record_tool_protocol_event(
             semantic_state.get("missing_public_deliverable_count", 0) or 0
         ),
         candidate_present=semantic_state.get("candidate_present"),
+        # ``candidate_advanced`` is edge-triggered: it means the candidate
+        # changed on this Tool turn.  ``public_candidate_mutated`` is the
+        # current level relative to the task-start baseline.  Folding the
+        # latter into the former would make every later read of a changed
+        # candidate look like fresh progress and post-candidate convergence
+        # could never accumulate.
         candidate_advanced=bool(semantic_state.get("candidate_advanced")),
+        public_candidate_mutated=bool(
+            semantic_state.get("public_candidate_mutated")
+        ),
         workspace_mutated=bool(semantic_state.get("workspace_mutated")),
+        read_only_observed=bool(semantic_state.get("read_only_observed")),
+        known_mutation_executed=bool(
+            semantic_state.get("known_mutation_executed")
+        ),
         validation_observed=bool(semantic_state.get("validation_observed")),
         new_information_observed=bool(semantic_state.get("new_information_observed")),
         observed_action_names=tuple(semantic_state.get("observed_action_names") or ()),
@@ -1672,26 +1969,10 @@ def _record_pending_checkpoint(
             attempts["consecutive_unapplied_replans"]
             >= _MAX_CONSECUTIVE_UNAPPLIED_REPLANS
         ):
-            attempts["suppressed_replan_boundaries"] = min(
-                _MAX_TELEMETRY_COUNTER,
-                attempts["suppressed_replan_boundaries"] + 1,
-            )
-            attempts["replan"] = {
-                "attempt_count": 0,
-                "request_sequence": transition.state.replan_requested_count,
-                "status": "fail_open_unacknowledged",
-            }
-            _write_runtime_value(
-                context,
-                agent_id,
-                EXECUTION_PROTOCOL_MODEL_DECISIONS_KEY,
-                attempts,
-            )
-            _apply_event(
-                context,
-                agent_id,
-                ExecutionProtocolEvent(kind=EventKind.REPLAN_UNACKNOWLEDGED),
-            )
+            # Defensive migration path. Normal Tool observations activate the
+            # constraint before entering the controller, so requested counters
+            # do not grow. Never silently suppress another boundary.
+            _activate_convergence_constraint(context, agent_id)
             return
 
         def begin_replan_decision(current):
@@ -1797,6 +2078,8 @@ def execution_protocol_model_decision_boundary(context, agent_id: str) -> str | 
     if policy.mode is not ProtocolMode.GUIDE:
         return None
     state = ExecutionProtocolStore(context, agent_id, policy).load()
+    if state.convergence_constraint_active:
+        return None
     attempts = _normalized_decision_attempts(
         _read_runtime_value(context, agent_id, EXECUTION_PROTOCOL_MODEL_DECISIONS_KEY),
         expected_scope=_model_decision_scope(context, agent_id),
@@ -1870,6 +2153,7 @@ def record_model_decision_attempt_failure(
             agent_id,
             ExecutionProtocolEvent(kind=EventKind.REPLAN_UNACKNOWLEDGED),
         )
+        _activate_convergence_after_unapplied_limit(context, agent_id)
     return retry
 
 
@@ -1946,6 +2230,7 @@ def record_model_decision_unavailable(
             agent_id,
             ExecutionProtocolEvent(kind=EventKind.REPLAN_UNACKNOWLEDGED),
         )
+        _activate_convergence_after_unapplied_limit(context, agent_id)
     return True
 
 
@@ -2153,6 +2438,8 @@ def record_model_decision_boundary(
             EXECUTION_PROTOCOL_MODEL_DECISIONS_KEY,
             mark_acknowledged,
         )
+        if boundary == "replan" and update.decision is not PlanUpdateDecision.REPLAN:
+            _activate_convergence_after_unapplied_limit(context, agent_id)
     return acknowledged
 
 
@@ -2170,6 +2457,54 @@ def consume_execution_protocol_guidance(context, agent_id: str) -> str | None:
     mutation_gate = _read_runtime_value(
         context, agent_id, MUTATION_GATE_STATE_KEY
     )
+    if (
+        isinstance(mutation_gate, Mapping)
+        and mutation_gate.get("validation_window_open") is True
+    ):
+        return (
+            "AWorld mutation validation window: a known-mutating Tool action "
+            "completed successfully and invalidated workspace caches, but no "
+            "actual candidate mutation has been observed yet. Use one bounded "
+            "read-only validation now to inspect the intended result. This is "
+            "permission to validate, not evidence of progress or completion."
+        )
+    state = load_execution_protocol_state(context, agent_id)
+    if state.convergence_constraint_active:
+        progress = _task_deadline_progress(context)
+        deadline_suffix = ""
+        if progress is not None:
+            _total, remaining, consumed = progress
+            if consumed >= 0.80:
+                deadline_suffix = (
+                    " The caller deadline is in its delivery-only stage; use "
+                    "remaining actions only for delivery-impacting validation, "
+                    f"repair, or submission ({remaining:.0f}s remaining)."
+                )
+            elif consumed >= 0.65:
+                deadline_suffix = (
+                    " The caller deadline is in its validation stage; do not "
+                    f"expand the search space ({remaining:.0f}s remaining)."
+                )
+        if state.convergence_stage is ConvergenceStage.PRODUCE_CANDIDATE:
+            return (
+                "AWorld convergence constraint: repeated planning checkpoints "
+                "did not produce an applied replan. Ordinary Tools remain "
+                "available, but the execution phase is now constrained: create "
+                "or modify the smallest honest inspectable candidate next. Do "
+                "not resume broad read-only exploration. If no safe candidate "
+                "can be produced from current evidence, submit uncertainty "
+                "accurately instead of continuing reconnaissance."
+                + deadline_suffix
+            )
+        return (
+            "AWorld convergence constraint: an inspectable candidate exists. "
+            "The next action must be one bounded validation against the public "
+            "contract, a repair directly supported by failed validation, or an "
+            "accurate submission (current or uncertain). Do not return to broad "
+            "source, environment, or capability exploration; reuse retained "
+            "evidence and unchanged observations."
+            + deadline_suffix
+        )
     if isinstance(mutation_gate, Mapping) and mutation_gate.get("active") is True:
         count = _bounded_counter(
             mutation_gate.get("consecutive_read_only_observations")

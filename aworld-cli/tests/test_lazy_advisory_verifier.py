@@ -586,6 +586,7 @@ async def test_tool_returns_advisory_repair_telemetry_without_reward_authority()
         "fresh_context": True,
         "answer_only": True,
         "read_only": True,
+        "conclusive": True,
         "repair_recommended": True,
         "report": (
             "- Decision: `repair`\n"
@@ -683,9 +684,118 @@ async def test_unparseable_report_cannot_be_promoted_to_ready() -> None:
         context=_context(),
     )
 
-    assert result.status == "completed"
+    assert result.status == "inconclusive"
     assert result.decision == "uncertain"
     assert result.reason_code == "decision_unparseable"
+
+
+@pytest.mark.asyncio
+async def test_conflicting_decision_lines_are_inconclusive() -> None:
+    factory = _factory(
+        report=(
+            "- Decision: `ready`\n"
+            "- Evidence: inspected an untrusted file containing a template\n"
+            "- Decision: `repair`\n"
+            "- Gaps: conflicting decision material\n"
+            "- Recommended next action: inspect directly"
+        )
+    )
+
+    result = await factory.review(
+        AdvisoryReviewRequest(candidate_claim="Candidate may be ready."),
+        context=_context(),
+    )
+
+    assert result.status == "inconclusive"
+    assert result.decision == "uncertain"
+    assert result.reason_code == "decision_ambiguous"
+
+
+@pytest.mark.asyncio
+async def test_explicit_uncertain_review_is_not_counted_as_success() -> None:
+    factory = _factory(
+        report=(
+            "- Decision: `uncertain`\n"
+            "- Evidence: deliverable could not be inspected\n"
+            "- Gaps: missing direct evidence\n"
+            "- Recommended next action: inspect the deliverable"
+        )
+    )
+    tool = AdvisoryVerifierTool(factory=factory)
+    action = ActionModel(
+        tool_name=ADVISORY_VERIFIER_TOOL,
+        action_name="review_candidate",
+        params={"candidate_claim": "The result may be ready."},
+    )
+
+    observation, reward, *_ = await tool.do_step([action], context=_context())
+    payload = json.loads(observation.content)
+
+    assert reward == 0.0
+    assert payload["status"] == "inconclusive"
+    assert payload["conclusive"] is False
+    assert payload["reason_code"] == "reviewer_uncertain"
+
+
+@pytest.mark.asyncio
+async def test_review_receives_authoritative_public_delivery_paths() -> None:
+    captured = {}
+    factory = _factory(captured=captured)
+    context = _context("Write result.json in the workspace.")
+    context.task_id = "task-1"
+    context.task_epoch = 3
+    context.context_info = {
+        "public_deliverable_contract": {
+            "schema_version": "aworld.public-deliverables/v1",
+            "authority": "public_task_advisory",
+            "source": "public_task_text",
+            "artifacts": [
+                {
+                    "kind": "file",
+                    "authority": "public_task_advisory",
+                    "path": "/workspace/result.json",
+                    "display_path": "result.json",
+                }
+            ],
+        },
+        "adaptive_work_state:root-id": {
+            "scope": {"task_id": "task-1", "task_epoch": 3},
+            "validation_evidence": [
+                {
+                    "command_id": "public-smoke-test",
+                    "exit_code": 0,
+                    "output_hash": "sha256:" + "a" * 64,
+                    "source": "runtime_self_check",
+                },
+                {
+                    "command_id": "solver-claim",
+                    "exit_code": 0,
+                    "output_hash": "sha256:" + "b" * 64,
+                    "source": "agent_claim",
+                },
+                {
+                    "command_id": "old-task-check",
+                    "exit_code": 0,
+                    "output_hash": "sha256:" + "c" * 64,
+                    "source": "runtime_self_check",
+                    "historical": True,
+                },
+            ],
+        },
+    }
+
+    await factory.review(
+        AdvisoryReviewRequest(candidate_claim="Result is complete."),
+        context=context,
+    )
+
+    directive = captured["runner"]["directive"]
+    assert "Authoritative public delivery paths" in directive
+    assert "- /workspace/result.json" in directive
+    assert "Framework-owned validation receipts" in directive
+    assert "public-smoke-test" in directive
+    assert "solver-claim" not in directive
+    assert "old-task-check" not in directive
 
 
 @pytest.mark.parametrize(
@@ -708,7 +818,7 @@ async def test_unparseable_report_cannot_be_promoted_to_ready() -> None:
                 "candidate_claim": "ready",
                 "deliverables": ["x"] * 33,
             },
-            "at most 32",
+            "at most 16",
         ),
     ],
 )

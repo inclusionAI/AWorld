@@ -13,6 +13,7 @@ from .acceptance import (
 from .models import (
     action_signature,
     CompletionAssessment,
+    ConvergenceStage,
     ControllerAction,
     ControllerDecision,
     DeliveryIntent,
@@ -45,6 +46,7 @@ __all__ = [
     "AcceptanceDecision",
     "AcceptanceProbeReceipt",
     "CompletionAssessment",
+    "ConvergenceStage",
     "ControllerAction",
     "ControllerDecision",
     "DeliveryIntent",

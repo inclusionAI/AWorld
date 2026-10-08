@@ -43,6 +43,9 @@ from aworld.core.common import (
 )
 from aworld.core.context.amni.prompt.assembly import (
     DefaultPromptAssemblyProvider,
+    PROMPT_SECTION_NAME_HINT_KEY,
+    PROMPT_STABILITY_HINT_KEY,
+    sanitize_prompt_messages,
     validated_amni_system_sections,
 )
 from aworld.core.context.base import Context
@@ -2359,6 +2362,10 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             if hasattr(plan, "to_model_messages")
             else to_serializable(getattr(plan, "messages", messages))
         )
+        # Custom PromptAssemblyProvider implementations may preserve unknown
+        # message keys. Framework stability hints are never provider wire
+        # fields, so strip them again at the shared model boundary.
+        assembled_messages = sanitize_prompt_messages(assembled_messages)
         observability = dict(metadata)
         plan_observability = getattr(plan, "observability", None)
         if isinstance(plan_observability, dict):
@@ -5425,10 +5432,18 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                     {
                         "role": (
                             "system"
-                            if execution_guidance.startswith("AWorld mutation gate:")
+                            if execution_guidance.startswith(
+                                (
+                                    "AWorld mutation gate:",
+                                    "AWorld mutation validation window:",
+                                    "AWorld convergence constraint:",
+                                )
+                            )
                             else "user"
                         ),
                         "content": execution_guidance,
+                        PROMPT_SECTION_NAME_HINT_KEY: "execution_protocol_guidance",
+                        PROMPT_STABILITY_HINT_KEY: "dynamic",
                     }
                 )
         if transient_model_recovery_turn and not tool_free_finalization:
@@ -6067,9 +6082,22 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                         elif execution_decision_outcome == "acknowledged":
                             from aworld.runners.execution_protocol import (
                                 execution_protocol_requires_tool_free_finalization,
+                                load_execution_protocol_state,
                             )
 
-                            if execution_protocol_requires_tool_free_finalization(
+                            protocol_state = load_execution_protocol_state(
+                                message.context, self.id()
+                            )
+                            if protocol_state.convergence_constraint_active:
+                                execution_decision_feedback = (
+                                    "AWorld recorded the checkpoint, but repeated "
+                                    "checkpoints did not produce an applied replan. "
+                                    "Resume with ordinary Tools under the active "
+                                    "delivery-phase constraint: produce a candidate, "
+                                    "or validate, repair, and submit the candidate "
+                                    "already present. Do not resume broad exploration."
+                                )
+                            elif execution_protocol_requires_tool_free_finalization(
                                 message.context, self.id()
                             ):
                                 execution_decision_feedback = (
@@ -6093,14 +6121,29 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                                 "choose horizon=unknown when classification is uncertain."
                             )
                         else:
-                            execution_decision_feedback = (
-                                "The bounded AWorld execution-checkpoint attempts were "
-                                "not acknowledged. Resume with ordinary Tools. The "
-                                "initial horizon remains unknown or the replan request "
-                                "remains explicitly unacknowledged; neither condition is "
-                                "evidence of completion or authorization for a short-task "
-                                "review bypass."
+                            from aworld.runners.execution_protocol import (
+                                load_execution_protocol_state,
                             )
+
+                            protocol_state = load_execution_protocol_state(
+                                message.context, self.id()
+                            )
+                            if protocol_state.convergence_constraint_active:
+                                execution_decision_feedback = (
+                                    "The bounded AWorld replan checkpoint was not "
+                                    "acknowledged twice. Resume with ordinary Tools "
+                                    "under the active delivery-phase constraint; no "
+                                    "further replan requests will be accumulated."
+                                )
+                            else:
+                                execution_decision_feedback = (
+                                    "The bounded AWorld execution-checkpoint attempts "
+                                    "were not acknowledged. Resume with ordinary Tools. "
+                                    "The initial horizon remains unknown or the replan "
+                                    "request remains explicitly unacknowledged; neither "
+                                    "condition is evidence of completion or authorization "
+                                    "for a short-task review bypass."
+                                )
                     if agent_result.is_call_tool:
                         review_repair_requested = self._consume_model_review_control(
                             agent_result, message.context
@@ -7284,7 +7327,15 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             return None
         messages = []
         for section in sections:
-            messages.append({"role": "system", "content": section["content"]})
+            message = {
+                "role": "system",
+                "content": section["content"],
+                PROMPT_STABILITY_HINT_KEY: section["stability"],
+            }
+            name = section.get("name")
+            if isinstance(name, str) and name.strip():
+                message[PROMPT_SECTION_NAME_HINT_KEY] = name.strip()
+            messages.append(message)
         return messages
 
     def _process_messages(
@@ -7337,6 +7388,8 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                 "validate file contents, authorize arbitrary commands, or replace "
                 "a canonical verifier."
             ),
+            PROMPT_SECTION_NAME_HINT_KEY: "public_deliverable_contract",
+            PROMPT_STABILITY_HINT_KEY: "stable",
         }
         return [guidance, *messages]
 

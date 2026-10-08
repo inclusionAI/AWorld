@@ -7,6 +7,10 @@ from aworld_cli.core.runtime_completion import configure_runtime_completion
 from aworld.agents.llm_agent import LLMAgent
 from aworld.config.conf import AgentConfig, ContextCompilerRuntimeConfig
 from aworld.core.context.base import Context
+from aworld.core.context.amni.prompt.assembly import (
+    PROMPT_SECTION_NAME_HINT_KEY,
+    PROMPT_STABILITY_HINT_KEY,
+)
 from aworld.core.context.compiler import estimate_canonical_json_tokens
 from tests.core.agent.test_agent_loop_budget import LoopBudgetAgent, _agent_message
 
@@ -61,6 +65,10 @@ def test_public_deliverable_guidance_is_injected_once(tmp_path):
     assert len(transformed) == 2
     assert transformed[0]["role"] == "system"
     assert "result.json" in transformed[0]["content"]
+    assert transformed[0][PROMPT_SECTION_NAME_HINT_KEY] == (
+        "public_deliverable_contract"
+    )
+    assert transformed[0][PROMPT_STABILITY_HINT_KEY] == "stable"
     assert agent._process_messages(transformed, context=context) == transformed
 
 

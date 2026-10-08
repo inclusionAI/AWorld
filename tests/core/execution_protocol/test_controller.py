@@ -5,6 +5,7 @@ import pytest
 
 from aworld.core.execution_protocol import (
     action_signature,
+    ConvergenceStage,
     ControllerAction,
     DeliveryIntent,
     DecisionReason,
@@ -899,6 +900,202 @@ def test_continue_checkpoint_acknowledges_request_without_claiming_replan_applie
     assert acknowledged.state.replan_applied_count == 0
     assert acknowledged.state.decision_checkpoint_pending is False
     assert acknowledged.decision.reason is DecisionReason.MODEL_PLAN_CHECKPOINT
+
+
+def test_convergence_constraint_stops_future_replan_requests_and_advances_stage():
+    policy = ExecutionProtocolPolicy(mode="guide", repetition_threshold=1)
+    requested = transition_execution_protocol(
+        _state(), _tool(current_step=1, repetition_count=1), policy
+    )
+    constrained = transition_execution_protocol(
+        requested.state,
+        ExecutionProtocolEvent(
+            kind=EventKind.REPLAN_UNACKNOWLEDGED,
+            convergence_stage=ConvergenceStage.PRODUCE_CANDIDATE,
+        ),
+        policy,
+    )
+
+    assert constrained.decision.action is ControllerAction.APPLY_CONVERGENCE_CONSTRAINT
+    assert constrained.state.decision_checkpoint_pending is False
+    assert constrained.state.convergence_constraint_active is True
+    assert constrained.state.convergence_constraint_activation_count == 1
+    assert constrained.state.history[-1].kind is EventKind.REPLAN_UNACKNOWLEDGED
+    assert constrained.state.to_dict()["history"][-1]["kind"] == (
+        "replan_unacknowledged"
+    )
+
+    repeated = transition_execution_protocol(
+        constrained.state,
+        _tool(current_step=2, repetition_count=2),
+        policy,
+    )
+    assert repeated.decision.action is ControllerAction.CONTINUE
+    assert repeated.decision.reason is DecisionReason.CONVERGENCE_CONSTRAINT_ACTIVE
+    assert repeated.state.replan_requested_count == 1
+
+    candidate = transition_execution_protocol(
+        repeated.state,
+        _tool(
+            current_step=3,
+            candidate_present=True,
+            candidate_advanced=True,
+            workspace_mutated=True,
+        ),
+        policy,
+    )
+    assert candidate.state.convergence_stage is (
+        ConvergenceStage.VALIDATE_REPAIR_OR_SUBMIT
+    )
+
+
+def test_repeated_post_candidate_reads_activate_convergence_without_replan():
+    policy = ExecutionProtocolPolicy(
+        mode="guide",
+        post_candidate_read_only_threshold=2,
+        repetition_threshold=99,
+        low_information_gain_threshold=99,
+        no_goal_progress_threshold=99,
+        stagnation_event_threshold=99,
+    )
+    existing = transition_execution_protocol(
+        _state(),
+        _tool(candidate_present=True, read_only_observed=True),
+        policy,
+    )
+    assert existing.state.post_candidate_read_only_observations == 0
+    assert existing.state.convergence_constraint_active is False
+
+    advanced = transition_execution_protocol(
+        existing.state,
+        _tool(
+            candidate_present=True,
+            candidate_advanced=True,
+            workspace_mutated=True,
+        ),
+        policy,
+    )
+    first = transition_execution_protocol(
+        advanced.state,
+        _tool(
+            public_deliverable_declared=True,
+            public_candidate_mutated=True,
+            candidate_present=True,
+            read_only_observed=True,
+        ),
+        policy,
+    )
+    second = transition_execution_protocol(
+        first.state,
+        _tool(
+            public_deliverable_declared=True,
+            public_candidate_mutated=True,
+            candidate_present=True,
+            read_only_observed=True,
+        ),
+        policy,
+    )
+
+    assert second.decision.action is ControllerAction.APPLY_CONVERGENCE_CONSTRAINT
+    assert second.decision.reason is DecisionReason.POST_CANDIDATE_STAGNATION
+    assert second.state.convergence_stage is (
+        ConvergenceStage.VALIDATE_REPAIR_OR_SUBMIT
+    )
+    assert second.state.post_candidate_read_only_observations == 2
+    assert second.state.replan_requested_count == 0
+
+
+def test_explicit_candidate_checkpoint_enables_contractless_post_candidate_phase():
+    policy = ExecutionProtocolPolicy(
+        mode="guide",
+        post_candidate_read_only_threshold=1,
+        repetition_threshold=99,
+        low_information_gain_threshold=99,
+        no_goal_progress_threshold=99,
+        stagnation_event_threshold=99,
+    )
+    checkpoint = transition_execution_protocol(
+        _state(),
+        ExecutionProtocolEvent(
+            kind=EventKind.MODEL_PLAN_UPDATE,
+            model_plan_update=_plan_update(intent="validate_candidate"),
+        ),
+        policy,
+    )
+    assert checkpoint.state.candidate_checkpoint_recorded is True
+
+    constrained = transition_execution_protocol(
+        checkpoint.state,
+        _tool(read_only_observed=True),
+        policy,
+    )
+    assert constrained.decision.action is (
+        ControllerAction.APPLY_CONVERGENCE_CONSTRAINT
+    )
+    assert constrained.state.convergence_stage is (
+        ConvergenceStage.VALIDATE_REPAIR_OR_SUBMIT
+    )
+
+    removed = transition_execution_protocol(
+        constrained.state,
+        _tool(candidate_present=False, read_only_observed=True),
+        policy,
+    )
+    assert removed.state.candidate_checkpoint_recorded is False
+    assert removed.state.candidate_epoch_advanced is False
+    assert removed.state.post_candidate_read_only_observations == 0
+    assert removed.state.convergence_stage is ConvergenceStage.PRODUCE_CANDIDATE
+
+
+def test_public_candidate_rollback_to_baseline_revokes_convergence_readiness():
+    policy = ExecutionProtocolPolicy(
+        mode="guide",
+        post_candidate_read_only_threshold=1,
+        repetition_threshold=99,
+        low_information_gain_threshold=99,
+        no_goal_progress_threshold=99,
+        stagnation_event_threshold=99,
+    )
+    advanced = transition_execution_protocol(
+        _state(),
+        _tool(
+            public_deliverable_declared=True,
+            candidate_present=True,
+            candidate_advanced=True,
+            public_candidate_mutated=True,
+            workspace_mutated=True,
+        ),
+        policy,
+    )
+    assert advanced.state.public_candidate_mutated is True
+
+    rolled_back = transition_execution_protocol(
+        advanced.state,
+        _tool(
+            public_deliverable_declared=True,
+            candidate_present=True,
+            candidate_advanced=True,
+            public_candidate_mutated=False,
+            workspace_mutated=True,
+        ),
+        policy,
+    )
+    assert rolled_back.state.candidate_epoch_advanced is True
+    assert rolled_back.state.public_candidate_mutated is False
+    assert rolled_back.state.candidate_checkpoint_recorded is False
+
+    inspected = transition_execution_protocol(
+        rolled_back.state,
+        _tool(
+            public_deliverable_declared=True,
+            candidate_present=True,
+            public_candidate_mutated=False,
+            read_only_observed=True,
+        ),
+        policy,
+    )
+    assert inspected.state.post_candidate_read_only_observations == 0
+    assert inspected.state.convergence_constraint_active is False
 
 
 def test_model_plan_update_cannot_escape_pending_review_phase():

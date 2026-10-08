@@ -67,6 +67,18 @@ class NextActionAlignment(str, Enum):
     UNOBSERVABLE = "unobservable"
 
 
+class ConvergenceStage(str, Enum):
+    """Framework-owned phase constraint after advisory replanning stalls.
+
+    The stage deliberately describes only the delivery lifecycle.  It does not
+    select a command, infer task correctness, or contain benchmark-specific
+    semantics.
+    """
+
+    PRODUCE_CANDIDATE = "produce_candidate"
+    VALIDATE_REPAIR_OR_SUBMIT = "validate_repair_or_submit"
+
+
 class EventKind(str, Enum):
     MODEL_EXECUTION_PROFILE = "model_execution_profile"
     MODEL_PLAN_UPDATE = "model_plan_update"
@@ -92,6 +104,8 @@ class ControllerAction(str, Enum):
     CONTINUE = "continue"
     WOULD_REQUEST_REPLAN = "would_request_replan"
     REQUEST_REPLAN = "request_replan"
+    WOULD_APPLY_CONVERGENCE_CONSTRAINT = "would_apply_convergence_constraint"
+    APPLY_CONVERGENCE_CONSTRAINT = "apply_convergence_constraint"
     WOULD_ENTER_FINALIZATION = "would_enter_finalization"
     ENTER_FINALIZATION = "enter_finalization"
     WOULD_REQUEST_FINAL_REVIEW = "would_request_final_review"
@@ -113,6 +127,9 @@ class DecisionReason(str, Enum):
     MODEL_PLAN_CHECKPOINT = "model_plan_checkpoint"
     MODEL_REPLAN_APPLIED = "model_replan_applied"
     MODEL_REPLAN_UNACKNOWLEDGED = "model_replan_unacknowledged"
+    REPLAN_ACK_LIMIT_REACHED = "replan_ack_limit_reached"
+    POST_CANDIDATE_STAGNATION = "post_candidate_stagnation"
+    CONVERGENCE_CONSTRAINT_ACTIVE = "convergence_constraint_active"
     OBSERVED_LONG_HORIZON = "observed_long_horizon"
     STAGNATION_DETECTED = "stagnation_detected"
     DELIVERY_DEBT_DETECTED = "delivery_debt_detected"
@@ -577,6 +594,9 @@ class ExecutionProtocolPolicy:
     low_information_gain_threshold: int = 3
     no_goal_progress_threshold: int = 6
     delivery_debt_observation_threshold: int = 3
+    # Once a candidate exists, repeated provably read-only exploration must
+    # converge to validation, an evidence-driven repair, or submission.
+    post_candidate_read_only_threshold: int = 3
     # Semantic loop counts are model-owned. ``None`` leaves replanning,
     # reviewing, and repair bounded by the caller's task deadline instead of a
     # framework-selected number of attempts. Explicit callers may still set a
@@ -616,6 +636,7 @@ class ExecutionProtocolPolicy:
             "low_information_gain_threshold",
             "no_goal_progress_threshold",
             "delivery_debt_observation_threshold",
+            "post_candidate_read_only_threshold",
         ):
             value = getattr(self, name)
             if isinstance(value, bool) or not isinstance(value, int) or value < 1:
@@ -701,6 +722,9 @@ class ExecutionProtocolPolicy:
             "delivery_debt_observation_threshold": (
                 self.delivery_debt_observation_threshold
             ),
+            "post_candidate_read_only_threshold": (
+                self.post_candidate_read_only_threshold
+            ),
             "max_replans": self.max_replans,
             "max_final_reviews": self.max_final_reviews,
             "max_repairs": self.max_repairs,
@@ -744,6 +768,9 @@ class ExecutionProtocolPolicy:
             no_goal_progress_threshold=value.get("no_goal_progress_threshold"),
             delivery_debt_observation_threshold=value.get(
                 "delivery_debt_observation_threshold", 3
+            ),
+            post_candidate_read_only_threshold=value.get(
+                "post_candidate_read_only_threshold", 3
             ),
             max_replans=value.get("max_replans"),
             max_final_reviews=value.get("max_final_reviews"),
@@ -816,7 +843,10 @@ class ExecutionProtocolEvent:
     missing_public_deliverable_count: int = 0
     candidate_present: bool | None = None
     candidate_advanced: bool = False
+    public_candidate_mutated: bool = False
     workspace_mutated: bool = False
+    read_only_observed: bool = False
+    known_mutation_executed: bool = False
     validation_observed: bool = False
     new_information_observed: bool = False
     observed_action_names: tuple[str, ...] = field(default_factory=tuple)
@@ -828,6 +858,7 @@ class ExecutionProtocolEvent:
     review_outcome: ReviewOutcome | None = None
     model_execution_profile: ModelExecutionProfile | None = None
     model_plan_update: ModelPlanUpdate | None = None
+    convergence_stage: ConvergenceStage | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.kind, EventKind):
@@ -851,7 +882,10 @@ class ExecutionProtocolEvent:
             "evidence_advanced",
             "public_deliverable_declared",
             "workspace_mutated",
+            "read_only_observed",
+            "known_mutation_executed",
             "candidate_advanced",
+            "public_candidate_mutated",
             "validation_observed",
             "new_information_observed",
         ):
@@ -943,6 +977,22 @@ class ExecutionProtocolEvent:
             self.model_plan_update, ModelPlanUpdate
         ):
             raise ValueError("model_plan_update must be ModelPlanUpdate or None")
+        if self.convergence_stage is not None and not isinstance(
+            self.convergence_stage, ConvergenceStage
+        ):
+            try:
+                object.__setattr__(
+                    self, "convergence_stage", ConvergenceStage(self.convergence_stage)
+                )
+            except (TypeError, ValueError) as exc:
+                raise ValueError("unsupported convergence_stage") from exc
+        if (
+            self.kind is not EventKind.REPLAN_UNACKNOWLEDGED
+            and self.convergence_stage is not None
+        ):
+            raise ValueError(
+                "convergence_stage is valid only for replan_unacknowledged"
+            )
 
     def to_record(self, sequence: int) -> "ProtocolEventRecord":
         return ProtocolEventRecord(
@@ -958,7 +1008,10 @@ class ExecutionProtocolEvent:
             missing_public_deliverable_count=self.missing_public_deliverable_count,
             candidate_present=self.candidate_present,
             candidate_advanced=self.candidate_advanced,
+            public_candidate_mutated=self.public_candidate_mutated,
             workspace_mutated=self.workspace_mutated,
+            read_only_observed=self.read_only_observed,
+            known_mutation_executed=self.known_mutation_executed,
             validation_observed=self.validation_observed,
             new_information_observed=self.new_information_observed,
             observed_action_names=self.observed_action_names,
@@ -970,6 +1023,7 @@ class ExecutionProtocolEvent:
             review_outcome=self.review_outcome,
             model_execution_profile=self.model_execution_profile,
             model_plan_update=self.model_plan_update,
+            convergence_stage=self.convergence_stage,
         )
 
 
@@ -987,7 +1041,10 @@ class ProtocolEventRecord:
     missing_public_deliverable_count: int = 0
     candidate_present: bool | None = None
     candidate_advanced: bool = False
+    public_candidate_mutated: bool = False
     workspace_mutated: bool = False
+    read_only_observed: bool = False
+    known_mutation_executed: bool = False
     validation_observed: bool = False
     new_information_observed: bool = False
     observed_action_names: tuple[str, ...] = field(default_factory=tuple)
@@ -999,6 +1056,7 @@ class ProtocolEventRecord:
     review_outcome: ReviewOutcome | None = None
     model_execution_profile: ModelExecutionProfile | None = None
     model_plan_update: ModelPlanUpdate | None = None
+    convergence_stage: ConvergenceStage | None = None
 
     def __post_init__(self) -> None:
         for name in (
@@ -1020,7 +1078,10 @@ class ProtocolEventRecord:
             "evidence_advanced",
             "public_deliverable_declared",
             "workspace_mutated",
+            "read_only_observed",
+            "known_mutation_executed",
             "candidate_advanced",
+            "public_candidate_mutated",
             "validation_observed",
             "new_information_observed",
         ):
@@ -1103,6 +1164,17 @@ class ProtocolEventRecord:
             self.model_plan_update, ModelPlanUpdate
         ):
             raise ValueError("record model_plan_update has invalid type")
+        if self.convergence_stage is not None and not isinstance(
+            self.convergence_stage, ConvergenceStage
+        ):
+            raise ValueError("record convergence_stage has invalid type")
+        if (
+            self.kind is not EventKind.REPLAN_UNACKNOWLEDGED
+            and self.convergence_stage is not None
+        ):
+            raise ValueError(
+                "convergence_stage is valid only for replan-unacknowledged records"
+            )
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -1118,7 +1190,10 @@ class ProtocolEventRecord:
             "missing_public_deliverable_count": self.missing_public_deliverable_count,
             "candidate_present": self.candidate_present,
             "candidate_advanced": self.candidate_advanced,
+            "public_candidate_mutated": self.public_candidate_mutated,
             "workspace_mutated": self.workspace_mutated,
+            "read_only_observed": self.read_only_observed,
+            "known_mutation_executed": self.known_mutation_executed,
             "validation_observed": self.validation_observed,
             "new_information_observed": self.new_information_observed,
             "observed_action_names": list(self.observed_action_names),
@@ -1140,6 +1215,11 @@ class ProtocolEventRecord:
                 if self.model_plan_update is not None
                 else None
             ),
+            "convergence_stage": (
+                self.convergence_stage.value
+                if self.convergence_stage is not None
+                else None
+            ),
         }
 
     @classmethod
@@ -1147,6 +1227,7 @@ class ProtocolEventRecord:
         outcome = value.get("review_outcome")
         profile = value.get("model_execution_profile")
         plan_update = value.get("model_plan_update")
+        convergence_stage = value.get("convergence_stage")
         return cls(
             sequence=_non_negative_int(value.get("sequence"), "sequence"),
             kind=EventKind(value.get("kind")),
@@ -1169,7 +1250,10 @@ class ProtocolEventRecord:
             ),
             candidate_present=value.get("candidate_present"),
             candidate_advanced=value.get("candidate_advanced", False),
+            public_candidate_mutated=value.get("public_candidate_mutated", False),
             workspace_mutated=value.get("workspace_mutated", False),
+            read_only_observed=value.get("read_only_observed", False),
+            known_mutation_executed=value.get("known_mutation_executed", False),
             validation_observed=value.get("validation_observed", False),
             new_information_observed=value.get("new_information_observed", False),
             observed_action_names=value.get("observed_action_names") or (),
@@ -1191,12 +1275,18 @@ class ProtocolEventRecord:
                 if plan_update is not None
                 else None
             ),
+            convergence_stage=(
+                ConvergenceStage(convergence_stage)
+                if convergence_stage is not None
+                else None
+            ),
         )
 
 
 @dataclass(frozen=True, slots=True)
 class ExecutionProtocolState:
-    SCHEMA_VERSION: ClassVar[str] = "aworld.execution-protocol-state/v1"
+    SCHEMA_VERSION: ClassVar[str] = "aworld.execution-protocol-state/v2"
+    LEGACY_SCHEMA_VERSION: ClassVar[str] = "aworld.execution-protocol-state/v1"
 
     scope: ProtocolScope
     phase: ProtocolPhase = ProtocolPhase.EXECUTE
@@ -1228,6 +1318,15 @@ class ExecutionProtocolState:
     last_action_alignment_observation_sequence: int | None = None
     action_alignment_match_count: int = 0
     action_alignment_mismatch_count: int = 0
+    candidate_present: bool | None = None
+    public_deliverable_declared: bool = False
+    public_candidate_mutated: bool = False
+    candidate_epoch_advanced: bool = False
+    candidate_checkpoint_recorded: bool = False
+    post_candidate_read_only_observations: int = 0
+    convergence_constraint_active: bool = False
+    convergence_stage: ConvergenceStage | None = None
+    convergence_constraint_activation_count: int = 0
     final_review_count: int = 0
     repair_count: int = 0
     candidate_final_count: int = 0
@@ -1265,6 +1364,8 @@ class ExecutionProtocolState:
             "candidate_decision_count",
             "action_alignment_match_count",
             "action_alignment_mismatch_count",
+            "post_candidate_read_only_observations",
+            "convergence_constraint_activation_count",
         ):
             _non_negative_int(getattr(self, name), name)
         if self.last_replan_attempt_epoch is not None:
@@ -1288,8 +1389,30 @@ class ExecutionProtocolState:
             or not isinstance(self.acceptance_confirmed, bool)
             or not isinstance(self.candidate_decision_recorded, bool)
             or not isinstance(self.next_action_alignment_pending, bool)
+            or not isinstance(self.public_deliverable_declared, bool)
+            or not isinstance(self.public_candidate_mutated, bool)
+            or not isinstance(self.candidate_epoch_advanced, bool)
+            or not isinstance(self.candidate_checkpoint_recorded, bool)
+            or not isinstance(self.convergence_constraint_active, bool)
         ):
             raise ValueError("state flags must be booleans")
+        if self.candidate_present is not None and not isinstance(
+            self.candidate_present, bool
+        ):
+            raise ValueError("candidate_present must be a boolean or None")
+        if self.convergence_stage is not None and not isinstance(
+            self.convergence_stage, ConvergenceStage
+        ):
+            try:
+                object.__setattr__(
+                    self, "convergence_stage", ConvergenceStage(self.convergence_stage)
+                )
+            except (TypeError, ValueError) as exc:
+                raise ValueError("unsupported convergence_stage") from exc
+        if self.convergence_constraint_active != (self.convergence_stage is not None):
+            raise ValueError(
+                "active convergence constraint requires exactly one convergence stage"
+            )
         if self.decision_checkpoint_reason is not None and not isinstance(
             self.decision_checkpoint_reason, DecisionReason
         ):
@@ -1408,6 +1531,23 @@ class ExecutionProtocolState:
             ),
             "action_alignment_match_count": self.action_alignment_match_count,
             "action_alignment_mismatch_count": self.action_alignment_mismatch_count,
+            "candidate_present": self.candidate_present,
+            "public_deliverable_declared": self.public_deliverable_declared,
+            "public_candidate_mutated": self.public_candidate_mutated,
+            "candidate_epoch_advanced": self.candidate_epoch_advanced,
+            "candidate_checkpoint_recorded": self.candidate_checkpoint_recorded,
+            "post_candidate_read_only_observations": (
+                self.post_candidate_read_only_observations
+            ),
+            "convergence_constraint_active": self.convergence_constraint_active,
+            "convergence_stage": (
+                self.convergence_stage.value
+                if self.convergence_stage is not None
+                else None
+            ),
+            "convergence_constraint_activation_count": (
+                self.convergence_constraint_activation_count
+            ),
             "final_review_count": self.final_review_count,
             "repair_count": self.repair_count,
             "candidate_final_count": self.candidate_final_count,
@@ -1430,7 +1570,10 @@ class ExecutionProtocolState:
 
     @classmethod
     def from_dict(cls, value: Mapping[str, Any]) -> "ExecutionProtocolState":
-        if value.get("schema_version") != cls.SCHEMA_VERSION:
+        if value.get("schema_version") not in {
+            cls.LEGACY_SCHEMA_VERSION,
+            cls.SCHEMA_VERSION,
+        }:
             raise ValueError("unsupported execution protocol state schema")
         history = value.get("history", [])
         if not isinstance(history, list):
@@ -1510,6 +1653,27 @@ class ExecutionProtocolState:
                 value.get("action_alignment_mismatch_count", 0),
                 "action_alignment_mismatch_count",
             ),
+            candidate_present=value.get("candidate_present"),
+            public_deliverable_declared=value.get(
+                "public_deliverable_declared", False
+            ),
+            public_candidate_mutated=value.get("public_candidate_mutated", False),
+            candidate_epoch_advanced=value.get("candidate_epoch_advanced", False),
+            candidate_checkpoint_recorded=value.get(
+                "candidate_checkpoint_recorded", False
+            ),
+            post_candidate_read_only_observations=_non_negative_int(
+                value.get("post_candidate_read_only_observations", 0),
+                "post_candidate_read_only_observations",
+            ),
+            convergence_constraint_active=value.get(
+                "convergence_constraint_active", False
+            ),
+            convergence_stage=value.get("convergence_stage"),
+            convergence_constraint_activation_count=_non_negative_int(
+                value.get("convergence_constraint_activation_count", 0),
+                "convergence_constraint_activation_count",
+            ),
             final_review_count=_non_negative_int(
                 value.get("final_review_count", 0), "final_review_count"
             ),
@@ -1551,6 +1715,7 @@ class ProtocolTransition:
 
 __all__ = [
     "CompletionAssessment",
+    "ConvergenceStage",
     "ControllerAction",
     "action_signature",
     "ControllerDecision",

@@ -9,6 +9,8 @@ from aworld.core.common import TaskStatusValue
 from aworld.core.context.amni.config import AgentContextConfig, ContextCacheConfig
 from aworld.core.context.amni.prompt.assembly import (
     CacheAwarePromptAssemblyProvider,
+    PROMPT_SECTION_NAME_HINT_KEY,
+    PROMPT_STABILITY_HINT_KEY,
     PromptAssemblyPlan,
 )
 from aworld.core.context.base import Context
@@ -304,6 +306,34 @@ def test_prompt_assembly_observability_uses_injected_prompt_assembly_provider():
     assert observability["assembly_provider"] == "CustomPromptAssemblyProvider"
     assert observability["stable_prefix_hash"] == "custom-stable-hash"
     assert observability["provider_native_cache"] is True
+
+
+def test_custom_prompt_assembly_cannot_leak_framework_message_hints():
+    class PassthroughPromptAssemblyProvider:
+        def build_plan(self, *, messages, tools=None, metadata=None):
+            return PromptAssemblyPlan(
+                messages=messages,
+                stable_hash="custom-stable-hash",
+                metadata=dict(metadata or {}),
+            )
+
+    agent = _build_agent()
+    agent.prompt_assembly_provider = PassthroughPromptAssemblyProvider()
+
+    _plan, messages, _observability = agent._build_prompt_assembly_state(
+        messages=[
+            {
+                "role": "system",
+                "content": "incremental state",
+                PROMPT_SECTION_NAME_HINT_KEY: "execution_protocol_guidance",
+                PROMPT_STABILITY_HINT_KEY: "dynamic",
+            }
+        ],
+        tools=[],
+        request_kwargs={},
+    )
+
+    assert messages == [{"role": "system", "content": "incremental state"}]
 
 
 def test_openai_stable_prefix_requires_explicit_native_cache_opt_in():

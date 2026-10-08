@@ -5,6 +5,7 @@ import pytest
 
 from aworld.core.execution_protocol import (
     action_signature,
+    ConvergenceStage,
     DeliveryIntent,
     CompletionAssessment,
     ExecutionHorizon,
@@ -448,6 +449,65 @@ def test_state_round_trip_distinguishes_requested_and_applied_replans():
     assert restored.replan_requested_count == 2
     assert restored.replan_applied_count == 1
     assert restored.decision_checkpoint_pending is True
+
+
+def test_additive_convergence_state_restores_legacy_v1_snapshot_defaults():
+    state = ExecutionProtocolState.initial(
+        ProtocolScope(task_id="legacy", task_epoch=1, agent_id="agent")
+    ).append_event(
+        ExecutionProtocolEvent(kind=EventKind.REPLAN_UNACKNOWLEDGED),
+        history_limit=4,
+    )
+    payload = state.to_dict()
+    payload["schema_version"] = ExecutionProtocolState.LEGACY_SCHEMA_VERSION
+    for key in (
+        "candidate_present",
+        "public_deliverable_declared",
+        "public_candidate_mutated",
+        "candidate_epoch_advanced",
+        "candidate_checkpoint_recorded",
+        "post_candidate_read_only_observations",
+        "convergence_constraint_active",
+        "convergence_stage",
+        "convergence_constraint_activation_count",
+    ):
+        payload.pop(key, None)
+    for record in payload["history"]:
+        record.pop("read_only_observed", None)
+        record.pop("known_mutation_executed", None)
+        record.pop("public_candidate_mutated", None)
+        record.pop("convergence_stage", None)
+
+    restored = ExecutionProtocolState.from_dict(payload)
+
+    assert restored.candidate_epoch_advanced is False
+    assert restored.candidate_checkpoint_recorded is False
+    assert restored.convergence_constraint_active is False
+    assert restored.convergence_stage is None
+    assert restored.history[-1].kind is EventKind.REPLAN_UNACKNOWLEDGED
+
+
+def test_convergence_state_declares_v2_and_round_trips_known_v1_history_kind():
+    state = replace(
+        ExecutionProtocolState.initial(
+            ProtocolScope(task_id="current", task_epoch=1, agent_id="agent")
+        ).append_event(
+            ExecutionProtocolEvent(
+                kind=EventKind.REPLAN_UNACKNOWLEDGED,
+                convergence_stage=ConvergenceStage.PRODUCE_CANDIDATE,
+            ),
+            history_limit=4,
+        ),
+        convergence_constraint_active=True,
+        convergence_stage=ConvergenceStage.PRODUCE_CANDIDATE,
+        convergence_constraint_activation_count=1,
+    )
+
+    payload = state.to_dict()
+    assert payload["schema_version"] == "aworld.execution-protocol-state/v2"
+    assert payload["history"][-1]["kind"] == "replan_unacknowledged"
+    restored = ExecutionProtocolState.from_dict(payload)
+    assert restored == state
 
 
 def test_state_round_trip_preserves_content_free_model_profile():
