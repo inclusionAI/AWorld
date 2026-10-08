@@ -681,9 +681,35 @@ def test_command_timeout_is_clamped_to_trial_deadline_with_completion_reserve(
     decision = _resolve_command_timeout(300, now_epoch=1000)
 
     assert decision.requested_seconds == 300
-    assert decision.effective_seconds == 90
+    assert decision.effective_seconds == 22.5
     assert decision.remaining_task_seconds == 120
-    assert decision.limited_by == "task_deadline"
+    assert decision.limited_by == "task_lease"
+
+
+def test_command_timeout_lease_preserves_finalization_reserve(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("AWORLD_TASK_DEADLINE_EPOCH_SECONDS", "4600")
+    monkeypatch.setenv("AWORLD_TERMINAL_COMPLETION_RESERVE_SECONDS", "60")
+
+    decision = _resolve_command_timeout(1800, now_epoch=1000)
+
+    assert decision.requested_seconds == 1800
+    assert decision.remaining_task_seconds == 3600
+    assert decision.effective_seconds == 885
+    assert decision.limited_by == "task_lease"
+
+
+def test_command_timeout_lease_never_lengthens_a_short_request(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("AWORLD_TASK_DEADLINE_EPOCH_SECONDS", "4600")
+    monkeypatch.setenv("AWORLD_TERMINAL_COMPLETION_RESERVE_SECONDS", "60")
+
+    decision = _resolve_command_timeout(20, now_epoch=1000)
+
+    assert decision.effective_seconds == 20
+    assert decision.limited_by is None
 
 
 def test_command_timeout_reports_exhausted_completion_reserve(

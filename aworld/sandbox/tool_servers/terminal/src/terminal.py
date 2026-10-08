@@ -78,7 +78,11 @@ _ARTIFACT_DIRECTORY_ENV = "AWORLD_TERMINAL_ARTIFACT_DIR"
 _TASK_DEADLINE_ENV = "AWORLD_TASK_DEADLINE_EPOCH_SECONDS"
 _COMPLETION_RESERVE_ENV = "AWORLD_TERMINAL_COMPLETION_RESERVE_SECONDS"
 _MAX_TIMEOUT_ENV = "AWORLD_TERMINAL_MAX_TIMEOUT_SECONDS"
+_TASK_LEASE_FRACTION_ENV = "AWORLD_TERMINAL_TASK_LEASE_FRACTION"
+_TASK_LEASE_MIN_ENV = "AWORLD_TERMINAL_TASK_LEASE_MIN_SECONDS"
 _DEFAULT_COMPLETION_RESERVE_SECONDS = 15.0
+_DEFAULT_TASK_LEASE_FRACTION = 0.25
+_DEFAULT_TASK_LEASE_MIN_SECONDS = 15.0
 _ARTIFACT_REF_PREFIX = "aworld-terminal-output://sha256/"
 _ENV_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*\Z")
 _MAX_ENV_OVERRIDES = 128
@@ -252,6 +256,16 @@ def _positive_env_float(name: str, default: float) -> float:
     return value
 
 
+def _task_lease_fraction() -> float:
+    value = _positive_env_float(
+        _TASK_LEASE_FRACTION_ENV,
+        _DEFAULT_TASK_LEASE_FRACTION,
+    )
+    if value <= 0 or value > 1:
+        return _DEFAULT_TASK_LEASE_FRACTION
+    return value
+
+
 def _resolve_command_timeout(
     requested: float,
     *,
@@ -319,6 +333,22 @@ def _resolve_command_timeout(
     if available < effective:
         effective = available
         limited_by = "task_deadline"
+    # One Tool call must not consume the entire solve window merely because the
+    # model requested a very large timeout.  Reserve finalization first, then
+    # grant a bounded fraction of the remaining executable time.  The floor
+    # avoids turning healthy short commands into sub-second leases near a long
+    # deadline, while ``min(available, ...)`` never borrows from the reserve.
+    lease_floor = _positive_env_float(
+        _TASK_LEASE_MIN_ENV,
+        _DEFAULT_TASK_LEASE_MIN_SECONDS,
+    )
+    lease_cap = min(
+        available,
+        max(lease_floor, available * _task_lease_fraction()),
+    )
+    if lease_cap < effective:
+        effective = lease_cap
+        limited_by = "task_lease"
     return CommandTimeoutDecision(
         requested_seconds=requested_seconds,
         effective_seconds=effective,
