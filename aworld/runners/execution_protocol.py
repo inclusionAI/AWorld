@@ -1551,6 +1551,10 @@ def record_acceptance_critic_decision(
         )
     )
     _record_transition_metrics(context, transition)
+    if transition.decision.reason is DecisionReason.PERSISTENCE_ERROR:
+        independently_supported = False
+        clear_acceptance_critic_state(context, agent_id)
+        return transition, decision, False
     if outcome is ReviewOutcome.REPAIR and decision is not None:
         _mint_review_repair_authorization(
             context,
@@ -1610,7 +1614,14 @@ def project_execution_protocol_telemetry(value: Any) -> dict[str, Any] | None:
         return None
     enums = {
         "mode": {"off", "observe", "guide"},
-        "phase": {"execute", "finalize", "review", "repair", "complete"},
+        "phase": {
+            "execute",
+            "finalize",
+            "review",
+            "repair",
+            "incomplete",
+            "complete",
+        },
         "model_horizon": {"unknown", "short", "long"},
         "long_horizon_activation_source": {
             "model_declared_long",
@@ -2768,6 +2779,8 @@ def _activate_convergence_constraint(
             convergence_stage=stage,
         ),
     )
+    if transition.decision.reason is DecisionReason.PERSISTENCE_ERROR:
+        return transition
     expected_scope = _model_decision_scope(context, agent_id)
 
     def mark_constraint(current):
@@ -2908,6 +2921,8 @@ def record_tool_protocol_event(
         result_hash=semantic_state.get("result_hash"),
     )
     transition = _apply_event(context, agent_id, event)
+    if transition.decision.reason is DecisionReason.PERSISTENCE_ERROR:
+        return transition
     _update_mutation_gate(context, agent_id, transition, semantic_state)
     _record_pending_checkpoint(context, agent_id, transition)
     _record_deadline_guidance(context, agent_id, transition)
@@ -2945,7 +2960,10 @@ def bind_pending_next_action_call(
             bound_tool_call_id=first_call_id,
         ),
     )
-    return transition.decision.reason is not DecisionReason.INVALID_EVENT
+    return transition.decision.reason not in {
+        DecisionReason.INVALID_EVENT,
+        DecisionReason.PERSISTENCE_ERROR,
+    }
 
 
 def _record_pending_checkpoint(
@@ -3351,7 +3369,10 @@ def _record_validated_model_plan_update(
             model_plan_update=update,
         ),
     )
-    if transition.decision.reason.value == "invalid_event":
+    if transition.decision.reason in {
+        DecisionReason.INVALID_EVENT,
+        DecisionReason.PERSISTENCE_ERROR,
+    }:
         return transition
     try:
         from aworld.core.context.work_progress import retain_model_work_checkpoint
@@ -3464,7 +3485,11 @@ def record_model_decision_boundary(
     update_transition = _record_validated_model_plan_update(context, agent_id, update)
     acknowledged = bool(
         update_transition is not None
-        and update_transition.decision.reason.value != "invalid_event"
+        and update_transition.decision.reason
+        not in {
+            DecisionReason.INVALID_EVENT,
+            DecisionReason.PERSISTENCE_ERROR,
+        }
         and execution_protocol_model_decision_boundary(context, agent_id) is None
     )
     if acknowledged:
@@ -3757,6 +3782,11 @@ def record_candidate_final(
             kind=EventKind.CANDIDATE_FINAL,
             result_hash=_candidate_review_basis(context, agent_id, actions),
             review_boundary_available=review_boundary_available,
+            public_deliverable_declared=bool(
+                _public_delivery_status(state_context(context)).get(
+                    "public_deliverable_declared"
+                )
+            ),
         )
     )
     _record_transition_metrics(context, transition)
@@ -3793,6 +3823,8 @@ def record_review_repair_decision(
         )
     )
     _record_transition_metrics(context, transition)
+    if transition.decision.reason is DecisionReason.PERSISTENCE_ERROR:
+        return transition
     from aworld.core.context.compiler import semantic_fingerprint
 
     _mint_review_repair_authorization(

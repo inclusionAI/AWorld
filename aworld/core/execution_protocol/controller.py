@@ -570,7 +570,8 @@ def transition_execution_protocol(
             else False
         )
         reserve_reached = (
-            event.remaining_seconds is not None
+            protocol_eligible
+            and event.remaining_seconds is not None
             and event.remaining_seconds <= policy.finalization_reserve_seconds
             and not next_state.finalization_entered
         )
@@ -816,6 +817,10 @@ def transition_execution_protocol(
             candidate_final_count=next_state.candidate_final_count + 1,
             candidate_present=True,
             candidate_checkpoint_recorded=True,
+            public_deliverable_declared=(
+                next_state.public_deliverable_declared
+                or event.public_deliverable_declared
+            ),
             finalization_entered=True,
         )
         previous_review_basis = next(
@@ -838,7 +843,7 @@ def transition_execution_protocol(
             # unchanged work to independent acceptance.
             next_state = replace(
                 next_state,
-                phase=ProtocolPhase.COMPLETE,
+                phase=ProtocolPhase.INCOMPLETE,
                 review_pending=False,
             )
             return ProtocolTransition(
@@ -856,16 +861,20 @@ def transition_execution_protocol(
             # path to the typed profile/review boundary (for example, a bare
             # no-Tool agent). An explicitly requested or eligible review stays
             # unverified; only a genuinely ineligible bare response bypasses.
-            next_state = replace(
-                next_state,
-                phase=ProtocolPhase.COMPLETE,
-                review_pending=False,
-            )
             action = (
                 ControllerAction.STOP_INCOMPLETE
                 if policy.review_unarmed_candidates
                 or execution_protocol_eligible(next_state)
                 else ControllerAction.SUBMIT_CURRENT_RESULT
+            )
+            next_state = replace(
+                next_state,
+                phase=(
+                    ProtocolPhase.INCOMPLETE
+                    if action is ControllerAction.STOP_INCOMPLETE
+                    else ProtocolPhase.COMPLETE
+                ),
+                review_pending=False,
             )
             return ProtocolTransition(
                 next_state,
@@ -877,7 +886,7 @@ def transition_execution_protocol(
         if next_state.phase is ProtocolPhase.FINALIZE:
             next_state = replace(
                 next_state,
-                phase=ProtocolPhase.COMPLETE,
+                phase=ProtocolPhase.INCOMPLETE,
                 review_pending=False,
             )
             return ProtocolTransition(
@@ -896,6 +905,10 @@ def transition_execution_protocol(
             and not policy.review_unarmed_candidates
             and not policy.independent_acceptance_enabled
             and _model_horizon(next_state) is ExecutionHorizon.SHORT
+            and not execution_protocol_eligible(
+                next_state,
+                public_deliverable_declared=event.public_deliverable_declared,
+            )
         ):
             next_state = replace(
                 next_state,
@@ -931,7 +944,7 @@ def transition_execution_protocol(
             )
         next_state = replace(
             next_state,
-            phase=ProtocolPhase.COMPLETE,
+            phase=ProtocolPhase.INCOMPLETE,
             review_pending=False,
         )
         return ProtocolTransition(
@@ -948,7 +961,7 @@ def transition_execution_protocol(
 
     if event.kind is EventKind.REVIEW_RESULT:
         if not next_state.review_pending:
-            next_state = replace(next_state, phase=ProtocolPhase.COMPLETE)
+            next_state = replace(next_state, phase=ProtocolPhase.INCOMPLETE)
             return ProtocolTransition(
                 next_state,
                 _decision(
@@ -996,11 +1009,18 @@ def transition_execution_protocol(
             reason = DecisionReason.REVIEW_ERROR
         else:
             reason = DecisionReason.REVIEW_UNCERTAIN
-        next_state = replace(next_state, phase=ProtocolPhase.COMPLETE)
         action = (
             ControllerAction.SUBMIT_CURRENT_RESULT
             if event.review_outcome is ReviewOutcome.ACCEPT
             else ControllerAction.STOP_INCOMPLETE
+        )
+        next_state = replace(
+            next_state,
+            phase=(
+                ProtocolPhase.COMPLETE
+                if action is ControllerAction.SUBMIT_CURRENT_RESULT
+                else ProtocolPhase.INCOMPLETE
+            ),
         )
         return ProtocolTransition(next_state, _decision(action, reason))
 

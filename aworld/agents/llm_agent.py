@@ -5371,11 +5371,6 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                             self.loop_step += 1
                             await asyncio.sleep(0)
                             continue
-                        text = (
-                            "Independent acceptance review failed before a typed, "
-                            "probe-backed decision was available. Completion is "
-                            "unverified."
-                        )
                         record_execution_state(
                             message.context,
                             self.id(),
@@ -5384,7 +5379,7 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                             recoverable=True,
                         )
                         self._finished = True
-                        return [ActionModel(agent_name=self.id(), policy_info=text)]
+                        return list(review_fallback)
                     record_execution_state(
                         message.context,
                         self.id(),
@@ -5630,10 +5625,6 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                     long_horizon_review_deadline = None
                     policy = execution_protocol_policy(message.context, self.id())
                     if policy.independent_acceptance_enabled:
-                        text = (
-                            "The bounded independent acceptance review did not "
-                            "finish. Completion is unverified."
-                        )
                         record_execution_state(
                             message.context,
                             self.id(),
@@ -5642,7 +5633,7 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                             recoverable=True,
                         )
                         self._finished = True
-                        return [ActionModel(agent_name=self.id(), policy_info=text)]
+                        return list(review_fallback)
                     record_execution_state(
                         message.context,
                         self.id(),
@@ -6936,6 +6927,25 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                                 )
                             ),
                         )
+                        if (
+                            protocol_transition is not None
+                            and protocol_transition.decision.action
+                            is ControllerAction.SUBMIT_CURRENT_RESULT
+                            and protocol_transition.decision.reason.value
+                            == "review_accepted"
+                        ):
+                            from aworld.core.context.execution_state import (
+                                record_execution_resolution,
+                            )
+
+                            record_execution_resolution(
+                                message.context,
+                                self.id(),
+                                evidence_kind="accepted_review",
+                                status="running",
+                                reason="model_owned_review_accepted",
+                                observation=provider_resolution_observation,
+                            )
                         if (
                             protocol_transition is not None
                             and protocol_transition.decision.action

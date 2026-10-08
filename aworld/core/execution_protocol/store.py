@@ -48,7 +48,10 @@ def _persistence_failure_transition(
         else ControllerAction.CONTINUE
     )
     return ProtocolTransition(
-        state=(state if terminal_boundary else transition.state),
+        # The transition was never persisted. Returning its derived state
+        # would let callers activate gates from evidence that a transported
+        # Context cannot reload.
+        state=state,
         decision=ControllerDecision(
             action=action,
             reason=DecisionReason.PERSISTENCE_ERROR,

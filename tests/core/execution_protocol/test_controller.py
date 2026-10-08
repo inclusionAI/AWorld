@@ -1027,6 +1027,30 @@ def test_explicit_short_horizon_still_protects_named_public_deliverable():
     assert debt.state.candidate_decision_count == 1
 
 
+def test_short_profile_with_public_contract_cannot_bypass_review():
+    policy = ExecutionProtocolPolicy(
+        mode="guide",
+        independent_acceptance_enabled=False,
+        candidate_decision_reserve_seconds=180,
+        finalization_reserve_seconds=60,
+    )
+    profiled = transition_execution_protocol(
+        _state(), _profile(horizon=ExecutionHorizon.SHORT), policy
+    )
+    reviewed = transition_execution_protocol(
+        profiled.state,
+        ExecutionProtocolEvent(
+            kind=EventKind.CANDIDATE_FINAL,
+            public_deliverable_declared=True,
+        ),
+        policy,
+    )
+
+    assert reviewed.decision.action is ControllerAction.REQUEST_FINAL_REVIEW
+    assert reviewed.decision.reason is DecisionReason.FINAL_REVIEW_REQUIRED
+    assert reviewed.state.phase is ProtocolPhase.REVIEW
+
+
 def test_public_contract_without_model_profile_cannot_activate_delivery_control():
     policy = ExecutionProtocolPolicy(
         mode="guide",
@@ -1741,7 +1765,7 @@ def test_structurally_unavailable_requested_review_is_unverified():
 
     assert transition.decision.action is ControllerAction.STOP_INCOMPLETE
     assert transition.decision.reason is DecisionReason.REVIEW_BOUNDARY_UNAVAILABLE
-    assert transition.state.phase is ProtocolPhase.COMPLETE
+    assert transition.state.phase is ProtocolPhase.INCOMPLETE
     assert transition.state.review_pending is False
     assert transition.state.final_review_count == 0
 
@@ -1783,7 +1807,9 @@ def test_guide_stops_requesting_replans_at_limit_without_revoking_tools():
     policy = ExecutionProtocolPolicy(
         mode="guide", repetition_threshold=2, max_replans=2
     )
-    first = transition_execution_protocol(_state(), _tool(repetition_count=2), policy)
+    first = transition_execution_protocol(
+        _armed_state(), _tool(repetition_count=2), policy
+    )
     duplicate = transition_execution_protocol(
         first.state, _tool(repetition_count=4), policy
     )
@@ -1931,7 +1957,7 @@ def test_unchanged_candidate_evidence_basis_stops_before_second_review(
 
     assert unchanged.decision.action is ControllerAction.STOP_INCOMPLETE
     assert unchanged.decision.reason is DecisionReason.REVIEW_BASIS_UNCHANGED
-    assert unchanged.state.phase is ProtocolPhase.COMPLETE
+    assert unchanged.state.phase is ProtocolPhase.INCOMPLETE
     assert unchanged.state.final_review_count == 1
 
 
@@ -2002,7 +2028,7 @@ def test_observable_no_progress_accumulates_and_requests_replan():
 def test_finalization_reserve_is_generic_and_emitted_once():
     policy = ExecutionProtocolPolicy(mode="guide", finalization_reserve_seconds=60)
     first = transition_execution_protocol(
-        _state(), _tool(remaining_seconds=59.5), policy
+        _armed_state(), _tool(remaining_seconds=59.5), policy
     )
     second = transition_execution_protocol(
         first.state, _tool(remaining_seconds=20), policy
@@ -2010,8 +2036,23 @@ def test_finalization_reserve_is_generic_and_emitted_once():
 
     assert first.decision.action is ControllerAction.ENTER_FINALIZATION
     assert first.state.phase is ProtocolPhase.FINALIZE
-    assert first.state.long_horizon_armed is False
+    assert first.state.long_horizon_armed is True
     assert second.decision.action is ControllerAction.CONTINUE
+
+
+def test_unprofiled_task_does_not_enter_finalization_reserve():
+    transition = transition_execution_protocol(
+        _state(),
+        _tool(remaining_seconds=1),
+        ExecutionProtocolPolicy(
+            mode="guide",
+            finalization_reserve_seconds=60,
+        ),
+    )
+
+    assert transition.decision.action is ControllerAction.CONTINUE
+    assert transition.state.phase is ProtocolPhase.EXECUTE
+    assert transition.state.finalization_entered is False
 
 
 def test_candidate_final_in_finalization_reserve_is_unverified():
@@ -2021,7 +2062,7 @@ def test_candidate_final_in_finalization_reserve_is_unverified():
         independent_acceptance_enabled=False,
     )
     finalizing = transition_execution_protocol(
-        _state(), _tool(remaining_seconds=59.5), policy
+        _armed_state(), _tool(remaining_seconds=59.5), policy
     )
 
     submitted = transition_execution_protocol(
@@ -2033,7 +2074,19 @@ def test_candidate_final_in_finalization_reserve_is_unverified():
     assert submitted.decision.action is ControllerAction.STOP_INCOMPLETE
     assert submitted.decision.reason is DecisionReason.FINALIZATION_RESERVE
     assert submitted.state.final_review_count == 0
-    assert submitted.state.phase is ProtocolPhase.COMPLETE
+    assert submitted.state.phase is ProtocolPhase.INCOMPLETE
+
+    forged_accept = transition_execution_protocol(
+        submitted.state,
+        ExecutionProtocolEvent(
+            kind=EventKind.REVIEW_RESULT,
+            review_outcome=ReviewOutcome.ACCEPT,
+        ),
+        policy,
+    )
+    assert forged_accept.decision.action is ControllerAction.STOP_INCOMPLETE
+    assert forged_accept.decision.reason is DecisionReason.INVALID_EVENT
+    assert forged_accept.state.phase is ProtocolPhase.INCOMPLETE
 
 
 def test_tool_event_threshold_never_overrides_model_horizon_ownership():

@@ -140,6 +140,73 @@ def test_uncertain_reviewer_requires_typed_critic_acceptance() -> None:
     assert accepted["unresolved_blockers"] == []
 
 
+def test_model_review_blocker_requires_fresh_authoritative_review_acceptance() -> None:
+    context = _context("model-review-recovery")
+    stale_observation = execution_resolution_observation(context, "solver")
+    blocked = record_execution_state(
+        context,
+        "solver",
+        "incomplete",
+        "model_owned_review_error_unverified",
+        recoverable=True,
+    )
+    generic = record_execution_resolution(
+        context,
+        "solver",
+        evidence_kind="complete_provider_final_action",
+        status="succeeded",
+        reason="agent_final_response",
+        observation=execution_resolution_observation(context, "solver"),
+    )
+    stale_review = record_execution_resolution(
+        context,
+        "solver",
+        evidence_kind="accepted_review",
+        status="succeeded",
+        reason="model_owned_review_accepted",
+        observation=stale_observation,
+    )
+
+    assert blocked["status"] == "incomplete"
+    assert generic["status"] == "incomplete"
+    assert stale_review["status"] == "incomplete"
+
+    accepted = record_execution_resolution(
+        context,
+        "solver",
+        evidence_kind="accepted_review",
+        status="succeeded",
+        reason="model_owned_review_accepted",
+        observation=execution_resolution_observation(context, "solver"),
+    )
+
+    assert accepted["status"] == "succeeded"
+    assert accepted["unresolved_blockers"] == []
+
+
+def test_nonrecoverable_unverified_review_blocker_stays_terminal() -> None:
+    context = _context("nonrecoverable-review")
+    record_execution_state(
+        context,
+        "solver",
+        "incomplete",
+        "execution_protocol_finalization_reserve_unverified",
+        recoverable=False,
+    )
+
+    accepted = record_execution_resolution(
+        context,
+        "solver",
+        evidence_kind="accepted_review",
+        status="succeeded",
+        reason="model_owned_review_accepted",
+        observation=execution_resolution_observation(context, "solver"),
+    )
+
+    assert accepted["status"] == "incomplete"
+    assert len(accepted["unresolved_blockers"]) == 1
+
+
 def test_reconciliation_is_fail_closed_for_stale_and_tied_copies() -> None:
     blocked_context = _context("fan-in")
     blocked = record_execution_state(

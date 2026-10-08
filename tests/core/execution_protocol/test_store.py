@@ -296,3 +296,37 @@ def test_runtime_writer_failure_cannot_fall_back_to_terminal_submit():
     assert transition.decision.reason.value == "protocol_persistence_error"
     assert transition.state.revision == 0
     assert store.load().revision == 0
+
+
+def test_runtime_writer_failure_never_returns_unsaved_nonterminal_state():
+    class FailingWriterContext:
+        task_id = "writer-failure-tool"
+        task_epoch = 1
+
+        def __init__(self):
+            self.context_info = {}
+
+        def write_task_runtime_state(self, _namespace, _key, _value):
+            raise OSError("runtime registry unavailable")
+
+    context = FailingWriterContext()
+    policy = ExecutionProtocolPolicy(
+        mode="guide",
+        repetition_threshold=1,
+    )
+    store = ExecutionProtocolStore(context, "agent", policy)
+
+    transition = store.apply(
+        ExecutionProtocolEvent(
+            kind=EventKind.TOOL_OBSERVATION,
+            repetition_count=1,
+            current_step=1,
+        )
+    )
+
+    assert transition.decision.action is ControllerAction.CONTINUE
+    assert transition.decision.reason.value == "protocol_persistence_error"
+    assert transition.state.revision == 0
+    assert transition.state.decision_checkpoint_pending is False
+    assert store.context_key not in context.context_info
+    assert store.load().revision == 0

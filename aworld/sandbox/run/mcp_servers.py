@@ -355,7 +355,7 @@ def _tool_lease_stage(
     except Exception:
         return deadline_stage
     phase = getattr(getattr(state, "phase", None), "value", None)
-    if phase in {"finalize", "review", "complete"}:
+    if phase in {"finalize", "review", "incomplete", "complete"}:
         return ToolLeaseStage.DELIVERY_ONLY
     if phase == "repair" and deadline_stage is ToolLeaseStage.EXECUTE:
         return ToolLeaseStage.CONVERGENCE

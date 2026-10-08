@@ -17,7 +17,10 @@ from aworld.core.context.compiler import (
     CompletionMode,
     ValidationCommand,
 )
-from aworld.core.context.execution_state import get_execution_state
+from aworld.core.context.execution_state import (
+    get_execution_state,
+    record_execution_state,
+)
 from aworld.core.event.base import Constants, Message
 from aworld.core.execution_protocol import (
     ControllerAction,
@@ -253,6 +256,93 @@ async def test_review_model_error_returns_original_candidate_as_incomplete() -> 
     assert get_execution_state(context)["reason"] == (
         "model_owned_review_error_unverified"
     )
+
+
+def _independent_review_failure_fixture(
+    task_id: str,
+) -> tuple[Context, Agent, ExecutionProtocolPolicy, ActionModel]:
+    context = Context(task_id=task_id)
+    context.set_task(Task(id=task_id, input="finish the task", timeout=600))
+    context.configure_completion_contract(
+        CompletionContract(
+            required_artifacts=(),
+            immutable_inputs=(),
+            validation_commands=(
+                ValidationCommand(command_id="registered-check", argv=("true",)),
+            ),
+            max_evidence_age_seconds=None,
+            required_final_evidence=(),
+        ),
+        mode=CompletionMode.ENFORCE,
+    )
+    policy = ExecutionProtocolPolicy(
+        mode=ProtocolMode.GUIDE,
+        review_unarmed_candidates=True,
+        independent_acceptance_enabled=True,
+        max_repairs=0,
+    )
+    agent = _agent(context, policy)
+    configure_execution_protocol(context, agent.id(), policy)
+    fallback = ActionModel(agent_name=agent.id(), policy_info="preserved candidate")
+    record_candidate_final(context, agent.id(), actions=(fallback,))
+    store_candidate_fallback(context, agent.id(), (fallback,))
+    return context, agent, policy, fallback
+
+
+@pytest.mark.asyncio
+async def test_independent_review_provider_error_preserves_candidate(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("AWORLD_INDEPENDENT_ACCEPTANCE_CRITIC", raising=False)
+    context, agent, _policy, fallback = _independent_review_failure_fixture(
+        "independent-review-provider-error"
+    )
+
+    async def fail_review(_observation, **_kwargs):
+        raise RuntimeError("critic provider unavailable")
+
+    agent._async_policy_once = fail_review
+    message = Message(category=Constants.AGENT, headers={"context": context})
+
+    result = await agent.async_policy(Observation(content="candidate"), message=message)
+
+    assert result == [fallback]
+    state = get_execution_state(context, agent.id())
+    assert state["status"] == "incomplete"
+    assert state["reason"] == "independent_acceptance_review_error"
+    assert state["recoverable"] is True
+
+
+@pytest.mark.asyncio
+async def test_independent_review_budget_stop_preserves_candidate(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("AWORLD_INDEPENDENT_ACCEPTANCE_CRITIC", raising=False)
+    context, agent, _policy, fallback = _independent_review_failure_fixture(
+        "independent-review-budget-stop"
+    )
+
+    async def continue_review(_observation, **_kwargs):
+        return _LongHorizonReviewContinuation(
+            observation=Observation(content="review current evidence"),
+            kwargs={},
+            fallback_actions=(fallback,),
+        )
+
+    async def terminate(_message):
+        return True
+
+    agent._async_policy_once = continue_review
+    agent.should_terminate_loop = terminate
+    message = Message(category=Constants.AGENT, headers={"context": context})
+
+    result = await agent.async_policy(Observation(content="candidate"), message=message)
+
+    assert result == [fallback]
+    state = get_execution_state(context, agent.id())
+    assert state["status"] == "incomplete"
+    assert state["reason"] == "independent_acceptance_review_budget_stop"
+    assert state["recoverable"] is True
 
 
 @pytest.mark.asyncio
@@ -2600,6 +2690,13 @@ async def test_final_review_guidance_reaches_the_second_model_request() -> None:
     )
     configure_execution_protocol(context, agent.id(), policy)
     _declare_long_horizon(context, agent.id())
+    record_execution_state(
+        context,
+        agent.id(),
+        "incomplete",
+        "model_owned_review_error_unverified",
+        recoverable=True,
+    )
     probe_action = ActionModel(
         tool_name="terminal",
         action_name="execute",
@@ -2653,6 +2750,13 @@ async def test_final_review_guidance_reaches_the_second_model_request() -> None:
     assert "public self-check receipts" in guidance
     assert '"probe_assessment":"unassessed"' in guidance
     assert '"stale":true' in guidance
+    execution_state = get_execution_state(context, agent.id())
+    assert execution_state["status"] == "succeeded"
+    assert execution_state["unresolved_blockers"] == []
+    assert any(
+        item["evidence_kind"] == "accepted_review"
+        for item in execution_state["resolution_evidence"]
+    )
 
 
 @pytest.mark.asyncio

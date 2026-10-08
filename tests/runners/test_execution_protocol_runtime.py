@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 import json
 import pytest
 
@@ -94,6 +95,55 @@ def _semantic_state(**overrides):
     }
     state.update(overrides)
     return state
+
+
+def test_protocol_persistence_failure_cannot_activate_runtime_gates(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    context = _context("protocol-persistence-gate")
+    policy = ExecutionProtocolPolicy(
+        mode=ProtocolMode.GUIDE,
+        post_candidate_read_only_threshold=1,
+    )
+    configure_execution_protocol(context, "agent", policy)
+    store = ExecutionProtocolStore(context, "agent", policy)
+    store.save(
+        replace(
+            store.load(),
+            long_horizon_armed=True,
+            candidate_present=True,
+            candidate_checkpoint_recorded=True,
+        )
+    )
+
+    def fail_persistence(*_args, **_kwargs):
+        raise OSError("runtime registry unavailable")
+
+    monkeypatch.setattr(
+        context, "update_and_project_task_runtime_state", fail_persistence
+    )
+    monkeypatch.setattr(context, "update_task_runtime_state", fail_persistence)
+    monkeypatch.setattr(context, "write_task_runtime_state", fail_persistence)
+
+    transition = record_tool_protocol_event(
+        context,
+        "agent",
+        _semantic_state(
+            current_agent_step=9,
+            candidate_present=True,
+            read_only_observed=True,
+        ),
+    )
+
+    assert transition.decision.reason is DecisionReason.PERSISTENCE_ERROR
+    state = load_execution_protocol_state(context, "agent")
+    assert state.event_count == 0
+    assert state.convergence_constraint_active is False
+    assert execution_protocol_module.MUTATION_GATE_STATE_KEY not in context.context_info
+    assert (
+        f"{execution_protocol_module.EXECUTION_PROTOCOL_DEADLINE_GUIDANCE_KEY}:agent"
+        not in context.context_info
+    )
 
 
 def _declare_long_horizon(context: Context, agent_id: str = "agent") -> None:
@@ -3280,6 +3330,54 @@ def test_short_task_candidate_final_bypasses_review() -> None:
     )
 
 
+def test_short_profile_with_context_contract_requires_review(tmp_path) -> None:
+    context = _context("short-public-contract")
+    context.context_info["public_deliverable_contract"] = {
+        "schema_version": "aworld.public-deliverables/v1",
+        "authority": "public_task_advisory",
+        "source": "public_task_text",
+        "artifacts": [
+            {
+                "deliverable_id": "public-output-1",
+                "path": str(tmp_path / "result.json"),
+                "display_path": "result.json",
+                "kind": "file",
+                "authority": "public_task_advisory",
+            }
+        ],
+    }
+    configure_execution_protocol(
+        context,
+        "agent",
+        ExecutionProtocolPolicy(
+            mode=ProtocolMode.GUIDE,
+            independent_acceptance_enabled=False,
+        ),
+    )
+    record_model_execution_profile(
+        context,
+        "agent",
+        {
+            "horizon": "short",
+            "confidence": 0.9,
+            "milestone_count": 1,
+            "expected_tool_actions": 1,
+            "verification_required": True,
+        },
+    )
+
+    transition = record_candidate_final(
+        context,
+        "agent",
+        review_boundary_available=True,
+    )
+
+    assert transition is not None
+    assert transition.decision.action is ControllerAction.REQUEST_FINAL_REVIEW
+    assert transition.state.public_deliverable_declared is True
+    assert transition.state.phase is ProtocolPhase.REVIEW
+
+
 def test_missing_validation_contract_uses_model_owned_reflection(
     monkeypatch,
 ) -> None:
@@ -3404,7 +3502,10 @@ def test_runtime_stops_review_loop_when_candidate_and_evidence_are_unchanged() -
     assert unchanged.decision.action is ControllerAction.STOP_INCOMPLETE
     assert unchanged.decision.reason is DecisionReason.REVIEW_BASIS_UNCHANGED
     assert unchanged.state.final_review_count == 1
-    assert unchanged.state.phase is ProtocolPhase.COMPLETE
+    assert unchanged.state.phase is ProtocolPhase.INCOMPLETE
+    telemetry = build_execution_protocol_telemetry(context, "agent")
+    assert telemetry["phase"] == "incomplete"
+    assert project_execution_protocol_telemetry(telemetry) is not None
 
 
 def test_independent_review_rejects_noncritic_repair_marker(

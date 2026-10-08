@@ -56,6 +56,7 @@ _RESOLUTION_CATEGORIES = {
     "complete_provider_tool_action": frozenset({"model_response"}),
     "complete_provider_final_action": frozenset({"model_response"}),
     "accepted_critic": frozenset({"acceptance_review"}),
+    "accepted_review": frozenset({"acceptance_review"}),
     "completion_contract_satisfied": frozenset(
         {"completion_contract", "validation", "candidate"}
     ),
@@ -96,7 +97,16 @@ def _blocker_category(status: str, reason: str) -> str:
         return "budget"
     if reason in _MODEL_RESPONSE_REASONS or reason.startswith("model_response_"):
         return "model_response"
-    if reason.startswith(("independent_acceptance_", "acceptance_critic_")):
+    if reason.startswith(
+        (
+            "independent_acceptance_",
+            "acceptance_critic_",
+            "model_owned_review_",
+        )
+    ) or (
+        reason.startswith("execution_protocol_")
+        and reason.endswith("_unverified")
+    ):
         return "acceptance_review"
     if reason.startswith("completion_contract_"):
         return "completion_contract"
@@ -934,6 +944,10 @@ def _record_event(
                     blocker
                     for blocker in blockers
                     if blocker["category"] == category
+                    and (
+                        category != "acceptance_review"
+                        or blocker.get("recoverable") is True
+                    )
                     and blocker["revision"] <= watermark_revision
                     and (
                         explicitly_observed is None

@@ -28,6 +28,7 @@ class ProtocolPhase(str, Enum):
     FINALIZE = "finalize"
     REVIEW = "review"
     REPAIR = "repair"
+    INCOMPLETE = "incomplete"
     COMPLETE = "complete"
 
 
