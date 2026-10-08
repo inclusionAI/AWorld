@@ -2209,6 +2209,41 @@ async def test_validate_convergence_requires_typed_validation_or_one_bound_repai
     assert first_validation["delivery_progress_advanced"] is True
     assert repeated_state["delivery_progress_advanced"] is False
 
+    failed_states = []
+    for index, error in enumerate(("missing-result", "still-missing"), start=1):
+        failed_action = ActionModel(
+            tool_name="terminal",
+            action_name="run_code",
+            params={"code": validation_code},
+            tool_call_id=f"registered-validation-failed-{index}",
+            agent_name="agent",
+        )
+        failed_states.append(
+            record_semantic_tool_progress(
+                context,
+                tool_name="terminal",
+                agent_id="agent",
+                actions=[failed_action],
+                observation=Observation(
+                    action_result=[
+                        ActionResult(
+                            tool_call_id=failed_action.tool_call_id,
+                            content=error,
+                            success=False,
+                            error=error,
+                        )
+                    ]
+                ),
+            )
+        )
+    assert all(state["validation_observed"] is True for state in failed_states)
+    assert all(
+        state["validation_evidence_advanced"] is False for state in failed_states
+    )
+    assert all(
+        state["delivery_progress_advanced"] is False for state in failed_states
+    )
+
     failed_validation = {
         "schema_version": "aworld.action-semantic-receipt/v1",
         "capability_aliases": ["workspace.validate"],

@@ -1296,14 +1296,23 @@ def _record_semantic_tool_progress_locked(
             )
         if validation_results:
             state["validation_observed"] = True
-            validation_fingerprint = semantic_fingerprint(validation_results)
+            successful_validation_results = [
+                item for item in validation_results if item["succeeded"] is True
+            ]
             validation_high_water = [
                 value
                 for value in (previous.get("recent_validation_fingerprints") or ())
                 if isinstance(value, str)
             ][-15:]
-            validation_advanced = validation_fingerprint not in validation_high_water
-            validation_high_water.append(validation_fingerprint)
+            validation_advanced = False
+            if successful_validation_results:
+                validation_fingerprint = semantic_fingerprint(
+                    successful_validation_results
+                )
+                validation_advanced = (
+                    validation_fingerprint not in validation_high_water
+                )
+                validation_high_water.append(validation_fingerprint)
             state["recent_validation_fingerprints"] = validation_high_water[-16:]
             state["validation_evidence_advanced"] = validation_advanced
             if validation_advanced:
