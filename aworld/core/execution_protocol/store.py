@@ -152,16 +152,15 @@ class ExecutionProtocolStore:
                 writer(self._agent_id, EXECUTION_PROTOCOL_STATE_KEY, payload)
             except Exception as exc:
                 writer_error = exc
+        if writer_error is not None:
+            # Do not project a state that the cross-transport authority
+            # rejected; a later local load must not observe a false COMPLETE.
+            raise writer_error
         owner_resolver = getattr(self._context, "_task_runtime_registry_owner", None)
         durable_owner = owner_resolver() if callable(owner_resolver) else self._context
         self._project(state, context=durable_owner)
         if self._context is not durable_owner:
             self._project(state)
-        if writer_error is not None:
-            # A local projection keeps ordinary execution observable, but it
-            # cannot replace the task-scoped runtime registry as completion
-            # authority across transported Context copies.
-            raise writer_error
         return state
 
     def apply(self, event: ExecutionProtocolEvent) -> ProtocolTransition:

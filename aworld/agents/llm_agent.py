@@ -1056,9 +1056,7 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             or policy.independent_acceptance_enabled
         ):
             return True
-        return execution_protocol_control_eligible(
-            context, self.id()
-        ) and bool(tools)
+        return execution_protocol_control_eligible(context, self.id()) and bool(tools)
 
     @staticmethod
     def _long_horizon_execution_profile_schema() -> dict[str, Any]:

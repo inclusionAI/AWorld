@@ -2050,8 +2050,7 @@ def _update_mutation_gate(
     )
     post_candidate_convergence_due = bool(
         protocol_eligible
-        and
-        transition.state.convergence_constraint_active
+        and transition.state.convergence_constraint_active
         and convergence_stage is ConvergenceStage.VALIDATE_REPAIR_OR_SUBMIT
         and no_delivery_progress_count
         >= execution_protocol_policy(

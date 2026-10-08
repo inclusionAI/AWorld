@@ -265,6 +265,7 @@ def test_terminal_transition_persistence_failure_cannot_authorize_submit(
     assert transition.decision.action is ControllerAction.STOP_INCOMPLETE
     assert transition.decision.reason.value == "protocol_persistence_error"
     assert transition.state.revision == 0
+    assert store.load().revision == 0
 
 
 def test_runtime_writer_failure_cannot_fall_back_to_terminal_submit():
@@ -294,3 +295,4 @@ def test_runtime_writer_failure_cannot_fall_back_to_terminal_submit():
     assert transition.decision.action is ControllerAction.STOP_INCOMPLETE
     assert transition.decision.reason.value == "protocol_persistence_error"
     assert transition.state.revision == 0
+    assert store.load().revision == 0

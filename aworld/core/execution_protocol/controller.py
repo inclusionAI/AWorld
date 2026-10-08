@@ -507,8 +507,8 @@ def transition_execution_protocol(
         else:
             candidate_missing = bool(
                 protocol_eligible
-                and
-                event.public_deliverable_declared and event.candidate_present is False
+                and event.public_deliverable_declared
+                and event.candidate_present is False
             )
             next_state = replace(
                 next_state,
@@ -592,8 +592,7 @@ def transition_execution_protocol(
 
         post_candidate_constraint_due = bool(
             protocol_eligible
-            and
-            event.kind is EventKind.TOOL_OBSERVATION
+            and event.kind is EventKind.TOOL_OBSERVATION
             and candidate_convergence_ready
             and not next_state.convergence_constraint_active
             and post_candidate_no_delivery_progress_observations
