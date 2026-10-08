@@ -399,7 +399,10 @@ def transition_execution_protocol(
             state.phase not in {ProtocolPhase.EXECUTE, ProtocolPhase.REPAIR}
             or not state.convergence_constraint_active
             or state.convergence_stage
-            is not ConvergenceStage.VALIDATE_REPAIR_OR_SUBMIT
+            not in {
+                ConvergenceStage.PRODUCE_CANDIDATE,
+                ConvergenceStage.VALIDATE_REPAIR_OR_SUBMIT,
+            }
         ):
             return ProtocolTransition(
                 next_state,

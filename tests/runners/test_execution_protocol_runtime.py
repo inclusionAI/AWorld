@@ -2239,6 +2239,189 @@ async def test_produce_convergence_admits_only_exact_declared_target(tmp_path) -
     assert anonymous_receipt["tool_call_ids"] == []
 
 
+def test_produce_convergence_finalizes_after_two_rejected_calls(tmp_path) -> None:
+    target = tmp_path / "result.json"
+    context = _context("produce-rejection-finalization")
+    context.context_info["public_deliverable_contract"] = {
+        "schema_version": "aworld.public-deliverables/v1",
+        "authority": "public_task_advisory",
+        "source": "public_task_text",
+        "artifacts": [
+            {
+                "deliverable_id": "public-output-1",
+                "path": str(target),
+                "display_path": "result.json",
+                "kind": "file",
+                "authority": "public_task_advisory",
+            }
+        ],
+    }
+    configure_execution_protocol(
+        context,
+        "agent",
+        ExecutionProtocolPolicy(
+            mode=ProtocolMode.GUIDE,
+            activation_event_threshold=1,
+            model_activation_min_tool_actions=1,
+            repetition_threshold=1,
+            stagnation_event_threshold=1,
+        ),
+    )
+    _declare_long_horizon(context)
+    _activate_produce_convergence(context)
+
+    for index in range(2):
+        blocked = mutation_gate_interception(
+            context,
+            [
+                ActionModel(
+                    tool_name="terminal",
+                    action_name="run_code",
+                    params={"code": f"cat diagnostic-{index}.log"},
+                    tool_call_id=f"rejected-before-candidate-{index}",
+                    agent_name="agent",
+                )
+            ],
+        )
+        assert blocked is not None
+        assert blocked["convergence_stage"] == "produce_candidate"
+        assert blocked["blocked_call_count"] == index + 1
+        assert blocked["pre_candidate_rejected_batch_count"] == index + 1
+        assert blocked["pre_candidate_tool_free_latched"] is (index == 1)
+        assert execution_protocol_requires_tool_free_finalization(
+            context, "agent"
+        ) is (index == 1)
+
+    state = load_execution_protocol_state(context, "agent")
+    assert state.phase is ProtocolPhase.FINALIZE
+    assert state.finalization_entered is True
+    telemetry = build_execution_protocol_telemetry(context, "agent")
+    assert telemetry["convergence_gate_blocked_call_count"] == 2
+
+
+def test_produce_rejection_latch_rechecks_live_candidate_before_finalizing(
+    tmp_path,
+) -> None:
+    target = tmp_path / "result.json"
+    context = _context("produce-live-candidate-recheck")
+    context.context_info["public_deliverable_contract"] = {
+        "schema_version": "aworld.public-deliverables/v1",
+        "authority": "public_task_advisory",
+        "source": "public_task_text",
+        "artifacts": [
+            {
+                "deliverable_id": "public-output-1",
+                "path": str(target),
+                "display_path": "result.json",
+                "kind": "file",
+                "authority": "public_task_advisory",
+            }
+        ],
+    }
+    configure_execution_protocol(
+        context,
+        "agent",
+        ExecutionProtocolPolicy(
+            mode=ProtocolMode.GUIDE,
+            activation_event_threshold=1,
+            model_activation_min_tool_actions=1,
+            repetition_threshold=1,
+            stagnation_event_threshold=1,
+        ),
+    )
+    _declare_long_horizon(context)
+    _activate_produce_convergence(context)
+
+    admitted = ActionModel(
+        tool_name="terminal",
+        action_name="run_code",
+        params={"code": f"printf '{{}}' > {target}"},
+        tool_call_id="admitted-candidate-write",
+        agent_name="agent",
+    )
+    blocked = [
+        ActionModel(
+            tool_name="terminal",
+            action_name="run_code",
+            params={"code": f"cat diagnostic-{index}.log"},
+            tool_call_id=f"blocked-helper-{index}",
+            agent_name="agent",
+        )
+        for index in range(2)
+    ]
+    receipt = mutation_gate_interception(context, [admitted, *blocked])
+    assert receipt is not None
+    assert receipt["blocked_call_count"] == 2
+    assert receipt["pre_candidate_rejected_batch_count"] == 0
+    assert receipt["pre_candidate_tool_free_latched"] is False
+    # Simulate the admitted call completing while post-tool projection is
+    # delayed or unavailable. The durable gate is intentionally still stale.
+    target.write_text("{}", encoding="utf-8")
+
+    assert not execution_protocol_requires_tool_free_finalization(
+        context, "agent"
+    )
+    state = load_execution_protocol_state(context, "agent")
+    assert state.phase is ProtocolPhase.EXECUTE
+    assert state.finalization_entered is False
+
+
+def test_produce_rejection_latch_ignores_baseline_file_presence(tmp_path) -> None:
+    target = tmp_path / "result.json"
+    target.write_text("baseline", encoding="utf-8")
+    context = _context("produce-baseline-candidate")
+    context.context_info["public_deliverable_contract"] = {
+        "schema_version": "aworld.public-deliverables/v1",
+        "authority": "public_task_advisory",
+        "source": "public_task_text",
+        "artifacts": [
+            {
+                "deliverable_id": "public-output-1",
+                "path": str(target),
+                "display_path": "result.json",
+                "kind": "file",
+                "authority": "public_task_advisory",
+            }
+        ],
+    }
+    configure_execution_protocol(
+        context,
+        "agent",
+        ExecutionProtocolPolicy(
+            mode=ProtocolMode.GUIDE,
+            activation_event_threshold=1,
+            model_activation_min_tool_actions=1,
+            repetition_threshold=1,
+            stagnation_event_threshold=1,
+        ),
+    )
+    _declare_long_horizon(context)
+    _activate_produce_convergence(context)
+    assert load_execution_protocol_state(
+        context, "agent"
+    ).convergence_stage is ConvergenceStage.PRODUCE_CANDIDATE
+
+    for index in range(2):
+        receipt = mutation_gate_interception(
+            context,
+            [
+                ActionModel(
+                    tool_name="terminal",
+                    action_name="run_code",
+                    params={"code": f"cat diagnostic-{index}.log"},
+                    tool_call_id=f"baseline-rejected-{index}",
+                    agent_name="agent",
+                )
+            ],
+        )
+        assert receipt is not None
+
+    assert execution_protocol_requires_tool_free_finalization(context, "agent")
+    assert load_execution_protocol_state(
+        context, "agent"
+    ).phase is ProtocolPhase.FINALIZE
+
+
 def test_produce_convergence_requires_isolated_python_import_authority() -> None:
     from aworld.sandbox.tool_observation import (
         build_preflight_action_semantic_receipt,
@@ -2674,6 +2857,32 @@ def test_contractless_produce_requires_exact_model_bound_semantics_and_call_id()
     blocked = mutation_gate_interception(context, [unbound])
     assert blocked is not None
     assert blocked["tool_call_ids"] == ["unbound-helper"]
+    mixed = mutation_gate_interception(
+        context,
+        [
+            candidate,
+            ActionModel(
+                tool_name="filesystem",
+                action_name="write_file",
+                params={"path": "helper-2.txt", "content": "helper"},
+                tool_call_id="unbound-helper-2",
+                agent_name="agent",
+            ),
+            ActionModel(
+                tool_name="terminal",
+                action_name="run_code",
+                params={"code": "cat README.md"},
+                tool_call_id="unbound-read",
+                agent_name="agent",
+            ),
+        ],
+    )
+    assert mixed is not None
+    assert mixed["pre_candidate_rejected_batch_count"] == 0
+    assert mixed["pre_candidate_tool_free_latched"] is False
+    assert not execution_protocol_requires_tool_free_finalization(
+        context, "agent"
+    )
 
 
 def test_contractless_empty_targets_fall_back_to_exact_bound_signature() -> None:
@@ -7083,6 +7292,17 @@ async def test_mutation_gate_reports_bounded_path_free_rejection_reasons(
     assert str(target) not in serialized
     assert str(tmp_path / "helper.txt") not in serialized
 
+    hook_result = await MutationGatePreToolHook().exec(
+        Message(category="tool_call", payload=[actions[0]], sender="agent"),
+        context,
+    )
+    assert hook_result is not None
+    message = hook_result.headers["tool_interception"]["message"]
+    assert "effect_unknown" in message
+    assert "pipelines" in message
+    assert "python3 -I" in message
+    assert "not sufficient" in message
+
     many_unknown = [
         ActionModel(
             tool_name="custom",
@@ -7106,18 +7326,6 @@ async def test_mutation_gate_reports_bounded_path_free_rejection_reasons(
     assert sanitized == [{"tool_call_id": None, "reason": "effect_unknown"}]
     assert truncated == 0
     assert unsafe_call_id not in json.dumps(sanitized)
-
-    hook_result = await MutationGatePreToolHook().exec(
-        Message(category="tool_call", payload=[actions[0]], sender="agent"),
-        context,
-    )
-    assert hook_result is not None
-    message = hook_result.headers["tool_interception"]["message"]
-    assert "effect_unknown" in message
-    assert "pipelines" in message
-    assert "python3 -I" in message
-    assert "not sufficient" in message
-
 
 def test_validate_gate_distinguishes_replay_and_exhausted_diagnostic(
     tmp_path,
