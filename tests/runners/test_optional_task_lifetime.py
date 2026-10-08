@@ -629,6 +629,51 @@ async def test_finished_discovers_state_owner_when_sender_is_handler_identity():
 
 
 @pytest.mark.asyncio
+async def test_finished_reconciles_all_agent_scopes_when_generic_is_helper_success():
+    from aworld.core.context.base import Context
+    from aworld.core.context.execution_state import record_execution_state
+    from aworld.core.event.base import Message, Constants, TopicType
+    from aworld.runners.handler.task import DefaultTaskHandler
+
+    task = Task(id="multi-agent-state")
+    context = Context(task_id=task.id)
+    record_execution_state(
+        context,
+        "solver",
+        "incomplete",
+        "model_output_truncated",
+    )
+    record_execution_state(
+        context,
+        "helper",
+        "succeeded",
+        "helper_final_response",
+    )
+    assert context.context_info["agent_execution_state"]["agent_id"] == "helper"
+    assert "agent_execution_state:solver" in context.context_info
+
+    runner = SimpleNamespace(
+        task=task, context=context, start_time=0, stop=AsyncMock()
+    )
+    message = Message(
+        category=Constants.TASK,
+        topic=TopicType.FINISHED,
+        payload="forwarded finish",
+        sender="_agent_handler",
+        headers={"context": context},
+    )
+
+    response = [
+        event
+        async for event in DefaultTaskHandler(runner)._do_handle(message)
+    ][-1].payload
+
+    assert response.success is False
+    assert response.semantic_status == "incomplete"
+    assert response.completion_reason == "model_output_truncated"
+
+
+@pytest.mark.asyncio
 async def test_finished_event_classifies_validator_errors_as_infrastructure():
     from aworld.core.context.compiler import CompletionMode, CompletionStatus
     from aworld.core.event.base import Message, Constants, TopicType

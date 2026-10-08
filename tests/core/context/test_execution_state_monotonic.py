@@ -290,6 +290,83 @@ def test_newest_resolution_is_retained_after_bounded_ledger_fills() -> None:
     assert reconciled["status"] == "running"
 
 
+def test_resolution_compaction_covers_many_independent_source_streams() -> None:
+    resolved_states = []
+    stale_blockers = []
+    for index in range(40):
+        context = _context("many-sources")
+        blocked = record_execution_state(
+            context,
+            "solver",
+            "incomplete",
+            f"delivery_candidate_missing_{index}",
+        )
+        stale_blockers.append(json.loads(json.dumps(blocked)))
+        resolved_states.append(
+            record_execution_resolution(
+                context,
+                "solver",
+                evidence_kind="candidate_advanced",
+                reason="public_candidate_advanced",
+                observation=execution_resolution_observation(context, "solver"),
+            )
+        )
+
+    aggregate = reconcile_execution_states(
+        resolved_states,
+        task_id="many-sources",
+        task_epoch=0,
+        agent_id="solver",
+    )
+    assert aggregate is not None
+    assert aggregate["status"] == "running"
+    assert len(aggregate["resolution_watermarks"]) == 40
+    assert aggregate["resolution_watermark_overflow"] is False
+
+    merged_with_every_stale_copy = reconcile_execution_states(
+        [aggregate, *stale_blockers],
+        task_id="many-sources",
+        task_epoch=0,
+        agent_id="solver",
+    )
+    assert merged_with_every_stale_copy is not None
+    assert merged_with_every_stale_copy["status"] == "running"
+    assert merged_with_every_stale_copy["unresolved_blockers"] == []
+
+
+def test_resolution_source_map_overflow_is_bounded_and_fail_closed() -> None:
+    resolved_states = []
+    for index in range(70):
+        context = _context("source-overflow")
+        record_execution_state(
+            context,
+            "solver",
+            "incomplete",
+            f"delivery_candidate_missing_{index}",
+        )
+        resolved_states.append(
+            record_execution_resolution(
+                context,
+                "solver",
+                evidence_kind="candidate_advanced",
+                reason="public_candidate_advanced",
+                observation=execution_resolution_observation(context, "solver"),
+            )
+        )
+
+    aggregate = reconcile_execution_states(
+        resolved_states,
+        task_id="source-overflow",
+        task_epoch=0,
+        agent_id="solver",
+    )
+    assert aggregate is not None
+    assert len(aggregate["resolution_watermarks"]) == 64
+    assert aggregate["resolution_watermark_overflow"] is True
+    assert aggregate["status"] == "incomplete"
+    assert aggregate["reason"] == "resolution_compaction_overflow"
+
+
 def test_same_category_blockers_remain_independent_until_each_is_resolved() -> None:
     context = _context("same-category")
     record_execution_state(context, "solver", "incomplete", "model_output_truncated")

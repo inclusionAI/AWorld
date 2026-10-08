@@ -29,6 +29,7 @@ _REASON_CODE = re.compile(r"^[A-Za-z0-9_.:-]{1,128}$")
 _MAX_BLOCKERS = 8
 _MAX_RESOLUTION_IDS = 8
 _MAX_RESOLUTION_EVENTS = 16
+_MAX_RESOLUTION_SOURCES = 64
 _BLOCKER_CATEGORIES = {
     "model_response",
     "acceptance_review",
@@ -349,7 +350,7 @@ def _normalize_record(value: Any) -> dict[str, Any] | None:
     resolution_watermarks: list[dict[str, Any]] = []
     raw_watermarks = value.get("resolution_watermarks")
     if schema == EXECUTION_STATE_SCHEMA and isinstance(raw_watermarks, list):
-        for item in raw_watermarks[-(_MAX_RESOLUTION_EVENTS * 2) :]:
+        for item in raw_watermarks[-(_MAX_RESOLUTION_SOURCES * 2) :]:
             if not isinstance(item, dict):
                 continue
             category = item.get("category")
@@ -365,6 +366,9 @@ def _normalize_record(value: Any) -> dict[str, Any] | None:
                     ),
                 }
             )
+    resolution_watermark_digest, _ = _bounded_code(
+        value.get("resolution_watermark_digest"), ""
+    )
 
     last_event = value.get("last_event")
     if not isinstance(last_event, dict):
@@ -423,6 +427,10 @@ def _normalize_record(value: Any) -> dict[str, Any] | None:
         "unresolved_blockers": blockers,
         "resolution_evidence": resolutions,
         "resolution_watermarks": resolution_watermarks,
+        "resolution_watermark_overflow": bool(
+            value.get("resolution_watermark_overflow", False)
+        ),
+        "resolution_watermark_digest": (resolution_watermark_digest or None),
         "last_event": last_event,
         "work_state_revision": _normalized_revision(
             value.get("work_state_revision"), 0
@@ -565,9 +573,10 @@ def reconcile_execution_states(
             item["blocker_id"],
         ),
     )
-    retained_resolution_events = resolution_events[-_MAX_RESOLUTION_EVENTS:]
-    dropped_resolution_events = resolution_events[:-_MAX_RESOLUTION_EVENTS]
-    for resolution in dropped_resolution_events:
+    # Compact every causally gap-free tombstone into a monotonic per-source
+    # watermark. Recent events remain as bounded telemetry, but correctness no
+    # longer depends on a separate 16-event window.
+    for resolution in resolution_events:
         for ref in resolution.get("blocker_refs", ()):
             if any(
                 blocker["category"] == resolution["category"]
@@ -577,13 +586,77 @@ def reconcile_execution_states(
             ):
                 # A lower unresolved occurrence creates a gap, so a high-water
                 # compaction would be unsafe. Dropping the tombstone is
-                # deliberately fail-closed in this rare branch.
+                # deliberately fail-closed; the recent explicit event remains.
                 continue
             key = (resolution["category"], ref["source_id"])
             resolution_watermarks_by_key[key] = max(
                 resolution_watermarks_by_key.get(key, 0),
                 ref["source_sequence"],
             )
+    retained_resolution_events = resolution_events[-_MAX_RESOLUTION_EVENTS:]
+
+    watermark_items = sorted(resolution_watermarks_by_key.items())
+    incoming_watermark_overflow = any(
+        record.get("resolution_watermark_overflow") is True for record in normalized
+    )
+    incoming_digests = sorted(
+        {
+            record.get("resolution_watermark_digest")
+            for record in normalized
+            if isinstance(record.get("resolution_watermark_digest"), str)
+        }
+    )
+    watermark_digest = hashlib.sha256(
+        json.dumps(
+            {
+                "incoming": incoming_digests,
+                "watermarks": [
+                    [category, source_id, through_sequence]
+                    for (category, source_id), through_sequence in watermark_items
+                ],
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()[:24]
+    watermark_overflow = bool(
+        incoming_watermark_overflow or len(watermark_items) > _MAX_RESOLUTION_SOURCES
+    )
+    retained_watermark_items = watermark_items[-_MAX_RESOLUTION_SOURCES:]
+    if watermark_overflow:
+        overflow_revision = max(record["revision"] for record in normalized)
+        overflow_occurrence = f"resolution-overflow:{watermark_digest}"
+        all_blockers.append(
+            {
+                "blocker_id": _blocker_id(
+                    {
+                        "task_id": task_id,
+                        "task_epoch": task_epoch,
+                        "agent_id": agent_id,
+                    },
+                    revision=overflow_revision,
+                    status="incomplete",
+                    reason="resolution_compaction_overflow",
+                    occurrence_id=overflow_occurrence,
+                ),
+                "occurrence_id": overflow_occurrence,
+                "source_id": "resolution-overflow",
+                "source_sequence": overflow_revision,
+                "category": "work",
+                "status": "incomplete",
+                "reason": "resolution_compaction_overflow",
+                "revision": overflow_revision,
+                "recoverable": False,
+            }
+        )
+        all_blockers.sort(
+            key=lambda item: (
+                -_STATUS_SEVERITY[item["status"]],
+                -item["revision"],
+                item["category"],
+                item["blocker_id"],
+            )
+        )
     blockers = all_blockers[:_MAX_BLOCKERS]
     if len(all_blockers) > _MAX_BLOCKERS:
         retained = blockers[: _MAX_BLOCKERS - 1]
@@ -653,10 +726,10 @@ def reconcile_execution_states(
                 "source_id": source_id,
                 "through_sequence": through_sequence,
             }
-            for (category, source_id), through_sequence in sorted(
-                resolution_watermarks_by_key.items()
-            )
-        ][-_MAX_RESOLUTION_EVENTS:],
+            for (category, source_id), through_sequence in retained_watermark_items
+        ],
+        "resolution_watermark_overflow": watermark_overflow,
+        "resolution_watermark_digest": watermark_digest,
         "last_event": deepcopy(last_event),
         "work_state_revision": max(
             record["work_state_revision"] for record in normalized
@@ -777,6 +850,12 @@ def _record_event(
         resolutions = list(base["resolution_evidence"] if base is not None else [])
         resolution_watermarks = list(
             base["resolution_watermarks"] if base is not None else []
+        )
+        resolution_watermark_overflow = bool(
+            base is not None and base.get("resolution_watermark_overflow") is True
+        )
+        resolution_watermark_digest = (
+            base.get("resolution_watermark_digest") if base is not None else None
         )
         if status in _BLOCKING_STATUSES:
             category = _blocker_category(status, reason)
@@ -913,6 +992,8 @@ def _record_event(
             "unresolved_blockers": blockers,
             "resolution_evidence": resolutions,
             "resolution_watermarks": resolution_watermarks,
+            "resolution_watermark_overflow": resolution_watermark_overflow,
+            "resolution_watermark_digest": resolution_watermark_digest,
             "last_event": {
                 "revision": revision,
                 "kind": "resolution" if evidence_kind is not None else "state",
@@ -1030,6 +1111,41 @@ def get_execution_state(context, agent_id: str | None = None) -> dict[str, Any] 
         task_epoch=scope["task_epoch"],
         agent_id=agent_id,
     )
+
+
+def get_execution_states(context) -> list[dict[str, Any]]:
+    """Return every task-scoped Agent state visible across transport surfaces."""
+
+    if context is None:
+        return []
+    contexts = [context]
+    owner = state_context(context)
+    if owner is not None and owner is not context:
+        contexts.append(owner)
+    agent_ids: set[str] = set()
+    for target in contexts:
+        context_info = getattr(target, "context_info", None)
+        if not hasattr(context_info, "items"):
+            continue
+        for key, value in context_info.items():
+            if not isinstance(value, dict):
+                continue
+            if key == EXECUTION_STATE_KEY and isinstance(value.get("agent_id"), str):
+                agent_ids.add(value["agent_id"])
+            elif isinstance(key, str) and key.startswith(EXECUTION_STATE_KEY + ":"):
+                scoped_agent_id = key[len(EXECUTION_STATE_KEY) + 1 :]
+                if scoped_agent_id:
+                    agent_ids.add(scoped_agent_id)
+    states = []
+    for scoped_agent_id in sorted(agent_ids):
+        state = get_execution_state(context, agent_id=scoped_agent_id)
+        if state is not None:
+            states.append(state)
+    if not states:
+        state = get_execution_state(context)
+        if state is not None:
+            states.append(state)
+    return states
 
 
 async def checkpoint_execution_state(context) -> None:

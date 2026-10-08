@@ -19,7 +19,7 @@ from aworld.runners.hook.hooks import HookPoint
 from aworld.utils.serialized_util import to_serializable
 from aworld.core.context.compiler import CompletionMode, CompletionStatus
 from aworld.core.context.execution_state import (
-    get_execution_state,
+    get_execution_states,
     project_execution_state,
     reconcile_execution_states,
 )
@@ -140,40 +140,32 @@ class DefaultTaskHandler(TaskHandler):
             )
             return
 
-        event_agent_id = (
-            message.sender.strip()
-            if isinstance(message.sender, str) and message.sender.strip()
-            else None
-        )
-
-        def scoped_execution_state(context):
+        def scoped_execution_states(context):
             # The task-scoped execution record owns its Agent identity. Event
             # senders are often handlers or Tools and are not state namespaces.
-            value = get_execution_state(context)
-            if not isinstance(value, dict):
-                return None
-            if value.get("task_id") != expected_task_id:
-                return None
-            if value.get("task_epoch") != expected_task_epoch:
-                return None
-            return value
+            return [
+                value
+                for value in get_execution_states(context)
+                if value.get("task_id") == expected_task_id
+                and value.get("task_epoch") == expected_task_epoch
+            ]
 
-        runner_execution_state = (
-            scoped_execution_state(self.runner.context)
+        runner_execution_states = (
+            scoped_execution_states(self.runner.context)
             if topic == TopicType.FINISHED
-            else None
+            else []
         )
-        terminal_execution_state = None
+        terminal_execution_states = []
         if topic == TopicType.FINISHED:
-            terminal_execution_state = scoped_execution_state(message.context)
+            terminal_execution_states = scoped_execution_states(message.context)
         self.runner.context.merge_context(message.context)
         reconciled_execution_state = None
         if topic == TopicType.FINISHED:
             candidates = [
-                terminal_execution_state,
-                runner_execution_state,
-                scoped_execution_state(self.runner.context),
-                scoped_execution_state(message.context),
+                *terminal_execution_states,
+                *runner_execution_states,
+                *scoped_execution_states(self.runner.context),
+                *scoped_execution_states(message.context),
             ]
             candidate_agent_ids = {
                 value.get("agent_id")
@@ -181,9 +173,7 @@ class DefaultTaskHandler(TaskHandler):
                 if isinstance(value, dict)
             }
             reconciled_agent_id = (
-                event_agent_id
-                if event_agent_id in candidate_agent_ids
-                else next(iter(candidate_agent_ids))
+                next(iter(candidate_agent_ids))
                 if len(candidate_agent_ids) == 1
                 else None
             )
@@ -296,8 +286,8 @@ class DefaultTaskHandler(TaskHandler):
             # arrival order is never promotion authority.
             latest_candidates = [
                 reconciled_execution_state,
-                scoped_execution_state(self.runner.context),
-                scoped_execution_state(message.context),
+                *scoped_execution_states(self.runner.context),
+                *scoped_execution_states(message.context),
             ]
             latest_agent_ids = {
                 value.get("agent_id")
@@ -305,9 +295,7 @@ class DefaultTaskHandler(TaskHandler):
                 if isinstance(value, dict)
             }
             latest_agent_id = (
-                event_agent_id
-                if event_agent_id in latest_agent_ids
-                else next(iter(latest_agent_ids))
+                next(iter(latest_agent_ids))
                 if len(latest_agent_ids) == 1
                 else None
             )
