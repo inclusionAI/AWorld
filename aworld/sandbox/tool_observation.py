@@ -733,6 +733,8 @@ def _validated_terminal_execution_receipt(
 ) -> tuple[dict[str, Any] | None, bool]:
     """Return a validated provider receipt and whether one was supplied."""
 
+    tool_name, _operation = canonical_tool_identity(action)
+    normalized_tool = tool_name.strip().lower().replace("_", "-")
     if not _trusted_terminal_receipt_identity(action):
         return None, False
     metadata = _metadata(result)
@@ -807,6 +809,21 @@ def _validated_terminal_execution_receipt(
     if cacheable and (not (executed or provider_cache_hit) or effect != "read_only"):
         return None, True
     if cacheable and effect_source not in TERMINAL_CACHEABLE_EFFECT_SOURCES:
+        return None, True
+    docker_provider = normalized_tool in {
+        "docker",
+        "docker-sandbox",
+        "docker-sandbox-server",
+    }
+    execution_context_sha256 = receipt.get("execution_context_sha256")
+    trusted_docker_receipt = effect_source == "trusted_docker_command_contract"
+    if trusted_docker_receipt and (
+        not docker_provider
+        or re.fullmatch(r"sha256:[0-9a-f]{64}", str(execution_context_sha256 or ""))
+        is None
+    ):
+        return None, True
+    if docker_provider and cacheable and not trusted_docker_receipt:
         return None, True
     if not isinstance(receipt.get("language"), str):
         return None, True
@@ -922,7 +939,8 @@ def _validated_terminal_execution_receipt(
     )
     expected_representation = (
         f"{representation_provider}.run-code."
-        f"{expected_output_format}.{expected_selector}/v1"
+        f"{expected_output_format}.{expected_selector}/"
+        f"v{2 if representation_provider == 'docker' and projection_reusable else 1}"
     )
     if representation is not None and representation != expected_representation:
         return None, True
@@ -1101,6 +1119,16 @@ def _validated_read_observation_receipt(
         if normalized in {"docker", "docker-sandbox", "docker-sandbox-server"}
         else "filesystem"
     )
+    execution_context_sha256 = receipt.get("execution_context_sha256")
+    if (
+        provider_name == "docker"
+        and re.fullmatch(r"sha256:[0-9a-f]{64}", str(execution_context_sha256 or ""))
+        is None
+    ) or (
+        execution_context_sha256 is not None
+        and re.fullmatch(r"sha256:[0-9a-f]{64}", str(execution_context_sha256)) is None
+    ):
+        return None, True
     requested_head = (
         action_params.get("head") if isinstance(action_params, Mapping) else None
     )
@@ -1390,7 +1418,7 @@ def _requested_read_projection(
                 return None
             path = posixpath.normpath(posixpath.join(cwd, path))
         representation = (
-            f"docker.run-code.text.{coverage['kind']}/v1"
+            f"docker.run-code.text.{coverage['kind']}/v2"
             if normalized in {"docker", "docker-sandbox", "docker-sandbox-server"}
             else (
                 "terminal.run-code."

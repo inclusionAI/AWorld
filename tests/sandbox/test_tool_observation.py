@@ -172,6 +172,18 @@ def test_shell_classifier_accepts_static_read_only_composition() -> None:
         assert effect.effect == "read_only"
         assert effect.cacheable is False
 
+    plan = plan_terminal_execution("cat /app/a.py; wc -l /app/a.py")
+    assert sorted(plan.executable_tokens) == ["cat", "wc"]
+    assert plan.executable_set_complete is True
+
+
+def test_terminal_plan_marks_bounded_executable_catalog_incomplete() -> None:
+    plan = plan_terminal_execution("; ".join("pwd" for _ in range(17)))
+
+    assert plan.effect == "read_only"
+    assert len(plan.executable_tokens) == 16
+    assert plan.executable_set_complete is False
+
 
 def test_shell_classifier_fails_open_for_dynamic_or_ambiguous_code() -> None:
     for code in (
@@ -746,8 +758,9 @@ def test_provider_authoritative_container_epoch_is_not_replayed_on_host() -> Non
         timed_out=False,
         effect_source="trusted_docker_command_contract",
         read_path_epochs=[remote_epoch],
-        representation="docker.run-code.text.full/v1",
+        representation="docker.run-code.text.full/v2",
         source_checkpoint_revision=0,
+        execution_context_sha256="sha256:" + "e" * 64,
     )
 
     observed = runtime.record(
@@ -779,6 +792,62 @@ def test_provider_authoritative_container_epoch_is_not_replayed_on_host() -> Non
     )
     assert mismatched.metadata["sandbox_observation"]["effect"] == "unknown"
     assert "action_semantic_receipt" not in mismatched.metadata["sandbox_observation"]
+
+
+def test_docker_terminal_receipt_rejects_old_analyzer_or_missing_context() -> None:
+    context = _context()
+    code = "cat /workspace/input.txt"
+    action = {
+        "tool_name": "docker",
+        "action_name": "run_code",
+        "params": {"code": code},
+    }
+    epoch = {
+        "path": "/workspace/input.txt",
+        "resolved_path": "/workspace/input.txt",
+        "link_inode": 1,
+        "link_mtime_ns": 2,
+        "mode": 0o100644,
+        "size": 6,
+        "mtime_ns": 3,
+        "ctime_ns": 4,
+        "inode": 5,
+        "authority": "docker:sha256:" + "a" * 64,
+        "fingerprint": "sha256:" + "b" * 64,
+    }
+    valid = build_terminal_execution_receipt(
+        code=code,
+        plan=plan_terminal_execution(code),
+        executed=True,
+        exit_code=0,
+        timed_out=False,
+        effect_source="trusted_docker_command_contract",
+        read_path_epochs=[epoch],
+        representation="docker.run-code.text.full/v2",
+        source_checkpoint_revision=0,
+        execution_context_sha256="sha256:" + "e" * 64,
+    )
+    old_version = {**valid, "parser_version": 6}
+    missing_context = dict(valid)
+    missing_context.pop("execution_context_sha256")
+    malformed_context = {**valid, "execution_context_sha256": "forged"}
+
+    for receipt in (old_version, missing_context, malformed_context):
+        observed = SandboxToolObservationRuntime().record(
+            action,
+            ActionResult(
+                success=True,
+                content="remote",
+                parameter=action["params"],
+                metadata={TERMINAL_EXECUTION_RECEIPT_KEY: receipt},
+            ),
+            context=context,
+        )
+
+        sandbox_receipt = observed.metadata["sandbox_observation"]
+        assert sandbox_receipt["effect"] == "unknown"
+        assert sandbox_receipt["workspace_generation"] == 1
+        assert "action_semantic_receipt" not in sandbox_receipt
 
 
 def test_provider_cache_hit_is_replay_not_fresh_execution_evidence() -> None:
@@ -816,8 +885,9 @@ def test_provider_cache_hit_is_replay_not_fresh_execution_evidence() -> None:
         read_path_epochs=[remote_epoch],
         observation_id=observation_id,
         content_sha256=content_sha256,
-        representation="docker.run-code.text.full/v1",
+        representation="docker.run-code.text.full/v2",
         source_checkpoint_revision=0,
+        execution_context_sha256="sha256:" + "e" * 64,
     )
 
     observed = runtime.record(
@@ -903,8 +973,9 @@ def test_malformed_provider_replay_claim_still_fails_execution_evidence_closed(
         ],
         observation_id="sha256:" + "c" * 64,
         content_sha256="sha256:" + "d" * 64,
-        representation="docker.run-code.text.full/v1",
+        representation="docker.run-code.text.full/v2",
         source_checkpoint_revision=0,
+        execution_context_sha256="sha256:" + "e" * 64,
     )
     receipt[corrupt_field] = corrupt_value
 

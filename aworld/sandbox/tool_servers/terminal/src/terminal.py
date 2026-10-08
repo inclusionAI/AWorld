@@ -1518,7 +1518,7 @@ def _command_words(segment: list[str]) -> tuple[str, list[str]]:
             words.pop(0)
             continue
         raw_executable = words[0]
-        executable = "source" if raw_executable == "." else Path(raw_executable).name.lower()
+        executable = "source" if raw_executable == "." else Path(raw_executable).name
         if executable in {"command", "builtin"}:
             words.pop(0)
             continue

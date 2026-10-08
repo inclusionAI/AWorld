@@ -27,7 +27,7 @@ TERMINAL_EXECUTION_RECEIPT_KEY = "terminal_execution_receipt"
 # with this same analyzer; they are never assumed reusable by default. Provider
 # replay is authenticated by ``cache_hit=true`` plus ``executed=false``, a
 # content/observation identity, representation, and checkpoint revision.
-TERMINAL_EXECUTION_ANALYZER_VERSION = 6
+TERMINAL_EXECUTION_ANALYZER_VERSION = 7
 TERMINAL_LANGUAGE_CONTRACT_VERSION = 1
 TERMINAL_LANGUAGES = frozenset({"shell", "python"})
 TERMINAL_EFFECTS = frozenset({"read_only", "mutating", "unknown"})
@@ -295,6 +295,12 @@ class TerminalExecutionPlan:
     read_ranges: tuple["TerminalReadRange", ...] = ()
     read_projection_reusable: bool = False
     callback_kinds: tuple[str, ...] = ()
+    # Literal executable tokens accepted by the same Shell parse that produced
+    # this plan. Providers use these tokens to prove the concrete execution
+    # context (for example, PATH resolution inside a Docker container) without
+    # maintaining a second command parser.
+    executable_tokens: tuple[str, ...] = ()
+    executable_set_complete: bool = True
 
 
 @dataclass(frozen=True, slots=True)
@@ -568,7 +574,7 @@ def _command_words(words: Sequence[str]) -> tuple[str, list[str]]:
             remaining.pop(0)
             continue
         raw_executable = remaining[0]
-        executable = "source" if raw_executable == "." else Path(raw_executable).name.lower()
+        executable = "source" if raw_executable == "." else Path(raw_executable).name
         if executable in {"command", "builtin"}:
             remaining.pop(0)
             continue
@@ -1619,11 +1625,11 @@ _PYTHON_HEREDOC = re.compile(
     r"(?P=quote)[ \t]*\r?\n"
     r"(?P<body>.*?)"
     r"(?:\r?\n)(?P<closing_tabs>\t*)(?P=delimiter)[ \t]*(?:\r?\n)?\Z",
-    re.DOTALL | re.IGNORECASE,
+    re.DOTALL,
 )
 
 
-def _python_heredoc_source(source: str) -> tuple[str, bool] | None:
+def _python_heredoc_source(source: str) -> tuple[str, bool, str] | None:
     """Return one Python heredoc body and whether its bytes are static.
 
     Quoted delimiters are byte-stable.  An unquoted delimiter is accepted only
@@ -1641,7 +1647,7 @@ def _python_heredoc_source(source: str) -> tuple[str, bool] | None:
         match.group("quote") == ""
         and any(marker in body for marker in ("$", "`", "\\"))
     )
-    return body, literal
+    return body, literal, match.group("executable")
 
 
 def plan_terminal_execution(
@@ -1681,7 +1687,7 @@ def plan_terminal_execution(
         )
     nested_heredoc = _python_heredoc_source(code)
     if nested_heredoc is not None:
-        nested_python, literal = nested_heredoc
+        nested_python, literal, nested_executable = nested_heredoc
         if literal:
             effect, reads, writes, read_set_complete = _python_effect_and_paths(
                 nested_python
@@ -1710,6 +1716,7 @@ def plan_terminal_execution(
             ("python",),
             (terminal_command_sha256(nested_python),),
             read_ranges=read_ranges,
+            executable_tokens=(nested_executable,),
         )
     if _looks_like_bare_python(code):
         # run_code is a shell contract.  Recognizing Python-looking input here
@@ -1746,6 +1753,7 @@ def plan_terminal_execution(
     unknown = background_operator
     read_set_complete = True
     callback_kinds: set[str] = set()
+    executable_tokens: list[str] = []
     command_cwd, command_cwd_safe = shell_command_working_directory(code)
     if not command_cwd_safe:
         unknown = True
@@ -1784,7 +1792,7 @@ def plan_terminal_execution(
         words = [part.word for part in word_nodes]
         if words:
             leading_assignments = bool(re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", words[0]))
-            wrapper = Path(words[0]).name.lower() in {
+            wrapper = Path(words[0]).name in {
                 "builtin",
                 "command",
                 "env",
@@ -1814,6 +1822,15 @@ def plan_terminal_execution(
         executable, args = _command_words(words)
         if not executable:
             continue
+        # Wrapper-bearing commands are already classified as unknown above.
+        # Keeping only the accepted command token means an execution provider
+        # can bind its trust proof to the exact interpreter/binary selected by
+        # this parser rather than reparsing raw source independently.
+        for raw_token in words:
+            if re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", raw_token):
+                continue
+            executable_tokens.append(raw_token)
+            break
         if executable == "rg" and "--no-config" not in _rg_actual_literal_flags(args):
             callback_kinds.add("ripgrep_config")
         elif executable == "git" and not _git_version_only(args):
@@ -1883,6 +1900,8 @@ def plan_terminal_execution(
             read_ranges=read_ranges,
         ),
         callback_kinds=tuple(sorted(callback_kinds)),
+        executable_tokens=tuple(executable_tokens[:16]),
+        executable_set_complete=len(executable_tokens) <= 16,
     )
 
 
@@ -1904,6 +1923,7 @@ def build_terminal_execution_receipt(
     content_sha256: str | None = None,
     representation: str | None = None,
     source_checkpoint_revision: int | None = None,
+    execution_context_sha256: str | None = None,
 ) -> dict[str, Any]:
     """Project one terminal decision/result into bounded transport metadata."""
 
@@ -1931,6 +1951,11 @@ def build_terminal_execution_receipt(
         or source_checkpoint_revision < 0
     ):
         raise ValueError("source_checkpoint_revision must be non-negative")
+    if (
+        execution_context_sha256 is not None
+        and re.fullmatch(r"sha256:[0-9a-f]{64}", execution_context_sha256) is None
+    ):
+        raise ValueError("execution_context_sha256 must be a canonical sha256 identity")
     generation_delta = 0 if not executed or plan.effect == "read_only" else 1
     read_epochs = [dict(epoch) for epoch in read_path_epochs][:_MAX_RECEIPT_PATHS]
     read_epochs_complete = not plan.read_paths or len(read_epochs) == len(
@@ -1994,6 +2019,8 @@ def build_terminal_execution_receipt(
         "timed_out": bool(timed_out),
         "exit_code": exit_code,
     }
+    if execution_context_sha256 is not None:
+        receipt["execution_context_sha256"] = execution_context_sha256
     if nested_language_evidence:
         receipt["nested_language_evidence"] = nested_language_evidence
     return receipt

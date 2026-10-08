@@ -5,7 +5,7 @@
 import asyncio
 import base64
 from collections import OrderedDict
-from dataclasses import replace
+from dataclasses import dataclass, replace
 import difflib
 import fnmatch
 import hashlib
@@ -14,6 +14,7 @@ import mimetypes
 import os
 import posixpath
 import re
+import stat as stat_module
 import sys
 import time
 from pathlib import Path, PurePosixPath
@@ -50,6 +51,186 @@ from aworld.sandbox.artifact_observation import (
     artifact_mcp_result,
     observe_artifact_bytes,
 )
+
+
+_TRUSTED_DOCKER_PATH = "/usr/bin:/bin"
+_TRUSTED_DOCKER_BINARY_ROOTS = ("/usr/bin", "/bin")
+_TRUSTED_DOCKER_SHELL_ENTRYPOINTS = frozenset(
+    {
+        "/bin/bash",
+        "/bin/dash",
+        "/bin/sh",
+        "/usr/bin/bash",
+        "/usr/bin/dash",
+        "/usr/bin/sh",
+    }
+)
+_TRUSTED_SHELL_BUILTINS = frozenset(
+    {":", "cd", "echo", "false", "printf", "pwd", "test", "true", "type"}
+)
+_UNTRUSTED_NESTED_INTERPRETERS = frozenset({"py", "python", "python3"})
+_MAX_PORTABLE_SHELL_INTEGER = 2_147_483_646
+_DOCKER_EXEC_ENV_OVERRIDES = {
+    # These variables are consumed by the dynamic loader or a non-interactive
+    # shell before command source can clear its environment. Override them at
+    # ``docker exec`` itself; the trusted child is then launched via ``env -i``.
+    "BASH_ENV": "",
+    "CDPATH": "",
+    "ENV": "",
+    "GLIBC_TUNABLES": "",
+    "LD_AUDIT": "",
+    "LD_DEBUG": "",
+    "LD_LIBRARY_PATH": "",
+    "LD_PRELOAD": "",
+    "LD_PROFILE": "",
+    "PYTHONHOME": "",
+    "PYTHONPATH": "",
+    "RIPGREP_CONFIG_PATH": "",
+}
+_DOCKER_EXEC_CONTEXT_PROBE = r"""
+set -efu
+if (set -o pipefail) 2>/dev/null; then set -o pipefail; fi
+PATH=/usr/bin:/bin
+export PATH
+readlink_bin=
+stat_bin=
+for candidate in /usr/bin/readlink /bin/readlink; do
+    if [ -x "$candidate" ]; then readlink_bin=$candidate; break; fi
+done
+for candidate in /usr/bin/stat /bin/stat; do
+    if [ -x "$candidate" ]; then stat_bin=$candidate; break; fi
+done
+[ -n "$readlink_bin" ] && [ -n "$stat_bin" ] || exit 71
+policy=$1
+shift
+[ ! -e /etc/ld.so.preload ] || exit 77
+if [ "$policy" = immutable ]; then
+    for trusted_root in /bin /usr/bin /etc /lib /lib64 /usr/lib /usr/lib64 /usr/local/lib; do
+        [ ! -e "$trusted_root" ] || [ ! -w "$trusted_root" ] || exit 78
+    done
+elif [ "$policy" != stable ]; then
+    exit 81
+fi
+for token do
+    case "$token" in
+        :|cd|echo|false|printf|pwd|test|true|type) continue ;;
+    esac
+    case "$token" in
+        */*) candidate=$token ;;
+        *) candidate=$(command -v "$token") || exit 72 ;;
+    esac
+    case "$candidate" in /*) ;; *) exit 72 ;; esac
+    canonical=$($readlink_bin -f -- "$candidate") || exit 73
+    case "$canonical" in /usr/bin/*|/bin/*) ;; *) exit 74 ;; esac
+    [ -f "$canonical" ] && [ -x "$canonical" ] || exit 75
+    if [ "$policy" = immutable ]; then [ ! -w "$canonical" ] || exit 79; fi
+    first_record=
+    IFS= read -r first_record < "$canonical" || :
+    case "$first_record" in '#!'*) exit 80 ;; esac
+    epoch=$($stat_bin -Lc '%d|%i|%f|%s|%Y|%Z|%y|%z' -- "$canonical") || exit 76
+    printf '%s\000%s\000%s\000' "$token" "$canonical" "$epoch"
+done
+"""
+
+_DOCKER_HELD_FD_READER = r"""
+set -efu
+PATH=/usr/bin:/bin
+export PATH
+path=$1
+mode=$2
+hard_limit=$3
+first=$4
+second=$5
+emit=$6
+shift 6
+[ -f "$path" ] || exit 82
+exec 3< "$path" || exit 82
+exec 4< "$path" || exit 82
+exec 5< "$path" || exit 82
+exec 7< "$path" || exit 82
+resolved=$(readlink -f /proc/self/fd/3) || exit 83
+resolved_hash=$(readlink -f /proc/self/fd/4) || exit 83
+resolved_scan=$(readlink -f /proc/self/fd/5) || exit 83
+resolved_lines=$(readlink -f /proc/self/fd/7) || exit 83
+[ "$resolved" = "$resolved_hash" ] && [ "$resolved" = "$resolved_scan" ] \
+    && [ "$resolved" = "$resolved_lines" ] || exit 83
+allowed=0
+for root do
+    if [ "$root" = / ]; then
+        case "$resolved" in /*) allowed=1; break ;; esac
+    else
+        case "$resolved" in "$root"|"$root"/*) allowed=1; break ;; esac
+    fi
+done
+[ "$allowed" -eq 1 ] || exit 84
+link_before=$(stat -c '%d|%i|%f|%s|%Y|%Z|%y|%z' "$path") || exit 85
+before=$(stat -Lc '%d|%i|%f|%s|%Y|%Z|%y|%z' /proc/self/fd/3) || exit 85
+before_hash=$(stat -Lc '%d|%i|%f|%s|%Y|%Z|%y|%z' /proc/self/fd/4) || exit 85
+before_scan=$(stat -Lc '%d|%i|%f|%s|%Y|%Z|%y|%z' /proc/self/fd/5) || exit 85
+before_lines=$(stat -Lc '%d|%i|%f|%s|%Y|%Z|%y|%z' /proc/self/fd/7) || exit 85
+[ "$before" = "$before_hash" ] && [ "$before" = "$before_scan" ] \
+    && [ "$before" = "$before_lines" ] || exit 85
+saved_ifs=$IFS
+IFS='|'
+set -- $before
+IFS=$saved_ifs
+size=$4
+count_limit=$((hard_limit + 1))
+scan_complete=1
+if [ "$mode" = head ] || [ "$mode" = range ]; then
+    prefix_count=$(head -c "$count_limit" /proc/self/fd/5 | wc -c) || exit 86
+    target_line=$first
+    if [ "$mode" = range ]; then target_line=$second; fi
+    if [ "$prefix_count" -lt "$size" ]; then
+        newline_count=$(head -c "$count_limit" /proc/self/fd/7 | wc -l) || exit 86
+        if [ "$newline_count" -lt "$target_line" ]; then scan_complete=0; fi
+    fi
+fi
+raw_selection() {
+    fd=$1
+    case "$mode" in
+        full) head -c "$size" "/proc/self/fd/$fd" ;;
+        head) head -c "$count_limit" "/proc/self/fd/$fd" | sed -n "1,${first}p" ;;
+        range) head -c "$count_limit" "/proc/self/fd/$fd" | sed -n "${first},${second}p" ;;
+        tail) if [ "$scan_complete" -eq 1 ]; then tail -n "$first" "/proc/self/fd/$fd"; fi ;;
+        bytes) tail -c "+$((first + 1))" "/proc/self/fd/$fd" | head -c "$second" ;;
+        *) exit 87 ;;
+    esac
+}
+selected() { raw_selection "$1" | head -c "$hard_limit"; }
+raw_count=$(raw_selection 3 | head -c "$count_limit" | wc -c) || exit 88
+selected_count=$raw_count
+if [ "$selected_count" -gt "$hard_limit" ]; then selected_count=$hard_limit; fi
+if [ "$emit" = 1 ]; then
+    exec 6>&1
+    content_hash=$(selected 4 | tee /proc/self/fd/6 | sha256sum) || exit 89
+elif [ "$emit" = 0 ]; then
+    content_hash=$(selected 4 | sha256sum) || exit 89
+else
+    exit 90
+fi
+content_hash=${content_hash%% *}
+after=$(stat -Lc '%d|%i|%f|%s|%Y|%Z|%y|%z' /proc/self/fd/3) || exit 91
+after_hash=$(stat -Lc '%d|%i|%f|%s|%Y|%Z|%y|%z' /proc/self/fd/4) || exit 91
+after_scan=$(stat -Lc '%d|%i|%f|%s|%Y|%Z|%y|%z' /proc/self/fd/5) || exit 91
+after_lines=$(stat -Lc '%d|%i|%f|%s|%Y|%Z|%y|%z' /proc/self/fd/7) || exit 91
+[ "$before" = "$after" ] && [ "$before_hash" = "$after_hash" ] \
+    && [ "$before_scan" = "$after_scan" ] \
+    && [ "$before_lines" = "$after_lines" ] || exit 92
+link_after=$(stat -c '%d|%i|%f|%s|%Y|%Z|%y|%z' "$path") || exit 93
+[ "$link_before" = "$link_after" ] || exit 94
+printf 'AWORLD_READ_V1\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+    "$resolved" "$link_before" "$before" "$content_hash" \
+    "$raw_count" "$selected_count" "$size" "$scan_complete" >&2
+"""
+
+
+@dataclass(frozen=True, slots=True)
+class _DockerExecutionContext:
+    env_executable: str
+    shell_executable: str
+    fingerprint: str
+    executable_epochs: tuple[tuple[str, str, str], ...]
 
 
 _DOCKER_ARTIFACT_READER = r"""
@@ -255,12 +436,19 @@ class DockerBridge:
         input_bytes: Optional[bytes] = None,
         timeout: int = 30,
         workdir: Optional[str] = None,
+        environment_overrides: Mapping[str, str] | None = None,
     ) -> tuple[int, bytes, bytes, bool]:
         args = [self.docker_binary, "exec"]
         if input_bytes is not None:
             args.append("-i")
         if workdir:
             args.extend(["-w", workdir])
+        for key, value in sorted((environment_overrides or {}).items()):
+            if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", key) is None:
+                raise ValueError(f"Invalid Docker environment key: {key!r}")
+            if any(marker in value for marker in ("\0", "\r", "\n")):
+                raise ValueError(f"Invalid Docker environment value for {key!r}")
+            args.extend(["--env", f"{key}={value}"])
         args.extend([self.container, *command])
         process = await asyncio.create_subprocess_exec(
             *args,
@@ -453,9 +641,7 @@ class DockerBridge:
             file_epoch=(
                 "sha256:"
                 + hashlib.sha256(
-                    json.dumps(
-                        epoch, sort_keys=True, separators=(",", ":")
-                    ).encode()
+                    json.dumps(epoch, sort_keys=True, separators=(",", ":")).encode()
                 ).hexdigest()
             ),
             framework_scope=framework_scope,
@@ -603,68 +789,383 @@ def _plan_read_paths(plan: Any) -> list[str] | None:
     return paths
 
 
-async def _container_read_path_epochs(
-    paths: list[str] | None,
+def _trusted_system_binary(path: str) -> bool:
+    if not PurePosixPath(path).is_absolute():
+        return False
+    normalized = posixpath.normpath(path)
+    return any(
+        posixpath.commonpath((normalized, root)) == root
+        for root in _TRUSTED_DOCKER_BINARY_ROOTS
+    )
+
+
+def _parse_execution_context_probe(
+    *,
+    stdout: bytes,
+    tokens: tuple[str, ...],
+    env_executable: str,
+    policy: str,
+) -> _DockerExecutionContext | None:
+    if len(stdout) > 32 * 1024:
+        return None
+    fields = stdout.split(b"\0")
+    if not fields or fields[-1] != b"" or len(fields) != len(tokens) * 3 + 1:
+        return None
+    epochs: list[tuple[str, str, str]] = []
+    try:
+        for index, expected_token in enumerate(tokens):
+            token = fields[index * 3].decode("utf-8", errors="strict")
+            canonical = fields[index * 3 + 1].decode("utf-8", errors="strict")
+            epoch = fields[index * 3 + 2].decode("utf-8", errors="strict")
+            if token != expected_token or len(canonical) > 1024 or len(epoch) > 1024:
+                return None
+            if posixpath.normpath(canonical) != canonical:
+                return None
+            if not _trusted_system_binary(canonical):
+                return None
+            epoch_fields = epoch.split("|", 7)
+            if len(epoch_fields) != 8:
+                return None
+            for field_index, numeric in enumerate(epoch_fields[:6]):
+                int(numeric, 16 if field_index == 2 else 10)
+            epochs.append((token, canonical, epoch))
+    except (UnicodeDecodeError, ValueError, IndexError):
+        return None
+    payload = {
+        "authority": _container_epoch_authority(),
+        "path": _TRUSTED_DOCKER_PATH,
+        "workdir": bridge.workdir,
+        "policy": policy,
+        "epochs": epochs,
+    }
+    fingerprint = (
+        "sha256:"
+        + hashlib.sha256(
+            json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        ).hexdigest()
+    )
+    return _DockerExecutionContext(
+        env_executable=env_executable,
+        shell_executable=bridge.shell,
+        fingerprint=fingerprint,
+        executable_epochs=tuple(epochs),
+    )
+
+
+async def _trusted_docker_helper_context(
+    *,
+    executable_tokens: tuple[str, ...],
+    timeout: int,
+    require_immutable: bool = True,
+) -> _DockerExecutionContext | None:
+    """Attest fixed-PATH helpers used by one provider-owned read operation.
+
+    ``run_code`` requires immutable system binary/loader roots. Provider-owned
+    held-fd reads may request the compatibility policy for root/minimal images:
+    every helper identity is still bound before/after, loader preloads remain
+    forbidden, and selected bytes are authenticated by a fresh content hash.
+    """
+
+    if (
+        posixpath.normpath(bridge.shell) not in _TRUSTED_DOCKER_SHELL_ENTRYPOINTS
+        or not _trusted_system_binary(bridge.shell)
+        or len(executable_tokens) > 16
+    ):
+        return None
+    for token in executable_tokens:
+        if (
+            not token
+            or len(token) > 512
+            or any(marker in token for marker in ("\0", "\r", "\n", "$", "`"))
+            or any(marker in token for marker in ("*", "?", "[", "]"))
+        ):
+            return None
+    command_tokens = tuple(
+        token
+        for token in executable_tokens
+        if not ("/" not in token and token in _TRUSTED_SHELL_BUILTINS)
+    )
+    for env_executable in ("/usr/bin/env", "/bin/env"):
+        policy = "immutable" if require_immutable else "stable"
+        tokens = (env_executable, bridge.shell, "readlink", "stat", *command_tokens)
+        return_code, stdout, stderr, timed_out = await bridge.execute(
+            [
+                env_executable,
+                "-i",
+                f"PATH={_TRUSTED_DOCKER_PATH}",
+                bridge.shell,
+                "-c",
+                _DOCKER_EXEC_CONTEXT_PROBE,
+                "aworld-execution-context",
+                policy,
+                *tokens,
+            ],
+            timeout=max(1, min(timeout, 5)),
+            workdir=bridge.workdir,
+            environment_overrides=_DOCKER_EXEC_ENV_OVERRIDES,
+        )
+        if timed_out or return_code != 0 or stderr:
+            continue
+        context = _parse_execution_context_probe(
+            stdout=stdout,
+            tokens=tokens,
+            env_executable=env_executable,
+            policy=policy,
+        )
+        if context is not None:
+            return context
+    return None
+
+
+async def _trusted_docker_execution_context(
+    *,
+    plan: Any,
+    timeout: int,
+) -> _DockerExecutionContext | None:
+    """Prove the exact, sanitized context used for a Docker run-code read.
+
+    A parser-level read classification is insufficient when the command runs
+    through a login shell with inherited PATH/configuration. This authority
+    accepts only ordinary Shell commands, resolves every executable under a
+    fixed system PATH, records canonical file epochs, and executes through an
+    empty non-login environment. Nested interpreters and callback-bearing
+    commands stay unknown until they have their own equally strong contract.
+    """
+
+    if (
+        plan.effect != "read_only"
+        or not plan.parsed
+        or not plan.read_set_complete
+        or plan.language != "shell"
+        or plan.nested_languages
+        or plan.callback_kinds
+        or not plan.command_cwd_safe
+        or not getattr(plan, "executable_set_complete", False)
+    ):
+        return None
+    raw_tokens = tuple(getattr(plan, "executable_tokens", ()) or ())
+    if any(
+        PurePosixPath(token).name in _UNTRUSTED_NESTED_INTERPRETERS
+        for token in raw_tokens
+    ):
+        return None
+    return await _trusted_docker_helper_context(
+        executable_tokens=(*raw_tokens, "timeout"),
+        timeout=timeout,
+    )
+
+
+async def _execute_in_trusted_context(
+    context: _DockerExecutionContext,
+    code: str,
     *,
     timeout: int,
-) -> list[dict[str, Any]]:
-    """Capture bounded, provider-authoritative epochs for regular files."""
-
-    if paths is None:
-        return []
-    if not paths:
-        return []
-    script = (
-        'for p do resolved=$(readlink -f "$p") || exit 7; '
-        '[ -f "$resolved" ] || exit 7; '
-        "link=$(stat -c '%d|%i|%f|%s|%Y|%Z|%y|%z' \"$p\") || exit 8; "
-        "target=$(stat -c '%d|%i|%f|%s|%Y|%Z|%y|%z' \"$resolved\") || exit 9; "
-        'printf "%s\\000%s\\t%s\\000" "$resolved" "$link" "$target"; done'
-    )
-    return_code, stdout, _stderr, timed_out = await bridge.execute(
-        [bridge.shell, "-c", script, "aworld-read-epoch", *paths],
-        timeout=max(1, min(timeout, 5)),
+    arguments: tuple[str, ...] = (),
+) -> tuple[int, bytes, bytes, bool]:
+    return await bridge.execute(
+        [
+            context.env_executable,
+            "-i",
+            f"PATH={_TRUSTED_DOCKER_PATH}",
+            "timeout",
+            "-s",
+            "KILL",
+            str(max(1, min(timeout - 1 if timeout > 1 else 1, 29))),
+            context.shell_executable,
+            "-c",
+            code,
+            "aworld-trusted-command",
+            *arguments,
+        ],
+        timeout=timeout,
         workdir=bridge.workdir,
+        environment_overrides=_DOCKER_EXEC_ENV_OVERRIDES,
     )
-    if timed_out or return_code != 0 or len(stdout) > 64 * 1024:
-        return []
-    fields = stdout.split(b"\0")
-    if not fields or fields[-1] != b"" or len(fields) != len(paths) * 2 + 1:
-        return []
-    authority = _container_epoch_authority()
-    epochs: list[dict[str, Any]] = []
+
+
+async def _held_fd_container_file_read(
+    context: _DockerExecutionContext,
+    *,
+    path: str,
+    request: Mapping[str, Any],
+    emit: bool,
+    timeout: int,
+) -> tuple[
+    bytes,
+    TerminalReadRange,
+    bool,
+    dict[str, Any],
+    dict[str, Any],
+    str,
+]:
+    mode = str(request.get("mode") or "")
+    hard_limit = int(request.get("hard_limit") or 0)
+    if mode == "head":
+        first, second = int(request["end"]), 0
+    elif mode == "range":
+        first, second = int(request["start"]), int(request["end"])
+    elif mode == "tail":
+        first, second = int(request["count"]), 0
+    elif mode == "bytes":
+        first, second = int(request["offset"]), int(request["limit"])
+    elif mode == "full":
+        first = second = 0
+    else:
+        raise ValueError("unsupported held-fd read mode")
+    if hard_limit < 1 or hard_limit > 16 * 1024 * 1024:
+        raise ValueError("invalid held-fd read limit")
+    if min(first, second) < 0 or max(first, second) > _MAX_PORTABLE_SHELL_INTEGER:
+        raise ValueError("held-fd selector exceeds portable integer bounds")
+    return_code, stdout, stderr, timed_out = await bridge.execute(
+        [
+            context.env_executable,
+            "-i",
+            f"PATH={_TRUSTED_DOCKER_PATH}",
+            "timeout",
+            "-s",
+            "KILL",
+            str(max(1, min(timeout - 1 if timeout > 1 else 1, 29))),
+            context.shell_executable,
+            "-c",
+            _DOCKER_HELD_FD_READER,
+            "aworld-held-fd-read",
+            path,
+            mode,
+            str(hard_limit),
+            str(first),
+            str(second),
+            "1" if emit else "0",
+            *bridge.allowed_directories,
+        ],
+        timeout=timeout,
+        workdir=bridge.workdir,
+        environment_overrides=_DOCKER_EXEC_ENV_OVERRIDES,
+    )
+    if timed_out or return_code != 0 or len(stdout) > hard_limit:
+        raise RuntimeError("container held-fd file reader failed")
     try:
-        for index, path in enumerate(paths):
-            resolved_path = fields[index * 2].decode("utf-8", errors="strict")
-            if len(path) > 1024 or len(resolved_path) > 1024:
-                return []
-            if bridge.validate_path(resolved_path) != posixpath.normpath(resolved_path):
-                return []
-            record = fields[index * 2 + 1].decode("utf-8", errors="strict")
-            link_raw, target_raw = record.split("\t", 1)
-            link = link_raw.split("|", 7)
-            target = target_raw.split("|", 7)
-            if len(link) != 8 or len(target) != 8:
-                return []
-            fingerprint = "sha256:" + hashlib.sha256(record.encode("utf-8")).hexdigest()
-            epochs.append(
-                {
-                    "path": path,
-                    "resolved_path": resolved_path,
-                    "link_inode": int(link[1]),
-                    "link_mtime_ns": int(link[4]) * 1_000_000_000,
-                    "mode": int(target[2], 16),
-                    "size": int(target[3]),
-                    "mtime_ns": int(target[4]) * 1_000_000_000,
-                    "ctime_ns": int(target[5]) * 1_000_000_000,
-                    "inode": int(target[1]),
-                    "authority": authority,
-                    "fingerprint": fingerprint,
-                }
-            )
-    except (UnicodeDecodeError, ValueError, IndexError):
-        return []
-    return epochs
+        stderr_text = stderr.decode("utf-8", errors="strict")
+        lines = stderr_text.splitlines()
+        if len(lines) != 1:
+            raise ValueError("invalid held-fd metadata lines")
+        fields = lines[0].split("\t")
+        if len(fields) != 9 or fields[0] != "AWORLD_READ_V1":
+            raise ValueError("invalid held-fd metadata")
+        (
+            _,
+            resolved_path,
+            link_record,
+            target_record,
+            digest,
+            raw_text,
+            selected_text,
+            size_text,
+            scan_complete_text,
+        ) = fields
+        if (
+            len(resolved_path) > 1024
+            or bridge.validate_path(resolved_path) != posixpath.normpath(resolved_path)
+            or re.fullmatch(r"[0-9a-f]{64}", digest) is None
+        ):
+            raise ValueError("invalid held-fd identity")
+        link = link_record.split("|", 7)
+        target = target_record.split("|", 7)
+        if len(link) != 8 or len(target) != 8:
+            raise ValueError("invalid held-fd epoch")
+        if not stat_module.S_ISREG(int(target[2], 16)):
+            raise ValueError("held-fd target is not a regular file")
+        raw_count = int(raw_text)
+        selected_count = int(selected_text)
+        total_bytes = int(size_text)
+        if scan_complete_text not in {"0", "1"}:
+            raise ValueError("invalid held-fd scan completeness")
+        scan_complete = scan_complete_text == "1"
+        if min(raw_count, selected_count, total_bytes) < 0:
+            raise ValueError("invalid held-fd sizes")
+        if selected_count != min(raw_count, hard_limit):
+            raise ValueError("invalid held-fd selection")
+        content_sha256 = "sha256:" + digest
+        if emit:
+            if len(stdout) != selected_count or (
+                "sha256:" + hashlib.sha256(stdout).hexdigest() != content_sha256
+            ):
+                raise ValueError("held-fd bytes do not match receipt")
+        elif stdout:
+            raise ValueError("hash-only held-fd read returned bytes")
+        if int(target[3]) != total_bytes:
+            raise ValueError("held-fd size mismatch")
+    except (UnicodeDecodeError, ValueError, IndexError) as exc:
+        raise RuntimeError("container held-fd receipt is invalid") from exc
+    if mode == "bytes":
+        effective_offset = min(first, total_bytes)
+        next_offset = effective_offset + selected_count
+        coverage = TerminalReadRange("byte_range", effective_offset, next_offset)
+        complete = scan_complete and next_offset >= total_bytes
+        metadata: dict[str, Any] = {
+            "offset": first,
+            "nextOffset": next_offset,
+            "returnedBytes": selected_count,
+            "totalBytes": total_bytes,
+            "truncated": not complete,
+            "complete": complete,
+        }
+    elif mode == "head":
+        coverage = TerminalReadRange("line_range", 1, first)
+        complete = scan_complete and raw_count <= hard_limit
+        metadata = {
+            "complete": complete,
+            "returnedBytes": selected_count,
+            "totalBytes": total_bytes,
+        }
+    elif mode == "range":
+        coverage = TerminalReadRange("line_range", first, second)
+        complete = scan_complete and raw_count <= hard_limit
+        metadata = {
+            "complete": complete,
+            "returnedBytes": selected_count,
+            "totalBytes": total_bytes,
+        }
+    elif mode == "tail":
+        coverage = TerminalReadRange("tail_lines", first, None)
+        complete = scan_complete and raw_count <= hard_limit
+        metadata = {
+            "complete": complete,
+            "returnedBytes": selected_count,
+            "totalBytes": total_bytes,
+        }
+    else:
+        coverage = (
+            TerminalReadRange("full")
+            if total_bytes <= hard_limit
+            else TerminalReadRange("byte_range", 0, selected_count)
+        )
+        complete = (
+            scan_complete and raw_count <= hard_limit and raw_count == total_bytes
+        )
+        metadata = {
+            "complete": complete,
+            "returnedBytes": selected_count,
+            "totalBytes": total_bytes,
+        }
+    epoch_record = {
+        "path": path,
+        "resolved_path": resolved_path,
+        "link_inode": int(link[1]),
+        "link_mtime_ns": int(link[4]) * 1_000_000_000,
+        "mode": int(target[2], 16),
+        "size": int(target[3]),
+        "mtime_ns": int(target[4]) * 1_000_000_000,
+        "ctime_ns": int(target[5]) * 1_000_000_000,
+        "inode": int(target[1]),
+        "authority": _container_epoch_authority(),
+    }
+    epoch_record["fingerprint"] = (
+        "sha256:"
+        + hashlib.sha256(
+            (resolved_path + "\0" + link_record + "\0" + target_record).encode("utf-8")
+        ).hexdigest()
+    )
+    return stdout, coverage, complete, metadata, epoch_record, content_sha256
 
 
 def _plan_read_ranges(plan: Any) -> tuple[TerminalReadRange, ...]:
@@ -672,6 +1173,57 @@ def _plan_read_ranges(plan: Any) -> tuple[TerminalReadRange, ...]:
     if len(ranges) != len(plan.read_paths):
         return tuple(TerminalReadRange("full") for _ in plan.read_paths)
     return ranges
+
+
+def _controlled_run_code_read_request(
+    plan: Any,
+    *,
+    hard_limit: int,
+) -> dict[str, Any] | None:
+    if (
+        plan.language != "shell"
+        or plan.effect != "read_only"
+        or not plan.parsed
+        or not plan.read_set_complete
+        or plan.nested_languages
+        or plan.callback_kinds
+        or not plan.command_cwd_safe
+        or not plan.read_projection_reusable
+        or len(plan.read_paths) != 1
+        or len(plan.read_ranges) != 1
+    ):
+        return None
+    coverage = plan.read_ranges[0]
+    if coverage.kind == "full":
+        return {"mode": "full", "hard_limit": hard_limit}
+    if (
+        coverage.kind == "line_range"
+        and coverage.start is not None
+        and coverage.end is not None
+    ):
+        if coverage.start == 1:
+            return {"mode": "head", "hard_limit": hard_limit, "end": coverage.end}
+        return {
+            "mode": "range",
+            "hard_limit": hard_limit,
+            "start": coverage.start,
+            "end": coverage.end,
+        }
+    if coverage.kind == "tail_lines" and coverage.start is not None:
+        return {"mode": "tail", "hard_limit": hard_limit, "count": coverage.start}
+    if (
+        coverage.kind == "byte_range"
+        and coverage.start is not None
+        and coverage.end is not None
+        and coverage.end > coverage.start
+    ):
+        return {
+            "mode": "bytes",
+            "hard_limit": hard_limit,
+            "offset": coverage.start,
+            "limit": coverage.end - coverage.start,
+        }
+    return None
 
 
 def _coverage_contains(
@@ -724,6 +1276,7 @@ def _lookup_read_fact(
     epochs: list[dict[str, Any]],
     allow_overlap: bool,
     representation: str,
+    execution_context_sha256: str,
 ) -> dict[str, Any] | None:
     if (
         not _framework_scope_is_complete(scope)
@@ -738,6 +1291,7 @@ def _lookup_read_fact(
         exact is not None
         and exact.get("epochs") == epochs
         and exact.get("representation") == representation
+        and exact.get("execution_context_sha256") == execution_context_sha256
     ):
         _READ_FACTS.move_to_end(exact_key)
         return exact
@@ -749,6 +1303,7 @@ def _lookup_read_fact(
             key[0] == scope
             and candidate.get("coverage_complete") is True
             and candidate.get("representation") == representation
+            and candidate.get("execution_context_sha256") == execution_context_sha256
             and candidate.get("paths") == paths
             and candidate.get("epochs") == epochs
             and len(candidate.get("ranges") or ()) == 1
@@ -769,6 +1324,8 @@ def _store_read_fact(
     content_sha256: str,
     coverage_complete: bool,
     representation: str,
+    execution_context_sha256: str,
+    projection_content_sha256: str | None = None,
 ) -> dict[str, Any] | None:
     if (
         not _framework_scope_is_complete(scope)
@@ -787,6 +1344,8 @@ def _store_read_fact(
                     "epochs": epochs,
                     "ranges": [item.to_dict() for item in ranges],
                     "content": content_sha256,
+                    "execution_context": execution_context_sha256,
+                    "projection_content": projection_content_sha256,
                 },
                 sort_keys=True,
                 separators=(",", ":"),
@@ -801,6 +1360,8 @@ def _store_read_fact(
         "epochs": [dict(epoch) for epoch in epochs],
         "coverage_complete": bool(coverage_complete),
         "representation": representation,
+        "execution_context_sha256": execution_context_sha256,
+        "projection_content_sha256": projection_content_sha256,
         "source_checkpoint_revision": int(scope[5]),
     }
     key = (scope, operation_key)
@@ -862,18 +1423,24 @@ async def run_code(
     potential_plan = plan_terminal_execution(code, language=language)
     execution_plan = potential_plan
     effect_source = "parser_contract"
+    execution_context: _DockerExecutionContext | None = None
+    controlled_read_request: dict[str, Any] | None = None
+    controlled_read_probe: (
+        tuple[
+            bytes,
+            TerminalReadRange,
+            bool,
+            dict[str, Any],
+            dict[str, Any],
+            str,
+        ]
+        | None
+    ) = None
+    controlled_helper_tokens: tuple[str, ...] = ()
     read_paths: list[str] = []
     if potential_plan.effect == "read_only":
         planned_paths = _plan_read_paths(potential_plan)
-        if potential_plan.callback_kinds:
-            execution_plan = replace(
-                potential_plan,
-                effect="unknown",
-                cacheable=False,
-                read_projection_reusable=False,
-            )
-            effect_source = "untrusted_callback_environment"
-        elif planned_paths is None:
+        if planned_paths is None:
             execution_plan = replace(
                 potential_plan,
                 effect="unknown",
@@ -882,8 +1449,67 @@ async def run_code(
             )
             effect_source = "untrusted_execution_context"
         else:
-            read_paths = planned_paths
-            effect_source = "trusted_docker_command_contract"
+            candidate_request = _controlled_run_code_read_request(
+                potential_plan,
+                hard_limit=int(getattr(bridge, "max_output_bytes", 1024 * 1024)),
+            )
+            if candidate_request is not None and len(planned_paths) == 1:
+                controlled_helper_tokens = (
+                    *tuple(getattr(potential_plan, "executable_tokens", ()) or ()),
+                    "head",
+                    "sed",
+                    "sha256sum",
+                    "tail",
+                    "tee",
+                    "timeout",
+                    "wc",
+                )
+                execution_context = await _trusted_docker_helper_context(
+                    executable_tokens=controlled_helper_tokens,
+                    timeout=timeout,
+                    require_immutable=False,
+                )
+                if execution_context is not None:
+                    try:
+                        probe = await _held_fd_container_file_read(
+                            execution_context,
+                            path=planned_paths[0],
+                            request=candidate_request,
+                            emit=False,
+                            timeout=timeout,
+                        )
+                    except (RuntimeError, ValueError):
+                        execution_context = None
+                    else:
+                        if probe[2] and probe[1] == potential_plan.read_ranges[0]:
+                            controlled_read_request = candidate_request
+                            controlled_read_probe = probe
+            if controlled_read_probe is None:
+                execution_context = await _trusted_docker_execution_context(
+                    plan=potential_plan,
+                    timeout=timeout,
+                )
+            if execution_context is None:
+                execution_plan = replace(
+                    potential_plan,
+                    effect="unknown",
+                    cacheable=False,
+                    read_projection_reusable=False,
+                )
+                effect_source = "untrusted_docker_execution_context"
+            else:
+                read_paths = planned_paths
+                effect_source = "trusted_docker_command_contract"
+                if read_paths and controlled_read_probe is None:
+                    # Shell utilities reopen workspace paths after the provider
+                    # preflight. Their bytes cannot be bound to a path epoch in
+                    # the same fd transaction, so they may establish a
+                    # read-only effect but never reusable observation facts.
+                    execution_plan = replace(
+                        potential_plan,
+                        cacheable=False,
+                        read_projection_reusable=False,
+                    )
     read_ranges = _plan_read_ranges(execution_plan)
     projection_kind = (
         read_ranges[0].kind
@@ -891,16 +1517,21 @@ async def run_code(
         else "exact"
     )
     representation = f"docker.run-code.text.{projection_kind}/v1"
-    read_epochs_before = (
-        await _container_read_path_epochs(read_paths, timeout=timeout)
-        if execution_plan.effect == "read_only" and read_paths
-        else []
-    )
+    if controlled_read_probe is not None:
+        representation = f"docker.run-code.text.{projection_kind}/v2"
+        read_epochs_before = [controlled_read_probe[4]]
+        projection_content_before = controlled_read_probe[5]
+    else:
+        read_epochs_before = []
+        projection_content_before = None
     operation_key = _fact_operation_key(
         kind="run_code",
         value={
             "command": terminal_command_sha256(code),
             "language": language,
+            "execution_context": (
+                execution_context.fingerprint if execution_context is not None else None
+            ),
         },
     )
     scope = _framework_scope(env_content)
@@ -911,6 +1542,9 @@ async def run_code(
         ranges=read_ranges,
         epochs=read_epochs_before,
         representation=representation,
+        execution_context_sha256=(
+            execution_context.fingerprint if execution_context is not None else ""
+        ),
         allow_overlap=(
             execution_plan.read_projection_reusable
             and len(read_ranges) == 1
@@ -918,12 +1552,34 @@ async def run_code(
             in {"full", "line_range", "byte_range", "tail_lines", "tail_bytes"}
         ),
     )
-    if cached_fact is not None:
-        confirmed_epochs = await _container_read_path_epochs(
-            read_paths,
+    if cached_fact is not None and (
+        controlled_read_request is not None
+        and cached_fact.get("projection_content_sha256") == projection_content_before
+    ):
+        confirmed_context = await _trusted_docker_helper_context(
+            executable_tokens=controlled_helper_tokens,
             timeout=timeout,
+            require_immutable=False,
         )
-        if confirmed_epochs == read_epochs_before:
+        confirmed_probe = None
+        if confirmed_context is not None:
+            try:
+                confirmed_probe = await _held_fd_container_file_read(
+                    confirmed_context,
+                    path=read_paths[0],
+                    request=controlled_read_request,
+                    emit=False,
+                    timeout=timeout,
+                )
+            except (RuntimeError, ValueError):
+                confirmed_probe = None
+        if (
+            confirmed_probe is not None
+            and [confirmed_probe[4]] == read_epochs_before
+            and confirmed_probe[5] == projection_content_before
+            and confirmed_context is not None
+            and confirmed_context.fingerprint == execution_context.fingerprint
+        ):
             compact = _compact_read_fact_payload(
                 cached_fact,
                 coverage=read_ranges[0],
@@ -949,28 +1605,95 @@ async def run_code(
                             timed_out=False,
                             potential_effect=potential_plan.effect,
                             effect_source=effect_source,
-                            read_path_epochs=confirmed_epochs,
+                            read_path_epochs=[confirmed_probe[4]],
                             requested_language=language,
                             cache_hit=True,
                             observation_id=str(cached_fact["observation_id"]),
                             content_sha256=str(cached_fact["content_sha256"]),
                             representation=representation,
                             source_checkpoint_revision=int(scope[5]),
+                            execution_context_sha256=execution_context.fingerprint,
                         ),
                     },
                 }
             )
+        if confirmed_context is None or (
+            confirmed_context.fingerprint != execution_context.fingerprint
+        ):
+            execution_plan = replace(
+                potential_plan,
+                effect="unknown",
+                cacheable=False,
+                read_projection_reusable=False,
+            )
+            effect_source = "docker_execution_context_changed"
+            execution_context = None
+            controlled_read_request = None
+            controlled_read_probe = None
     write_paths = _literal_container_write_paths(code, potential_plan)
     before_write_states = await _container_path_states(
         write_paths,
         timeout=timeout,
     )
-    if language == "shell":
+    controlled_execution: (
+        tuple[
+            bytes,
+            TerminalReadRange,
+            bool,
+            dict[str, Any],
+            dict[str, Any],
+            str,
+        ]
+        | None
+    ) = None
+    if controlled_read_request is not None and execution_context is not None:
+        try:
+            candidate_execution = await _held_fd_container_file_read(
+                execution_context,
+                path=read_paths[0],
+                request=controlled_read_request,
+                emit=True,
+                timeout=timeout,
+            )
+        except (RuntimeError, ValueError):
+            candidate_execution = None
+        if (
+            candidate_execution is not None
+            and candidate_execution[2]
+            and candidate_execution[1] == read_ranges[0]
+        ):
+            controlled_execution = candidate_execution
+            return_code, stdout, stderr, timed_out = (
+                0,
+                candidate_execution[0],
+                b"",
+                False,
+            )
+        else:
+            execution_plan = replace(
+                potential_plan,
+                cacheable=False,
+                read_projection_reusable=False,
+            )
+            controlled_read_request = None
+            controlled_read_probe = None
+    if (
+        controlled_execution is None
+        and language == "shell"
+        and execution_plan.effect == "read_only"
+        and execution_context is not None
+    ):
+        return_code, stdout, stderr, timed_out = await _execute_in_trusted_context(
+            execution_context,
+            code,
+            timeout=timeout,
+        )
+    elif controlled_execution is None and language == "shell":
         return_code, stdout, stderr, timed_out = await bridge.shell_command(
             code,
             timeout=timeout,
         )
-    else:
+    elif controlled_execution is None:
         return_code, stdout, stderr, timed_out = await bridge.execute(
             [os.environ.get("AWORLD_DOCKER_PYTHON", "python3"), "-c", code],
             timeout=timeout,
@@ -985,17 +1708,51 @@ async def run_code(
         if before_write_states is not None and after_write_states is not None
         else None
     )
+    stable_execution_context = execution_context
+    if execution_context is not None:
+        if controlled_execution is not None:
+            confirmed_context = await _trusted_docker_helper_context(
+                executable_tokens=controlled_helper_tokens,
+                timeout=timeout,
+                require_immutable=False,
+            )
+        else:
+            confirmed_context = await _trusted_docker_execution_context(
+                plan=potential_plan,
+                timeout=timeout,
+            )
+        if (
+            confirmed_context is None
+            or confirmed_context.fingerprint != execution_context.fingerprint
+        ):
+            execution_plan = replace(
+                potential_plan,
+                effect="unknown",
+                cacheable=False,
+                read_projection_reusable=False,
+            )
+            effect_source = "docker_execution_context_changed"
+            stable_execution_context = None
     read_epochs_after = (
-        await _container_read_path_epochs(read_paths, timeout=timeout)
-        if return_code == 0 and execution_plan.effect == "read_only" and read_paths
+        [controlled_execution[4]]
+        if controlled_execution is not None and stable_execution_context is not None
         else []
     )
     read_path_epochs = (
-        read_epochs_after if read_epochs_before == read_epochs_after else []
+        read_epochs_after
+        if read_epochs_before == read_epochs_after
+        and (
+            controlled_execution is None
+            or controlled_execution[5] == projection_content_before
+        )
+        else []
     )
     raw_content_sha256 = (
         "sha256:"
         + hashlib.sha256(b"stdout\0" + stdout + b"\0stderr\0" + stderr).hexdigest()
+    )
+    projection_content_sha256 = (
+        controlled_execution[5] if controlled_execution is not None else None
     )
     stdout, stdout_policy = bridge.bound_output(stdout, label="run-code-stdout")
     stderr, stderr_policy = bridge.bound_output(stderr, label="run-code-stderr")
@@ -1017,6 +1774,11 @@ async def run_code(
         source_checkpoint_revision=(
             int(scope[5]) if _framework_scope_is_complete(scope) else None
         ),
+        execution_context_sha256=(
+            stable_execution_context.fingerprint
+            if stable_execution_context is not None
+            else None
+        ),
     )
     stored_fact = None
     if terminal_receipt["cacheable"] and read_paths:
@@ -1032,6 +1794,12 @@ async def run_code(
             )
             and execution_plan.read_projection_reusable,
             representation=representation,
+            execution_context_sha256=(
+                stable_execution_context.fingerprint
+                if stable_execution_context is not None
+                else ""
+            ),
+            projection_content_sha256=projection_content_sha256,
         )
         if stored_fact is not None:
             terminal_receipt = build_terminal_execution_receipt(
@@ -1049,6 +1817,11 @@ async def run_code(
                 content_sha256=str(stored_fact["content_sha256"]),
                 representation=representation,
                 source_checkpoint_revision=int(scope[5]),
+                execution_context_sha256=(
+                    stable_execution_context.fingerprint
+                    if stable_execution_context is not None
+                    else None
+                ),
             )
     return _text(
         {
@@ -1090,6 +1863,7 @@ def _read_observation_receipt(
     coverage_complete: bool,
     representation: str,
     source_checkpoint_revision: int,
+    execution_context_sha256: str,
 ) -> dict[str, Any]:
     return {
         "schema_version": _READ_OBSERVATION_SCHEMA,
@@ -1104,125 +1878,8 @@ def _read_observation_receipt(
         "executed": not cache_hit,
         "representation": representation,
         "source_checkpoint_revision": source_checkpoint_revision,
+        "execution_context_sha256": execution_context_sha256,
     }
-
-
-async def _bounded_container_file_read(
-    *,
-    path: str,
-    head: int | None,
-    tail: int | None,
-    output: str,
-    offset: int,
-    limit: int | None,
-    total_bytes: int,
-) -> tuple[bytes, TerminalReadRange, bool, dict[str, Any]]:
-    if head is not None and head < 1:
-        raise ValueError("head must be a positive line number/count")
-    if tail is not None and tail < 1:
-        raise ValueError("tail must be a positive line number/count")
-    if head is not None and tail is not None and head > tail:
-        raise ValueError("head must be <= tail when both are specified")
-    if offset < 0:
-        raise ValueError("offset must be non-negative")
-    if limit is not None and limit < 1:
-        raise ValueError("limit must be positive")
-    max_output = int(getattr(bridge, "max_output_bytes", 1024 * 1024))
-    if output == "base64" and head is None and tail is None:
-        hard_limit = min(
-            int(getattr(bridge, "max_binary_bytes", 1024 * 1024)),
-            max_output,
-        )
-        requested = hard_limit if limit is None else min(limit, hard_limit)
-        script = 'tail -c "+$2" "$1" | head -c "$3"'
-        return_code, data, stderr, timed_out = await bridge.execute(
-            [
-                bridge.shell,
-                "-c",
-                script,
-                "aworld-bounded-bytes",
-                path,
-                str(offset + 1),
-                str(requested),
-            ],
-            timeout=30,
-            workdir=bridge.workdir,
-        )
-        if timed_out or return_code != 0:
-            raise RuntimeError(stderr.decode("utf-8", errors="replace"))
-        effective_offset = min(offset, total_bytes)
-        next_offset = effective_offset + len(data)
-        return (
-            data,
-            TerminalReadRange("byte_range", effective_offset, next_offset),
-            next_offset >= total_bytes,
-            {
-                "offset": offset,
-                "nextOffset": next_offset,
-                "returnedBytes": len(data),
-                "totalBytes": total_bytes,
-                "truncated": next_offset < total_bytes,
-            },
-        )
-    if output == "text" and (offset != 0 or limit is not None):
-        raise ValueError("offset and limit are only supported with output='base64'")
-    if output == "base64" and (offset != 0 or limit is not None):
-        raise ValueError("offset/limit cannot be combined with head/tail")
-
-    hard_limit = min(
-        int(getattr(bridge, "max_read_bytes", 1024 * 1024)),
-        max_output,
-    )
-    if head is not None and tail is not None:
-        script = 'sed -n "$2,$3p" "$1" | head -c "$4"'
-        argv = [path, str(head), str(tail), str(hard_limit + 1)]
-        coverage = TerminalReadRange("line_range", head, tail)
-    elif head is not None:
-        script = 'sed -n "1,$2p" "$1" | head -c "$3"'
-        argv = [path, str(head), str(hard_limit + 1)]
-        coverage = TerminalReadRange("line_range", 1, head)
-    elif tail is not None:
-        script = 'tail -n "$2" "$1" | head -c "$3"'
-        argv = [path, str(tail), str(hard_limit + 1)]
-        coverage = TerminalReadRange("tail_lines", tail, None)
-    else:
-        script = 'head -c "$2" "$1"'
-        argv = [path, str(hard_limit + 1)]
-        coverage = (
-            TerminalReadRange("full")
-            if total_bytes <= hard_limit
-            else TerminalReadRange("byte_range", 0, hard_limit)
-        )
-    return_code, data, stderr, timed_out = await bridge.execute(
-        [bridge.shell, "-c", script, "aworld-bounded-read", *argv],
-        timeout=30,
-        workdir=bridge.workdir,
-    )
-    if timed_out or return_code != 0:
-        raise RuntimeError(stderr.decode("utf-8", errors="replace"))
-    selection_complete = len(data) <= hard_limit
-    if not selection_complete:
-        data = data[:hard_limit]
-    metadata: dict[str, Any] = {
-        "complete": selection_complete and coverage.kind == "full",
-        "returnedBytes": len(data),
-        "totalBytes": total_bytes,
-    }
-    if coverage.kind != "full":
-        # Complete describes the requested window for explicit ranges.
-        metadata["complete"] = selection_complete
-    if not selection_complete:
-        metadata["truncationReason"] = "read_bytes"
-    if head is None and tail is None and total_bytes > hard_limit:
-        metadata.update(
-            {
-                "complete": False,
-                "defaultBounded": True,
-                "truncationReason": "default_bytes",
-                "nextOffset": hard_limit,
-            }
-        )
-    return data, coverage, bool(metadata["complete"]), metadata
 
 
 @mcp.tool(
@@ -1272,46 +1929,103 @@ async def read_file(
     valid_path = bridge.validate_path(path)
     if output not in {"text", "base64"}:
         raise ValueError("output must be 'text' or 'base64'")
-    epochs_before = await _container_read_path_epochs([valid_path], timeout=5)
-    if len(epochs_before) != 1:
-        raise ValueError("path must resolve to a regular file with a stable epoch")
-    total_bytes = int(epochs_before[0]["size"])
-    resolved_read_path = str(epochs_before[0]["resolved_path"])
+    if head is not None and head < 1:
+        raise ValueError("head must be a positive line number/count")
+    if tail is not None and tail < 1:
+        raise ValueError("tail must be a positive line number/count")
+    if head is not None and tail is not None and head > tail:
+        raise ValueError("head must be <= tail when both are specified")
+    if offset < 0:
+        raise ValueError("offset must be non-negative")
+    if limit is not None and limit < 1:
+        raise ValueError("limit must be positive")
+    for name, value in (
+        ("head", head),
+        ("tail", tail),
+        ("offset", offset),
+        ("limit", limit),
+    ):
+        if value is not None and value > _MAX_PORTABLE_SHELL_INTEGER:
+            raise ValueError(f"{name} exceeds portable integer bounds")
+    if output == "text" and (offset != 0 or limit is not None):
+        raise ValueError("offset and limit are only supported with output='base64'")
+    if (
+        output == "base64"
+        and (head is not None or tail is not None)
+        and (offset != 0 or limit is not None)
+    ):
+        raise ValueError("offset/limit cannot be combined with head/tail")
+    helper_tokens = (
+        "head",
+        "sed",
+        "sha256sum",
+        "tail",
+        "tee",
+        "timeout",
+        "wc",
+    )
+    execution_context = await _trusted_docker_helper_context(
+        executable_tokens=helper_tokens,
+        timeout=5,
+        require_immutable=False,
+    )
+    if execution_context is None:
+        raise RuntimeError("container cannot prove a trusted file-read context")
+    max_output = int(getattr(bridge, "max_output_bytes", 1024 * 1024))
+    text_hard_limit = min(
+        int(getattr(bridge, "max_read_bytes", 1024 * 1024)),
+        max_output,
+    )
     binary_hard_limit = min(
         int(getattr(bridge, "max_binary_bytes", 1024 * 1024)),
-        int(getattr(bridge, "max_output_bytes", 1024 * 1024)),
+        max_output,
     )
     binary_requested = (
         binary_hard_limit if limit is None else min(limit, binary_hard_limit)
     )
-    effective_offset = min(offset, total_bytes) if isinstance(offset, int) else offset
-    requested_coverage = (
-        TerminalReadRange(
-            "byte_range",
-            effective_offset,
-            min(total_bytes, effective_offset + binary_requested),
-        )
-        if output == "base64" and head is None and tail is None
-        else TerminalReadRange("line_range", head, tail)
-        if head is not None and tail is not None
-        else TerminalReadRange("line_range", 1, head)
-        if head is not None
-        else TerminalReadRange("tail_lines", tail, None)
-        if tail is not None
-        else TerminalReadRange("full")
+    if output == "base64" and head is None and tail is None:
+        read_request: dict[str, Any] = {
+            "mode": "bytes",
+            "hard_limit": binary_hard_limit,
+            "offset": offset,
+            "limit": binary_requested,
+        }
+    elif head is not None and tail is not None:
+        read_request = {
+            "mode": "range",
+            "hard_limit": text_hard_limit,
+            "start": head,
+            "end": tail,
+        }
+    elif head is not None:
+        read_request = {
+            "mode": "head",
+            "hard_limit": text_hard_limit,
+            "end": head,
+        }
+    elif tail is not None:
+        read_request = {
+            "mode": "tail",
+            "hard_limit": text_hard_limit,
+            "count": tail,
+        }
+    else:
+        read_request = {"mode": "full", "hard_limit": text_hard_limit}
+    (
+        _,
+        requested_coverage,
+        _probed_complete,
+        probed_metadata,
+        epoch_before,
+        probed_content_sha256,
+    ) = await _held_fd_container_file_read(
+        execution_context,
+        path=valid_path,
+        request=read_request,
+        emit=False,
+        timeout=30,
     )
-    if requested_coverage.kind == "full" and total_bytes > min(
-        int(getattr(bridge, "max_read_bytes", 1024 * 1024)),
-        int(getattr(bridge, "max_output_bytes", 1024 * 1024)),
-    ):
-        requested_coverage = TerminalReadRange(
-            "byte_range",
-            0,
-            min(
-                int(getattr(bridge, "max_read_bytes", 1024 * 1024)),
-                int(getattr(bridge, "max_output_bytes", 1024 * 1024)),
-            ),
-        )
+    total_bytes = int(probed_metadata["totalBytes"])
     selector = (
         "range"
         if head is not None and tail is not None
@@ -1332,6 +2046,7 @@ async def read_file(
             "path": valid_path,
             "output": output,
             "coverage": requested_coverage.to_dict(),
+            "execution_context": execution_context.fingerprint,
         },
     )
     scope = _framework_scope(env_content)
@@ -1343,21 +2058,51 @@ async def read_file(
             operation_key=operation_key,
             paths=[valid_path],
             ranges=(requested_coverage,),
-            epochs=epochs_before,
+            epochs=[epoch_before],
             allow_overlap=True,
             representation=representation,
+            execution_context_sha256=execution_context.fingerprint,
         )
     )
-    if cached_fact is not None:
-        confirmed_epochs = await _container_read_path_epochs([valid_path], timeout=5)
-        if confirmed_epochs == epochs_before:
+    if cached_fact is not None and (
+        cached_fact.get("content_sha256") == probed_content_sha256
+    ):
+        confirmed_context = await _trusted_docker_helper_context(
+            executable_tokens=helper_tokens,
+            timeout=5,
+            require_immutable=False,
+        )
+        if (
+            confirmed_context is None
+            or confirmed_context.fingerprint != execution_context.fingerprint
+        ):
+            raise RuntimeError("container file-read context changed during reuse")
+        (
+            _,
+            confirmed_coverage,
+            _,
+            _,
+            confirmed_epoch,
+            confirmed_content_sha256,
+        ) = await _held_fd_container_file_read(
+            confirmed_context,
+            path=valid_path,
+            request=read_request,
+            emit=False,
+            timeout=30,
+        )
+        if (
+            confirmed_epoch == epoch_before
+            and confirmed_coverage == requested_coverage
+            and confirmed_content_sha256 == probed_content_sha256
+        ):
             payload = _compact_read_fact_payload(
                 cached_fact,
                 coverage=requested_coverage,
             )
             receipt = _read_observation_receipt(
                 path=valid_path,
-                epoch=confirmed_epochs[0],
+                epoch=confirmed_epoch,
                 coverage=requested_coverage,
                 content_sha256=str(cached_fact["content_sha256"]),
                 observation_id=str(cached_fact["observation_id"]),
@@ -1365,6 +2110,7 @@ async def read_file(
                 coverage_complete=bool(cached_fact.get("coverage_complete")),
                 representation=representation,
                 source_checkpoint_revision=int(scope[5]),
+                execution_context_sha256=execution_context.fingerprint,
             )
             return _text(payload, metadata={_READ_OBSERVATION_RECEIPT_KEY: receipt})
 
@@ -1373,31 +2119,52 @@ async def read_file(
         coverage,
         coverage_complete,
         read_metadata,
-    ) = await _bounded_container_file_read(
-        path=resolved_read_path,
-        head=head,
-        tail=tail,
-        output=output,
-        offset=offset,
-        limit=limit,
-        total_bytes=total_bytes,
+        read_epoch,
+        content_sha256,
+    ) = await _held_fd_container_file_read(
+        execution_context,
+        path=valid_path,
+        request=read_request,
+        emit=True,
+        timeout=30,
     )
-    epochs_after = await _container_read_path_epochs([valid_path], timeout=5)
-    stable_epochs = epochs_after if epochs_after == epochs_before else []
-    content_sha256 = "sha256:" + hashlib.sha256(data).hexdigest()
-    fact = (
-        _store_read_fact(
-            scope=scope,
-            operation_key=operation_key,
-            paths=[valid_path],
-            ranges=(coverage,),
-            epochs=stable_epochs,
-            content_sha256=content_sha256,
-            coverage_complete=coverage_complete,
-            representation=representation,
+    if not coverage_complete:
+        read_metadata.setdefault("truncationReason", "read_bytes")
+    if (
+        head is None
+        and tail is None
+        and output == "text"
+        and total_bytes > text_hard_limit
+    ):
+        read_metadata.update(
+            {
+                "complete": False,
+                "defaultBounded": True,
+                "truncationReason": "default_bytes",
+                "nextOffset": text_hard_limit,
+            }
         )
-        if stable_epochs
-        else None
+    confirmed_context = await _trusted_docker_helper_context(
+        executable_tokens=helper_tokens,
+        timeout=5,
+        require_immutable=False,
+    )
+    if (
+        confirmed_context is None
+        or confirmed_context.fingerprint != execution_context.fingerprint
+    ):
+        raise RuntimeError("container file-read context changed during execution")
+    fact = _store_read_fact(
+        scope=scope,
+        operation_key=operation_key,
+        paths=[valid_path],
+        ranges=(coverage,),
+        epochs=[read_epoch],
+        content_sha256=content_sha256,
+        coverage_complete=coverage_complete,
+        representation=representation,
+        execution_context_sha256=execution_context.fingerprint,
+        projection_content_sha256=content_sha256,
     )
     payload: dict[str, Any]
     if output == "base64":
@@ -1421,7 +2188,7 @@ async def read_file(
     payload["coverage"] = coverage.to_dict()
     receipt = _read_observation_receipt(
         path=valid_path,
-        epoch=stable_epochs[0] if stable_epochs else None,
+        epoch=read_epoch,
         coverage=coverage,
         content_sha256=content_sha256,
         observation_id=fact["observation_id"] if fact is not None else None,
@@ -1431,6 +2198,7 @@ async def read_file(
         source_checkpoint_revision=(
             int(scope[5]) if _framework_scope_is_complete(scope) else 0
         ),
+        execution_context_sha256=execution_context.fingerprint,
     )
     return _text(payload, metadata={_READ_OBSERVATION_RECEIPT_KEY: receipt})
 
