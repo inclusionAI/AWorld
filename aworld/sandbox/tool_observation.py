@@ -32,6 +32,12 @@ from aworld.utils.serialized_util import to_serializable
 
 OBSERVATION_SCHEMA = "aworld.sandbox-tool-observation/v1"
 _MAX_CACHE_ENTRIES = 256
+# Exact replay keeps the original Tool body in the Sandbox control plane so a
+# checkpoint that discarded it can be hydrated without executing the Tool
+# again.  Bound both the per-entry footprint and the total LRU footprint.  Tool
+# output larger than this remains executable/readable, but is deliberately not
+# eligible for exact replay.
+_MAX_EXACT_REPLAY_CONTENT_BYTES = 64 * 1024
 _FILESYSTEM_READ_ACTIONS = frozenset(
     {
         "download_file",
@@ -348,6 +354,51 @@ def _result_content_hash(result: Any) -> str:
     return "sha256:" + hashlib.sha256(encoded).hexdigest()
 
 
+def _context_checkpoint_revision(context: Any) -> int:
+    """Return the current Context rewrite boundary, defaulting conservatively."""
+
+    lifecycle = getattr(context, "context_lifecycle_state", None)
+    revision = (
+        lifecycle.get("checkpoint_revision")
+        if isinstance(lifecycle, Mapping)
+        else getattr(lifecycle, "checkpoint_revision", 0)
+    )
+    if isinstance(revision, bool) or not isinstance(revision, int) or revision < 0:
+        return 0
+    return revision
+
+
+def _bounded_replay_content(
+    result: Any,
+    *,
+    max_bytes: int,
+) -> tuple[Any | None, int | None, str | None]:
+    """Copy one JSON-shaped result body when it fits the exact-replay budget."""
+
+    try:
+        content = _value(result, "content")
+        serializable = to_serializable(content)
+        encoded = json.dumps(
+            serializable,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+            default=str,
+        ).encode("utf-8")
+    except Exception:
+        # Replay is an optimization. A provider-specific result type must not
+        # turn an otherwise successful Tool execution into a control-plane
+        # failure merely because it cannot be copied safely.
+        return None, None, "content_not_serializable"
+    if len(encoded) > max_bytes:
+        return None, len(encoded), "content_too_large"
+    try:
+        retained = deepcopy(content)
+    except Exception:
+        return None, len(encoded), "content_not_copyable"
+    return retained, len(encoded), None
+
+
 def _read_epoch_matches(epoch: Mapping[str, Any]) -> bool:
     path = Path(str(epoch.get("path") or ""))
     if not path.is_absolute():
@@ -375,8 +426,20 @@ def _read_epoch_matches(epoch: Mapping[str, Any]) -> bool:
 class SandboxToolObservationRuntime:
     """Task-scoped observation cache owned by one Sandbox control plane."""
 
-    def __init__(self, *, max_cache_entries: int = _MAX_CACHE_ENTRIES) -> None:
+    def __init__(
+        self,
+        *,
+        max_cache_entries: int = _MAX_CACHE_ENTRIES,
+        max_replay_content_bytes: int = _MAX_EXACT_REPLAY_CONTENT_BYTES,
+    ) -> None:
         self._max_cache_entries = max(1, max_cache_entries)
+        if (
+            isinstance(max_replay_content_bytes, bool)
+            or not isinstance(max_replay_content_bytes, int)
+            or max_replay_content_bytes < 1
+        ):
+            raise ValueError("max_replay_content_bytes must be a positive integer")
+        self._max_replay_content_bytes = max_replay_content_bytes
         self._generation: dict[tuple[str, str, str], int] = {}
         self._cache: "OrderedDict[tuple[tuple[str, str, str], int, str], dict[str, Any]]" = OrderedDict()
         self._authoritative_effects: "OrderedDict[tuple[tuple[str, str, str], str], ToolEffect]" = OrderedDict()
@@ -442,12 +505,24 @@ class SandboxToolObservationRuntime:
             key = (scope, generation, effect.operation_hash)
             self._cache[key] = cached
         self._cache.move_to_end(key)
+        checkpoint_revision = _context_checkpoint_revision(context)
+        evidence_retained = (
+            cached.get("evidence_checkpoint_revision") == checkpoint_revision
+        )
+        cache_state = "retained_reference" if evidence_retained else "rehydrated"
+        if not evidence_retained:
+            # Returning the full body makes this observation evidence available
+            # again in the active checkpoint. Later hits in the same epoch may
+            # safely use a compact content-addressed reference.
+            cached["evidence_checkpoint_revision"] = checkpoint_revision
         receipt = {
             "schema_version": OBSERVATION_SCHEMA,
             "canonical_tool": effect.identity,
             "effect": "read_only",
             "cache_hit": True,
+            "cache_state": cache_state,
             "changed": False,
+            "workspace_mutated": False,
             "workspace_generation": generation,
             "operation_hash": effect.operation_hash,
             "observation_id": cached["observation_id"],
@@ -458,19 +533,30 @@ class SandboxToolObservationRuntime:
                 else "exact_generation"
             ),
             "source_workspace_generation": source_generation,
+            "source_checkpoint_revision": cached["source_checkpoint_revision"],
+            "evidence_checkpoint_revision": checkpoint_revision,
+            "content_rehydrated": not evidence_retained,
+            "exact_replay_cached": True,
+            "scope_volatile": False,
         }
         return ActionResult(
             success=True,
+            is_done=bool(cached.get("is_done", False)),
             tool_name=canonical_tool_identity(action)[0],
             action_name=canonical_tool_identity(action)[1],
-            content=json.dumps(
-                {
-                    "type": "unchanged",
-                    "observationId": cached["observation_id"],
-                    "contentSha256": cached["content_sha256"],
-                    "message": "unchanged since the referenced Sandbox observation; reuse retained facts",
-                },
-                ensure_ascii=False,
+            tool_call_id=_value(action, "tool_call_id"),
+            content=(
+                json.dumps(
+                    {
+                        "type": "unchanged",
+                        "observationId": cached["observation_id"],
+                        "contentSha256": cached["content_sha256"],
+                        "message": "unchanged since the referenced Sandbox observation; reuse retained facts",
+                    },
+                    ensure_ascii=False,
+                )
+                if evidence_retained
+                else deepcopy(cached["content"])
             ),
             keep=True,
             metadata={"sandbox_observation": receipt},
@@ -569,19 +655,45 @@ class SandboxToolObservationRuntime:
                 separators=(",", ":"),
             ).encode("utf-8")
         ).hexdigest()
+        checkpoint_revision = _context_checkpoint_revision(context)
+        replay_content = None
+        replay_content_bytes = None
+        replay_bypass_reason = None
+        replay_candidate = (
+            effect.cacheable and success and scope not in self._volatile_scopes
+        )
+        if replay_candidate:
+            (
+                replay_content,
+                replay_content_bytes,
+                replay_bypass_reason,
+            ) = _bounded_replay_content(
+                result,
+                max_bytes=self._max_replay_content_bytes,
+            )
+        replay_stored = replay_candidate and replay_bypass_reason is None
         receipt = {
             "schema_version": OBSERVATION_SCHEMA,
             "canonical_tool": effect.identity,
             "effect": effective_effect,
             "cache_hit": False,
+            "cache_state": "stored" if replay_stored else "not_stored",
             "changed": workspace_mutated,
             "workspace_mutated": workspace_mutated,
             "workspace_generation": generation,
             "operation_hash": effect.operation_hash,
             "observation_id": observation_id,
             "content_sha256": content_sha256,
+            "source_checkpoint_revision": checkpoint_revision,
+            "evidence_checkpoint_revision": checkpoint_revision,
+            "content_rehydrated": False,
+            "exact_replay_cached": replay_stored,
             "scope_volatile": scope in self._volatile_scopes,
         }
+        if replay_content_bytes is not None:
+            receipt["replay_content_bytes"] = replay_content_bytes
+        if replay_bypass_reason is not None:
+            receipt["cache_bypass_reason"] = replay_bypass_reason
         if terminal_receipt is not None:
             receipt["terminal_execution_receipt"] = terminal_receipt
         metadata = _metadata(result)
@@ -591,11 +703,15 @@ class SandboxToolObservationRuntime:
         except (AttributeError, TypeError):
             if isinstance(result, dict):
                 result["metadata"] = metadata
-        if effect.cacheable and success and scope not in self._volatile_scopes:
+        if replay_stored:
             key = (scope, generation, effect.operation_hash)
             self._cache[key] = {
                 "observation_id": observation_id,
                 "content_sha256": content_sha256,
+                "content": replay_content,
+                "is_done": bool(_value(result, "is_done", False)),
+                "source_checkpoint_revision": checkpoint_revision,
+                "evidence_checkpoint_revision": checkpoint_revision,
                 "read_path_epochs": deepcopy(
                     terminal_receipt.get("read_path_epochs", ())
                     if terminal_receipt is not None

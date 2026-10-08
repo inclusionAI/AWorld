@@ -1082,6 +1082,35 @@ def _record_semantic_tool_progress_locked(
         "observation_count": int(previous.get("observation_count", 0) or 0) + 1,
         "runtime_revision": int(previous.get("runtime_revision", 0) or 0) + 1,
     }
+    # A convergence gate may authorize only an exact, framework-bound
+    # read-only validation.  Derive validation_observed from that real Tool
+    # boundary instead of accepting a caller/model boolean.  Public-probe
+    # receipt creation below remains the richer advisory evidence projection.
+    try:
+        from aworld.runners.execution_protocol import (
+            framework_observable_validation_kind,
+        )
+
+        observed_call_ids = {
+            item.get("tool_call_id")
+            for item in action_results
+            if isinstance(item, Mapping)
+            and isinstance(item.get("tool_call_id"), str)
+        }
+        if any(
+            isinstance(getattr(action, "tool_call_id", None), str)
+            and action.tool_call_id in observed_call_ids
+            and framework_observable_validation_kind(
+                runtime_context, agent_id, action
+            )
+            is not None
+            for action in actions
+        ):
+            state["validation_observed"] = True
+    except Exception:
+        # Protocol accounting is advisory and cannot turn a successful Tool
+        # observation into a runtime failure.
+        pass
     state_by_agent[agent_id] = state
     runtime_context.context_info[SEMANTIC_PROGRESS_KEY] = state_by_agent
     shared_writer = getattr(runtime_context, "write_task_runtime_state", None)

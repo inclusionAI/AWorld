@@ -68,7 +68,7 @@ def test_prompt_session_makes_inserted_delta_an_explicit_epoch_boundary():
     assert second.messages == [first_messages[0], inserted, *first_messages[1:]]
 
 
-def test_prompt_session_checkpoint_and_tool_change_are_explicit_epoch_boundaries():
+def test_prompt_session_checkpoint_rolls_epoch_and_tool_change_starts_a_lane():
     first = _advance(None, [{"role": "user", "content": "task"}])
     checkpoint = _advance(
         first.state,
@@ -84,8 +84,142 @@ def test_prompt_session_checkpoint_and_tool_change_are_explicit_epoch_boundaries
 
     assert checkpoint.receipt["rollover_reason"] == "context_checkpoint"
     assert checkpoint.receipt["epoch_id"] == first.receipt["epoch_id"] + 1
-    assert tool_change.receipt["rollover_reason"] == "tool_catalog_change"
-    assert tool_change.receipt["epoch_id"] == checkpoint.receipt["epoch_id"] + 1
+    assert tool_change.receipt["rollover_reason"] == "lane_start"
+    assert tool_change.receipt["lane_switched"] is True
+    assert tool_change.receipt["epoch_rollover"] is False
+
+
+def test_prompt_session_restores_solver_lane_after_control_catalog_call():
+    solver_messages = [
+        {"role": "system", "content": "rules"},
+        {"role": "user", "content": "task"},
+    ]
+    solver = _advance(None, solver_messages)
+    decision_tools = [
+        {
+            "type": "function",
+            "function": {"name": "aworld__execution_decision"},
+        }
+    ]
+    decision = _advance(
+        solver.state,
+        [{"role": "system", "content": "decision"}],
+        tools=decision_tools,
+    )
+    resumed = _advance(
+        decision.state,
+        [*solver_messages, {"role": "assistant", "content": "continue"}],
+    )
+
+    assert decision.receipt["lane_switched"] is True
+    assert decision.receipt["epoch_rollover"] is False
+    assert resumed.receipt["lane_switched"] is True
+    assert resumed.receipt["lane_restored"] is True
+    assert resumed.receipt["epoch_id"] == solver.receipt["epoch_id"]
+    assert resumed.receipt["epoch_rollover"] is False
+    assert resumed.receipt["appended_message_count"] == 1
+    assert resumed.messages[: len(solver.messages)] == solver.messages
+    assert resumed.state["total_request_count"] == 3
+    assert resumed.state["lane_total_request_count"] == 2
+    inactive = resumed.state["inactive_prompt_lanes"]
+    assert all("messages" not in lane for lane in inactive.values())
+
+
+def test_prompt_session_evicts_old_control_lane_but_keeps_recent_solver_lane():
+    def catalog(name):
+        return [{"type": "function", "function": {"name": name}}]
+
+    solver_messages = [{"role": "user", "content": "task"}]
+    solver = _advance(None, solver_messages)
+    solver_lane_id = solver.receipt["lane_id"]
+
+    decision = _advance(
+        solver.state,
+        [{"role": "system", "content": "decision"}],
+        tools=catalog("aworld__execution_decision"),
+    )
+    decision_lane_id = decision.receipt["lane_id"]
+    solver_after_decision = _advance(
+        decision.state,
+        [*solver_messages, {"role": "assistant", "content": "after decision"}],
+    )
+    review = _advance(
+        solver_after_decision.state,
+        [{"role": "system", "content": "review"}],
+        tools=catalog("terminal__execute_with_review"),
+    )
+    solver_after_review = _advance(
+        review.state,
+        [
+            *solver_messages,
+            {"role": "assistant", "content": "after decision"},
+            {"role": "assistant", "content": "after review"},
+        ],
+    )
+    control = _advance(
+        solver_after_review.state,
+        [{"role": "system", "content": "acceptance"}],
+        tools=catalog("aworld__acceptance_probe"),
+    )
+    solver_recent = _advance(
+        control.state,
+        [
+            *solver_messages,
+            {"role": "assistant", "content": "after decision"},
+            {"role": "assistant", "content": "after review"},
+            {"role": "assistant", "content": "after acceptance"},
+        ],
+    )
+    finalization = _advance(
+        solver_recent.state,
+        [{"role": "system", "content": "finalization"}],
+        tools=catalog("aworld__finalization"),
+    )
+
+    inactive = finalization.state["inactive_prompt_lanes"]
+    assert len(inactive) == 3
+    assert decision_lane_id not in inactive
+    assert solver_lane_id in inactive
+    assert all("messages" not in lane for lane in inactive.values())
+
+    restored_solver = _advance(
+        finalization.state,
+        [
+            *solver_messages,
+            {"role": "assistant", "content": "after decision"},
+            {"role": "assistant", "content": "after review"},
+            {"role": "assistant", "content": "after acceptance"},
+            {"role": "assistant", "content": "resume solver"},
+        ],
+    )
+    assert restored_solver.receipt["lane_restored"] is True
+    assert restored_solver.receipt["epoch_rollover"] is False
+    assert restored_solver.receipt["appended_message_count"] == 1
+
+
+def test_inactive_prompt_lane_does_not_duplicate_large_prompt_bodies():
+    large_body = "large-solver-prefix:" + ("x" * (256 * 1024))
+    solver = _advance(
+        None,
+        [{"role": "user", "content": large_body}],
+    )
+    control = _advance(
+        solver.state,
+        [{"role": "system", "content": "bounded control"}],
+        tools=[
+            {
+                "type": "function",
+                "function": {"name": "aworld__execution_decision"},
+            }
+        ],
+    )
+
+    inactive = control.state["inactive_prompt_lanes"][solver.receipt["lane_id"]]
+    assert "messages" not in inactive
+    assert inactive["message_count"] == 1
+    assert len(inactive["message_fingerprints"]) == 1
+    assert "large-solver-prefix" not in repr(inactive)
+    assert len(repr(inactive)) < 8_000
 
 
 def test_appended_system_delta_does_not_break_an_exact_wire_prefix():
@@ -236,3 +370,69 @@ def test_application_context_records_provider_cache_evidence_per_session():
     assert after_rollover["epoch_id"] == checkpoint_receipt["epoch_id"]
     assert after_rollover["epoch_observation_count"] == 1
     assert after_rollover["epoch_cache_hit_tokens"] == 5
+
+
+def test_provider_cache_evidence_follows_the_active_prompt_lane():
+    context = ApplicationContext.create(
+        session_id="session-1",
+        task_id="task-1",
+        task_content="task",
+    )
+    solver_messages = [{"role": "user", "content": "task"}]
+    context.materialize_append_only_prompt_session(
+        namespace="agent",
+        messages=solver_messages,
+        tools=TOOLS,
+        provider_name="openai",
+        model_name="model",
+        stable_prefix_hash="stable",
+    )
+    context.record_append_only_prompt_cache_usage(
+        namespace="agent",
+        cache_hit_tokens=120,
+    )
+    solver_state = context.read_task_runtime_state(
+        "agent", PROMPT_SESSION_STATE_KEY
+    )
+    solver_lane_id = solver_state["active_lane_id"]
+
+    context.materialize_append_only_prompt_session(
+        namespace="agent",
+        messages=[{"role": "system", "content": "review"}],
+        tools=[],
+        provider_name="openai",
+        model_name="model",
+        stable_prefix_hash="review",
+        request_cache_scope_hash="review-effort",
+    )
+    context.record_append_only_prompt_cache_usage(
+        namespace="agent",
+        cache_write_tokens=40,
+    )
+    control_state = context.read_task_runtime_state(
+        "agent", PROMPT_SESSION_STATE_KEY
+    )
+    assert control_state["active_lane_id"] != solver_lane_id
+    assert control_state["provider_cache_evidence"]["total_cache_hit_tokens"] == 0
+    assert control_state["provider_cache_evidence"]["total_cache_write_tokens"] == 40
+
+    _, resumed_receipt = context.materialize_append_only_prompt_session(
+        namespace="agent",
+        messages=[
+            *solver_messages,
+            {"role": "assistant", "content": "resume"},
+        ],
+        tools=TOOLS,
+        provider_name="openai",
+        model_name="model",
+        stable_prefix_hash="stable",
+    )
+    resumed_state = context.read_task_runtime_state(
+        "agent", PROMPT_SESSION_STATE_KEY
+    )
+
+    assert resumed_receipt["lane_restored"] is True
+    assert resumed_receipt["epoch_rollover"] is False
+    assert resumed_state["active_lane_id"] == solver_lane_id
+    assert resumed_state["provider_cache_evidence"]["total_cache_hit_tokens"] == 120
+    assert resumed_state["provider_cache_evidence"]["total_cache_write_tokens"] == 0

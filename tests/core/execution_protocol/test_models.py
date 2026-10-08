@@ -16,6 +16,7 @@ from aworld.core.execution_protocol import (
     ModelExecutionProfile,
     ModelPlanUpdate,
     PlanUpdateDecision,
+    ProtocolEventRecord,
     ProtocolMode,
     ProtocolScope,
 )
@@ -329,12 +330,12 @@ def test_policy_coerces_valid_mode_and_is_immutable():
         policy.mode = ProtocolMode.OFF
 
 
-def test_policy_leaves_semantic_attempt_counts_model_owned_by_default():
+def test_policy_bounds_review_and_repair_attempts_by_default():
     policy = ExecutionProtocolPolicy(mode="guide")
 
     assert policy.max_replans is None
-    assert policy.max_final_reviews is None
-    assert policy.max_repairs is None
+    assert policy.max_final_reviews == 2
+    assert policy.max_repairs == 1
     assert policy.final_review_timeout_seconds is None
 
 
@@ -392,6 +393,17 @@ def test_event_validates_generic_measurements_and_review_shape():
             kind=EventKind.TOOL_OBSERVATION,
             review_outcome="unknown",
         )
+    with pytest.raises(ValueError, match="review_boundary_available"):
+        ExecutionProtocolEvent(
+            kind=EventKind.TOOL_OBSERVATION,
+            review_boundary_available=False,
+        )
+    candidate = ExecutionProtocolEvent(
+        kind=EventKind.CANDIDATE_FINAL,
+        review_boundary_available=False,
+    )
+    restored = ProtocolEventRecord.from_dict(candidate.to_record(1).to_dict())
+    assert restored.review_boundary_available is False
     profile = ModelExecutionProfile(
         horizon=ExecutionHorizon.LONG,
         confidence=0.9,

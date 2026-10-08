@@ -19,6 +19,7 @@ from aworld.core.context.execution_state import state_context
 from aworld.core.execution_protocol import (
     ConvergenceStage,
     ControllerAction,
+    DeliveryIntent,
     EventKind,
     ExecutionProtocolEvent,
     ExecutionProtocolPolicy,
@@ -29,8 +30,12 @@ from aworld.core.execution_protocol import (
     ProtocolMode,
     ProtocolTransition,
     ReviewOutcome,
+    action_signature,
 )
-from aworld.sandbox.tool_observation import actions_are_provably_read_only
+from aworld.sandbox.tool_observation import (
+    actions_are_provably_read_only,
+    canonical_tool_identity,
+)
 
 
 EXECUTION_PROTOCOL_POLICY_KEY = "execution_protocol_policy"
@@ -348,6 +353,37 @@ def configure_execution_protocol(
     trusted_validation_available = bool(
         getattr(contract, "validation_commands", ()) or ()
     )
+    review_timeout = policy.final_review_timeout_seconds
+    if review_timeout is None:
+        get_task = getattr(owner, "get_task", None) if owner is not None else None
+        try:
+            task = get_task() if callable(get_task) else None
+            total = getattr(task, "timeout", None) if task is not None else None
+            external_reserve = (
+                getattr(task, "completion_reserve_seconds", 0.0)
+                if task is not None
+                else 0.0
+            )
+        except Exception:
+            total = None
+            external_reserve = 0.0
+        if (
+            isinstance(total, (int, float))
+            and not isinstance(total, bool)
+            and total > 0
+        ):
+            if (
+                not isinstance(external_reserve, (int, float))
+                or isinstance(external_reserve, bool)
+                or external_reserve < 0
+            ):
+                external_reserve = 0.0
+            caller_available = max(0.0, float(total) - float(external_reserve))
+            review_timeout = min(180.0, max(60.0, caller_available * 0.05))
+        else:
+            # Contexts without a typed Task deadline still need a finite review
+            # episode.  Explicit caller policy continues to win above.
+            review_timeout = 120.0
     policy = replace(
         policy,
         independent_acceptance_enabled=(
@@ -365,6 +401,7 @@ def configure_execution_protocol(
                 and semantic_flag.strip().lower() in {"0", "false", "no", "off"}
             )
         ),
+        final_review_timeout_seconds=review_timeout,
     )
     _write_runtime_value(
         context, agent_id, EXECUTION_PROTOCOL_POLICY_KEY, policy.to_dict()
@@ -762,9 +799,68 @@ def _acceptance_candidate_and_evidence(
     return candidate, evidence
 
 
+def _candidate_review_basis(
+    context, agent_id: str, actions: Any = None
+) -> str:
+    """Hash only the candidate and durable validation basis for review loops."""
+
+    from aworld.core.context.compiler import semantic_fingerprint
+
+    candidate = ""
+    for action in actions or ():
+        text = str(_action_value(action, "policy_info") or "").strip()
+        if text:
+            candidate = text[:_MAX_FALLBACK_CHARS]
+            break
+    if not candidate:
+        fallback = load_candidate_fallback(context, agent_id) or ()
+        candidate = (
+            str(getattr(fallback[0], "policy_info", "") or "")[:_MAX_FALLBACK_CHARS]
+            if fallback
+            else ""
+        )
+    try:
+        from aworld.runners.post_tool_progress import semantic_progress_for_agent
+
+        state = semantic_progress_for_agent(context, agent_id=agent_id)
+    except Exception:
+        state = {}
+    evidence = {
+        key: state.get(key)
+        for key in (
+            "artifact_fingerprint",
+            "completion_evidence_fingerprint",
+            "failure_signature",
+            "public_delivery_versions",
+            "public_probe_receipts",
+        )
+        if state.get(key) is not None
+    }
+    return semantic_fingerprint({"candidate": candidate, "evidence": evidence})
+
+
 def _matching_completion_validation_id(
-    context, arguments: Mapping[str, Any]
+    context,
+    arguments: Mapping[str, Any],
+    *,
+    tool_identity: str | None = None,
 ) -> str | None:
+    if tool_identity is not None:
+        if not isinstance(tool_identity, str) or ":" not in tool_identity:
+            return None
+        tool, operation = tool_identity.split(":", 1)
+        normalized_tool = tool.strip().casefold().replace("_", "-")
+        if normalized_tool == "mcp" and "__" in operation:
+            tool, operation = operation.split("__", 1)
+            normalized_tool = tool.strip().casefold().replace("_", "-")
+        if normalized_tool not in {
+            "terminal",
+            "terminal-server",
+            "docker",
+            "docker-sandbox",
+            "docker-sandbox-server",
+        } or operation.strip().casefold() not in {"run_code", "execute"}:
+            return None
     command_text = arguments.get("command") or arguments.get("code")
     if not isinstance(command_text, str) or not command_text.strip():
         return None
@@ -784,6 +880,138 @@ def _matching_completion_validation_id(
         command_id = getattr(validation, "command_id", None)
         if command_text.strip() == registered.strip() and isinstance(command_id, str):
             return command_id
+    return None
+
+
+def _action_value(action: Any, name: str) -> Any:
+    return action.get(name) if isinstance(action, Mapping) else getattr(action, name, None)
+
+
+def _action_identity(action: Any) -> str:
+    return ":".join(
+        part.strip().casefold()
+        for part in (
+            str(_action_value(action, "tool_name") or ""),
+            str(_action_value(action, "action_name") or ""),
+        )
+    )
+
+
+def _canonical_action_identity(action: Any) -> str:
+    tool, operation = canonical_tool_identity(action)
+    return f"{tool}:{operation}"
+
+
+def _action_arguments(action: Any) -> Mapping[str, Any] | None:
+    value = _action_value(action, "params")
+    return value if isinstance(value, Mapping) else None
+
+
+def _action_matches_bound_plan(action: Any, plan: Mapping[str, Any]) -> bool:
+    """Match a framework-recorded plan to one exact provider Tool call."""
+
+    from aworld.core.context.compiler import semantic_fingerprint
+
+    arguments = _action_arguments(action)
+    call_id = _action_value(action, "tool_call_id")
+    return bool(
+        isinstance(call_id, str)
+        and call_id
+        and call_id == plan.get("tool_call_id")
+        and arguments is not None
+        and _action_identity(action) == plan.get("tool_identity")
+        and semantic_fingerprint(arguments) == plan.get("arguments_hash")
+    )
+
+
+def _action_matches_typed_validation_plan(
+    context, agent_id: str, action: Any
+) -> bool:
+    """Match the current typed validate-candidate intent without plan prose."""
+
+    state = load_execution_protocol_state(context, agent_id)
+    update = state.model_plan_update
+    arguments = _action_arguments(action)
+    if (
+        not state.next_action_alignment_pending
+        or update is None
+        or update.delivery_intent is not DeliveryIntent.VALIDATE_CANDIDATE
+        or update.next_action_tool is None
+        or update.next_action_signature is None
+        or arguments is None
+    ):
+        return False
+    tool = str(_action_value(action, "tool_name") or "").strip()
+    operation = str(_action_value(action, "action_name") or "").strip()
+    model_visible = str(
+        _action_value(action, "model_visible_tool_name") or ""
+    ).strip()
+    identities = {value for value in (model_visible, tool, operation) if value}
+    if tool and operation:
+        identities.add(f"{tool}__{operation}")
+    if update.next_action_tool not in identities:
+        return False
+    try:
+        observed_signature = action_signature(update.next_action_tool, arguments)
+    except ValueError:
+        return False
+    return observed_signature == update.next_action_signature
+
+
+def framework_observable_validation_kind(
+    context, agent_id: str, action: Any
+) -> str | None:
+    """Classify one exact read-only action that may cross an active gate.
+
+    This is deliberately narrower than generic read-only classification.  A
+    validation is authorized only when the framework can bind the eventual
+    observation to a caller-registered command, a pending critic/public probe,
+    or the exact typed ``validate_candidate`` action signature.
+    """
+
+    if not actions_are_provably_read_only([action]):
+        return None
+    arguments = _action_arguments(action)
+    if arguments is None:
+        return None
+
+    critic = _read_runtime_value(context, agent_id, EXECUTION_PROTOCOL_CRITIC_KEY)
+    if (
+        isinstance(critic, Mapping)
+        and critic.get("status") == "planned"
+        and _action_matches_bound_plan(action, critic)
+    ):
+        return "pending_acceptance_critic_probe"
+
+    public_state = _public_probe_state(context, agent_id)
+    call_id = _action_value(action, "tool_call_id")
+    public_plan = (
+        public_state.get("plans", {}).get(call_id)
+        if isinstance(call_id, str)
+        and isinstance(public_state.get("plans"), Mapping)
+        else None
+    )
+    if isinstance(public_plan, Mapping) and _action_matches_bound_plan(
+        action, public_plan
+    ):
+        candidate_hash, _ = _public_candidate_binding(context, agent_id)
+        if (
+            public_plan.get("request_hash") == _public_request_hash(context)
+            and public_plan.get("candidate_hash") == candidate_hash
+        ):
+            return "pending_public_validation_probe"
+
+    if _action_matches_typed_validation_plan(context, agent_id, action):
+        return "typed_validation_plan"
+    if (
+        _matching_completion_validation_id(
+            context,
+            arguments,
+            tool_identity=_canonical_action_identity(action),
+        )
+        is not None
+    ):
+        return "registered_completion_validation"
     return None
 
 
@@ -817,7 +1045,9 @@ def record_acceptance_probe_plan(
     )
 
     framework_validation_id = _matching_completion_validation_id(
-        context, arguments_projection
+        context,
+        arguments_projection,
+        tool_identity=tool_identity,
     )
     if not probe_plan_is_framework_observable(
         probe_kind=probe_kind,
@@ -1544,15 +1774,18 @@ def mutation_gate_interception(
     context,
     actions: list[Any],
 ) -> dict[str, Any] | None:
-    """Return a Hook interception receipt for one all-read-only action batch."""
+    """Block broad reads while allowing only bound validation actions.
 
-    if context is None or not actions or not actions_are_provably_read_only(actions):
+    A mixed batch is handled per action: mutations remain available, exact
+    framework-observable validation may run, and unrelated reads are listed in
+    the interception receipt for the Sandbox to materialize as blocked.
+    """
+
+    if context is None or not actions:
         return None
-    def action_value(action: Any, name: str) -> Any:
-        return action.get(name) if isinstance(action, Mapping) else getattr(action, name, None)
 
     agent_ids = {
-        str(action_value(action, "agent_name") or "")
+        str(_action_value(action, "agent_name") or "")
         for action in actions
     }
     if len(agent_ids) != 1 or not next(iter(agent_ids)):
@@ -1568,17 +1801,25 @@ def mutation_gate_interception(
         or gate.get("active") is not True
     ):
         return None
-    call_ids = [
-        str(action_value(action, "tool_call_id") or "")
-        for action in actions
-    ]
-    if not all(call_ids):
+    blocked_call_ids: list[str] = []
+    for action in actions:
+        if not actions_are_provably_read_only([action]):
+            continue
+        call_id = str(_action_value(action, "tool_call_id") or "")
+        if not call_id:
+            # Tool calls without a stable identity cannot be selectively
+            # intercepted. Keep the historical fail-open behavior.
+            return None
+        if framework_observable_validation_kind(context, agent_id, action) is None:
+            blocked_call_ids.append(call_id)
+    if not blocked_call_ids:
         return None
     owner = state_context(context)
     updated = dict(gate)
     updated["blocked_read_only_call_count"] = min(
         _MAX_TELEMETRY_COUNTER,
-        _bounded_counter(gate.get("blocked_read_only_call_count")) + len(call_ids),
+        _bounded_counter(gate.get("blocked_read_only_call_count"))
+        + len(blocked_call_ids),
     )
     interception_kind = (
         "candidate_convergence_required"
@@ -1598,7 +1839,7 @@ def mutation_gate_interception(
         "schema_version": MUTATION_GATE_SCHEMA,
         "kind": interception_kind,
         "agent_id": agent_id,
-        "tool_call_ids": call_ids,
+        "tool_call_ids": blocked_call_ids,
         "reason": updated.get("reason"),
         "consecutive_read_only_observations": updated.get(
             "consecutive_read_only_observations", 0
@@ -2636,7 +2877,13 @@ def consume_execution_protocol_guidance(context, agent_id: str) -> str | None:
     return None
 
 
-def record_candidate_final(context, agent_id: str) -> ProtocolTransition | None:
+def record_candidate_final(
+    context,
+    agent_id: str,
+    actions: Any = None,
+    *,
+    review_boundary_available: bool | None = None,
+) -> ProtocolTransition | None:
     """Record a candidate final result and decide whether one review is due."""
     policy = execution_protocol_policy(context, agent_id)
     if policy.mode is ProtocolMode.OFF:
@@ -2651,7 +2898,13 @@ def record_candidate_final(context, agent_id: str) -> ProtocolTransition | None:
         )
         _record_transition_metrics(context, transition)
         return transition
-    transition = store.apply(ExecutionProtocolEvent(kind=EventKind.CANDIDATE_FINAL))
+    transition = store.apply(
+        ExecutionProtocolEvent(
+            kind=EventKind.CANDIDATE_FINAL,
+            result_hash=_candidate_review_basis(context, agent_id, actions),
+            review_boundary_available=review_boundary_available,
+        )
+    )
     _record_transition_metrics(context, transition)
     return transition
 
@@ -2857,6 +3110,7 @@ __all__ = [
     "execution_protocol_accepts_model_profile",
     "execution_protocol_model_decision_boundary",
     "execution_protocol_requires_tool_free_finalization",
+    "framework_observable_validation_kind",
     "final_review_guidance",
     "model_owned_review_active",
     "record_candidate_final",

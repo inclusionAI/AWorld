@@ -1151,6 +1151,49 @@ def test_runtime_can_request_model_review_for_an_unarmed_candidate():
     assert transition.state.long_horizon_armed is False
 
 
+def test_structurally_unavailable_review_boundary_is_controller_bypass():
+    transition = transition_execution_protocol(
+        _state(),
+        ExecutionProtocolEvent(
+            kind=EventKind.CANDIDATE_FINAL,
+            result_hash="sha256:candidate",
+            review_boundary_available=False,
+        ),
+        ExecutionProtocolPolicy(
+            mode="guide",
+            review_unarmed_candidates=True,
+            independent_acceptance_enabled=False,
+        ),
+    )
+
+    assert transition.decision.action is ControllerAction.SUBMIT_CURRENT_RESULT
+    assert transition.decision.reason is DecisionReason.REVIEW_BOUNDARY_UNAVAILABLE
+    assert transition.state.phase is ProtocolPhase.COMPLETE
+    assert transition.state.review_pending is False
+    assert transition.state.final_review_count == 0
+
+
+def test_strict_acceptance_never_submits_from_unavailable_review_claim():
+    transition = transition_execution_protocol(
+        _state(),
+        ExecutionProtocolEvent(
+            kind=EventKind.CANDIDATE_FINAL,
+            result_hash="sha256:candidate",
+            review_boundary_available=False,
+        ),
+        ExecutionProtocolPolicy(
+            mode="guide",
+            review_unarmed_candidates=True,
+            independent_acceptance_enabled=True,
+        ),
+    )
+
+    assert transition.decision.action is ControllerAction.REQUEST_FINAL_REVIEW
+    assert transition.decision.action is not ControllerAction.SUBMIT_CURRENT_RESULT
+    assert transition.state.phase is ProtocolPhase.REVIEW
+    assert transition.state.review_pending is True
+
+
 def test_observe_reports_would_replan_without_issuing_guidance():
     transition = transition_execution_protocol(
         _state(),
@@ -1233,7 +1276,7 @@ def test_default_policy_keeps_replan_advice_available_until_deadline():
         ).state
 
 
-def test_default_policy_allows_multiple_evidence_driven_review_repairs():
+def test_default_policy_bounds_evidence_driven_review_repairs():
     policy = ExecutionProtocolPolicy(
         mode="guide",
         review_unarmed_candidates=True,
@@ -1241,24 +1284,89 @@ def test_default_policy_allows_multiple_evidence_driven_review_repairs():
     )
     state = _state()
 
-    for expected_count in range(1, 4):
-        review = transition_execution_protocol(
-            state,
-            ExecutionProtocolEvent(kind=EventKind.CANDIDATE_FINAL),
-            policy,
-        )
-        assert review.decision.action is ControllerAction.REQUEST_FINAL_REVIEW
-        repair = transition_execution_protocol(
-            review.state,
-            ExecutionProtocolEvent(
-                kind=EventKind.REVIEW_RESULT,
-                review_outcome=ReviewOutcome.REPAIR,
-            ),
-            policy,
-        )
-        assert repair.decision.action is ControllerAction.REQUEST_REPAIR
-        assert repair.state.repair_count == expected_count
-        state = repair.state
+    first_review = transition_execution_protocol(
+        state,
+        ExecutionProtocolEvent(
+            kind=EventKind.CANDIDATE_FINAL, result_hash="sha256:first"
+        ),
+        policy,
+    )
+    first_repair = transition_execution_protocol(
+        first_review.state,
+        ExecutionProtocolEvent(
+            kind=EventKind.REVIEW_RESULT,
+            review_outcome=ReviewOutcome.REPAIR,
+        ),
+        policy,
+    )
+    assert first_repair.decision.action is ControllerAction.REQUEST_REPAIR
+
+    second_review = transition_execution_protocol(
+        first_repair.state,
+        ExecutionProtocolEvent(
+            kind=EventKind.CANDIDATE_FINAL, result_hash="sha256:changed"
+        ),
+        policy,
+    )
+    second_repair = transition_execution_protocol(
+        second_review.state,
+        ExecutionProtocolEvent(
+            kind=EventKind.REVIEW_RESULT,
+            review_outcome=ReviewOutcome.REPAIR,
+        ),
+        policy,
+    )
+
+    assert second_review.decision.action is ControllerAction.REQUEST_FINAL_REVIEW
+    assert second_repair.decision.action is ControllerAction.SUBMIT_CURRENT_RESULT
+    assert second_repair.decision.reason is DecisionReason.REPAIR_LIMIT_REACHED
+    assert second_repair.state.final_review_count == 2
+    assert second_repair.state.repair_count == 1
+
+
+@pytest.mark.parametrize(
+    ("independent", "expected_action"),
+    [
+        (False, ControllerAction.SUBMIT_CURRENT_RESULT),
+        (True, ControllerAction.STOP_INCOMPLETE),
+    ],
+)
+def test_unchanged_candidate_evidence_basis_stops_before_second_review(
+    independent,
+    expected_action,
+):
+    policy = ExecutionProtocolPolicy(
+        mode="guide",
+        review_unarmed_candidates=True,
+        independent_acceptance_enabled=independent,
+    )
+    first_review = transition_execution_protocol(
+        _state(),
+        ExecutionProtocolEvent(
+            kind=EventKind.CANDIDATE_FINAL, result_hash="sha256:unchanged"
+        ),
+        policy,
+    )
+    repair = transition_execution_protocol(
+        first_review.state,
+        ExecutionProtocolEvent(
+            kind=EventKind.REVIEW_RESULT,
+            review_outcome=ReviewOutcome.REPAIR,
+        ),
+        policy,
+    )
+    unchanged = transition_execution_protocol(
+        repair.state,
+        ExecutionProtocolEvent(
+            kind=EventKind.CANDIDATE_FINAL, result_hash="sha256:unchanged"
+        ),
+        policy,
+    )
+
+    assert unchanged.decision.action is expected_action
+    assert unchanged.decision.reason is DecisionReason.REVIEW_BASIS_UNCHANGED
+    assert unchanged.state.phase is ProtocolPhase.COMPLETE
+    assert unchanged.state.final_review_count == 1
 
 
 def test_observed_progress_resets_stagnation_counter():

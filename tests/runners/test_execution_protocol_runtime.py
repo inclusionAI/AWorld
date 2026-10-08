@@ -3,7 +3,7 @@ from __future__ import annotations
 import pytest
 
 from aworld.core.context.base import Context
-from aworld.core.common import ActionModel
+from aworld.core.common import ActionModel, ActionResult, Observation
 from aworld.core.event.base import Message
 from aworld.core.context.compiler import (
     CompletionContract,
@@ -30,24 +30,29 @@ from aworld.runners.execution_protocol import (
     execution_protocol_policy,
     execution_protocol_requires_tool_free_finalization,
     final_review_guidance,
+    framework_observable_validation_kind,
     load_candidate_fallback,
     load_execution_protocol_state,
     load_model_plan_update,
+    load_public_probe_receipts,
     model_owned_review_active,
     mutation_gate_interception,
     project_execution_protocol_telemetry,
     record_candidate_final,
+    record_acceptance_probe_plan,
     record_model_execution_profile,
     record_model_decision_attempt_failure,
     record_model_decision_boundary,
     record_model_plan_update,
     record_pre_generation_delivery_decision,
+    record_public_probe_plan,
     record_review_repair_decision,
     record_review_tool_action,
     record_tool_protocol_event,
     store_candidate_fallback,
 )
 from aworld.runners.hook.agent_hooks import MutationGatePreToolHook
+from aworld.runners.post_tool_progress import record_semantic_tool_progress
 
 
 @pytest.fixture(autouse=True)
@@ -108,6 +113,54 @@ def _declare_mutation_required(context: Context, agent_id: str = "agent") -> Non
         },
     )
     assert transition is not None
+
+
+@pytest.mark.parametrize(
+    ("task_timeout", "expected_review_timeout"),
+    [(600, 60.0), (7_200, 180.0)],
+)
+def test_runtime_derives_finite_review_episode_timeout_from_task_budget(
+    task_timeout,
+    expected_review_timeout,
+) -> None:
+    context = Context(task_id=f"review-timeout-{task_timeout}")
+    context.set_task(
+        Task(
+            id=f"review-timeout-{task_timeout}",
+            input="complete the public request",
+            timeout=task_timeout,
+        )
+    )
+    configure_execution_protocol(
+        context,
+        "agent",
+        ExecutionProtocolPolicy(
+            mode=ProtocolMode.GUIDE,
+            independent_acceptance_enabled=False,
+        ),
+    )
+
+    policy = execution_protocol_policy(context, "agent")
+    assert policy.final_review_timeout_seconds == expected_review_timeout
+    assert policy.max_final_reviews == 2
+    assert policy.max_repairs == 1
+
+
+def test_explicit_review_episode_timeout_is_preserved() -> None:
+    context = _context("explicit-review-timeout")
+    configure_execution_protocol(
+        context,
+        "agent",
+        ExecutionProtocolPolicy(
+            mode=ProtocolMode.GUIDE,
+            independent_acceptance_enabled=False,
+            final_review_timeout_seconds=90,
+        ),
+    )
+
+    assert execution_protocol_policy(
+        context, "agent"
+    ).final_review_timeout_seconds == 90
 
 
 def test_guide_mode_delivers_each_replan_checkpoint_once() -> None:
@@ -1008,7 +1061,8 @@ def test_named_deliverable_gate_reopens_reads_after_candidate_changes(
     ] == 1
 
 
-def test_post_candidate_read_only_loop_converges_to_validate_repair_or_submit(
+@pytest.mark.asyncio
+async def test_post_candidate_read_only_loop_converges_to_validate_repair_or_submit(
     tmp_path,
 ) -> None:
     candidate = tmp_path / "result.json"
@@ -1095,20 +1149,82 @@ def test_post_candidate_read_only_loop_converges_to_validate_repair_or_submit(
     assert "validation against the public contract" in guidance
     assert "Do not return to broad" in guidance
 
-    record_tool_protocol_event(
+    validation = ActionModel(
+        tool_name="terminal",
+        action_name="run_code",
+        params={"code": "cat result.json"},
+        tool_call_id="call-post-candidate-validation",
+        agent_name="agent",
+    )
+    assert record_model_plan_update(
         context,
         "agent",
-        _semantic_state(
-            current_agent_step=4,
-            candidate_present=True,
-            read_only_observed=True,
-            validation_observed=True,
+        {
+            "decision": "continue",
+            "horizon": "long",
+            "milestone": "validate the current result",
+            "next_action": "read the declared result exactly once",
+            "next_action_tool": "terminal__run_code",
+            "next_action_arguments": '{"code":"cat result.json"}',
+            "verification_plan": "inspect the exact candidate bytes",
+            "completion_assessment": "candidate_ready",
+            "delivery_intent": "validate_candidate",
+            "delivery_rationale": "the current candidate needs bounded validation",
+            "assumptions": [],
+            "retired_approaches": [],
+            "evidence_refs": [],
+            "selected_candidate_id": "result-json-v1",
+        },
+    ) is not None
+
+    # The exact typed validation crosses the real pre-Tool Hook while the
+    # unrelated read remains blocked by the same still-active gate.
+    hook = MutationGatePreToolHook()
+    unrelated_read = ActionModel(
+        tool_name="terminal",
+        action_name="run_code",
+        params={"code": "cat README.md"},
+        tool_call_id="call-post-candidate-broad-read",
+        agent_name="agent",
+    )
+    assert await hook.exec(
+        Message(category="tool_call", payload=[validation], sender="agent"),
+        context,
+    ) is None
+    assert await hook.exec(
+        Message(category="tool_call", payload=[unrelated_read], sender="agent"),
+        context,
+    ) is not None
+
+    record_semantic_tool_progress(
+        context,
+        tool_name="terminal",
+        agent_id="agent",
+        actions=[validation],
+        observation=Observation(
+            content="{}",
+            action_result=[
+                ActionResult(
+                    tool_call_id=validation.tool_call_id,
+                    content="{}",
+                    success=True,
+                    metadata={
+                        "sandbox_observation": {
+                            "effect": "read_only",
+                            "workspace_mutated": False,
+                            "workspace_generation": 1,
+                        }
+                    },
+                )
+            ],
         ),
     )
-    assert mutation_gate_interception(context, [read]) is None
     telemetry = build_execution_protocol_telemetry(context, "agent")
     assert telemetry["post_candidate_read_only_observations"] == 0
-    assert telemetry["mutation_gate_blocked_read_only_call_count"] == 1
+    assert telemetry["mutation_gate_blocked_read_only_call_count"] == 2
+    assert load_execution_protocol_state(context, "agent").last_action_alignment.value == (
+        "matched"
+    )
 
 
 @pytest.mark.asyncio
@@ -1193,24 +1309,6 @@ async def test_post_candidate_gate_does_not_require_mutation_classification_and_
     assert await hook.exec(
         Message(category="tool_call", payload=[read], sender="agent"), context
     ) is None
-
-    # A fresh validation receipt resets only the read-only gate. The phase
-    # constraint remains available to steer the model toward repair/submission.
-    record_tool_protocol_event(
-        context,
-        "agent",
-        _semantic_state(
-            current_agent_step=5,
-            candidate_present=True,
-            read_only_observed=True,
-            validation_observed=True,
-        ),
-    )
-    assert mutation_gate_interception(context, [read]) is None
-    state = load_execution_protocol_state(context, "agent")
-    assert state.convergence_constraint_active is True
-    assert state.post_candidate_read_only_observations == 0
-
 
 def test_preexisting_named_file_does_not_arm_post_candidate_convergence(
     tmp_path,
@@ -1342,6 +1440,258 @@ async def test_mutation_gate_pre_tool_hook_intercepts_only_read_only_batches() -
     assert telemetry["mutation_gate_activation_count"] == 1
     assert telemetry["mutation_gate_blocked_read_only_call_count"] == 1
     assert telemetry["consecutive_read_only_observations"] == 8
+
+
+@pytest.mark.asyncio
+async def test_mutation_gate_allows_registered_validation_but_blocks_broad_read(
+    tmp_path,
+) -> None:
+    context = _context("mutation-gate-registered-validation")
+    context.configure_completion_contract(
+        CompletionContract(
+            required_artifacts=(),
+            immutable_inputs=(),
+            validation_commands=(
+                ValidationCommand(
+                    command_id="read-result",
+                    argv=("cat", str(tmp_path / "result.json")),
+                ),
+            ),
+            max_evidence_age_seconds=None,
+            required_final_evidence=(),
+        ),
+        mode=CompletionMode.ENFORCE,
+    )
+    configure_execution_protocol(
+        context,
+        "agent",
+        ExecutionProtocolPolicy(
+            mode=ProtocolMode.GUIDE,
+            independent_acceptance_enabled=False,
+            repetition_threshold=99,
+            low_information_gain_threshold=99,
+            no_goal_progress_threshold=99,
+            stagnation_event_threshold=99,
+        ),
+    )
+    _declare_mutation_required(context)
+    record_tool_protocol_event(
+        context,
+        "agent",
+        _semantic_state(
+            consecutive_read_only_observations=8,
+            workspace_mutation_observed=False,
+            candidate_present=False,
+        ),
+    )
+    validation = ActionModel(
+        tool_name="terminal",
+        action_name="run_code",
+        params={"code": f"cat {tmp_path / 'result.json'}"},
+        tool_call_id="registered-validation",
+        agent_name="agent",
+    )
+    broad = ActionModel(
+        tool_name="terminal",
+        action_name="run_code",
+        params={"code": "cat README.md"},
+        tool_call_id="broad-read",
+        agent_name="agent",
+    )
+    spoofed_validation = ActionModel(
+        tool_name="filesystem",
+        action_name="read_file",
+        params={
+            "path": "README.md",
+            "code": f"cat {tmp_path / 'result.json'}",
+        },
+        tool_call_id="spoofed-validation",
+        agent_name="agent",
+    )
+    hook = MutationGatePreToolHook()
+
+    assert await hook.exec(
+        Message(category="tool_call", payload=[validation], sender="agent"), context
+    ) is None
+    intercepted = await hook.exec(
+        Message(
+            category="tool_call",
+            payload=[validation, broad],
+            sender="agent",
+        ),
+        context,
+    )
+
+    assert intercepted is not None
+    assert intercepted.headers["tool_interception"]["tool_call_ids"] == [
+        "broad-read"
+    ]
+    spoofed = await hook.exec(
+        Message(
+            category="tool_call",
+            payload=[spoofed_validation],
+            sender="agent",
+        ),
+        context,
+    )
+    assert spoofed is not None
+    assert spoofed.headers["tool_interception"]["tool_call_ids"] == [
+        "spoofed-validation"
+    ]
+
+
+@pytest.mark.asyncio
+async def test_mutation_gate_public_probe_executes_through_hook_and_records_receipt(
+) -> None:
+    context = _context("mutation-gate-public-probe")
+    configure_execution_protocol(
+        context,
+        "agent",
+        ExecutionProtocolPolicy(
+            mode=ProtocolMode.GUIDE,
+            independent_acceptance_enabled=False,
+            repetition_threshold=99,
+            low_information_gain_threshold=99,
+            no_goal_progress_threshold=99,
+            stagnation_event_threshold=99,
+        ),
+    )
+    _declare_mutation_required(context)
+    record_tool_protocol_event(
+        context,
+        "agent",
+        _semantic_state(
+            consecutive_read_only_observations=8,
+            workspace_mutation_observed=False,
+            candidate_present=False,
+        ),
+    )
+    validation = ActionModel(
+        tool_name="terminal",
+        action_name="run_code",
+        params={"code": "cat result.json"},
+        tool_call_id="public-validation",
+        agent_name="agent",
+    )
+    assert record_public_probe_plan(
+        context,
+        "agent",
+        tool_call_id=validation.tool_call_id,
+        tool_identity="terminal:run_code",
+        arguments_projection=validation.params,
+        value={
+            "hypothesis_id": "result-readable",
+            "highest_risk_counterexample": "the result is missing or unreadable",
+            "probe_kind": "smoke",
+        },
+    )
+    hook = MutationGatePreToolHook()
+    assert await hook.exec(
+        Message(category="tool_call", payload=[validation], sender="agent"), context
+    ) is None
+
+    record_semantic_tool_progress(
+        context,
+        tool_name="terminal",
+        agent_id="agent",
+        actions=[validation],
+        observation=Observation(
+            content="{}",
+            action_result=[
+                ActionResult(
+                    tool_call_id=validation.tool_call_id,
+                    content="{}",
+                    success=True,
+                    metadata={
+                        "sandbox_observation": {
+                            "effect": "read_only",
+                            "workspace_mutated": False,
+                            "workspace_generation": 0,
+                        }
+                    },
+                )
+            ],
+        ),
+    )
+
+    receipts = load_public_probe_receipts(context, "agent")
+    assert len(receipts) == 1
+    assert receipts[0]["hypothesis_id"] == "result-readable"
+    assert receipts[0]["tool_execution_succeeded"] is True
+
+
+@pytest.mark.asyncio
+async def test_mutation_gate_allows_exact_pending_acceptance_probe(
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("AWORLD_INDEPENDENT_ACCEPTANCE_CRITIC", "true")
+    context = _context("mutation-gate-acceptance-probe")
+    context.configure_completion_contract(
+        CompletionContract(
+            required_artifacts=(),
+            immutable_inputs=(),
+            validation_commands=(
+                ValidationCommand(command_id="read-result", argv=("cat", "result.json")),
+            ),
+            max_evidence_age_seconds=None,
+            required_final_evidence=(),
+        ),
+        mode=CompletionMode.ENFORCE,
+    )
+    configure_execution_protocol(
+        context,
+        "agent",
+        ExecutionProtocolPolicy(
+            mode=ProtocolMode.GUIDE,
+            review_unarmed_candidates=True,
+            independent_acceptance_enabled=True,
+            repetition_threshold=99,
+            low_information_gain_threshold=99,
+            no_goal_progress_threshold=99,
+            stagnation_event_threshold=99,
+        ),
+    )
+    _declare_mutation_required(context)
+    record_tool_protocol_event(
+        context,
+        "agent",
+        _semantic_state(
+            consecutive_read_only_observations=8,
+            workspace_mutation_observed=False,
+            candidate_present=False,
+        ),
+    )
+    review = record_candidate_final(
+        context,
+        "agent",
+        actions=[ActionModel(agent_name="agent", policy_info="candidate")],
+    )
+    assert review is not None
+    assert review.decision.action is ControllerAction.REQUEST_FINAL_REVIEW
+    validation = ActionModel(
+        tool_name="terminal",
+        action_name="run_code",
+        params={"code": "cat result.json"},
+        tool_call_id="acceptance-validation",
+        agent_name="agent",
+    )
+    assert record_acceptance_probe_plan(
+        context,
+        "agent",
+        tool_call_id=validation.tool_call_id,
+        hypothesis_id="result-readable",
+        highest_risk_counterexample="the result is unreadable",
+        tool_identity="terminal:run_code",
+        arguments_projection=validation.params,
+        probe_kind="independent_cross_check",
+    )
+
+    assert framework_observable_validation_kind(
+        context, "agent", validation
+    ) == "pending_acceptance_critic_probe"
+    assert await MutationGatePreToolHook().exec(
+        Message(category="tool_call", payload=[validation], sender="agent"), context
+    ) is None
 
 
 def test_delivery_intent_is_bounded_in_telemetry_and_transition_metrics() -> None:
@@ -1734,6 +2084,38 @@ def test_only_strict_structured_review_decision_enters_repair() -> None:
     assert transition.state.review_pending is False
     assert transition.state.repair_count == 1
     assert model_owned_review_active(context, "agent") is False
+
+
+def test_runtime_stops_review_loop_when_candidate_and_evidence_are_unchanged() -> None:
+    context = _context("unchanged-review-basis")
+    configure_execution_protocol(
+        context,
+        "agent",
+        ExecutionProtocolPolicy(
+            mode=ProtocolMode.GUIDE,
+            review_unarmed_candidates=True,
+            independent_acceptance_enabled=False,
+        ),
+    )
+    candidate = ActionModel(agent_name="agent", policy_info="same candidate")
+    first_review = record_candidate_final(
+        context, "agent", actions=[candidate]
+    )
+    assert first_review is not None
+    repair = record_review_repair_decision(
+        context,
+        "agent",
+        {"decision": "repair", "reason": "recheck the material gap"},
+    )
+    assert repair is not None
+
+    unchanged = record_candidate_final(context, "agent", actions=[candidate])
+
+    assert unchanged is not None
+    assert unchanged.decision.action is ControllerAction.SUBMIT_CURRENT_RESULT
+    assert unchanged.decision.reason is DecisionReason.REVIEW_BASIS_UNCHANGED
+    assert unchanged.state.final_review_count == 1
+    assert unchanged.state.phase is ProtocolPhase.COMPLETE
 
 
 def test_independent_review_rejects_noncritic_repair_marker(

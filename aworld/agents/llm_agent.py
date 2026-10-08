@@ -976,9 +976,10 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         ):
             external_reserve = 0.0
         available = max(0.0, float(total) - float(external_reserve))
-        # Reserve scheduling remains bounded, but it is not a semantic review
-        # timeout. By default the review itself may use the caller's remaining
-        # task deadline (important for slow max-reasoning providers).
+        # Reserve scheduling is distinct from the semantic review timeout.
+        # ``configure_execution_protocol`` derives the latter from the caller
+        # budget when no explicit value is supplied; this small fallback only
+        # sizes the earlier finalization reserve.
         review_reserve_cap = (
             float(policy.final_review_timeout_seconds)
             if policy.final_review_timeout_seconds is not None
@@ -1005,6 +1006,45 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
     def _long_horizon_skill_active(self) -> bool:
         skill = (self.skill_configs or {}).get("long-running-agent")
         return isinstance(skill, dict) and skill.get("active") is True
+
+    def _candidate_review_boundary_available(
+        self,
+        context: Context,
+        *,
+        tools: List[Dict[str, Any]] | None,
+    ) -> bool:
+        """Return whether a candidate can enter a meaningful review boundary.
+
+        Baseline GUIDE remains available for observed long work, but a bare
+        Agent cannot answer the typed horizon question when the long-running
+        controls or every ordinary Tool are absent.  Sending that unclassified
+        candidate through ``CANDIDATE_FINAL`` would manufacture a review turn
+        solely because the unreachable profile defaults to ``unknown``.
+        Explicit review policy, an existing profile, an armed observation
+        state, and already-entered review/finalization phases remain intact.
+        """
+
+        from aworld.runners.execution_protocol import execution_protocol_policy
+
+        try:
+            policy = execution_protocol_policy(context, self.id())
+            state = ExecutionProtocolStore(context, self.id(), policy).load()
+        except Exception:
+            # Protocol accounting is advisory at this boundary.  Preserve the
+            # established path when state cannot be inspected safely.
+            return True
+        if policy.mode is ProtocolMode.OFF:
+            return False
+        if (
+            state.review_pending
+            or state.phase in {ProtocolPhase.REVIEW, ProtocolPhase.FINALIZE}
+            or state.long_horizon_armed
+            or policy.review_unarmed_candidates
+            or policy.independent_acceptance_enabled
+            or state.model_execution_profile is not None
+        ):
+            return True
+        return self._long_horizon_skill_active() and bool(tools)
 
     @staticmethod
     def _long_horizon_execution_profile_schema() -> dict[str, Any]:
@@ -2128,6 +2168,10 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                         metadata["prompt_epoch_id"] = prompt_session_receipt[
                             "epoch_id"
                         ]
+                        if prompt_session_receipt.get("lane_id"):
+                            metadata["prompt_lane_id"] = prompt_session_receipt[
+                                "lane_id"
+                            ]
                     updated_record["assembly_observability"] = metadata
                 context.replace_llm_call(
                     index,
@@ -6372,7 +6416,15 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                         )
 
                         protocol_transition = record_candidate_final(
-                            message.context, self.id()
+                            message.context,
+                            self.id(),
+                            actions=agent_result.actions,
+                            review_boundary_available=(
+                                self._candidate_review_boundary_available(
+                                    message.context,
+                                    tools=tools,
+                                )
+                            ),
                         )
                         if (
                             protocol_transition is not None

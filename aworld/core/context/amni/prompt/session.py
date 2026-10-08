@@ -6,7 +6,8 @@ the final provider request is rebuilt or compacted between calls.  This module
 owns the last *wire-ready* message sequence and makes every mutation explicit:
 
 * within one epoch, a request is the prior request plus an appended delta;
-* checkpoint, scope, Tool-catalog, or historical-prefix rewrites start a new epoch;
+* request-cache scope and Tool-catalog shape select a bounded reusable lane;
+* checkpoint, task/provider scope, or historical-prefix rewrites start a new epoch;
 * an otherwise unexplained rewrite is surfaced as a typed epoch rollover.
 
 The state is JSON-compatible so ``ApplicationContext`` can keep it in its
@@ -27,6 +28,18 @@ PROMPT_SESSION_SCHEMA_VERSION = "aworld.context.amni-prompt-session/v1"
 PROMPT_SESSION_RECEIPT_SCHEMA_VERSION = "aworld.context.amni-prompt-session-receipt/v1"
 PROMPT_SESSION_STATE_KEY = "amni_prompt_session"
 _MAX_TRANSITIONS = 32
+_MAX_INACTIVE_LANES = 3
+_SESSION_CONTAINER_KEYS = frozenset(
+    {
+        "active_lane_id",
+        "base_scope_hash",
+        "inactive_prompt_lanes",
+        "inactive_prompt_lane_order",
+        "session_total_request_count",
+        "session_rollover_count",
+        "session_lane_switch_count",
+    }
+)
 
 
 def _as_messages(values: Any) -> list[Any]:
@@ -47,6 +60,70 @@ def _common_prefix_length(previous: Sequence[Any], current: Sequence[Any]) -> in
             break
         count += 1
     return count
+
+
+def _base_scope(scope: Mapping[str, Any]) -> dict[str, Any]:
+    """Return task/provider identity shared by every request-shape lane."""
+
+    return {
+        str(key): to_serializable(value)
+        for key, value in scope.items()
+        if key != "request_cache_scope_hash"
+    }
+
+
+def _prompt_lane_id(
+    *,
+    scope: Mapping[str, Any],
+    tool_catalog_hash: str,
+) -> str:
+    """Identify one provider-cache-compatible request shape generically."""
+
+    return _fingerprint(
+        {
+            "request_cache_scope_hash": str(
+                scope.get("request_cache_scope_hash") or ""
+            ),
+            "tool_catalog_hash": tool_catalog_hash,
+        }
+    )
+
+
+def _lane_state(value: Any) -> dict[str, Any] | None:
+    """Project the active state without recursively embedding sibling lanes."""
+
+    if not (
+        isinstance(value, Mapping)
+        and value.get("schema_version") == PROMPT_SESSION_SCHEMA_VERSION
+    ):
+        return None
+    return {
+        str(key): copy.deepcopy(item)
+        for key, item in value.items()
+        if key not in _SESSION_CONTAINER_KEYS
+    }
+
+
+def _inactive_lane_state(value: Any) -> dict[str, Any] | None:
+    """Store an inactive lane as fingerprints, never a second full prompt."""
+
+    if not (
+        isinstance(value, Mapping)
+        and value.get("schema_version") == PROMPT_SESSION_SCHEMA_VERSION
+    ):
+        return None
+    projected = {
+        str(key): copy.deepcopy(item)
+        for key, item in value.items()
+        if key not in _SESSION_CONTAINER_KEYS and key != "messages"
+    }
+    messages = value.get("messages")
+    if isinstance(messages, list):
+        projected["message_fingerprints"] = [
+            _fingerprint(message) for message in messages
+        ]
+        projected["message_count"] = len(messages)
+    return projected
 
 
 @dataclass(frozen=True, slots=True)
@@ -77,19 +154,141 @@ def advance_prompt_session(
     scope_hash = _fingerprint(dict(scope))
     tool_catalog_hash = _fingerprint(tools or [])
     stable_hash = str(stable_prefix_hash or "")
-    previous = (
-        copy.deepcopy(previous_state)
+    stored = (
+        previous_state
         if isinstance(previous_state, Mapping)
         and previous_state.get("schema_version") == PROMPT_SESSION_SCHEMA_VERSION
         else None
     )
 
-    prior_messages = _as_messages(previous.get("messages")) if previous else []
+    base_scope_hash = _fingerprint(_base_scope(scope))
+    lane_id = _prompt_lane_id(
+        scope=scope,
+        tool_catalog_hash=tool_catalog_hash,
+    )
+    previous_active_lane_id: str | None = None
+    inactive_lanes: dict[str, dict[str, Any]] = {}
+    inactive_lane_order: list[str] = []
+    prior_session_total_requests = 0
+    prior_session_rollovers = 0
+    prior_lane_switches = 0
+    lane_switched = False
+    lane_restored = False
+    previous: dict[str, Any] | None = None
+    if stored is not None:
+        prior_session_total_requests = int(
+            stored.get(
+                "session_total_request_count",
+                stored.get("total_request_count", 0),
+            )
+            or 0
+        )
+        prior_lane_switches = int(stored.get("session_lane_switch_count", 0) or 0)
+        prior_session_rollovers = int(
+            stored.get("session_rollover_count", stored.get("rollover_count", 0))
+            or 0
+        )
+        stored_scope = stored.get("scope")
+        stored_base_scope_hash = str(
+            stored.get("base_scope_hash")
+            or (
+                _fingerprint(_base_scope(stored_scope))
+                if isinstance(stored_scope, Mapping)
+                else ""
+            )
+        )
+        previous_active_lane_id = str(
+            stored.get("active_lane_id")
+            or _prompt_lane_id(
+                scope=(stored_scope if isinstance(stored_scope, Mapping) else {}),
+                tool_catalog_hash=str(stored.get("tool_catalog_hash") or ""),
+            )
+        )
+        raw_inactive = stored.get("inactive_prompt_lanes")
+        if isinstance(raw_inactive, Mapping):
+            for raw_lane_id, raw_lane_state in raw_inactive.items():
+                projected = _inactive_lane_state(raw_lane_state)
+                if isinstance(raw_lane_id, str) and projected is not None:
+                    inactive_lanes[raw_lane_id] = projected
+        raw_order = stored.get("inactive_prompt_lane_order")
+        if isinstance(raw_order, list):
+            inactive_lane_order = list(
+                dict.fromkeys(
+                    value
+                    for value in raw_order
+                    if isinstance(value, str) and value in inactive_lanes
+                )
+            )
+        for inactive_lane_id in inactive_lanes:
+            if inactive_lane_id not in inactive_lane_order:
+                inactive_lane_order.append(inactive_lane_id)
+
+        if stored_base_scope_hash != base_scope_hash:
+            # A task/provider identity change invalidates every sibling lane,
+            # while the active predecessor still supplies the typed scope
+            # rollover receipt expected by existing consumers.
+            inactive_lanes = {}
+            inactive_lane_order = []
+            previous = _lane_state(stored)
+        elif previous_active_lane_id == lane_id:
+            previous = _lane_state(stored)
+        else:
+            lane_switched = True
+            inactive_active = _inactive_lane_state(stored)
+            if inactive_active is not None:
+                inactive_lanes[previous_active_lane_id] = inactive_active
+                if previous_active_lane_id in inactive_lane_order:
+                    inactive_lane_order.remove(previous_active_lane_id)
+                inactive_lane_order.append(previous_active_lane_id)
+            previous = inactive_lanes.pop(lane_id, None)
+            lane_restored = previous is not None
+            if lane_id in inactive_lane_order:
+                inactive_lane_order.remove(lane_id)
+
+    while len(inactive_lane_order) > _MAX_INACTIVE_LANES:
+        evicted = inactive_lane_order.pop(0)
+        inactive_lanes.pop(evicted, None)
+
+    prior_messages = (
+        _as_messages(previous.get("messages"))
+        if previous and isinstance(previous.get("messages"), list)
+        else []
+    )
+    prior_message_fingerprints: list[str] = []
+    if prior_messages:
+        prior_message_fingerprints = [
+            _fingerprint(message) for message in prior_messages
+        ]
+    elif previous and isinstance(previous.get("message_fingerprints"), list):
+        prior_message_fingerprints = [
+            value
+            for value in previous["message_fingerprints"]
+            if isinstance(value, str) and value
+        ]
+    prior_message_count = len(prior_message_fingerprints)
     prior_epoch = int(previous.get("epoch_id", 0) or 0) if previous else 0
     prior_total_requests = (
-        int(previous.get("total_request_count", 0) or 0) if previous else 0
+        int(
+            previous.get(
+                "lane_total_request_count",
+                previous.get("total_request_count", 0),
+            )
+            or 0
+        )
+        if previous
+        else 0
     )
-    prior_rollovers = int(previous.get("rollover_count", 0) or 0) if previous else 0
+    prior_rollovers = (
+        int(
+            previous.get(
+                "lane_rollover_count",
+                previous.get("rollover_count", 0),
+            )
+            or 0
+        )
+        if previous
+        else 0
+    )
     stable_prefix_changed = bool(
         previous is not None
         and str(previous.get("stable_prefix_hash") or "") != stable_hash
@@ -106,13 +305,20 @@ def advance_prompt_session(
     elif previous.get("tool_catalog_hash") != tool_catalog_hash:
         rollover_reason = "tool_catalog_change"
 
-    common_prefix = _common_prefix_length(prior_messages, candidate)
+    common_prefix = (
+        _common_prefix_length(prior_messages, candidate)
+        if prior_messages
+        else _common_prefix_length(
+            prior_message_fingerprints,
+            [_fingerprint(message) for message in candidate],
+        )
+    )
     if rollover_reason is not None:
         effective = candidate
         epoch_id = prior_epoch + 1
         epoch_request_index = 1
         mode = "epoch_start"
-    elif common_prefix == len(prior_messages):
+    elif common_prefix == prior_message_count:
         effective = candidate
         epoch_id = prior_epoch
         epoch_request_index = int(previous.get("epoch_request_index", 0) or 0) + 1
@@ -129,17 +335,22 @@ def advance_prompt_session(
 
     epoch_started = rollover_reason is not None
     epoch_rollover = previous is not None and epoch_started
-    append_only = epoch_started or effective[: len(prior_messages)] == prior_messages
+    append_only = epoch_started or common_prefix == prior_message_count
     if rollover_reason is None and not append_only:
         raise RuntimeError("Amini prompt session violated its append-only invariant")
 
     appended_count = (
         len(effective)
         if rollover_reason is not None
-        else max(0, len(effective) - len(prior_messages))
+        else max(0, len(effective) - prior_message_count)
     )
     receipt = {
         "schema_version": PROMPT_SESSION_RECEIPT_SCHEMA_VERSION,
+        "lane_id": lane_id,
+        "previous_lane_id": previous_active_lane_id,
+        "lane_switched": lane_switched,
+        "lane_restored": lane_restored,
+        "lane_count": len(inactive_lanes) + 1,
         "epoch_id": epoch_id,
         "epoch_request_index": epoch_request_index,
         "mode": mode,
@@ -147,7 +358,7 @@ def advance_prompt_session(
         "epoch_started": epoch_started,
         "epoch_rollover": epoch_rollover,
         "rollover_reason": rollover_reason,
-        "previous_message_count": len(prior_messages),
+        "previous_message_count": prior_message_count,
         "candidate_message_count": len(candidate),
         "wire_message_count": len(effective),
         "appended_message_count": appended_count,
@@ -158,6 +369,10 @@ def advance_prompt_session(
         "tool_catalog_hash": tool_catalog_hash,
         "wire_messages_hash": _fingerprint(effective),
     }
+    if lane_switched and rollover_reason == "initial":
+        # A new request shape starts its own cache lane; it does not roll over
+        # or erase the previously active provider prefix.
+        receipt["rollover_reason"] = "lane_start"
     prior_cache_evidence = previous.get("provider_cache_evidence") if previous else None
     if isinstance(prior_cache_evidence, Mapping):
         receipt["prior_provider_cache_evidence"] = {
@@ -175,10 +390,19 @@ def advance_prompt_session(
     transitions.append(copy.deepcopy(receipt))
     state = {
         "schema_version": PROMPT_SESSION_SCHEMA_VERSION,
+        "active_lane_id": lane_id,
+        "base_scope_hash": base_scope_hash,
+        "inactive_prompt_lanes": inactive_lanes,
+        "inactive_prompt_lane_order": inactive_lane_order,
+        "session_total_request_count": prior_session_total_requests + 1,
+        "session_rollover_count": prior_session_rollovers + int(epoch_rollover),
+        "session_lane_switch_count": prior_lane_switches + int(lane_switched),
         "epoch_id": epoch_id,
         "epoch_request_index": epoch_request_index,
-        "total_request_count": prior_total_requests + 1,
-        "rollover_count": prior_rollovers + int(epoch_rollover),
+        "lane_total_request_count": prior_total_requests + 1,
+        "lane_rollover_count": prior_rollovers + int(epoch_rollover),
+        "total_request_count": prior_session_total_requests + 1,
+        "rollover_count": prior_session_rollovers + int(epoch_rollover),
         "scope_hash": scope_hash,
         "scope": to_serializable(dict(scope)),
         "checkpoint_revision": checkpoint_revision,

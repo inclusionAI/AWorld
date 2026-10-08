@@ -722,3 +722,140 @@ def test_background_execution_makes_scope_replay_volatile() -> None:
 
     assert observed.metadata["sandbox_observation"]["scope_volatile"] is True
     assert runtime.lookup(read_action, context=context) is None
+
+
+def test_cache_rehydrates_content_after_context_checkpoint_then_renews_reference() -> None:
+    runtime = SandboxToolObservationRuntime()
+    context = _context()
+    context.context_lifecycle_state = SimpleNamespace(checkpoint_revision=3)
+    code = "print('durable evidence')"
+    action = {
+        "tool_name": "terminal",
+        "action_name": "run_code",
+        "tool_call_id": "call-original",
+        "params": {"code": code, "language": "python"},
+    }
+    terminal_receipt = build_terminal_execution_receipt(
+        code=code,
+        plan=TerminalExecutionPlan("python", "read_only", True, True),
+        executed=True,
+        exit_code=0,
+        timed_out=False,
+        effect_source="trusted_command_contract",
+    )
+    original = runtime.record(
+        action,
+        ActionResult(
+            success=True,
+            content="durable evidence\n",
+            parameter=action["params"],
+            metadata={TERMINAL_EXECUTION_RECEIPT_KEY: terminal_receipt},
+        ),
+        context=context,
+    )
+
+    retained = runtime.lookup(action, context=context)
+    assert retained is not None
+    retained_receipt = retained.metadata["sandbox_observation"]
+    assert retained_receipt["cache_state"] == "retained_reference"
+    assert retained_receipt["content_rehydrated"] is False
+    assert '"type": "unchanged"' in retained.content
+
+    context.context_lifecycle_state = SimpleNamespace(checkpoint_revision=4)
+    action["tool_call_id"] = "call-after-checkpoint"
+    rehydrated = runtime.lookup(action, context=context)
+    assert rehydrated is not None
+    rehydrated_receipt = rehydrated.metadata["sandbox_observation"]
+    assert rehydrated.content == "durable evidence\n"
+    assert rehydrated.tool_call_id == "call-after-checkpoint"
+    assert rehydrated_receipt["cache_state"] == "rehydrated"
+    assert rehydrated_receipt["content_rehydrated"] is True
+    assert rehydrated_receipt["observation_id"] == original.metadata[
+        "sandbox_observation"
+    ]["observation_id"]
+    assert rehydrated_receipt["content_sha256"] == original.metadata[
+        "sandbox_observation"
+    ]["content_sha256"]
+
+    renewed = runtime.lookup(action, context=context)
+    assert renewed is not None
+    assert renewed.metadata["sandbox_observation"]["cache_state"] == (
+        "retained_reference"
+    )
+    assert '"type": "unchanged"' in renewed.content
+
+
+def test_oversized_result_is_not_eligible_for_exact_replay() -> None:
+    runtime = SandboxToolObservationRuntime(max_replay_content_bytes=32)
+    context = _context()
+    context.context_lifecycle_state = SimpleNamespace(checkpoint_revision=0)
+    code = "print('x' * 128)"
+    action = {
+        "tool_name": "terminal",
+        "action_name": "run_code",
+        "params": {"code": code, "language": "python"},
+    }
+    terminal_receipt = build_terminal_execution_receipt(
+        code=code,
+        plan=TerminalExecutionPlan("python", "read_only", True, True),
+        executed=True,
+        exit_code=0,
+        timed_out=False,
+        effect_source="trusted_command_contract",
+    )
+
+    observed = runtime.record(
+        action,
+        ActionResult(
+            success=True,
+            content="x" * 128,
+            parameter=action["params"],
+            metadata={TERMINAL_EXECUTION_RECEIPT_KEY: terminal_receipt},
+        ),
+        context=context,
+    )
+
+    receipt = observed.metadata["sandbox_observation"]
+    assert receipt["exact_replay_cached"] is False
+    assert receipt["cache_state"] == "not_stored"
+    assert receipt["cache_bypass_reason"] == "content_too_large"
+    assert runtime.lookup(action, context=context) is None
+
+
+def test_uncopyable_result_is_not_retained_for_exact_replay() -> None:
+    class _UncopyableContent:
+        def __deepcopy__(self, _memo):
+            raise TypeError("provider object cannot be copied")
+
+    runtime = SandboxToolObservationRuntime()
+    context = _context()
+    code = "print('opaque provider value')"
+    action = {
+        "tool_name": "terminal",
+        "action_name": "run_code",
+        "params": {"code": code, "language": "python"},
+    }
+    terminal_receipt = build_terminal_execution_receipt(
+        code=code,
+        plan=TerminalExecutionPlan("python", "read_only", True, True),
+        executed=True,
+        exit_code=0,
+        timed_out=False,
+        effect_source="trusted_command_contract",
+    )
+
+    observed = runtime.record(
+        action,
+        ActionResult(
+            success=True,
+            content=_UncopyableContent(),
+            parameter=action["params"],
+            metadata={TERMINAL_EXECUTION_RECEIPT_KEY: terminal_receipt},
+        ),
+        context=context,
+    )
+
+    receipt = observed.metadata["sandbox_observation"]
+    assert receipt["exact_replay_cached"] is False
+    assert receipt["cache_bypass_reason"] == "content_not_copyable"
+    assert runtime.lookup(action, context=context) is None

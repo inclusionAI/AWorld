@@ -5,7 +5,7 @@ import os
 import getpass
 import time
 
-__version__ = '0.2.21'
+__version__ = '0.2.22'
 
 version_template = \
     """# auto generated

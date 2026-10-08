@@ -14,6 +14,8 @@ from aworld.sandbox.implementations.sandbox import Sandbox
 from aworld.sandbox.models import SandboxEnvType
 from aworld.mcp_client import utils as mcp_utils
 from aworld.core.common import ActionResult
+from aworld.core.context.amni import ApplicationContext
+from aworld.core.context.compiler import LifecycleAction
 from aworld.core.event.base import Message
 from aworld.sandbox.terminal_receipt import (
     TERMINAL_EXECUTION_RECEIPT_KEY,
@@ -370,15 +372,30 @@ async def test_sandbox_uses_terminal_receipt_then_replays_from_observation_cache
         "action_name": "run_code",
         "params": {"code": code, "language": "python"},
     }
-    context = _sandbox_context()
+    context = ApplicationContext.create(
+        session_id="cache-session",
+        task_id="task-1",
+        task_content="inspect state",
+    )
 
     first = await sandbox.call_tool(action_list=[action], context=context)
     repeated = await sandbox.call_tool(action_list=[action], context=context)
+    context.advance_context_lifecycle(LifecycleAction.CHECKPOINT)
+    rehydrated = await sandbox.call_tool(action_list=[action], context=context)
+    retained_again = await sandbox.call_tool(action_list=[action], context=context)
 
     assert len(calls) == 1
     assert first[0].metadata["sandbox_observation"]["effect"] == "read_only"
     assert first[0].metadata["sandbox_observation"]["workspace_generation"] == 0
     assert repeated[0].metadata["sandbox_observation"]["cache_hit"] is True
+    assert repeated[0].metadata["sandbox_observation"]["cache_state"] == (
+        "retained_reference"
+    )
+    assert rehydrated[0].content == "4\n"
+    assert rehydrated[0].metadata["sandbox_observation"]["cache_state"] == "rehydrated"
+    assert retained_again[0].metadata["sandbox_observation"]["cache_state"] == (
+        "retained_reference"
+    )
 
 
 @pytest.mark.asyncio

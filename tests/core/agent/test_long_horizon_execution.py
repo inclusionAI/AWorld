@@ -21,9 +21,12 @@ from aworld.core.context.execution_state import get_execution_state
 from aworld.core.event.base import Constants, Message
 from aworld.core.execution_protocol import (
     ControllerAction,
+    DecisionReason,
+    EventKind,
     ExecutionProtocolPolicy,
     ExecutionProtocolStore,
     ProtocolMode,
+    ProtocolPhase,
 )
 from aworld.core.task import Task
 from aworld.models.model_response import Function, ModelResponse, ToolCall
@@ -567,8 +570,8 @@ async def test_independent_review_error_resumes_tool_enabled_repair(
     )
     agent = _agent(context, policy)
     configure_execution_protocol(context, agent.id(), policy)
-    record_candidate_final(context, agent.id())
     fallback = ActionModel(agent_name=agent.id(), policy_info="unverified candidate")
+    record_candidate_final(context, agent.id(), actions=(fallback,))
     store_candidate_fallback(context, agent.id(), (fallback,))
     registered_command = "true"
     assert record_acceptance_probe_plan(
@@ -617,7 +620,13 @@ async def test_independent_review_error_resumes_tool_enabled_repair(
 
     # The next candidate owns a fresh critic episode. A stale planned probe
     # from the failed review must not reject its new probe plan.
-    transition = record_candidate_final(context, agent.id())
+    transition = record_candidate_final(
+        context,
+        agent.id(),
+        actions=(
+            ActionModel(agent_name=agent.id(), policy_info="repaired candidate"),
+        ),
+    )
     assert transition is not None
     assert transition.state.review_pending is True
     assert record_acceptance_probe_plan(
@@ -1639,7 +1648,7 @@ def test_default_convergence_avoids_extra_profile_turn_without_skill() -> None:
     assert augmented == tools
 
 
-def test_no_user_tools_keeps_unknown_review_path_without_impossible_control() -> None:
+def test_no_user_tools_records_structurally_unavailable_review_boundary() -> None:
     context = Context(task_id="profile-no-tools")
     context.set_task(Task(id="profile-no-tools", timeout=600))
     policy = ExecutionProtocolPolicy(
@@ -1651,17 +1660,72 @@ def test_no_user_tools_keeps_unknown_review_path_without_impossible_control() ->
     configure_execution_protocol(context, agent.id(), policy)
 
     augmented, offer = agent._with_long_horizon_execution_profile(None, context)
-    transition = record_candidate_final(context, agent.id())
+    transition = record_candidate_final(
+        context,
+        agent.id(),
+        review_boundary_available=False,
+    )
 
     assert augmented is None
     assert offer.decision_boundary is None
     assert offer.carrier_function_name is None
     assert transition is not None
+    assert transition.decision.action is ControllerAction.SUBMIT_CURRENT_RESULT
+    assert transition.decision.reason is DecisionReason.REVIEW_BOUNDARY_UNAVAILABLE
+    assert transition.state.phase is ProtocolPhase.COMPLETE
+    assert transition.state.final_review_count == 0
+
+
+def test_no_user_tools_never_downgrade_strict_acceptance_to_submit(
+    monkeypatch,
+) -> None:
+    monkeypatch.delenv("AWORLD_INDEPENDENT_ACCEPTANCE_CRITIC", raising=False)
+    context = Context(task_id="strict-profile-no-tools")
+    context.set_task(Task(id="strict-profile-no-tools", timeout=600))
+    context.configure_completion_contract(
+        CompletionContract(
+            required_artifacts=(),
+            immutable_inputs=(),
+            validation_commands=(
+                ValidationCommand(
+                    command_id="registered-check",
+                    argv=("pytest", "-q", "tests/test_contract.py"),
+                ),
+            ),
+            max_evidence_age_seconds=None,
+            required_final_evidence=(),
+        ),
+        mode=CompletionMode.ENFORCE,
+    )
+    policy = ExecutionProtocolPolicy(
+        mode=ProtocolMode.GUIDE,
+        independent_acceptance_enabled=True,
+    )
+    agent = _agent(context, policy)
+    configure_execution_protocol(context, agent.id(), policy)
+
+    review_boundary_available = agent._candidate_review_boundary_available(
+        context,
+        tools=None,
+    )
+    transition = record_candidate_final(
+        context,
+        agent.id(),
+        actions=[ActionModel(agent_name=agent.id(), policy_info="candidate")],
+        review_boundary_available=review_boundary_available,
+    )
+
+    assert execution_protocol_policy(
+        context, agent.id()
+    ).independent_acceptance_enabled is True
+    assert review_boundary_available is True
+    assert transition is not None
     assert transition.decision.action is ControllerAction.REQUEST_FINAL_REVIEW
+    assert transition.state.review_pending is True
 
 
 @pytest.mark.asyncio
-async def test_no_user_tools_never_send_required_without_a_tool_catalog() -> None:
+async def test_no_user_tools_do_not_force_unreachable_profile_or_review() -> None:
     requests = []
 
     class NoToolAgent(Agent):
@@ -1676,7 +1740,7 @@ async def test_no_user_tools_never_send_required_without_a_tool_catalog() -> Non
 
         async def invoke_model(self, messages=None, message=None, **kwargs):
             requests.append(kwargs)
-            content = "candidate" if len(requests) == 1 else "reviewed candidate"
+            content = "candidate"
             return ModelResponse(
                 id=f"no-tool-{len(requests)}",
                 model="offline",
@@ -1706,10 +1770,16 @@ async def test_no_user_tools_never_send_required_without_a_tool_catalog() -> Non
 
     result = await agent.async_policy(Observation(content="answer"), message=message)
 
-    assert result[0].policy_info == "reviewed candidate"
-    assert len(requests) == 2
+    assert result[0].policy_info == "candidate"
+    assert len(requests) == 1
     assert all(request.get("prepared_tools") is None for request in requests)
     assert all("tool_choice" not in request for request in requests)
+    policy = execution_protocol_policy(context, agent.id())
+    state = ExecutionProtocolStore(context, agent.id(), policy).load()
+    assert state.phase is ProtocolPhase.COMPLETE
+    assert state.final_review_count == 0
+    assert state.history[-1].kind is EventKind.CANDIDATE_FINAL
+    assert state.history[-1].review_boundary_available is False
 
 
 def test_strict_critic_uses_required_probe_control_not_review_marker(

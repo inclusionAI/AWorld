@@ -730,6 +730,58 @@ def transition_execution_protocol(
             candidate_checkpoint_recorded=True,
             finalization_entered=True,
         )
+        previous_review_basis = next(
+            (
+                record.result_hash
+                for record in reversed(state.history)
+                if record.kind is EventKind.CANDIDATE_FINAL
+                and record.result_hash is not None
+            ),
+            None,
+        )
+        if (
+            state.phase is ProtocolPhase.REPAIR
+            and event.result_hash is not None
+            and event.result_hash == previous_review_basis
+        ):
+            # A repair episode that returns the identical candidate/evidence
+            # basis cannot justify another potentially slow review. Preserve
+            # the best current result for model-owned review, but never promote
+            # unchanged work to independent acceptance.
+            next_state = replace(
+                next_state,
+                phase=ProtocolPhase.COMPLETE,
+                review_pending=False,
+            )
+            action = (
+                ControllerAction.STOP_INCOMPLETE
+                if policy.independent_acceptance_enabled
+                else ControllerAction.SUBMIT_CURRENT_RESULT
+            )
+            return ProtocolTransition(
+                next_state,
+                _decision(action, DecisionReason.REVIEW_BASIS_UNCHANGED),
+            )
+        if (
+            event.review_boundary_available is False
+            and not policy.independent_acceptance_enabled
+        ):
+            # The caller reached a textual candidate without any structural
+            # path to the typed profile/review boundary (for example, a bare
+            # no-Tool agent).  Keep this decision in the controller so direct
+            # and LLMAgent callers share the same state transition.
+            next_state = replace(
+                next_state,
+                phase=ProtocolPhase.COMPLETE,
+                review_pending=False,
+            )
+            return ProtocolTransition(
+                next_state,
+                _decision(
+                    ControllerAction.SUBMIT_CURRENT_RESULT,
+                    DecisionReason.REVIEW_BOUNDARY_UNAVAILABLE,
+                ),
+            )
         if next_state.phase is ProtocolPhase.FINALIZE:
             if policy.independent_acceptance_enabled:
                 next_state = replace(

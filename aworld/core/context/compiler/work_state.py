@@ -89,6 +89,41 @@ def _read_only_actions(actions: Sequence[Mapping[str, Any]]) -> bool:
     return actions_are_provably_read_only(actions)
 
 
+def _sandbox_observation_ref(value: Any) -> dict[str, Any] | None:
+    """Project stable Sandbox evidence identity without replaying Tool content."""
+
+    if not isinstance(value, Mapping):
+        return None
+    projected: dict[str, Any] = {}
+    for key in (
+        "observation_id",
+        "content_sha256",
+        "cache_state",
+        "cache_validation",
+    ):
+        candidate = value.get(key)
+        if isinstance(candidate, str) and len(candidate) <= 256:
+            projected[key] = candidate
+    for key in (
+        "workspace_generation",
+        "source_workspace_generation",
+        "source_checkpoint_revision",
+        "evidence_checkpoint_revision",
+    ):
+        candidate = value.get(key)
+        if (
+            isinstance(candidate, int)
+            and not isinstance(candidate, bool)
+            and candidate >= 0
+        ):
+            projected[key] = candidate
+    for key in ("cache_hit", "content_rehydrated", "exact_replay_cached"):
+        candidate = value.get(key)
+        if isinstance(candidate, bool):
+            projected[key] = candidate
+    return projected or None
+
+
 def build_adaptive_work_state_entry(
     *,
     tool_name: str,
@@ -117,6 +152,7 @@ def build_adaptive_work_state_entry(
     artifact_changed = rollback_performed = implicit_artifact_loss = False
     artifact_fingerprint = None
     workspace_generation = None
+    sandbox_observations: list[dict[str, Any]] = []
     for result in result_values:
         if not isinstance(result, Mapping):
             continue
@@ -144,6 +180,7 @@ def build_adaptive_work_state_entry(
             if isinstance(metadata, Mapping)
             else None
         )
+        observation_ref = _sandbox_observation_ref(sandbox_observation)
         if isinstance(sandbox_observation, Mapping):
             artifact_changed = artifact_changed or (
                 sandbox_observation.get("workspace_mutated") is True
@@ -160,6 +197,8 @@ def build_adaptive_work_state_entry(
                     workspace_generation or 0,
                     candidate_generation,
                 )
+        if observation_ref is not None:
+            sandbox_observations.append(observation_ref)
         output_policy = (
             metadata.get("tool_output_policy")
             if isinstance(metadata, Mapping)
@@ -203,15 +242,16 @@ def build_adaptive_work_state_entry(
             if isinstance(content, str)
             else json.dumps(content, ensure_ascii=False, sort_keys=True, default=str)
         )
-        projected_results.append(
-            {
-                "tool": result.get("tool_name") or tool_name,
-                "action": result.get("action_name"),
-                "success": result.get("success"),
-                "error": _bounded_projection(result.get("error"), field_name="error"),
-                "evidence": _bounded_text(content_text, limit=900),
-            }
-        )
+        projected_result = {
+            "tool": result.get("tool_name") or tool_name,
+            "action": result.get("action_name"),
+            "success": result.get("success"),
+            "error": _bounded_projection(result.get("error"), field_name="error"),
+            "evidence": _bounded_text(content_text, limit=900),
+        }
+        if observation_ref is not None:
+            projected_result["sandbox_observation"] = observation_ref
+        projected_results.append(projected_result)
 
     progress = dict(semantic_progress or {})
     return {
@@ -225,6 +265,7 @@ def build_adaptive_work_state_entry(
         "artifact_changed": artifact_changed,
         "artifact_fingerprint": artifact_fingerprint,
         "workspace_generation": workspace_generation,
+        "sandbox_observations": sandbox_observations[-8:],
         "rollback_performed": rollback_performed,
         "implicit_artifact_loss": implicit_artifact_loss,
         "goal_progress": progress.get("goal_progress") is True,
@@ -285,6 +326,17 @@ def advance_adaptive_work_state(
     failed = [item for item in state.get("failed_operations", []) if isinstance(item, Mapping)]
     if any(result.get("success") is False for result in value.get("results", [])):
         failed.append(value)
+    latest_sandbox_observations = [
+        dict(item)
+        for item in (value.get("sandbox_observations") or [])
+        if isinstance(item, Mapping)
+    ][-8:]
+    if not latest_sandbox_observations:
+        latest_sandbox_observations = [
+            dict(item)
+            for item in (state.get("latest_sandbox_observations") or [])
+            if isinstance(item, Mapping)
+        ][-8:]
     # A successful repeated read is not proof of progress. A write or changed
     # artifact resets the comparison window so deliberate readback is allowed.
     read_window = []
@@ -313,6 +365,7 @@ def advance_adaptive_work_state(
             if value.get("workspace_generation") is not None
             else state.get("workspace_generation")
         ),
+        "latest_sandbox_observations": latest_sandbox_observations,
         "recent_operations": recent[-8:],
         "milestones": milestones[-4:],
         "attempted_operation_hashes": hashes[-24:],
@@ -346,6 +399,11 @@ def _compact_work_entry(entry: Mapping[str, Any]) -> dict[str, Any]:
         for item in (entry.get("available_artifacts") or [])
         if isinstance(item, Mapping)
     ]
+    sandbox_observations = [
+        dict(item)
+        for item in (entry.get("sandbox_observations") or [])
+        if isinstance(item, Mapping)
+    ]
     return {
         "sequence": entry.get("sequence"),
         "operation_hash": _stable_identifier(entry.get("operation_hash")),
@@ -369,12 +427,16 @@ def _compact_work_entry(entry: Mapping[str, Any]) -> dict[str, Any]:
                 if item.get("error") is not None
                 else None,
                 "evidence": _bounded_text(str(item.get("evidence")), limit=320),
+                "sandbox_observation": _bounded_projection(
+                    item.get("sandbox_observation") or {}, depth=3
+                ),
             }
             for item in results[-3:]
         ],
         "artifact_changed": entry.get("artifact_changed") is True,
         "artifact_fingerprint": _stable_identifier(entry.get("artifact_fingerprint")),
         "workspace_generation": entry.get("workspace_generation"),
+        "sandbox_observations": sandbox_observations[-3:],
         "rollback_performed": entry.get("rollback_performed") is True,
         "implicit_artifact_loss": entry.get("implicit_artifact_loss") is True,
         "goal_progress": entry.get("goal_progress") is True,
@@ -393,6 +455,11 @@ def _minimal_work_entry(entry: Mapping[str, Any]) -> dict[str, Any]:
         "artifact_changed": entry.get("artifact_changed") is True,
         "artifact_fingerprint": _stable_identifier(entry.get("artifact_fingerprint")),
         "workspace_generation": entry.get("workspace_generation"),
+        "sandbox_observations": [
+            dict(item)
+            for item in (entry.get("sandbox_observations") or [])
+            if isinstance(item, Mapping)
+        ][-1:],
         "rollback_performed": entry.get("rollback_performed") is True,
         "implicit_artifact_loss": entry.get("implicit_artifact_loss") is True,
         "goal_progress": entry.get("goal_progress") is True,
@@ -528,6 +595,10 @@ def _fit_work_state_payload(
             "current_artifact_fingerprint": _stable_identifier(
                 payload.get("current_artifact_fingerprint")
             ),
+            "workspace_generation": payload.get("workspace_generation"),
+            "latest_sandbox_observations": list(
+                payload.get("latest_sandbox_observations") or []
+            )[-1:],
             "attempted_operation_hashes": payload.get("attempted_operation_hashes", [])[
                 -1:
             ],
@@ -577,6 +648,9 @@ def adaptive_work_state_message(state: Any) -> dict[str, Any] | None:
             state.get("artifact_fingerprint")
         ),
         "workspace_generation": state.get("workspace_generation"),
+        "latest_sandbox_observations": list(
+            state.get("latest_sandbox_observations") or []
+        )[-8:],
         "attempted_operation_hashes": list(
             state.get("attempted_operation_hashes") or []
         )[-12:],

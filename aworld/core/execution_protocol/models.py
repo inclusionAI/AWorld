@@ -146,6 +146,8 @@ class DecisionReason(str, Enum):
     REVIEW_UNCERTAIN = "review_uncertain"
     REVIEW_ERROR = "review_error"
     REPAIR_LIMIT_REACHED = "repair_limit_reached"
+    REVIEW_BASIS_UNCHANGED = "review_basis_unchanged"
+    REVIEW_BOUNDARY_UNAVAILABLE = "review_boundary_unavailable"
     ACCEPTANCE_EVIDENCE_MISSING = "acceptance_evidence_missing"
     CONTROLLER_ERROR = "controller_error"
     INVALID_EVENT = "invalid_event"
@@ -597,20 +599,19 @@ class ExecutionProtocolPolicy:
     # Once a candidate exists, repeated provably read-only exploration must
     # converge to validation, an evidence-driven repair, or submission.
     post_candidate_read_only_threshold: int = 3
-    # Semantic loop counts are model-owned. ``None`` leaves replanning,
-    # reviewing, and repair bounded by the caller's task deadline instead of a
-    # framework-selected number of attempts. Explicit callers may still set a
-    # finite compatibility limit for controlled experiments.
+    # Replanning remains model-owned, while completion review/repair has a
+    # small generic safety bound.  Explicit callers may still tune these
+    # limits (or use ``None`` for compatibility experiments).
     max_replans: int | None = None
-    max_final_reviews: int | None = None
-    max_repairs: int | None = None
+    max_final_reviews: int | None = 2
+    max_repairs: int | None = 1
     finalization_reserve_seconds: float = 60.0
     # The earlier reserve exposes a model-owned delivery choice while ordinary
     # Tools are still available. It does not itself revoke Tools or select an
     # action. Callers may tune it together with the finalization reserve.
     candidate_decision_reserve_seconds: float = 240.0
-    # ``None`` lets review consume the caller's remaining task deadline. A
-    # finite value is retained only for explicit compatibility experiments.
+    # ``None`` is resolved by runtime configuration to a finite task-budget
+    # fraction shared by every continuation within one review episode.
     final_review_timeout_seconds: float | None = None
 
     def __post_init__(self) -> None:
@@ -773,8 +774,8 @@ class ExecutionProtocolPolicy:
                 "post_candidate_read_only_threshold", 3
             ),
             max_replans=value.get("max_replans"),
-            max_final_reviews=value.get("max_final_reviews"),
-            max_repairs=value.get("max_repairs"),
+            max_final_reviews=value.get("max_final_reviews", 2),
+            max_repairs=value.get("max_repairs", 1),
             finalization_reserve_seconds=value.get("finalization_reserve_seconds"),
             candidate_decision_reserve_seconds=value.get(
                 "candidate_decision_reserve_seconds", 240.0
@@ -855,6 +856,7 @@ class ExecutionProtocolEvent:
     remaining_seconds: float | None = None
     operation_hash: str | None = None
     result_hash: str | None = None
+    review_boundary_available: bool | None = None
     review_outcome: ReviewOutcome | None = None
     model_execution_profile: ModelExecutionProfile | None = None
     model_plan_update: ModelPlanUpdate | None = None
@@ -931,6 +933,17 @@ class ExecutionProtocolEvent:
             value = getattr(self, name)
             if value is not None and (not isinstance(value, str) or len(value) > 256):
                 raise ValueError(f"{name} must be a bounded string or None")
+        if self.review_boundary_available is not None and not isinstance(
+            self.review_boundary_available, bool
+        ):
+            raise ValueError("review_boundary_available must be a boolean or None")
+        if (
+            self.kind is not EventKind.CANDIDATE_FINAL
+            and self.review_boundary_available is not None
+        ):
+            raise ValueError(
+                "review_boundary_available is valid only for candidate_final"
+            )
         if self.review_outcome is not None and not isinstance(
             self.review_outcome, ReviewOutcome
         ):
@@ -1020,6 +1033,7 @@ class ExecutionProtocolEvent:
             remaining_seconds=self.remaining_seconds,
             operation_hash=self.operation_hash,
             result_hash=self.result_hash,
+            review_boundary_available=self.review_boundary_available,
             review_outcome=self.review_outcome,
             model_execution_profile=self.model_execution_profile,
             model_plan_update=self.model_plan_update,
@@ -1053,6 +1067,7 @@ class ProtocolEventRecord:
     remaining_seconds: float | None = None
     operation_hash: str | None = None
     result_hash: str | None = None
+    review_boundary_available: bool | None = None
     review_outcome: ReviewOutcome | None = None
     model_execution_profile: ModelExecutionProfile | None = None
     model_plan_update: ModelPlanUpdate | None = None
@@ -1125,6 +1140,17 @@ class ProtocolEventRecord:
             value = getattr(self, name)
             if value is not None and (not isinstance(value, str) or len(value) > 256):
                 raise ValueError(f"{name} must be a bounded string or None")
+        if self.review_boundary_available is not None and not isinstance(
+            self.review_boundary_available, bool
+        ):
+            raise ValueError("review_boundary_available must be a boolean or None")
+        if (
+            self.kind is not EventKind.CANDIDATE_FINAL
+            and self.review_boundary_available is not None
+        ):
+            raise ValueError(
+                "review_boundary_available is valid only for candidate_final records"
+            )
         if self.review_outcome is not None and not isinstance(
             self.review_outcome, ReviewOutcome
         ):
@@ -1202,6 +1228,7 @@ class ProtocolEventRecord:
             "remaining_seconds": self.remaining_seconds,
             "operation_hash": self.operation_hash,
             "result_hash": self.result_hash,
+            "review_boundary_available": self.review_boundary_available,
             "review_outcome": self.review_outcome.value
             if self.review_outcome
             else None,
@@ -1264,6 +1291,7 @@ class ProtocolEventRecord:
             remaining_seconds=value.get("remaining_seconds"),
             operation_hash=value.get("operation_hash"),
             result_hash=value.get("result_hash"),
+            review_boundary_available=value.get("review_boundary_available"),
             review_outcome=ReviewOutcome(outcome) if outcome is not None else None,
             model_execution_profile=(
                 ModelExecutionProfile.from_mapping(profile)

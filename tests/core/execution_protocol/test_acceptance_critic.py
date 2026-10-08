@@ -248,13 +248,21 @@ def test_accept_without_probe_becomes_repair_not_submit():
 
 def test_second_uncertain_review_stops_incomplete_never_submits():
     context = _context("critic-uncertain")
-    record_candidate_final(context, "agent")
+    record_candidate_final(
+        context,
+        "agent",
+        actions=[ActionModel(agent_name="agent", policy_info="candidate-v1")],
+    )
     first, _, _ = record_acceptance_critic_decision(
         context, "agent", _decision("uncertain")
     )
     assert first.decision.action is ControllerAction.REQUEST_REPAIR
 
-    second_review = record_candidate_final(context, "agent")
+    second_review = record_candidate_final(
+        context,
+        "agent",
+        actions=[ActionModel(agent_name="agent", policy_info="candidate-v2")],
+    )
     assert second_review.decision.action is ControllerAction.REQUEST_FINAL_REVIEW
     second, _, _ = record_acceptance_critic_decision(
         context, "agent", _decision("uncertain")
