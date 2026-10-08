@@ -1,4 +1,5 @@
 from pathlib import Path
+import sys
 from types import SimpleNamespace
 
 import pytest
@@ -19,9 +20,11 @@ from aworld.core.context.compiler import LifecycleAction
 from aworld.core.event.base import Message
 from aworld.core.tool_action_journal import read_tool_action_journal
 from aworld.sandbox.terminal_receipt import (
+    TERMINAL_EXECUTION_AUTHORITY_ENV,
     TERMINAL_EXECUTION_RECEIPT_KEY,
     TerminalExecutionPlan,
     build_terminal_execution_receipt,
+    terminal_execution_context_sha256,
 )
 
 
@@ -138,6 +141,13 @@ def test_builtin_stdio_configs_pin_the_first_workspace_as_process_cwd(
 
     assert config["mcpServers"]["filesystem"]["cwd"] == str(workspace.resolve())
     assert config["mcpServers"]["terminal"]["cwd"] == str(workspace.resolve())
+    terminal_authority = config["mcpServers"]["terminal"]["env"][
+        TERMINAL_EXECUTION_AUTHORITY_ENV
+    ]
+    assert len(terminal_authority) == 64
+    assert TERMINAL_EXECUTION_AUTHORITY_ENV not in config["mcpServers"][
+        "filesystem"
+    ].get("env", {})
 
 
 def test_builtin_stdio_cwd_does_not_drift_after_config_is_built(
@@ -358,6 +368,7 @@ async def test_sandbox_uses_terminal_receipt_then_replays_from_observation_cache
         exit_code=0,
         timed_out=False,
         effect_source="trusted_command_contract",
+        execution_context_sha256=terminal_execution_context_sha256(sys.executable),
     )
 
     class _McpServers:

@@ -77,9 +77,17 @@ class MutationGatePreToolHook(PreToolCallHook):
             )
             message_text = (
                 "This Tool call is outside the active candidate convergence "
-                "admission. Run one registered validation, use one repair "
-                "authorized by fresh failed validation evidence, or submit the "
-                "current result accurately without Tools."
+                "admission. Run one registered validation, make one bounded "
+                "revision targeting only declared deliverables with an exact "
+                "Tool-argument signature that is new for the current candidate, "
+                "use one repair authorized by fresh failed validation evidence, "
+                "or submit the current result accurately without Tools. Each "
+                "candidate-bound declared-revision signature is admitted once. A "
+                "mixed batch does not widen admission: repeated revisions, "
+                "additional declared revisions, helper or unrelated mutations, "
+                "and unknown mutations remain blocked. Use a direct file write "
+                "or an exact-file copy primitive for named file outputs; "
+                "directory-ambiguous and recursive writers remain blocked."
             )
         else:
             message_text = (
@@ -108,8 +116,11 @@ class MutationGatePreToolHook(PreToolCallHook):
                     "AWorld convergence admission intercepted part of a Tool "
                     f"batch after {count} observations without delivery progress. "
                     + (
-                        "Validate, repair from evidence, or submit; do not restart "
-                        "broad exploration."
+                        "Validate, make one current-candidate-new-signature bounded "
+                        "declared-deliverable revision, repair from evidence, or "
+                        "submit; repeated, mixed, helper, unrelated, and unknown "
+                        "mutations stay blocked. Named file outputs require a "
+                        "direct write or exact-file copy primitive."
                         if post_candidate
                         else "Create or modify the smallest relevant candidate now."
                     )

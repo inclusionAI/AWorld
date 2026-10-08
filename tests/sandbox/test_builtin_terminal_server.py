@@ -49,6 +49,12 @@ def _result(*, stdout: str = "", stderr: str = "") -> CommandResult:
     )
 
 
+def test_internal_execution_authority_is_not_projected_to_task_commands() -> None:
+    environment = terminal_module._resolve_environment(None)
+
+    assert terminal_module.TERMINAL_EXECUTION_AUTHORITY_ENV not in environment
+
+
 @pytest.mark.parametrize(
     ("command", "effect"),
     (
@@ -413,7 +419,7 @@ async def test_run_code_emits_compact_terminal_execution_receipt() -> None:
     assert payload["success"] is True
     assert receipt == {
         "schema_version": "aworld.terminal-execution-receipt/v2",
-        "parser_version": 7,
+        "parser_version": 8,
         "language_contract_version": 1,
         "command_sha256": terminal_command_sha256(command),
         "requested_language": "shell",
@@ -429,6 +435,7 @@ async def test_run_code_emits_compact_terminal_execution_receipt() -> None:
         "read_projection_reusable": False,
         "read_representation": "terminal.run-code.structured.exact/v1",
         "write_paths": [],
+        "write_set_complete": True,
         "read_set_complete": True,
         "read_path_epochs": [],
         "workspace_generation_delta": 0,
@@ -439,6 +446,9 @@ async def test_run_code_emits_compact_terminal_execution_receipt() -> None:
         "observation_id": None,
         "observation_content_sha256": None,
         "source_checkpoint_revision": None,
+        "execution_context_sha256": (
+            terminal_module._TERMINAL_EXECUTION_CONTEXT_SHA256
+        ),
         "timed_out": False,
         "exit_code": 0,
     }

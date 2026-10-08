@@ -18,6 +18,7 @@ from aworld.sandbox.config.templates import (
     get_server_env,
     ENV_WORKSPACE,
 )
+from aworld.sandbox.terminal_receipt import TERMINAL_EXECUTION_AUTHORITY_ENV
 
 
 class ToolConfigManager:
@@ -101,6 +102,13 @@ class ToolConfigManager:
         env = dict(get_server_env())
         if self.workspaces:
             env[ENV_WORKSPACE] = ",".join(self.workspaces)
+        execution_authority = os.environ.get(
+            TERMINAL_EXECUTION_AUTHORITY_ENV, ""
+        ).strip()
+        if execution_authority:
+            # Forward only to the built-in Terminal stdio child. The provider
+            # strips this controller/sidecar cache binding before task commands.
+            env[TERMINAL_EXECUTION_AUTHORITY_ENV] = execution_authority
         working_directory = self._stdio_working_directory(env)
         env.setdefault(
             "AWORLD_TERMINAL_ARTIFACT_DIR",

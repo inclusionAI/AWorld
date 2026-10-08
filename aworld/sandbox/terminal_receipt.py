@@ -11,9 +11,12 @@ from __future__ import annotations
 import ast
 from dataclasses import dataclass
 import hashlib
+import os
 import posixpath
 import re
-from pathlib import Path
+import secrets
+import shlex
+from pathlib import Path, PurePosixPath
 from typing import Any, Iterable, Mapping, Sequence
 
 import bashlex
@@ -27,7 +30,7 @@ TERMINAL_EXECUTION_RECEIPT_KEY = "terminal_execution_receipt"
 # with this same analyzer; they are never assumed reusable by default. Provider
 # replay is authenticated by ``cache_hit=true`` plus ``executed=false``, a
 # content/observation identity, representation, and checkpoint revision.
-TERMINAL_EXECUTION_ANALYZER_VERSION = 7
+TERMINAL_EXECUTION_ANALYZER_VERSION = 8
 TERMINAL_LANGUAGE_CONTRACT_VERSION = 1
 TERMINAL_LANGUAGES = frozenset({"shell", "python"})
 TERMINAL_EFFECTS = frozenset({"read_only", "mutating", "unknown"})
@@ -36,6 +39,25 @@ TERMINAL_CACHEABLE_EFFECT_SOURCES = frozenset(
 )
 _MAX_RECEIPT_PATHS = 16
 _MAX_RECEIPT_PATH_CHARS = 512
+TERMINAL_EXECUTION_AUTHORITY_ENV = (
+    "AWORLD_INTERNAL_TERMINAL_EXECUTION_AUTHORITY"
+)
+
+
+def _terminal_process_authority() -> str:
+    inherited = os.environ.get(TERMINAL_EXECUTION_AUTHORITY_ENV, "")
+    if re.fullmatch(r"[0-9a-f]{64}", inherited):
+        return inherited
+    generated = secrets.token_hex(32)
+    # Built-in stdio providers are child processes of the Sandbox. Sharing a
+    # freshly generated parent authority through inherited process state lets
+    # that sidecar prove locality without treating unrelated hosts/containers
+    # with coincidentally equal executable metadata as local.
+    os.environ[TERMINAL_EXECUTION_AUTHORITY_ENV] = generated
+    return generated
+
+
+_TERMINAL_PROCESS_AUTHORITY = _terminal_process_authority()
 
 _SHELL_READ_COMMANDS = frozenset(
     {
@@ -223,6 +245,7 @@ _SAFE_PYTHON_METHOD_NAMES = frozenset(
         "keys",
         "load",
         "loads",
+        "lstrip",
         "match",
         "max",
         "mean",
@@ -233,15 +256,19 @@ _SAFE_PYTHON_METHOD_NAMES = frozenset(
         "ones",
         "percentile",
         "read",
+        "readline",
+        "readlines",
         "read_bytes",
         "read_text",
         "release",
         "reshape",
         "resize",
         "round",
+        "rstrip",
         "search",
         "sort",
         "split",
+        "splitlines",
         "sqrt",
         "stack",
         "startswith",
@@ -258,8 +285,6 @@ _PYTHON_PATH_MUTATION_METHODS = frozenset(
     {
         "chmod",
         "mkdir",
-        "rename",
-        "replace",
         "rmdir",
         "symlink_to",
         "touch",
@@ -268,12 +293,16 @@ _PYTHON_PATH_MUTATION_METHODS = frozenset(
         "write_text",
     }
 )
+_PYTHON_PATH_MOVE_METHODS = frozenset({"rename", "replace"})
 _PYTHON_OS_MUTATION_METHODS = frozenset(
-    {"chmod", "makedirs", "mkdir", "remove", "rename", "replace", "rmdir", "unlink"}
+    {"chmod", "makedirs", "mkdir", "remove", "rmdir", "unlink"}
 )
-_PYTHON_SHUTIL_MUTATION_METHODS = frozenset(
-    {"copy", "copy2", "copyfile", "copytree", "move", "rmtree"}
+_PYTHON_OS_MOVE_METHODS = frozenset({"rename", "replace"})
+_PYTHON_SHUTIL_COPY_METHODS = frozenset(
+    {"copy", "copy2", "copyfile", "copytree"}
 )
+_PYTHON_SHUTIL_MOVE_METHODS = frozenset({"move"})
+_PYTHON_SHUTIL_MUTATION_METHODS = frozenset({"rmtree"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -301,6 +330,7 @@ class TerminalExecutionPlan:
     # maintaining a second command parser.
     executable_tokens: tuple[str, ...] = ()
     executable_set_complete: bool = True
+    write_set_complete: bool = True
 
 
 @dataclass(frozen=True, slots=True)
@@ -334,10 +364,46 @@ def terminal_command_sha256(code: str) -> str:
     return "sha256:" + hashlib.sha256(code.encode("utf-8")).hexdigest()
 
 
-def _python_open_is_read_only(call: ast.Call) -> bool:
+def terminal_execution_context_sha256(executable: str) -> str:
+    """Identify one local executable context without exposing its path.
+
+    The identity is reproducible inside the current process and built-in stdio
+    children that inherit its freshly generated authority. An independently
+    launched worker, cloned container, or remote provider receives a distinct
+    authority even when executable path/stat metadata happen to match. It is a
+    cache binding, not a content signature or a claim that arbitrary
+    executables are trusted.
+    """
+
+    candidate = Path(executable).expanduser()
+    try:
+        resolved = candidate.resolve(strict=True)
+        stat_result = resolved.stat()
+        fields = (
+            "aworld.terminal-execution-context/v1",
+            _TERMINAL_PROCESS_AUTHORITY,
+            str(resolved),
+            str(stat_result.st_dev),
+            str(stat_result.st_ino),
+            str(stat_result.st_size),
+            str(stat_result.st_mtime_ns),
+        )
+    except OSError:
+        fields = (
+            "aworld.terminal-execution-context/v1",
+            _TERMINAL_PROCESS_AUTHORITY,
+            str(candidate.resolve(strict=False)),
+            "unavailable",
+        )
+    return "sha256:" + hashlib.sha256("\0".join(fields).encode("utf-8")).hexdigest()
+
+
+def _python_open_mode_is_read_only(
+    call: ast.Call, *, positional_index: int
+) -> bool:
     mode: ast.AST | None = None
-    if len(call.args) >= 2:
-        mode = call.args[1]
+    if len(call.args) > positional_index:
+        mode = call.args[positional_index]
     for keyword in call.keywords:
         if keyword.arg == "mode":
             mode = keyword.value
@@ -349,6 +415,14 @@ def _python_open_is_read_only(call: ast.Call) -> bool:
         and mode.value.startswith("r")
         and "+" not in mode.value
     )
+
+
+def _python_open_is_read_only(call: ast.Call) -> bool:
+    return _python_open_mode_is_read_only(call, positional_index=1)
+
+
+def _python_path_open_is_read_only(call: ast.Call) -> bool:
+    return _python_open_mode_is_read_only(call, positional_index=0)
 
 
 def python_is_provably_read_only(source: str) -> bool:
@@ -421,29 +495,420 @@ def _constant_string(node: ast.AST | None) -> str | None:
 
 
 def _path_from_python_receiver(node: ast.AST) -> str | None:
-    if not isinstance(node, ast.Call) or not node.args:
+    if not _is_python_path_receiver(node) or node.keywords:
         return None
+    segments: list[str] = []
+    for argument in node.args:
+        segment = _constant_string(argument)
+        if segment is None and _is_python_path_receiver(argument):
+            segment = _path_from_python_receiver(argument)
+        if segment is None:
+            return None
+        segments.append(segment)
+    return str(PurePosixPath(*segments))
+
+
+def _constant_python_path(node: ast.AST | None) -> str | None:
+    if node is None:
+        return None
+    return _constant_string(node) or _path_from_python_receiver(node)
+
+
+def _is_python_path_receiver(node: ast.AST) -> bool:
+    if not isinstance(node, ast.Call):
+        return False
     function = node.func
-    if isinstance(function, ast.Name) and function.id in {
+    return isinstance(function, ast.Name) and function.id in {
         "Path",
         "PurePath",
         "PurePosixPath",
-    }:
-        return _constant_string(node.args[0])
+    }
+
+
+def _is_direct_python_open_call(node: ast.AST) -> bool:
+    return (
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "open"
+    )
+
+
+def _is_python_path_open_call(node: ast.AST) -> bool:
+    return (
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "open"
+        and _is_python_path_receiver(node.func.value)
+    )
+
+
+def _python_path_bindings(tree: ast.Module) -> dict[str, str]:
+    store_counts: dict[str, int] = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store):
+            store_counts[node.id] = store_counts.get(node.id, 0) + 1
+
+    candidates: dict[str, str] = {}
+    for node in ast.walk(tree):
+        target: ast.AST | None = None
+        value: ast.AST | None = None
+        if isinstance(node, ast.Assign) and len(node.targets) == 1:
+            target, value = node.targets[0], node.value
+        elif isinstance(node, ast.AnnAssign) and node.value is not None:
+            target, value = node.target, node.value
+        if isinstance(target, ast.Name) and value is not None:
+            path = _path_from_python_receiver(value)
+            if path is not None:
+                candidates[target.id] = path
+    return {
+        name: path
+        for name, path in candidates.items()
+        if store_counts.get(name) == 1
+    }
+
+
+def _python_file_open_is_read_only(
+    node: ast.AST,
+    *,
+    path_bindings: Mapping[str, str] | None = None,
+) -> bool | None:
+    if _is_direct_python_open_call(node) and isinstance(node, ast.Call):
+        return _python_open_is_read_only(node)
+    if _is_python_path_open_call(node) and isinstance(node, ast.Call):
+        return _python_path_open_is_read_only(node)
+    if (
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "open"
+        and isinstance(node.func.value, ast.Name)
+        and path_bindings is not None
+        and node.func.value.id in path_bindings
+    ):
+        return _python_path_open_is_read_only(node)
     return None
+
+
+def _python_imported_modules(tree: ast.Module) -> dict[str, str]:
+    modules: dict[str, str] = {}
+    for node in tree.body:
+        if not isinstance(node, ast.Import):
+            continue
+        for alias in node.names:
+            root = alias.name.split(".", 1)[0]
+            modules[alias.asname or root] = root
+    return modules
+
+
+def _python_call_argument(
+    call: ast.Call, index: int, keyword_name: str
+) -> ast.AST | None:
+    if len(call.args) > index:
+        return call.args[index]
+    return next(
+        (keyword.value for keyword in call.keywords if keyword.arg == keyword_name),
+        None,
+    )
+
+
+def _python_bool_argument(
+    call: ast.Call,
+    index: int,
+    keyword_name: str,
+    *,
+    default: bool,
+) -> bool | None:
+    value = _python_call_argument(call, index, keyword_name)
+    if value is None:
+        return default
+    if isinstance(value, ast.Constant) and isinstance(value.value, bool):
+        return value.value
+    return None
+
+
+def _python_handle_expression_is_known(
+    node: ast.AST | None,
+    *,
+    handles: frozenset[str],
+    read_only: bool,
+    path_bindings: Mapping[str, str] | None = None,
+) -> bool:
+    if isinstance(node, ast.Name):
+        return node.id in handles
+    mode = (
+        _python_file_open_is_read_only(node, path_bindings=path_bindings)
+        if node is not None
+        else None
+    )
+    return mode is read_only
+
+
+def _python_open_handle_names(
+    tree: ast.Module,
+) -> tuple[frozenset[str], frozenset[str]]:
+    """Return simple names bound exactly once to a builtin ``open`` call."""
+
+    store_counts: dict[str, int] = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store):
+            store_counts[node.id] = store_counts.get(node.id, 0) + 1
+
+    candidates: dict[str, bool] = {}
+    path_bindings = _python_path_bindings(tree)
+
+    def remember(target: ast.AST | None, value: ast.AST) -> None:
+        read_only = _python_file_open_is_read_only(
+            value, path_bindings=path_bindings
+        )
+        if isinstance(target, ast.Name) and read_only is not None:
+            candidates[target.id] = read_only
+
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.With, ast.AsyncWith)):
+            for item in node.items:
+                remember(item.optional_vars, item.context_expr)
+        elif isinstance(node, ast.Assign) and len(node.targets) == 1:
+            remember(node.targets[0], node.value)
+        elif isinstance(node, ast.AnnAssign) and node.value is not None:
+            remember(node.target, node.value)
+
+    read_handles = frozenset(
+        name
+        for name, read_only in candidates.items()
+        if read_only and store_counts.get(name) == 1
+    )
+    write_handles = frozenset(
+        name
+        for name, read_only in candidates.items()
+        if not read_only and store_counts.get(name) == 1
+    )
+    return read_handles, write_handles
+
+
+def _is_python_csv_writer_call(
+    node: ast.AST,
+    *,
+    imported_modules: Mapping[str, str],
+    write_handles: frozenset[str],
+) -> bool:
+    if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Attribute):
+        return False
+    receiver = node.func.value
+    if (
+        node.func.attr != "writer"
+        or not isinstance(receiver, ast.Name)
+        or imported_modules.get(receiver.id) != "csv"
+    ):
+        return False
+    output = _python_call_argument(node, 0, "csvfile")
+    return _python_handle_expression_is_known(
+        output, handles=write_handles, read_only=False
+    )
+
+
+def _python_csv_writer_names(
+    tree: ast.Module,
+    *,
+    imported_modules: Mapping[str, str],
+    write_handles: frozenset[str],
+) -> frozenset[str]:
+    store_counts: dict[str, int] = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store):
+            store_counts[node.id] = store_counts.get(node.id, 0) + 1
+
+    candidates: set[str] = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Assign) or len(node.targets) != 1:
+            continue
+        target = node.targets[0]
+        if isinstance(target, ast.Name) and _is_python_csv_writer_call(
+            node.value,
+            imported_modules=imported_modules,
+            write_handles=write_handles,
+        ):
+            candidates.add(target.id)
+    return frozenset(name for name in candidates if store_counts.get(name) == 1)
+
+
+def _python_effects_are_fully_modeled(tree: ast.Module) -> bool:
+    """Prove that calls/imports outside known file effects are computation only."""
+
+    local_functions = {
+        node.name
+        for node in tree.body
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    }
+    imported_names: set[str] = set()
+    read_handles, write_handles = _python_open_handle_names(tree)
+    path_bindings = _python_path_bindings(tree)
+    imported_modules = _python_imported_modules(tree)
+    csv_writer_names = _python_csv_writer_names(
+        tree,
+        imported_modules=imported_modules,
+        write_handles=write_handles,
+    )
+    for node in tree.body:
+        if isinstance(node, ast.Import):
+            imported_names.update(
+                alias.asname or alias.name.split(".", 1)[0] for alias in node.names
+            )
+        elif isinstance(node, ast.ImportFrom):
+            imported_names.update(alias.asname or alias.name for alias in node.names)
+
+    modeled_import_roots = _SAFE_PYTHON_IMPORT_ROOTS | {"os", "shutil"}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            if any(
+                alias.name.split(".", 1)[0] not in modeled_import_roots
+                for alias in node.names
+            ):
+                return False
+            continue
+        if isinstance(node, ast.ImportFrom):
+            root = node.module.split(".", 1)[0] if node.module else ""
+            allowed = _SAFE_PYTHON_FROM_IMPORTS.get(root, frozenset())
+            if (
+                node.level
+                or not node.module
+                or root not in _SAFE_PYTHON_IMPORT_ROOTS
+                or any(alias.name not in allowed for alias in node.names)
+            ):
+                return False
+            continue
+        if isinstance(node, (ast.ClassDef, ast.Delete)):
+            return False
+        if not isinstance(node, ast.Call):
+            continue
+
+        function = node.func
+        if isinstance(function, ast.Name):
+            if function.id in _UNSAFE_PYTHON_CALL_NAMES:
+                return False
+            if (
+                function.id not in _SAFE_PYTHON_CALL_NAMES
+                and function.id not in local_functions
+                and function.id not in imported_names
+            ):
+                return False
+            continue
+        if not isinstance(function, ast.Attribute):
+            return False
+
+        receiver_name = (
+            function.value.id if isinstance(function.value, ast.Name) else None
+        )
+        receiver_module = imported_modules.get(receiver_name or "")
+        if receiver_name in read_handles and function.attr in {
+            "close",
+            "read",
+            "readline",
+            "readlines",
+        }:
+            continue
+        if receiver_name in write_handles and function.attr in {
+            "close",
+            "flush",
+            "write",
+            "writelines",
+        }:
+            continue
+        if receiver_name in csv_writer_names and function.attr in {
+            "writerow",
+            "writerows",
+        }:
+            continue
+        if receiver_module == "json":
+            if function.attr in {"dumps", "loads"}:
+                continue
+            if function.attr == "dump" and _python_handle_expression_is_known(
+                _python_call_argument(node, 1, "fp"),
+                handles=write_handles,
+                read_only=False,
+                path_bindings=path_bindings,
+            ):
+                continue
+            if function.attr == "load" and _python_handle_expression_is_known(
+                _python_call_argument(node, 0, "fp"),
+                handles=read_handles,
+                read_only=True,
+                path_bindings=path_bindings,
+            ):
+                continue
+            return False
+        if receiver_module == "csv" and _is_python_csv_writer_call(
+            node,
+            imported_modules=imported_modules,
+            write_handles=write_handles,
+        ):
+            continue
+        if function.attr in {"writerow", "writerows"} and (
+            _is_python_csv_writer_call(
+                function.value,
+                imported_modules=imported_modules,
+                write_handles=write_handles,
+            )
+        ):
+            continue
+        if receiver_module == "numpy" and function.attr == "save":
+            continue
+        if receiver_name == "os" and function.attr in (
+            _PYTHON_OS_MUTATION_METHODS | _PYTHON_OS_MOVE_METHODS
+        ):
+            continue
+        if receiver_name == "shutil" and function.attr in (
+            _PYTHON_SHUTIL_COPY_METHODS
+            | _PYTHON_SHUTIL_MOVE_METHODS
+            | _PYTHON_SHUTIL_MUTATION_METHODS
+        ):
+            continue
+        path_receiver = _is_python_path_receiver(function.value) or (
+            isinstance(function.value, ast.Name)
+            and function.value.id in path_bindings
+        )
+        if path_receiver and function.attr in (
+            _PYTHON_PATH_MUTATION_METHODS | _PYTHON_PATH_MOVE_METHODS
+        ):
+            continue
+        if path_receiver and function.attr == "open":
+            continue
+        if function.attr in {
+            "VideoCapture",
+            "load",
+            "read",
+            "read_bytes",
+            "read_text",
+        }:
+            continue
+        if function.attr in _SAFE_PYTHON_METHOD_NAMES:
+            continue
+        if function.attr in {"close", "flush", "write", "writelines"} and (
+            _is_direct_python_open_call(function.value)
+            or _python_file_open_is_read_only(
+                function.value, path_bindings=path_bindings
+            )
+            is False
+        ):
+            continue
+        return False
+    return True
 
 
 def _python_effect_and_paths(
     source: str,
-) -> tuple[str, tuple[str, ...], tuple[str, ...], bool]:
+) -> tuple[str, tuple[str, ...], tuple[str, ...], bool, bool]:
     try:
         tree = ast.parse(source, mode="exec")
     except (SyntaxError, ValueError, TypeError):
-        return "unknown", (), (), False
+        return "unknown", (), (), False, False
     reads: list[str] = []
     writes: list[str] = []
     known_mutation = False
     read_set_complete = True
+    write_set_complete = True
+    effect_targets_complete = True
+    read_handles, write_handles = _python_open_handle_names(tree)
+    path_bindings = _python_path_bindings(tree)
+    imported_modules = _python_imported_modules(tree)
     for node in ast.walk(tree):
         if not isinstance(node, ast.Call):
             continue
@@ -459,64 +924,255 @@ def _python_effect_and_paths(
                 known_mutation = True
                 if path:
                     writes.append(path)
+                else:
+                    write_set_complete = False
+                    effect_targets_complete = False
         elif isinstance(function, ast.Attribute):
-            path = _path_from_python_receiver(function.value)
             receiver_name = (
                 function.value.id if isinstance(function.value, ast.Name) else None
             )
-            if path is not None and function.attr in _PYTHON_PATH_MUTATION_METHODS:
+            path = _path_from_python_receiver(function.value) or path_bindings.get(
+                receiver_name or ""
+            )
+            path_receiver = _is_python_path_receiver(function.value) or (
+                receiver_name in path_bindings
+            )
+            receiver_module = imported_modules.get(receiver_name or "")
+            if path_receiver and function.attr in _PYTHON_PATH_MUTATION_METHODS:
                 known_mutation = True
-                writes.append(path)
+                if path is not None:
+                    writes.append(path)
+                else:
+                    write_set_complete = False
+                    effect_targets_complete = False
+                if function.attr == "mkdir" and _python_bool_argument(
+                    node, 1, "parents", default=False
+                ) is not False:
+                    write_set_complete = False
+                    effect_targets_complete = False
+            elif path_receiver and function.attr in _PYTHON_PATH_MOVE_METHODS:
+                known_mutation = True
+                destination = _constant_string(node.args[0]) if node.args else None
+                for mutation_path in (path, destination):
+                    if mutation_path is not None:
+                        writes.append(mutation_path)
+                    else:
+                        write_set_complete = False
+                        effect_targets_complete = False
+                write_set_complete = False
+                effect_targets_complete = False
             elif (
                 receiver_name == "os" and function.attr in _PYTHON_OS_MUTATION_METHODS
-            ) or (
-                receiver_name == "shutil"
-                and function.attr in _PYTHON_SHUTIL_MUTATION_METHODS
             ):
-                known_mutation = True
-                argument_path = _constant_string(node.args[-1]) if node.args else None
-                if argument_path:
-                    writes.append(argument_path)
-            elif function.attr == "save":
-                # numpy/PIL-style save calls have filesystem semantics even
-                # though their receiver may be an imported alias or object.
                 known_mutation = True
                 argument_path = _constant_string(node.args[0]) if node.args else None
                 if argument_path:
                     writes.append(argument_path)
+                else:
+                    write_set_complete = False
+                    effect_targets_complete = False
+                if function.attr == "makedirs":
+                    write_set_complete = False
+                    effect_targets_complete = False
+            elif receiver_name == "os" and function.attr in _PYTHON_OS_MOVE_METHODS:
+                known_mutation = True
+                for index in range(2):
+                    argument_path = (
+                        _constant_string(node.args[index])
+                        if index < len(node.args)
+                        else None
+                    )
+                    if argument_path:
+                        writes.append(argument_path)
+                    else:
+                        write_set_complete = False
+                        effect_targets_complete = False
+                write_set_complete = False
+                effect_targets_complete = False
+            elif (
+                receiver_name == "shutil"
+                and function.attr in _PYTHON_SHUTIL_COPY_METHODS
+            ):
+                known_mutation = True
+                source_path = _constant_string(node.args[0]) if node.args else None
+                destination_path = (
+                    _constant_string(node.args[1]) if len(node.args) > 1 else None
+                )
+                if source_path:
+                    reads.append(source_path)
+                else:
+                    read_set_complete = False
+                    effect_targets_complete = False
+                if destination_path:
+                    writes.append(destination_path)
+                else:
+                    write_set_complete = False
+                    effect_targets_complete = False
+                if function.attr in {"copy", "copy2", "copytree"}:
+                    write_set_complete = False
+                    effect_targets_complete = False
+                if function.attr == "copytree":
+                    read_set_complete = False
+            elif (
+                receiver_name == "shutil"
+                and function.attr in _PYTHON_SHUTIL_MOVE_METHODS
+            ):
+                known_mutation = True
+                for index in range(2):
+                    argument_path = (
+                        _constant_string(node.args[index])
+                        if index < len(node.args)
+                        else None
+                    )
+                    if argument_path:
+                        writes.append(argument_path)
+                    else:
+                        write_set_complete = False
+                        effect_targets_complete = False
+                # ``move`` may rename a directory tree or derive a basename
+                # beneath an existing destination directory.
+                write_set_complete = False
+                effect_targets_complete = False
+            elif (
+                receiver_name == "shutil"
+                and function.attr in _PYTHON_SHUTIL_MUTATION_METHODS
+            ):
+                known_mutation = True
+                argument_path = _constant_string(node.args[0]) if node.args else None
+                if argument_path:
+                    writes.append(argument_path)
+                else:
+                    write_set_complete = False
+                    effect_targets_complete = False
+                # rmtree mutates an unbounded descendant set.
+                write_set_complete = False
+                effect_targets_complete = False
+            elif receiver_module == "json":
+                if function.attr == "dump" and not _python_handle_expression_is_known(
+                    _python_call_argument(node, 1, "fp"),
+                    handles=write_handles,
+                    read_only=False,
+                    path_bindings=path_bindings,
+                ):
+                    effect_targets_complete = False
+                elif function.attr == "load" and not (
+                    _python_handle_expression_is_known(
+                        _python_call_argument(node, 0, "fp"),
+                        handles=read_handles,
+                        read_only=True,
+                        path_bindings=path_bindings,
+                    )
+                ):
+                    read_set_complete = False
+                    effect_targets_complete = False
+            elif receiver_module == "numpy" and function.attr == "save":
+                known_mutation = True
+                output = _python_call_argument(node, 0, "file")
+                output_path = _constant_python_path(output)
+                if output_path is not None:
+                    writes.append(
+                        output_path
+                        if output_path.endswith(".npy")
+                        else output_path + ".npy"
+                    )
+                elif not _python_handle_expression_is_known(
+                    output,
+                    handles=write_handles,
+                    read_only=False,
+                    path_bindings=path_bindings,
+                ):
+                    write_set_complete = False
+                    effect_targets_complete = False
+            elif function.attr == "save":
+                # An arbitrary receiver's save contract is not strong enough
+                # to prove filename rewriting or additional side effects.
+                known_mutation = True
+                argument_path = _constant_string(node.args[0]) if node.args else None
+                if argument_path:
+                    writes.append(argument_path)
+                write_set_complete = False
+                effect_targets_complete = False
             elif function.attr in {"VideoCapture", "load"}:
                 argument_path = _constant_string(node.args[0]) if node.args else None
                 if argument_path:
                     reads.append(argument_path)
                 else:
                     read_set_complete = False
-            elif function.attr in {"open", "read", "read_bytes", "read_text"}:
-                if path is None and function.attr == "open" and node.args:
-                    path = _constant_string(node.args[0])
-                if function.attr == "open" and not _python_open_is_read_only(node):
-                    known_mutation = True
-                    if path:
-                        writes.append(path)
+                    effect_targets_complete = False
+            elif function.attr in {
+                "open",
+                "read",
+                "read_bytes",
+                "read_text",
+                "readline",
+                "readlines",
+            }:
+                if function.attr != "open" and (
+                    _python_file_open_is_read_only(
+                        function.value, path_bindings=path_bindings
+                    )
+                    is not None
+                    or receiver_name in read_handles
+                    or receiver_name in write_handles
+                ):
+                    # The underlying open call already contributed its literal
+                    # path; handle reads must not manufacture a second dynamic
+                    # dependency from the receiver name.
+                    continue
+                if function.attr == "open":
+                    read_only = (
+                        _python_path_open_is_read_only(node)
+                        if path_receiver
+                        else None
+                    )
+                    if read_only is False:
+                        known_mutation = True
+                        if path:
+                            writes.append(path)
+                        else:
+                            write_set_complete = False
+                            effect_targets_complete = False
+                    elif read_only is True and path:
+                        reads.append(path)
+                    else:
+                        read_set_complete = False
+                        effect_targets_complete = False
                 elif path:
                     reads.append(path)
                 else:
                     read_set_complete = False
-    if len(dict.fromkeys(reads)) > _MAX_RECEIPT_PATHS:
+                    effect_targets_complete = False
+    if len(dict.fromkeys(reads)) > _MAX_RECEIPT_PATHS or any(
+        len(path) > _MAX_RECEIPT_PATH_CHARS for path in reads
+    ):
         read_set_complete = False
+        if known_mutation:
+            effect_targets_complete = False
+    if len(dict.fromkeys(writes)) > _MAX_RECEIPT_PATHS or any(
+        len(path) > _MAX_RECEIPT_PATH_CHARS for path in writes
+    ):
+        write_set_complete = False
+    effects_fully_modeled = _python_effects_are_fully_modeled(tree)
     if known_mutation:
         return (
-            "mutating",
+            "mutating" if effects_fully_modeled else "unknown",
             _bounded_paths(reads),
             _bounded_paths(writes),
             read_set_complete,
+            write_set_complete
+            and effect_targets_complete
+            and effects_fully_modeled,
         )
-    if python_is_provably_read_only(source):
-        return "read_only", _bounded_paths(reads), (), read_set_complete
+    if effects_fully_modeled and python_is_provably_read_only(source):
+        return "read_only", _bounded_paths(reads), (), read_set_complete, True
     return (
         "unknown",
         _bounded_paths(reads),
         _bounded_paths(writes),
         read_set_complete,
+        write_set_complete
+        and effect_targets_complete
+        and effects_fully_modeled,
     )
 
 
@@ -608,12 +1264,79 @@ def _literal_redirect_path(output: Any) -> str | None:
     value = getattr(output, "word", None)
     if not isinstance(value, str) or not value or value in _NON_FILE_REDIRECT_TARGETS:
         return None
-    if value.startswith("/dev/fd/") or any(marker in value for marker in ("$", "`")):
+    if value.startswith("/dev/fd/") or _has_dynamic_path(value):
         return None
     return value
 
 
-def _python_source_from_shell_command(node: Any, args: Sequence[str]) -> str | None:
+def _shell_word_has_runtime_expansion(raw_word: str) -> bool:
+    quote: str | None = None
+    index = 0
+    while index < len(raw_word):
+        value = raw_word[index]
+        if quote == "'":
+            if value == "'":
+                quote = None
+            index += 1
+            continue
+        if quote == '"':
+            if value == '"':
+                quote = None
+                index += 1
+                continue
+            if value == "\\":
+                index += 2
+                continue
+            if value in {"$", "`"}:
+                return True
+            index += 1
+            continue
+        if value in {"'", '"'}:
+            quote = value
+            index += 1
+            continue
+        if value == "\\":
+            index += 2
+            continue
+        if value in {"$", "`", "*", "?", "[", "{"}:
+            return True
+        if value == "~" and (index == 0 or raw_word[index - 1] in {"=", ":"}):
+            return True
+        index += 1
+    return False
+
+
+def _literal_shell_word(source: str, node: Any) -> str | None:
+    position = getattr(node, "pos", None)
+    if (
+        not isinstance(position, tuple)
+        or len(position) != 2
+        or not all(isinstance(value, int) for value in position)
+    ):
+        return None
+    raw_word = source[position[0] : position[1]]
+    if getattr(node, "parts", ()) or _shell_word_has_runtime_expansion(raw_word):
+        return None
+    try:
+        values = shlex.split(raw_word, comments=False, posix=True)
+    except ValueError:
+        return None
+    return values[0] if len(values) == 1 else None
+
+
+def _python_source_from_shell_command(node: Any, source: str) -> str | None:
+    word_nodes = [
+        part
+        for part in getattr(node, "parts", ())
+        if getattr(part, "kind", None) == "word"
+    ]
+    words: list[str] = []
+    for word_node in word_nodes:
+        value = _literal_shell_word(source, word_node)
+        if value is None:
+            return None
+        words.append(value)
+    _executable, args = _command_words(words)
     for index, value in enumerate(args):
         if value == "-c" and index + 1 < len(args):
             return args[index + 1]
@@ -667,6 +1390,494 @@ def _path_arguments(executable: str, args: Sequence[str]) -> tuple[str, ...]:
             continue
         values.append(value)
     return tuple(values)
+
+
+@dataclass(frozen=True, slots=True)
+class _MutationOperandAnalysis:
+    read_paths: tuple[str, ...] = ()
+    write_paths: tuple[str, ...] = ()
+    read_set_complete: bool = True
+    write_set_complete: bool = True
+
+
+def _literal_mutation_paths(values: Sequence[str]) -> tuple[str, ...]:
+    return tuple(
+        value
+        for value in values
+        if value and value != "-" and not _has_dynamic_path(value)
+    )
+
+
+def _mutation_paths_are_bounded_literals(values: Sequence[str]) -> bool:
+    return all(
+        value
+        and value != "-"
+        and not _has_dynamic_path(value)
+        and len(value) <= _MAX_RECEIPT_PATH_CHARS
+        for value in values
+    )
+
+
+def _mutation_positionals(
+    args: Sequence[str],
+    *,
+    short_flags: frozenset[str] = frozenset(),
+    short_value_options: frozenset[str] = frozenset(),
+    long_flags: frozenset[str] = frozenset(),
+    long_value_options: frozenset[str] = frozenset(),
+    incomplete_short_flags: frozenset[str] = frozenset(),
+    incomplete_short_value_options: frozenset[str] = frozenset(),
+    incomplete_long_flags: frozenset[str] = frozenset(),
+    incomplete_long_value_options: frozenset[str] = frozenset(),
+) -> tuple[tuple[str, ...], bool]:
+    """Parse only options whose operand arity is unambiguous.
+
+    Unknown options fail closed immediately because the next token may be an
+    option value rather than a filesystem operand. Recognized options that can
+    create implicit destinations (backup/target-directory/parents modes) are
+    consumed but deliberately mark the result incomplete.
+    """
+
+    positionals: list[str] = []
+    complete = True
+    options_enabled = True
+    index = 0
+    while index < len(args):
+        value = args[index]
+        if not options_enabled or value == "-" or not value.startswith("-"):
+            positionals.append(value)
+            index += 1
+            continue
+        if value == "--":
+            options_enabled = False
+            index += 1
+            continue
+        if value.startswith("--"):
+            name, separator, _attached = value.partition("=")
+            if name in long_flags or name in incomplete_long_flags:
+                if separator:
+                    return (), False
+                if name in incomplete_long_flags:
+                    complete = False
+                index += 1
+                continue
+            if name in long_value_options or name in incomplete_long_value_options:
+                if name in incomplete_long_value_options:
+                    complete = False
+                if not separator:
+                    index += 1
+                    if index >= len(args):
+                        return (), False
+                index += 1
+                continue
+            return (), False
+
+        cluster = value[1:]
+        if not cluster:
+            positionals.append(value)
+            index += 1
+            continue
+        cluster_index = 0
+        while cluster_index < len(cluster):
+            option = cluster[cluster_index]
+            if option in short_flags or option in incomplete_short_flags:
+                if option in incomplete_short_flags:
+                    complete = False
+                cluster_index += 1
+                continue
+            if (
+                option in short_value_options
+                or option in incomplete_short_value_options
+            ):
+                if option in incomplete_short_value_options:
+                    complete = False
+                if cluster_index + 1 == len(cluster):
+                    index += 1
+                    if index >= len(args):
+                        return (), False
+                cluster_index = len(cluster)
+                continue
+            return (), False
+        index += 1
+    return tuple(positionals), complete
+
+
+def _mutation_has_exact_destination_option(args: Sequence[str]) -> bool:
+    for value in args:
+        if value == "--":
+            return False
+        if value in {"-T", "--no-target-directory"}:
+            return True
+    return False
+
+
+def _mutation_has_recursive_option(
+    executable: str, args: Sequence[str]
+) -> bool:
+    short_options = {"cp": frozenset("aRr"), "rm": frozenset("Rr")}.get(
+        executable, frozenset()
+    )
+    long_options = (
+        {"--archive", "--recursive"}
+        if executable == "cp"
+        else {"--recursive"}
+    )
+    for value in args:
+        if value == "--":
+            break
+        if value in long_options:
+            return True
+        if value.startswith("-") and not value.startswith("--") and any(
+            option in value[1:] for option in short_options
+        ):
+            return True
+    return False
+
+
+def _copy_like_mutation_operands(
+    executable: str, args: Sequence[str]
+) -> _MutationOperandAnalysis:
+    if executable == "cp":
+        operands, options_complete = _mutation_positionals(
+            args,
+            short_flags=frozenset("afHilLnPpRrsuvxT"),
+            long_flags=frozenset(
+                {
+                    "--archive",
+                    "--attributes-only",
+                    "--dereference",
+                    "--force",
+                    "--interactive",
+                    "--link",
+                    "--no-clobber",
+                    "--no-dereference",
+                    "--no-target-directory",
+                    "--recursive",
+                    "--remove-destination",
+                    "--strip-trailing-slashes",
+                    "--symbolic-link",
+                    "--update",
+                    "--verbose",
+                    "--one-file-system",
+                }
+            ),
+            incomplete_short_flags=frozenset("b"),
+            incomplete_short_value_options=frozenset("St"),
+            incomplete_long_flags=frozenset({"--backup", "--parents"}),
+            incomplete_long_value_options=frozenset(
+                {"--suffix", "--target-directory"}
+            ),
+        )
+    elif executable == "install":
+        operands, options_complete = _mutation_positionals(
+            args,
+            short_flags=frozenset("cCpsTv"),
+            short_value_options=frozenset("gmo"),
+            long_flags=frozenset(
+                {
+                    "--compare",
+                    "--no-target-directory",
+                    "--preserve-timestamps",
+                    "--strip",
+                    "--verbose",
+                }
+            ),
+            long_value_options=frozenset({"--group", "--mode", "--owner"}),
+            incomplete_short_flags=frozenset("bDd"),
+            incomplete_short_value_options=frozenset("St"),
+            incomplete_long_flags=frozenset(
+                {"--backup", "--directory"}
+            ),
+            incomplete_long_value_options=frozenset(
+                {"--suffix", "--target-directory"}
+            ),
+        )
+    else:
+        operands, options_complete = _mutation_positionals(
+            args,
+            short_flags=frozenset("fHilLnPrsTv"),
+            long_flags=frozenset(
+                {
+                    "--directory",
+                    "--force",
+                    "--interactive",
+                    "--logical",
+                    "--no-dereference",
+                    "--no-target-directory",
+                    "--physical",
+                    "--relative",
+                    "--symbolic",
+                    "--verbose",
+                }
+            ),
+            incomplete_short_flags=frozenset("b"),
+            incomplete_short_value_options=frozenset("St"),
+            incomplete_long_flags=frozenset({"--backup"}),
+            incomplete_long_value_options=frozenset(
+                {"--suffix", "--target-directory"}
+            ),
+        )
+
+    sources = operands[:-1] if operands else ()
+    destinations = operands[-1:] if len(operands) >= 2 else ()
+    literal_sources = _literal_mutation_paths(sources)
+    literal_destinations = _literal_mutation_paths(destinations)
+    operands_literal = _mutation_paths_are_bounded_literals(operands)
+    exact_destination = _mutation_has_exact_destination_option(args)
+    recursive = executable == "cp" and _mutation_has_recursive_option(
+        executable, args
+    )
+    return _MutationOperandAnalysis(
+        read_paths=literal_sources,
+        write_paths=literal_destinations,
+        read_set_complete=(
+            options_complete
+            and operands_literal
+            and len(operands) >= 2
+            and not recursive
+            and len(dict.fromkeys(literal_sources)) <= _MAX_RECEIPT_PATHS
+        ),
+        write_set_complete=(
+            options_complete
+            and operands_literal
+            and len(operands) == 2
+            and exact_destination
+            and not recursive
+        ),
+    )
+
+
+def _move_mutation_operands(args: Sequence[str]) -> _MutationOperandAnalysis:
+    operands, options_complete = _mutation_positionals(
+        args,
+        short_flags=frozenset("finTuv"),
+        long_flags=frozenset(
+            {
+                "--force",
+                "--interactive",
+                "--no-clobber",
+                "--no-copy",
+                "--no-target-directory",
+                "--strip-trailing-slashes",
+                "--update",
+                "--verbose",
+            }
+        ),
+        incomplete_short_flags=frozenset("b"),
+        incomplete_short_value_options=frozenset("St"),
+        incomplete_long_flags=frozenset({"--backup", "--exchange"}),
+        incomplete_long_value_options=frozenset(
+            {"--suffix", "--target-directory"}
+        ),
+    )
+    literal_operands = _literal_mutation_paths(operands)
+    operands_literal = _mutation_paths_are_bounded_literals(operands)
+    return _MutationOperandAnalysis(
+        write_paths=literal_operands,
+        read_set_complete=options_complete and operands_literal,
+        # A source directory moves a descendant tree, and a destination
+        # directory derives a basename. Shell syntax cannot prove either away.
+        write_set_complete=False,
+    )
+
+
+def _remove_mutation_operands(args: Sequence[str]) -> _MutationOperandAnalysis:
+    operands, options_complete = _mutation_positionals(
+        args,
+        short_flags=frozenset("dfiIRrv"),
+        long_flags=frozenset(
+            {
+                "--dir",
+                "--force",
+                "--interactive",
+                "--no-preserve-root",
+                "--one-file-system",
+                "--preserve-root",
+                "--recursive",
+                "--verbose",
+            }
+        ),
+    )
+    literal_operands = _literal_mutation_paths(operands)
+    operands_literal = _mutation_paths_are_bounded_literals(operands)
+    recursive = _mutation_has_recursive_option("rm", args)
+    return _MutationOperandAnalysis(
+        write_paths=literal_operands,
+        write_set_complete=(
+            options_complete
+            and bool(operands)
+            and operands_literal
+            and not recursive
+        ),
+    )
+
+
+def _sed_has_in_place_option(args: Sequence[str]) -> bool:
+    return any(
+        value == "-i"
+        or value.startswith("-i")
+        or value == "--in-place"
+        or value.startswith("--in-place=")
+        for value in args
+    )
+
+
+def _sed_in_place_mutation_operands(
+    args: Sequence[str],
+) -> _MutationOperandAnalysis:
+    option_complete = True
+    in_place = False
+    explicit_script = False
+    script_files: list[str] = []
+    positionals: list[str] = []
+    options_enabled = True
+    files_started = False
+    index = 0
+    while index < len(args):
+        value = args[index]
+        if not files_started and options_enabled and value == "--":
+            options_enabled = False
+            index += 1
+            continue
+        if (
+            not files_started
+            and options_enabled
+            and value.startswith("-")
+            and value != "-"
+        ):
+            if value in {"-i", "--in-place"}:
+                in_place = True
+            elif value.startswith("-i") or value.startswith("--in-place="):
+                in_place = True
+                # A backup suffix adds one derived write path per input file.
+                option_complete = False
+            elif value in {"-e", "--expression", "-f", "--file"}:
+                index += 1
+                if index >= len(args):
+                    return _MutationOperandAnalysis(
+                        read_set_complete=False, write_set_complete=False
+                    )
+                explicit_script = True
+                if value in {"-f", "--file"}:
+                    script_files.append(args[index])
+            elif value.startswith("-e") and value != "-e":
+                explicit_script = True
+            elif value.startswith("-f") and value != "-f":
+                explicit_script = True
+                script_files.append(value[2:])
+            elif value.startswith("--expression="):
+                explicit_script = True
+            elif value.startswith("--file="):
+                explicit_script = True
+                script_files.append(value.partition("=")[2])
+            elif value in {
+                "-E",
+                "-n",
+                "-r",
+                "-s",
+                "-u",
+                "-z",
+                "--null-data",
+                "--quiet",
+                "--regexp-extended",
+                "--sandbox",
+                "--separate",
+                "--silent",
+                "--unbuffered",
+            }:
+                pass
+            else:
+                return _MutationOperandAnalysis(
+                    read_set_complete=False, write_set_complete=False
+                )
+            index += 1
+            continue
+        files_started = True
+        positionals.append(value)
+        index += 1
+
+    files = tuple(positionals if explicit_script else positionals[1:])
+    dependencies = (*script_files, *files)
+    literal_dependencies = _literal_mutation_paths(dependencies)
+    literal_files = _literal_mutation_paths(files)
+    paths_literal = _mutation_paths_are_bounded_literals(dependencies)
+    complete = option_complete and in_place and bool(files) and paths_literal
+    return _MutationOperandAnalysis(
+        read_paths=literal_dependencies,
+        write_paths=literal_files,
+        read_set_complete=complete,
+        write_set_complete=complete,
+    )
+
+
+def _simple_mutation_operands(
+    executable: str, args: Sequence[str]
+) -> _MutationOperandAnalysis:
+    if executable in {"chmod", "chown"}:
+        operands, options_complete = _mutation_positionals(
+            args,
+            short_flags=frozenset("cfv"),
+            long_flags=frozenset({"--changes", "--quiet", "--silent", "--verbose"}),
+            incomplete_short_flags=frozenset("R"),
+            incomplete_long_flags=frozenset({"--recursive"}),
+        )
+        paths = operands[1:]
+    elif executable in {"mkdir", "rmdir"}:
+        operands, options_complete = _mutation_positionals(
+            args,
+            short_flags=frozenset("v"),
+            short_value_options=frozenset("m"),
+            long_flags=frozenset({"--verbose"}),
+            long_value_options=frozenset({"--mode"}),
+            incomplete_short_flags=frozenset("p"),
+            incomplete_long_flags=frozenset({"--parents"}),
+        )
+        paths = operands
+    elif executable == "truncate":
+        operands, options_complete = _mutation_positionals(
+            args,
+            short_flags=frozenset("co"),
+            short_value_options=frozenset("s"),
+            long_flags=frozenset({"--no-create"}),
+            long_value_options=frozenset({"--size"}),
+            incomplete_short_value_options=frozenset("r"),
+            incomplete_long_value_options=frozenset({"--reference"}),
+        )
+        paths = operands
+    elif executable == "touch":
+        operands, options_complete = _mutation_positionals(
+            args,
+            short_flags=frozenset("achm"),
+            long_flags=frozenset({"--no-create", "--no-dereference"}),
+            incomplete_short_value_options=frozenset("drt"),
+            incomplete_long_value_options=frozenset(
+                {"--date", "--reference", "--time"}
+            ),
+        )
+        paths = operands
+    else:
+        paths, options_complete = _mutation_positionals(args)
+
+    literal_paths = _literal_mutation_paths(paths)
+    paths_literal = _mutation_paths_are_bounded_literals(paths)
+    return _MutationOperandAnalysis(
+        write_paths=literal_paths,
+        write_set_complete=(
+            options_complete and bool(paths) and paths_literal
+        ),
+    )
+
+
+def _mutation_operand_analysis(
+    executable: str, args: Sequence[str]
+) -> _MutationOperandAnalysis:
+    if executable in {"cp", "install", "ln"}:
+        return _copy_like_mutation_operands(executable, args)
+    if executable == "mv":
+        return _move_mutation_operands(args)
+    if executable == "rm":
+        return _remove_mutation_operands(args)
+    return _simple_mutation_operands(executable, args)
 
 
 _SEARCH_LITERAL_FLAGS = frozenset(
@@ -848,7 +2059,22 @@ _GREP_VALUE_OPTIONS = {
 
 
 def _has_dynamic_path(value: str) -> bool:
-    return any(marker in value for marker in ("$", "`", "*", "?", "[", "]", "\n", "\r"))
+    return any(
+        marker in value
+        for marker in (
+            "$",
+            "`",
+            "*",
+            "?",
+            "[",
+            "]",
+            "{",
+            "}",
+            "~",
+            "\n",
+            "\r",
+        )
+    )
 
 
 def _consume_search_options(
@@ -1664,7 +2890,13 @@ def plan_terminal_execution(
     if language not in TERMINAL_LANGUAGES:
         return TerminalExecutionPlan("unknown", "unknown", False, False)
     if language == "python":
-        effect, reads, writes, read_set_complete = _python_effect_and_paths(code)
+        (
+            effect,
+            reads,
+            writes,
+            read_set_complete,
+            write_set_complete,
+        ) = _python_effect_and_paths(code)
         try:
             ast.parse(code, mode="exec")
         except (SyntaxError, ValueError, TypeError):
@@ -1684,16 +2916,27 @@ def plan_terminal_execution(
             False,
             read_set_complete and entries_complete,
             read_ranges=read_ranges,
+            write_set_complete=write_set_complete,
         )
     nested_heredoc = _python_heredoc_source(code)
     if nested_heredoc is not None:
         nested_python, literal, nested_executable = nested_heredoc
         if literal:
-            effect, reads, writes, read_set_complete = _python_effect_and_paths(
-                nested_python
-            )
+            (
+                effect,
+                reads,
+                writes,
+                read_set_complete,
+                write_set_complete,
+            ) = _python_effect_and_paths(nested_python)
         else:
-            effect, reads, writes, read_set_complete = "unknown", (), (), False
+            effect, reads, writes, read_set_complete, write_set_complete = (
+                "unknown",
+                (),
+                (),
+                False,
+                False,
+            )
         try:
             ast.parse(nested_python, mode="exec")
         except (SyntaxError, ValueError, TypeError):
@@ -1717,6 +2960,7 @@ def plan_terminal_execution(
             (terminal_command_sha256(nested_python),),
             read_ranges=read_ranges,
             executable_tokens=(nested_executable,),
+            write_set_complete=write_set_complete,
         )
     if _looks_like_bare_python(code):
         # run_code is a shell contract.  Recognizing Python-looking input here
@@ -1751,7 +2995,9 @@ def plan_terminal_execution(
     writes: list[str] = []
     known_mutation = False
     unknown = background_operator
+    unknown_component = False
     read_set_complete = True
+    write_set_complete = True
     callback_kinds: set[str] = set()
     executable_tokens: list[str] = []
     command_cwd, command_cwd_safe = shell_command_working_directory(code)
@@ -1773,6 +3019,8 @@ def plan_terminal_execution(
                 known_mutation = True
             if path is not None:
                 writes.append(path)
+            elif not non_file_target:
+                write_set_complete = False
         elif redirect_type == "<" and path is not None:
             read_entries.append((path, _FULL_READ))
         elif redirect_type == "<":
@@ -1819,6 +3067,8 @@ def plan_terminal_execution(
             )
             if leading_assignments or wrapper or untrusted_explicit_path:
                 unknown = True
+            if untrusted_explicit_path:
+                unknown_component = True
         executable, args = _command_words(words)
         if not executable:
             continue
@@ -1842,45 +3092,83 @@ def plan_terminal_execution(
             unknown = True
         if executable in _SHELL_MUTATION_COMMANDS:
             known_mutation = True
-            writes.extend(_path_arguments(executable, args))
+            mutation = _mutation_operand_analysis(executable, args)
+            read_entries.extend(
+                (path, _FULL_READ) for path in mutation.read_paths
+            )
+            writes.extend(mutation.write_paths)
+            read_set_complete = (
+                read_set_complete and mutation.read_set_complete
+            )
+            write_set_complete = (
+                write_set_complete and mutation.write_set_complete
+            )
             continue
         if executable in _PYTHON_EXECUTABLES:
-            python_source = _python_source_from_shell_command(node, args)
+            python_source = _python_source_from_shell_command(node, code)
             if python_source is None:
                 unknown = True
+                unknown_component = True
                 continue
             (
                 python_effect,
                 python_reads,
                 python_writes,
                 python_reads_complete,
+                python_writes_complete,
             ) = _python_effect_and_paths(python_source)
             read_entries.extend((path, _FULL_READ) for path in python_reads)
             writes.extend(python_writes)
             read_set_complete = read_set_complete and python_reads_complete
+            write_set_complete = write_set_complete and python_writes_complete
             if python_effect == "mutating":
                 known_mutation = True
             elif python_effect != "read_only":
                 unknown = True
+                unknown_component = True
             continue
-        if executable == "sed" and any(
-            value == "-i" or value.startswith("-i") for value in args
-        ):
+        if executable == "sed" and _sed_has_in_place_option(args):
             known_mutation = True
-            writes.extend(_path_arguments(executable, args))
+            mutation = _sed_in_place_mutation_operands(args)
+            read_entries.extend(
+                (path, _FULL_READ) for path in mutation.read_paths
+            )
+            writes.extend(mutation.write_paths)
+            read_set_complete = (
+                read_set_complete and mutation.read_set_complete
+            )
+            write_set_complete = (
+                write_set_complete and mutation.write_set_complete
+            )
             continue
         command_read_only, command_entries, command_complete = _generic_read_analysis(
             executable, args
         )
         if not command_read_only:
             unknown = True
+            unknown_component = True
             continue
         read_entries.extend(command_entries)
         read_set_complete = read_set_complete and command_complete
 
-    effect = "mutating" if known_mutation else "unknown" if unknown else "read_only"
+    effect = (
+        "unknown"
+        if unknown_component
+        else "mutating"
+        if known_mutation
+        else "unknown"
+        if unknown
+        else "read_only"
+    )
     read_paths, read_ranges, entries_complete = _bounded_read_entries(read_entries)
     read_set_complete = read_set_complete and entries_complete
+    if (
+        len(dict.fromkeys(writes)) > _MAX_RECEIPT_PATHS
+        or any(len(path) > _MAX_RECEIPT_PATH_CHARS for path in writes)
+        or unknown_component
+        or (known_mutation and unknown)
+    ):
+        write_set_complete = False
     return TerminalExecutionPlan(
         "shell",
         effect,
@@ -1902,6 +3190,7 @@ def plan_terminal_execution(
         callback_kinds=tuple(sorted(callback_kinds)),
         executable_tokens=tuple(executable_tokens[:16]),
         executable_set_complete=len(executable_tokens) <= 16,
+        write_set_complete=write_set_complete,
     )
 
 
@@ -2006,6 +3295,7 @@ def build_terminal_execution_receipt(
         "read_projection_reusable": bool(plan.read_projection_reusable),
         "read_representation": representation,
         "write_paths": list(plan.write_paths),
+        "write_set_complete": plan.write_set_complete,
         "read_set_complete": plan.read_set_complete,
         "read_path_epochs": read_epochs,
         "workspace_generation_delta": generation_delta,
@@ -2028,6 +3318,7 @@ def build_terminal_execution_receipt(
 
 __all__ = [
     "TERMINAL_EFFECTS",
+    "TERMINAL_EXECUTION_AUTHORITY_ENV",
     "TERMINAL_CACHEABLE_EFFECT_SOURCES",
     "TERMINAL_EXECUTION_ANALYZER_VERSION",
     "TERMINAL_LANGUAGE_CONTRACT_VERSION",
@@ -2041,4 +3332,5 @@ __all__ = [
     "python_is_provably_read_only",
     "shell_command_working_directory",
     "terminal_command_sha256",
+    "terminal_execution_context_sha256",
 ]

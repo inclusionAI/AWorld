@@ -52,9 +52,11 @@ from mcp.types import TextContent
 from pydantic import Field, BaseModel
 
 from aworld.sandbox.terminal_receipt import (
+    TERMINAL_EXECUTION_AUTHORITY_ENV,
     TerminalExecutionPlan,
     build_terminal_execution_receipt,
     plan_terminal_execution,
+    terminal_execution_context_sha256,
 )
 from aworld.sandbox.artifact_observation import (
     artifact_mcp_result,
@@ -72,11 +74,18 @@ from aworld.sandbox.task_budget import (
 _TERMINAL_RECEIPT_PARAMETERS = frozenset(
     inspect.signature(build_terminal_execution_receipt).parameters
 )
+_TERMINAL_EXECUTION_CONTEXT_SHA256 = (
+    terminal_execution_context_sha256(sys.executable)
+)
 
 
 def _build_terminal_execution_receipt(**kwargs: Any) -> dict[str, Any]:
     """Keep source-tree stdio servers compatible during additive upgrades."""
 
+    if "execution_context_sha256" in _TERMINAL_RECEIPT_PARAMETERS:
+        kwargs.setdefault(
+            "execution_context_sha256", _TERMINAL_EXECUTION_CONTEXT_SHA256
+        )
     return build_terminal_execution_receipt(
         **{
             key: value
@@ -469,6 +478,9 @@ def _resolve_environment(
             )
         normalized[raw_name] = raw_value
     resolved = {**os.environ, **normalized}
+    # This parent/stdio-sidecar cache authority is framework state, not task
+    # command configuration. Never project it into model-executed processes.
+    resolved.pop(TERMINAL_EXECUTION_AUTHORITY_ENV, None)
     if isinstance(framework_scope, Mapping):
         for source_name, environment_name in (
             ("task_id", "AWORLD_TASK_ID"),

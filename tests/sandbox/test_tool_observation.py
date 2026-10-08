@@ -1,6 +1,8 @@
 import hashlib
 import json
 from pathlib import Path
+import shlex
+import sys
 from types import SimpleNamespace
 
 import pytest
@@ -21,6 +23,7 @@ from aworld.sandbox.terminal_receipt import (
     TerminalExecutionPlan,
     build_terminal_execution_receipt,
     plan_terminal_execution,
+    terminal_execution_context_sha256,
 )
 
 
@@ -262,6 +265,443 @@ def test_shell_classifier_recognizes_inline_python_file_mutation() -> None:
         assert effect.cacheable is False
 
 
+@pytest.mark.parametrize(
+    ("code", "read_paths", "write_paths", "write_set_complete"),
+    (
+        ("cp source.txt result.txt", ("source.txt",), ("result.txt",), False),
+        ("cp -T source.txt result.txt", ("source.txt",), ("result.txt",), True),
+        ("install source.txt result.txt", ("source.txt",), ("result.txt",), False),
+        (
+            "install -T -m 644 source.txt result.txt",
+            ("source.txt",),
+            ("result.txt",),
+            True,
+        ),
+        ("ln source.txt result.txt", ("source.txt",), ("result.txt",), False),
+        ("ln -T source.txt result.txt", ("source.txt",), ("result.txt",), True),
+        ("mv source.txt result.txt", (), ("source.txt", "result.txt"), False),
+        ("rm first.txt second.txt", (), ("first.txt", "second.txt"), True),
+        (
+            "sed -i 's/before/after/' source.txt",
+            ("source.txt",),
+            ("source.txt",),
+            True,
+        ),
+    ),
+)
+def test_terminal_plan_models_literal_mutation_operands_by_command_semantics(
+    code: str,
+    read_paths: tuple[str, ...],
+    write_paths: tuple[str, ...],
+    write_set_complete: bool,
+) -> None:
+    plan = plan_terminal_execution(code)
+
+    assert plan.effect == "mutating"
+    assert plan.read_paths == read_paths
+    assert plan.write_paths == write_paths
+    assert plan.write_set_complete is write_set_complete
+
+
+@pytest.mark.parametrize(
+    "code",
+    (
+        "touch $TARGET",
+        "touch {declared,helper}.txt",
+        "touch ~/result.txt",
+        'rm "$TARGET"',
+        "rm build/*.o",
+        'mv source.txt "$DESTINATION"',
+        'cp "$SOURCE" result.txt',
+        "install source-*.txt result.txt",
+        'ln source.txt "$DESTINATION"',
+        "cp --target-directory=result source.txt",
+        "cp first.txt second.txt result",
+        "install first.txt second.txt result",
+        "ln first.txt second.txt result",
+        "mv first.txt second.txt result",
+        "sed -i.bak 's/before/after/' source.txt",
+        'sed -i "s/before/after/" "$TARGET"',
+    ),
+)
+def test_terminal_plan_fails_closed_for_ambiguous_mutation_operands(
+    code: str,
+) -> None:
+    plan = plan_terminal_execution(code)
+
+    assert plan.effect == "mutating"
+    assert plan.write_set_complete is False
+
+
+def test_terminal_plan_bounds_write_paths_and_marks_truncation_incomplete() -> None:
+    overlong_path = "x" * 513
+    overlong = plan_terminal_execution(f"touch {overlong_path}")
+    too_many = plan_terminal_execution(
+        "rm " + " ".join(f"output-{index}.txt" for index in range(17))
+    )
+
+    assert overlong.write_paths == ("x" * 512,)
+    assert overlong.write_set_complete is False
+    assert len(too_many.write_paths) == 16
+    assert too_many.write_paths[0] == "output-0.txt"
+    assert too_many.write_paths[-1] == "output-15.txt"
+    assert too_many.write_set_complete is False
+
+
+@pytest.mark.parametrize(
+    "code",
+    (
+        "printf changed > declared.txt; make",
+        "rm declared.txt; curl https://example.invalid",
+        "touch declared.txt; bash script.sh",
+        "printf changed > declared.txt | opaque-filter",
+    ),
+)
+def test_unknown_shell_component_cannot_hide_behind_known_mutation(code: str) -> None:
+    plan = plan_terminal_execution(code)
+
+    assert plan.effect == "unknown"
+    assert plan.write_set_complete is False
+
+
+@pytest.mark.parametrize(
+    ("source", "read_paths", "write_paths", "write_set_complete"),
+    (
+        (
+            "import os; os.rename('/app/a', '/app/b')",
+            (),
+            ("/app/a", "/app/b"),
+            False,
+        ),
+        (
+            "import os; os.replace('/app/a', '/app/b')",
+            (),
+            ("/app/a", "/app/b"),
+            False,
+        ),
+        (
+            "import shutil; shutil.move('/app/a', '/app/b')",
+            (),
+            ("/app/a", "/app/b"),
+            False,
+        ),
+        (
+            "from pathlib import Path; Path('/app/a').rename('/app/b')",
+            (),
+            ("/app/a", "/app/b"),
+            False,
+        ),
+        (
+            "from pathlib import Path; Path('/app/a').replace('/app/b')",
+            (),
+            ("/app/a", "/app/b"),
+            False,
+        ),
+        (
+            "import shutil; shutil.copy('/app/source', '/app/result')",
+            ("/app/source",),
+            ("/app/result",),
+            False,
+        ),
+        (
+            "import shutil; shutil.copy2('/app/source', '/app/result')",
+            ("/app/source",),
+            ("/app/result",),
+            False,
+        ),
+        (
+            "import shutil; shutil.copyfile('/app/source', '/app/result')",
+            ("/app/source",),
+            ("/app/result",),
+            True,
+        ),
+        (
+            "import shutil; shutil.copytree('/app/source', '/app/result')",
+            ("/app/source",),
+            ("/app/result",),
+            False,
+        ),
+    ),
+)
+def test_python_mutation_plan_models_move_and_copy_endpoints(
+    source: str,
+    read_paths: tuple[str, ...],
+    write_paths: tuple[str, ...],
+    write_set_complete: bool,
+) -> None:
+    plan = plan_terminal_execution(source, language="python")
+
+    assert plan.effect == "mutating"
+    assert plan.read_paths == read_paths
+    assert plan.write_paths == write_paths
+    assert plan.write_set_complete is write_set_complete
+
+
+@pytest.mark.parametrize(
+    ("source", "write_path"),
+    (
+        (
+            "import json\n"
+            "open('/app/out.json', 'w').write(json.dumps({'ok': True}))\n",
+            "/app/out.json",
+        ),
+        (
+            "import json\n"
+            "with open('/app/out.json', 'w') as output:\n"
+            "    json.dump({'ok': True}, output)\n",
+            "/app/out.json",
+        ),
+        (
+            "import csv\n"
+            "with open('/app/out.csv', 'w') as output:\n"
+            "    csv.writer(output).writerow(['x', 'y'])\n",
+            "/app/out.csv",
+        ),
+        (
+            "import csv\n"
+            "with open('/app/out.csv', 'w') as output:\n"
+            "    writer = csv.writer(output)\n"
+            "    writer.writerow(['x', 'y'])\n",
+            "/app/out.csv",
+        ),
+        (
+            "from pathlib import Path\n"
+            "with Path('/app/out.txt').open('w') as output:\n"
+            "    output.write('done')\n",
+            "/app/out.txt",
+        ),
+        (
+            "from pathlib import Path\n"
+            "target = Path('/app', 'out.txt')\n"
+            "with target.open('w') as output:\n"
+            "    output.write('done')\n",
+            "/app/out.txt",
+        ),
+        (
+            "from pathlib import Path\n"
+            "Path('/ignored', '/app', 'out.txt').write_text('done')\n",
+            "/app/out.txt",
+        ),
+        (
+            "from pathlib import Path\n"
+            "Path('/app/out.txt').open('w').write('done')\n",
+            "/app/out.txt",
+        ),
+    ),
+)
+def test_python_known_writer_stacks_keep_declared_output_complete(
+    source: str, write_path: str
+) -> None:
+    plan = plan_terminal_execution(source, language="python")
+
+    assert plan.effect == "mutating"
+    assert plan.read_paths == ()
+    assert plan.write_paths == (write_path,)
+    assert plan.write_set_complete is True
+
+
+@pytest.mark.parametrize(
+    ("source", "write_set_complete"),
+    (
+        ("import os; os.mkdir('/app/declared')", True),
+        (
+            "import os; os.makedirs('/app/declared/nested', exist_ok=True)",
+            False,
+        ),
+        (
+            "from pathlib import Path; Path('/app/declared').mkdir()",
+            True,
+        ),
+        (
+            "from pathlib import Path; "
+            "Path('/app/declared/nested').mkdir(parents=True)",
+            False,
+        ),
+        (
+            "from pathlib import Path; "
+            "Path('/app/declared/nested').mkdir(parents=CREATE_PARENTS)",
+            False,
+        ),
+    ),
+)
+def test_python_directory_creation_reports_implicit_parent_writes(
+    source: str, write_set_complete: bool
+) -> None:
+    plan = plan_terminal_execution(source, language="python")
+
+    assert plan.effect == "mutating"
+    assert plan.write_set_complete is write_set_complete
+
+
+def test_unproven_python_attribute_open_is_not_read_only() -> None:
+    plan = plan_terminal_execution("client.open('w')", language="python")
+
+    assert plan.effect == "unknown"
+    assert plan.write_paths == ()
+    assert plan.write_set_complete is False
+
+
+@pytest.mark.parametrize(
+    ("source", "write_paths", "write_set_complete"),
+    (
+        (
+            "import numpy as np; np.save('/app/out', np.array([1]))",
+            ("/app/out.npy",),
+            True,
+        ),
+        (
+            "import numpy as np; np.save('/app/out.npy', np.array([1]))",
+            ("/app/out.npy",),
+            True,
+        ),
+        (
+            "from pathlib import Path\n"
+            "import numpy as np\n"
+            "np.save(Path('/app', 'out'), np.array([1]))\n",
+            ("/app/out.npy",),
+            True,
+        ),
+        (
+            "import numpy as np\n"
+            "with open('/app/out.bin', 'wb') as output:\n"
+            "    np.save(output, np.array([1]))\n",
+            ("/app/out.bin",),
+            True,
+        ),
+        (
+            "import numpy as np; np.save(destination, np.array([1]))",
+            (),
+            False,
+        ),
+    ),
+)
+def test_numpy_save_reports_runtime_filename_semantics(
+    source: str,
+    write_paths: tuple[str, ...],
+    write_set_complete: bool,
+) -> None:
+    plan = plan_terminal_execution(source, language="python")
+
+    assert plan.effect == "mutating"
+    assert plan.write_paths == write_paths
+    assert plan.write_set_complete is write_set_complete
+
+
+@pytest.mark.parametrize(
+    "source",
+    (
+        "from pathlib import Path; "
+        "Path('/app', OUTPUT_NAME).write_text('done')",
+        "from pathlib import Path\n"
+        "target = Path('/app', OUTPUT_NAME)\n"
+        "target.open('w')\n",
+        "from pathlib import Path\n"
+        "import numpy as np\n"
+        "np.save(Path('/app', OUTPUT_NAME), np.array([1]))\n",
+    ),
+)
+def test_dynamic_path_constructor_segment_fails_closed(source: str) -> None:
+    plan = plan_terminal_execution(source, language="python")
+
+    assert plan.effect in {"mutating", "unknown"}
+    assert plan.write_paths == ()
+    assert plan.write_set_complete is False
+
+
+def test_generic_save_receiver_cannot_claim_complete_write_set() -> None:
+    plan = plan_terminal_execution(
+        "artifact.save('/app/out')", language="python"
+    )
+
+    assert plan.effect == "unknown"
+    assert plan.write_paths == ("/app/out",)
+    assert plan.write_set_complete is False
+
+
+@pytest.mark.parametrize(
+    "source",
+    (
+        "rm -rf /app/tree",
+        "cp -r -T /app/source /app/result",
+        "python -c \"import shutil; shutil.rmtree('/app/tree')\"",
+    ),
+)
+def test_recursive_mutation_never_claims_exact_write_set(source: str) -> None:
+    plan = plan_terminal_execution(source)
+
+    assert plan.effect == "mutating"
+    assert plan.write_set_complete is False
+
+
+@pytest.mark.parametrize(
+    "unknown_component",
+    (
+        "__import__('os').system('true')",
+        "exec('value = 1')",
+        "unknown_callback()",
+        "import subprocess",
+    ),
+)
+def test_unknown_python_component_cannot_hide_behind_known_mutation(
+    unknown_component: str,
+) -> None:
+    source = (
+        "from pathlib import Path\n"
+        "Path('/app/out.txt').write_text('done')\n"
+        f"{unknown_component}\n"
+    )
+
+    plan = plan_terminal_execution(source, language="python")
+
+    assert plan.effect == "unknown"
+    assert plan.write_paths == ("/app/out.txt",)
+    assert plan.write_set_complete is False
+
+
+def test_quoted_python_heredoc_propagates_unknown_effect_component() -> None:
+    source = """python <<'PY'
+from pathlib import Path
+Path('/app/out.txt').write_text('done')
+unknown_callback()
+PY
+"""
+
+    plan = plan_terminal_execution(source)
+
+    assert plan.effect == "unknown"
+    assert plan.write_paths == ("/app/out.txt",)
+    assert plan.write_set_complete is False
+
+
+def test_python_gcode_transform_keeps_complete_declared_output() -> None:
+    source = """
+rows = open('/app/text.gcode').read().splitlines()
+revised = []
+for index, row in enumerate(rows):
+    line = row.strip()
+    if not line:
+        continue
+    values = []
+    for token in line.split():
+        bounded = max(0.0, min(float(index), 999.0))
+        values.append(str(round(bounded, 3)))
+    revised.append(''.join(values).rstrip())
+payload = '\\n'.join(revised).lstrip()
+print(int(len(payload)))
+with open('/app/out.txt', 'w') as output:
+    output.write(payload)
+    output.flush()
+"""
+
+    plan = plan_terminal_execution(source, language="python")
+
+    assert plan.effect == "mutating"
+    assert plan.read_paths == ("/app/text.gcode",)
+    assert plan.write_paths == ("/app/out.txt",)
+    assert plan.read_set_complete is True
+    assert plan.write_set_complete is True
+
+
 def test_shell_classifier_types_quoted_python_heredoc_read_and_write() -> None:
     read_source = """python3 <<'PY'\nfrom pathlib import Path\nprint(Path('/app/input.txt').read_text())\nPY\n"""
     write_source = """python <<'PY'\nfrom pathlib import Path\nPath('/app/result.txt').write_text('done')\nPY\n"""
@@ -282,6 +722,7 @@ def test_shell_classifier_types_quoted_python_heredoc_read_and_write() -> None:
         executed=True,
         exit_code=0,
         timed_out=False,
+        execution_context_sha256="sha256:" + "e" * 64,
     )
     assert receipt["nested_language_evidence"] == [
         {
@@ -381,6 +822,62 @@ def test_relative_declared_target_uses_trusted_workspace_without_basename_alias(
     assert sibling_write.declared_deliverable_targeted is False
 
 
+def test_filesystem_copy_targets_only_mutated_destination(tmp_path) -> None:
+    context = _context()
+    context.workspace_path = str(tmp_path)
+    destination = tmp_path / "result.json"
+    context.context_info = {
+        "public_deliverable_contract": {
+            "schema_version": "aworld.public-deliverables/v1",
+            "authority": "public_task_advisory",
+            "source": "public_task_text",
+            "artifacts": [
+                {
+                    "deliverable_id": "result",
+                    "path": str(destination),
+                    "display_path": "result.json",
+                    "kind": "file",
+                    "authority": "public_task_advisory",
+                }
+            ],
+        }
+    }
+
+    receipt = build_planned_action_semantic_receipt(
+        context=context,
+        tool_name="filesystem__copy_file",
+        arguments={
+            "source": "/tmp/read-only-input.json",
+            "destination": str(destination),
+        },
+        delivery_intent="produce_candidate",
+    )
+
+    assert receipt.effect == "mutating"
+    assert receipt.target_ids == (semantic_target_sha256(str(destination)),)
+    assert receipt.declared_deliverable_targeted is True
+
+
+def test_filesystem_move_targets_source_and_destination(tmp_path) -> None:
+    context = _context()
+    context.workspace_path = str(tmp_path)
+    source = tmp_path / "scratch.json"
+    destination = tmp_path / "result.json"
+
+    receipt = build_planned_action_semantic_receipt(
+        context=context,
+        tool_name="filesystem__move_file",
+        arguments={"source": str(source), "destination": str(destination)},
+        delivery_intent="produce_candidate",
+    )
+
+    assert receipt.effect == "mutating"
+    assert receipt.target_ids == (
+        semantic_target_sha256(str(source)),
+        semantic_target_sha256(str(destination)),
+    )
+
+
 def test_registered_validation_semantics_require_canonical_cwd(tmp_path) -> None:
     context = _context()
     context.workspace_path = str(tmp_path)
@@ -478,6 +975,7 @@ def test_authoritative_terminal_receipt_overrides_raw_code_guess_and_seeds_cache
         exit_code=0,
         timed_out=False,
         effect_source="trusted_command_contract",
+        execution_context_sha256=terminal_execution_context_sha256(sys.executable),
     )
 
     observed = runtime.record(
@@ -498,6 +996,41 @@ def test_authoritative_terminal_receipt_overrides_raw_code_guess_and_seeds_cache
     assert sandbox_receipt["workspace_generation"] == 0
     assert repeated is not None
     assert repeated.metadata["sandbox_observation"]["cache_hit"] is True
+
+
+def test_terminal_execution_context_does_not_seed_outer_sandbox_replay() -> None:
+    runtime = SandboxToolObservationRuntime()
+    context = _context()
+    code = "print('provider-bound')"
+    action = {
+        "tool_name": "terminal",
+        "action_name": "run_code",
+        "params": {"code": code, "language": "python"},
+    }
+    receipt = build_terminal_execution_receipt(
+        code=code,
+        plan=plan_terminal_execution(code, language="python"),
+        executed=True,
+        exit_code=0,
+        timed_out=False,
+        effect_source="trusted_command_contract",
+        execution_context_sha256="sha256:" + "e" * 64,
+    )
+
+    observed = runtime.record(
+        action,
+        ActionResult(
+            success=True,
+            content="provider-bound\n",
+            parameter=action["params"],
+            metadata={TERMINAL_EXECUTION_RECEIPT_KEY: receipt},
+        ),
+        context=context,
+    )
+
+    assert observed.metadata["sandbox_observation"]["effect"] == "read_only"
+    assert observed.metadata["sandbox_observation"]["exact_replay_cached"] is False
+    assert runtime.lookup(action, context=context) is None
 
 
 def test_explicit_file_epoch_revalidates_cache_across_unknown_generation(
@@ -530,6 +1063,7 @@ def test_explicit_file_epoch_revalidates_cache_across_unknown_generation(
         read_path_epochs=[_file_epoch(source)],
         representation="terminal.run-code.structured.full/v1",
         source_checkpoint_revision=0,
+        execution_context_sha256=terminal_execution_context_sha256(sys.executable),
     )
     runtime.record(
         read_action,
@@ -590,6 +1124,7 @@ def test_cross_generation_epoch_mismatch_reexecutes_read(
         read_path_epochs=[_file_epoch(source)],
         representation="terminal.run-code.structured.full/v1",
         source_checkpoint_revision=0,
+        execution_context_sha256=terminal_execution_context_sha256(sys.executable),
     )
     runtime.record(
         action,
@@ -632,6 +1167,7 @@ def test_implicit_read_dependency_does_not_cross_generation() -> None:
         exit_code=0,
         timed_out=False,
         effect_source="trusted_command_contract",
+        execution_context_sha256=terminal_execution_context_sha256(sys.executable),
     )
     runtime.record(
         action,
@@ -725,6 +1261,195 @@ def test_malformed_terminal_read_coverage_cannot_seed_replay(tmp_path: Path) -> 
 
     assert observed.metadata["sandbox_observation"]["effect"] == "unknown"
     assert runtime.lookup(action, context=context) is None
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    (
+        ("effect", "unknown"),
+        ("potential_effect", "read_only"),
+        ("write_paths", []),
+        ("write_set_complete", False),
+    ),
+)
+def test_terminal_receipt_cannot_rewrite_shared_mutation_plan(
+    field: str,
+    value: object,
+) -> None:
+    runtime = SandboxToolObservationRuntime()
+    context = _context()
+    code = "printf updated > /app/result.txt"
+    action = {
+        "tool_name": "terminal",
+        "action_name": "run_code",
+        "params": {"code": code},
+    }
+    receipt = build_terminal_execution_receipt(
+        code=code,
+        plan=plan_terminal_execution(code),
+        executed=True,
+        exit_code=0,
+        timed_out=False,
+    )
+    receipt[field] = value
+
+    observed = runtime.record(
+        action,
+        ActionResult(
+            success=True,
+            content="updated",
+            parameter=action["params"],
+            metadata={TERMINAL_EXECUTION_RECEIPT_KEY: receipt},
+        ),
+        context=context,
+    )
+
+    assert observed.metadata["sandbox_observation"]["effect"] == "unknown"
+    assert "action_semantic_receipt" not in observed.metadata["sandbox_observation"]
+
+
+def test_terminal_receipt_cannot_replace_dispatched_code_with_result_echo() -> None:
+    runtime = SandboxToolObservationRuntime()
+    context = _context()
+    dispatched = "printf declared > /app/result.txt; printf helper > /tmp/helper.txt"
+    substituted = "printf declared > /app/result.txt"
+    action = {
+        "tool_name": "terminal",
+        "action_name": "run_code",
+        "params": {"code": dispatched},
+    }
+    receipt = build_terminal_execution_receipt(
+        code=substituted,
+        plan=plan_terminal_execution(substituted),
+        executed=True,
+        exit_code=0,
+        timed_out=False,
+    )
+
+    observed = runtime.record(
+        action,
+        ActionResult(
+            success=True,
+            content="declared",
+            parameter={"code": substituted},
+            metadata={TERMINAL_EXECUTION_RECEIPT_KEY: receipt},
+        ),
+        context=context,
+    )
+
+    sandbox = observed.metadata["sandbox_observation"]
+    assert sandbox["effect"] == "unknown"
+    assert "action_semantic_receipt" not in sandbox
+
+
+def test_terminal_receipt_binds_remote_python_executable_authority() -> None:
+    runtime = SandboxToolObservationRuntime()
+    context = _context()
+    provider_python = "/remote/venv/bin/python"
+    python_source = "open('/app/result.txt', 'w').write('updated')"
+    code = f"{shlex.quote(provider_python)} -c {shlex.quote(python_source)}"
+    action = {
+        "tool_name": "terminal",
+        "action_name": "run_code",
+        "params": {"code": code},
+    }
+    provider_plan = plan_terminal_execution(
+        code,
+        trusted_executable_paths=(provider_python,),
+    )
+    assert provider_plan.effect == "mutating"
+    assert provider_plan.write_paths == ("/app/result.txt",)
+    receipt = build_terminal_execution_receipt(
+        code=code,
+        plan=provider_plan,
+        executed=True,
+        exit_code=0,
+        timed_out=False,
+        execution_context_sha256="sha256:" + "e" * 64,
+    )
+
+    observed = runtime.record(
+        action,
+        ActionResult(
+            success=True,
+            content="updated",
+            parameter=action["params"],
+            metadata={TERMINAL_EXECUTION_RECEIPT_KEY: receipt},
+        ),
+        context=context,
+    )
+
+    semantic = observed.metadata["sandbox_observation"][
+        "action_semantic_receipt"
+    ]
+    assert semantic["effect"] == "mutating"
+    assert semantic["target_ids"] == [semantic_target_sha256("/app/result.txt")]
+
+    unattested = dict(receipt)
+    unattested.pop("execution_context_sha256")
+    rejected = SandboxToolObservationRuntime().record(
+        action,
+        ActionResult(
+            success=True,
+            content="updated",
+            parameter=action["params"],
+            metadata={TERMINAL_EXECUTION_RECEIPT_KEY: unattested},
+        ),
+        context=_context(),
+    )
+    rejected_sandbox = rejected.metadata["sandbox_observation"]
+    assert rejected_sandbox["effect"] == "unknown"
+    assert "action_semantic_receipt" not in rejected_sandbox
+
+
+@pytest.mark.parametrize(
+    ("python_source", "write_path"),
+    (
+        (
+            "open(\"/app/it's.txt\", 'w').write('nested \\\"quote\\\"')",
+            "/app/it's.txt",
+        ),
+        (
+            "open('/app/$literal.txt', 'w').write('not expanded')",
+            "/app/$literal.txt",
+        ),
+    ),
+)
+def test_shell_quoted_python_source_decodes_literal_quote_splices(
+    python_source: str, write_path: str
+) -> None:
+    code = f"{shlex.quote(sys.executable)} -c {shlex.quote(python_source)}"
+
+    plan = plan_terminal_execution(
+        code,
+        trusted_executable_paths=(sys.executable,),
+    )
+
+    assert plan.effect == "mutating"
+    assert plan.write_paths == (write_path,)
+    assert plan.write_set_complete is True
+
+
+@pytest.mark.parametrize(
+    "python_argument",
+    (
+        '"$PYTHON_SOURCE"',
+        '"open(\'/app/$TARGET.txt\', \'w\').write(\'expanded\')"',
+    ),
+)
+def test_shell_python_source_with_runtime_expansion_stays_unknown(
+    python_argument: str,
+) -> None:
+    code = f"{shlex.quote(sys.executable)} -c {python_argument}"
+
+    plan = plan_terminal_execution(
+        code,
+        trusted_executable_paths=(sys.executable,),
+    )
+
+    assert plan.effect == "unknown"
+    assert plan.write_paths == ()
+    assert plan.write_set_complete is False
 
 
 def test_provider_authoritative_container_epoch_is_not_replayed_on_host() -> None:
@@ -1014,6 +1739,7 @@ def test_cache_requires_complete_scope_but_zero_task_epoch_is_valid() -> None:
         exit_code=0,
         timed_out=False,
         effect_source="trusted_command_contract",
+        execution_context_sha256=terminal_execution_context_sha256(sys.executable),
     )
     zero_epoch = SimpleNamespace(
         task_id="task",
@@ -1077,6 +1803,7 @@ def test_sandbox_scope_separates_agent_branch_and_session_epoch() -> None:
         exit_code=0,
         timed_out=False,
         effect_source="trusted_command_contract",
+        execution_context_sha256=terminal_execution_context_sha256(sys.executable),
     )
     source = _context()
     runtime.record(
@@ -1360,13 +2087,7 @@ def test_background_execution_makes_scope_replay_volatile() -> None:
     }
     background_receipt = build_terminal_execution_receipt(
         code=background_code,
-        plan=TerminalExecutionPlan(
-            "shell",
-            "unknown",
-            False,
-            True,
-            background=True,
-        ),
+        plan=plan_terminal_execution(background_code),
         executed=True,
         exit_code=0,
         timed_out=False,
@@ -1431,6 +2152,7 @@ def test_cache_misses_after_checkpoint_and_renews_after_fresh_execution() -> Non
         exit_code=0,
         timed_out=False,
         effect_source="trusted_command_contract",
+        execution_context_sha256=terminal_execution_context_sha256(sys.executable),
     )
     runtime.record(
         action,
@@ -1506,6 +2228,7 @@ def test_oversized_file_result_retains_only_compact_epoch_bound_facts(
         read_path_epochs=[_file_epoch(source)],
         representation="terminal.run-code.structured.full/v1",
         source_checkpoint_revision=0,
+        execution_context_sha256=terminal_execution_context_sha256(sys.executable),
     )
 
     observed = runtime.record(
@@ -1674,6 +2397,7 @@ def test_uncopyable_result_is_not_retained_for_exact_replay() -> None:
         exit_code=0,
         timed_out=False,
         effect_source="trusted_command_contract",
+        execution_context_sha256=terminal_execution_context_sha256(sys.executable),
     )
 
     observed = runtime.record(

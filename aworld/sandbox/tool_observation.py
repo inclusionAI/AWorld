@@ -16,6 +16,7 @@ import posixpath
 from pathlib import Path
 import re
 import shlex
+import sys
 from typing import Any, Mapping, Sequence
 
 from aworld.core.common import ActionResult
@@ -31,6 +32,7 @@ from aworld.sandbox.terminal_receipt import (
     plan_terminal_execution,
     shell_command_working_directory,
     terminal_command_sha256,
+    terminal_execution_context_sha256,
 )
 from aworld.utils.serialized_util import to_serializable
 
@@ -51,6 +53,9 @@ _MAX_CACHE_ENTRIES = 256
 # output larger than this remains executable/readable, but is deliberately not
 # eligible for exact replay.
 _MAX_EXACT_REPLAY_CONTENT_BYTES = 64 * 1024
+_LOCAL_TERMINAL_EXECUTION_CONTEXT_SHA256 = terminal_execution_context_sha256(
+    sys.executable
+)
 _FILESYSTEM_READ_ACTIONS = frozenset(
     {
         "download_file",
@@ -342,8 +347,43 @@ def _action_target_paths(
                 else (*plan.read_paths, *plan.write_paths)
             )[:16]
         return ()
+    normalized_operation = operation.casefold().replace("-", "_")
+    if normalized_tool in _FILESYSTEM_CAPABILITY_TOOLS:
+        # Mutation admission is based on paths whose contents or directory
+        # entries can change, not every path-shaped argument.  Copy/import
+        # sources are read-only inputs; move/rename sources are mutations too.
+        # Keep this provider-neutral because Docker exposes the same filesystem
+        # capability catalog through the Sandbox abstraction.
+        if normalized_operation == "copy_file":
+            keys = ("destination", "destination_path", "target", "target_path")
+        elif normalized_operation == "upload_file":
+            keys = ("target", "target_path", "destination", "destination_path")
+        elif normalized_operation == "move_file":
+            keys = ("source", "source_path", "destination", "destination_path")
+        else:
+            keys = (
+                "path",
+                "destination",
+                "destination_path",
+                "target",
+                "target_path",
+                "file",
+            )
+        values = [params.get(key) for key in keys]
+        return tuple(
+            dict.fromkeys(value for value in values if isinstance(value, str))
+        )[:16]
     values: list[str] = []
-    for key in ("path", "source", "destination", "target", "file"):
+    for key in (
+        "path",
+        "source",
+        "source_path",
+        "destination",
+        "destination_path",
+        "target",
+        "target_path",
+        "file",
+    ):
         value = params.get(key)
         if isinstance(value, str):
             values.append(value)
@@ -433,6 +473,8 @@ def build_planned_action_semantic_receipt(
             effect = (
                 "unknown" if execution_plan.callback_kinds else execution_plan.effect
             )
+            if effect == "mutating" and not execution_plan.write_set_complete:
+                effect = "unknown"
     paths = _action_target_paths(action, effect=effect)
     target_ids = _target_ids(
         paths,
@@ -490,6 +532,12 @@ def _observed_action_semantic_receipt(
         cwd=params.get("cwd"),
     )
     semantic_effect = effect.effect
+    if (
+        terminal_receipt is not None
+        and terminal_receipt.get("effect") == "mutating"
+        and terminal_receipt.get("write_set_complete") is not True
+    ):
+        semantic_effect = "unknown"
     if validation_kind is not None and (
         terminal_receipt is not None or not _trusted_terminal_receipt_identity(action)
     ):
@@ -750,21 +798,21 @@ def _validated_terminal_execution_receipt(
         return None, True
     result_params = _value(result, "parameter", {})
     action_params = _value(action, "params", {})
-    params = (
-        result_params
-        if isinstance(result_params, Mapping)
-        and isinstance(result_params.get("code"), str)
-        else action_params
-    )
-    code = params.get("code") if isinstance(params, Mapping) else None
+    if not isinstance(action_params, Mapping):
+        return None, True
+    code = action_params.get("code")
     if not isinstance(code, str):
+        return None, True
+    if (
+        isinstance(result_params, Mapping)
+        and "code" in result_params
+        and result_params.get("code") != code
+    ):
         return None, True
     if receipt.get("command_sha256") != terminal_command_sha256(code):
         return None, True
     requested_language = (
-        params.get("language", action_params.get("language", "shell"))
-        if isinstance(params, Mapping) and isinstance(action_params, Mapping)
-        else "shell"
+        action_params.get("language", "shell")
     )
     if requested_language not in TERMINAL_LANGUAGES:
         return None, True
@@ -815,12 +863,18 @@ def _validated_terminal_execution_receipt(
         "docker-sandbox",
         "docker-sandbox-server",
     }
+    terminal_provider = normalized_tool in {"terminal", "terminal-server"}
     execution_context_sha256 = receipt.get("execution_context_sha256")
+    execution_context_bound = bool(
+        isinstance(execution_context_sha256, str)
+        and re.fullmatch(r"sha256:[0-9a-f]{64}", execution_context_sha256)
+    )
+    if execution_context_sha256 is not None and not execution_context_bound:
+        return None, True
     trusted_docker_receipt = effect_source == "trusted_docker_command_contract"
     if trusted_docker_receipt and (
         not docker_provider
-        or re.fullmatch(r"sha256:[0-9a-f]{64}", str(execution_context_sha256 or ""))
-        is None
+        or not execution_context_bound
     ):
         return None, True
     if docker_provider and cacheable and not trusted_docker_receipt:
@@ -830,6 +884,8 @@ def _validated_terminal_execution_receipt(
     if not isinstance(receipt.get("parsed"), bool):
         return None, True
     if not isinstance(receipt.get("read_set_complete"), bool):
+        return None, True
+    if not isinstance(receipt.get("write_set_complete"), bool):
         return None, True
     if cacheable and receipt.get("read_set_complete") is not True:
         return None, True
@@ -859,6 +915,43 @@ def _validated_terminal_execution_receipt(
             or any(not isinstance(path, str) or len(path) > 512 for path in paths)
         ):
             return None, True
+    # A receipt may downgrade an otherwise read-only plan when its concrete
+    # execution context is not trusted, but it may not rewrite the shared
+    # parser's potential effect or dependency sets.  Binding these fields back
+    # to the local analyzer prevents a stale, buggy, or forged provider receipt
+    # from omitting a helper write while retaining the same command hash.
+    verifier_plan = plan_terminal_execution(code, language=requested_language)
+    paths_match = bool(
+        tuple(receipt["read_paths"]) == verifier_plan.read_paths
+        and tuple(receipt["write_paths"]) == verifier_plan.write_paths
+    )
+    exact_analysis_match = bool(
+        paths_match
+        and potential_effect == verifier_plan.effect
+        and (
+            effect == verifier_plan.effect
+            or (verifier_plan.effect == "read_only" and effect == "unknown")
+        )
+        and receipt["read_set_complete"] is verifier_plan.read_set_complete
+        and receipt["write_set_complete"] is verifier_plan.write_set_complete
+    )
+    executable_tokens = tuple(verifier_plan.executable_tokens or ())
+    provider_context_upgrade = bool(
+        terminal_provider
+        and execution_context_bound
+        and requested_language == "shell"
+        and verifier_plan.effect == "unknown"
+        and executable_tokens
+        and posixpath.isabs(executable_tokens[0])
+        and paths_match
+        and potential_effect in {"read_only", "mutating"}
+        and (
+            effect == potential_effect
+            or (potential_effect == "read_only" and effect == "unknown")
+        )
+    )
+    if not exact_analysis_match and not provider_context_upgrade:
+        return None, True
     nested_evidence = receipt.get("nested_language_evidence", [])
     if not isinstance(nested_evidence, list) or len(nested_evidence) > 4:
         return None, True
@@ -896,7 +989,6 @@ def _validated_terminal_execution_receipt(
     projection_reusable = receipt.get("read_projection_reusable", False)
     if not isinstance(projection_reusable, bool):
         return None, True
-    verifier_plan = plan_terminal_execution(code, language=requested_language)
     if tuple(read_paths) == verifier_plan.read_paths:
         verifier_ranges = tuple(verifier_plan.read_ranges or ())
         expected_ranges = (
@@ -1828,6 +1920,14 @@ class SandboxToolObservationRuntime:
         effect = fallback_effect
         if terminal_receipt is not None:
             terminal_epochs = terminal_receipt.get("read_path_epochs", ())
+            terminal_tool = (
+                canonical_tool_identity(action)[0].strip().lower().replace("_", "-")
+            )
+            terminal_execution_context_remote = bool(
+                terminal_tool in {"terminal", "terminal-server"}
+                and terminal_receipt.get("execution_context_sha256")
+                != _LOCAL_TERMINAL_EXECUTION_CONTEXT_SHA256
+            )
             checkpoint_matches = terminal_receipt.get("source_checkpoint_revision") in (
                 None,
                 _context_checkpoint_revision(context),
@@ -1838,6 +1938,12 @@ class SandboxToolObservationRuntime:
                     _epoch_is_host_authoritative(epoch) for epoch in terminal_epochs
                 )
                 and checkpoint_matches
+                # The caller cannot know a remote Terminal provider's current
+                # interpreter context before dispatch, so it cannot safely key
+                # an outer replay by this provider-attested identity. Provider
+                # cache hits remain valid because the provider rechecks its own
+                # context on every call.
+                and not terminal_execution_context_remote
             )
             effect = ToolEffect(
                 identity=fallback_effect.identity,
@@ -2158,9 +2264,11 @@ class SandboxToolObservationRuntime:
             read_ranges = terminal_receipt.get("read_ranges", ())
             read_epochs = terminal_receipt.get("read_path_epochs", ())
             read_representation = terminal_receipt.get("read_representation")
-            if len(read_paths) == len(read_ranges) == len(
-                read_epochs
-            ) == 1 and isinstance(read_representation, str):
+            if (
+                not terminal_execution_context_remote
+                and len(read_paths) == len(read_ranges) == len(read_epochs) == 1
+                and isinstance(read_representation, str)
+            ):
                 self._store_retained_read_fact(
                     context=context,
                     path=str(read_epochs[0]["path"]),

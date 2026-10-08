@@ -44,6 +44,7 @@ from aworld.sandbox.tool_observation import (
     build_preflight_action_semantic_receipt,
     canonical_invocation_cwd,
     canonical_tool_identity,
+    classify_tool_effect,
     declared_action_target_ids,
 )
 
@@ -97,12 +98,27 @@ def _repair_evidence_positions(fingerprint: str) -> tuple[int, ...]:
 
 
 def _repair_evidence_mask(value: Any) -> int:
-    if not isinstance(value, str) or len(value) > 128:
+    if (
+        not isinstance(value, str)
+        or re.fullmatch(r"[0-9a-fA-F]{1,128}", value) is None
+    ):
         return 0
-    try:
-        return int(value, 16)
-    except ValueError:
+    return int(value, 16)
+
+
+def _declared_mutation_attempt_mask(value: Any) -> int:
+    """Parse only a bounded, unsigned hexadecimal mutation-attempt mask."""
+
+    if (
+        not isinstance(value, str)
+        or re.fullmatch(r"[0-9a-fA-F]{1,128}", value) is None
+    ):
         return 0
+    return int(value, 16)
+
+
+def _serialized_declared_mutation_attempt_high_water(value: Any) -> str:
+    return format(_declared_mutation_attempt_mask(value), "0128x")
 
 
 def _repair_evidence_seen(mask: int, fingerprint: str) -> bool:
@@ -113,6 +129,32 @@ def _repair_evidence_add(mask: int, fingerprint: str) -> int:
     for bit in _repair_evidence_positions(fingerprint):
         mask |= 1 << bit
     return mask
+
+
+def _hashed_action_signature(
+    tool_name: str,
+    arguments: Mapping[str, Any],
+) -> str:
+    """Hash exact canonical Tool arguments without retaining or size-capping them."""
+
+    normalized_tool = str(tool_name or "").strip()
+    if not normalized_tool or len(normalized_tool) > 256:
+        raise ValueError("action signature requires a bounded Tool name")
+    encoder = json.JSONEncoder(
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    )
+    digest = hashlib.sha256()
+    try:
+        for chunk in encoder.iterencode(
+            {"arguments": dict(arguments), "tool": normalized_tool}
+        ):
+            digest.update(chunk.encode("utf-8"))
+    except (TypeError, ValueError) as exc:
+        raise ValueError("action arguments must be canonical JSON") from exc
+    return "sha256:" + digest.hexdigest()
 
 
 def _bounded_counter(value: Any) -> int:
@@ -1172,7 +1214,6 @@ def _action_matches_typed_candidate_plan(
         update is None
         or update.delivery_intent is not DeliveryIntent.PRODUCE_CANDIDATE
         or update.next_action_semantics is None
-        or observed.effect != "mutating"
         or not state.next_action_alignment_pending
         or not isinstance(call_id, str)
         or not call_id
@@ -1183,6 +1224,14 @@ def _action_matches_typed_candidate_plan(
     observed_targets = observed.target_ids
     if not expected_targets or not observed_targets:
         if bool(expected_targets) != bool(observed_targets):
+            return False
+        if observed.effect == "unknown":
+            try:
+                if classify_tool_effect(action).effect != "mutating":
+                    return False
+            except (TypeError, ValueError):
+                return False
+        elif observed.effect != "mutating":
             return False
         arguments = _action_arguments(action)
         if arguments is None or update.next_action_signature is None:
@@ -1204,6 +1253,8 @@ def _action_matches_typed_candidate_plan(
         except ValueError:
             return False
         return observed_signature == update.next_action_signature
+    if observed.effect != "mutating":
+        return False
     return (
         compare_action_semantic_shape(
             update.next_action_semantics,
@@ -1488,6 +1539,11 @@ def _mint_review_repair_authorization(
         "used": False,
     }
     updated["repair_failure_evidence_high_water"] = format(high_water, "0128x")
+    updated["declared_mutation_attempt_high_water"] = (
+        _serialized_declared_mutation_attempt_high_water(
+            gate.get("declared_mutation_attempt_high_water")
+        )
+    )
     updated["validation_window_open"] = True
     owner = state_context(context)
     if owner is not None:
@@ -2191,6 +2247,13 @@ def _update_mutation_gate(
         "repair_failure_evidence_high_water": format(
             repair_evidence_high_water, "0128x"
         ),
+        "declared_mutation_attempt_high_water": (
+            _serialized_declared_mutation_attempt_high_water(
+                previous.get("declared_mutation_attempt_high_water")
+                if isinstance(previous, Mapping)
+                else None
+            )
+        ),
         "declared_target_contract": bool(declared_action_target_ids(owner)),
         "pre_candidate_latched": pre_candidate_latched,
         "consecutive_read_only_observations": read_only_count,
@@ -2362,6 +2425,15 @@ def mutation_gate_interception(
             + len(actions),
         )
         updated["blocked_read_only_call_count"] = updated["blocked_call_count"]
+        updated["repair_failure_evidence_high_water"] = format(
+            _repair_evidence_mask(gate.get("repair_failure_evidence_high_water")),
+            "0128x",
+        )
+        updated["declared_mutation_attempt_high_water"] = (
+            _serialized_declared_mutation_attempt_high_water(
+                gate.get("declared_mutation_attempt_high_water")
+            )
+        )
         updated["last_interception_kind"] = "convergence_scope_ambiguous"
         owner = state_context(context)
         if owner is not None:
@@ -2412,6 +2484,11 @@ def mutation_gate_interception(
     )
     blocked_call_ids: list[str] = []
     consumed_repair = False
+    admitted_declared_mutation = False
+    declared_mutation_attempts = _declared_mutation_attempt_mask(
+        gate.get("declared_mutation_attempt_high_water")
+    )
+    initial_declared_mutation_attempts = declared_mutation_attempts
     block_all = False
     for action in actions:
         call_id = str(_action_value(action, "tool_call_id") or "")
@@ -2440,11 +2517,15 @@ def mutation_gate_interception(
             semantics = None
         admitted = False
         if stage is ConvergenceStage.PRODUCE_CANDIDATE:
-            if semantics is not None and semantics.effect == "mutating":
+            if semantics is not None:
                 targets = set(semantics.target_ids)
                 if declared_targets:
-                    admitted = bool(targets) and targets.issubset(declared_targets)
-                else:
+                    admitted = bool(
+                        semantics.effect == "mutating"
+                        and targets
+                        and targets.issubset(declared_targets)
+                    )
+                elif semantics.effect in {"mutating", "unknown"}:
                     admitted = _action_matches_typed_candidate_plan(
                         context, agent_id, action, semantics
                     )
@@ -2461,18 +2542,59 @@ def mutation_gate_interception(
                 == gate.get("candidate_fingerprint")
                 and repair_authorization.get("scope_hash") == gate.get("scope_hash")
             )
-            if not admitted and live_repair and semantics is not None:
+            if not admitted and semantics is not None:
                 targets = set(semantics.target_ids)
                 if semantics.effect == "mutating" and declared_targets:
-                    admitted = bool(targets) and targets.issubset(declared_targets)
-                elif semantics.effect == "mutating" and not declared_targets:
+                    try:
+                        tool, operation = canonical_tool_identity(action)
+                        arguments = _action_arguments(action)
+                        if arguments is None:
+                            raise ValueError("declared revision requires Tool arguments")
+                        mutation_signature = _hashed_action_signature(
+                            f"{tool}__{operation}", arguments
+                        )
+                        from aworld.core.context.compiler import semantic_fingerprint
+
+                        attempt_fingerprint = semantic_fingerprint(
+                            {
+                                "candidate_fingerprint": gate.get(
+                                    "candidate_fingerprint"
+                                ),
+                                "mutation_signature": mutation_signature,
+                                "target_ids": sorted(targets),
+                            }
+                        )
+                    except (TypeError, ValueError):
+                        attempt_fingerprint = None
+                    admitted = bool(
+                        not admitted_declared_mutation
+                        and targets
+                        and targets.issubset(declared_targets)
+                        and isinstance(attempt_fingerprint, str)
+                        and not _repair_evidence_seen(
+                            declared_mutation_attempts, attempt_fingerprint
+                        )
+                    )
+                    if admitted:
+                        declared_mutation_attempts = _repair_evidence_add(
+                            declared_mutation_attempts, attempt_fingerprint
+                        )
+                        admitted_declared_mutation = True
+                elif (
+                    live_repair
+                    and semantics.effect in {"mutating", "unknown"}
+                    and not declared_targets
+                ):
                     admitted = _action_matches_typed_candidate_plan(
                         context, agent_id, action, semantics
                     )
-                if admitted:
+                if admitted and live_repair and not declared_targets:
                     consumed_repair = True
         if not admitted:
             blocked_call_ids.append(call_id)
+    if block_all:
+        declared_mutation_attempts = initial_declared_mutation_attempts
+        admitted_declared_mutation = False
     owner = state_context(context)
     updated = dict(gate)
     updated["blocked_call_count"] = min(
@@ -2483,11 +2605,18 @@ def mutation_gate_interception(
         + (len(actions) if block_all else len(blocked_call_ids)),
     )
     updated["blocked_read_only_call_count"] = updated["blocked_call_count"]
+    updated["repair_failure_evidence_high_water"] = format(
+        _repair_evidence_mask(gate.get("repair_failure_evidence_high_water")),
+        "0128x",
+    )
+    updated["declared_mutation_attempt_high_water"] = format(
+        declared_mutation_attempts, "0128x"
+    )
     if consumed_repair:
         updated["repair_authorization"] = None
         updated["validation_window_open"] = False
     if not blocked_call_ids and not block_all:
-        if consumed_repair:
+        if consumed_repair or admitted_declared_mutation:
             if owner is not None:
                 owner.context_info[MUTATION_GATE_STATE_KEY] = updated
             _write_runtime_value(context, agent_id, MUTATION_GATE_STATE_KEY, updated)
@@ -3605,11 +3734,19 @@ def consume_execution_protocol_guidance(context, agent_id: str) -> str | None:
             )
         return (
             "AWorld convergence constraint: an inspectable candidate exists. "
-            "The next action must be one bounded validation against the public "
-            "contract, a repair directly supported by failed validation, or an "
-            "accurate submission (current or uncertain). Do not return to broad "
-            "source, environment, or capability exploration; reuse retained "
-            "evidence and unchanged observations."
+            "The next action may be one bounded validation against the public "
+            "contract, one bounded revision targeting only declared public "
+            "deliverables with an exact Tool-argument signature that is new for "
+            "the current candidate, a repair directly supported by failed "
+            "validation, or an accurate submission (current or uncertain). Each "
+            "candidate-bound declared-revision signature is admitted once. Mixed "
+            "batches do not widen admission: repeated revisions, additional "
+            "declared revisions in the same batch, helper or unrelated mutations, "
+            "and semantically unknown mutations remain blocked. Do not return to "
+            "broad source, environment, or capability exploration. For a named "
+            "output file, use a direct file write or an exact-file copy primitive; "
+            "directory-ambiguous and recursive writers cannot cross this gate. "
+            "Reuse retained evidence and unchanged observations."
             + deadline_suffix
         )
     if isinstance(mutation_gate, Mapping) and mutation_gate.get("active") is True:
