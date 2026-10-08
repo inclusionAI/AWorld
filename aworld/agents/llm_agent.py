@@ -6378,6 +6378,7 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         execution_decision_outcome = None
         critic_probe_planned = False
         critic_decision_handled = False
+        critic_protocol_persistence_error = False
         review_repair_requested = False
         from aworld.core.context.execution_state import (
             execution_resolution_observation,
@@ -6832,7 +6833,54 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                             )
                         )
                         critic_decision_handled = True
-                        if accepted and fallback is not None:
+                        if (
+                            transition is not None
+                            and transition.decision.reason.value
+                            == "protocol_persistence_error"
+                        ):
+                            critic_protocol_persistence_error = True
+                            preserved_actions = (
+                                list(fallback)
+                                if fallback is not None
+                                else list(agent_result.actions)
+                            )
+                            preserved_text = next(
+                                (
+                                    str(action.policy_info)
+                                    for action in preserved_actions
+                                    if str(
+                                        getattr(action, "policy_info", "") or ""
+                                    ).strip()
+                                ),
+                                "Completion is unverified.",
+                            )
+                            llm_response.content = preserved_text
+                            if isinstance(llm_response.message, dict):
+                                llm_response.message = dict(llm_response.message)
+                                llm_response.message["content"] = preserved_text
+                                llm_response.message["aworld_incomplete_reason"] = (
+                                    "independent_acceptance_protocol_"
+                                    "persistence_error"
+                                )
+                                llm_response.message["aworld_recoverable"] = True
+                            agent_result = AgentResult(
+                                actions=preserved_actions,
+                                current_state=agent_result.current_state,
+                                is_call_tool=False,
+                            )
+                            response_incomplete = True
+                            from aworld.core.context.execution_state import (
+                                record_execution_state,
+                            )
+
+                            record_execution_state(
+                                message.context,
+                                self.id(),
+                                "incomplete",
+                                "independent_acceptance_protocol_persistence_error",
+                                recoverable=True,
+                            )
+                        elif accepted and fallback is not None:
                             from aworld.core.context.execution_state import (
                                 record_execution_resolution,
                             )
@@ -6900,7 +6948,8 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                                 "independent_acceptance_evidence_missing",
                                 recoverable=False,
                             )
-                        clear_candidate_fallback(message.context, self.id())
+                        if not critic_protocol_persistence_error:
+                            clear_candidate_fallback(message.context, self.id())
                     if (
                         candidate_finished
                         and not loop_budget_finalization
@@ -6990,11 +7039,21 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                                 is_call_tool=False,
                             )
                             response_incomplete = True
+                            review_authority = (
+                                "independent_acceptance"
+                                if execution_protocol_policy(
+                                    message.context, self.id()
+                                ).independent_acceptance_enabled
+                                else "model_owned_review"
+                            )
                             record_execution_state(
                                 message.context,
                                 self.id(),
                                 "incomplete",
-                                f"execution_protocol_{reason}_unverified",
+                                (
+                                    f"{review_authority}_execution_protocol_"
+                                    f"{reason}_unverified"
+                                ),
                                 recoverable=reason
                                 in {
                                     "controller_error",

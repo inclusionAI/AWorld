@@ -3502,9 +3502,10 @@ def test_runtime_stops_review_loop_when_candidate_and_evidence_are_unchanged() -
     assert unchanged.decision.action is ControllerAction.STOP_INCOMPLETE
     assert unchanged.decision.reason is DecisionReason.REVIEW_BASIS_UNCHANGED
     assert unchanged.state.final_review_count == 1
-    assert unchanged.state.phase is ProtocolPhase.INCOMPLETE
+    assert unchanged.state.phase is ProtocolPhase.REVIEW
+    assert unchanged.state.terminal_incomplete is True
     telemetry = build_execution_protocol_telemetry(context, "agent")
-    assert telemetry["phase"] == "incomplete"
+    assert telemetry["phase"] == "review"
     assert project_execution_protocol_telemetry(telemetry) is not None
 
 

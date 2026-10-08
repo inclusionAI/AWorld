@@ -19,6 +19,7 @@ from aworld.core.execution_protocol import (
     PlanUpdateDecision,
     ProtocolEventRecord,
     ProtocolMode,
+    ProtocolPhase,
     ProtocolScope,
 )
 
@@ -580,6 +581,34 @@ def test_convergence_state_declares_v2_and_round_trips_known_v1_history_kind():
     assert payload["history"][-1]["kind"] == "replan_unacknowledged"
     restored = ExecutionProtocolState.from_dict(payload)
     assert restored == state
+
+
+def test_terminal_incomplete_uses_legacy_safe_v2_phase_projection():
+    state = replace(
+        ExecutionProtocolState.initial(
+            ProtocolScope(task_id="incomplete", task_epoch=1, agent_id="agent")
+        ),
+        phase=ProtocolPhase.REVIEW,
+        terminal_incomplete=True,
+        finalization_entered=True,
+    )
+
+    payload = state.to_dict()
+
+    assert payload["schema_version"] == "aworld.execution-protocol-state/v2"
+    assert payload["phase"] == "review"
+    assert payload["terminal_incomplete"] is True
+    assert ExecutionProtocolState.from_dict(payload) == state
+
+    # Simulate a rolling old v2 reader: it ignores the additive flag but still
+    # sees a pre-existing non-COMPLETE phase and therefore cannot promote the
+    # task to semantic success.
+    legacy_projection = dict(payload)
+    legacy_projection.pop("terminal_incomplete")
+    restored = ExecutionProtocolState.from_dict(legacy_projection)
+    assert restored.phase is ProtocolPhase.REVIEW
+    assert restored.phase is not ProtocolPhase.COMPLETE
+    assert restored.terminal_incomplete is False
 
 
 def test_no_delivery_progress_counter_restores_from_legacy_read_only_alias():

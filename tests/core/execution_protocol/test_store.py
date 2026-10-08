@@ -330,3 +330,31 @@ def test_runtime_writer_failure_never_returns_unsaved_nonterminal_state():
     assert transition.state.decision_checkpoint_pending is False
     assert store.context_key not in context.context_info
     assert store.load().revision == 0
+
+
+def test_controller_exception_persists_terminal_incomplete_state(monkeypatch):
+    context = FakeContext(task_id="controller-error", task_epoch=1)
+    policy = ExecutionProtocolPolicy(
+        mode="guide",
+        independent_acceptance_enabled=False,
+    )
+    store = ExecutionProtocolStore(context, "agent", policy)
+
+    def fail_controller(*_args, **_kwargs):
+        raise RuntimeError("controller defect")
+
+    monkeypatch.setattr(
+        "aworld.core.execution_protocol.controller.transition_execution_protocol",
+        fail_controller,
+    )
+    transition = store.apply(
+        ExecutionProtocolEvent(kind=EventKind.CANDIDATE_FINAL)
+    )
+
+    assert transition.decision.action is ControllerAction.STOP_INCOMPLETE
+    assert transition.decision.reason.value == "controller_error"
+    assert transition.state.phase.value == "review"
+    assert transition.state.terminal_incomplete is True
+    restored = store.load()
+    assert restored.phase.value == "review"
+    assert restored.terminal_incomplete is True

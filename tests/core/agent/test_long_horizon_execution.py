@@ -7,6 +7,7 @@ from types import SimpleNamespace
 import pytest
 
 import aworld.agents.llm_agent as llm_agent_module
+import aworld.runners.execution_protocol as execution_protocol_module
 from aworld.agents.llm_agent import Agent, _LongHorizonReviewContinuation
 from aworld.config.conf import AgentConfig
 from aworld.core.agent.base import AgentResult
@@ -23,6 +24,7 @@ from aworld.core.context.execution_state import (
 )
 from aworld.core.event.base import Constants, Message
 from aworld.core.execution_protocol import (
+    ControllerDecision,
     ControllerAction,
     DecisionReason,
     EventKind,
@@ -30,6 +32,7 @@ from aworld.core.execution_protocol import (
     ExecutionProtocolStore,
     ProtocolMode,
     ProtocolPhase,
+    ProtocolTransition,
 )
 from aworld.core.task import Task
 from aworld.models.model_response import Function, ModelResponse, ToolCall
@@ -44,6 +47,7 @@ from aworld.runners.execution_protocol import (
     execution_protocol_model_decision_boundary,
     execution_protocol_policy,
     load_acceptance_critic_state,
+    load_candidate_fallback,
     load_execution_protocol_state,
     record_acceptance_probe_observation,
     record_acceptance_probe_plan,
@@ -343,6 +347,85 @@ async def test_independent_review_budget_stop_preserves_candidate(
     assert state["status"] == "incomplete"
     assert state["reason"] == "independent_acceptance_review_budget_stop"
     assert state["recoverable"] is True
+
+
+@pytest.mark.asyncio
+async def test_independent_critic_persistence_error_preserves_candidate(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("AWORLD_INDEPENDENT_ACCEPTANCE_CRITIC", raising=False)
+    context, agent, policy, fallback = _independent_review_failure_fixture(
+        "independent-critic-persistence-error"
+    )
+
+    async def no_memory(*_args, **_kwargs):
+        return None
+
+    async def build_input(_observation, info=None, message=None, **_kwargs):
+        return [{"role": "user", "content": "review candidate"}]
+
+    async def no_tools(context=None):
+        return None
+
+    critic_response = ModelResponse(
+        id="critic-persistence-error",
+        model="offline",
+        content=json.dumps(
+            {
+                "decision": "uncertain",
+                "highest_risk_counterexample": "persistence unavailable",
+                "hypothesis_id": "persistence",
+                "reason": "the protocol state could not be saved",
+            }
+        ),
+        message={"role": "assistant", "content": "critic decision"},
+        finish_reason="stop",
+        usage={"prompt_tokens": 1, "completion_tokens": 1},
+    )
+
+    async def invoke_model(messages=None, message=None, **_kwargs):
+        return critic_response
+
+    def fail_protocol_persistence(_context, _agent_id, _value):
+        state = ExecutionProtocolStore(context, agent.id(), policy).load()
+        return (
+            ProtocolTransition(
+                state=state,
+                decision=ControllerDecision(
+                    action=ControllerAction.STOP_INCOMPLETE,
+                    reason=DecisionReason.PERSISTENCE_ERROR,
+                ),
+            ),
+            None,
+            False,
+        )
+
+    agent._add_message_to_memory = no_memory
+    agent.build_llm_input = build_input
+    agent._filter_tools = no_tools
+    agent.invoke_model = invoke_model
+    monkeypatch.setattr(
+        execution_protocol_module,
+        "record_acceptance_critic_decision",
+        fail_protocol_persistence,
+    )
+    message = Message(category=Constants.AGENT, headers={"context": context})
+
+    result = await agent.async_policy(Observation(content="candidate"), message=message)
+
+    assert result == [fallback]
+    assert critic_response.message["content"] == "preserved candidate"
+    assert critic_response.message["aworld_incomplete_reason"] == (
+        "independent_acceptance_protocol_persistence_error"
+    )
+    assert critic_response.message["aworld_recoverable"] is True
+    state = get_execution_state(context, agent.id())
+    assert state["status"] == "incomplete"
+    assert state["reason"] == (
+        "independent_acceptance_protocol_persistence_error"
+    )
+    assert state["recoverable"] is True
+    assert load_candidate_fallback(context, agent.id()) == (fallback,)
 
 
 @pytest.mark.asyncio

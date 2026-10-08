@@ -821,6 +821,7 @@ def transition_execution_protocol(
                 next_state.public_deliverable_declared
                 or event.public_deliverable_declared
             ),
+            terminal_incomplete=False,
             finalization_entered=True,
         )
         previous_review_basis = next(
@@ -843,8 +844,9 @@ def transition_execution_protocol(
             # unchanged work to independent acceptance.
             next_state = replace(
                 next_state,
-                phase=ProtocolPhase.INCOMPLETE,
+                phase=ProtocolPhase.REVIEW,
                 review_pending=False,
+                terminal_incomplete=True,
             )
             return ProtocolTransition(
                 next_state,
@@ -870,11 +872,14 @@ def transition_execution_protocol(
             next_state = replace(
                 next_state,
                 phase=(
-                    ProtocolPhase.INCOMPLETE
+                    ProtocolPhase.REVIEW
                     if action is ControllerAction.STOP_INCOMPLETE
                     else ProtocolPhase.COMPLETE
                 ),
                 review_pending=False,
+                terminal_incomplete=(
+                    action is ControllerAction.STOP_INCOMPLETE
+                ),
             )
             return ProtocolTransition(
                 next_state,
@@ -886,8 +891,9 @@ def transition_execution_protocol(
         if next_state.phase is ProtocolPhase.FINALIZE:
             next_state = replace(
                 next_state,
-                phase=ProtocolPhase.INCOMPLETE,
+                phase=ProtocolPhase.REVIEW,
                 review_pending=False,
+                terminal_incomplete=True,
             )
             return ProtocolTransition(
                 next_state,
@@ -914,6 +920,7 @@ def transition_execution_protocol(
                 next_state,
                 phase=ProtocolPhase.COMPLETE,
                 review_pending=False,
+                terminal_incomplete=False,
             )
             return ProtocolTransition(
                 next_state,
@@ -944,8 +951,9 @@ def transition_execution_protocol(
             )
         next_state = replace(
             next_state,
-            phase=ProtocolPhase.INCOMPLETE,
+            phase=ProtocolPhase.REVIEW,
             review_pending=False,
+            terminal_incomplete=True,
         )
         return ProtocolTransition(
             next_state,
@@ -961,7 +969,11 @@ def transition_execution_protocol(
 
     if event.kind is EventKind.REVIEW_RESULT:
         if not next_state.review_pending:
-            next_state = replace(next_state, phase=ProtocolPhase.INCOMPLETE)
+            next_state = replace(
+                next_state,
+                phase=ProtocolPhase.REVIEW,
+                terminal_incomplete=True,
+            )
             return ProtocolTransition(
                 next_state,
                 _decision(
@@ -1019,7 +1031,10 @@ def transition_execution_protocol(
             phase=(
                 ProtocolPhase.COMPLETE
                 if action is ControllerAction.SUBMIT_CURRENT_RESULT
-                else ProtocolPhase.INCOMPLETE
+                else ProtocolPhase.REVIEW
+            ),
+            terminal_incomplete=(
+                action is ControllerAction.STOP_INCOMPLETE
             ),
         )
         return ProtocolTransition(next_state, _decision(action, reason))
@@ -1041,10 +1056,18 @@ def safe_transition_execution_protocol(
             EventKind.REVIEW_RESULT,
         }
         action = ControllerAction.CONTINUE
+        fallback_state = state
         if final_boundary:
             action = ControllerAction.STOP_INCOMPLETE
+            fallback_state = replace(
+                state,
+                phase=ProtocolPhase.REVIEW,
+                review_pending=False,
+                terminal_incomplete=True,
+                finalization_entered=True,
+            )
         return ProtocolTransition(
-            state=state,
+            state=fallback_state,
             decision=_decision(action, DecisionReason.CONTROLLER_ERROR),
         )
 

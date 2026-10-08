@@ -128,6 +128,16 @@ def test_uncertain_reviewer_requires_typed_critic_acceptance() -> None:
     )
     assert still_blocked["status"] == "incomplete"
 
+    wrong_authority = record_execution_resolution(
+        context,
+        "solver",
+        evidence_kind="accepted_review",
+        status="succeeded",
+        reason="model_owned_review_accepted",
+        observation=execution_resolution_observation(context, "solver"),
+    )
+    assert wrong_authority["status"] == "incomplete"
+
     accepted = record_execution_resolution(
         context,
         "solver",
@@ -138,6 +148,31 @@ def test_uncertain_reviewer_requires_typed_critic_acceptance() -> None:
     )
     assert accepted["status"] == "succeeded"
     assert accepted["unresolved_blockers"] == []
+
+
+def test_legacy_shared_review_category_migrates_by_bounded_reason() -> None:
+    context = _context("legacy-review-category")
+    state = record_execution_state(
+        context,
+        "solver",
+        "incomplete",
+        "independent_acceptance_review_error",
+        recoverable=True,
+    )
+    legacy = json.loads(json.dumps(state))
+    legacy["unresolved_blockers"][0]["category"] = "acceptance_review"
+
+    restored = reconcile_execution_states(
+        [legacy],
+        task_id="legacy-review-category",
+        task_epoch=state["scope"]["task_epoch"],
+        agent_id="solver",
+    )
+
+    assert restored is not None
+    assert restored["unresolved_blockers"][0]["category"] == (
+        "independent_acceptance_review"
+    )
 
 
 def test_model_review_blocker_requires_fresh_authoritative_review_acceptance() -> None:
@@ -171,6 +206,16 @@ def test_model_review_blocker_requires_fresh_authoritative_review_acceptance() -
     assert generic["status"] == "incomplete"
     assert stale_review["status"] == "incomplete"
 
+    wrong_authority = record_execution_resolution(
+        context,
+        "solver",
+        evidence_kind="accepted_critic",
+        status="succeeded",
+        reason="independent_acceptance_accepted",
+        observation=execution_resolution_observation(context, "solver"),
+    )
+    assert wrong_authority["status"] == "incomplete"
+
     accepted = record_execution_resolution(
         context,
         "solver",
@@ -190,7 +235,7 @@ def test_nonrecoverable_unverified_review_blocker_stays_terminal() -> None:
         context,
         "solver",
         "incomplete",
-        "execution_protocol_finalization_reserve_unverified",
+        "model_owned_review_execution_protocol_finalization_reserve_unverified",
         recoverable=False,
     )
 

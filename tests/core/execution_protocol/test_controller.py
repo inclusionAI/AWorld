@@ -1765,7 +1765,8 @@ def test_structurally_unavailable_requested_review_is_unverified():
 
     assert transition.decision.action is ControllerAction.STOP_INCOMPLETE
     assert transition.decision.reason is DecisionReason.REVIEW_BOUNDARY_UNAVAILABLE
-    assert transition.state.phase is ProtocolPhase.INCOMPLETE
+    assert transition.state.phase is ProtocolPhase.REVIEW
+    assert transition.state.terminal_incomplete is True
     assert transition.state.review_pending is False
     assert transition.state.final_review_count == 0
 
@@ -1957,7 +1958,8 @@ def test_unchanged_candidate_evidence_basis_stops_before_second_review(
 
     assert unchanged.decision.action is ControllerAction.STOP_INCOMPLETE
     assert unchanged.decision.reason is DecisionReason.REVIEW_BASIS_UNCHANGED
-    assert unchanged.state.phase is ProtocolPhase.INCOMPLETE
+    assert unchanged.state.phase is ProtocolPhase.REVIEW
+    assert unchanged.state.terminal_incomplete is True
     assert unchanged.state.final_review_count == 1
 
 
@@ -2074,7 +2076,8 @@ def test_candidate_final_in_finalization_reserve_is_unverified():
     assert submitted.decision.action is ControllerAction.STOP_INCOMPLETE
     assert submitted.decision.reason is DecisionReason.FINALIZATION_RESERVE
     assert submitted.state.final_review_count == 0
-    assert submitted.state.phase is ProtocolPhase.INCOMPLETE
+    assert submitted.state.phase is ProtocolPhase.REVIEW
+    assert submitted.state.terminal_incomplete is True
 
     forged_accept = transition_execution_protocol(
         submitted.state,
@@ -2086,7 +2089,8 @@ def test_candidate_final_in_finalization_reserve_is_unverified():
     )
     assert forged_accept.decision.action is ControllerAction.STOP_INCOMPLETE
     assert forged_accept.decision.reason is DecisionReason.INVALID_EVENT
-    assert forged_accept.state.phase is ProtocolPhase.INCOMPLETE
+    assert forged_accept.state.phase is ProtocolPhase.REVIEW
+    assert forged_accept.state.terminal_incomplete is True
 
 
 def test_tool_event_threshold_never_overrides_model_horizon_ownership():
@@ -2283,3 +2287,5 @@ def test_controller_exception_fails_closed_at_candidate_boundary():
 
     assert transition.decision.action is ControllerAction.STOP_INCOMPLETE
     assert transition.decision.reason is DecisionReason.CONTROLLER_ERROR
+    assert transition.state.phase is ProtocolPhase.REVIEW
+    assert transition.state.terminal_incomplete is True

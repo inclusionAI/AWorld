@@ -28,7 +28,6 @@ class ProtocolPhase(str, Enum):
     FINALIZE = "finalize"
     REVIEW = "review"
     REPAIR = "repair"
-    INCOMPLETE = "incomplete"
     COMPLETE = "complete"
 
 
@@ -1676,6 +1675,10 @@ class ExecutionProtocolState:
     repair_count: int = 0
     candidate_final_count: int = 0
     review_pending: bool = False
+    # Additive v2 flag.  ``phase=review`` is the legacy-safe wire projection
+    # for a terminal unverified outcome; older readers ignore this field but
+    # still never observe ``phase=complete``.
+    terminal_incomplete: bool = False
     finalization_entered: bool = False
     long_horizon_armed: bool = False
     acceptance_confirmed: bool = False
@@ -1746,6 +1749,7 @@ class ExecutionProtocolState:
                 )
         if (
             not isinstance(self.review_pending, bool)
+            or not isinstance(self.terminal_incomplete, bool)
             or not isinstance(self.decision_checkpoint_pending, bool)
             or not isinstance(self.finalization_entered, bool)
             or not isinstance(self.long_horizon_armed, bool)
@@ -1919,6 +1923,7 @@ class ExecutionProtocolState:
             "repair_count": self.repair_count,
             "candidate_final_count": self.candidate_final_count,
             "review_pending": self.review_pending,
+            "terminal_incomplete": self.terminal_incomplete,
             "finalization_entered": self.finalization_entered,
             "long_horizon_armed": self.long_horizon_armed,
             "acceptance_confirmed": self.acceptance_confirmed,
@@ -2064,6 +2069,7 @@ class ExecutionProtocolState:
                 value.get("candidate_final_count", 0), "candidate_final_count"
             ),
             review_pending=value.get("review_pending", False),
+            terminal_incomplete=value.get("terminal_incomplete", False),
             finalization_entered=value.get("finalization_entered", False),
             long_horizon_armed=value.get("long_horizon_armed", False),
             acceptance_confirmed=value.get("acceptance_confirmed", False),

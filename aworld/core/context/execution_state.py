@@ -32,7 +32,8 @@ _MAX_RESOLUTION_EVENTS = 16
 _MAX_RESOLUTION_SOURCES = 64
 _BLOCKER_CATEGORIES = {
     "model_response",
-    "acceptance_review",
+    "independent_acceptance_review",
+    "model_owned_review",
     "completion_contract",
     "validation",
     "candidate",
@@ -55,8 +56,8 @@ _MODEL_RESPONSE_REASONS = {
 _RESOLUTION_CATEGORIES = {
     "complete_provider_tool_action": frozenset({"model_response"}),
     "complete_provider_final_action": frozenset({"model_response"}),
-    "accepted_critic": frozenset({"acceptance_review"}),
-    "accepted_review": frozenset({"acceptance_review"}),
+    "accepted_critic": frozenset({"independent_acceptance_review"}),
+    "accepted_review": frozenset({"model_owned_review"}),
     "completion_contract_satisfied": frozenset(
         {"completion_contract", "validation", "candidate"}
     ),
@@ -97,17 +98,10 @@ def _blocker_category(status: str, reason: str) -> str:
         return "budget"
     if reason in _MODEL_RESPONSE_REASONS or reason.startswith("model_response_"):
         return "model_response"
-    if reason.startswith(
-        (
-            "independent_acceptance_",
-            "acceptance_critic_",
-            "model_owned_review_",
-        )
-    ) or (
-        reason.startswith("execution_protocol_")
-        and reason.endswith("_unverified")
-    ):
-        return "acceptance_review"
+    if reason.startswith(("independent_acceptance_", "acceptance_critic_")):
+        return "independent_acceptance_review"
+    if reason.startswith("model_owned_review_"):
+        return "model_owned_review"
     if reason.startswith("completion_contract_"):
         return "completion_contract"
     if reason.startswith("validation_"):
@@ -211,6 +205,11 @@ def _normalize_record(value: Any) -> dict[str, Any] | None:
             )
             blocker_revision = _normalized_revision(item.get("revision"), revision)
             category, _ = _bounded_code(item.get("category"), "work")
+            if category == "acceptance_review":
+                # Rolling migration from the pre-authority-split v2 ledger.
+                # The bounded reason, not the incoming category claim, selects
+                # which acceptance authority may resolve this blocker.
+                category = _blocker_category(status, blocker_reason)
             if category not in _BLOCKER_CATEGORIES:
                 category = "work"
             occurrence_id, _ = _bounded_code(item.get("occurrence_id"), "")
@@ -310,6 +309,13 @@ def _normalize_record(value: Any) -> dict[str, Any] | None:
                 continue
             evidence_kind = item.get("evidence_kind")
             category = item.get("category")
+            if (
+                category == "acceptance_review"
+                and evidence_kind in _RESOLUTION_CATEGORIES
+            ):
+                # Legacy accepted_critic evidence had one shared category.
+                # Each current evidence kind now has exactly one authority.
+                category = next(iter(_RESOLUTION_CATEGORIES[evidence_kind]))
             if (
                 evidence_kind not in _RESOLUTION_CATEGORIES
                 or category not in _RESOLUTION_CATEGORIES[evidence_kind]
@@ -945,7 +951,11 @@ def _record_event(
                     for blocker in blockers
                     if blocker["category"] == category
                     and (
-                        category != "acceptance_review"
+                        category
+                        not in {
+                            "independent_acceptance_review",
+                            "model_owned_review",
+                        }
                         or blocker.get("recoverable") is True
                     )
                     and blocker["revision"] <= watermark_revision

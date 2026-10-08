@@ -1614,14 +1614,7 @@ def project_execution_protocol_telemetry(value: Any) -> dict[str, Any] | None:
         return None
     enums = {
         "mode": {"off", "observe", "guide"},
-        "phase": {
-            "execute",
-            "finalize",
-            "review",
-            "repair",
-            "incomplete",
-            "complete",
-        },
+        "phase": {"execute", "finalize", "review", "repair", "complete"},
         "model_horizon": {"unknown", "short", "long"},
         "long_horizon_activation_source": {
             "model_declared_long",
