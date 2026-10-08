@@ -203,7 +203,11 @@ async def test_docker_run_code_revalidates_container_epochs_before_compact_reuse
         "task_id": "task-a",
         "task_epoch": 0,
         "session_id": "session",
+        "session_epoch": 0,
+        "branch_id": "main",
         "checkpoint_revision": 0,
+        "agent_id": "agent",
+        "prompt_namespace": "agent",
         "sandbox_id": "sandbox",
     }
 
@@ -287,7 +291,11 @@ async def test_docker_read_file_executes_bounded_ranges_in_container(
             "task_id": "bounded",
             "task_epoch": 1,
             "session_id": "session",
+            "session_epoch": 0,
+            "branch_id": "main",
             "checkpoint_revision": 0,
+            "agent_id": "agent",
+            "prompt_namespace": "agent",
             "sandbox_id": "sandbox",
         },
         **kwargs,
@@ -314,14 +322,22 @@ async def test_docker_facts_require_same_representation_and_task_scope(
         "task_id": "task-a",
         "task_epoch": 1,
         "session_id": "session",
+        "session_epoch": 0,
+        "branch_id": "main",
         "checkpoint_revision": 0,
+        "agent_id": "agent-a",
+        "prompt_namespace": "agent-a",
         "sandbox_id": "sandbox",
     }
     scope_b = {
         "task_id": "task-b",
         "task_epoch": 1,
         "session_id": "session",
+        "session_epoch": 0,
+        "branch_id": "main",
         "checkpoint_revision": 0,
+        "agent_id": "agent-b",
+        "prompt_namespace": "agent-b",
         "sandbox_id": "sandbox",
     }
 
@@ -368,7 +384,11 @@ async def test_docker_large_default_read_is_producer_bounded_and_races_do_not_ca
         "task_id": "race",
         "task_epoch": 1,
         "session_id": "session",
+        "session_epoch": 0,
+        "branch_id": "main",
         "checkpoint_revision": 0,
+        "agent_id": "agent",
+        "prompt_namespace": "agent",
         "sandbox_id": "sandbox",
     }
 
@@ -436,7 +456,11 @@ async def test_docker_callback_sensitive_reads_fail_authority_closed(
         "task_id": "callbacks",
         "task_epoch": 0,
         "session_id": "session",
+        "session_epoch": 0,
+        "branch_id": "main",
         "checkpoint_revision": 0,
+        "agent_id": "agent",
+        "prompt_namespace": "agent",
         "sandbox_id": "sandbox",
     }
 
@@ -512,3 +536,62 @@ async def test_docker_missing_authoritative_scope_never_reuses_facts(
     assert first["metadata"].get("provider_observation_id") is None
     assert second["metadata"].get("provider_observation_cache_hit") is not True
     assert test_bridge.shell_calls == 2
+
+
+@pytest.mark.asyncio
+async def test_docker_scope_separates_agent_branch_and_session_epoch(
+    monkeypatch,
+) -> None:
+    server = _docker_server(monkeypatch)
+    test_bridge = _MemoryDockerBridge(b"alpha\n")
+    monkeypatch.setattr(server, "bridge", test_bridge)
+    server._READ_FACTS.clear()
+    scope = {
+        "task_id": "scope-task",
+        "task_epoch": 0,
+        "session_id": "session",
+        "session_epoch": 0,
+        "branch_id": "main",
+        "checkpoint_revision": 0,
+        "agent_id": "agent-a",
+        "prompt_namespace": "agent-a",
+        "sandbox_id": "sandbox",
+    }
+    variants = (
+        scope,
+        {**scope, "agent_id": "agent-b", "prompt_namespace": "agent-b"},
+        {**scope, "branch_id": "rewind-1"},
+        {**scope, "session_epoch": 1},
+    )
+
+    results = [
+        json.loads(
+            (
+                await server.run_code(
+                    None,
+                    "cat /workspace/input.txt",
+                    env_content=value,
+                )
+            ).text
+        )
+        for value in variants
+    ]
+
+    assert all(
+        result["metadata"].get("provider_observation_cache_hit") is not True
+        for result in results
+    )
+    assert test_bridge.shell_calls == len(variants)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("marker", ("\n", "\r", "\0"))
+async def test_docker_direct_paths_reject_record_delimiters(
+    monkeypatch,
+    marker,
+) -> None:
+    server = _docker_server(monkeypatch)
+    test_bridge = server.DockerBridge()
+
+    with pytest.raises(ValueError, match="forbidden control character"):
+        test_bridge.validate_path(f"/workspace/input{marker}.txt")

@@ -87,6 +87,10 @@ def test_hidden_env_content_keeps_framework_task_scope_authoritative():
             "session_id": "caller-session",
             "task_epoch": "caller-epoch",
             "checkpoint_revision": 98,
+            "session_epoch": 98,
+            "branch_id": "caller-branch",
+            "agent_id": "caller-agent",
+            "prompt_namespace": "caller-prompt",
             "sandbox_id": "caller-sandbox-id",
             "caller_only": "kept",
         }
@@ -99,6 +103,12 @@ def test_hidden_env_content_keeps_framework_task_scope_authoritative():
             task_id="trusted-task",
             session_id="trusted-session",
             task_epoch=37,
+            agent_info=SimpleNamespace(current_agent_id="trusted-agent"),
+            context_lifecycle_state=SimpleNamespace(
+                session_epoch=2,
+                branch_id="trusted-branch",
+                checkpoint_revision=0,
+            ),
         ),
     )
 
@@ -106,7 +116,11 @@ def test_hidden_env_content_keeps_framework_task_scope_authoritative():
         "task_id": "trusted-task",
         "session_id": "trusted-session",
         "task_epoch": 37,
+        "session_epoch": 2,
+        "branch_id": "trusted-branch",
         "checkpoint_revision": 0,
+        "agent_id": "trusted-agent",
+        "prompt_namespace": "trusted-agent",
         "sandbox_id": "sandbox",
         "caller_only": "kept",
         "sandbox_only": "kept",
@@ -128,7 +142,12 @@ def test_hidden_scope_preserves_zero_epoch_and_current_checkpoint_revision():
         task_id="task",
         session_id="session",
         task_epoch=0,
-        context_lifecycle_state=SimpleNamespace(checkpoint_revision=4),
+        context_lifecycle_state=SimpleNamespace(
+            session_epoch=3,
+            branch_id="rewind-branch",
+            checkpoint_revision=4,
+        ),
+        agent_info=SimpleNamespace(current_agent_id="agent"),
     )
 
     servers._inject_env_content_parameter(
@@ -139,6 +158,10 @@ def test_hidden_scope_preserves_zero_epoch_and_current_checkpoint_revision():
 
     assert parameter["env_content"]["task_epoch"] == 0
     assert parameter["env_content"]["checkpoint_revision"] == 4
+    assert parameter["env_content"]["session_epoch"] == 3
+    assert parameter["env_content"]["branch_id"] == "rewind-branch"
+    assert parameter["env_content"]["agent_id"] == "agent"
+    assert parameter["env_content"]["prompt_namespace"] == "agent"
     assert parameter["env_content"]["sandbox_id"] == "sandbox"
 
 

@@ -146,6 +146,14 @@ async def test_builtin_terminal_receipt_drives_sandbox_observation_cache(
         task_id="receipt-task",
         task_epoch=1,
         session_id="receipt-session",
+        agent_info=SimpleNamespace(current_agent_id="agent"),
+        context_lifecycle_state=SimpleNamespace(
+            session_id="receipt-session",
+            session_epoch=0,
+            task_epoch=1,
+            branch_id="main",
+            checkpoint_revision=0,
+        ),
     )
     try:
         first = await asyncio.wait_for(

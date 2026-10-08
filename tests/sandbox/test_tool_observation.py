@@ -3,6 +3,8 @@ import json
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 from aworld.core.common import ActionResult
 from aworld.sandbox.tool_observation import (
     READ_OBSERVATION_RECEIPT_KEY,
@@ -22,8 +24,29 @@ from aworld.sandbox.terminal_receipt import (
 )
 
 
+def _lifecycle(
+    checkpoint_revision: int = 0,
+    *,
+    session_epoch: int = 0,
+    branch_id: str = "main",
+):
+    return SimpleNamespace(
+        session_id="session",
+        session_epoch=session_epoch,
+        task_epoch=1,
+        branch_id=branch_id,
+        checkpoint_revision=checkpoint_revision,
+    )
+
+
 def _context():
-    return SimpleNamespace(task_id="task", task_epoch=1, session_id="session")
+    return SimpleNamespace(
+        task_id="task",
+        task_epoch=1,
+        session_id="session",
+        agent_info=SimpleNamespace(current_agent_id="agent"),
+        context_lifecycle_state=_lifecycle(),
+    )
 
 
 def _file_epoch(path: Path) -> dict[str, object]:
@@ -743,6 +766,20 @@ def test_provider_authoritative_container_epoch_is_not_replayed_on_host() -> Non
     assert runtime.lookup(action, context=context) is None
     assert runtime.current_generation(context) == 0
 
+    mismatched_receipt = {**receipt, "source_checkpoint_revision": 1}
+    mismatched = SandboxToolObservationRuntime().record(
+        action,
+        ActionResult(
+            success=True,
+            content="remote",
+            parameter=action["params"],
+            metadata={TERMINAL_EXECUTION_RECEIPT_KEY: mismatched_receipt},
+        ),
+        context=context,
+    )
+    assert mismatched.metadata["sandbox_observation"]["effect"] == "unknown"
+    assert "action_semantic_receipt" not in mismatched.metadata["sandbox_observation"]
+
 
 def test_provider_cache_hit_is_replay_not_fresh_execution_evidence() -> None:
     runtime = SandboxToolObservationRuntime()
@@ -802,10 +839,37 @@ def test_provider_cache_hit_is_replay_not_fresh_execution_evidence() -> None:
     assert sandbox_receipt["content_sha256"] == content_sha256
     assert "action_semantic_receipt" not in sandbox_receipt
 
+    stale_receipt = {**receipt, "source_checkpoint_revision": 1}
+    stale = SandboxToolObservationRuntime().record(
+        action,
+        ActionResult(
+            success=True,
+            content='{"type":"unchanged"}',
+            parameter=action["params"],
+            metadata={TERMINAL_EXECUTION_RECEIPT_KEY: stale_receipt},
+        ),
+        context=context,
+    )
+    stale_sandbox_receipt = stale.metadata["sandbox_observation"]
+    assert stale.success is False
+    assert stale.error == "provider_replay_rejected"
+    assert stale_sandbox_receipt["cache_state"] == "provider_replay_rejected"
+    assert stale_sandbox_receipt["executed"] is False
+    assert "action_semantic_receipt" not in stale_sandbox_receipt
 
-def test_malformed_provider_replay_claim_still_fails_execution_evidence_closed() -> (
-    None
-):
+
+@pytest.mark.parametrize(
+    ("corrupt_field", "corrupt_value"),
+    (
+        ("observation_id", "forged"),
+        ("cache_hit", "yes"),
+        ("read_representation", "docker.run-code.text.line_range/v1"),
+    ),
+)
+def test_malformed_provider_replay_claim_still_fails_execution_evidence_closed(
+    corrupt_field,
+    corrupt_value,
+) -> None:
     runtime = SandboxToolObservationRuntime()
     context = _context()
     code = "cat /workspace/input.txt"
@@ -842,7 +906,7 @@ def test_malformed_provider_replay_claim_still_fails_execution_evidence_closed()
         representation="docker.run-code.text.full/v1",
         source_checkpoint_revision=0,
     )
-    receipt["observation_id"] = "forged"
+    receipt[corrupt_field] = corrupt_value
 
     observed = runtime.record(
         action,
@@ -858,7 +922,9 @@ def test_malformed_provider_replay_claim_still_fails_execution_evidence_closed()
 
     assert sandbox_receipt["cache_hit"] is True
     assert sandbox_receipt["executed"] is False
-    assert sandbox_receipt["cache_state"] == "provider_replay_untrusted"
+    assert sandbox_receipt["cache_state"] == "provider_replay_rejected"
+    assert observed.success is False
+    assert observed.error == "provider_replay_rejected"
     assert "action_semantic_receipt" not in sandbox_receipt
 
 
@@ -878,8 +944,26 @@ def test_cache_requires_complete_scope_but_zero_task_epoch_is_valid() -> None:
         timed_out=False,
         effect_source="trusted_command_contract",
     )
-    zero_epoch = SimpleNamespace(task_id="task", task_epoch=0, session_id="session")
-    missing_session = SimpleNamespace(task_id="task", task_epoch=0, session_id="")
+    zero_epoch = SimpleNamespace(
+        task_id="task",
+        task_epoch=0,
+        session_id="session",
+        agent_info=SimpleNamespace(current_agent_id="agent"),
+        context_lifecycle_state=_lifecycle(),
+    )
+    missing_session = SimpleNamespace(
+        task_id="task",
+        task_epoch=0,
+        session_id="",
+        agent_info=SimpleNamespace(current_agent_id="agent"),
+        context_lifecycle_state=SimpleNamespace(
+            session_id="",
+            session_epoch=0,
+            task_epoch=0,
+            branch_id="main",
+            checkpoint_revision=0,
+        ),
+    )
 
     runtime.record(
         action,
@@ -905,6 +989,94 @@ def test_cache_requires_complete_scope_but_zero_task_epoch_is_valid() -> None:
         context=missing_session,
     )
     assert other_runtime.lookup(action, context=missing_session) is None
+
+
+def test_sandbox_scope_separates_agent_branch_and_session_epoch() -> None:
+    runtime = SandboxToolObservationRuntime()
+    code = "printf stable"
+    action = {
+        "tool_name": "terminal",
+        "action_name": "run_code",
+        "params": {"code": code},
+    }
+    receipt = build_terminal_execution_receipt(
+        code=code,
+        plan=plan_terminal_execution(code),
+        executed=True,
+        exit_code=0,
+        timed_out=False,
+        effect_source="trusted_command_contract",
+    )
+    source = _context()
+    runtime.record(
+        action,
+        ActionResult(
+            success=True,
+            content="stable",
+            parameter=action["params"],
+            metadata={TERMINAL_EXECUTION_RECEIPT_KEY: receipt},
+        ),
+        context=source,
+    )
+    other_agent = _context()
+    other_agent.agent_info.current_agent_id = "agent-b"
+    other_branch = _context()
+    other_branch.context_lifecycle_state = _lifecycle(branch_id="rewind-1")
+    resumed = _context()
+    resumed.context_lifecycle_state = _lifecycle(session_epoch=1)
+
+    assert runtime.lookup(action, context=source) is not None
+    assert runtime.lookup(action, context=other_agent) is None
+    assert runtime.lookup(action, context=other_branch) is None
+    assert runtime.lookup(action, context=resumed) is None
+
+
+def test_scope_lru_evicts_generation_volatile_and_related_cache_state() -> None:
+    runtime = SandboxToolObservationRuntime(max_cache_entries=2)
+    code = "opaque-reader &"
+    action = {
+        "tool_name": "terminal",
+        "action_name": "run_code",
+        "params": {"code": code},
+    }
+    receipt = build_terminal_execution_receipt(
+        code=code,
+        plan=TerminalExecutionPlan(
+            "shell",
+            "unknown",
+            False,
+            True,
+            background=True,
+        ),
+        executed=True,
+        exit_code=0,
+        timed_out=False,
+        capture_complete=False,
+    )
+    scopes = []
+    for index in range(3):
+        context = _context()
+        context.task_id = f"task-{index}"
+        runtime.record(
+            action,
+            ActionResult(
+                success=True,
+                content="started",
+                parameter=action["params"],
+                metadata={TERMINAL_EXECUTION_RECEIPT_KEY: receipt},
+            ),
+            context=context,
+        )
+        scopes.append(next(reversed(runtime._scope_lru)))
+
+    retained_scopes = set(runtime._scope_lru)
+    assert len(retained_scopes) == 2
+    assert scopes[0] not in retained_scopes
+    assert set(runtime._generation).issubset(retained_scopes)
+    assert runtime._volatile_scopes.issubset(retained_scopes)
+    assert all(key[0] in retained_scopes for key in runtime._cache)
+    assert all(key[0] in retained_scopes for key in runtime._authoritative_effects)
+    assert all(key[0] in retained_scopes for key in runtime._retained_read_facts)
 
 
 def test_terminal_receipt_language_must_match_requested_execution_mode() -> None:
@@ -1170,12 +1342,10 @@ def test_background_execution_makes_scope_replay_volatile() -> None:
     assert runtime.lookup(read_action, context=context) is None
 
 
-def test_cache_rehydrates_content_after_context_checkpoint_then_renews_reference() -> (
-    None
-):
+def test_cache_misses_after_checkpoint_and_renews_after_fresh_execution() -> None:
     runtime = SandboxToolObservationRuntime()
     context = _context()
-    context.context_lifecycle_state = SimpleNamespace(checkpoint_revision=3)
+    context.context_lifecycle_state = _lifecycle(3)
     code = "print('durable evidence')"
     action = {
         "tool_name": "terminal",
@@ -1191,7 +1361,7 @@ def test_cache_rehydrates_content_after_context_checkpoint_then_renews_reference
         timed_out=False,
         effect_source="trusted_command_contract",
     )
-    original = runtime.record(
+    runtime.record(
         action,
         ActionResult(
             success=True,
@@ -1210,23 +1380,21 @@ def test_cache_rehydrates_content_after_context_checkpoint_then_renews_reference
     assert retained_receipt["content_rehydrated"] is False
     assert '"type": "unchanged"' in retained.content
 
-    context.context_lifecycle_state = SimpleNamespace(checkpoint_revision=4)
+    context.context_lifecycle_state = _lifecycle(4)
     action["tool_call_id"] = "call-after-checkpoint"
-    rehydrated = runtime.lookup(action, context=context)
-    assert rehydrated is not None
-    rehydrated_receipt = rehydrated.metadata["sandbox_observation"]
-    assert rehydrated.content == "durable evidence\n"
-    assert rehydrated.tool_call_id == "call-after-checkpoint"
-    assert rehydrated_receipt["cache_state"] == "rehydrated"
-    assert rehydrated_receipt["content_rehydrated"] is True
-    assert (
-        rehydrated_receipt["observation_id"]
-        == original.metadata["sandbox_observation"]["observation_id"]
+    assert runtime.lookup(action, context=context) is None
+
+    refreshed = runtime.record(
+        action,
+        ActionResult(
+            success=True,
+            content="durable evidence\n",
+            parameter=action["params"],
+            metadata={TERMINAL_EXECUTION_RECEIPT_KEY: terminal_receipt},
+        ),
+        context=context,
     )
-    assert (
-        rehydrated_receipt["content_sha256"]
-        == original.metadata["sandbox_observation"]["content_sha256"]
-    )
+    assert refreshed.metadata["sandbox_observation"]["cache_hit"] is False
 
     renewed = runtime.lookup(action, context=context)
     assert renewed is not None
@@ -1241,7 +1409,7 @@ def test_oversized_file_result_retains_only_compact_epoch_bound_facts(
 ) -> None:
     runtime = SandboxToolObservationRuntime(max_replay_content_bytes=32)
     context = _context()
-    context.context_lifecycle_state = SimpleNamespace(checkpoint_revision=0)
+    context.context_lifecycle_state = _lifecycle(0)
     source = tmp_path / "large.txt"
     source.write_text("x" * 128, encoding="utf-8")
     code = f"cat {source}"
@@ -1346,6 +1514,25 @@ def test_retained_fact_requires_same_model_representation_and_checkpoint(
     assert observed_filesystem.metadata["sandbox_observation"]["content_sha256"] == (
         content_sha256
     )
+    forged_result = ActionResult(
+        success=True,
+        content="alpha\nbeta\n",
+        parameter=filesystem_action["params"],
+        metadata={
+            READ_OBSERVATION_RECEIPT_KEY: {
+                **filesystem_result.metadata[READ_OBSERVATION_RECEIPT_KEY],
+                "coverage": {"kind": "line_range", "start": 1, "end": 2},
+            }
+        },
+    )
+    forged_observed = SandboxToolObservationRuntime().record(
+        filesystem_action,
+        forged_result,
+        context=context,
+    )
+    assert (
+        "action_semantic_receipt" not in forged_observed.metadata["sandbox_observation"]
+    )
 
     refresh_action = {
         **filesystem_action,
@@ -1392,7 +1579,7 @@ def test_retained_fact_requires_same_model_representation_and_checkpoint(
         "host_epoch_overlap"
     )
 
-    context.context_lifecycle_state = SimpleNamespace(checkpoint_revision=1)
+    context.context_lifecycle_state = _lifecycle(1)
     assert runtime.lookup(filesystem_head_action, context=context) is None
 
 

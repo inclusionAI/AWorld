@@ -291,11 +291,21 @@ def _sandbox_context():
         task_id="task-1",
         task_epoch=1,
         session_id="session-1",
+        agent_info=SimpleNamespace(current_agent_id="agent-1"),
+        context_lifecycle_state=SimpleNamespace(
+            session_id="session-1",
+            session_epoch=0,
+            task_epoch=1,
+            branch_id="main",
+            checkpoint_revision=0,
+        ),
     )
 
 
 @pytest.mark.asyncio
-async def test_sandbox_delegates_repeated_filesystem_read_epoch_checks_to_provider() -> None:
+async def test_sandbox_delegates_repeated_filesystem_read_epoch_checks_to_provider() -> (
+    None
+):
     calls = []
 
     class _McpServers:
@@ -336,7 +346,9 @@ async def test_sandbox_delegates_repeated_filesystem_read_epoch_checks_to_provid
 
 
 @pytest.mark.asyncio
-async def test_sandbox_uses_terminal_receipt_then_replays_from_observation_cache() -> None:
+async def test_sandbox_uses_terminal_receipt_then_replays_from_observation_cache() -> (
+    None
+):
     calls = []
     code = "if depth > 3:\n    print(depth)"
     terminal_receipt = build_terminal_execution_receipt(
@@ -378,6 +390,7 @@ async def test_sandbox_uses_terminal_receipt_then_replays_from_observation_cache
         task_id="task-1",
         task_content="inspect state",
     )
+    context.agent_info["current_agent_id"] = "agent"
 
     first = await sandbox.call_tool(action_list=[action], context=context)
     repeated = await sandbox.call_tool(action_list=[action], context=context)
@@ -385,7 +398,7 @@ async def test_sandbox_uses_terminal_receipt_then_replays_from_observation_cache
     rehydrated = await sandbox.call_tool(action_list=[action], context=context)
     retained_again = await sandbox.call_tool(action_list=[action], context=context)
 
-    assert len(calls) == 1
+    assert len(calls) == 2
     assert first[0].metadata["sandbox_observation"]["effect"] == "read_only"
     assert first[0].metadata["sandbox_observation"]["workspace_generation"] == 0
     assert repeated[0].metadata["sandbox_observation"]["cache_hit"] is True
@@ -393,7 +406,7 @@ async def test_sandbox_uses_terminal_receipt_then_replays_from_observation_cache
         "retained_reference"
     )
     assert rehydrated[0].content == "4\n"
-    assert rehydrated[0].metadata["sandbox_observation"]["cache_state"] == "rehydrated"
+    assert rehydrated[0].metadata["sandbox_observation"]["cache_hit"] is False
     assert retained_again[0].metadata["sandbox_observation"]["cache_state"] == (
         "retained_reference"
     )
@@ -607,6 +620,8 @@ async def test_sandbox_routes_context_artifact_reads_before_remote_transport(
     )
 
     assert result is expected
+
+
 @pytest.mark.asyncio
 async def test_sandbox_failure_journals_completed_results_from_earlier_batch_action(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch

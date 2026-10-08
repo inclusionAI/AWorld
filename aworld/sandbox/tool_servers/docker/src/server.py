@@ -42,7 +42,7 @@ from aworld.sandbox.terminal_receipt import (
 _READ_OBSERVATION_RECEIPT_KEY = "read_observation_receipt"
 _READ_OBSERVATION_SCHEMA = "aworld.read-observation/v1"
 _READ_FACT_CAPACITY = 256
-_READ_FACTS: "OrderedDict[tuple[tuple[str, str, str, str, str], str], dict[str, Any]]" = OrderedDict()
+_READ_FACTS: "OrderedDict[tuple[tuple[str, ...], str], dict[str, Any]]" = OrderedDict()
 from aworld.sandbox.artifact_observation import (
     ArtifactObservationError,
     artifact_mcp_result,
@@ -235,6 +235,8 @@ class DockerBridge:
         return posixpath.normpath(path)
 
     def validate_path(self, path: str) -> str:
+        if any(marker in path for marker in ("\0", "\r", "\n")):
+            raise ValueError("Container path contains a forbidden control character")
         normalized = self._normalize_absolute(path)
         for allowed in self.allowed_directories:
             if posixpath.commonpath([normalized, allowed]) == allowed:
@@ -525,15 +527,24 @@ async def _container_path_states(
     return states if len(states) == len(paths) else None
 
 
-def _framework_scope(env_content: Any) -> tuple[str, str, str, str, str]:
+def _framework_scope(env_content: Any) -> tuple[str, ...]:
     if not isinstance(env_content, Mapping):
-        return ("", "", "", "", "")
+        return ("",) * 9
     epoch = env_content.get("task_epoch")
+    session_epoch = env_content.get("session_epoch")
     checkpoint_revision = env_content.get("checkpoint_revision")
     return (
         str(env_content.get("task_id") or "").strip(),
         "" if epoch is None or isinstance(epoch, bool) else str(epoch),
         str(env_content.get("session_id") or "").strip(),
+        (
+            str(session_epoch)
+            if isinstance(session_epoch, int)
+            and not isinstance(session_epoch, bool)
+            and session_epoch >= 0
+            else ""
+        ),
+        str(env_content.get("branch_id") or "").strip(),
         (
             str(checkpoint_revision)
             if isinstance(checkpoint_revision, int)
@@ -541,11 +552,13 @@ def _framework_scope(env_content: Any) -> tuple[str, str, str, str, str]:
             and checkpoint_revision >= 0
             else ""
         ),
+        str(env_content.get("agent_id") or "").strip(),
+        str(env_content.get("prompt_namespace") or "").strip(),
         str(env_content.get("sandbox_id") or "").strip(),
     )
 
 
-def _framework_scope_is_complete(scope: tuple[str, str, str, str, str]) -> bool:
+def _framework_scope_is_complete(scope: tuple[str, ...]) -> bool:
     return all(bool(value) for value in scope)
 
 
@@ -702,7 +715,7 @@ def _fact_operation_key(*, kind: str, value: Any) -> str:
 
 def _lookup_read_fact(
     *,
-    scope: tuple[str, str, str, str, str],
+    scope: tuple[str, ...],
     operation_key: str,
     paths: list[str],
     ranges: tuple[TerminalReadRange, ...],
@@ -746,7 +759,7 @@ def _lookup_read_fact(
 
 def _store_read_fact(
     *,
-    scope: tuple[str, str, str, str, str],
+    scope: tuple[str, ...],
     operation_key: str,
     paths: list[str],
     ranges: tuple[TerminalReadRange, ...],
@@ -786,7 +799,7 @@ def _store_read_fact(
         "epochs": [dict(epoch) for epoch in epochs],
         "coverage_complete": bool(coverage_complete),
         "representation": representation,
-        "source_checkpoint_revision": int(scope[3]),
+        "source_checkpoint_revision": int(scope[5]),
     }
     key = (scope, operation_key)
     _READ_FACTS[key] = fact
@@ -940,7 +953,7 @@ async def run_code(
                             observation_id=str(cached_fact["observation_id"]),
                             content_sha256=str(cached_fact["content_sha256"]),
                             representation=representation,
-                            source_checkpoint_revision=int(scope[3]),
+                            source_checkpoint_revision=int(scope[5]),
                         ),
                     },
                 }
@@ -1000,7 +1013,7 @@ async def run_code(
         requested_language=language,
         representation=representation,
         source_checkpoint_revision=(
-            int(scope[3]) if _framework_scope_is_complete(scope) else None
+            int(scope[5]) if _framework_scope_is_complete(scope) else None
         ),
     )
     stored_fact = None
@@ -1033,7 +1046,7 @@ async def run_code(
                 observation_id=str(stored_fact["observation_id"]),
                 content_sha256=str(stored_fact["content_sha256"]),
                 representation=representation,
-                source_checkpoint_revision=int(scope[3]),
+                source_checkpoint_revision=int(scope[5]),
             )
     return _text(
         {
@@ -1349,7 +1362,7 @@ async def read_file(
                 cache_hit=True,
                 coverage_complete=bool(cached_fact.get("coverage_complete")),
                 representation=representation,
-                source_checkpoint_revision=int(scope[3]),
+                source_checkpoint_revision=int(scope[5]),
             )
             return _text(payload, metadata={_READ_OBSERVATION_RECEIPT_KEY: receipt})
 
@@ -1414,7 +1427,7 @@ async def read_file(
         coverage_complete=coverage_complete,
         representation=representation,
         source_checkpoint_revision=(
-            int(scope[3]) if _framework_scope_is_complete(scope) else 0
+            int(scope[5]) if _framework_scope_is_complete(scope) else 0
         ),
     )
     return _text(payload, metadata={_READ_OBSERVATION_RECEIPT_KEY: receipt})

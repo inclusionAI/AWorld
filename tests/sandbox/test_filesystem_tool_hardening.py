@@ -109,7 +109,11 @@ async def test_repeated_unchanged_read_returns_receipt_and_refresh_bypasses_cach
         "task_id": "cache-task",
         "task_epoch": 0,
         "session_id": "session",
+        "session_epoch": 0,
+        "branch_id": "main",
         "checkpoint_revision": 0,
+        "agent_id": "agent",
+        "prompt_namespace": "agent",
         "sandbox_id": "sandbox",
     }
 
@@ -177,14 +181,22 @@ async def test_read_observation_cache_is_task_scoped_and_emits_epoch_coverage(
         "task_id": "task-a",
         "task_epoch": 1,
         "session_id": "session",
+        "session_epoch": 0,
+        "branch_id": "main",
         "checkpoint_revision": 0,
+        "agent_id": "agent-a",
+        "prompt_namespace": "agent-a",
         "sandbox_id": "sandbox",
     }
     scope_b = {
         "task_id": "task-b",
         "task_epoch": 1,
         "session_id": "session",
+        "session_epoch": 0,
+        "branch_id": "main",
         "checkpoint_revision": 0,
+        "agent_id": "agent-b",
+        "prompt_namespace": "agent-b",
         "sandbox_id": "sandbox",
     }
 
@@ -212,10 +224,41 @@ async def test_read_observation_cache_is_task_scoped_and_emits_epoch_coverage(
         output="text",
         env_content=scope_a,
     )
+    other_agent = await filesystem.read_file(
+        None,
+        str(path),
+        head=1,
+        tail=None,
+        output="text",
+        env_content={
+            **scope_a,
+            "agent_id": "agent-c",
+            "prompt_namespace": "agent-c",
+        },
+    )
+    other_branch = await filesystem.read_file(
+        None,
+        str(path),
+        head=1,
+        tail=None,
+        output="text",
+        env_content={**scope_a, "branch_id": "rewind-1"},
+    )
+    resumed = await filesystem.read_file(
+        None,
+        str(path),
+        head=1,
+        tail=None,
+        output="text",
+        env_content={**scope_a, "session_epoch": 1},
+    )
 
     assert _json(first)["type"] == "text"
     assert _json(isolated)["type"] == "text"
     assert _json(repeated)["type"] == "unchanged"
+    assert _json(other_agent)["type"] == "text"
+    assert _json(other_branch)["type"] == "text"
+    assert _json(resumed)["type"] == "text"
     receipt = first.model_extra["metadata"]["read_observation_receipt"]
     replay_receipt = repeated.model_extra["metadata"]["read_observation_receipt"]
     assert receipt["authority"] == "host"
@@ -246,7 +289,11 @@ async def test_restored_mtime_cannot_replay_a_changed_file(tmp_path: Path) -> No
         "task_id": "mtime-task",
         "task_epoch": 0,
         "session_id": "session",
+        "session_epoch": 0,
+        "branch_id": "main",
         "checkpoint_revision": 0,
+        "agent_id": "agent",
+        "prompt_namespace": "agent",
         "sandbox_id": "sandbox",
     }
     first = _json(
@@ -290,7 +337,11 @@ async def test_read_changed_during_capture_never_seeds_observation_cache(
         "task_id": "race-task",
         "task_epoch": 1,
         "session_id": "session",
+        "session_epoch": 0,
+        "branch_id": "main",
         "checkpoint_revision": 0,
+        "agent_id": "agent",
+        "prompt_namespace": "agent",
         "sandbox_id": "sandbox",
     }
     original = filesystem.read_text_bounded

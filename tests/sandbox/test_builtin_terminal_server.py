@@ -243,6 +243,26 @@ def test_callback_sensitive_reads_require_callback_free_authority(
     assert git_source == "untrusted_execution_context"
 
 
+def test_callback_bypass_tokens_must_be_actual_top_level_options() -> None:
+    rg_pathspec = _terminal_execution_plan("rg needle -- --no-config")
+    rg_real_flag = _terminal_execution_plan("rg --no-config needle -- --no-config")
+    git_pathspec = _terminal_execution_plan("git status -- --version")
+    git_version = _terminal_execution_plan("git --no-pager --version")
+    mutating_config = _terminal_execution_plan(
+        "git -c alias.status='!touch /tmp/pwned' status"
+    )
+    external_diff = _terminal_execution_plan("git diff --ext-diff")
+
+    assert rg_pathspec.callback_kinds == ("ripgrep_config",)
+    assert rg_real_flag.callback_kinds == ()
+    assert git_pathspec.callback_kinds == ("git_config",)
+    assert git_version.callback_kinds == ()
+    assert mutating_config.effect == "unknown"
+    assert mutating_config.callback_kinds == ("git_config",)
+    assert external_diff.effect == "unknown"
+    assert external_diff.callback_kinds == ("git_config",)
+
+
 @pytest.mark.parametrize(
     "command",
     ("head -n -5 input.txt", "head -c +5 input.txt", "tail -n +5 input.txt"),
@@ -417,7 +437,19 @@ async def test_leading_cd_cache_tracks_command_scoped_file_epoch(
     assert receipt["read_path_epochs"][0]["path"] != str(tmp_path / "result.txt")
 
     runtime = SandboxToolObservationRuntime()
-    context = SimpleNamespace(task_id="task", task_epoch=1, session_id="session")
+    context = SimpleNamespace(
+        task_id="task",
+        task_epoch=1,
+        session_id="session",
+        agent_info=SimpleNamespace(current_agent_id="agent"),
+        context_lifecycle_state=SimpleNamespace(
+            session_id="session",
+            session_epoch=0,
+            task_epoch=1,
+            branch_id="main",
+            checkpoint_revision=0,
+        ),
+    )
     runtime.record(
         action,
         ActionResult(
@@ -522,7 +554,19 @@ async def test_nested_cd_never_replays_epoch_from_outer_directory(
         "params": {"code": command, "cwd": str(tmp_path)},
     }
     runtime = SandboxToolObservationRuntime()
-    context = SimpleNamespace(task_id="task", task_epoch=1, session_id="session")
+    context = SimpleNamespace(
+        task_id="task",
+        task_epoch=1,
+        session_id="session",
+        agent_info=SimpleNamespace(current_agent_id="agent"),
+        context_lifecycle_state=SimpleNamespace(
+            session_id="session",
+            session_epoch=0,
+            task_epoch=1,
+            branch_id="main",
+            checkpoint_revision=0,
+        ),
+    )
 
     first = await run_code(None, command, timeout=10, cwd=str(tmp_path))
     first_payload = json.loads(first.text)

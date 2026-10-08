@@ -1412,6 +1412,29 @@ def _shell_projection_is_reusable(
     return False
 
 
+def _actual_flag_before_double_dash(args: Sequence[str], flag: str) -> bool:
+    for value in args:
+        if value == "--":
+            return False
+        if value == flag:
+            return True
+    return False
+
+
+def _git_version_only(args: Sequence[str]) -> bool:
+    allowed = {
+        "--no-pager",
+        "--no-replace-objects",
+        "--no-optional-locks",
+        "--literal-pathspecs",
+        "--glob-pathspecs",
+        "--noglob-pathspecs",
+        "--icase-pathspecs",
+        "--version",
+    }
+    return "--version" in args and all(value in allowed for value in args)
+
+
 def _bounded_paths(values: Iterable[str]) -> tuple[str, ...]:
     bounded: list[str] = []
     for raw_value in values:
@@ -1777,11 +1800,11 @@ def plan_terminal_execution(
         executable, args = _command_words(words)
         if not executable:
             continue
-        if executable == "rg" and "--no-config" not in args:
-            callback_kinds.add("ripgrep_config")
-        elif executable == "git" and not any(
-            value in {"--version", "-v"} for value in args
+        if executable == "rg" and not _actual_flag_before_double_dash(
+            args, "--no-config"
         ):
+            callback_kinds.add("ripgrep_config")
+        elif executable == "git" and not _git_version_only(args):
             callback_kinds.add("git_config")
         if executable == "cd" and command_cwd is None:
             unknown = True

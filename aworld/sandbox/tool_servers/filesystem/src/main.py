@@ -126,15 +126,24 @@ def _file_epoch_receipt(path: str) -> dict[str, Any]:
     }
 
 
-def _framework_scope(env_content: Any) -> tuple[str, str, str, str, str]:
+def _framework_scope(env_content: Any) -> tuple[str, ...]:
     if not isinstance(env_content, Mapping):
-        return ("", "", "", "", "")
+        return ("",) * 9
     epoch = env_content.get("task_epoch")
+    session_epoch = env_content.get("session_epoch")
     checkpoint_revision = env_content.get("checkpoint_revision")
     return (
         str(env_content.get("task_id") or "").strip(),
         "" if epoch is None or isinstance(epoch, bool) else str(epoch),
         str(env_content.get("session_id") or "").strip(),
+        (
+            str(session_epoch)
+            if isinstance(session_epoch, int)
+            and not isinstance(session_epoch, bool)
+            and session_epoch >= 0
+            else ""
+        ),
+        str(env_content.get("branch_id") or "").strip(),
         (
             str(checkpoint_revision)
             if isinstance(checkpoint_revision, int)
@@ -142,11 +151,13 @@ def _framework_scope(env_content: Any) -> tuple[str, str, str, str, str]:
             and checkpoint_revision >= 0
             else ""
         ),
+        str(env_content.get("agent_id") or "").strip(),
+        str(env_content.get("prompt_namespace") or "").strip(),
         str(env_content.get("sandbox_id") or "").strip(),
     )
 
 
-def _framework_scope_is_complete(scope: tuple[str, str, str, str, str]) -> bool:
+def _framework_scope_is_complete(scope: tuple[str, ...]) -> bool:
     return all(bool(value) for value in scope)
 
 
@@ -484,7 +495,7 @@ async def read_file(
                 coverage=coverage,
                 coverage_complete=coverage_complete,
                 representation=representation,
-                source_checkpoint_revision=int(scope[3]),
+                source_checkpoint_revision=int(scope[5]),
             )
             metadata[_READ_OBSERVATION_RECEIPT_KEY] = _read_receipt(
                 _READ_OBSERVATION_CACHE[cache_key], cache_hit=False
@@ -553,7 +564,7 @@ async def read_file(
             coverage=coverage,
             coverage_complete=coverage_complete,
             representation=representation,
-            source_checkpoint_revision=int(scope[3]),
+            source_checkpoint_revision=int(scope[5]),
         )
         metadata[_READ_OBSERVATION_RECEIPT_KEY] = _read_receipt(
             _READ_OBSERVATION_CACHE[cache_key], cache_hit=False

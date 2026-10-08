@@ -2034,7 +2034,11 @@ class McpServers:
             "task_id",
             "session_id",
             "task_epoch",
+            "session_epoch",
+            "branch_id",
             "checkpoint_revision",
+            "agent_id",
+            "prompt_namespace",
             "sandbox_id",
         }
 
@@ -2060,11 +2064,29 @@ class McpServers:
             if hasattr(context, 'task_epoch') and context.task_epoch is not None:
                 env_content_value["task_epoch"] = context.task_epoch
             lifecycle = getattr(context, "context_lifecycle_state", None)
+            session_epoch = (
+                lifecycle.get("session_epoch")
+                if isinstance(lifecycle, Mapping)
+                else getattr(lifecycle, "session_epoch", None)
+            )
+            branch_id = (
+                lifecycle.get("branch_id")
+                if isinstance(lifecycle, Mapping)
+                else getattr(lifecycle, "branch_id", None)
+            )
             checkpoint_revision = (
                 lifecycle.get("checkpoint_revision")
                 if isinstance(lifecycle, Mapping)
                 else getattr(lifecycle, "checkpoint_revision", 0)
             )
+            if (
+                isinstance(session_epoch, int)
+                and not isinstance(session_epoch, bool)
+                and session_epoch >= 0
+            ):
+                env_content_value["session_epoch"] = session_epoch
+            if isinstance(branch_id, str) and branch_id.strip():
+                env_content_value["branch_id"] = branch_id.strip()
             if (
                 isinstance(checkpoint_revision, int)
                 and not isinstance(checkpoint_revision, bool)
@@ -2076,9 +2098,28 @@ class McpServers:
             env_content_value["sandbox_id"] = sandbox_id.strip()
 
         # 3. Dynamically add additional context from event_message
+        agent_id = None
         if event_message:
             if hasattr(event_message, 'sender') and event_message.sender:
-                env_content_value["agent_id"] = event_message.sender
+                agent_id = event_message.sender
+        if not agent_id and context is not None:
+            agent_info = getattr(context, "agent_info", None)
+            try:
+                agent_id = (
+                    agent_info.get("current_agent_id")
+                    if isinstance(agent_info, Mapping)
+                    else getattr(agent_info, "current_agent_id", None)
+                )
+            except (AttributeError, KeyError, TypeError):
+                agent_id = None
+            if not agent_id:
+                try:
+                    agent_id = getattr(context, "agent_id", None)
+                except (AttributeError, KeyError, TypeError):
+                    agent_id = None
+        if isinstance(agent_id, str) and agent_id.strip():
+            env_content_value["agent_id"] = agent_id.strip()
+            env_content_value["prompt_namespace"] = agent_id.strip()
         if isinstance(tool_call_id, str) and tool_call_id:
             env_content_value["tool_call_id"] = tool_call_id
 

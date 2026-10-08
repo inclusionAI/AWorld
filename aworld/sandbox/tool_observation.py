@@ -639,16 +639,60 @@ def actions_are_provably_read_only(actions: Sequence[Any]) -> bool:
     )
 
 
-def _scope(context: Any) -> tuple[str, str, str]:
-    epoch = getattr(context, "task_epoch", None)
+def _scope(context: Any) -> tuple[str, ...]:
+    lifecycle = getattr(context, "context_lifecycle_state", None)
+
+    def lifecycle_value(name: str, default: Any = None) -> Any:
+        return (
+            lifecycle.get(name, default)
+            if isinstance(lifecycle, Mapping)
+            else getattr(lifecycle, name, default)
+        )
+
+    epoch = getattr(context, "task_epoch", lifecycle_value("task_epoch"))
+    session_epoch = lifecycle_value("session_epoch")
+    checkpoint_revision = lifecycle_value("checkpoint_revision")
+    branch_id = lifecycle_value("branch_id")
+    agent_info = getattr(context, "agent_info", None)
+    try:
+        current_agent_id = (
+            agent_info.get("current_agent_id")
+            if isinstance(agent_info, Mapping)
+            else getattr(agent_info, "current_agent_id", None)
+        )
+    except (AttributeError, KeyError, TypeError):
+        current_agent_id = None
+    try:
+        context_agent_id = getattr(context, "agent_id", None)
+    except (AttributeError, KeyError, TypeError):
+        context_agent_id = None
+    agent_id = current_agent_id or context_agent_id
+    session_id = getattr(context, "session_id", None) or lifecycle_value("session_id")
     return (
         str(getattr(context, "task_id", "") or "").strip(),
         "" if epoch is None or isinstance(epoch, bool) else str(epoch),
-        str(getattr(context, "session_id", "") or "").strip(),
+        str(session_id or "").strip(),
+        (
+            str(session_epoch)
+            if isinstance(session_epoch, int)
+            and not isinstance(session_epoch, bool)
+            and session_epoch >= 0
+            else ""
+        ),
+        str(branch_id or "").strip(),
+        (
+            str(checkpoint_revision)
+            if isinstance(checkpoint_revision, int)
+            and not isinstance(checkpoint_revision, bool)
+            and checkpoint_revision >= 0
+            else ""
+        ),
+        str(agent_id or "").strip(),
+        str(agent_id or "").strip(),
     )
 
 
-def _scope_is_complete(scope: tuple[str, str, str]) -> bool:
+def _scope_is_complete(scope: tuple[str, ...]) -> bool:
     return all(isinstance(value, str) and bool(value) for value in scope)
 
 
@@ -660,6 +704,27 @@ def _result_success(result: Any) -> bool:
 def _metadata(result: Any) -> dict[str, Any]:
     value = _value(result, "metadata", {})
     return dict(value) if isinstance(value, Mapping) else {}
+
+
+def _reject_provider_replay(result: Any, *, reason: str) -> None:
+    content = json.dumps(
+        {
+            "type": "provider_replay_rejected",
+            "reason": reason,
+            "message": "cached observation is not valid in the current execution scope; retry the Tool",
+        },
+        ensure_ascii=False,
+    )
+    for name, value in (
+        ("success", False),
+        ("error", "provider_replay_rejected"),
+        ("content", content),
+    ):
+        try:
+            setattr(result, name, value)
+        except (AttributeError, TypeError):
+            if isinstance(result, dict):
+                result[name] = value
 
 
 def _validated_terminal_execution_receipt(
@@ -843,9 +908,23 @@ def _validated_terminal_execution_receipt(
         if normalized_tool in {"docker", "docker-sandbox", "docker-sandbox-server"}
         else "terminal"
     )
-    if representation is not None and not representation.startswith(
+    expected_output_format = (
+        "text"
+        if representation_provider == "docker"
+        else str(action_params.get("output_format", "structured"))
+        if isinstance(action_params, Mapping)
+        else "structured"
+    )
+    expected_selector = (
+        str(read_ranges[0]["kind"])
+        if projection_reusable and len(read_ranges) == 1
+        else "exact"
+    )
+    expected_representation = (
         f"{representation_provider}.run-code."
-    ):
+        f"{expected_output_format}.{expected_selector}/v1"
+    )
+    if representation is not None and representation != expected_representation:
         return None, True
     observation_id = receipt.get("observation_id")
     if observation_id is not None and (
@@ -1022,7 +1101,34 @@ def _validated_read_observation_receipt(
         if normalized in {"docker", "docker-sandbox", "docker-sandbox-server"}
         else "filesystem"
     )
-    if not representation.startswith(f"{provider_name}.read-file.{requested_output}."):
+    requested_head = (
+        action_params.get("head") if isinstance(action_params, Mapping) else None
+    )
+    requested_tail = (
+        action_params.get("tail") if isinstance(action_params, Mapping) else None
+    )
+    expected_selector = (
+        "range"
+        if isinstance(requested_head, int)
+        and not isinstance(requested_head, bool)
+        and isinstance(requested_tail, int)
+        and not isinstance(requested_tail, bool)
+        else "head"
+        if isinstance(requested_head, int) and not isinstance(requested_head, bool)
+        else "tail"
+        if isinstance(requested_tail, int) and not isinstance(requested_tail, bool)
+        else "bytes"
+        if requested_output == "base64"
+        else "head"
+        if coverage.get("kind") == "line_range" and coverage.get("start") == 1
+        else "prefix"
+        if coverage.get("kind") == "byte_range"
+        else "full"
+    )
+    expected_representation = (
+        f"{provider_name}.read-file.{requested_output}.{expected_selector}/v1"
+    )
+    if representation != expected_representation:
         return None, True
     source_checkpoint_revision = receipt.get("source_checkpoint_revision")
     if (
@@ -1057,6 +1163,66 @@ def _validated_read_observation_receipt(
     epoch_authority = epoch.get("authority") or "host"
     if receipt["authority"] != epoch_authority:
         return None, True
+    if expected_selector == "range" and coverage != {
+        "kind": "line_range",
+        "start": requested_head,
+        "end": requested_tail,
+    }:
+        return None, True
+    if expected_selector == "head":
+        expected_head = (
+            requested_head
+            if isinstance(requested_head, int) and not isinstance(requested_head, bool)
+            else coverage.get("end")
+        )
+        if coverage != {
+            "kind": "line_range",
+            "start": 1,
+            "end": expected_head,
+        }:
+            return None, True
+    if expected_selector == "tail" and coverage != {
+        "kind": "tail_lines",
+        "start": requested_tail,
+    }:
+        return None, True
+    if expected_selector == "full" and coverage != {"kind": "full"}:
+        return None, True
+    if expected_selector == "prefix" and not (
+        coverage.get("kind") == "byte_range"
+        and coverage.get("start") == 0
+        and coverage.get("end") <= epoch["size"]
+    ):
+        return None, True
+    if expected_selector == "bytes":
+        requested_offset = (
+            action_params.get("offset", 0) if isinstance(action_params, Mapping) else 0
+        )
+        requested_limit = (
+            action_params.get("limit") if isinstance(action_params, Mapping) else None
+        )
+        if (
+            isinstance(requested_offset, bool)
+            or not isinstance(requested_offset, int)
+            or requested_offset < 0
+            or isinstance(requested_limit, bool)
+            or (
+                requested_limit is not None
+                and (not isinstance(requested_limit, int) or requested_limit < 1)
+            )
+        ):
+            return None, True
+        effective_offset = min(requested_offset, epoch["size"])
+        if not (
+            coverage.get("kind") == "byte_range"
+            and coverage.get("start") == effective_offset
+            and coverage.get("end") <= epoch["size"]
+            and (
+                requested_limit is None
+                or coverage.get("end") <= effective_offset + requested_limit
+            )
+        ):
+            return None, True
     return receipt, True
 
 
@@ -1308,18 +1474,41 @@ class SandboxToolObservationRuntime:
         ):
             raise ValueError("max_replay_content_bytes must be a positive integer")
         self._max_replay_content_bytes = max_replay_content_bytes
-        self._generation: dict[tuple[str, str, str], int] = {}
-        self._cache: "OrderedDict[tuple[tuple[str, str, str], int, str], dict[str, Any]]" = OrderedDict()
-        self._authoritative_effects: "OrderedDict[tuple[tuple[str, str, str], str], ToolEffect]" = OrderedDict()
-        self._retained_read_facts: "OrderedDict[tuple[tuple[str, str, str], str, str], dict[str, Any]]" = OrderedDict()
-        self._volatile_scopes: set[tuple[str, str, str]] = set()
+        self._generation: dict[tuple[str, ...], int] = {}
+        self._cache: "OrderedDict[tuple[tuple[str, ...], int, str], dict[str, Any]]" = (
+            OrderedDict()
+        )
+        self._authoritative_effects: "OrderedDict[tuple[tuple[str, ...], str], ToolEffect]" = OrderedDict()
+        self._retained_read_facts: "OrderedDict[tuple[tuple[str, ...], str, str], dict[str, Any]]" = OrderedDict()
+        self._volatile_scopes: set[tuple[str, ...]] = set()
+        self._scope_lru: "OrderedDict[tuple[str, ...], None]" = OrderedDict()
 
     def _current_generation(self, context: Any) -> int:
         return self._generation.get(_scope(context), 0)
 
+    def _touch_scope(self, scope: tuple[str, ...]) -> None:
+        if not _scope_is_complete(scope):
+            return
+        self._scope_lru[scope] = None
+        self._scope_lru.move_to_end(scope)
+        while len(self._scope_lru) > self._max_cache_entries:
+            stale_scope, _ = self._scope_lru.popitem(last=False)
+            self._generation.pop(stale_scope, None)
+            self._volatile_scopes.discard(stale_scope)
+            for key in list(self._cache):
+                if key[0] == stale_scope:
+                    self._cache.pop(key, None)
+            for key in list(self._authoritative_effects):
+                if key[0] == stale_scope:
+                    self._authoritative_effects.pop(key, None)
+            for key in list(self._retained_read_facts):
+                if key[0] == stale_scope:
+                    self._retained_read_facts.pop(key, None)
+
     def current_generation(self, context: Any) -> int:
         """Return the bounded workspace generation for control-plane receipts."""
 
+        self._touch_scope(_scope(context))
         return self._current_generation(context)
 
     def _lookup_retained_read_fact(
@@ -1417,7 +1606,7 @@ class SandboxToolObservationRuntime:
 
     def _invalidate_read_path(
         self,
-        scope: tuple[str, str, str],
+        scope: tuple[str, ...],
         path: str,
     ) -> None:
         for key in list(self._retained_read_facts):
@@ -1476,6 +1665,7 @@ class SandboxToolObservationRuntime:
         scope = _scope(context)
         if not _scope_is_complete(scope):
             return None
+        self._touch_scope(scope)
         if scope in self._volatile_scopes:
             return None
         learned_key = (scope, fallback_effect.operation_hash)
@@ -1604,6 +1794,9 @@ class SandboxToolObservationRuntime:
         read_receipt, read_receipt_supplied = _validated_read_observation_receipt(
             action, result
         )
+        invalid_supplied_receipt = bool(
+            terminal_receipt_supplied and terminal_receipt is None
+        ) or bool(read_receipt_supplied and read_receipt is None)
         effect = fallback_effect
         if terminal_receipt is not None:
             terminal_epochs = terminal_receipt.get("read_path_epochs", ())
@@ -1673,20 +1866,58 @@ class SandboxToolObservationRuntime:
                 operation_hash=fallback_effect.operation_hash,
             )
         scope = _scope(context)
+        self._touch_scope(scope)
         result_metadata = _metadata(result)
         raw_terminal_receipt = result_metadata.get(TERMINAL_EXECUTION_RECEIPT_KEY)
         raw_read_receipt = result_metadata.get(READ_OBSERVATION_RECEIPT_KEY)
-        untrusted_replay_claim = bool(
-            isinstance(raw_terminal_receipt, Mapping)
-            and raw_terminal_receipt.get("cache_hit") is True
-        ) or bool(
-            isinstance(raw_read_receipt, Mapping)
-            and raw_read_receipt.get("cache_hit") is True
+        invalid_replay_claim = invalid_supplied_receipt and (
+            bool(
+                isinstance(raw_terminal_receipt, Mapping)
+                and "cache_hit" in raw_terminal_receipt
+                and raw_terminal_receipt.get("cache_hit") is not False
+            )
+            or bool(
+                isinstance(raw_read_receipt, Mapping)
+                and "cache_hit" in raw_read_receipt
+                and raw_read_receipt.get("cache_hit") is not False
+            )
         )
+        current_checkpoint_revision = _context_checkpoint_revision(context)
+        receipt_checkpoint_mismatch = bool(
+            terminal_receipt is not None
+            and terminal_receipt.get("source_checkpoint_revision") is not None
+            and terminal_receipt.get("source_checkpoint_revision")
+            != current_checkpoint_revision
+        ) or bool(
+            read_receipt is not None
+            and read_receipt.get("source_checkpoint_revision")
+            != current_checkpoint_revision
+        )
+        stale_provider_replay = bool(
+            terminal_receipt is not None
+            and terminal_receipt.get("cache_hit") is True
+            and terminal_receipt.get("source_checkpoint_revision")
+            != current_checkpoint_revision
+        ) or bool(
+            read_receipt is not None
+            and read_receipt.get("cache_hit") is True
+            and read_receipt.get("source_checkpoint_revision")
+            != current_checkpoint_revision
+        )
+        failed_provider_replay = invalid_replay_claim or stale_provider_replay
+        if failed_provider_replay:
+            _reject_provider_replay(
+                result,
+                reason=(
+                    "checkpoint_mismatch"
+                    if stale_provider_replay
+                    else "invalid_replay_receipt"
+                ),
+            )
         provider_cache_hit = bool(
             (terminal_receipt or {}).get("cache_hit") is True
             or (read_receipt or {}).get("cache_hit") is True
-            or untrusted_replay_claim
+            or invalid_replay_claim
         )
         scope_volatile = (
             bool(
@@ -1697,7 +1928,7 @@ class SandboxToolObservationRuntime:
         )
         if result_metadata.get("capture_complete") is False:
             scope_volatile = True
-        if scope_volatile:
+        if scope_volatile and _scope_is_complete(scope):
             self._volatile_scopes.add(scope)
         generation = self._current_generation(context)
         success = _result_success(result)
@@ -1708,9 +1939,12 @@ class SandboxToolObservationRuntime:
             if terminal_receipt is not None
             else (0 if effect.effect == "read_only" else 1)
         )
+        if failed_provider_replay:
+            generation_delta = 0
         if generation_delta:
             generation += generation_delta
-            self._generation[scope] = generation
+            if _scope_is_complete(scope):
+                self._generation[scope] = generation
         if terminal_receipt is not None:
             observed_mutation = terminal_receipt.get("mutation_observed")
             if effect.effect == "read_only":
@@ -1731,6 +1965,10 @@ class SandboxToolObservationRuntime:
             # Unknown calls must execute and conservatively invalidate replay,
             # but do not claim progress merely because a command ran.
             workspace_mutated = None
+        if failed_provider_replay or receipt_checkpoint_mismatch:
+            effective_effect = "unknown"
+            if failed_provider_replay:
+                workspace_mutated = False
         if _scope_is_complete(scope) and (
             terminal_receipt is not None or read_receipt is not None
         ):
@@ -1807,8 +2045,10 @@ class SandboxToolObservationRuntime:
                 else True
             ),
             "cache_state": (
-                "provider_replay_untrusted"
-                if untrusted_replay_claim
+                "provider_replay_rejected"
+                if failed_provider_replay
+                else "provider_replay_untrusted"
+                if invalid_replay_claim
                 and terminal_receipt is None
                 and read_receipt is None
                 else "provider_replay"
@@ -1833,6 +2073,8 @@ class SandboxToolObservationRuntime:
             action_semantics = (
                 None
                 if provider_cache_hit
+                or invalid_supplied_receipt
+                or receipt_checkpoint_mismatch
                 else _observed_action_semantic_receipt(
                     action,
                     result,
