@@ -207,13 +207,44 @@ class SandboxManager:
         return await asyncio.wrap_future(fut)
     
     async def cleanup_all(self) -> None:
-        """
-        Placeholder for unified cleanup support.
+        """Stop sandbox workers, drain provider calls, then close pool loops."""
 
-        At present SandboxManager only knows how to dispatch work to the
-        correct worker_task. It does not own or enumerate Sandbox
-        instances; higher layers are responsible for tracking sandboxes
-        and calling per-sandbox cleanup explicitly.
-        """
-        return None
+        contexts = list(self._registry.values())
+        self._registry.clear()
+        contexts_by_loop: Dict[asyncio.AbstractEventLoop, List[_SandboxContext]] = {}
+        for context in contexts:
+            contexts_by_loop.setdefault(context.loop, []).append(context)
 
+        async def _stop_loop_contexts(
+            loop_contexts: List[_SandboxContext],
+        ) -> None:
+            workers = [
+                context.worker_task
+                for context in loop_contexts
+                if not context.worker_task.done()
+            ]
+            for worker in workers:
+                worker.cancel()
+            if workers:
+                await asyncio.gather(*workers, return_exceptions=True)
+            from aworld.sandbox.run.mcp_servers import (
+                cleanup_provider_calls_for_loop,
+            )
+
+            await cleanup_provider_calls_for_loop(asyncio.get_running_loop())
+
+        shutdown_futures = []
+        for loop, loop_contexts in contexts_by_loop.items():
+            if loop.is_closed():
+                continue
+            shutdown_futures.append(
+                asyncio.wrap_future(
+                    self._loop_pool.submit_to_loop(
+                        loop, _stop_loop_contexts(loop_contexts)
+                    )
+                )
+            )
+        if shutdown_futures:
+            await asyncio.gather(*shutdown_futures, return_exceptions=True)
+        self._sandbox_instances.clear()
+        await asyncio.to_thread(self._loop_pool.shutdown)

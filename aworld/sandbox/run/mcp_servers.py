@@ -127,6 +127,7 @@ def _provider_cleanup_state(
         if state is None and create:
             state = _ProviderCleanupState()
             _provider_cleanup_states[loop] = state
+            _install_provider_cleanup_close_hook(loop)
         return state
 
 
@@ -151,6 +152,69 @@ def _provider_cleanup_snapshot(
 def _provider_cleanup_state_count() -> int:
     with _provider_cleanup_states_lock:
         return len(_provider_cleanup_states)
+
+
+async def cleanup_provider_calls_for_loop(
+    loop: asyncio.AbstractEventLoop | None = None,
+) -> None:
+    """Drain retained provider calls on their owning event loop."""
+
+    owner_loop = asyncio.get_running_loop()
+    if loop is not None and loop is not owner_loop:
+        raise RuntimeError("provider cleanup must run on the owning event loop")
+    state = _provider_cleanup_state(owner_loop, create=False)
+    if state is None:
+        return
+    worker = state.worker
+    if worker is not None and worker is not asyncio.current_task() and not worker.done():
+        worker.cancel()
+        await asyncio.gather(worker, return_exceptions=True)
+    retained = list(state.calls)
+    for task in retained:
+        _force_close_provider_call(task)
+    state.calls.clear()
+    await asyncio.sleep(0)
+    for task in retained:
+        _consume_provider_call(task)
+    state.worker = None
+    _drop_provider_cleanup_state(owner_loop, state)
+
+
+def _close_provider_cleanup_before_loop_close(
+    loop: asyncio.AbstractEventLoop,
+) -> None:
+    """Defensive synchronous hook for loops closed outside SandboxManager."""
+
+    if loop.is_closed() or _provider_cleanup_state(loop, create=False) is None:
+        return
+    if loop.is_running():
+        raise RuntimeError("cannot close an event loop while provider cleanup is active")
+    loop.run_until_complete(cleanup_provider_calls_for_loop(loop))
+
+
+def _install_provider_cleanup_close_hook(loop: asyncio.AbstractEventLoop) -> None:
+    if getattr(loop, "_aworld_provider_cleanup_close_hook", False):
+        return
+    original_close = loop.close
+    try:
+        original_close_ref = weakref.WeakMethod(original_close)
+    except TypeError:
+        return
+    loop_ref = weakref.ref(loop)
+
+    def close_with_provider_cleanup(*args, **kwargs):
+        owner_loop = loop_ref()
+        original = original_close_ref()
+        if owner_loop is None or original is None:
+            return None
+        _close_provider_cleanup_before_loop_close(owner_loop)
+        return original(*args, **kwargs)
+
+    try:
+        setattr(loop, "close", close_with_provider_cleanup)
+        setattr(loop, "_aworld_provider_cleanup_close_hook", True)
+    except (AttributeError, TypeError):
+        return
 
 
 async def _cleanup_cancelled_provider_calls(

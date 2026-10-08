@@ -1,7 +1,7 @@
 import asyncio
 import threading
 from concurrent.futures import Future
-from typing import Dict, List, Optional
+from typing import List, Optional
 
 
 class SandboxLoopPool:
@@ -48,7 +48,18 @@ class SandboxLoopPool:
         Thread target: run an event loop forever.
         """
         asyncio.set_event_loop(loop)
-        loop.run_forever()
+        try:
+            loop.run_forever()
+        finally:
+            try:
+                from aworld.sandbox.run.mcp_servers import (
+                    cleanup_provider_calls_for_loop,
+                )
+
+                loop.run_until_complete(cleanup_provider_calls_for_loop(loop))
+                loop.run_until_complete(loop.shutdown_asyncgens())
+            finally:
+                loop.close()
 
     def get_loop_for_key(self, key: str) -> asyncio.AbstractEventLoop:
         """
@@ -78,3 +89,20 @@ class SandboxLoopPool:
         """
         return asyncio.run_coroutine_threadsafe(coro, loop)
 
+    def shutdown(self) -> None:
+        """Stop all pool loops and wait until their owner threads close them."""
+
+        loops = list(self._loops)
+        threads = list(self._threads)
+        for loop in loops:
+            if not loop.is_closed():
+                try:
+                    loop.call_soon_threadsafe(loop.stop)
+                except RuntimeError:
+                    pass
+        current = threading.current_thread()
+        for thread in threads:
+            if thread is not current and thread.is_alive():
+                thread.join(timeout=5)
+        self._loops.clear()
+        self._threads.clear()

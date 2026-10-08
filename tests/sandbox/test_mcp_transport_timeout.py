@@ -5,8 +5,10 @@ from __future__ import annotations
 import ast
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
+import gc
 import sys
 import threading
+import weakref
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -329,6 +331,101 @@ def test_provider_cleanup_isolated_across_debug_event_loops():
 
     assert all(not errors and not pending for _, errors, pending in results)
     assert mcp_servers._provider_cleanup_state_count() == 0
+
+
+def test_abrupt_loop_close_releases_retained_provider_and_request():
+    class RequestContext:
+        pass
+
+    loop = asyncio.new_event_loop()
+    loop.set_debug(True)
+    errors = []
+    loop.set_exception_handler(lambda _loop, context: errors.append(context))
+    asyncio.set_event_loop(loop)
+    request = RequestContext()
+    request_ref = weakref.ref(request)
+    loop_ref = weakref.ref(loop)
+
+    async def setup(payload):
+        async def stubborn_provider():
+            while True:
+                try:
+                    _ = payload
+                    await asyncio.Event().wait()
+                except asyncio.CancelledError:
+                    continue
+
+        task = asyncio.create_task(stubborn_provider())
+        await asyncio.sleep(0)
+        task.cancel()
+        await asyncio.sleep(0)
+        mcp_servers._retain_cancelled_provider_call(task)
+        return weakref.ref(task)
+
+    task_ref = loop.run_until_complete(setup(request))
+    assert mcp_servers._provider_cleanup_snapshot(loop)[0] == 1
+
+    loop.close()
+
+    task = task_ref()
+    assert task is not None and task.done()
+    assert mcp_servers._provider_cleanup_state_count() == 0
+    del task
+    del request
+    asyncio.set_event_loop(None)
+    del loop
+    for _ in range(3):
+        gc.collect()
+
+    assert task_ref() is None
+    assert request_ref() is None
+    assert loop_ref() is None
+    assert not errors
+
+
+def test_sandbox_loop_pool_shutdown_drains_provider_cleanup_before_close():
+    from aworld.sandbox.runtime.loop_pool import SandboxLoopPool
+
+    class RequestContext:
+        pass
+
+    pool = SandboxLoopPool(num_loops=1)
+    loop = pool._loops[0]
+    thread = pool._threads[0]
+    request = RequestContext()
+    request_ref = weakref.ref(request)
+
+    async def setup(payload):
+        async def stubborn_provider():
+            while True:
+                try:
+                    _ = payload
+                    await asyncio.Event().wait()
+                except asyncio.CancelledError:
+                    continue
+
+        task = asyncio.create_task(stubborn_provider())
+        await asyncio.sleep(0)
+        task.cancel()
+        await asyncio.sleep(0)
+        mcp_servers._retain_cancelled_provider_call(task)
+        return weakref.ref(task)
+
+    task_ref = pool.submit_to_loop(loop, setup(request)).result(timeout=5)
+
+    pool.shutdown()
+
+    task = task_ref()
+    assert task is not None and task.done()
+    assert loop.is_closed()
+    assert not thread.is_alive()
+    assert mcp_servers._provider_cleanup_state_count() == 0
+    del task
+    del request
+    for _ in range(3):
+        gc.collect()
+    assert task_ref() is None
+    assert request_ref() is None
 
 
 @pytest.mark.parametrize(
