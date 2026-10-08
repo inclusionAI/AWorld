@@ -10,6 +10,8 @@ from aworld.config.conf import AgentMemoryConfig
 from aworld.config.conf import AgentConfig
 from aworld.core.common import ActionModel, ActionResult, Observation
 from aworld.core.context.base import Context
+from aworld.core.context.execution_state import get_execution_state
+from aworld.core.context.generation_budget import GenerationBudgetPolicy
 from aworld.core.context.session import Session
 from aworld.core.event.base import AgentMessage, Constants, Message
 from aworld.core.exceptions import AWorldRuntimeException
@@ -60,6 +62,9 @@ async def test_invoke_model_types_framework_total_deadline_separately_from_provi
             llm_model_name="fake-model",
             llm_api_key="fake-key",
         ),
+        generation_budget_policy=GenerationBudgetPolicy(
+            total_timeout_seconds=0.01,
+        ),
     )
     provider_cancelled = False
 
@@ -71,9 +76,6 @@ async def test_invoke_model_types_framework_total_deadline_separately_from_provi
             provider_cancelled = True
             raise
 
-    monkeypatch.setattr(
-        llm_agent_module, "DEFAULT_LLM_EXECUTION_TIMEOUT_SECONDS", 0.01
-    )
     monkeypatch.setattr(
         llm_agent_module, "acall_llm_model", blocked_acall_llm_model
     )
@@ -1052,7 +1054,7 @@ async def test_aworld_result_validation_retry_types_the_followup_model_turn():
 
 
 @pytest.mark.asyncio
-async def test_invoke_model_reports_empty_response_failure_only_once(
+async def test_invoke_model_returns_typed_incomplete_for_empty_response(
     monkeypatch: pytest.MonkeyPatch,
 ):
     class MinimalAgent(Agent):
@@ -1098,20 +1100,24 @@ async def test_invoke_model_reports_empty_response_failure_only_once(
         headers={"context": context},
     )
 
-    with pytest.raises(AWorldRuntimeException, match="empty or invalid response"):
-        await agent.invoke_model(
-            messages=[{"role": "user", "content": "hello"}],
-            message=message,
-            stream=False,
-        )
+    response = await agent.invoke_model(
+        messages=[{"role": "user", "content": "hello"}],
+        message=message,
+        stream=False,
+    )
+
+    assert response.message["aworld_incomplete_reason"] == "empty_model_response"
+    assert response.message["aworld_recoverable"] is True
+    execution_state = get_execution_state(context, agent_id=agent.id())
+    assert execution_state["status"] == "incomplete"
+    assert execution_state["reason"] == "empty_model_response"
 
     failure_payloads = [
         payload
         for payload in sent_payloads
         if payload.startswith("Failed to call llm model")
     ]
-    assert len(failure_payloads) == 1
-    assert failure_payloads[0].startswith("Failed to call llm model after 1 attempts:")
+    assert failure_payloads == []
 
 
 @pytest.mark.asyncio
