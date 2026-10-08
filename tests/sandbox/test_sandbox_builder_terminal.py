@@ -27,6 +27,7 @@ async def test_builder_terminal_proxy_uses_production_defaults_and_scoped_inputs
         output_format="structured",
         cwd="workspace",
         env={"MODE": "test"},
+        language="shell",
     )
 
 

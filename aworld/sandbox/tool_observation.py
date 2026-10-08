@@ -22,6 +22,8 @@ from aworld.sandbox.terminal_receipt import (
     TERMINAL_EXECUTION_ANALYZER_VERSION,
     TERMINAL_EXECUTION_RECEIPT_KEY,
     TERMINAL_EXECUTION_RECEIPT_SCHEMA,
+    TERMINAL_LANGUAGE_CONTRACT_VERSION,
+    TERMINAL_LANGUAGES,
     plan_terminal_execution,
     terminal_command_sha256,
 )
@@ -135,13 +137,21 @@ def classify_tool_effect(action: Any) -> ToolEffect:
         effect = "mutating"
     elif normalized_tool in _TERMINAL_CAPABILITY_TOOLS and operation == "run_code":
         code = params.get("code")
-        if isinstance(code, str):
-            execution_plan = plan_terminal_execution(code)
+        language = params.get("language", "shell")
+        if isinstance(code, str) and language in TERMINAL_LANGUAGES:
+            execution_plan = plan_terminal_execution(code, language=language)
             effect = execution_plan.effect
             # Terminal replay is enabled only after a provider receipt binds
             # the parser decision to the actual execution environment.
             cacheable = False
     operation_params = dict(params)
+    if (
+        normalized_tool in _TERMINAL_CAPABILITY_TOOLS
+        and operation == "run_code"
+        and operation_params.get("language", "shell") == "shell"
+    ):
+        # Omitted and explicit Shell are the same versioned request contract.
+        operation_params.pop("language", None)
     if "env_content" in operation_params:
         encoded_env_content = json.dumps(
             operation_params["env_content"],
@@ -220,6 +230,22 @@ def _validated_terminal_execution_receipt(
     if not isinstance(code, str):
         return None, True
     if receipt.get("command_sha256") != terminal_command_sha256(code):
+        return None, True
+    requested_language = (
+        params.get("language", action_params.get("language", "shell"))
+        if isinstance(params, Mapping) and isinstance(action_params, Mapping)
+        else "shell"
+    )
+    if requested_language not in TERMINAL_LANGUAGES:
+        return None, True
+    if (
+        receipt.get("language_contract_version")
+        != TERMINAL_LANGUAGE_CONTRACT_VERSION
+        or receipt.get("requested_language") != requested_language
+        or receipt.get("effective_language") not in TERMINAL_LANGUAGES
+        or receipt.get("effective_language") != requested_language
+        or receipt.get("language") != receipt.get("effective_language")
+    ):
         return None, True
     effect = receipt.get("effect")
     potential_effect = receipt.get("potential_effect")
@@ -378,6 +404,29 @@ class SandboxToolObservationRuntime:
         generation = self._current_generation(context)
         key = (scope, generation, effect.operation_hash)
         cached = self._cache.get(key)
+        source_generation = generation
+        epoch_revalidated = False
+        if cached is None:
+            # A generation is a conservative ordering barrier, not proof that
+            # every previously read file changed. Receipts with explicit file
+            # epochs can be revalidated safely across unrelated or opaque
+            # operations instead of becoming unreachable forever.
+            for candidate_key in reversed(self._cache):
+                candidate_scope, candidate_generation, candidate_hash = candidate_key
+                if (
+                    candidate_scope != scope
+                    or candidate_hash != effect.operation_hash
+                    or candidate_generation == generation
+                ):
+                    continue
+                candidate = self._cache[candidate_key]
+                if not candidate.get("read_path_epochs"):
+                    continue
+                key = candidate_key
+                cached = candidate
+                source_generation = candidate_generation
+                epoch_revalidated = True
+                break
         if cached is None:
             return None
         if not all(
@@ -388,6 +437,10 @@ class SandboxToolObservationRuntime:
             generation += 1
             self._generation[scope] = generation
             return None
+        if epoch_revalidated:
+            self._cache.pop(key, None)
+            key = (scope, generation, effect.operation_hash)
+            self._cache[key] = cached
         self._cache.move_to_end(key)
         receipt = {
             "schema_version": OBSERVATION_SCHEMA,
@@ -399,6 +452,12 @@ class SandboxToolObservationRuntime:
             "operation_hash": effect.operation_hash,
             "observation_id": cached["observation_id"],
             "content_sha256": cached["content_sha256"],
+            "cache_validation": (
+                "epoch_revalidated"
+                if epoch_revalidated
+                else "exact_generation"
+            ),
+            "source_workspace_generation": source_generation,
         }
         return ActionResult(
             success=True,

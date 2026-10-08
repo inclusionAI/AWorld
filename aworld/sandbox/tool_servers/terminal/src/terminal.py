@@ -19,7 +19,7 @@ import time
 import traceback
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Mapping, Optional, Union
+from typing import Any, Literal, Mapping, Optional, Union
 import os
 
 import bashlex
@@ -605,7 +605,7 @@ Key features:
 - LLM-optimized output formatting
 
 Main tool:
-- run_code: Execute a terminal command with safety checks
+- run_code: Execute Shell by default, or explicit raw Python, with safety checks
 - read_output_artifact: Retrieve a bounded range from truncated command output
 """,
 )
@@ -643,7 +643,7 @@ async def send_command_card(
 
 @mcp.tool(
     description="""
-Execute a terminal command with safety checks and timeout controls.
+Execute Shell commands or explicit raw Python with safety checks and timeout controls.
 
         This tool provides secure command execution with:
         - Cross-platform compatibility (Windows, macOS, Linux)
@@ -652,15 +652,18 @@ Execute a terminal command with safety checks and timeout controls.
         - LLM-optimized result formatting
         - Command history tracking
 
-        Specialized Feature:
-        - Execute Python code and output the result to stdout
-            - Example (Directly execute simple Python code): `python -c "nums = [1, 2, 3, 4]\nsum_of_nums = sum(nums)\nprint(f'{sum_of_nums=}')"`
-            - Example (Execute code from a file): `python my_script.py`
+        Language contract:
+        - `language="shell"` is the default. It can invoke Python and any other
+          executable, for example `python -c "print(1)"` or `python script.py`.
+        - Use `language="python"` only when `code` itself is raw Python source.
+          Bare Python is never inferred from a Shell request.
 """
 )
 async def run_code(
     ctx: Context,
-    code: str = Field(description="Terminal command to execute"),
+    code: str = Field(
+        description="Shell command or raw Python source, according to language"
+    ),
     timeout: float = Field(
         default=_DEFAULT_COMMAND_TIMEOUT_SECONDS,
         description="Command timeout in seconds (default: 300, max: 3600)",
@@ -681,6 +684,13 @@ async def run_code(
         default=None,
         description="Framework-injected task scope; hidden from the model schema",
     ),
+    language: Literal["shell", "python"] = Field(
+        default="shell",
+        description=(
+            "Execution language. 'shell' is backward-compatible and may invoke "
+            "Python; 'python' executes code as raw Python source."
+        ),
+    ),
 ) -> Union[str, TextContent]:
     # Normalize parameters: when using MCP tool schemas, the raw values may be
     # FieldInfo instances. In that case, fall back to their default values.
@@ -692,6 +702,9 @@ async def run_code(
     if isinstance(timeout, FieldInfo):
         timeout = timeout.default
 
+    if isinstance(language, FieldInfo):
+        language = language.default
+
     if isinstance(output_format, FieldInfo):
         output_format = output_format.default
 
@@ -702,7 +715,10 @@ async def run_code(
     if isinstance(env_content, FieldInfo):
         env_content = env_content.default
 
-    execution_plan = _terminal_execution_plan(command)
+    if language not in {"shell", "python"}:
+        raise ValueError("language must be either 'shell' or 'python'")
+
+    execution_plan = _terminal_execution_plan(command, language=language)
     receipt_plan = execution_plan
     receipt_effect_source = "parser_contract"
     execution_started = False
@@ -764,6 +780,7 @@ async def run_code(
                         timed_out=False,
                         potential_effect=execution_plan.effect,
                         effect_source=receipt_effect_source,
+                        requested_language=language,
                     ),
                 ).model_dump(),
             )
@@ -772,8 +789,18 @@ async def run_code(
                 text=json.dumps(action_response.model_dump()),
                 **{"metadata": {}},
             )
-        # Safety check
-        is_safe, safety_reason = _check_command_safety(command)
+        # Preserve the existing Shell safety boundary for both modes. Raw
+        # Python is represented as one safely quoted ``python -c`` command for
+        # inspection, but execution below does not round-trip through Shell.
+        python_executable = (
+            command_environment.get("AWORLD_PYTHON_EXECUTABLE") or sys.executable
+        )
+        safety_command = (
+            command
+            if language == "shell"
+            else f"{shlex.quote(python_executable)} -c {shlex.quote(command)}"
+        )
+        is_safe, safety_reason = _check_command_safety(safety_command)
         if not is_safe:
             action_response = ActionResponse(
                 success=False,
@@ -797,6 +824,7 @@ async def run_code(
                         timed_out=False,
                         potential_effect=execution_plan.effect,
                         effect_source=receipt_effect_source,
+                        requested_language=language,
                     ),
                 ).model_dump(),
             )
@@ -835,6 +863,8 @@ async def run_code(
             timeout_decision.effective_seconds,
             cwd=working_directory,
             env=command_environment,
+            language=language,
+            python_executable=python_executable,
         )
         execution_result = result
         execution_time = time.time() - start_time
@@ -896,6 +926,7 @@ async def run_code(
                 potential_effect=execution_plan.effect,
                 effect_source=receipt_effect_source,
                 read_path_epochs=read_path_epochs,
+                requested_language=language,
             ),
         )
 
@@ -970,6 +1001,7 @@ async def run_code(
                     ),
                     potential_effect=execution_plan.effect,
                     effect_source=receipt_effect_source,
+                    requested_language=language,
                 ),
             ).model_dump(),
         )
@@ -1329,10 +1361,18 @@ def _command_words(segment: list[str]) -> tuple[str, list[str]]:
     return "", []
 
 
-def _terminal_execution_plan(command: Any) -> TerminalExecutionPlan:
+def _terminal_execution_plan(
+    command: Any,
+    *,
+    language: str = "shell",
+) -> TerminalExecutionPlan:
     """Analyze exactly what this terminal will hand to its platform shell."""
 
-    if not isinstance(command, str) or platform_info["system"] == "Windows":
+    if not isinstance(command, str):
+        return TerminalExecutionPlan("unknown", "unknown", False, False)
+    if language == "python":
+        return plan_terminal_execution(command, language="python")
+    if language != "shell" or platform_info["system"] == "Windows":
         return TerminalExecutionPlan("unknown", "unknown", False, False)
     try:
         shell_nodes = list(_parse_shell_nodes(command))
@@ -1348,6 +1388,7 @@ def _terminal_execution_plan(command: Any) -> TerminalExecutionPlan:
         return TerminalExecutionPlan("shell", "unknown", False, False)
     return plan_terminal_execution(
         command,
+        language="shell",
         shell_nodes=shell_nodes,
         trusted_executable_paths=(sys.executable,),
     )
@@ -1358,6 +1399,9 @@ _CACHE_SAFE_SHELL_BUILTINS = frozenset(
 )
 _SHELL_STARTUP_ENVIRONMENT_KEYS = frozenset(
     {"BASH_ENV", "CDPATH", "ENV", "SHELLOPTS"}
+)
+_PYTHON_STARTUP_ENVIRONMENT_KEYS = frozenset(
+    {"PYTHONHOME", "PYTHONINSPECT", "PYTHONPATH", "PYTHONSTARTUP"}
 )
 
 
@@ -1389,17 +1433,29 @@ def _trusted_read_execution_context(
         or not plan.read_set_complete
     ):
         return False
-    if any(environment.get(key) for key in _SHELL_STARTUP_ENVIRONMENT_KEYS):
-        return False
-    if any(str(key).startswith("BASH_FUNC_") for key in environment):
-        return False
     overrides = environment_overrides or {}
-    if any(
-        key == "PATH"
-        or key in _SHELL_STARTUP_ENVIRONMENT_KEYS
-        or str(key).startswith("BASH_FUNC_")
-        for key in overrides
-    ):
+    if plan.language == "shell":
+        if any(environment.get(key) for key in _SHELL_STARTUP_ENVIRONMENT_KEYS):
+            return False
+        if any(str(key).startswith("BASH_FUNC_") for key in environment):
+            return False
+        if any(
+            key == "PATH"
+            or key in _SHELL_STARTUP_ENVIRONMENT_KEYS
+            or str(key).startswith("BASH_FUNC_")
+            for key in overrides
+        ):
+            return False
+    elif plan.language == "python":
+        if any(environment.get(key) for key in _PYTHON_STARTUP_ENVIRONMENT_KEYS):
+            return False
+        if any(
+            key == "AWORLD_PYTHON_EXECUTABLE"
+            or key in _PYTHON_STARTUP_ENVIRONMENT_KEYS
+            for key in overrides
+        ):
+            return False
+    else:
         return False
 
     workspace_root = workspace.resolve()
@@ -1419,6 +1475,26 @@ def _trusted_read_execution_context(
             return False
         if not stat_module.S_ISREG(stat_result.st_mode):
             return False
+
+    if plan.language == "python":
+        executable = Path(
+            environment.get("AWORLD_PYTHON_EXECUTABLE") or sys.executable
+        ).expanduser()
+        if not executable.is_absolute():
+            resolved_text = shutil.which(str(executable), path=environment.get("PATH"))
+            if not resolved_text:
+                return False
+            executable = Path(resolved_text)
+        try:
+            resolved = executable.resolve()
+        except OSError:
+            return False
+        return (
+            not _path_within(resolved, workspace_root)
+            and not _path_within(resolved, Path("/tmp").resolve())
+            and resolved.is_file()
+            and os.access(resolved, os.X_OK)
+        )
 
     try:
         segments = _shell_command_segments(command)
@@ -1544,17 +1620,21 @@ def _snapshot_known_write_paths(
 
     if plan.effect != "mutating" or not plan.write_paths:
         return None
-    try:
-        if any(
-            _command_words(segment)[0] == "cd"
-            for segment in _shell_command_segments(command)
-        ):
-            # Relative paths following a shell-local cd cannot be resolved
-            # safely without interpreting shell control flow.
-            if any(not Path(value).expanduser().is_absolute() for value in plan.write_paths):
-                return None
-    except ValueError:
-        return None
+    if plan.language == "shell":
+        try:
+            if any(
+                _command_words(segment)[0] == "cd"
+                for segment in _shell_command_segments(command)
+            ):
+                # Relative paths following a shell-local cd cannot be resolved
+                # safely without interpreting shell control flow.
+                if any(
+                    not Path(value).expanduser().is_absolute()
+                    for value in plan.write_paths
+                ):
+                    return None
+        except ValueError:
+            return None
     snapshot: dict[Path, tuple[Any, ...]] = {}
     for value in plan.write_paths:
         candidate = Path(value).expanduser()
@@ -1980,6 +2060,8 @@ async def _execute_command_async(
     *,
     cwd: Path | None = None,
     env: Mapping[str, str] | None = None,
+    language: Literal["shell", "python"] = "shell",
+    python_executable: str | None = None,
 ) -> CommandResult:
     """Execute a command while retaining only bounded stdout/stderr excerpts.
 
@@ -2019,23 +2101,35 @@ async def _execute_command_async(
 
     try:
         is_background = (
-            _is_background_process(command) and platform_info["system"] != "Windows"
+            language == "shell"
+            and _is_background_process(command)
+            and platform_info["system"] != "Windows"
         )
         process_options: dict[str, Any] = {
             "stdin": subprocess.DEVNULL,
             "stdout": asyncio.subprocess.PIPE,
             "stderr": asyncio.subprocess.PIPE,
-            "shell": True,
             "limit": _STREAM_READ_CHUNK_BYTES,
             "cwd": str(cwd or workspace),
             "env": dict(env) if env is not None else None,
         }
-        if platform_info["system"] != "Windows":
-            process_options.update(
-                executable="/bin/bash",
-                start_new_session=True,
+        if language == "shell":
+            process_options["shell"] = True
+            if platform_info["system"] != "Windows":
+                process_options.update(
+                    executable="/bin/bash",
+                    start_new_session=True,
+                )
+            process = await asyncio.create_subprocess_shell(command, **process_options)
+        else:
+            if platform_info["system"] != "Windows":
+                process_options["start_new_session"] = True
+            process = await asyncio.create_subprocess_exec(
+                python_executable or sys.executable,
+                "-c",
+                command,
+                **process_options,
             )
-        process = await asyncio.create_subprocess_shell(command, **process_options)
         if process.stdout is None or process.stderr is None:
             raise RuntimeError("terminal subprocess pipes were not created")
 

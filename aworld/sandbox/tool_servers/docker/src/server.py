@@ -14,7 +14,7 @@ import re
 import sys
 import time
 from pathlib import Path, PurePosixPath
-from typing import Any, Optional
+from typing import Any, Literal, Optional
 
 from mcp.server import FastMCP
 from mcp.server.fastmcp import Context
@@ -235,7 +235,7 @@ def _literal_container_write_paths(
 ) -> list[str] | None:
     if plan.effect != "mutating" or not plan.write_paths:
         return None
-    shell_changes_directory = bool(
+    shell_changes_directory = plan.language == "shell" and bool(
         re.search(r"(?:^|[;&|]\s*)cd\s+", code)
     )
     paths: list[str] = []
@@ -277,16 +277,29 @@ async def _container_path_states(
     return states if len(states) == len(paths) else None
 
 
-@mcp.tool(description="Execute a shell command inside the attached Docker container.")
+@mcp.tool(
+    description=(
+        "Execute Shell commands, or explicit raw Python, inside the attached "
+        "Docker container. Shell remains the default and may invoke Python."
+    )
+)
 async def run_code(
     ctx: Context,
-    code: str = Field(description="Shell command to execute inside the container"),
+    code: str = Field(
+        description="Shell command or raw Python source, according to language"
+    ),
     timeout: int = Field(default=30, description="Command timeout in seconds"),
     output_format: str = Field(default="markdown", description="markdown, json, or text"),
+    language: Literal["shell", "python"] = Field(
+        default="shell",
+        description="Use 'python' only when code itself is raw Python source",
+    ),
 ) -> TextContent:
     del ctx, output_format
     started = time.monotonic()
-    potential_plan = plan_terminal_execution(code)
+    if language not in {"shell", "python"}:
+        raise ValueError("language must be either 'shell' or 'python'")
+    potential_plan = plan_terminal_execution(code, language=language)
     execution_plan = potential_plan
     effect_source = "parser_contract"
     if potential_plan.effect == "read_only":
@@ -310,7 +323,17 @@ async def run_code(
         write_paths,
         timeout=timeout,
     )
-    return_code, stdout, stderr, timed_out = await bridge.shell_command(code, timeout=timeout)
+    if language == "shell":
+        return_code, stdout, stderr, timed_out = await bridge.shell_command(
+            code,
+            timeout=timeout,
+        )
+    else:
+        return_code, stdout, stderr, timed_out = await bridge.execute(
+            [os.environ.get("AWORLD_DOCKER_PYTHON", "python3"), "-c", code],
+            timeout=timeout,
+            workdir=bridge.workdir,
+        )
     after_write_states = await _container_path_states(
         write_paths,
         timeout=timeout,
@@ -353,6 +376,7 @@ async def run_code(
                     mutation_observed=mutation_observed,
                     potential_effect=potential_plan.effect,
                     effect_source=effect_source,
+                    requested_language=language,
                 ),
             },
         }

@@ -137,9 +137,12 @@ async def test_run_code_emits_compact_terminal_execution_receipt() -> None:
 
     assert payload["success"] is True
     assert receipt == {
-        "schema_version": "aworld.terminal-execution-receipt/v1",
-        "parser_version": 1,
+        "schema_version": "aworld.terminal-execution-receipt/v2",
+        "parser_version": 2,
+        "language_contract_version": 1,
         "command_sha256": terminal_command_sha256(command),
+        "requested_language": "shell",
+        "effective_language": "shell",
         "language": "shell",
         "parsed": True,
         "potential_effect": "read_only",
@@ -158,6 +161,94 @@ async def test_run_code_emits_compact_terminal_execution_receipt() -> None:
         "exit_code": 0,
     }
     assert command not in json.dumps(receipt)
+
+
+@pytest.mark.asyncio
+async def test_run_code_executes_explicit_raw_python_without_shell_inference() -> None:
+    source = "values = [1, 2, 3]\nprint(sum(values))"
+
+    response = await run_code(
+        None,
+        source,
+        timeout=10,
+        language="python",
+    )
+    payload = json.loads(response.text)
+    receipt = payload["metadata"]["terminal_execution_receipt"]
+
+    assert payload["success"] is True
+    assert payload["message"]["stdout"] == "6\n"
+    assert receipt["requested_language"] == "python"
+    assert receipt["effective_language"] == "python"
+    assert receipt["language_contract_version"] == 1
+    assert receipt["effect"] == "read_only"
+
+
+@pytest.mark.asyncio
+async def test_run_code_keeps_shell_default_for_bare_python() -> None:
+    source = "import json\nprint(json.dumps({'ok': True}))"
+
+    response = await run_code(None, source, timeout=10)
+    payload = json.loads(response.text)
+    receipt = payload["metadata"]["terminal_execution_receipt"]
+
+    assert payload["success"] is False
+    assert receipt["requested_language"] == "shell"
+    assert receipt["effective_language"] == "shell"
+    assert receipt["effect"] == "unknown"
+
+
+@pytest.mark.asyncio
+async def test_run_code_explicit_python_reports_literal_file_mutation(
+    tmp_path: Path,
+) -> None:
+    response = await run_code(
+        None,
+        "from pathlib import Path\nPath('result.txt').write_text('changed')",
+        timeout=10,
+        cwd=str(tmp_path),
+        language="python",
+    )
+    payload = json.loads(response.text)
+    receipt = payload["metadata"]["terminal_execution_receipt"]
+
+    assert payload["success"] is True
+    assert receipt["effective_language"] == "python"
+    assert receipt["effect"] == "mutating"
+    assert receipt["write_paths"] == ["result.txt"]
+    assert receipt["mutation_observed"] is True
+    assert (tmp_path / "result.txt").read_text() == "changed"
+
+
+@pytest.mark.asyncio
+async def test_run_code_explicit_python_emits_stable_file_read_epochs(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = tmp_path / "input.txt"
+    source.write_text("evidence", encoding="utf-8")
+    monkeypatch.setattr(
+        "aworld.sandbox.tool_servers.terminal.src.terminal.workspace",
+        tmp_path,
+    )
+
+    response = await run_code(
+        None,
+        "from pathlib import Path\nprint(Path('input.txt').read_text())",
+        timeout=10,
+        cwd=str(tmp_path),
+        language="python",
+    )
+    payload = json.loads(response.text)
+    receipt = payload["metadata"]["terminal_execution_receipt"]
+
+    assert payload["success"] is True
+    assert payload["message"]["stdout"] == "evidence\n"
+    assert receipt["effect"] == "read_only"
+    assert receipt["effect_source"] == "trusted_command_contract"
+    assert receipt["read_paths"] == ["input.txt"]
+    assert len(receipt["read_path_epochs"]) == 1
+    assert receipt["cacheable"] is True
 
 
 @pytest.mark.asyncio

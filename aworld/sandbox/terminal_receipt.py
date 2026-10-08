@@ -18,9 +18,11 @@ from typing import Any, Iterable, Sequence
 import bashlex
 
 
-TERMINAL_EXECUTION_RECEIPT_SCHEMA = "aworld.terminal-execution-receipt/v1"
+TERMINAL_EXECUTION_RECEIPT_SCHEMA = "aworld.terminal-execution-receipt/v2"
 TERMINAL_EXECUTION_RECEIPT_KEY = "terminal_execution_receipt"
-TERMINAL_EXECUTION_ANALYZER_VERSION = 1
+TERMINAL_EXECUTION_ANALYZER_VERSION = 2
+TERMINAL_LANGUAGE_CONTRACT_VERSION = 1
+TERMINAL_LANGUAGES = frozenset({"shell", "python"})
 TERMINAL_EFFECTS = frozenset({"read_only", "mutating", "unknown"})
 TERMINAL_CACHEABLE_EFFECT_SOURCES = frozenset(
     {"execution_trace", "trusted_command_contract", "trusted_docker_command_contract"}
@@ -661,6 +663,7 @@ def _parse_shell_nodes(source: str) -> list[Any] | None:
 def plan_terminal_execution(
     code: str,
     *,
+    language: str = "shell",
     shell_nodes: Sequence[Any] | None = None,
     trusted_executable_paths: Sequence[str] = (),
 ) -> TerminalExecutionPlan:
@@ -668,6 +671,26 @@ def plan_terminal_execution(
 
     if not isinstance(code, str) or not code.strip():
         return TerminalExecutionPlan("unknown", "unknown", False, False)
+    if language not in TERMINAL_LANGUAGES:
+        return TerminalExecutionPlan("unknown", "unknown", False, False)
+    if language == "python":
+        effect, reads, writes, read_set_complete = _python_effect_and_paths(code)
+        try:
+            ast.parse(code, mode="exec")
+        except (SyntaxError, ValueError, TypeError):
+            parsed = False
+        else:
+            parsed = True
+        return TerminalExecutionPlan(
+            "python",
+            effect,
+            effect == "read_only",
+            parsed,
+            reads,
+            writes,
+            False,
+            read_set_complete,
+        )
     if _looks_like_bare_python(code):
         # run_code is a shell contract.  Recognizing Python-looking input here
         # prevents comparison operators such as ``>`` from being promoted to
@@ -843,6 +866,7 @@ def build_terminal_execution_receipt(
     potential_effect: str | None = None,
     effect_source: str = "parser_contract",
     read_path_epochs: Sequence[dict[str, Any]] = (),
+    requested_language: str | None = None,
 ) -> dict[str, Any]:
     """Project one terminal decision/result into bounded transport metadata."""
 
@@ -854,7 +878,11 @@ def build_terminal_execution_receipt(
     return {
         "schema_version": TERMINAL_EXECUTION_RECEIPT_SCHEMA,
         "parser_version": TERMINAL_EXECUTION_ANALYZER_VERSION,
+        "language_contract_version": TERMINAL_LANGUAGE_CONTRACT_VERSION,
         "command_sha256": terminal_command_sha256(code),
+        "requested_language": requested_language or plan.language,
+        "effective_language": plan.language,
+        # Retained as a compact compatibility alias for receipt consumers.
         "language": plan.language,
         "parsed": plan.parsed,
         "potential_effect": potential_effect or plan.effect,
@@ -888,6 +916,8 @@ __all__ = [
     "TERMINAL_EFFECTS",
     "TERMINAL_CACHEABLE_EFFECT_SOURCES",
     "TERMINAL_EXECUTION_ANALYZER_VERSION",
+    "TERMINAL_LANGUAGE_CONTRACT_VERSION",
+    "TERMINAL_LANGUAGES",
     "TERMINAL_EXECUTION_RECEIPT_KEY",
     "TERMINAL_EXECUTION_RECEIPT_SCHEMA",
     "TerminalExecutionPlan",

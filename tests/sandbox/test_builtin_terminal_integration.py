@@ -31,6 +31,7 @@ async def test_builtin_terminal_discovers_and_executes_in_workspace(
 
         assert "terminal__run_code" in schemas
         assert "code" in schemas["terminal__run_code"]["parameters"]["properties"]
+        assert "language" in schemas["terminal__run_code"]["parameters"]["properties"]
         assert "cwd" in schemas["terminal__run_code"]["parameters"]["properties"]
         assert "env" in schemas["terminal__run_code"]["parameters"]["properties"]
         assert "terminal__read_output_artifact" in schemas
@@ -56,13 +57,29 @@ async def test_builtin_terminal_discovers_and_executes_in_workspace(
         assert payload["metadata"]["timeout_seconds"] == 300
         terminal_receipt = payload["metadata"]["terminal_execution_receipt"]
         assert terminal_receipt["schema_version"] == (
-            "aworld.terminal-execution-receipt/v1"
+            "aworld.terminal-execution-receipt/v2"
         )
+        assert terminal_receipt["language_contract_version"] == 1
+        assert terminal_receipt["requested_language"] == "shell"
+        assert terminal_receipt["effective_language"] == "shell"
         assert terminal_receipt["language"] == "shell"
         assert terminal_receipt["effect"] == "read_only"
         assert terminal_receipt["workspace_generation_delta"] == 0
         assert terminal_receipt["executed"] is True
         assert terminal_receipt["exit_code"] == 0
+
+        python_result = await asyncio.wait_for(
+            sandbox.terminal.run_code(
+                "print('raw-python-ok')",
+                language="python",
+            ),
+            timeout=30,
+        )
+        python_payload = python_result["data"]
+        python_receipt = python_payload["metadata"]["terminal_execution_receipt"]
+        assert python_payload["message"]["stdout"] == "raw-python-ok\n"
+        assert python_receipt["requested_language"] == "python"
+        assert python_receipt["effective_language"] == "python"
     finally:
         await sandbox.cleanup()
 
@@ -139,6 +156,21 @@ async def test_builtin_terminal_receipt_drives_sandbox_observation_cache(
             sandbox.call_tool(action_list=[action], context=context),
             timeout=30,
         )
+        opaque = {
+            "tool_name": "terminal",
+            "action_name": "run_code",
+            "params": {
+                "code": "python -c 'import sys; sys.stdout.write(\"opaque\")'",
+            },
+        }
+        await asyncio.wait_for(
+            sandbox.call_tool(action_list=[opaque], context=context),
+            timeout=30,
+        )
+        retained = await asyncio.wait_for(
+            sandbox.call_tool(action_list=[action], context=context),
+            timeout=30,
+        )
         source.write_text("gamma\n", encoding="utf-8")
         changed = await asyncio.wait_for(
             sandbox.call_tool(action_list=[action], context=context),
@@ -151,6 +183,11 @@ async def test_builtin_terminal_receipt_drives_sandbox_observation_cache(
         assert first[0].metadata["sandbox_observation"]["workspace_generation"] == 0
         assert repeated[0].metadata["sandbox_observation"]["cache_hit"] is True
         assert repeated[0].metadata["sandbox_observation"]["changed"] is False
+        retained_receipt = retained[0].metadata["sandbox_observation"]
+        assert retained_receipt["cache_hit"] is True
+        assert retained_receipt["cache_validation"] == "epoch_revalidated"
+        assert retained_receipt["source_workspace_generation"] == 0
+        assert retained_receipt["workspace_generation"] == 1
         assert changed[0].metadata["sandbox_observation"]["cache_hit"] is False
         assert "gamma" in changed[0].content
         assert "env_content" not in action["params"]

@@ -129,7 +129,35 @@ async def test_terminal_namespace_rewrites_host_skill_paths_for_remote_execution
     assert captured["parameter"]["output_format"] == "structured"
     assert captured["parameter"]["cwd"] == "/remote/workspace"
     assert captured["parameter"]["env"] == {"MODE": "test"}
+    assert "language" not in captured["parameter"]
     assert sandbox.calls == [("browser-use", sandbox._skill_configs["browser-use"])]
+
+
+@pytest.mark.asyncio
+async def test_terminal_namespace_forwards_explicit_python_language(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+
+    async def _fake_call(**kwargs):
+        captured.update(kwargs)
+
+        class _Result:
+            content = [TextContent(type="text", text="done")]
+
+        return _Result()
+
+    monkeypatch.setattr(
+        "aworld.sandbox.run.mcp_servers.call_mcp_tool_with_exit_stack",
+        _fake_call,
+    )
+    terminal = TerminalNamespace(_SuccessfulNamespaceSandbox())
+
+    result = await terminal.run_code("print(1)", language="python")
+
+    assert result == {"success": True, "data": "done", "error": None}
+    assert captured["parameter"]["code"] == "print(1)"
+    assert captured["parameter"]["language"] == "python"
 
 
 class _AliasedTerminalSandbox(_SuccessfulNamespaceSandbox):

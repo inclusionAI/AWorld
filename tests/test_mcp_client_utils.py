@@ -233,9 +233,12 @@ def test_lower_mcp_call_result_honors_explicit_failed_result_envelope():
 
 def test_lower_mcp_call_result_preserves_terminal_execution_receipt() -> None:
     receipt = {
-        "schema_version": "aworld.terminal-execution-receipt/v1",
-        "parser_version": 1,
+        "schema_version": "aworld.terminal-execution-receipt/v2",
+        "parser_version": 2,
+        "language_contract_version": 1,
         "command_sha256": "sha256:" + "a" * 64,
+        "requested_language": "shell",
+        "effective_language": "shell",
         "language": "shell",
         "parsed": True,
         "potential_effect": "read_only",

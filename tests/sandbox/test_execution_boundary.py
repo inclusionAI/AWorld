@@ -368,7 +368,7 @@ async def test_sandbox_uses_terminal_receipt_then_replays_from_observation_cache
     action = {
         "tool_name": "terminal",
         "action_name": "run_code",
-        "params": {"code": code},
+        "params": {"code": code, "language": "python"},
     }
     context = _sandbox_context()
 

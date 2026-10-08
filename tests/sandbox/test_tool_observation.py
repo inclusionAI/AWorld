@@ -1,3 +1,4 @@
+from pathlib import Path
 from types import SimpleNamespace
 
 from aworld.core.common import ActionResult
@@ -16,6 +17,24 @@ from aworld.sandbox.terminal_receipt import (
 
 def _context():
     return SimpleNamespace(task_id="task", task_epoch=1, session_id="session")
+
+
+def _file_epoch(path: Path) -> dict[str, object]:
+    absolute = path.absolute()
+    link_stat = absolute.lstat()
+    resolved = absolute.resolve()
+    target_stat = resolved.stat()
+    return {
+        "path": str(absolute),
+        "resolved_path": str(resolved),
+        "link_inode": link_stat.st_ino,
+        "link_mtime_ns": link_stat.st_mtime_ns,
+        "mode": target_stat.st_mode,
+        "size": target_stat.st_size,
+        "mtime_ns": target_stat.st_mtime_ns,
+        "ctime_ns": target_stat.st_ctime_ns,
+        "inode": target_stat.st_ino,
+    }
 
 
 def test_internal_mcp_dispatcher_has_one_canonical_capability_identity() -> None:
@@ -76,6 +95,35 @@ def test_operation_hash_includes_redacted_env_content_fingerprint() -> None:
     assert first.operation_hash == repeated.operation_hash
     assert first.operation_hash != changed.operation_hash
     assert "alpha-secret" not in first.operation_hash
+
+
+def test_operation_hash_separates_shell_and_python_language_contracts() -> None:
+    shell = classify_tool_effect(
+        {
+            "tool_name": "terminal",
+            "action_name": "run_code",
+            "params": {"code": "print(1)"},
+        }
+    )
+    python = classify_tool_effect(
+        {
+            "tool_name": "terminal",
+            "action_name": "run_code",
+            "params": {"code": "print(1)", "language": "python"},
+        }
+    )
+    explicit_shell = classify_tool_effect(
+        {
+            "tool_name": "terminal",
+            "action_name": "run_code",
+            "params": {"code": "print(1)", "language": "shell"},
+        }
+    )
+
+    assert shell.effect == "unknown"
+    assert python.effect == "read_only"
+    assert shell.operation_hash == explicit_shell.operation_hash
+    assert shell.operation_hash != python.operation_hash
 
 
 def test_shell_classifier_accepts_static_read_only_composition() -> None:
@@ -200,7 +248,7 @@ def test_authoritative_terminal_receipt_overrides_raw_code_guess_and_seeds_cache
     action = {
         "tool_name": "terminal",
         "action_name": "run_code",
-        "params": {"code": code},
+        "params": {"code": code, "language": "python"},
     }
     receipt = build_terminal_execution_receipt(
         code=code,
@@ -216,7 +264,7 @@ def test_authoritative_terminal_receipt_overrides_raw_code_guess_and_seeds_cache
         ActionResult(
             success=True,
             content="4\n",
-            parameter={"code": code},
+            parameter={"code": code, "language": "python"},
             metadata={TERMINAL_EXECUTION_RECEIPT_KEY: receipt},
         ),
         context=context,
@@ -229,6 +277,156 @@ def test_authoritative_terminal_receipt_overrides_raw_code_guess_and_seeds_cache
     assert sandbox_receipt["workspace_generation"] == 0
     assert repeated is not None
     assert repeated.metadata["sandbox_observation"]["cache_hit"] is True
+
+
+def test_explicit_file_epoch_revalidates_cache_across_unknown_generation(
+    tmp_path: Path,
+) -> None:
+    runtime = SandboxToolObservationRuntime()
+    context = _context()
+    source = tmp_path / "input.txt"
+    source.write_text("stable", encoding="utf-8")
+    code = f"cat {source}"
+    read_action = {
+        "tool_name": "terminal",
+        "action_name": "run_code",
+        "params": {"code": code},
+    }
+    read_receipt = build_terminal_execution_receipt(
+        code=code,
+        plan=TerminalExecutionPlan(
+            "shell",
+            "read_only",
+            True,
+            True,
+            read_paths=(str(source),),
+        ),
+        executed=True,
+        exit_code=0,
+        timed_out=False,
+        effect_source="trusted_command_contract",
+        read_path_epochs=[_file_epoch(source)],
+    )
+    runtime.record(
+        read_action,
+        ActionResult(
+            success=True,
+            content="stable\n",
+            parameter={"code": code},
+            metadata={TERMINAL_EXECUTION_RECEIPT_KEY: read_receipt},
+        ),
+        context=context,
+    )
+    runtime.record(
+        {
+            "tool_name": "terminal",
+            "action_name": "run_code",
+            "params": {"code": "opaque-program"},
+        },
+        ActionResult(success=True, content="done"),
+        context=context,
+    )
+
+    repeated = runtime.lookup(read_action, context=context)
+
+    assert repeated is not None
+    receipt = repeated.metadata["sandbox_observation"]
+    assert receipt["cache_validation"] == "epoch_revalidated"
+    assert receipt["source_workspace_generation"] == 0
+    assert receipt["workspace_generation"] == 1
+
+
+def test_cross_generation_epoch_mismatch_reexecutes_read(
+    tmp_path: Path,
+) -> None:
+    runtime = SandboxToolObservationRuntime()
+    context = _context()
+    source = tmp_path / "input.txt"
+    source.write_text("before", encoding="utf-8")
+    code = f"cat {source}"
+    action = {
+        "tool_name": "terminal",
+        "action_name": "run_code",
+        "params": {"code": code},
+    }
+    receipt = build_terminal_execution_receipt(
+        code=code,
+        plan=TerminalExecutionPlan(
+            "shell",
+            "read_only",
+            True,
+            True,
+            read_paths=(str(source),),
+        ),
+        executed=True,
+        exit_code=0,
+        timed_out=False,
+        effect_source="trusted_command_contract",
+        read_path_epochs=[_file_epoch(source)],
+    )
+    runtime.record(
+        action,
+        ActionResult(
+            success=True,
+            content="before\n",
+            parameter={"code": code},
+            metadata={TERMINAL_EXECUTION_RECEIPT_KEY: receipt},
+        ),
+        context=context,
+    )
+    runtime.record(
+        {
+            "tool_name": "terminal",
+            "action_name": "run_code",
+            "params": {"code": "opaque-program"},
+        },
+        ActionResult(success=True, content="done"),
+        context=context,
+    )
+    source.write_text("after", encoding="utf-8")
+
+    assert runtime.lookup(action, context=context) is None
+    assert runtime.current_generation(context) == 2
+
+
+def test_implicit_read_dependency_does_not_cross_generation() -> None:
+    runtime = SandboxToolObservationRuntime()
+    context = _context()
+    code = "pwd"
+    action = {
+        "tool_name": "terminal",
+        "action_name": "run_code",
+        "params": {"code": code},
+    }
+    receipt = build_terminal_execution_receipt(
+        code=code,
+        plan=TerminalExecutionPlan("shell", "read_only", True, True),
+        executed=True,
+        exit_code=0,
+        timed_out=False,
+        effect_source="trusted_command_contract",
+    )
+    runtime.record(
+        action,
+        ActionResult(
+            success=True,
+            content="/app\n",
+            parameter={"code": code},
+            metadata={TERMINAL_EXECUTION_RECEIPT_KEY: receipt},
+        ),
+        context=context,
+    )
+    runtime.record(
+        {
+            "tool_name": "terminal",
+            "action_name": "run_code",
+            "params": {"code": "opaque-program"},
+        },
+        ActionResult(success=True, content="done"),
+        context=context,
+    )
+
+    assert runtime.lookup(action, context=context) is None
 
 
 def test_invalid_terminal_receipt_fails_open_and_does_not_seed_cache() -> None:
@@ -254,6 +452,42 @@ def test_invalid_terminal_receipt_fails_open_and_does_not_seed_cache() -> None:
             success=True,
             content="ok",
             parameter={"code": code},
+            metadata={TERMINAL_EXECUTION_RECEIPT_KEY: receipt},
+        ),
+        context=context,
+    )
+
+    sandbox_receipt = observed.metadata["sandbox_observation"]
+    assert sandbox_receipt["effect"] == "unknown"
+    assert sandbox_receipt["workspace_generation"] == 1
+    assert runtime.lookup(action, context=context) is None
+
+
+def test_terminal_receipt_language_must_match_requested_execution_mode() -> None:
+    runtime = SandboxToolObservationRuntime()
+    context = _context()
+    code = "print(1)"
+    action = {
+        "tool_name": "terminal",
+        "action_name": "run_code",
+        "params": {"code": code, "language": "python"},
+    }
+    receipt = build_terminal_execution_receipt(
+        code=code,
+        plan=TerminalExecutionPlan("python", "read_only", True, True),
+        executed=True,
+        exit_code=0,
+        timed_out=False,
+        effect_source="trusted_command_contract",
+        requested_language="shell",
+    )
+
+    observed = runtime.record(
+        action,
+        ActionResult(
+            success=True,
+            content="1\n",
+            parameter={"code": code, "language": "python"},
             metadata={TERMINAL_EXECUTION_RECEIPT_KEY: receipt},
         ),
         context=context,
