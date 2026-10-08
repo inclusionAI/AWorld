@@ -27,6 +27,7 @@ FILESYSTEM_TOOL_MAPPING = {
 
 TERMINAL_TOOL_MAPPING = {
     "run_code": "run_code",
+    "observe_artifact": "observe_artifact",
     "bash": "execute_command",  # User-friendly alias for execute_command
     "execute_command": "execute_command",  # Keep original name for compatibility
 }

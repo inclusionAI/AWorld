@@ -391,6 +391,19 @@ class SandboxBuilder:
             output=output,
         )
 
+    async def observe_artifact(
+        self,
+        path: str,
+        *,
+        expected_mime: str | None = None,
+    ):
+        """Proxy to Sandbox.terminal.observe_artifact."""
+        instance = self.build()
+        return await instance.terminal.observe_artifact(
+            path=path,
+            expected_mime=expected_mime,
+        )
+
     def build(self) -> 'Sandbox':
         """Build and return the Sandbox instance.
         This is the only build() call needed - all agent configurations are auto-committed.

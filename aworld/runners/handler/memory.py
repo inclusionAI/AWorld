@@ -325,6 +325,23 @@ class DefaultMemoryHandler(DefaultHandler):
 
             tool_content = tool_result.content if hasattr(tool_result, 'content') else tool_result
             ext_info = {"tool_name": tool_result.tool_name, "action_name": tool_result.action_name}
+            try:
+                from aworld.sandbox.artifact_observation import (
+                    artifact_memory_descriptor,
+                )
+
+                artifact_descriptor = artifact_memory_descriptor(
+                    tool_result,
+                    context=context,
+                    tool_call_id=tool_call_id,
+                )
+                if artifact_descriptor is not None:
+                    ext_info["artifact_observation"] = artifact_descriptor
+            except Exception as exc:
+                logger.warning(
+                    "Artifact observation Memory binding failed closed; "
+                    f"error_type={type(exc).__name__}"
+                )
             compaction = compact_tool_result_for_memory(
                 tool_content,
                 tool_name=tool_result.tool_name,

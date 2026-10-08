@@ -41,6 +41,10 @@ from aworld.sandbox.terminal_receipt import (
     build_terminal_execution_receipt,
     plan_terminal_execution,
 )
+from aworld.sandbox.artifact_observation import (
+    artifact_mcp_content,
+    observe_local_artifact,
+)
 from aworld.sandbox.task_budget import (
     DEFAULT_COMPLETION_RESERVE_SECONDS,
     FrameworkTaskBudget,
@@ -673,6 +677,7 @@ Key features:
 Main tool:
 - run_code: Execute Shell by default, or explicit raw Python, with safety checks
 - read_output_artifact: Retrieve a bounded range from truncated command output
+- observe_artifact: Inspect one bounded workspace image with a vision-capable model
 """,
 )
 
@@ -705,6 +710,42 @@ async def send_command_card(
             await ctx.report_progress(progress=0.0, total=1.0, message=message)
     except Exception:
         logging.error(f"Error sending command card: {traceback.format_exc()}")
+
+
+@mcp.tool(
+    description=(
+        "Observe one bounded PNG, JPEG, WebP, or GIF artifact from the terminal "
+        "workspace as an image. Use an explicitly generated frame image for video; "
+        "this action never downloads URLs or decodes a whole video."
+    )
+)
+async def observe_artifact(
+    ctx: Context,
+    path: str = Field(description="Workspace-relative or absolute image path"),
+    expected_mime: Optional[str] = Field(
+        default=None,
+        description="Optional expected image MIME type",
+    ),
+    env_content: Optional[dict[str, Any]] = Field(
+        default=None,
+        description="Framework-injected task scope; hidden from the model schema",
+    ),
+) -> list[Any]:
+    del ctx
+    if isinstance(path, FieldInfo):
+        path = path.default
+    if isinstance(expected_mime, FieldInfo):
+        expected_mime = expected_mime.default
+    if isinstance(env_content, FieldInfo):
+        env_content = env_content.default
+    observed = await asyncio.to_thread(
+        observe_local_artifact,
+        str(path),
+        workspace_root=workspace,
+        expected_mime=expected_mime,
+        framework_scope=env_content,
+    )
+    return artifact_mcp_content(observed)
 
 
 @mcp.tool(

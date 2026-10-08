@@ -106,6 +106,9 @@ def prepare_provider_context_request(
 ) -> PreparedProviderContextRequest:
     """Select, lower, snapshot and commit one provider request before I/O."""
     request_kwargs = dict(kwargs)
+    artifact_redacted_messages = request_kwargs.pop(
+        "_aworld_artifact_redacted_messages", None
+    )
     envelope = request_kwargs.pop(AWORLD_PROVIDER_CANDIDATE_KWARG, None)
     observed_envelope = request_kwargs.pop(
         AWORLD_PROVIDER_OBSERVED_ATTRIBUTION_KWARG, None
@@ -160,10 +163,26 @@ def prepare_provider_context_request(
         if not isinstance(projection, ProviderWireProjection):
             raise TypeError("provider lowerer returned an invalid projection")
         canonical_json_bytes(projection.payload)
+        snapshot_payload = projection.payload
+        if isinstance(artifact_redacted_messages, list):
+            redacted_selected = dict(selected)
+            redacted_selected["messages"] = artifact_redacted_messages
+            redacted_projection = lower(
+                redacted_selected,
+                request_kwargs,
+                stream,
+                None,
+            )
+            if not isinstance(redacted_projection, ProviderWireProjection):
+                raise TypeError(
+                    "provider redacted lowerer returned an invalid projection"
+                )
+            canonical_json_bytes(redacted_projection.payload)
+            snapshot_payload = redacted_projection.payload
         snapshot = ProviderRequestSnapshot(
             request_id=request_kwargs.get("llm_request_id"),
             provider_name=capability.provider_name,
-            payload=projection.payload,
+            payload=snapshot_payload,
             capture_stage=RequestCaptureStage.PROVIDER_PREPARED,
             fidelity=ProviderRequestFidelity.PROVIDER_PREPARED,
         )

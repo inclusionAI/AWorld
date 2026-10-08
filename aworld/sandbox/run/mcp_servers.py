@@ -1534,7 +1534,13 @@ class McpServers:
                     continue
 
                 # Inject env_content parameter if needed (before other processing)
-                self._inject_env_content_parameter(result_key, parameter, context, event_message)
+                self._inject_env_content_parameter(
+                    result_key,
+                    parameter,
+                    context,
+                    event_message,
+                    tool_call_id=action_dict.get("tool_call_id"),
+                )
 
                 # Check server type
                 server_type = None
@@ -1769,7 +1775,16 @@ class McpServers:
                     call_mcp_e = Exception("Failed to call tool after all retry attempts")
 
                 logger.debug(f"tool_name:{server_name},action_name:{tool_name} finished.")
-                logger.debug(f"tool_name:{server_name},action_name:{tool_name} call-mcp-tool-result: {call_result_raw}")
+                content_types = [
+                    getattr(block, "type", type(block).__name__)
+                    for block in (getattr(call_result_raw, "content", None) or ())
+                ]
+                logger.debug(
+                    "MCP Tool result received: "
+                    f"server={server_name} action={tool_name} "
+                    f"content_types={content_types} "
+                    f"is_error={bool(getattr(call_result_raw, 'isError', False))}"
+                )
 
                 if not call_result_raw:
                     logger.warning(f"Error calling tool: {server_name}__{tool_name}")
@@ -1871,8 +1886,15 @@ class McpServers:
                 logger.debug(
                     f"Removed env_content parameter '{env_content_name}' from tool '{tool_key}' schema and saved mapping")
 
-    def _inject_env_content_parameter(self, tool_key: str, parameter: Dict[str, Any], context: Context = None,
-                                      event_message: Message = None):
+    def _inject_env_content_parameter(
+        self,
+        tool_key: str,
+        parameter: Dict[str, Any],
+        context: Context = None,
+        event_message: Message = None,
+        *,
+        tool_call_id: str | None = None,
+    ):
         """
         Inject env_content parameter into tool call parameters.
 
@@ -1926,6 +1948,8 @@ class McpServers:
         if event_message:
             if hasattr(event_message, 'sender') and event_message.sender:
                 env_content_value["agent_id"] = event_message.sender
+        if isinstance(tool_call_id, str) and tool_call_id:
+            env_content_value["tool_call_id"] = tool_call_id
 
         # 4. Merge into parameter
         # If a stale caller supplied the hidden parameter, merge ordinary

@@ -12,6 +12,14 @@ timeout is also clamped to the trial time remaining after
 `AWORLD_TERMINAL_COMPLETION_RESERVE_SECONDS`. Standalone CLI use does not set a
 trial deadline and therefore retains the normal per-command timeout behavior.
 
+## Bounded visual artifact observation
+
+`observe_artifact` exposes one workspace-local PNG, JPEG, WebP, or GIF to a
+vision-capable model through a typed, content-addressed receipt. It rejects
+symlinks, paths outside the workspace, non-regular files, MIME/magic mismatch,
+oversized files, and excessive image dimensions. For video, generate and select
+one frame image first; the Tool never downloads or decodes a whole video.
+
 ## Bounded output capture
 
 Stdout and stderr are drained concurrently in fixed-size chunks. The server only

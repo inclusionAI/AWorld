@@ -59,3 +59,16 @@ class TerminalNamespace(ToolNamespace):
             limit=limit,
             output=output,
         )
+
+    async def observe_artifact(
+        self,
+        path: str,
+        *,
+        expected_mime: str | None = None,
+    ) -> Dict[str, Any]:
+        """Observe one bounded workspace image through the Terminal provider."""
+        return await self._call_tool(
+            "observe_artifact",
+            path=path,
+            expected_mime=expected_mime,
+        )

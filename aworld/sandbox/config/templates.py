@@ -71,6 +71,7 @@ ENV_TERMINAL_POLICY = (
     "AWORLD_TERMINAL_TASK_LEASE_MIN_SECONDS",
     "AWORLD_TASK_DEADLINE_EPOCH_SECONDS",
     "AWORLD_TERMINAL_COMPLETION_RESERVE_SECONDS",
+    "AWORLD_ARTIFACT_OBSERVATION_MAX_BYTES",
     "TERMINAL_CAPTURE_MAX_BYTES",
     "TERMINAL_TIMEOUT",
 )
@@ -118,7 +119,12 @@ def get_server_env() -> Dict[str, str]:
     - AWORLD_WORKSPACE: workspace directories
     - Log suppression vars: prevent verbose DEBUG/INFO logs from appearing in CLI
     """
-    env: Dict[str, str] = {}
+    # Companion stdio scripts must import the exact AWorld package that owns
+    # their schema. This is derived from the installed/source package location,
+    # never inherited from a caller-controlled PYTHONPATH.
+    env: Dict[str, str] = {
+        "PYTHONPATH": str(Path(__file__).resolve().parents[3]),
+    }
 
     # Workspace configuration
     v = os.environ.get(ENV_WORKSPACE, "").strip()

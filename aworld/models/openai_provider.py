@@ -471,6 +471,9 @@ class OpenAIProvider(LLMProviderBase):
             preferred=request_kwargs,
             allow_chat_template_reasoning=self._allows_chat_template_reasoning(),
         )
+        artifact_redacted_messages = request_kwargs.pop(
+            "_aworld_artifact_redacted_messages", None
+        )
         envelope = request_kwargs.pop(AWORLD_PROVIDER_CANDIDATE_KWARG, None)
         observed_envelope = request_kwargs.pop(
             AWORLD_PROVIDER_OBSERVED_ATTRIBUTION_KWARG, None
@@ -693,6 +696,12 @@ class OpenAIProvider(LLMProviderBase):
                     ) from None
                 raise
 
+        snapshot_params = openai_params
+        if isinstance(artifact_redacted_messages, list):
+            snapshot_params = dict(openai_params)
+            snapshot_params["messages"] = sanitize_openai_messages(
+                artifact_redacted_messages
+            )
         try:
             provider_request = ProviderRequestSnapshot(
                 request_id=request_kwargs.get("llm_request_id"),
@@ -701,7 +710,7 @@ class OpenAIProvider(LLMProviderBase):
                     if self.context_candidate_lowering_capability() is not None
                     else "openai"
                 ),
-                payload=openai_params,
+                payload=snapshot_params,
                 capture_stage=RequestCaptureStage.PROVIDER_PREPARED,
                 fidelity=ProviderRequestFidelity.PROVIDER_PREPARED,
                 serialized_checksum=(
@@ -1353,7 +1362,7 @@ class OpenAIProvider(LLMProviderBase):
                 stream=True,
             )
             openai_params = prepared_request.params
-            logger.debug(f"openai_params: {openai_params}")
+            logger.debug(f"openai_params keys: {tuple(openai_params)}")
             self._mark_prepared_attempt(prepared_request)
 
             if self.is_http_provider:

@@ -52,6 +52,7 @@ _FILESYSTEM_READ_ACTIONS = frozenset(
         "list_directory",
         "read_file",
         "read_media_file",
+        "observe_artifact",
         "read_output_artifact",
         "search_content",
         "search_files",
@@ -573,6 +574,15 @@ def classify_tool_effect(action: Any) -> ToolEffect:
             # Terminal replay is enabled only after a provider receipt binds
             # the parser decision to the actual execution environment.
             cacheable = False
+    elif (
+        normalized_tool in _TERMINAL_CAPABILITY_TOOLS
+        and operation == "observe_artifact"
+    ):
+        # The Terminal provider validates the file epoch/content identity and
+        # owns the bounded media sidecar. Replaying here would bypass that
+        # validation, so the outer Sandbox records read-only but never caches.
+        effect = "read_only"
+        cacheable = False
     operation_params = dict(params)
     if (
         normalized_tool in _TERMINAL_CAPABILITY_TOOLS

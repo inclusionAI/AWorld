@@ -80,6 +80,22 @@ class MemoryItemConvertor:
             ext_info["tool_name"] = tool_result.tool_name
         if getattr(tool_result, "action_name", None):
             ext_info["action_name"] = tool_result.action_name
+        try:
+            from aworld.sandbox.artifact_observation import (
+                artifact_memory_descriptor,
+            )
+
+            artifact_descriptor = artifact_memory_descriptor(
+                tool_result,
+                context=context,
+                tool_call_id=tool_call_id,
+            )
+            if artifact_descriptor is not None:
+                ext_info["artifact_observation"] = artifact_descriptor
+        except Exception:
+            # Media bytes never fall back into ordinary Memory on a binding
+            # failure. The compact Tool receipt remains sufficient evidence.
+            pass
 
         return MemoryToolMessage(
             content=tool_content,

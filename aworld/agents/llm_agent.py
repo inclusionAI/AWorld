@@ -2260,6 +2260,36 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             return self.conf.llm_provider
         return "openai"
 
+    def _artifact_vision_enabled(self) -> bool:
+        """Resolve explicit vision declarations without guessing from names."""
+
+        if getattr(self.conf, "use_vision", False) is not True:
+            return False
+        declarations: list[bool] = []
+        llm_config = getattr(self.conf, "llm_config", None)
+        ext_config = getattr(llm_config, "ext_config", None)
+        if isinstance(ext_config, dict):
+            value = ext_config.get("supports_vision", ext_config.get("vision_capability"))
+            if isinstance(value, bool):
+                declarations.append(value)
+            elif isinstance(value, str) and value.casefold() in {
+                "supported", "unsupported"
+            }:
+                declarations.append(value.casefold() == "supported")
+        for owner in (
+            getattr(self, "llm", None),
+            getattr(getattr(self, "llm", None), "provider", None),
+        ):
+            declared = getattr(owner, "supports_vision", None)
+            if callable(declared):
+                try:
+                    declared = declared()
+                except TypeError:
+                    declared = None
+            if isinstance(declared, bool):
+                declarations.append(declared)
+        return not declarations or all(declarations)
+
     def _apply_reasoning_phase_policy(
         self,
         request_kwargs: Dict[str, Any],
@@ -3131,6 +3161,7 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         histories = causalize_memory_history(histories or [])
         if histories:
             tool_calls_map = {}
+            tool_artifact_map = {}
             last_tool_calls = []
             matched_tool_call_ids = set()
 
@@ -3140,7 +3171,7 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                 return history.metadata.get("role") == "tool"
 
             def _drop_incomplete_tool_call_turn(reason: str):
-                nonlocal tool_calls_map, last_tool_calls
+                nonlocal tool_calls_map, tool_artifact_map, last_tool_calls
                 if not last_tool_calls:
                     return
                 dropped_message = None
@@ -3157,10 +3188,11 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                     f"dropped_assistant_message={bool(dropped_message)}, agent={self.id()}"
                 )
                 tool_calls_map = {}
+                tool_artifact_map = {}
                 last_tool_calls = []
 
             def _append_complete_tool_results():
-                nonlocal tool_calls_map, last_tool_calls
+                nonlocal tool_calls_map, tool_artifact_map, last_tool_calls
                 for tool_call_id in last_tool_calls:
                     if tool_call_id not in tool_calls_map:
                         _drop_incomplete_tool_call_turn(
@@ -3169,7 +3201,31 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                         return
                     messages.append(tool_calls_map.get(tool_call_id))
                     matched_tool_call_ids.add(tool_call_id)
+                if tool_artifact_map:
+                    from aworld.sandbox.artifact_observation import (
+                        artifact_prompt_message,
+                    )
+
+                    artifact_message = artifact_prompt_message(
+                        [
+                            tool_artifact_map[tool_call_id]
+                            for tool_call_id in last_tool_calls
+                            if tool_call_id in tool_artifact_map
+                        ]
+                    )
+                    if artifact_message is not None:
+                        if track_occurrences:
+                            observation_ids = ":".join(
+                                str(tool_artifact_map[tool_call_id].get("observation_id", ""))
+                                for tool_call_id in last_tool_calls
+                                if tool_call_id in tool_artifact_map
+                            )
+                            artifact_message[_ADAPTIVE_MEMORY_OCCURRENCE_KEY] = (
+                                "artifact-observation:" + observation_ids
+                            )[:256]
+                        messages.append(artifact_message)
                 tool_calls_map = {}
+                tool_artifact_map = {}
                 last_tool_calls = []
 
             for history in histories:
@@ -3190,6 +3246,13 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                                     history.to_openai_message(),
                                 )
                             )
+                            ext_info = history.metadata.get("ext_info", {})
+                            if isinstance(ext_info, dict) and isinstance(
+                                ext_info.get("artifact_observation"), dict
+                            ):
+                                tool_artifact_map[history.tool_call_id] = dict(
+                                    ext_info["artifact_observation"]
+                                )
                         elif history.tool_call_id in matched_tool_call_ids:
                             logger.warning(
                                 f"Skip duplicate tool result in memory replay: "
@@ -3236,6 +3299,13 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                                 history,
                                 msg,
                             )
+                            ext_info = history.metadata.get("ext_info", {})
+                            if isinstance(ext_info, dict) and isinstance(
+                                ext_info.get("artifact_observation"), dict
+                            ):
+                                tool_artifact_map[tool_call_id] = dict(
+                                    ext_info["artifact_observation"]
+                                )
                         elif tool_call_id in matched_tool_call_ids:
                             logger.warning(
                                 f"Skip duplicate tool result in memory replay: "
@@ -3468,6 +3538,7 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             for value in result_values
             if isinstance(value, dict) and isinstance(value.get("tool_call_id"), str)
         }
+        artifact_descriptors = []
         for action_index, action in enumerate(actions):
             if not isinstance(action, dict):
                 continue
@@ -3487,6 +3558,17 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             try:
                 result = ActionResult(**value)
                 content = self._format_tool_result_for_followup(result)
+                from aworld.sandbox.artifact_observation import (
+                    artifact_memory_descriptor,
+                )
+
+                descriptor = artifact_memory_descriptor(
+                    result,
+                    context=message.context,
+                    tool_call_id=call_id,
+                )
+                if descriptor is not None:
+                    artifact_descriptors.append(descriptor)
             except Exception:
                 content = str(value.get("content", ""))
             tool_message = {
@@ -3501,6 +3583,12 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                     f"continuation:{continuation_token}:tool:{call_id}"
                 )
             repaired.append(tool_message)
+        if artifact_descriptors:
+            from aworld.sandbox.artifact_observation import artifact_prompt_message
+
+            artifact_message = artifact_prompt_message(artifact_descriptors)
+            if artifact_message is not None:
+                repaired.append(artifact_message)
         increment_watchdog_metric(message.context, "current_tool_turn_repaired_count")
         return attach_continuation_work_state(repaired)
 
@@ -6353,6 +6441,12 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                     decision_boundary=execution_control_offer.decision_boundary,
                 )
             )
+            # Consumed by LLMModel before provider kwargs are built. Artifact
+            # bytes remain opaque refs until that final transport boundary.
+            kwargs["_aworld_artifact_vision_enabled"] = (
+                self._artifact_vision_enabled()
+            )
+            kwargs["_aworld_artifact_agent_id"] = self.id()
             if context_compiler_mode != "off":
                 try:
                     from aworld.agents.final_context_adapter import (

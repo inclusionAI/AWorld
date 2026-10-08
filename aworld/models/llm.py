@@ -2821,6 +2821,12 @@ class LLMModel:
         """
         if max_tokens is None:
             max_tokens = self._configured_max_tokens
+        artifact_vision_enabled = bool(
+            kwargs.pop("_aworld_artifact_vision_enabled", False)
+        )
+        artifact_agent_id = str(
+            kwargs.pop("_aworld_artifact_agent_id", "") or "default"
+        )
         reasoning_selection = kwargs.pop(
             AWORLD_REASONING_SELECTION_KWARG, None
         )
@@ -2893,6 +2899,22 @@ class LLMModel:
                 context_rollout=context_rollout,
             )
         )
+        from aworld.sandbox.artifact_observation import (
+            contains_artifact_references,
+            mark_artifact_rollout_late_bound,
+        )
+
+        artifact_references_present = contains_artifact_references(messages)
+        if artifact_references_present:
+            # Image bytes are a late-bound transport sidecar, not Context or
+            # provider-cache material. Candidate attribution was computed from
+            # the opaque reference view; do not let an immutable candidate or
+            # an older assembly plan replace the materialized provider view.
+            provider_candidate = None
+            observed_attribution = None
+            kwargs.pop("prompt_assembly_plan", None)
+            kwargs.pop("provider_native_prompt_cache", None)
+            context_rollout = mark_artifact_rollout_late_bound(context_rollout)
         self._begin_llm_call_record(
             context=context,
             request_id=request_id,
@@ -2915,15 +2937,39 @@ class LLMModel:
             kwargs[AWORLD_PROVIDER_CANDIDATE_KWARG] = provider_candidate
         if observed_attribution is not None:
             kwargs[AWORLD_PROVIDER_OBSERVED_ATTRIBUTION_KWARG] = observed_attribution
+        provider_messages = messages
+        _artifact_projection = None
+        if artifact_references_present:
+            from aworld.sandbox.artifact_observation import (
+                hydrate_artifact_messages,
+            )
+
+            provider_messages, _artifact_projection = hydrate_artifact_messages(
+                messages,
+                context=context,
+                agent_id=artifact_agent_id,
+                vision_enabled=artifact_vision_enabled and context is not None,
+            )
+            kwargs["_aworld_artifact_redacted_messages"] = messages
         try:
             resp = await self.provider.acompletion(
-                messages=messages,
+                messages=provider_messages,
                 temperature=temperature,
                 max_tokens=max_tokens,
                 stop=stop,
                 context=context,
                 **kwargs,
             )
+            if _artifact_projection is not None and context is not None:
+                from aworld.sandbox.artifact_observation import (
+                    commit_artifact_projection,
+                )
+
+                commit_artifact_projection(
+                    context,
+                    agent_id=artifact_agent_id,
+                    receipt=_artifact_projection,
+                )
             if self.llm_response_parser:
                 response_parse_args = kwargs.get("response_parse_args") or {}
                 response_parse_args["tools"] = kwargs.get("tools")
@@ -3087,6 +3133,12 @@ class LLMModel:
         """
         if max_tokens is None:
             max_tokens = self._configured_max_tokens
+        artifact_vision_enabled = bool(
+            kwargs.pop("_aworld_artifact_vision_enabled", False)
+        )
+        artifact_agent_id = str(
+            kwargs.pop("_aworld_artifact_agent_id", "") or "default"
+        )
         reasoning_selection = kwargs.pop(
             AWORLD_REASONING_SELECTION_KWARG, None
         )
@@ -3158,6 +3210,18 @@ class LLMModel:
                 context_rollout=context_rollout,
             )
         )
+        from aworld.sandbox.artifact_observation import (
+            contains_artifact_references,
+            mark_artifact_rollout_late_bound,
+        )
+
+        artifact_references_present = contains_artifact_references(messages)
+        if artifact_references_present:
+            provider_candidate = None
+            observed_attribution = None
+            kwargs.pop("prompt_assembly_plan", None)
+            kwargs.pop("provider_native_prompt_cache", None)
+            context_rollout = mark_artifact_rollout_late_bound(context_rollout)
         self._begin_llm_call_record(
             context=context,
             request_id=request_id,
@@ -3180,15 +3244,39 @@ class LLMModel:
             kwargs[AWORLD_PROVIDER_CANDIDATE_KWARG] = provider_candidate
         if observed_attribution is not None:
             kwargs[AWORLD_PROVIDER_OBSERVED_ATTRIBUTION_KWARG] = observed_attribution
+        provider_messages = messages
+        _artifact_projection = None
+        if artifact_references_present:
+            from aworld.sandbox.artifact_observation import (
+                hydrate_artifact_messages,
+            )
+
+            provider_messages, _artifact_projection = hydrate_artifact_messages(
+                messages,
+                context=context,
+                agent_id=artifact_agent_id,
+                vision_enabled=artifact_vision_enabled and context is not None,
+            )
+            kwargs["_aworld_artifact_redacted_messages"] = messages
         try:
             resp = self.provider.completion(
-                messages=messages,
+                messages=provider_messages,
                 temperature=temperature,
                 max_tokens=max_tokens,
                 stop=stop,
                 context=context,
                 **kwargs,
             )
+            if _artifact_projection is not None and context is not None:
+                from aworld.sandbox.artifact_observation import (
+                    commit_artifact_projection,
+                )
+
+                commit_artifact_projection(
+                    context,
+                    agent_id=artifact_agent_id,
+                    receipt=_artifact_projection,
+                )
             if self.llm_response_parser:
                 response_parse_args = kwargs.get("response_parse_args") or {}
                 resp = sync_exec(
@@ -3304,6 +3392,12 @@ class LLMModel:
         """
         if max_tokens is None:
             max_tokens = self._configured_max_tokens
+        artifact_vision_enabled = bool(
+            kwargs.pop("_aworld_artifact_vision_enabled", False)
+        )
+        artifact_agent_id = str(
+            kwargs.pop("_aworld_artifact_agent_id", "") or "default"
+        )
         reasoning_selection = kwargs.pop(
             AWORLD_REASONING_SELECTION_KWARG, None
         )
@@ -3380,6 +3474,18 @@ class LLMModel:
                 context_rollout=context_rollout,
             )
         )
+        from aworld.sandbox.artifact_observation import (
+            contains_artifact_references,
+            mark_artifact_rollout_late_bound,
+        )
+
+        artifact_references_present = contains_artifact_references(messages)
+        if artifact_references_present:
+            provider_candidate = None
+            observed_attribution = None
+            kwargs.pop("prompt_assembly_plan", None)
+            kwargs.pop("provider_native_prompt_cache", None)
+            context_rollout = mark_artifact_rollout_late_bound(context_rollout)
         self._begin_llm_call_record(
             context=context,
             request_id=request_id,
@@ -3402,17 +3508,47 @@ class LLMModel:
             kwargs[AWORLD_PROVIDER_CANDIDATE_KWARG] = provider_candidate
         if observed_attribution is not None:
             kwargs[AWORLD_PROVIDER_OBSERVED_ATTRIBUTION_KWARG] = observed_attribution
+        provider_messages = messages
+        _artifact_projection = None
+        if artifact_references_present:
+            from aworld.sandbox.artifact_observation import (
+                hydrate_artifact_messages,
+            )
+
+            provider_messages, _artifact_projection = hydrate_artifact_messages(
+                messages,
+                context=context,
+                agent_id=artifact_agent_id,
+                vision_enabled=artifact_vision_enabled and context is not None,
+            )
+            kwargs["_aworld_artifact_redacted_messages"] = messages
         provider_stream = None
         try:
             provider_stream = self.provider.stream_completion(
-                messages=messages,
+                messages=provider_messages,
                 temperature=temperature,
                 max_tokens=max_tokens,
                 stop=stop,
                 context=context,
                 **kwargs,
             )
+            artifact_projection_committed = False
             for chunk in provider_stream:
+                if (
+                    not artifact_projection_committed
+                    and _artifact_projection is not None
+                    and context is not None
+                ):
+                    from aworld.sandbox.artifact_observation import (
+                        commit_artifact_projection,
+                    )
+
+                    commit_artifact_projection(
+                        context,
+                        agent_id=artifact_agent_id,
+                        receipt=_artifact_projection,
+                    )
+                    artifact_projection_committed = True
                 self._observe_stream_chunk(
                     stream_diagnostics,
                     chunk,
@@ -3521,6 +3657,12 @@ class LLMModel:
         """
         if max_tokens is None:
             max_tokens = self._configured_max_tokens
+        artifact_vision_enabled = bool(
+            kwargs.pop("_aworld_artifact_vision_enabled", False)
+        )
+        artifact_agent_id = str(
+            kwargs.pop("_aworld_artifact_agent_id", "") or "default"
+        )
         reasoning_selection = kwargs.pop(
             AWORLD_REASONING_SELECTION_KWARG, None
         )
@@ -3596,6 +3738,18 @@ class LLMModel:
                 context_rollout=context_rollout,
             )
         )
+        from aworld.sandbox.artifact_observation import (
+            contains_artifact_references,
+            mark_artifact_rollout_late_bound,
+        )
+
+        artifact_references_present = contains_artifact_references(messages)
+        if artifact_references_present:
+            provider_candidate = None
+            observed_attribution = None
+            kwargs.pop("prompt_assembly_plan", None)
+            kwargs.pop("provider_native_prompt_cache", None)
+            context_rollout = mark_artifact_rollout_late_bound(context_rollout)
         self._begin_llm_call_record(
             context=context,
             request_id=request_id,
@@ -3618,17 +3772,47 @@ class LLMModel:
             kwargs[AWORLD_PROVIDER_CANDIDATE_KWARG] = provider_candidate
         if observed_attribution is not None:
             kwargs[AWORLD_PROVIDER_OBSERVED_ATTRIBUTION_KWARG] = observed_attribution
+        provider_messages = messages
+        _artifact_projection = None
+        if artifact_references_present:
+            from aworld.sandbox.artifact_observation import (
+                hydrate_artifact_messages,
+            )
+
+            provider_messages, _artifact_projection = hydrate_artifact_messages(
+                messages,
+                context=context,
+                agent_id=artifact_agent_id,
+                vision_enabled=artifact_vision_enabled and context is not None,
+            )
+            kwargs["_aworld_artifact_redacted_messages"] = messages
         provider_stream = None
         try:
             provider_stream = self.provider.astream_completion(
-                messages=messages,
+                messages=provider_messages,
                 temperature=temperature,
                 max_tokens=max_tokens,
                 stop=stop,
                 context=context,
                 **kwargs,
             )
+            artifact_projection_committed = False
             async for chunk in provider_stream:
+                if (
+                    not artifact_projection_committed
+                    and _artifact_projection is not None
+                    and context is not None
+                ):
+                    from aworld.sandbox.artifact_observation import (
+                        commit_artifact_projection,
+                    )
+
+                    commit_artifact_projection(
+                        context,
+                        agent_id=artifact_agent_id,
+                        receipt=_artifact_projection,
+                    )
+                    artifact_projection_committed = True
                 self._observe_stream_chunk(
                     stream_diagnostics,
                     chunk,

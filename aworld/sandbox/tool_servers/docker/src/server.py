@@ -25,6 +25,11 @@ from aworld.sandbox.terminal_receipt import (
     build_terminal_execution_receipt,
     plan_terminal_execution,
 )
+from aworld.sandbox.artifact_observation import (
+    ArtifactObservationError,
+    artifact_mcp_content,
+    observe_artifact_bytes,
+)
 
 
 def _required_env(name: str) -> str:
@@ -213,6 +218,71 @@ class DockerBridge:
                 stderr=stderr,
             )
         return stdout
+
+    async def observe_artifact(
+        self,
+        path: str,
+        *,
+        expected_mime: str | None = None,
+        framework_scope: dict[str, Any] | None = None,
+    ):
+        """Read one stable, regular, non-symlink image from the container."""
+
+        valid_path = self.validate_path(path)
+        symlink_script = (
+            'p="$1"; while [ "$p" != / ]; do '
+            '[ -L "$p" ] && exit 42; p=${p%/*}; [ -n "$p" ] || p=/; done'
+        )
+        return_code, _stdout, stderr, timed_out = await self.execute(
+            [self.shell, "-c", symlink_script, "aworld-artifact", valid_path],
+            timeout=5,
+            workdir=self.workdir,
+        )
+        if timed_out or return_code == 42:
+            raise ArtifactObservationError("symlink artifacts are not allowed")
+        if return_code != 0:
+            raise ArtifactObservationError(
+                stderr.decode("utf-8", errors="replace").strip()
+                or "artifact path validation failed"
+            )
+        resolved = (
+            await self.require_success(["readlink", "-f", valid_path], timeout=5)
+        ).decode("utf-8", errors="strict").strip()
+        self.validate_path(resolved)
+        stat_command = ["stat", "-Lc", "%f|%s|%i|%Y", valid_path]
+        before = (await self.require_success(stat_command, timeout=5)).decode().strip()
+        try:
+            mode_text, size_text, _inode, _mtime = before.split("|", 3)
+            mode = int(mode_text, 16)
+            size = int(size_text)
+        except (TypeError, ValueError) as exc:
+            raise ArtifactObservationError("container artifact stat is invalid") from exc
+        if mode & 0o170000 != 0o100000:
+            raise ArtifactObservationError("artifact must be a regular file")
+        try:
+            configured_limit = int(
+                os.environ.get("AWORLD_ARTIFACT_OBSERVATION_MAX_BYTES", "5242880")
+            )
+        except ValueError:
+            configured_limit = 5 * 1024 * 1024
+        limit = max(1, min(configured_limit, 16 * 1024 * 1024))
+        if size > limit:
+            raise ArtifactObservationError(f"artifact exceeds byte limit ({limit})")
+        data = await self.require_success(
+            ["head", "-c", str(limit + 1), valid_path], timeout=30
+        )
+        after = (await self.require_success(stat_command, timeout=5)).decode().strip()
+        if before != after or len(data) != size:
+            raise ArtifactObservationError("artifact changed while it was being observed")
+        return observe_artifact_bytes(
+            data,
+            suffix=PurePosixPath(valid_path).suffix,
+            expected_mime=expected_mime,
+            path_key="sha256:" + hashlib.sha256(valid_path.encode()).hexdigest(),
+            file_epoch="sha256:" + hashlib.sha256(before.encode()).hexdigest(),
+            framework_scope=framework_scope,
+            max_bytes=limit,
+        )
 
 
 bridge = DockerBridge()
@@ -549,6 +619,32 @@ async def download_file(ctx: Context, path: str = Field(description="Absolute co
 @mcp.tool(description="Read image, audio, or other binary container file as base64.")
 async def read_media_file(ctx: Context, path: str = Field(description="Absolute container path")) -> TextContent:
     return await read_file(ctx, path, output="base64")
+
+
+@mcp.tool(
+    description=(
+        "Observe one bounded PNG, JPEG, WebP, or GIF artifact inside the attached "
+        "container. For video, first generate and select one bounded frame image."
+    )
+)
+async def observe_artifact(
+    ctx: Context,
+    path: str = Field(description="Absolute container image path"),
+    expected_mime: Optional[str] = Field(
+        default=None, description="Optional expected image MIME type"
+    ),
+    env_content: Optional[dict[str, Any]] = Field(
+        default=None,
+        description="Framework-injected task scope; hidden from the model schema",
+    ),
+) -> list[Any]:
+    del ctx
+    observed = await bridge.observe_artifact(
+        path,
+        expected_mime=expected_mime,
+        framework_scope=env_content,
+    )
+    return artifact_mcp_content(observed)
 
 
 @mcp.tool(description="Read a bounded chunk from a full Tool output artifact returned by this sandbox.")
