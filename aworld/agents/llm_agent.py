@@ -200,6 +200,7 @@ class _LongHorizonControlOffer:
     profile_schema_offered: bool = False
     decision_boundary: str | None = None
     decision_tool_names: frozenset[str] = frozenset()
+    decision_tool_aliases: tuple[tuple[str, str], ...] = ()
 
     def matches(self, action: ActionModel) -> bool:
         carrier = self.carrier_function_name
@@ -1469,6 +1470,17 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                 and len(name.strip()) <= 256
                 and name != _LONG_HORIZON_DECISION_TOOL
             )
+            raw_tool_mapping = getattr(self, "tool_mapping", {}) or {}
+            decision_tool_aliases = tuple(
+                sorted(
+                    (name, target.strip())
+                    for name in decision_tool_names
+                    for target in (raw_tool_mapping.get(name),)
+                    if isinstance(target, str)
+                    and target.strip()
+                    and len(target.strip()) <= 256
+                )
+            )[:256]
             try:
                 plan_update_schema = self._long_horizon_plan_update_schema(tools)
             except _LongHorizonDecisionSchemaOverflow:
@@ -1517,6 +1529,7 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                 profile_schema_offered=boundary == "initial",
                 decision_boundary=boundary,
                 decision_tool_names=decision_tool_names,
+                decision_tool_aliases=decision_tool_aliases,
             )
 
         augmented = copy.deepcopy(tools)
@@ -1631,6 +1644,8 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             execution_profile=(profiles[0] if profiles else None),
             plan_update=plan_updates[0],
             available_tool_names=offer.decision_tool_names,
+            available_tool_aliases=dict(offer.decision_tool_aliases),
+            decision_tool_call_id=matched_actions[0].tool_call_id,
         )
         if acknowledged:
             return "acknowledged"
@@ -6562,6 +6577,16 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                                     "for a short-task review bypass."
                                 )
                     if agent_result.is_call_tool:
+                        if execution_control_offer.decision_boundary is None:
+                            from aworld.runners.execution_protocol import (
+                                bind_pending_next_action_call,
+                            )
+
+                            bind_pending_next_action_call(
+                                message.context,
+                                self.id(),
+                                list(agent_result.actions or ()),
+                            )
                         review_repair_requested = self._consume_model_review_control(
                             agent_result, message.context
                         )

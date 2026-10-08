@@ -23,6 +23,7 @@ from .models import (
     ProtocolPhase,
     ProtocolTransition,
     ReviewOutcome,
+    compare_action_semantic_shape,
 )
 
 
@@ -34,39 +35,11 @@ def _semantic_pair_alignment(
 ) -> NextActionAlignment:
     """Compare bounded action meaning without consulting raw Tool arguments."""
 
-    if not expected.observable or not observed.observable:
-        return NextActionAlignment.UNOBSERVABLE
     if observed.executed is not True:
         return NextActionAlignment.UNOBSERVABLE
     if observed.succeeded is not True or observed.timed_out is not False:
         return NextActionAlignment.MISMATCHED
-    if not set(expected.capability_aliases).intersection(observed.capability_aliases):
-        return NextActionAlignment.MISMATCHED
-    if expected.effect != observed.effect:
-        return NextActionAlignment.MISMATCHED
-    expected_targets = set(expected.target_ids)
-    observed_targets = set(observed.target_ids)
-    if expected_targets:
-        if not observed_targets:
-            return NextActionAlignment.UNOBSERVABLE
-        if expected_targets.isdisjoint(observed_targets):
-            return NextActionAlignment.MISMATCHED
-    elif observed_targets:
-        return NextActionAlignment.MISMATCHED
-    if expected.declared_deliverable_targeted is True:
-        if observed.declared_deliverable_targeted is None:
-            return NextActionAlignment.UNOBSERVABLE
-        if observed.declared_deliverable_targeted is not True:
-            return NextActionAlignment.MISMATCHED
-    if intent is DeliveryIntent.PRODUCE_CANDIDATE:
-        if expected.effect != "mutating":
-            return NextActionAlignment.UNOBSERVABLE
-    elif intent is DeliveryIntent.VALIDATE_CANDIDATE:
-        if expected.validation_kind is None or observed.validation_kind is None:
-            return NextActionAlignment.UNOBSERVABLE
-        if expected.validation_kind != observed.validation_kind:
-            return NextActionAlignment.MISMATCHED
-    return NextActionAlignment.MATCHED
+    return compare_action_semantic_shape(expected, observed, intent=intent)
 
 
 def _decision(action: ControllerAction, reason: DecisionReason) -> ControllerDecision:
@@ -145,8 +118,21 @@ def _next_action_alignment(
         # Any Tool observation contradicts the model's declared terminal step.
         return NextActionAlignment.MISMATCHED
     expected = state.model_plan_update.next_action_semantics
-    observed = event.observed_action_semantics
-    if expected is None or not observed:
+    expected_call_id = state.pending_next_action_call_id
+    if expected is None:
+        return NextActionAlignment.UNOBSERVABLE
+    observed = (
+        tuple(
+            item
+            for item in event.observed_action_semantics
+            if item.tool_call_id == expected_call_id
+        )
+        if expected_call_id is not None
+        else event.observed_action_semantics
+        if len(event.observed_action_semantics) == 1
+        else ()
+    )
+    if not observed:
         return NextActionAlignment.UNOBSERVABLE
     comparisons = tuple(
         _semantic_pair_alignment(expected, item, intent=intent) for item in observed
@@ -353,6 +339,7 @@ def transition_execution_protocol(
             pending_next_action_plan_sequence=(
                 next_state.event_count if alignment_pending else None
             ),
+            pending_next_action_call_id=None,
             replan_applied_count=(
                 next_state.replan_applied_count + 1
                 if update is not None
@@ -371,6 +358,23 @@ def transition_execution_protocol(
         return ProtocolTransition(
             next_state,
             _decision(ControllerAction.CONTINUE, reason),
+        )
+
+    if event.kind is EventKind.NEXT_ACTION_BOUND:
+        if (
+            not state.next_action_alignment_pending
+            or state.pending_next_action_call_id is not None
+        ):
+            return ProtocolTransition(
+                next_state,
+                _decision(ControllerAction.CONTINUE, DecisionReason.INVALID_EVENT),
+            )
+        return ProtocolTransition(
+            replace(
+                next_state,
+                pending_next_action_call_id=event.bound_tool_call_id,
+            ),
+            _decision(ControllerAction.CONTINUE, DecisionReason.OBSERVATION_RECORDED),
         )
 
     if event.kind in {EventKind.TOOL_OBSERVATION, EventKind.DELIVERY_STATUS}:
@@ -517,6 +521,7 @@ def transition_execution_protocol(
                     next_state,
                     next_action_alignment_pending=False,
                     pending_next_action_plan_sequence=None,
+                    pending_next_action_call_id=None,
                     last_action_alignment=alignment,
                     last_action_alignment_plan_sequence=(
                         state.pending_next_action_plan_sequence

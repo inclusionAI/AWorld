@@ -188,9 +188,10 @@ def _declared_target_ids(context: Any) -> frozenset[str]:
         owners.append(owner)
     for candidate_owner in owners:
         context_info = getattr(candidate_owner, "context_info", None)
+        context_get = getattr(context_info, "get", None)
         public_contract = (
-            context_info.get("public_deliverable_contract")
-            if isinstance(context_info, Mapping)
+            context_get("public_deliverable_contract")
+            if callable(context_get)
             else None
         )
         if (
@@ -253,12 +254,20 @@ def _action_target_paths(
     action: Any,
     *,
     terminal_receipt: Mapping[str, Any] | None = None,
+    effect: str | None = None,
 ) -> tuple[str, ...]:
     if terminal_receipt is not None:
+        terminal_effect = str(terminal_receipt.get("effect") or effect or "unknown")
         values = (
-            *(terminal_receipt.get("read_paths") or ()),
-            *(terminal_receipt.get("write_paths") or ()),
-        )
+            terminal_receipt.get("write_paths")
+            if terminal_effect == "mutating"
+            else terminal_receipt.get("read_paths")
+            if terminal_effect == "read_only"
+            else (
+                *(terminal_receipt.get("read_paths") or ()),
+                *(terminal_receipt.get("write_paths") or ()),
+            )
+        ) or ()
         return tuple(value for value in values if isinstance(value, str))[:16]
     tool, operation = _semantic_tool_parts(action)
     params = _value(action, "params", {})
@@ -272,7 +281,14 @@ def _action_target_paths(
         language = params.get("language", "shell")
         if isinstance(code, str) and language in TERMINAL_LANGUAGES:
             plan = plan_terminal_execution(code, language=language)
-            return (*plan.read_paths, *plan.write_paths)[:16]
+            selected_effect = effect or plan.effect
+            return (
+                plan.write_paths
+                if selected_effect == "mutating"
+                else plan.read_paths
+                if selected_effect == "read_only"
+                else (*plan.read_paths, *plan.write_paths)
+            )[:16]
         return ()
     values: list[str] = []
     for key in ("path", "source", "destination", "target", "file"):
@@ -282,11 +298,57 @@ def _action_target_paths(
     return tuple(dict.fromkeys(values))[:16]
 
 
-def _target_ids(paths: Sequence[str]) -> tuple[str, ...]:
+_LEADING_CD = re.compile(
+    r"\A\s*cd\s+(?P<path>'[^']*'|\"[^\"]*\"|[^\s;&|]+)\s*(?:&&|;|\n)"
+)
+
+
+def _effective_action_cwd(
+    action: Any,
+    result: Any | None = None,
+    *,
+    context: Any | None = None,
+) -> str | None:
+    params = _value(action, "params", {})
+    params = params if isinstance(params, Mapping) else {}
+    cwd = params.get("cwd")
+    if not isinstance(cwd, str) or not cwd.strip():
+        metadata = _metadata(result) if result is not None else {}
+        cwd = metadata.get("working_directory")
+    if (not isinstance(cwd, str) or not cwd.strip()) and context is not None:
+        cwd = getattr(context, "workspace_path", None)
+    current = posixpath.normpath(cwd.replace("\\", "/")) if isinstance(cwd, str) and cwd.strip() else None
+    code = params.get("code", params.get("command"))
+    if not isinstance(code, str) or params.get("language", "shell") != "shell":
+        return current
+    remainder = code
+    while True:
+        match = _LEADING_CD.match(remainder)
+        if match is None:
+            break
+        raw_path = match.group("path")
+        if raw_path[:1] in {"'", '"'} and raw_path[-1:] == raw_path[:1]:
+            raw_path = raw_path[1:-1]
+        if not raw_path or any(marker in raw_path for marker in ("$", "`")):
+            return current
+        normalized = posixpath.normpath(raw_path.replace("\\", "/"))
+        current = (
+            normalized
+            if posixpath.isabs(normalized) or current is None
+            else posixpath.normpath(posixpath.join(current, normalized))
+        )
+        remainder = remainder[match.end() :]
+    return current
+
+
+def _target_ids(paths: Sequence[str], *, cwd: str | None = None) -> tuple[str, ...]:
     identities: list[str] = []
     for path in paths:
         try:
-            identity = semantic_target_sha256(path)
+            normalized = posixpath.normpath(path.replace("\\", "/"))
+            if cwd is not None and not posixpath.isabs(normalized):
+                normalized = posixpath.normpath(posixpath.join(cwd, normalized))
+            identity = semantic_target_sha256(normalized)
         except ValueError:
             continue
         if identity not in identities:
@@ -312,10 +374,6 @@ def build_planned_action_semantic_receipt(
         context,
         code=code if isinstance(code, str) else None,
     )
-    paths = _action_target_paths(action)
-    target_ids = _target_ids(paths)
-    declared_targets = _declared_target_ids(context)
-    declared = bool(declared_targets.intersection(target_ids)) if target_ids else False
     effect = fallback.effect
     normalized_tool = tool.casefold().replace("_", "-")
     normalized_operation = operation.casefold().replace("-", "_")
@@ -327,6 +385,13 @@ def build_planned_action_semantic_receipt(
         language = arguments.get("language", "shell")
         if language in TERMINAL_LANGUAGES:
             effect = plan_terminal_execution(code, language=language).effect
+    paths = _action_target_paths(action, effect=effect)
+    target_ids = _target_ids(
+        paths,
+        cwd=_effective_action_cwd(action, context=context),
+    )
+    declared_targets = _declared_target_ids(context)
+    declared = bool(declared_targets.intersection(target_ids)) if target_ids else False
     if validation_kind is not None:
         effect = "validation"
     elif delivery_intent == "validate_candidate" and effect == "read_only" and declared:
@@ -337,6 +402,26 @@ def build_planned_action_semantic_receipt(
         target_ids=target_ids,
         validation_kind=validation_kind,
         declared_deliverable_targeted=declared,
+    )
+
+
+def build_preflight_action_semantic_receipt(
+    *,
+    context: Any,
+    action: Any,
+    delivery_intent: str,
+) -> ActionSemanticReceipt:
+    """Derive semantics from one validated, already-dispatched action."""
+
+    tool, operation = canonical_tool_identity(action)
+    params = _value(action, "params", {})
+    if not tool or not operation or not isinstance(params, Mapping):
+        raise ValueError("preflight action requires a canonical Tool identity")
+    return build_planned_action_semantic_receipt(
+        context=context,
+        tool_name=f"{tool}__{operation}",
+        arguments=params,
+        delivery_intent=delivery_intent,
     )
 
 
@@ -362,8 +447,15 @@ def _observed_action_semantic_receipt(
         semantic_effect = "validation"
     elif terminal_receipt is None and _trusted_terminal_receipt_identity(action):
         validation_kind = None
-    paths = _action_target_paths(action, terminal_receipt=terminal_receipt)
-    target_ids = _target_ids(paths)
+    paths = _action_target_paths(
+        action,
+        terminal_receipt=terminal_receipt,
+        effect=effect.effect,
+    )
+    target_ids = _target_ids(
+        paths,
+        cwd=_effective_action_cwd(action, result, context=context),
+    )
     declared_targets = _declared_target_ids(context)
     declared = bool(declared_targets.intersection(target_ids)) if target_ids else False
     if validation_kind is None and semantic_effect == "read_only" and declared:
@@ -1054,6 +1146,7 @@ __all__ = [
     "ToolEffect",
     "actions_are_provably_read_only",
     "build_planned_action_semantic_receipt",
+    "build_preflight_action_semantic_receipt",
     "canonical_tool_identity",
     "classify_tool_effect",
     "semantic_target_sha256",

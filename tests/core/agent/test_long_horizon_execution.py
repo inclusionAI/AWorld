@@ -1231,10 +1231,12 @@ def test_agent_consumes_explicit_decision_without_forwarding_internal_tool() -> 
     )
     agent = _agent(context, policy)
     agent.skill_configs = {"long-running-agent": {"active": True}}
+    agent.tool_mapping = {"run_code": "docker__run_code"}
     configure_execution_protocol(context, agent.id(), policy)
     action = ActionModel(
         tool_name="aworld",
         action_name="execution_decision",
+        tool_call_id="call-control-decision",
         params={
             "__aworld_execution_profile": {
                 "horizon": "long",
@@ -1248,8 +1250,8 @@ def test_agent_consumes_explicit_decision_without_forwarding_internal_tool() -> 
                 "horizon": "long",
                 "milestone": "runnable candidate",
                 "next_action": "run the smoke test",
-                "next_action_tool": "terminal__execute",
-                "next_action_arguments": '{"command":"pytest -q"}',
+                "next_action_tool": "run_code",
+                "next_action_arguments": '{"code":"cat /app/input.txt"}',
                 "verification_plan": "inspect the smoke-test exit code",
                 "completion_assessment": "in_progress",
                 "delivery_intent": "validate_candidate",
@@ -1266,10 +1268,10 @@ def test_agent_consumes_explicit_decision_without_forwarding_internal_tool() -> 
         {
             "type": "function",
             "function": {
-                "name": "terminal__execute",
+                "name": "run_code",
                 "parameters": {
                     "type": "object",
-                    "properties": {"command": {"type": "string"}},
+                    "properties": {"code": {"type": "string"}},
                 },
             },
         }
@@ -1284,6 +1286,10 @@ def test_agent_consumes_explicit_decision_without_forwarding_internal_tool() -> 
     assert state.attempt_epoch == 1
     assert state.replan_requested_count == 0
     assert state.replan_applied_count == 0
+    assert state.model_plan_update.decision_call_id == "call-control-decision"
+    assert "workspace.execute" in (
+        state.model_plan_update.next_action_semantics.capability_aliases
+    )
     assert (
         load_model_plan_update(context, agent.id())["selected_candidate_id"]
         == "candidate-1"

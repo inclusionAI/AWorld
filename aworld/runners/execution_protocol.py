@@ -22,17 +22,20 @@ from aworld.core.execution_protocol import (
     ConvergenceStage,
     ControllerAction,
     DeliveryIntent,
+    DecisionReason,
     EventKind,
     ExecutionProtocolEvent,
     ExecutionProtocolPolicy,
     ExecutionProtocolStore,
     ModelExecutionProfile,
     ModelPlanUpdate,
+    NextActionAlignment,
     PlanUpdateDecision,
     ProtocolMode,
     ProtocolTransition,
     ReviewOutcome,
     action_signature,
+    compare_action_semantic_shape,
 )
 from aworld.sandbox.tool_observation import (
     actions_are_provably_read_only,
@@ -943,6 +946,35 @@ def _action_matches_typed_validation_plan(
         or arguments is None
     ):
         return False
+    call_id = _action_value(action, "tool_call_id")
+    if (
+        state.pending_next_action_call_id is not None
+        and call_id != state.pending_next_action_call_id
+    ):
+        return False
+    if update.next_action_semantics is not None:
+        from aworld.sandbox.tool_observation import (
+            build_preflight_action_semantic_receipt,
+        )
+
+        try:
+            observed = build_preflight_action_semantic_receipt(
+                context=context,
+                action=action,
+                delivery_intent=update.delivery_intent.value,
+            )
+        except (TypeError, ValueError):
+            return False
+        return (
+            compare_action_semantic_shape(
+                update.next_action_semantics,
+                observed,
+                intent=update.delivery_intent,
+            )
+            is NextActionAlignment.MATCHED
+        )
+    # Compatibility for persisted v1/v2 plan snapshots that predate semantic
+    # receipts. New plans never use exact raw-argument signatures as policy.
     tool = str(_action_value(action, "tool_name") or "").strip()
     operation = str(_action_value(action, "action_name") or "").strip()
     model_visible = str(
@@ -2262,6 +2294,40 @@ def record_tool_protocol_event(
     return transition
 
 
+def bind_pending_next_action_call(
+    context,
+    agent_id: str,
+    actions: list[Any],
+) -> bool:
+    """Bind one declared next action to the first call of its continuation.
+
+    A checkpoint declares exactly one *next* action. Later calls in the same
+    model batch remain executable but cannot satisfy its alignment receipt.
+    """
+
+    policy = execution_protocol_policy(context, agent_id)
+    if policy.mode is ProtocolMode.OFF or not actions:
+        return False
+    state = load_execution_protocol_state(context, agent_id)
+    if (
+        not state.next_action_alignment_pending
+        or state.pending_next_action_call_id is not None
+    ):
+        return False
+    first_call_id = _action_value(actions[0], "tool_call_id")
+    if not isinstance(first_call_id, str) or not first_call_id.strip():
+        return False
+    transition = _apply_event(
+        context,
+        agent_id,
+        ExecutionProtocolEvent(
+            kind=EventKind.NEXT_ACTION_BOUND,
+            bound_tool_call_id=first_call_id,
+        ),
+    )
+    return transition.decision.reason is not DecisionReason.INVALID_EVENT
+
+
 def _record_pending_checkpoint(
     context,
     agent_id: str,
@@ -2609,10 +2675,15 @@ def record_model_plan_update(
 def _model_plan_update_with_semantics(
     context,
     value: Mapping[str, Any],
+    *,
+    tool_identity_aliases: Mapping[str, str] | None = None,
+    decision_call_id: str | None = None,
 ) -> ModelPlanUpdate:
     """Validate model data, then discard raw args behind a typed receipt."""
 
     update = ModelPlanUpdate.from_model_mapping(value)
+    if decision_call_id is not None:
+        update = replace(update, decision_call_id=decision_call_id)
     tool_name = update.next_action_tool
     raw_arguments = value.get("next_action_arguments")
     if tool_name is None or not isinstance(raw_arguments, str):
@@ -2624,9 +2695,13 @@ def _model_plan_update_with_semantics(
         build_planned_action_semantic_receipt,
     )
 
+    aliases = tool_identity_aliases or {}
+    resolved_tool_name = aliases.get(tool_name, tool_name)
+    if resolved_tool_name.startswith("mcp__"):
+        resolved_tool_name = resolved_tool_name[len("mcp__") :]
     semantics = build_planned_action_semantic_receipt(
         context=context,
-        tool_name=tool_name,
+        tool_name=resolved_tool_name,
         arguments=parsed_arguments,
         delivery_intent=update.delivery_intent.value,
     )
@@ -2680,6 +2755,8 @@ def record_model_decision_boundary(
     execution_profile: Mapping[str, Any] | None,
     plan_update: Mapping[str, Any] | None,
     available_tool_names: frozenset[str] | None = None,
+    available_tool_aliases: Mapping[str, str] | None = None,
+    decision_tool_call_id: str | None = None,
 ) -> bool:
     """Validate and record an explicit model-owned decision acknowledgement.
 
@@ -2697,7 +2774,26 @@ def record_model_decision_boundary(
         boundary_state.replan_requested_count if boundary == "replan" else 0
     )
     try:
-        update = _model_plan_update_with_semantics(context, plan_update)
+        raw_aliases = available_tool_aliases or {}
+        if not isinstance(raw_aliases, Mapping) or len(raw_aliases) > 256:
+            raise ValueError("tool alias catalog must be a bounded mapping")
+        trusted_names = available_tool_names or frozenset()
+        if any(
+            not isinstance(key, str)
+            or key not in trusted_names
+            or not isinstance(target, str)
+            or not target.strip()
+            or len(target.strip()) > 256
+            for key, target in raw_aliases.items()
+        ):
+            raise ValueError("tool alias catalog is not bound to offered Tools")
+        aliases = {key: target.strip() for key, target in raw_aliases.items()}
+        update = _model_plan_update_with_semantics(
+            context,
+            plan_update,
+            tool_identity_aliases=aliases,
+            decision_call_id=decision_tool_call_id,
+        )
         profile = (
             ModelExecutionProfile.from_mapping(execution_profile)
             if boundary == "initial"
@@ -3189,6 +3285,7 @@ def final_review_guidance(
 
 
 __all__ = [
+    "bind_pending_next_action_call",
     "EXECUTION_PROTOCOL_METRICS_KEY",
     "EXECUTION_PROTOCOL_FALLBACK_KEY",
     "EXECUTION_PROTOCOL_MODEL_PROFILE_KEY",

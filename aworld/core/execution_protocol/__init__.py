@@ -12,6 +12,7 @@ from .acceptance import (
 )
 from .models import (
     ActionSemanticReceipt,
+    compare_action_semantic_shape,
     action_signature,
     CompletionAssessment,
     ConvergenceStage,
@@ -48,6 +49,7 @@ __all__ = [
     "AcceptanceDecision",
     "AcceptanceProbeReceipt",
     "CompletionAssessment",
+    "compare_action_semantic_shape",
     "ConvergenceStage",
     "ControllerAction",
     "ControllerDecision",

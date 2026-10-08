@@ -122,6 +122,7 @@ def _semantic_receipt(
     timed_out: bool | None = None,
     validation_kind: str | None = None,
     declared: bool | None = None,
+    call_id: str | None = None,
 ) -> ActionSemanticReceipt:
     return ActionSemanticReceipt(
         capability_aliases=(capability,),
@@ -132,6 +133,7 @@ def _semantic_receipt(
         timed_out=timed_out,
         validation_kind=validation_kind,
         declared_deliverable_targeted=declared,
+        tool_call_id=call_id,
     )
 
 
@@ -336,6 +338,95 @@ def test_exploration_semantics_require_fresh_information() -> None:
             ),
             new_information_observed=False,
         ),
+        policy,
+    )
+
+    assert observed.state.last_action_alignment is NextActionAlignment.MISMATCHED
+
+
+def test_bound_intended_call_failure_is_not_masked_by_incidental_success() -> None:
+    target = "sha256:" + "d" * 64
+    policy = ExecutionProtocolPolicy(mode="guide")
+    planned = transition_execution_protocol(
+        _armed_state(),
+        ExecutionProtocolEvent(
+            kind=EventKind.MODEL_PLAN_UPDATE,
+            model_plan_update=_semantic_plan(
+                intent="continue_exploration",
+                receipt=_semantic_receipt(effect="read_only", target=target),
+            ),
+        ),
+        policy,
+    )
+    bound = transition_execution_protocol(
+        planned.state,
+        ExecutionProtocolEvent(
+            kind=EventKind.NEXT_ACTION_BOUND,
+            bound_tool_call_id="call-intended",
+        ),
+        policy,
+    )
+
+    observed = transition_execution_protocol(
+        bound.state,
+        _tool(
+            observed_action_names=(),
+            observed_action_signatures=(),
+            observed_action_semantics=(
+                _semantic_receipt(
+                    effect="read_only",
+                    target=target,
+                    executed=True,
+                    succeeded=False,
+                    timed_out=False,
+                    call_id="call-intended",
+                ),
+                _semantic_receipt(
+                    effect="read_only",
+                    target=target,
+                    executed=True,
+                    succeeded=True,
+                    timed_out=False,
+                    call_id="call-incidental",
+                ),
+            ),
+            new_information_observed=True,
+        ),
+        policy,
+    )
+
+    assert bound.state.pending_next_action_call_id == "call-intended"
+    assert observed.state.last_action_alignment is NextActionAlignment.MISMATCHED
+    assert observed.state.action_alignment_match_count == 0
+
+
+def test_semantic_alignment_rejects_extra_observed_target() -> None:
+    first = "sha256:" + "e" * 64
+    second = "sha256:" + "f" * 64
+    policy = ExecutionProtocolPolicy(mode="guide")
+    planned = transition_execution_protocol(
+        _armed_state(),
+        ExecutionProtocolEvent(
+            kind=EventKind.MODEL_PLAN_UPDATE,
+            model_plan_update=_semantic_plan(
+                intent="continue_exploration",
+                receipt=_semantic_receipt(effect="read_only", target=first),
+            ),
+        ),
+        policy,
+    )
+    observed_receipt = ActionSemanticReceipt(
+        capability_aliases=("workspace.execute",),
+        effect="read_only",
+        target_ids=(first, second),
+        executed=True,
+        succeeded=True,
+        timed_out=False,
+    )
+
+    observed = transition_execution_protocol(
+        planned.state,
+        _semantic_tool(observed_receipt, new_information_observed=True),
         policy,
     )
 

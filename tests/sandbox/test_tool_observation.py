@@ -5,8 +5,10 @@ from aworld.core.common import ActionResult
 from aworld.sandbox.tool_observation import (
     SandboxToolObservationRuntime,
     actions_are_provably_read_only,
+    build_planned_action_semantic_receipt,
     canonical_tool_identity,
     classify_tool_effect,
+    semantic_target_sha256,
 )
 from aworld.sandbox.terminal_receipt import (
     TERMINAL_EXECUTION_RECEIPT_KEY,
@@ -235,6 +237,41 @@ def test_shell_classifier_keeps_dynamic_python_heredoc_unknown() -> None:
     assert plan.effect == "unknown"
     assert plan.read_paths == ()
     assert plan.nested_languages == ("python",)
+
+
+def test_semantic_targets_resolve_explicit_cwd_and_command_local_cd() -> None:
+    context = _context()
+    context.workspace_path = "/app"
+    explicit_cwd = build_planned_action_semantic_receipt(
+        context=context,
+        tool_name="terminal__run_code",
+        arguments={"code": "cat result.txt", "cwd": "/app"},
+        delivery_intent="continue_exploration",
+    )
+    local_cd = build_planned_action_semantic_receipt(
+        context=context,
+        tool_name="terminal__run_code",
+        arguments={"code": "cd /app && cat result.txt"},
+        delivery_intent="continue_exploration",
+    )
+    workspace_relative = build_planned_action_semantic_receipt(
+        context=context,
+        tool_name="terminal__run_code",
+        arguments={"code": "cat result.txt"},
+        delivery_intent="continue_exploration",
+    )
+    absolute = build_planned_action_semantic_receipt(
+        context=context,
+        tool_name="terminal__run_code",
+        arguments={"code": "cat /app/result.txt"},
+        delivery_intent="continue_exploration",
+    )
+
+    expected = semantic_target_sha256("/app/result.txt")
+    assert explicit_cwd.target_ids == (expected,)
+    assert local_cd.target_ids == (expected,)
+    assert workspace_relative.target_ids == absolute.target_ids == (expected,)
+    assert semantic_target_sha256("/app") not in local_cd.target_ids
 
 
 def test_shell_classifier_does_not_treat_fd_redirection_as_file_mutation() -> None:

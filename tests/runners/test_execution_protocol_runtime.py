@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import pytest
 
 from aworld.core.context.base import Context
@@ -24,6 +25,7 @@ from aworld.core.execution_protocol import (
 )
 from aworld.core.task import Task
 from aworld.runners.execution_protocol import (
+    bind_pending_next_action_call,
     build_execution_protocol_telemetry,
     configure_execution_protocol,
     consume_execution_protocol_guidance,
@@ -1253,7 +1255,7 @@ async def test_post_candidate_read_only_loop_converges_to_validate_repair_or_sub
     validation = ActionModel(
         tool_name="terminal",
         action_name="run_code",
-        params={"code": "cat result.json"},
+        params={"code": "cat result.json", "cwd": str(tmp_path)},
         tool_call_id="call-post-candidate-validation",
         agent_name="agent",
     )
@@ -1266,7 +1268,7 @@ async def test_post_candidate_read_only_loop_converges_to_validate_repair_or_sub
             "milestone": "validate the current result",
             "next_action": "read the declared result exactly once",
             "next_action_tool": "terminal__run_code",
-            "next_action_arguments": '{"code":"cat result.json"}',
+            "next_action_arguments": json.dumps(validation.params),
             "verification_plan": "inspect the exact candidate bytes",
             "completion_assessment": "candidate_ready",
             "delivery_intent": "validate_candidate",
@@ -1277,6 +1279,7 @@ async def test_post_candidate_read_only_loop_converges_to_validate_repair_or_sub
             "selected_candidate_id": "result-json-v1",
         },
     ) is not None
+    assert bind_pending_next_action_call(context, "agent", [validation]) is True
 
     # The exact typed validation crosses the real pre-Tool Hook while the
     # unrelated read remains blocked by the same still-active gate.
@@ -1973,6 +1976,149 @@ def test_runtime_treats_malformed_semantic_receipt_as_unobservable() -> None:
     state = load_execution_protocol_state(context, "agent")
     assert state.last_action_alignment.value == "unobservable"
     assert "/raw/path/must-not-persist" not in str(state.to_dict())
+
+
+def test_friendly_run_code_mapping_binds_real_dispatched_call() -> None:
+    context = _context("friendly-run-code-alignment")
+    configure_execution_protocol(
+        context,
+        "agent",
+        ExecutionProtocolPolicy(mode=ProtocolMode.GUIDE),
+    )
+    assert record_model_decision_boundary(
+        context,
+        "agent",
+        boundary="initial",
+        execution_profile={
+            "horizon": "long",
+            "confidence": 0.9,
+            "milestone_count": 2,
+            "expected_tool_actions": 4,
+            "verification_required": True,
+        },
+        plan_update={
+            "decision": "continue",
+            "horizon": "long",
+            "milestone": "inspect the input",
+            "next_action": "read the input once",
+            "next_action_tool": "run_code",
+            "next_action_arguments": '{"code":"cat /app/input.txt"}',
+            "verification_plan": "use the observed bytes",
+            "completion_assessment": "in_progress",
+            "delivery_intent": "continue_exploration",
+            "delivery_rationale": "the input format is unknown",
+            "assumptions": [],
+            "retired_approaches": [],
+            "evidence_refs": [],
+            "selected_candidate_id": None,
+        },
+        available_tool_names=frozenset({"run_code"}),
+        available_tool_aliases={"run_code": "docker__run_code"},
+        decision_tool_call_id="call-control",
+    )
+    update = load_execution_protocol_state(context, "agent").model_plan_update
+    assert update is not None
+    assert update.decision_call_id == "call-control"
+    assert "workspace.execute" in update.next_action_semantics.capability_aliases
+
+    action = ActionModel(
+        tool_name="mcp",
+        action_name="docker__run_code",
+        model_visible_tool_name="run_code",
+        params={"code": "cat /app/input.txt"},
+        tool_call_id="call-intended",
+        agent_name="agent",
+    )
+    assert bind_pending_next_action_call(context, "agent", [action]) is True
+    receipt = build_terminal_execution_receipt(
+        code=action.params["code"],
+        plan=plan_terminal_execution(action.params["code"]),
+        executed=True,
+        exit_code=0,
+        timed_out=False,
+        mutation_observed=False,
+    )
+    result = SandboxToolObservationRuntime().record(
+        action,
+        ActionResult(
+            tool_call_id=action.tool_call_id,
+            content="input",
+            success=True,
+            parameter=action.params,
+            metadata={TERMINAL_EXECUTION_RECEIPT_KEY: receipt},
+        ),
+        context=context,
+    )
+    record_semantic_tool_progress(
+        context,
+        tool_name="mcp",
+        agent_id="agent",
+        actions=[action],
+        observation=Observation(content="input", action_result=[result]),
+    )
+
+    state = load_execution_protocol_state(context, "agent")
+    assert state.last_action_alignment.value == "matched"
+    assert state.pending_next_action_call_id is None
+
+
+def test_typed_validation_preflight_uses_semantics_before_exact_signature() -> None:
+    context = _context("semantic-validation-preflight")
+    context.configure_completion_contract(
+        CompletionContract(
+            required_artifacts=(
+                ArtifactRequirement("result", "/app/result.txt"),
+            ),
+            immutable_inputs=(),
+            validation_commands=(),
+            max_evidence_age_seconds=None,
+            required_final_evidence=(),
+        ),
+        mode=CompletionMode.ENFORCE,
+    )
+    configure_execution_protocol(
+        context,
+        "agent",
+        ExecutionProtocolPolicy(mode=ProtocolMode.GUIDE),
+    )
+    assert record_model_plan_update(
+        context,
+        "agent",
+        {
+            "decision": "continue",
+            "horizon": "long",
+            "milestone": "validate the result",
+            "next_action": "read the first result line",
+            "next_action_tool": "terminal__run_code",
+            "next_action_arguments": '{"code":"cat /app/result.txt"}',
+            "verification_plan": "inspect the declared artifact",
+            "completion_assessment": "candidate_ready",
+            "delivery_intent": "validate_candidate",
+            "delivery_rationale": "the candidate needs bounded validation",
+            "assumptions": [],
+            "retired_approaches": [],
+            "evidence_refs": [],
+            "selected_candidate_id": "result-v1",
+        },
+    ) is not None
+    action = ActionModel(
+        tool_name="terminal",
+        action_name="run_code",
+        model_visible_tool_name="terminal__run_code",
+        params={"code": "head -n 1 /app/result.txt"},
+        tool_call_id="call-semantic-validation",
+        agent_name="agent",
+    )
+    assert bind_pending_next_action_call(context, "agent", [action]) is True
+
+    state = load_execution_protocol_state(context, "agent")
+    assert state.model_plan_update.next_action_signature != action_signature(
+        "terminal__run_code", action.params
+    )
+    assert (
+        framework_observable_validation_kind(context, "agent", action)
+        == "typed_validation_plan"
+    )
 
 
 def test_invalid_model_plan_update_fails_open_without_acknowledging_checkpoint():

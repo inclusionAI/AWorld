@@ -577,6 +577,7 @@ def _path_arguments(executable: str, args: Sequence[str]) -> tuple[str, ...]:
     if executable in {
         ":",
         "basename",
+        "cd",
         "dirname",
         "echo",
         "false",

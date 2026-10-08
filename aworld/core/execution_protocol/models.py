@@ -210,6 +210,44 @@ class ActionSemanticReceipt:
         )
 
 
+def compare_action_semantic_shape(
+    expected: ActionSemanticReceipt,
+    observed: ActionSemanticReceipt,
+    *,
+    intent: DeliveryIntent,
+) -> NextActionAlignment:
+    """Compare action meaning without execution outcome or raw arguments."""
+
+    if not expected.observable or observed.effect == "unknown":
+        return NextActionAlignment.UNOBSERVABLE
+    if not set(expected.capability_aliases).intersection(
+        observed.capability_aliases
+    ):
+        return NextActionAlignment.MISMATCHED
+    if expected.effect != observed.effect:
+        return NextActionAlignment.MISMATCHED
+    expected_targets = set(expected.target_ids)
+    observed_targets = set(observed.target_ids)
+    if expected_targets and not observed_targets:
+        return NextActionAlignment.UNOBSERVABLE
+    if expected_targets != observed_targets:
+        return NextActionAlignment.MISMATCHED
+    if expected.declared_deliverable_targeted is True:
+        if observed.declared_deliverable_targeted is None:
+            return NextActionAlignment.UNOBSERVABLE
+        if observed.declared_deliverable_targeted is not True:
+            return NextActionAlignment.MISMATCHED
+    if intent is DeliveryIntent.PRODUCE_CANDIDATE:
+        if expected.effect != "mutating":
+            return NextActionAlignment.UNOBSERVABLE
+    elif intent is DeliveryIntent.VALIDATE_CANDIDATE:
+        if expected.validation_kind is None or observed.validation_kind is None:
+            return NextActionAlignment.UNOBSERVABLE
+        if expected.validation_kind != observed.validation_kind:
+            return NextActionAlignment.MISMATCHED
+    return NextActionAlignment.MATCHED
+
+
 class ConvergenceStage(str, Enum):
     """Framework-owned phase constraint after advisory replanning stalls.
 
@@ -225,6 +263,7 @@ class ConvergenceStage(str, Enum):
 class EventKind(str, Enum):
     MODEL_EXECUTION_PROFILE = "model_execution_profile"
     MODEL_PLAN_UPDATE = "model_plan_update"
+    NEXT_ACTION_BOUND = "next_action_bound"
     TOOL_OBSERVATION = "tool_observation"
     DELIVERY_STATUS = "delivery_status"
     REPLAN_APPLIED = "replan_applied"
@@ -456,6 +495,7 @@ class ModelPlanUpdate:
     next_action_tool: str | None = None
     next_action_signature: str | None = None
     next_action_semantics: ActionSemanticReceipt | None = None
+    decision_call_id: str | None = None
 
     def __post_init__(self) -> None:
         for name, enum_type in (
@@ -519,6 +559,15 @@ class ModelPlanUpdate:
             except (TypeError, ValueError) as exc:
                 raise ValueError("invalid next_action_semantics") from exc
             object.__setattr__(self, "next_action_semantics", next_action_semantics)
+        decision_call_id = self.decision_call_id
+        if decision_call_id is not None and (
+            not isinstance(decision_call_id, str)
+            or not decision_call_id.strip()
+            or len(decision_call_id.strip()) > 256
+        ):
+            raise ValueError("decision_call_id must be null or a bounded string")
+        if decision_call_id is not None:
+            object.__setattr__(self, "decision_call_id", decision_call_id.strip())
         tool_required_intents = {
             DeliveryIntent.CONTINUE_EXPLORATION,
             DeliveryIntent.PRODUCE_CANDIDATE,
@@ -594,6 +643,7 @@ class ModelPlanUpdate:
                 if self.next_action_semantics is not None
                 else None
             ),
+            "decision_call_id": self.decision_call_id,
             "verification_plan": self.verification_plan,
             "completion_assessment": self.completion_assessment.value,
             "delivery_intent": self.delivery_intent.value,
@@ -619,6 +669,7 @@ class ModelPlanUpdate:
             next_action_tool=value.get("next_action_tool"),
             next_action_signature=next_action_signature,
             next_action_semantics=value.get("next_action_semantics"),
+            decision_call_id=value.get("decision_call_id"),
             verification_plan=value.get("verification_plan"),
             completion_assessment=value.get("completion_assessment"),
             delivery_intent=value.get("delivery_intent", DeliveryIntent.UNKNOWN.value),
@@ -715,6 +766,7 @@ class ModelPlanUpdate:
             "next_action_tool",
             "next_action_signature",
             "next_action_semantics",
+            "decision_call_id",
         }
         unknown = set(value) - required - optional
         if unknown:
@@ -1024,6 +1076,7 @@ class ExecutionProtocolEvent:
     observed_action_semantics: tuple[ActionSemanticReceipt, ...] = field(
         default_factory=tuple
     )
+    bound_tool_call_id: str | None = None
     current_step: int = 0
     remaining_seconds: float | None = None
     operation_hash: str | None = None
@@ -1110,6 +1163,19 @@ class ExecutionProtocolEvent:
                 raise ValueError("invalid observed action semantic receipt") from exc
             semantics.append(receipt)
         object.__setattr__(self, "observed_action_semantics", tuple(semantics))
+        bound_tool_call_id = self.bound_tool_call_id
+        if bound_tool_call_id is not None and (
+            not isinstance(bound_tool_call_id, str)
+            or not bound_tool_call_id.strip()
+            or len(bound_tool_call_id.strip()) > 256
+        ):
+            raise ValueError("bound_tool_call_id must be null or a bounded string")
+        if self.kind is EventKind.NEXT_ACTION_BOUND and bound_tool_call_id is None:
+            raise ValueError("next_action_bound requires bound_tool_call_id")
+        if self.kind is not EventKind.NEXT_ACTION_BOUND and bound_tool_call_id is not None:
+            raise ValueError("bound_tool_call_id is valid only for next_action_bound")
+        if bound_tool_call_id is not None:
+            object.__setattr__(self, "bound_tool_call_id", bound_tool_call_id.strip())
         if self.remaining_seconds is not None:
             value = self.remaining_seconds
             if (
@@ -1219,6 +1285,7 @@ class ExecutionProtocolEvent:
             observed_action_names=self.observed_action_names,
             observed_action_signatures=self.observed_action_signatures,
             observed_action_semantics=self.observed_action_semantics,
+            bound_tool_call_id=self.bound_tool_call_id,
             current_step=self.current_step,
             remaining_seconds=self.remaining_seconds,
             operation_hash=self.operation_hash,
@@ -1256,6 +1323,7 @@ class ProtocolEventRecord:
     observed_action_semantics: tuple[ActionSemanticReceipt, ...] = field(
         default_factory=tuple
     )
+    bound_tool_call_id: str | None = None
     current_step: int = 0
     remaining_seconds: float | None = None
     operation_hash: str | None = None
@@ -1340,6 +1408,21 @@ class ProtocolEventRecord:
                 raise ValueError("invalid observed action semantic receipt") from exc
             semantics.append(receipt)
         object.__setattr__(self, "observed_action_semantics", tuple(semantics))
+        bound_tool_call_id = self.bound_tool_call_id
+        if bound_tool_call_id is not None and (
+            not isinstance(bound_tool_call_id, str)
+            or not bound_tool_call_id.strip()
+            or len(bound_tool_call_id.strip()) > 256
+        ):
+            raise ValueError("bound_tool_call_id must be null or a bounded string")
+        if self.kind is EventKind.NEXT_ACTION_BOUND and bound_tool_call_id is None:
+            raise ValueError("next_action_bound record requires bound_tool_call_id")
+        if self.kind is not EventKind.NEXT_ACTION_BOUND and bound_tool_call_id is not None:
+            raise ValueError(
+                "bound_tool_call_id is valid only for next_action_bound records"
+            )
+        if bound_tool_call_id is not None:
+            object.__setattr__(self, "bound_tool_call_id", bound_tool_call_id.strip())
         if self.remaining_seconds is not None and (
             isinstance(self.remaining_seconds, bool)
             or not isinstance(self.remaining_seconds, (int, float))
@@ -1437,6 +1520,7 @@ class ProtocolEventRecord:
             "observed_action_semantics": [
                 receipt.to_dict() for receipt in self.observed_action_semantics
             ],
+            "bound_tool_call_id": self.bound_tool_call_id,
             "current_step": self.current_step,
             "remaining_seconds": self.remaining_seconds,
             "operation_hash": self.operation_hash,
@@ -1499,6 +1583,7 @@ class ProtocolEventRecord:
             observed_action_names=value.get("observed_action_names") or (),
             observed_action_signatures=value.get("observed_action_signatures") or (),
             observed_action_semantics=value.get("observed_action_semantics") or (),
+            bound_tool_call_id=value.get("bound_tool_call_id"),
             current_step=_non_negative_int(
                 value.get("current_step", 0), "current_step"
             ),
@@ -1555,6 +1640,7 @@ class ExecutionProtocolState:
     candidate_decision_recorded: bool = False
     next_action_alignment_pending: bool = False
     pending_next_action_plan_sequence: int | None = None
+    pending_next_action_call_id: str | None = None
     last_action_alignment: NextActionAlignment | None = None
     last_action_alignment_plan_sequence: int | None = None
     last_action_alignment_observation_sequence: int | None = None
@@ -1623,6 +1709,23 @@ class ExecutionProtocolState:
             value = getattr(self, name)
             if value is not None:
                 _non_negative_int(value, name)
+        pending_call_id = self.pending_next_action_call_id
+        if pending_call_id is not None and (
+            not isinstance(pending_call_id, str)
+            or not pending_call_id.strip()
+            or len(pending_call_id.strip()) > 256
+        ):
+            raise ValueError(
+                "pending_next_action_call_id must be null or a bounded string"
+            )
+        if pending_call_id is not None:
+            object.__setattr__(
+                self, "pending_next_action_call_id", pending_call_id.strip()
+            )
+            if not self.next_action_alignment_pending:
+                raise ValueError(
+                    "pending_next_action_call_id requires pending alignment"
+                )
         if (
             not isinstance(self.review_pending, bool)
             or not isinstance(self.decision_checkpoint_pending, bool)
@@ -1760,6 +1863,7 @@ class ExecutionProtocolState:
             "candidate_decision_recorded": self.candidate_decision_recorded,
             "next_action_alignment_pending": self.next_action_alignment_pending,
             "pending_next_action_plan_sequence": self.pending_next_action_plan_sequence,
+            "pending_next_action_call_id": self.pending_next_action_call_id,
             "last_action_alignment": (
                 self.last_action_alignment.value
                 if self.last_action_alignment is not None
@@ -1880,6 +1984,7 @@ class ExecutionProtocolState:
             pending_next_action_plan_sequence=value.get(
                 "pending_next_action_plan_sequence"
             ),
+            pending_next_action_call_id=value.get("pending_next_action_call_id"),
             last_action_alignment=value.get("last_action_alignment"),
             last_action_alignment_plan_sequence=value.get(
                 "last_action_alignment_plan_sequence"
@@ -1958,6 +2063,7 @@ class ProtocolTransition:
 __all__ = [
     "ActionSemanticReceipt",
     "CompletionAssessment",
+    "compare_action_semantic_shape",
     "ConvergenceStage",
     "ControllerAction",
     "action_signature",
