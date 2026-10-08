@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import ast
 import asyncio
+from concurrent.futures import ThreadPoolExecutor
 import sys
+import threading
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -228,6 +230,7 @@ def test_transport_lease_honors_explicit_reserve_when_snapshot_is_unspecified():
 @pytest.mark.asyncio
 async def test_cancelled_provider_retention_is_bounded_and_forcibly_cleaned():
     limit = mcp_servers._MAX_RETAINED_CANCELLED_PROVIDER_CALLS
+    loop = asyncio.get_running_loop()
     cancellation_counts = [0] * (limit + 5)
 
     async def suppress_cancellation(index):
@@ -247,18 +250,85 @@ async def test_cancelled_provider_retention_is_bounded_and_forcibly_cleaned():
     await asyncio.sleep(0)
     for task in tasks:
         mcp_servers._retain_cancelled_provider_call(task)
+        retained, _ = mcp_servers._provider_cleanup_snapshot(loop)
         assert (
-            len(mcp_servers._task_lease_cancelled_calls)
+            retained
             <= mcp_servers._MAX_RETAINED_CANCELLED_PROVIDER_CALLS
         )
 
     for _ in range(12):
         await asyncio.sleep(0)
 
-    assert len(mcp_servers._task_lease_cancelled_calls) == 0
+    assert mcp_servers._provider_cleanup_snapshot(loop) == (0, False)
     assert all(task.done() for task in tasks)
-    worker = mcp_servers._task_lease_cleanup_worker
-    assert worker is None or worker.done()
+    assert mcp_servers._provider_cleanup_state_count() == 0
+
+
+def test_provider_cleanup_isolated_across_debug_event_loops():
+    barrier = threading.Barrier(2)
+
+    def run_loop(index):
+        loop = asyncio.new_event_loop()
+        loop.set_debug(True)
+        errors = []
+        loop.set_exception_handler(lambda _loop, context: errors.append(context))
+        asyncio.set_event_loop(loop)
+        barrier.wait(timeout=5)
+
+        async def scenario():
+            cancellation_counts = [0] * 4
+
+            async def stubborn_provider(provider_index):
+                while True:
+                    try:
+                        await asyncio.Event().wait()
+                    except asyncio.CancelledError:
+                        cancellation_counts[provider_index] += 1
+
+            decision = mcp_servers.ToolLeaseDecision(
+                requested_seconds=1,
+                policy_seconds=1,
+                effective_seconds=0.001,
+                remaining_task_seconds=None,
+                limited_by=None,
+            )
+            outcomes = await asyncio.gather(
+                *(
+                    mcp_servers._await_with_task_lease(
+                        stubborn_provider(provider_index), decision
+                    )
+                    for provider_index in range(4)
+                ),
+                return_exceptions=True,
+            )
+            assert all(
+                isinstance(outcome, mcp_servers._TaskToolLeaseTimeout)
+                for outcome in outcomes
+            )
+            for _ in range(20):
+                if mcp_servers._provider_cleanup_snapshot(loop) == (0, False):
+                    break
+                await asyncio.sleep(0)
+            assert mcp_servers._provider_cleanup_snapshot(loop) == (0, False)
+            assert all(count >= 2 for count in cancellation_counts)
+            assert not [
+                task for task in asyncio.all_tasks(loop) if task is not asyncio.current_task()
+            ]
+
+        try:
+            loop.run_until_complete(scenario())
+            loop.run_until_complete(loop.shutdown_asyncgens())
+            pending = [task for task in asyncio.all_tasks(loop) if not task.done()]
+            return index, errors, pending
+        finally:
+            asyncio.set_event_loop(None)
+            loop.close()
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        results = list(executor.map(run_loop, range(2)))
+
+    assert all(not errors and not pending for _, errors, pending in results)
+    assert mcp_servers._provider_cleanup_state_count() == 0
 
 
 @pytest.mark.parametrize(

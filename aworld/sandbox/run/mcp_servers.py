@@ -5,6 +5,7 @@ import re
 import shlex
 import threading
 import traceback
+import weakref
 from datetime import datetime
 from pathlib import Path
 
@@ -70,8 +71,20 @@ _TERMINAL_DEFAULT_TIMEOUT_SECONDS = 300.0
 _TERMINAL_MAX_TIMEOUT_SECONDS = 3600.0
 _MAX_RETAINED_CANCELLED_PROVIDER_CALLS = 32
 _PROVIDER_FORCE_CANCEL_ROUNDS = 3
-_task_lease_cancelled_calls: dict[asyncio.Future[Any], int] = {}
-_task_lease_cleanup_worker: asyncio.Task[None] | None = None
+
+
+class _ProviderCleanupState:
+    __slots__ = ("calls", "worker")
+
+    def __init__(self) -> None:
+        self.calls: dict[asyncio.Future[Any], int] = {}
+        self.worker: asyncio.Task[None] | None = None
+
+
+_provider_cleanup_states: weakref.WeakKeyDictionary[
+    asyncio.AbstractEventLoop, _ProviderCleanupState
+] = weakref.WeakKeyDictionary()
+_provider_cleanup_states_lock = threading.Lock()
 
 
 class _TaskToolLeaseTimeout(TimeoutError):
@@ -104,61 +117,116 @@ def _force_close_provider_call(task: asyncio.Future[Any]) -> None:
             pass
 
 
-async def _cleanup_cancelled_provider_calls() -> None:
-    global _task_lease_cleanup_worker
+def _provider_cleanup_state(
+    loop: asyncio.AbstractEventLoop,
+    *,
+    create: bool,
+) -> _ProviderCleanupState | None:
+    with _provider_cleanup_states_lock:
+        state = _provider_cleanup_states.get(loop)
+        if state is None and create:
+            state = _ProviderCleanupState()
+            _provider_cleanup_states[loop] = state
+        return state
+
+
+def _drop_provider_cleanup_state(
+    loop: asyncio.AbstractEventLoop,
+    state: _ProviderCleanupState,
+) -> None:
+    with _provider_cleanup_states_lock:
+        if _provider_cleanup_states.get(loop) is state:
+            _provider_cleanup_states.pop(loop, None)
+
+
+def _provider_cleanup_snapshot(
+    loop: asyncio.AbstractEventLoop,
+) -> tuple[int, bool]:
+    state = _provider_cleanup_state(loop, create=False)
+    if state is None:
+        return 0, False
+    return len(state.calls), bool(state.worker is not None and not state.worker.done())
+
+
+def _provider_cleanup_state_count() -> int:
+    with _provider_cleanup_states_lock:
+        return len(_provider_cleanup_states)
+
+
+async def _cleanup_cancelled_provider_calls(
+    state: _ProviderCleanupState,
+) -> None:
+    loop = asyncio.get_running_loop()
     worker = asyncio.current_task()
     try:
-        while _task_lease_cancelled_calls:
-            for task, attempts in list(_task_lease_cancelled_calls.items()):
+        while state.calls:
+            for task, attempts in list(state.calls.items()):
                 if task.done():
-                    _task_lease_cancelled_calls.pop(task, None)
+                    state.calls.pop(task, None)
                     _consume_provider_call(task)
                     continue
                 if attempts >= _PROVIDER_FORCE_CANCEL_ROUNDS:
                     _force_close_provider_call(task)
-                    _task_lease_cancelled_calls.pop(task, None)
+                    state.calls.pop(task, None)
                     continue
-                _task_lease_cancelled_calls[task] = attempts + 1
+                state.calls[task] = attempts + 1
                 task.cancel()
             await asyncio.sleep(0)
     finally:
         # Worker cancellation or loop shutdown must not retain request-bound
         # provider coroutines indefinitely.
-        for task in list(_task_lease_cancelled_calls):
+        for task in list(state.calls):
             _force_close_provider_call(task)
-        _task_lease_cancelled_calls.clear()
-        if _task_lease_cleanup_worker is worker:
-            _task_lease_cleanup_worker = None
+        state.calls.clear()
+        if state.worker is worker:
+            state.worker = None
+        _drop_provider_cleanup_state(loop, state)
 
 
 def _retain_cancelled_provider_call(task: asyncio.Future[Any]) -> None:
-    global _task_lease_cleanup_worker
+    get_loop = getattr(task, "get_loop", None)
+    owner_loop = get_loop() if callable(get_loop) else None
+    if owner_loop is None or owner_loop.is_closed():
+        return
+    try:
+        running_loop = asyncio.get_running_loop()
+    except RuntimeError:
+        running_loop = None
+    if running_loop is not owner_loop:
+        try:
+            owner_loop.call_soon_threadsafe(_retain_cancelled_provider_call, task)
+        except RuntimeError:
+            pass
+        return
     if task.done():
         _consume_provider_call(task)
         return
-    if task in _task_lease_cancelled_calls:
+    state = _provider_cleanup_state(owner_loop, create=True)
+    assert state is not None
+    if task in state.calls:
         return
-    while len(_task_lease_cancelled_calls) >= _MAX_RETAINED_CANCELLED_PROVIDER_CALLS:
-        oldest = next(iter(_task_lease_cancelled_calls))
-        _task_lease_cancelled_calls.pop(oldest, None)
+    while len(state.calls) >= _MAX_RETAINED_CANCELLED_PROVIDER_CALLS:
+        oldest = next(iter(state.calls))
+        state.calls.pop(oldest, None)
         _force_close_provider_call(oldest)
-    _task_lease_cancelled_calls[task] = 0
+    state.calls[task] = 0
 
     def finish_cancelled_call(done: asyncio.Future[Any]) -> None:
-        _task_lease_cancelled_calls.pop(done, None)
+        state.calls.pop(done, None)
         _consume_provider_call(done)
 
     task.add_done_callback(finish_cancelled_call)
-    if _task_lease_cleanup_worker is None or _task_lease_cleanup_worker.done():
+    if state.worker is None or state.worker.done():
         try:
-            _task_lease_cleanup_worker = asyncio.create_task(
-                _cleanup_cancelled_provider_calls(),
+            state.worker = asyncio.create_task(
+                _cleanup_cancelled_provider_calls(state),
                 name="aworld-task-lease-cleanup",
             )
         except RuntimeError:
-            _task_lease_cleanup_worker = None
-            _task_lease_cancelled_calls.pop(task, None)
+            state.worker = None
+            state.calls.pop(task, None)
             _force_close_provider_call(task)
+            _drop_provider_cleanup_state(owner_loop, state)
 
 
 def _safe_context_task(context: Context | None) -> Any:
