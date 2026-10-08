@@ -21,7 +21,7 @@ import bashlex
 
 TERMINAL_EXECUTION_RECEIPT_SCHEMA = "aworld.terminal-execution-receipt/v2"
 TERMINAL_EXECUTION_RECEIPT_KEY = "terminal_execution_receipt"
-TERMINAL_EXECUTION_ANALYZER_VERSION = 4
+TERMINAL_EXECUTION_ANALYZER_VERSION = 5
 TERMINAL_LANGUAGE_CONTRACT_VERSION = 1
 TERMINAL_LANGUAGES = frozenset({"shell", "python"})
 TERMINAL_EFFECTS = frozenset({"read_only", "mutating", "unknown"})
@@ -669,7 +669,7 @@ def _parse_shell_nodes(source: str) -> list[Any] | None:
 _LEADING_STATIC_CD = re.compile(
     r"\A\s*cd\s+(?P<path>'[^']*'|\"[^\"]*\"|[^\s;&|]+)\s*(?:&&|;|\n|\Z)"
 )
-_SHELL_CD_COMMAND = re.compile(r"(?:\A|&&|[;|\n])\s*cd(?:\s|\Z)")
+_SHELL_CD_COMMAND = re.compile(r"(?:\A|&&|[;|(){}\n])\s*cd(?:\s|\Z)")
 
 
 def shell_command_working_directory(source: str) -> tuple[str | None, bool]:

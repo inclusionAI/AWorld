@@ -142,7 +142,7 @@ async def test_run_code_emits_compact_terminal_execution_receipt() -> None:
     assert payload["success"] is True
     assert receipt == {
         "schema_version": "aworld.terminal-execution-receipt/v2",
-        "parser_version": 4,
+        "parser_version": 5,
         "language_contract_version": 1,
         "command_sha256": terminal_command_sha256(command),
         "requested_language": "shell",
@@ -309,6 +309,84 @@ async def test_dynamic_or_nonleading_cd_is_not_cacheable(
     assert receipt["effect"] == "unknown"
     assert receipt["cacheable"] is False
     assert receipt["read_path_epochs"] == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "command",
+    [
+        "cd sub && (cd nested && cat result.txt)",
+        "cd sub && { cd nested; cat result.txt; }",
+        "cd sub && read_nested() { cd nested && cat result.txt; }; read_nested",
+    ],
+)
+async def test_nested_group_cd_is_unknown_and_non_cacheable(
+    tmp_path: Path,
+    monkeypatch,
+    command: str,
+) -> None:
+    monkeypatch.setattr(terminal_module, "workspace", tmp_path)
+    nested = tmp_path / "sub" / "nested"
+    nested.mkdir(parents=True)
+    (tmp_path / "sub" / "result.txt").write_text("decoy", encoding="utf-8")
+    (nested / "result.txt").write_text("nested", encoding="utf-8")
+
+    response = await run_code(None, command, timeout=10, cwd=str(tmp_path))
+    payload = json.loads(response.text)
+    receipt = payload["metadata"]["terminal_execution_receipt"]
+
+    assert payload["success"] is True
+    assert payload["message"]["stdout"].strip() == "nested"
+    assert receipt["effect"] == "unknown"
+    assert receipt["cacheable"] is False
+    assert receipt["read_path_epochs"] == []
+
+
+@pytest.mark.asyncio
+async def test_nested_cd_never_replays_epoch_from_outer_directory(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(terminal_module, "workspace", tmp_path)
+    nested = tmp_path / "sub" / "nested"
+    nested.mkdir(parents=True)
+    decoy = tmp_path / "sub" / "result.txt"
+    decoy.write_text("decoy-stable", encoding="utf-8")
+    actual = nested / "result.txt"
+    actual.write_text("nested-before", encoding="utf-8")
+    command = "cd sub && (cd nested && cat result.txt)"
+    action = {
+        "tool_name": "terminal",
+        "action_name": "run_code",
+        "tool_call_id": "call-nested-cd",
+        "params": {"code": command, "cwd": str(tmp_path)},
+    }
+    runtime = SandboxToolObservationRuntime()
+    context = SimpleNamespace(task_id="task", task_epoch=1, session_id="session")
+
+    first = await run_code(None, command, timeout=10, cwd=str(tmp_path))
+    first_payload = json.loads(first.text)
+    runtime.record(
+        action,
+        ActionResult(
+            success=True,
+            tool_call_id="call-nested-cd",
+            content=first_payload["message"],
+            parameter=action["params"],
+            metadata=first_payload["metadata"],
+        ),
+        context=context,
+    )
+    assert first_payload["message"]["stdout"].strip() == "nested-before"
+    assert runtime.lookup(action, context=context) is None
+
+    actual.write_text("nested-after", encoding="utf-8")
+    second = await run_code(None, command, timeout=10, cwd=str(tmp_path))
+    second_payload = json.loads(second.text)
+
+    assert decoy.read_text(encoding="utf-8") == "decoy-stable"
+    assert second_payload["message"]["stdout"].strip() == "nested-after"
+    assert runtime.lookup(action, context=context) is None
 
 
 @pytest.mark.asyncio
