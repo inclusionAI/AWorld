@@ -7,6 +7,8 @@ from aworld.agents.llm_agent import Agent
 from aworld.config.conf import AgentConfig, ModelConfig
 from aworld.core.common import TaskStatusValue
 from aworld.core.context.amni.config import AgentContextConfig, ContextCacheConfig
+from aworld.core.context.amni import ApplicationContext
+from aworld.core.context.amni.prompt.session import PROMPT_SESSION_STATE_KEY
 from aworld.core.context.amni.prompt.assembly import (
     CacheAwarePromptAssemblyProvider,
     PROMPT_SECTION_NAME_HINT_KEY,
@@ -478,6 +480,91 @@ async def test_async_policy_publishes_the_prompt_assembly_provider_not_transport
     assert len(sidecars) == 1
     assert sidecars[0].task_epoch == context.task_epoch
     assert sidecars[0].result.items[0].stability.value == "session_stable"
+
+
+def test_model_boundary_commits_wire_messages_to_amni_append_only_session():
+    agent = _build_agent()
+    context = ApplicationContext.create(
+        session_id="append-only-session",
+        task_id="append-only-task",
+        task_content="task",
+    )
+    context.set_task(Task(id="append-only-task", name="append-only-task"))
+    first = [
+        {"role": "system", "content": "stable rules"},
+        {"role": "user", "content": "task"},
+    ]
+    second = [*first, {"role": "assistant", "content": "prior work"}]
+    request_kwargs = {"response_parse_args": {"agent_id": agent.id()}}
+
+    first_wire, first_rollout = (
+        agent.llm._commit_amni_prompt_session_at_provider_boundary(
+            context=context,
+            messages=first,
+            tools=None,
+            model_name="fake-model",
+            request_kwargs=request_kwargs,
+            context_rollout={"mode": "enforce"},
+        )
+    )
+    second_wire, second_rollout = (
+        agent.llm._commit_amni_prompt_session_at_provider_boundary(
+            context=context,
+            messages=second,
+            tools=None,
+            model_name="fake-model",
+            request_kwargs=request_kwargs,
+            context_rollout={"mode": "enforce"},
+        )
+    )
+
+    assert second_wire[: len(first_wire)] == first_wire
+    assert first_rollout["amni_prompt_session"]["epoch_started"] is True
+    assert second_rollout["amni_prompt_session"]["epoch_rollover"] is False
+    assert second_rollout["amni_prompt_session"]["appended_message_count"] == 1
+
+    message = Message(
+        category=Constants.AGENT,
+        sender="user",
+        receiver=agent.name(),
+        headers={"context": context},
+    )
+    call_id = agent._record_llm_call_request(
+        message,
+        second_wire,
+        started_at="2026-10-08T12:00:00",
+    )
+    agent._update_llm_call_observability(
+        message,
+        call_id,
+        metadata={"assembly_provider": "CacheAwarePromptAssemblyProvider"},
+    )
+    agent._record_llm_call_response(
+        message,
+        call_id,
+        ModelResponse(
+            id="resp-2",
+            model="fake-model",
+            content="done",
+            usage={
+                "prompt_tokens": 30,
+                "completion_tokens": 2,
+                "cache_hit_tokens": 20,
+            },
+        ),
+    )
+
+    state = context.read_task_runtime_state(
+        agent.id(), PROMPT_SESSION_STATE_KEY
+    )
+    assert state["epoch_request_index"] == 2
+    assert state["last_transition"]["epoch_rollover"] is False
+    assert state["provider_cache_evidence"]["last_cache_hit_tokens"] == 20
+    observability = context.get_llm_calls()[-1]["assembly_observability"]
+    assert observability["append_only_session"] is True
+    assert observability["amni_prompt_session"]["wire_messages_hash"] == state[
+        "wire_messages_hash"
+    ]
 
 
 def test_enforce_compiles_after_assembly_without_replaying_provider_plan():

@@ -551,6 +551,83 @@ class ApplicationContext(AmniContext):
             self._default_prompt_assembly_provider = DefaultPromptAssemblyProvider()
         return self._default_prompt_assembly_provider
 
+    def materialize_append_only_prompt_session(
+        self,
+        *,
+        namespace: str,
+        messages: List[Dict[str, Any]],
+        tools: Any = None,
+        provider_name: str = "",
+        model_name: str = "",
+        stable_prefix_hash: str = "",
+        request_cache_scope_hash: str = "",
+    ) -> tuple[List[Dict[str, Any]], Dict[str, Any]]:
+        """Commit one provider-bound request to Amini's prompt session.
+
+        Context transport copies share ``TaskRuntimeStateRegistry``.  Keeping
+        the ledger there makes the exact provider prefix task/Agent scoped
+        without placing prior prompt bodies in the user-visible prompt or in a
+        benchmark-specific Runtime layer.
+        """
+
+        if not isinstance(namespace, str) or not namespace.strip():
+            raise ValueError("prompt session namespace must be non-empty")
+        from .prompt.session import PROMPT_SESSION_STATE_KEY, advance_prompt_session
+
+        lifecycle = self.context_lifecycle_state
+        scope = {
+            "session_id": lifecycle.session_id,
+            "session_epoch": lifecycle.session_epoch,
+            "task_id": self.task_id,
+            "task_epoch": lifecycle.task_epoch,
+            "branch_id": lifecycle.branch_id,
+            "agent_id": namespace,
+            "provider_name": str(provider_name or ""),
+            "model_name": str(model_name or ""),
+            "request_cache_scope_hash": str(request_cache_scope_hash or ""),
+        }
+        projected: Dict[str, Any] = {}
+
+        def update(previous: Any) -> Dict[str, Any]:
+            transition = advance_prompt_session(
+                previous,
+                messages=messages,
+                tools=tools,
+                scope=scope,
+                checkpoint_revision=lifecycle.checkpoint_revision,
+                stable_prefix_hash=stable_prefix_hash,
+            )
+            projected["messages"] = transition.messages
+            projected["receipt"] = transition.receipt
+            return transition.state
+
+        self.update_task_runtime_state(namespace, PROMPT_SESSION_STATE_KEY, update)
+        return projected["messages"], projected["receipt"]
+
+    def record_append_only_prompt_cache_usage(
+        self,
+        *,
+        namespace: str,
+        cache_hit_tokens: Any = 0,
+        cache_write_tokens: Any = 0,
+    ) -> None:
+        """Record provider-attested cache adoption for the active epoch."""
+
+        from .prompt.session import (
+            PROMPT_SESSION_STATE_KEY,
+            record_prompt_session_cache_usage,
+        )
+
+        self.update_task_runtime_state(
+            namespace,
+            PROMPT_SESSION_STATE_KEY,
+            lambda previous: record_prompt_session_cache_usage(
+                previous,
+                cache_hit_tokens=cache_hit_tokens,
+                cache_write_tokens=cache_write_tokens,
+            ),
+        )
+
     @property
     def knowledge_service(self):
         """Get KnowledgeService instance (lazy initialization)."""

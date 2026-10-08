@@ -25,6 +25,7 @@ from aworld.core.context.compiler import (
     compact_duplicate_tool_results,
     compact_message_history,
     evaluate_adaptive_checkpoint,
+    restore_adaptive_continuation,
     semantic_fingerprint,
     estimate_canonical_json_tokens,
 )
@@ -951,6 +952,88 @@ def test_duplicate_tool_compaction_requires_exact_substantial_content():
     assert compacted == messages
 
 
+def test_adaptive_continuation_preserves_committed_prefix_with_new_occurrences():
+    previous = [
+        {"role": "system", "content": "rules"},
+        {"role": "user", "content": "task"},
+        {"role": "assistant", "content": "prior"},
+    ]
+    new_system = {"role": "system", "content": "dynamic update"}
+    new_result = {"role": "assistant", "content": "new result"}
+    current = [new_system, *previous, new_result]
+
+    restored = restore_adaptive_continuation(
+        current,
+        previous,
+        keep_recent=None,
+    )
+
+    assert restored[: len(previous)] == previous
+    assert restored[len(previous) :] == [new_system, new_result]
+
+
+@pytest.mark.asyncio
+async def test_agent_defers_duplicate_rewrite_until_explicit_checkpoint(monkeypatch):
+    agent = LLMAgent.__new__(LLMAgent)
+    agent._id = "agent"
+    agent._llm = SimpleNamespace(
+        _context_checkpoint_policy="adaptive",
+        _context_input_budget=100_000,
+    )
+    context = Context(task_id="duplicate-epoch-boundary")
+    repeated = "same file range\n" * 80
+    messages = [
+        {"role": "system", "content": "policy"},
+        {"role": "user", "content": "task"},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [{"id": "read-1", "type": "function"}],
+        },
+        {"role": "tool", "tool_call_id": "read-1", "content": repeated},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [{"id": "read-2", "type": "function"}],
+        },
+        {"role": "tool", "tool_call_id": "read-2", "content": repeated},
+    ]
+    context.context_info["context_semantic_progress"] = {
+        "agent": {"repetition_count": 0, "low_information_gain_count": 0}
+    }
+
+    unchanged = await agent._apply_adaptive_context_policy(
+        context=context,
+        messages=messages,
+        context_compiler_mode="enforce",
+    )
+
+    assert unchanged == messages
+
+    async def snapshot(**_kwargs):
+        context.advance_context_lifecycle("checkpoint")
+        return SimpleNamespace(id="duplicate-checkpoint")
+
+    monkeypatch.setattr(context, "snapshot", snapshot)
+    context.context_info["context_semantic_progress"] = {
+        "agent": {"repetition_count": 3, "low_information_gain_count": 0}
+    }
+    checkpointed = await agent._apply_adaptive_context_policy(
+        context=context,
+        messages=messages,
+        context_compiler_mode="enforce",
+    )
+
+    assert any(
+        message.get("role") == "tool"
+        and str(message.get("content", "")).startswith(
+            "AWorld cached duplicate tool observation"
+        )
+        for message in checkpointed
+    )
+    assert context.context_lifecycle_state.checkpoint_revision == 1
+
+
 def test_compaction_retains_task_system_policy_and_recent_turns():
     messages = [
         {"role": "system", "content": "policy"},
@@ -1113,6 +1196,16 @@ async def test_agent_adaptive_policy_performs_checkpoint_and_compaction(monkeypa
         context_compiler_mode="enforce",
     )
     assert reused
+    assert checkpoint_calls == [True]
+    assert context.context_lifecycle_state.checkpoint_revision == 1
+
+    extended = await agent._apply_adaptive_context_policy(
+        context=context,
+        messages=[*messages, {"role": "assistant", "content": "new delta"}],
+        context_compiler_mode="enforce",
+    )
+    assert extended[: len(reused)] == reused
+    assert extended[-1] == {"role": "assistant", "content": "new delta"}
     assert checkpoint_calls == [True]
     assert context.context_lifecycle_state.checkpoint_revision == 1
 

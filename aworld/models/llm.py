@@ -108,6 +108,7 @@ from aworld.core.context.compiler.parity import (
 )
 from aworld.core.model_output_parser import ModelOutputParser, BaseContentParser
 from aworld.utils.common import sync_exec
+from aworld.utils.serialized_util import to_serializable
 
 
 AWORLD_CONTEXT_CALL_ID_KWARG = "_aworld_context_call_id"
@@ -1559,6 +1560,91 @@ class LLMModel:
                 "model_boundary_finalize_failed"
             ) from None
 
+    def _commit_amni_prompt_session_at_provider_boundary(
+        self,
+        *,
+        context: Context | None,
+        messages: List[Dict[str, Any]],
+        tools: Any,
+        model_name: str | None,
+        request_kwargs: dict[str, Any],
+        context_rollout: dict[str, Any] | None,
+    ) -> tuple[List[Dict[str, Any]], dict[str, Any] | None]:
+        """Commit the exact post-compiler request to Amini's prompt epoch."""
+
+        materializer = getattr(
+            context,
+            "materialize_append_only_prompt_session",
+            None,
+        )
+        if (
+            context is None
+            or self.context_compiler_mode is ContextCompilerMode.OFF
+            or not callable(materializer)
+        ):
+            return messages, context_rollout
+
+        system_messages = [
+            message
+            for message in messages
+            if isinstance(message, dict) and message.get("role") == "system"
+        ]
+        cache_scope = {
+            key: to_serializable(request_kwargs[key])
+            for key in (
+                "reasoning_effort",
+                "response_format",
+                "extra_body",
+                "prompt_cache_key",
+                "cache_control",
+            )
+            if key in request_kwargs
+        }
+        response_parse_args = request_kwargs.get("response_parse_args")
+        requested_agent_id = (
+            response_parse_args.get("agent_id")
+            if isinstance(response_parse_args, dict)
+            else None
+        )
+        agent_id = (
+            requested_agent_id
+            if isinstance(requested_agent_id, str) and requested_agent_id.strip()
+            else self._context_agent_identity(context)
+        )
+        committed, receipt = materializer(
+            namespace=agent_id,
+            messages=messages,
+            tools=tools,
+            provider_name=self.provider_name,
+            model_name=(
+                model_name
+                or getattr(self.provider, "model_name", None)
+                or getattr(self, "model_name", None)
+                or ""
+            ),
+            stable_prefix_hash=canonical_json_hash(
+                {"system_messages": system_messages}
+            ),
+            request_cache_scope_hash=canonical_json_hash(cache_scope),
+        )
+        if committed != messages:
+            # The final provider candidate has already been compiled and
+            # attributed.  A session ledger may attest or reject it, but must
+            # never mutate it after that boundary.
+            raise CandidateRequestNotEnforceable(
+                "amni_prompt_session_mutated_provider_request"
+            )
+        if receipt.get("rollover_reason") == "projection_rewrite":
+            logger.warning(
+                "Amini final provider request required an explicit prompt epoch "
+                "rollover; agent=%s",
+                agent_id,
+            )
+        if context_rollout is not None:
+            context_rollout = dict(context_rollout)
+            context_rollout["amni_prompt_session"] = receipt
+        return committed, context_rollout
+
     def _context_window_for_request(self, policy, model_name):
         configured_model = getattr(self, "_context_model_name", None)
         if policy is not getattr(self, "_adaptive_context_policy", None) and policy.final_policy is not None:
@@ -2795,6 +2881,16 @@ class LLMModel:
                 reasoning_selection=reasoning_selection,
             )
         )
+        messages, context_rollout = (
+            self._commit_amni_prompt_session_at_provider_boundary(
+                context=context,
+                messages=messages,
+                tools=kwargs.get("tools"),
+                model_name=kwargs.get("model_name") or kwargs.get("model"),
+                request_kwargs=kwargs,
+                context_rollout=context_rollout,
+            )
+        )
         self._begin_llm_call_record(
             context=context,
             request_id=request_id,
@@ -3050,6 +3146,16 @@ class LLMModel:
                 reasoning_selection=reasoning_selection,
             )
         )
+        messages, context_rollout = (
+            self._commit_amni_prompt_session_at_provider_boundary(
+                context=context,
+                messages=messages,
+                tools=kwargs.get("tools"),
+                model_name=kwargs.get("model_name") or kwargs.get("model"),
+                request_kwargs=kwargs,
+                context_rollout=context_rollout,
+            )
+        )
         self._begin_llm_call_record(
             context=context,
             request_id=request_id,
@@ -3262,6 +3368,16 @@ class LLMModel:
                 reasoning_selection=reasoning_selection,
             )
         )
+        messages, context_rollout = (
+            self._commit_amni_prompt_session_at_provider_boundary(
+                context=context,
+                messages=messages,
+                tools=kwargs.get("tools"),
+                model_name=kwargs.get("model_name") or kwargs.get("model"),
+                request_kwargs=kwargs,
+                context_rollout=context_rollout,
+            )
+        )
         self._begin_llm_call_record(
             context=context,
             request_id=request_id,
@@ -3466,6 +3582,16 @@ class LLMModel:
                 call_shape=ContextCallShape.ASYNC_STREAM,
                 request_kwargs=kwargs,
                 reasoning_selection=reasoning_selection,
+            )
+        )
+        messages, context_rollout = (
+            self._commit_amni_prompt_session_at_provider_boundary(
+                context=context,
+                messages=messages,
+                tools=kwargs.get("tools"),
+                model_name=kwargs.get("model_name") or kwargs.get("model"),
+                request_kwargs=kwargs,
+                context_rollout=context_rollout,
             )
         )
         self._begin_llm_call_record(

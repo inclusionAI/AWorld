@@ -15,6 +15,14 @@ from .provider import (
 )
 from .hashing import compute_stable_prefix_hash
 from .state import PromptAssemblyRuntimeState
+from ..session import (
+    PROMPT_SESSION_RECEIPT_SCHEMA_VERSION,
+    PROMPT_SESSION_SCHEMA_VERSION,
+    PROMPT_SESSION_STATE_KEY,
+    PromptSessionTransition,
+    advance_prompt_session,
+    record_prompt_session_cache_usage,
+)
 from .context_adapter import PromptSectionContextAdapter, adapt_prompt_sections
 from .budget import (
     BudgetedPromptAssemblyPlan,
@@ -38,6 +46,12 @@ __all__ = [
     "CacheAwarePromptAssemblyProvider",
     "compute_stable_prefix_hash",
     "PromptAssemblyRuntimeState",
+    "PROMPT_SESSION_RECEIPT_SCHEMA_VERSION",
+    "PROMPT_SESSION_SCHEMA_VERSION",
+    "PROMPT_SESSION_STATE_KEY",
+    "PromptSessionTransition",
+    "advance_prompt_session",
+    "record_prompt_session_cache_usage",
     "PromptSectionContextAdapter",
     "adapt_prompt_sections",
     "PromptBudgetPolicy",

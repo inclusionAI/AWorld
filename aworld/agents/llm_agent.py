@@ -2061,6 +2061,53 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                 else to_serializable(llm_response)
             )
             serialized_usage = to_serializable(getattr(llm_response, "usage", None))
+            cache_usage_recorder = getattr(
+                context,
+                "record_append_only_prompt_cache_usage",
+                None,
+            )
+            if callable(cache_usage_recorder) and isinstance(
+                serialized_usage, dict
+            ):
+                try:
+                    normalized_cache_usage = normalize_usage(serialized_usage)
+                    cache_usage_recorder(
+                        namespace=self.id(),
+                        cache_hit_tokens=normalized_cache_usage.get(
+                            "cache_hit_tokens", 0
+                        ),
+                        cache_write_tokens=normalized_cache_usage.get(
+                            "cache_write_tokens", 0
+                        ),
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        "Amini prompt cache evidence recording failed; "
+                        f"error_type={type(exc).__name__}"
+                    )
+
+        prompt_session_receipt = None
+        runtime_state_reader = getattr(context, "read_task_runtime_state", None)
+        if callable(runtime_state_reader):
+            try:
+                from aworld.core.context.amni.prompt.session import (
+                    PROMPT_SESSION_STATE_KEY,
+                )
+
+                prompt_session_state = runtime_state_reader(
+                    self.id(), PROMPT_SESSION_STATE_KEY
+                )
+                if isinstance(prompt_session_state, dict) and isinstance(
+                    prompt_session_state.get("last_transition"), dict
+                ):
+                    prompt_session_receipt = dict(
+                        prompt_session_state["last_transition"]
+                    )
+            except Exception as exc:
+                logger.warning(
+                    "Amini prompt session receipt projection failed; "
+                    f"error_type={type(exc).__name__}"
+                )
 
         for index in range(len(llm_calls) - 1, -1, -1):
             record = llm_calls[index]
@@ -2071,11 +2118,16 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                 if serialized_usage is not None:
                     updated_record["usage"] = serialized_usage
                 metadata = updated_record.get("assembly_observability")
-                if isinstance(metadata, dict) and self._usage_has_cache_tokens(
-                    serialized_usage
-                ):
+                if isinstance(metadata, dict):
                     metadata = dict(metadata)
-                    metadata["provider_native_cache"] = True
+                    if self._usage_has_cache_tokens(serialized_usage):
+                        metadata["provider_native_cache"] = True
+                    if prompt_session_receipt is not None:
+                        metadata["amni_prompt_session"] = prompt_session_receipt
+                        metadata["append_only_session"] = True
+                        metadata["prompt_epoch_id"] = prompt_session_receipt[
+                            "epoch_id"
+                        ]
                     updated_record["assembly_observability"] = metadata
                 context.replace_llm_call(
                     index,
@@ -3494,19 +3546,6 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             restore_adaptive_continuation,
         )
 
-        messages, duplicate_receipt = compact_duplicate_tool_results(messages)
-        if duplicate_receipt is not None:
-            increment_watchdog_metric(
-                context,
-                "duplicate_tool_result_compaction_count",
-                int(duplicate_receipt["compacted_message_count"]),
-            )
-            increment_watchdog_metric(
-                context,
-                "duplicate_tool_result_saved_chars",
-                int(duplicate_receipt["saved_chars"]),
-            )
-
         progress = semantic_progress_for_agent(context, agent_id=self.id())
         prompt_tokens = int(estimate_canonical_json_tokens(messages).value or 0)
         input_budget = int(getattr(self.llm, "_context_input_budget", 0) or 0)
@@ -3598,13 +3637,11 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             messages = restore_adaptive_continuation(
                 messages,
                 continuation_capsule,
-                keep_recent=(
-                    None
-                    if policy_name == "budget_pressure"
-                    else AdaptiveCheckpointPolicy().keep_recent_messages
-                ),
+                # The previous capsule is the committed prefix for this
+                # checkpoint epoch.  Merge only newly replayed occurrences;
+                # never trim or replace it between explicit checkpoints.
+                keep_recent=None,
             )
-            messages = attach_work_state(messages)
             prompt_tokens = int(estimate_canonical_json_tokens(messages).value or 0)
 
         def adaptive_state_count(key: str) -> int:
@@ -3668,27 +3705,35 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             record_adaptive_context_metrics(state_context, progress_reset=True)
             save_adaptive_state()
         if not decision.checkpoint:
-            if policy_name == "budget_pressure":
-                if adaptive_state.get("compaction_active") is True:
-                    save_continuation_capsule(messages)
-                return messages
             if adaptive_state.get("compaction_active") is True:
-                compacted, _ = compact_message_history(
-                    messages, keep_recent=adaptive_policy.keep_recent_messages
-                )
-                compacted = attach_work_state(compacted)
                 effective_prompt_tokens = int(
-                    estimate_canonical_json_tokens(compacted).value or 0
+                    estimate_canonical_json_tokens(messages).value or 0
                 )
                 adaptive_state["last_prompt_tokens"] = prompt_tokens
                 adaptive_state["last_effective_prompt_tokens"] = effective_prompt_tokens
                 adaptive_state["last_estimated_saved_prompt_tokens"] = max(
                     0, prompt_tokens - effective_prompt_tokens
                 )
-                save_continuation_capsule(compacted)
+                save_continuation_capsule(messages)
                 save_adaptive_state()
-                return compacted
+                return messages
             return messages
+
+        # Destructive compaction is legal only at the explicit Context
+        # checkpoint below.  Replacing duplicate Tool bodies on every normal
+        # turn would otherwise invalidate an already committed provider prefix.
+        messages, duplicate_receipt = compact_duplicate_tool_results(messages)
+        if duplicate_receipt is not None:
+            increment_watchdog_metric(
+                context,
+                "duplicate_tool_result_compaction_count",
+                int(duplicate_receipt["compacted_message_count"]),
+            )
+            increment_watchdog_metric(
+                context,
+                "duplicate_tool_result_saved_chars",
+                int(duplicate_receipt["saved_chars"]),
+            )
 
         keep_recent = adaptive_policy.keep_recent_messages
         if policy_name == "budget_pressure":

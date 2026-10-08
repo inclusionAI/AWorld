@@ -464,24 +464,6 @@ def restore_adaptive_continuation(
     if not previous:
         return current
 
-    def split_prefix(values: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-        first_user = next(
-            (index for index, item in enumerate(values) if item.get("role") == "user"),
-            None,
-        )
-        prefix_indexes = {
-            index for index, item in enumerate(values) if item.get("role") == "system"
-        }
-        if first_user is not None:
-            prefix_indexes.add(first_user)
-        return (
-            [item for index, item in enumerate(values) if index in prefix_indexes],
-            [item for index, item in enumerate(values) if index not in prefix_indexes],
-        )
-
-    current_prefix, current_body = split_prefix(current)
-    _, previous_body = split_prefix(previous)
-
     def identity(message: Mapping[str, Any]) -> tuple[Any, ...]:
         role = str(message.get("role") or "")
         if role == "tool" and message.get("tool_call_id"):
@@ -498,16 +480,41 @@ def restore_adaptive_continuation(
         return role, semantic_fingerprint(message)
 
     if keep_recent is None:
-        # The capsule already contains retained history. Append only messages
-        # after its latest replayed entry, rather than resurrecting discarded
-        # history or trimming every subsequent turn to a fixed-size suffix.
-        previous_ids = {identity(message) for message in previous_body}
-        last_shared = max(
-            (index for index, message in enumerate(current_body)
-             if identity(message) in previous_ids),
-            default=-1,
+        # The capsule is the exact provider prefix already committed for this
+        # epoch. Preserve it byte-for-byte and append only unseen replay
+        # occurrences. Rebuilding a fresh system/task prefix here would turn
+        # an append-only Amni event stream back into a mutable wire prompt.
+        merged = [dict(message) for message in previous]
+        seen = {identity(message) for message in previous}
+        for message in current:
+            message_identity = identity(message)
+            if message_identity in seen:
+                continue
+            seen.add(message_identity)
+            merged.append(dict(message))
+        return merged
+
+    def split_prefix(
+        values: list[dict[str, Any]],
+    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+        first_user = next(
+            (index for index, item in enumerate(values) if item.get("role") == "user"),
+            None,
         )
-        current_body = current_body[last_shared + 1:]
+        prefix_indexes = {
+            index
+            for index, item in enumerate(values)
+            if item.get("role") == "system"
+        }
+        if first_user is not None:
+            prefix_indexes.add(first_user)
+        return (
+            [item for index, item in enumerate(values) if index in prefix_indexes],
+            [item for index, item in enumerate(values) if index not in prefix_indexes],
+        )
+
+    current_prefix, current_body = split_prefix(current)
+    _, previous_body = split_prefix(previous)
 
     body: list[dict[str, Any]] = []
     seen: set[tuple[Any, ...]] = set()
@@ -519,8 +526,6 @@ def restore_adaptive_continuation(
         body.append(message)
 
     merged = [*current_prefix, *body]
-    if keep_recent is None:
-        return merged
     compacted, _ = compact_message_history(merged, keep_recent=keep_recent)
     return compacted
 

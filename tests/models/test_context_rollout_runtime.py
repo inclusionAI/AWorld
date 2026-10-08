@@ -353,6 +353,12 @@ async def test_total_budget_recovery_uses_amni_and_preserves_cache_prefix(tmp_pa
     receipt = context.get_llm_calls()[-1]["context_rollout"]["budget_recovery"][0]
     assert receipt["tokens_after"] < receipt["tokens_before"]
     assert "report data" not in repr(receipt)
+    prompt_session = context.get_llm_calls()[-1]["context_rollout"][
+        "amni_prompt_session"
+    ]
+    assert prompt_session["append_only"] is True
+    assert prompt_session["epoch_rollover"] is False
+    assert prompt_session["appended_message_count"] >= 1
 
     # Replayed Memory must reuse the exact same capsule, including after the
     # volatile runtime registry is lost and only AMNI WorkingState remains.
