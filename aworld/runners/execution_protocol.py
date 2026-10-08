@@ -202,7 +202,7 @@ def _update_active_gate_index(context, agent_id: str, *, active: bool) -> None:
     )
 
 
-def _indexed_active_gate_agents(context) -> tuple[str, ...]:
+def _active_gate_index(context) -> Mapping[str, Any] | None:
     current = _read_runtime_value(
         context,
         _MUTATION_GATE_INDEX_NAMESPACE,
@@ -213,12 +213,24 @@ def _indexed_active_gate_agents(context) -> tuple[str, ...]:
         or current.get("schema_version") != "aworld.mutation-gate-index/v1"
         or current.get("scope_hash") != _gate_index_scope_hash(context)
     ):
+        return None
+    return current
+
+
+def _indexed_active_gate_agents(context) -> tuple[str, ...]:
+    current = _active_gate_index(context)
+    if current is None:
         return ()
     return tuple(
         value
         for value in (current.get("active_agent_ids") or ())
         if isinstance(value, str) and value
     )[:32]
+
+
+def _indexed_active_gate_overflow(context) -> bool:
+    current = _active_gate_index(context)
+    return bool(current is not None and current.get("overflow_active") is True)
 
 
 def _model_decision_scope(context, agent_id: str) -> dict[str, Any]:
@@ -2286,7 +2298,27 @@ def mutation_gate_interception(
             candidate_gates.append((latest_agent_id, latest_gate))
     if ambiguous_agent_scope:
         if not candidate_gates:
-            return None
+            if not _indexed_active_gate_overflow(context):
+                return None
+            # More than the bounded retained identities were active in this
+            # exact task epoch. Even when every retained gate later becomes
+            # inactive, an unindexed active gate may remain; ambiguity must
+            # therefore stay fail-closed until the task scope changes.
+            return {
+                "schema_version": MUTATION_GATE_SCHEMA,
+                "kind": "convergence_scope_ambiguous",
+                "agent_id": _MUTATION_GATE_INDEX_NAMESPACE,
+                "tool_call_ids": [
+                    str(_action_value(action, "tool_call_id") or "")
+                    for action in actions
+                    if str(_action_value(action, "tool_call_id") or "")
+                ],
+                "block_all": True,
+                "reason": "active_gate_index_overflow",
+                "convergence_stage": None,
+                "blocked_call_count": len(actions),
+                "blocked_read_only_call_count": len(actions),
+            }
         agent_id, gate = candidate_gates[0]
         updated = dict(gate)
         updated["blocked_call_count"] = min(

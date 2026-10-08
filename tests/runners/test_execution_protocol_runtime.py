@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 import pytest
 
+import aworld.runners.execution_protocol as execution_protocol_module
+
 from aworld.core.context.base import Context
 from aworld.core.common import ActionModel, ActionResult, Observation
 from aworld.core.event.base import Message
@@ -2038,6 +2040,36 @@ def test_missing_agent_uses_all_active_gates_not_latest_inactive_helper() -> Non
     assert receipt is not None
     assert receipt["agent_id"] == "solver"
     assert receipt["block_all"] is True
+
+
+def test_active_gate_index_overflow_remains_fail_closed_after_retained_deactivation(
+) -> None:
+    context = _context("active-gate-index-overflow")
+    agent_ids = [f"agent-{index:02d}" for index in range(33)]
+    for agent_id in agent_ids:
+        execution_protocol_module._update_active_gate_index(
+            context, agent_id, active=True
+        )
+    for agent_id in agent_ids[:32]:
+        execution_protocol_module._update_active_gate_index(
+            context, agent_id, active=False
+        )
+
+    index = execution_protocol_module._active_gate_index(context)
+    assert index["active_agent_ids"] == []
+    assert index["overflow_active"] is True
+    action = ActionModel(
+        tool_name="terminal",
+        action_name="run_code",
+        params={"code": "cat README.md"},
+        tool_call_id="overflow-missing-agent",
+        agent_name=None,
+    )
+
+    receipt = mutation_gate_interception(context, [action])
+    assert receipt is not None
+    assert receipt["block_all"] is True
+    assert receipt["reason"] == "active_gate_index_overflow"
 
 
 @pytest.mark.asyncio
