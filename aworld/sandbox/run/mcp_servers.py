@@ -2029,6 +2029,14 @@ class McpServers:
 
         # Build env_content value
         env_content_value = {}
+        framework_authority_keys = {
+            "task_budget",
+            "task_id",
+            "session_id",
+            "task_epoch",
+            "checkpoint_revision",
+            "sandbox_id",
+        }
 
         # 1. Copy user-defined context from sandbox.env_content. Framework
         # authority fields are never inherited from caller-owned dictionaries.
@@ -2039,7 +2047,7 @@ class McpServers:
                 {
                     key: value
                     for key, value in self.sandbox.env_content.items()
-                    if key != "task_budget"
+                    if key not in framework_authority_keys
                 }
             )
 
@@ -2051,6 +2059,21 @@ class McpServers:
                 env_content_value["session_id"] = context.session_id
             if hasattr(context, 'task_epoch') and context.task_epoch is not None:
                 env_content_value["task_epoch"] = context.task_epoch
+            lifecycle = getattr(context, "context_lifecycle_state", None)
+            checkpoint_revision = (
+                lifecycle.get("checkpoint_revision")
+                if isinstance(lifecycle, Mapping)
+                else getattr(lifecycle, "checkpoint_revision", 0)
+            )
+            if (
+                isinstance(checkpoint_revision, int)
+                and not isinstance(checkpoint_revision, bool)
+                and checkpoint_revision >= 0
+            ):
+                env_content_value["checkpoint_revision"] = checkpoint_revision
+        sandbox_id = getattr(self.sandbox, "sandbox_id", None)
+        if isinstance(sandbox_id, str) and sandbox_id.strip():
+            env_content_value["sandbox_id"] = sandbox_id.strip()
 
         # 3. Dynamically add additional context from event_message
         if event_message:
@@ -2071,7 +2094,7 @@ class McpServers:
                     **{
                         key: value
                         for key, value in user_value.items()
-                        if key != "task_budget"
+                        if key not in framework_authority_keys
                     },
                     **env_content_value,
                 }

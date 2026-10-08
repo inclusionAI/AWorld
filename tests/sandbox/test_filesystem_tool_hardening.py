@@ -77,7 +77,7 @@ async def test_small_file_contract_and_existing_parameters_remain_compatible(
     )
     assert full_payload["type"] == "text"
     assert full_payload["content"] == "alpha\nbeta\n"
-    assert full_payload["observationId"].startswith("sha256:")
+    assert "observationId" not in full_payload
     head_payload = _json(
         await filesystem.read_file(
             None, str(text_path), head=1, tail=None, output="text"
@@ -85,7 +85,7 @@ async def test_small_file_contract_and_existing_parameters_remain_compatible(
     )
     assert head_payload["type"] == "text"
     assert head_payload["content"] == "alpha"
-    assert head_payload["observationId"].startswith("sha256:")
+    assert "observationId" not in head_payload
     download_payload = _json(await filesystem.download_file(None, str(text_path)))
     assert download_payload == {
         "type": "base64",
@@ -105,12 +105,33 @@ async def test_repeated_unchanged_read_returns_receipt_and_refresh_bypasses_cach
     await filesystem.set_allowed_directories([str(tmp_path)])
     path = tmp_path / "cached.txt"
     path.write_text("alpha\nbeta\n", encoding="utf-8")
+    scope = {
+        "task_id": "cache-task",
+        "task_epoch": 0,
+        "session_id": "session",
+        "checkpoint_revision": 0,
+        "sandbox_id": "sandbox",
+    }
 
     first = _json(
-        await filesystem.read_file(None, str(path), head=None, tail=None, output="text")
+        await filesystem.read_file(
+            None,
+            str(path),
+            head=None,
+            tail=None,
+            output="text",
+            env_content=scope,
+        )
     )
     repeated = _json(
-        await filesystem.read_file(None, str(path), head=None, tail=None, output="text")
+        await filesystem.read_file(
+            None,
+            str(path),
+            head=None,
+            tail=None,
+            output="text",
+            env_content=scope,
+        )
     )
     refreshed = _json(
         await filesystem.read_file(
@@ -120,6 +141,7 @@ async def test_repeated_unchanged_read_returns_receipt_and_refresh_bypasses_cach
             tail=None,
             output="text",
             refresh=True,
+            env_content=scope,
         )
     )
 
@@ -131,7 +153,14 @@ async def test_repeated_unchanged_read_returns_receipt_and_refresh_bypasses_cach
 
     path.write_text("changed\n", encoding="utf-8")
     changed = _json(
-        await filesystem.read_file(None, str(path), head=None, tail=None, output="text")
+        await filesystem.read_file(
+            None,
+            str(path),
+            head=None,
+            tail=None,
+            output="text",
+            env_content=scope,
+        )
     )
     assert changed["type"] == "text"
     assert changed["content"] == "changed\n"
@@ -144,8 +173,20 @@ async def test_read_observation_cache_is_task_scoped_and_emits_epoch_coverage(
     await filesystem.set_allowed_directories([str(tmp_path)])
     path = tmp_path / "scoped.txt"
     path.write_text("alpha\nbeta\n", encoding="utf-8")
-    scope_a = {"task_id": "task-a", "task_epoch": 1, "session_id": "session"}
-    scope_b = {"task_id": "task-b", "task_epoch": 1, "session_id": "session"}
+    scope_a = {
+        "task_id": "task-a",
+        "task_epoch": 1,
+        "session_id": "session",
+        "checkpoint_revision": 0,
+        "sandbox_id": "sandbox",
+    }
+    scope_b = {
+        "task_id": "task-b",
+        "task_epoch": 1,
+        "session_id": "session",
+        "checkpoint_revision": 0,
+        "sandbox_id": "sandbox",
+    }
 
     first = await filesystem.read_file(
         None,
@@ -176,9 +217,65 @@ async def test_read_observation_cache_is_task_scoped_and_emits_epoch_coverage(
     assert _json(isolated)["type"] == "text"
     assert _json(repeated)["type"] == "unchanged"
     receipt = first.model_extra["metadata"]["read_observation_receipt"]
+    replay_receipt = repeated.model_extra["metadata"]["read_observation_receipt"]
     assert receipt["authority"] == "host"
     assert receipt["coverage"] == {"kind": "line_range", "start": 1, "end": 1}
     assert receipt["epoch"]["path"] == str(path)
+    assert replay_receipt["executed"] is False
+    assert replay_receipt["cache_hit"] is True
+    assert replay_receipt["observation_id"] == receipt["observation_id"]
+
+    rewritten = await filesystem.read_file(
+        None,
+        str(path),
+        head=1,
+        tail=None,
+        output="text",
+        env_content={**scope_a, "checkpoint_revision": 1},
+    )
+    assert _json(rewritten)["type"] == "text"
+
+
+@pytest.mark.asyncio
+async def test_restored_mtime_cannot_replay_a_changed_file(tmp_path: Path) -> None:
+    await filesystem.set_allowed_directories([str(tmp_path)])
+    path = tmp_path / "restored-mtime.txt"
+    path.write_text("before\n", encoding="utf-8")
+    original_stat = path.stat()
+    scope = {
+        "task_id": "mtime-task",
+        "task_epoch": 0,
+        "session_id": "session",
+        "checkpoint_revision": 0,
+        "sandbox_id": "sandbox",
+    }
+    first = _json(
+        await filesystem.read_file(
+            None,
+            str(path),
+            head=None,
+            tail=None,
+            output="text",
+            env_content=scope,
+        )
+    )
+
+    path.write_text("after!\n", encoding="utf-8")
+    os.utime(path, ns=(original_stat.st_atime_ns, original_stat.st_mtime_ns))
+    changed = _json(
+        await filesystem.read_file(
+            None,
+            str(path),
+            head=None,
+            tail=None,
+            output="text",
+            env_content=scope,
+        )
+    )
+
+    assert first["type"] == "text"
+    assert changed["type"] == "text"
+    assert changed["content"] == "after!\n"
 
 
 @pytest.mark.asyncio
@@ -189,6 +286,13 @@ async def test_read_changed_during_capture_never_seeds_observation_cache(
     await filesystem.set_allowed_directories([str(tmp_path)])
     path = tmp_path / "racing.txt"
     path.write_text("before\n", encoding="utf-8")
+    scope = {
+        "task_id": "race-task",
+        "task_epoch": 1,
+        "session_id": "session",
+        "checkpoint_revision": 0,
+        "sandbox_id": "sandbox",
+    }
     original = filesystem.read_text_bounded
     raced = False
 
@@ -202,10 +306,20 @@ async def test_read_changed_during_capture_never_seeds_observation_cache(
 
     monkeypatch.setattr(filesystem, "read_text_bounded", racing_read)
     first = await filesystem.read_file(
-        None, str(path), head=None, tail=None, output="text"
+        None,
+        str(path),
+        head=None,
+        tail=None,
+        output="text",
+        env_content=scope,
     )
     second = await filesystem.read_file(
-        None, str(path), head=None, tail=None, output="text"
+        None,
+        str(path),
+        head=None,
+        tail=None,
+        output="text",
+        env_content=scope,
     )
 
     assert _json(first)["content"] == "before\n"

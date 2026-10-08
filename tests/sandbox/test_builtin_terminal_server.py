@@ -24,6 +24,7 @@ from aworld.sandbox.tool_servers.terminal.src.terminal import (
     _has_background_operator,
     _resolve_command_timeout,
     _terminal_execution_plan,
+    _terminal_receipt_plan,
     read_output_artifact,
     run_code,
 )
@@ -170,6 +171,8 @@ def test_read_only_option_parser_emits_paths_and_typed_coverage(
         "git diff --output=patch.txt",
         "git grep --open-files-in-pager='sh -c touch changed' needle",
         "git cat-file --filters HEAD:file",
+        "git --help",
+        "git status --help",
         "tail -f application.log",
     ),
 )
@@ -201,6 +204,45 @@ def test_recursive_and_repository_queries_are_read_only_but_not_replay_complete(
     assert plan.cacheable is True
 
 
+def test_callback_sensitive_reads_require_callback_free_authority(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = tmp_path / "input.txt"
+    source.write_text("needle\n", encoding="utf-8")
+    monkeypatch.setattr(terminal_module, "workspace", tmp_path)
+    environment = dict(terminal_module.os.environ)
+
+    configured_rg, configured_source = _terminal_receipt_plan(
+        command="rg needle input.txt",
+        potential_plan=_terminal_execution_plan("rg needle input.txt"),
+        working_directory=tmp_path,
+        environment={**environment, "RIPGREP_CONFIG_PATH": str(source)},
+        environment_overrides=None,
+    )
+    no_config_rg, no_config_source = _terminal_receipt_plan(
+        command="rg --no-config needle input.txt",
+        potential_plan=_terminal_execution_plan("rg --no-config needle input.txt"),
+        working_directory=tmp_path,
+        environment={**environment, "RIPGREP_CONFIG_PATH": str(source)},
+        environment_overrides=None,
+    )
+    git_plan, git_source = _terminal_receipt_plan(
+        command="git --no-pager status --short",
+        potential_plan=_terminal_execution_plan("git --no-pager status --short"),
+        working_directory=tmp_path,
+        environment=environment,
+        environment_overrides=None,
+    )
+
+    assert configured_rg.effect == "unknown"
+    assert configured_source == "untrusted_execution_context"
+    assert no_config_rg.effect == "read_only"
+    assert no_config_source == "trusted_command_contract"
+    assert git_plan.effect == "unknown"
+    assert git_source == "untrusted_execution_context"
+
+
 @pytest.mark.parametrize(
     "command",
     ("head -n -5 input.txt", "head -c +5 input.txt", "tail -n +5 input.txt"),
@@ -221,6 +263,13 @@ def test_relative_head_tail_counts_never_claim_contiguous_overlap(
         ("head -n 2 input.txt", True),
         ("sed -n 2,4p input.txt", True),
         ("cat input.txt | head -n 2", False),
+        ("cat input.txt input.txt", False),
+        ("cat input.txt >/dev/null", False),
+        ("cat < input.txt", True),
+        ("head -n 2 < input.txt", False),
+        ("head -z -n 2 input.txt", False),
+        ("tail --zero-terminated -n 2 input.txt", False),
+        ("sed -n 2,4p input.txt input.txt", False),
         ("wc -l input.txt", False),
         ("cat -n input.txt", False),
     ),
@@ -260,6 +309,7 @@ async def test_run_code_emits_compact_terminal_execution_receipt() -> None:
         "read_paths": [],
         "read_ranges": [],
         "read_projection_reusable": False,
+        "read_representation": "terminal.run-code.structured.exact/v1",
         "write_paths": [],
         "read_set_complete": True,
         "read_path_epochs": [],
@@ -267,6 +317,10 @@ async def test_run_code_emits_compact_terminal_execution_receipt() -> None:
         "mutation_observed": None,
         "scope_volatile": False,
         "executed": True,
+        "cache_hit": False,
+        "observation_id": None,
+        "observation_content_sha256": None,
+        "source_checkpoint_revision": None,
         "timed_out": False,
         "exit_code": 0,
     }

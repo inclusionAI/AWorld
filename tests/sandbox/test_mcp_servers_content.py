@@ -71,18 +71,23 @@ def test_hidden_env_content_keeps_framework_task_scope_authoritative():
     servers = object.__new__(McpServers)
     servers._env_content_param_mapping = {"terminal__run_code": "env_content"}
     servers.sandbox = SimpleNamespace(
+        sandbox_id="sandbox",
         env_content={
             "task_id": "stale-sandbox-task",
             "session_id": "stale-sandbox-session",
             "task_epoch": "stale-sandbox-epoch",
+            "checkpoint_revision": 99,
+            "sandbox_id": "stale-sandbox-id",
             "sandbox_only": "kept",
-        }
+        },
     )
     parameter = {
         "env_content": {
             "task_id": "caller-task",
             "session_id": "caller-session",
             "task_epoch": "caller-epoch",
+            "checkpoint_revision": 98,
+            "sandbox_id": "caller-sandbox-id",
             "caller_only": "kept",
         }
     }
@@ -101,6 +106,8 @@ def test_hidden_env_content_keeps_framework_task_scope_authoritative():
         "task_id": "trusted-task",
         "session_id": "trusted-session",
         "task_epoch": 37,
+        "checkpoint_revision": 0,
+        "sandbox_id": "sandbox",
         "caller_only": "kept",
         "sandbox_only": "kept",
         "task_budget": {
@@ -110,6 +117,29 @@ def test_hidden_env_content_keeps_framework_task_scope_authoritative():
             "stage": "execute",
         },
     }
+
+
+def test_hidden_scope_preserves_zero_epoch_and_current_checkpoint_revision():
+    servers = object.__new__(McpServers)
+    servers._env_content_param_mapping = {"docker__read_file": "env_content"}
+    servers.sandbox = SimpleNamespace(env_content={}, sandbox_id="sandbox")
+    parameter = {}
+    context = SimpleNamespace(
+        task_id="task",
+        session_id="session",
+        task_epoch=0,
+        context_lifecycle_state=SimpleNamespace(checkpoint_revision=4),
+    )
+
+    servers._inject_env_content_parameter(
+        "docker__read_file",
+        parameter,
+        context,
+    )
+
+    assert parameter["env_content"]["task_epoch"] == 0
+    assert parameter["env_content"]["checkpoint_revision"] == 4
+    assert parameter["env_content"]["sandbox_id"] == "sandbox"
 
 
 def test_hidden_env_content_carries_framework_owned_task_budget():
@@ -155,7 +185,9 @@ def test_hidden_env_content_carries_framework_owned_task_budget():
     assert budget["completion_reserve_seconds"] == 30.0
 
 
-@pytest.mark.parametrize("failure_mode", ["missing_context", "missing_getter", "getter_error"])
+@pytest.mark.parametrize(
+    "failure_mode", ["missing_context", "missing_getter", "getter_error"]
+)
 def test_hidden_task_budget_is_authoritative_even_without_a_task(failure_mode):
     servers = object.__new__(McpServers)
     servers._env_content_param_mapping = {"terminal__run_code": "env_content"}
@@ -184,14 +216,13 @@ def test_hidden_task_budget_is_authoritative_even_without_a_task(failure_mode):
     elif failure_mode == "missing_getter":
         context = SimpleNamespace(task_id="task")
     else:
+
         def fail_get_task():
             raise RuntimeError("stale context")
 
         context = SimpleNamespace(task_id="task", get_task=fail_get_task)
 
-    servers._inject_env_content_parameter(
-        "terminal__run_code", parameter, context
-    )
+    servers._inject_env_content_parameter("terminal__run_code", parameter, context)
 
     assert parameter["env_content"]["task_budget"] == {
         "authority": "aworld_task",
@@ -321,9 +352,7 @@ def test_hidden_task_budget_projects_typed_convergence_stage():
     )
     parameter = {}
 
-    servers._inject_env_content_parameter(
-        "terminal__run_code", parameter, context
-    )
+    servers._inject_env_content_parameter("terminal__run_code", parameter, context)
 
     assert parameter["env_content"]["task_budget"]["stage"] == "convergence"
 
@@ -351,9 +380,7 @@ def test_hidden_task_budget_derives_typed_deadline_stage_from_live_task():
     )
     parameter = {}
 
-    servers._inject_env_content_parameter(
-        "terminal__run_code", parameter, context
-    )
+    servers._inject_env_content_parameter("terminal__run_code", parameter, context)
 
     budget = parameter["env_content"]["task_budget"]
     assert budget["stage"] == "deadline"

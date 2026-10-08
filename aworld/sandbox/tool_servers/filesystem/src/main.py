@@ -126,14 +126,28 @@ def _file_epoch_receipt(path: str) -> dict[str, Any]:
     }
 
 
-def _framework_scope(env_content: Any) -> tuple[str, str, str]:
+def _framework_scope(env_content: Any) -> tuple[str, str, str, str, str]:
     if not isinstance(env_content, Mapping):
-        return ("", "", "")
+        return ("", "", "", "", "")
+    epoch = env_content.get("task_epoch")
+    checkpoint_revision = env_content.get("checkpoint_revision")
     return (
-        str(env_content.get("task_id") or ""),
-        str(env_content.get("task_epoch") or ""),
-        str(env_content.get("session_id") or ""),
+        str(env_content.get("task_id") or "").strip(),
+        "" if epoch is None or isinstance(epoch, bool) else str(epoch),
+        str(env_content.get("session_id") or "").strip(),
+        (
+            str(checkpoint_revision)
+            if isinstance(checkpoint_revision, int)
+            and not isinstance(checkpoint_revision, bool)
+            and checkpoint_revision >= 0
+            else ""
+        ),
+        str(env_content.get("sandbox_id") or "").strip(),
     )
+
+
+def _framework_scope_is_complete(scope: tuple[str, str, str, str, str]) -> bool:
+    return all(bool(value) for value in scope)
 
 
 def _cache_observation(
@@ -145,6 +159,8 @@ def _cache_observation(
     epoch_receipt: dict[str, Any],
     coverage: dict[str, Any],
     coverage_complete: bool,
+    representation: str,
+    source_checkpoint_revision: int,
 ) -> str:
     digest = "sha256:" + hashlib.sha256(payload_text.encode("utf-8")).hexdigest()
     observation_id = (
@@ -159,6 +175,8 @@ def _cache_observation(
         "epoch_receipt": epoch_receipt,
         "coverage": coverage,
         "coverage_complete": bool(coverage_complete),
+        "representation": representation,
+        "source_checkpoint_revision": source_checkpoint_revision,
     }
     _READ_OBSERVATION_CACHE.move_to_end(key)
     capacity = _read_cache_capacity()
@@ -167,9 +185,17 @@ def _cache_observation(
     return observation_id
 
 
-def _unchanged_observation(key: tuple, epoch: tuple[int, int, int, int]) -> dict | None:
+def _unchanged_observation(
+    key: tuple,
+    epoch: tuple[int, int, int, int],
+    epoch_receipt: Mapping[str, Any],
+) -> dict | None:
     cached = _READ_OBSERVATION_CACHE.get(key)
-    if not cached or cached.get("epoch") != epoch:
+    if (
+        not cached
+        or cached.get("epoch") != epoch
+        or cached.get("epoch_receipt") != dict(epoch_receipt)
+    ):
         return None
     _READ_OBSERVATION_CACHE.move_to_end(key)
     return {
@@ -201,6 +227,9 @@ def _read_receipt(cached: Mapping[str, Any], *, cache_hit: bool) -> dict[str, An
         "content_sha256": cached["content_sha256"],
         "observation_id": cached["observation_id"],
         "cache_hit": bool(cache_hit),
+        "executed": not cache_hit,
+        "representation": cached["representation"],
+        "source_checkpoint_revision": cached["source_checkpoint_revision"],
     }
 
 
@@ -338,6 +367,8 @@ async def read_file(
     require_regular_file(valid_path)
     if output not in ("text", "base64"):
         raise ValueError("output must be 'text' or 'base64'")
+    scope = _framework_scope(env_content)
+    cache_enabled = _framework_scope_is_complete(scope)
     epoch = _file_epoch(valid_path)
     epoch_receipt = _file_epoch_receipt(valid_path)
     effective_head = head
@@ -357,8 +388,20 @@ async def read_file(
                 maximum=20_000,
             )
             default_bounded = True
+    selector = (
+        "range"
+        if effective_head is not None and tail is not None
+        else "head"
+        if effective_head is not None
+        else "tail"
+        if tail is not None
+        else "bytes"
+        if output == "base64"
+        else "full"
+    )
+    representation = f"filesystem.read-file.{output}.{selector}/v1"
     cache_key = (
-        _framework_scope(env_content),
+        scope,
         os.path.realpath(valid_path),
         output,
         effective_head,
@@ -366,8 +409,8 @@ async def read_file(
         offset,
         limit,
     )
-    if not refresh:
-        unchanged = _unchanged_observation(cache_key, epoch)
+    if cache_enabled and not refresh:
+        unchanged = _unchanged_observation(cache_key, epoch, epoch_receipt)
         if (
             unchanged is not None
             and _file_epoch(valid_path) == epoch
@@ -427,7 +470,11 @@ async def read_file(
             post_epoch = None
             post_epoch_receipt = None
         metadata: dict[str, Any] = {}
-        if post_epoch == epoch and post_epoch_receipt == epoch_receipt:
+        if (
+            cache_enabled
+            and post_epoch == epoch
+            and post_epoch_receipt == epoch_receipt
+        ):
             payload["observationId"] = _cache_observation(
                 cache_key,
                 path=path,
@@ -436,6 +483,8 @@ async def read_file(
                 epoch_receipt=epoch_receipt,
                 coverage=coverage,
                 coverage_complete=coverage_complete,
+                representation=representation,
+                source_checkpoint_revision=int(scope[3]),
             )
             metadata[_READ_OBSERVATION_RECEIPT_KEY] = _read_receipt(
                 _READ_OBSERVATION_CACHE[cache_key], cache_hit=False
@@ -494,7 +543,7 @@ async def read_file(
         post_epoch = None
         post_epoch_receipt = None
     metadata: dict[str, Any] = {}
-    if post_epoch == epoch and post_epoch_receipt == epoch_receipt:
+    if cache_enabled and post_epoch == epoch and post_epoch_receipt == epoch_receipt:
         payload["observationId"] = _cache_observation(
             cache_key,
             path=path,
@@ -503,6 +552,8 @@ async def read_file(
             epoch_receipt=epoch_receipt,
             coverage=coverage,
             coverage_complete=coverage_complete,
+            representation=representation,
+            source_checkpoint_revision=int(scope[3]),
         )
         metadata[_READ_OBSERVATION_RECEIPT_KEY] = _read_receipt(
             _READ_OBSERVATION_CACHE[cache_key], cache_hit=False

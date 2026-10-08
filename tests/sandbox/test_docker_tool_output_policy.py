@@ -82,7 +82,6 @@ class _MemoryDockerBridge:
 
     async def shell_command(self, code, **kwargs):
         self.shell_calls += 1
-        assert code == "cat /workspace/input.txt"
         data = self.content
         if self.mutate_on_shell:
             self.epoch += 1
@@ -200,7 +199,13 @@ async def test_docker_run_code_revalidates_container_epochs_before_compact_reuse
     test_bridge = _MemoryDockerBridge(b"alpha\nbeta\n")
     monkeypatch.setattr(server, "bridge", test_bridge)
     server._READ_FACTS.clear()
-    scope = {"task_id": "task-a", "task_epoch": 1, "session_id": "session"}
+    scope = {
+        "task_id": "task-a",
+        "task_epoch": 0,
+        "session_id": "session",
+        "checkpoint_revision": 0,
+        "sandbox_id": "sandbox",
+    }
 
     first = json.loads(
         (
@@ -220,17 +225,38 @@ async def test_docker_run_code_revalidates_container_epochs_before_compact_reuse
         "docker:sha256:"
     )
     assert repeated["metadata"]["provider_observation_cache_hit"] is True
+    repeated_receipt = repeated["metadata"]["terminal_execution_receipt"]
+    assert repeated_receipt["executed"] is False
+    assert repeated_receipt["cache_hit"] is True
+    assert repeated_receipt["observation_id"] == first_receipt["observation_id"]
     assert json.loads(repeated["message"])["type"] == "unchanged"
     assert test_bridge.shell_calls == 1
+
+    rewritten_scope = {**scope, "checkpoint_revision": 1}
+    rewritten = json.loads(
+        (
+            await server.run_code(
+                None,
+                "cat /workspace/input.txt",
+                env_content=rewritten_scope,
+            )
+        ).text
+    )
+    assert rewritten["metadata"].get("provider_observation_cache_hit") is not True
+    assert test_bridge.shell_calls == 2
 
     test_bridge.epoch += 1
     changed = json.loads(
         (
-            await server.run_code(None, "cat /workspace/input.txt", env_content=scope)
+            await server.run_code(
+                None,
+                "cat /workspace/input.txt",
+                env_content=rewritten_scope,
+            )
         ).text
     )
     assert changed["metadata"].get("provider_observation_cache_hit") is not True
-    assert test_bridge.shell_calls == 2
+    assert test_bridge.shell_calls == 3
 
 
 @pytest.mark.asyncio
@@ -257,7 +283,13 @@ async def test_docker_read_file_executes_bounded_ranges_in_container(
         None,
         "/workspace/input.txt",
         output="text",
-        env_content={"task_id": "bounded", "task_epoch": 1},
+        env_content={
+            "task_id": "bounded",
+            "task_epoch": 1,
+            "session_id": "session",
+            "checkpoint_revision": 0,
+            "sandbox_id": "sandbox",
+        },
         **kwargs,
     )
     payload = json.loads(result.text)
@@ -271,19 +303,37 @@ async def test_docker_read_file_executes_bounded_ranges_in_container(
 
 
 @pytest.mark.asyncio
-async def test_docker_provider_facts_are_cross_capability_but_task_scoped(
+async def test_docker_facts_require_same_representation_and_task_scope(
     monkeypatch,
 ) -> None:
     server = _docker_server(monkeypatch)
     test_bridge = _MemoryDockerBridge(b"alpha\nbeta\n")
     monkeypatch.setattr(server, "bridge", test_bridge)
     server._READ_FACTS.clear()
-    scope_a = {"task_id": "task-a", "task_epoch": 1, "session_id": "session"}
-    scope_b = {"task_id": "task-b", "task_epoch": 1, "session_id": "session"}
+    scope_a = {
+        "task_id": "task-a",
+        "task_epoch": 1,
+        "session_id": "session",
+        "checkpoint_revision": 0,
+        "sandbox_id": "sandbox",
+    }
+    scope_b = {
+        "task_id": "task-b",
+        "task_epoch": 1,
+        "session_id": "session",
+        "checkpoint_revision": 0,
+        "sandbox_id": "sandbox",
+    }
 
     await server.run_code(
         None,
         "cat /workspace/input.txt",
+        env_content=scope_a,
+    )
+    first_read = await server.read_file(
+        None,
+        "/workspace/input.txt",
+        output="text",
         env_content=scope_a,
     )
     reused = await server.read_file(
@@ -299,9 +349,10 @@ async def test_docker_provider_facts_are_cross_capability_but_task_scoped(
         env_content=scope_b,
     )
 
+    assert json.loads(first_read.text)["type"] == "text"
     assert json.loads(reused.text)["type"] == "unchanged"
     assert json.loads(isolated.text)["type"] == "text"
-    assert len(test_bridge.bounded_calls) == 1
+    assert len(test_bridge.bounded_calls) == 2
 
 
 @pytest.mark.asyncio
@@ -313,7 +364,13 @@ async def test_docker_large_default_read_is_producer_bounded_and_races_do_not_ca
     test_bridge.mutate_on_bounded = True
     monkeypatch.setattr(server, "bridge", test_bridge)
     server._READ_FACTS.clear()
-    scope = {"task_id": "race", "task_epoch": 1, "session_id": "session"}
+    scope = {
+        "task_id": "race",
+        "task_epoch": 1,
+        "session_id": "session",
+        "checkpoint_revision": 0,
+        "sandbox_id": "sandbox",
+    }
 
     first = await server.read_file(
         None,
@@ -365,3 +422,93 @@ async def test_docker_symlink_epoch_outside_allowed_scope_fails_cache_closed(
     assert receipt["effect"] == "read_only"
     assert receipt["cacheable"] is False
     assert receipt["read_path_epochs"] == []
+
+
+@pytest.mark.asyncio
+async def test_docker_callback_sensitive_reads_fail_authority_closed(
+    monkeypatch,
+) -> None:
+    server = _docker_server(monkeypatch)
+    test_bridge = _MemoryDockerBridge(b"needle\n")
+    monkeypatch.setattr(server, "bridge", test_bridge)
+    server._READ_FACTS.clear()
+    scope = {
+        "task_id": "callbacks",
+        "task_epoch": 0,
+        "session_id": "session",
+        "checkpoint_revision": 0,
+        "sandbox_id": "sandbox",
+    }
+
+    configured_rg = json.loads(
+        (
+            await server.run_code(
+                None,
+                "rg needle /workspace/input.txt",
+                env_content=scope,
+            )
+        ).text
+    )["metadata"]["terminal_execution_receipt"]
+    callback_free_rg = json.loads(
+        (
+            await server.run_code(
+                None,
+                "rg --no-config needle /workspace/input.txt",
+                env_content=scope,
+            )
+        ).text
+    )["metadata"]["terminal_execution_receipt"]
+    git_status = json.loads(
+        (
+            await server.run_code(
+                None,
+                "git --no-pager status --short",
+                env_content=scope,
+            )
+        ).text
+    )["metadata"]["terminal_execution_receipt"]
+
+    assert configured_rg["effect"] == "unknown"
+    assert configured_rg["cacheable"] is False
+    assert callback_free_rg["effect"] == "read_only"
+    assert callback_free_rg["cacheable"] is True
+    assert git_status["effect"] == "unknown"
+    assert git_status["cacheable"] is False
+
+
+@pytest.mark.asyncio
+async def test_docker_missing_authoritative_scope_never_reuses_facts(
+    monkeypatch,
+) -> None:
+    server = _docker_server(monkeypatch)
+    test_bridge = _MemoryDockerBridge(b"alpha\n")
+    monkeypatch.setattr(server, "bridge", test_bridge)
+    server._READ_FACTS.clear()
+    incomplete_scope = {
+        "task_id": "missing-session",
+        "task_epoch": 0,
+        "checkpoint_revision": 0,
+    }
+
+    first = json.loads(
+        (
+            await server.run_code(
+                None,
+                "cat /workspace/input.txt",
+                env_content=incomplete_scope,
+            )
+        ).text
+    )
+    second = json.loads(
+        (
+            await server.run_code(
+                None,
+                "cat /workspace/input.txt",
+                env_content=incomplete_scope,
+            )
+        ).text
+    )
+
+    assert first["metadata"].get("provider_observation_id") is None
+    assert second["metadata"].get("provider_observation_cache_hit") is not True
+    assert test_bridge.shell_calls == 2

@@ -3,6 +3,7 @@ import base64
 from collections import deque
 from dataclasses import replace
 import hashlib
+import inspect
 import json
 import logging
 import math
@@ -64,6 +65,24 @@ from aworld.sandbox.task_budget import (
     ToolLeaseStage,
     resolve_tool_lease,
 )
+
+
+_TERMINAL_RECEIPT_PARAMETERS = frozenset(
+    inspect.signature(build_terminal_execution_receipt).parameters
+)
+
+
+def _build_terminal_execution_receipt(**kwargs: Any) -> dict[str, Any]:
+    """Keep source-tree stdio servers compatible during additive upgrades."""
+
+    return build_terminal_execution_receipt(
+        **{
+            key: value
+            for key, value in kwargs.items()
+            if key in _TERMINAL_RECEIPT_PARAMETERS
+        }
+    )
+
 
 try:
     from .background_keywords import LONG_RUNNING_KEYWORDS
@@ -854,8 +873,14 @@ async def run_code(
         )
         decoded_task_budget = FrameworkTaskBudget.from_hidden_dict(task_budget)
         task_budget_stage = (
-            decoded_task_budget.stage.value
-            if decoded_task_budget is not None
+            decoded_task_budget.stage.value if decoded_task_budget is not None else None
+        )
+        checkpoint_revision = (
+            env_content.get("checkpoint_revision")
+            if isinstance(env_content, Mapping)
+            and isinstance(env_content.get("checkpoint_revision"), int)
+            and not isinstance(env_content.get("checkpoint_revision"), bool)
+            and env_content.get("checkpoint_revision") >= 0
             else None
         )
         timeout_decision = _resolve_command_timeout(
@@ -873,6 +898,15 @@ async def run_code(
             working_directory=working_directory,
             environment=command_environment,
             environment_overrides=env,
+        )
+        read_projection_kind = (
+            getattr(receipt_plan, "read_ranges", ())[0].kind
+            if getattr(receipt_plan, "read_projection_reusable", False)
+            and len(getattr(receipt_plan, "read_ranges", ())) == 1
+            else "exact"
+        )
+        read_representation = (
+            f"terminal.run-code.{output_format}.{read_projection_kind}/v1"
         )
         environment_keys = sorted(
             {
@@ -909,7 +943,7 @@ async def run_code(
                     safety_check_passed=True,
                     error_type="task_budget_exhausted",
                     environment_keys=environment_keys,
-                    terminal_execution_receipt=build_terminal_execution_receipt(
+                    terminal_execution_receipt=_build_terminal_execution_receipt(
                         code=str(command),
                         plan=receipt_plan,
                         executed=False,
@@ -918,6 +952,8 @@ async def run_code(
                         potential_effect=execution_plan.effect,
                         effect_source=receipt_effect_source,
                         requested_language=language,
+                        representation=read_representation,
+                        source_checkpoint_revision=checkpoint_revision,
                     ),
                 ).model_dump(),
             )
@@ -956,7 +992,7 @@ async def run_code(
                     safety_check_passed=False,
                     error_type="security_violation",
                     environment_keys=environment_keys,
-                    terminal_execution_receipt=build_terminal_execution_receipt(
+                    terminal_execution_receipt=_build_terminal_execution_receipt(
                         code=str(command),
                         plan=receipt_plan,
                         executed=False,
@@ -965,6 +1001,8 @@ async def run_code(
                         potential_effect=execution_plan.effect,
                         effect_source=receipt_effect_source,
                         requested_language=language,
+                        representation=read_representation,
+                        source_checkpoint_revision=checkpoint_revision,
                     ),
                 ).model_dump(),
             )
@@ -1020,9 +1058,7 @@ async def run_code(
         # epoch. If any input changed while the command was reading it, execute
         # normally but do not seed the observation cache.
         read_path_epochs = (
-            read_epochs_after
-            if read_epochs_before == read_epochs_after
-            else []
+            read_epochs_after if read_epochs_before == read_epochs_after else []
         )
 
         # Format output
@@ -1056,20 +1092,20 @@ async def run_code(
                 "stdout": result.stdout_output_policy,
                 "stderr": result.stderr_output_policy,
             },
-            terminal_execution_receipt=build_terminal_execution_receipt(
+            terminal_execution_receipt=_build_terminal_execution_receipt(
                 code=str(command),
                 plan=receipt_plan,
                 executed=True,
                 exit_code=result.return_code,
                 timed_out=result.timed_out,
                 capture_complete=result.capture_complete,
-                mutation_observed=_mutation_observed_from_snapshot(
-                    mutation_snapshot
-                ),
+                mutation_observed=_mutation_observed_from_snapshot(mutation_snapshot),
                 potential_effect=execution_plan.effect,
                 effect_source=receipt_effect_source,
                 read_path_epochs=read_path_epochs,
                 requested_language=language,
+                representation=read_representation,
+                source_checkpoint_revision=checkpoint_revision,
             ),
         )
 
@@ -1118,7 +1154,7 @@ async def run_code(
                 timeout_seconds=0,
                 safety_check_passed=True,
                 error_type="internal_error",
-                terminal_execution_receipt=build_terminal_execution_receipt(
+                terminal_execution_receipt=_build_terminal_execution_receipt(
                     code=str(command),
                     plan=receipt_plan,
                     executed=execution_started,
@@ -1544,9 +1580,7 @@ def _terminal_execution_plan(
 _CACHE_SAFE_SHELL_BUILTINS = frozenset(
     {":", "cd", "echo", "false", "printf", "pwd", "test", "true", "type"}
 )
-_SHELL_STARTUP_ENVIRONMENT_KEYS = frozenset(
-    {"BASH_ENV", "CDPATH", "ENV", "SHELLOPTS"}
-)
+_SHELL_STARTUP_ENVIRONMENT_KEYS = frozenset({"BASH_ENV", "CDPATH", "ENV", "SHELLOPTS"})
 _PYTHON_STARTUP_ENVIRONMENT_KEYS = frozenset(
     {"PYTHONHOME", "PYTHONINSPECT", "PYTHONPATH", "PYTHONSTARTUP"}
 )
@@ -1592,13 +1626,17 @@ def _trusted_read_execution_context(
     environment: Mapping[str, str],
     environment_overrides: Mapping[str, str] | None,
 ) -> bool:
-    if (
-        plan.effect != "read_only"
-        or not plan.parsed
-        or not plan.read_set_complete
-    ):
+    if plan.effect != "read_only" or not plan.parsed or not plan.read_set_complete:
         return False
     overrides = environment_overrides or {}
+    callback_kinds = tuple(getattr(plan, "callback_kinds", ()) or ())
+    if "git_config" in callback_kinds:
+        # Repository/global Git config may invoke fsmonitor, textconv, external
+        # diff, pager, or help callbacks. This provider does not own a complete
+        # config-free Git execution authority, so it must not certify the call.
+        return False
+    if "ripgrep_config" in callback_kinds and environment.get("RIPGREP_CONFIG_PATH"):
+        return False
     if plan.language == "shell":
         if any(environment.get(key) for key in _SHELL_STARTUP_ENVIRONMENT_KEYS):
             return False
@@ -1616,8 +1654,7 @@ def _trusted_read_execution_context(
         ):
             return False
         if plan.nested_languages and any(
-            key == "AWORLD_PYTHON_EXECUTABLE"
-            or key in _PYTHON_STARTUP_ENVIRONMENT_KEYS
+            key == "AWORLD_PYTHON_EXECUTABLE" or key in _PYTHON_STARTUP_ENVIRONMENT_KEYS
             for key in overrides
         ):
             return False
@@ -1780,11 +1817,10 @@ def _terminal_receipt_plan(
         environment_overrides=environment_overrides,
     ):
         return potential_plan, "trusted_command_contract"
-    return replace(
-        potential_plan,
-        effect="unknown",
-        cacheable=False,
-    ), "untrusted_execution_context"
+    updates: dict[str, Any] = {"effect": "unknown", "cacheable": False}
+    if hasattr(potential_plan, "read_projection_reusable"):
+        updates["read_projection_reusable"] = False
+    return replace(potential_plan, **updates), "untrusted_execution_context"
 
 
 def _path_state(path: Path) -> tuple[Any, ...]:

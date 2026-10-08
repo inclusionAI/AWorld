@@ -24,7 +24,9 @@ TERMINAL_EXECUTION_RECEIPT_KEY = "terminal_execution_receipt"
 # v2 coverage fields are additive: ``read_ranges`` aligns one-for-one with
 # ``read_paths`` and ``read_projection_reusable`` says whether stdout preserves
 # that single-file window. Legacy v2 receipts are re-derived by the Sandbox
-# with this same analyzer; they are never assumed reusable by default.
+# with this same analyzer; they are never assumed reusable by default. Provider
+# replay is authenticated by ``cache_hit=true`` plus ``executed=false``, a
+# content/observation identity, representation, and checkpoint revision.
 TERMINAL_EXECUTION_ANALYZER_VERSION = 6
 TERMINAL_LANGUAGE_CONTRACT_VERSION = 1
 TERMINAL_LANGUAGES = frozenset({"shell", "python"})
@@ -292,6 +294,7 @@ class TerminalExecutionPlan:
     command_cwd_safe: bool = True
     read_ranges: tuple["TerminalReadRange", ...] = ()
     read_projection_reusable: bool = False
+    callback_kinds: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -695,6 +698,7 @@ _SEARCH_LITERAL_FLAGS = frozenset(
         "--no-filename",
         "--no-heading",
         "--no-hidden",
+        "--no-config",
         "--no-ignore",
         "--no-ignore-dot",
         "--no-ignore-exclude",
@@ -1245,6 +1249,8 @@ _GIT_EXECUTING_OPTIONS = frozenset(
         "--output",
         "--open-files-in-pager",
         "-O",
+        "--help",
+        "-h",
     }
 )
 
@@ -1270,7 +1276,6 @@ def _git_analysis(
             "--noglob-pathspecs",
             "--icase-pathspecs",
             "--version",
-            "--help",
         }:
             return False, (), False
         index += 1
@@ -1339,6 +1344,7 @@ def _generic_read_analysis(
 def _shell_projection_is_reusable(
     commands: Sequence[Any],
     *,
+    redirects: Sequence[Any],
     read_paths: Sequence[str],
     read_ranges: Sequence[TerminalReadRange],
 ) -> bool:
@@ -1354,6 +1360,13 @@ def _shell_projection_is_reusable(
         "tail_bytes",
     }:
         return False
+    for redirect in redirects:
+        redirect_type = str(getattr(redirect, "type", "") or "")
+        input_fd = getattr(redirect, "input", None)
+        if redirect_type in {"&>", ">&"} or (
+            redirect_type in {">", ">>", ">|", "<>"} and input_fd in (None, 1)
+        ):
+            return False
     node = commands[0]
     words = [
         part.word
@@ -1362,20 +1375,41 @@ def _shell_projection_is_reusable(
     ]
     executable, args = _command_words(words)
     if executable == "cat":
-        return all(value == "--" or not value.startswith("-") for value in args)
-    if executable in {"head", "tail"}:
-        return not any(
-            value
-            in {
-                "-q",
-                "-v",
-                "--quiet",
-                "--silent",
-                "--verbose",
-            }
-            for value in args
+        operands = [
+            value for value in args if value != "--" and not value.startswith("-")
+        ]
+        input_redirects = [
+            redirect
+            for redirect in redirects
+            if str(getattr(redirect, "type", "") or "") == "<"
+        ]
+        return (
+            all(value == "--" or not value.startswith("-") for value in args)
+            and len(operands) + len(input_redirects) == 1
         )
-    return executable == "sed"
+    if executable in {"head", "tail"}:
+        safe, entries, _complete = _head_tail_analysis(executable, args)
+        return (
+            safe
+            and len(entries) == 1
+            and not any(
+                value
+                in {
+                    "-q",
+                    "-v",
+                    "--quiet",
+                    "--silent",
+                    "--verbose",
+                    "-z",
+                    "--zero-terminated",
+                }
+                for value in args
+            )
+        )
+    if executable == "sed":
+        safe, entries, _complete = _sed_analysis(args)
+        return safe and len(entries) == 1
+    return False
 
 
 def _bounded_paths(values: Iterable[str]) -> tuple[str, ...]:
@@ -1674,6 +1708,7 @@ def plan_terminal_execution(
     known_mutation = False
     unknown = background_operator
     read_set_complete = True
+    callback_kinds: set[str] = set()
     command_cwd, command_cwd_safe = shell_command_working_directory(code)
     if not command_cwd_safe:
         unknown = True
@@ -1742,6 +1777,12 @@ def plan_terminal_execution(
         executable, args = _command_words(words)
         if not executable:
             continue
+        if executable == "rg" and "--no-config" not in args:
+            callback_kinds.add("ripgrep_config")
+        elif executable == "git" and not any(
+            value in {"--version", "-v"} for value in args
+        ):
+            callback_kinds.add("git_config")
         if executable == "cd" and command_cwd is None:
             unknown = True
             read_set_complete = False
@@ -1802,9 +1843,11 @@ def plan_terminal_execution(
         read_ranges=read_ranges,
         read_projection_reusable=_shell_projection_is_reusable(
             commands,
+            redirects=redirects,
             read_paths=read_paths,
             read_ranges=read_ranges,
         ),
+        callback_kinds=tuple(sorted(callback_kinds)),
     )
 
 
@@ -1821,9 +1864,38 @@ def build_terminal_execution_receipt(
     effect_source: str = "parser_contract",
     read_path_epochs: Sequence[dict[str, Any]] = (),
     requested_language: str | None = None,
+    cache_hit: bool = False,
+    observation_id: str | None = None,
+    content_sha256: str | None = None,
+    representation: str | None = None,
+    source_checkpoint_revision: int | None = None,
 ) -> dict[str, Any]:
     """Project one terminal decision/result into bounded transport metadata."""
 
+    if cache_hit and executed:
+        raise ValueError("a terminal cache hit cannot claim fresh execution")
+    if (
+        observation_id is not None
+        and re.fullmatch(r"sha256:[0-9a-f]{64}", observation_id) is None
+    ):
+        raise ValueError("observation_id must be a canonical sha256 identity")
+    if (
+        content_sha256 is not None
+        and re.fullmatch(r"sha256:[0-9a-f]{64}", content_sha256) is None
+    ):
+        raise ValueError("content_sha256 must be a canonical sha256 identity")
+    if representation is not None and (
+        not representation
+        or len(representation) > 128
+        or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}", representation) is None
+    ):
+        raise ValueError("representation must be a bounded stable identity")
+    if source_checkpoint_revision is not None and (
+        isinstance(source_checkpoint_revision, bool)
+        or not isinstance(source_checkpoint_revision, int)
+        or source_checkpoint_revision < 0
+    ):
+        raise ValueError("source_checkpoint_revision must be non-negative")
     generation_delta = 0 if not executed or plan.effect == "read_only" else 1
     read_epochs = [dict(epoch) for epoch in read_path_epochs][:_MAX_RECEIPT_PATHS]
     read_epochs_complete = not plan.read_paths or len(read_epochs) == len(
@@ -1859,7 +1931,7 @@ def build_terminal_execution_receipt(
         "effect": plan.effect,
         "effect_source": effect_source,
         "cacheable": bool(
-            executed
+            (executed or cache_hit)
             and exit_code == 0
             and plan.cacheable
             and plan.read_set_complete
@@ -1872,6 +1944,7 @@ def build_terminal_execution_receipt(
         "read_paths": list(plan.read_paths),
         "read_ranges": [coverage.to_dict() for coverage in read_ranges],
         "read_projection_reusable": bool(plan.read_projection_reusable),
+        "read_representation": representation,
         "write_paths": list(plan.write_paths),
         "read_set_complete": plan.read_set_complete,
         "read_path_epochs": read_epochs,
@@ -1879,6 +1952,10 @@ def build_terminal_execution_receipt(
         "mutation_observed": mutation_observed,
         "scope_volatile": bool(executed and (plan.background or not capture_complete)),
         "executed": executed,
+        "cache_hit": bool(cache_hit),
+        "observation_id": observation_id,
+        "observation_content_sha256": content_sha256,
+        "source_checkpoint_revision": source_checkpoint_revision,
         "timed_out": bool(timed_out),
         "exit_code": exit_code,
     }

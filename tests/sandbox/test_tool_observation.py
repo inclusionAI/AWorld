@@ -166,6 +166,30 @@ def test_shell_classifier_fails_open_for_dynamic_or_ambiguous_code() -> None:
         assert effect.cacheable is False
 
 
+def test_callback_sensitive_shell_reads_remain_semantically_unknown() -> None:
+    for code in (
+        "rg needle /app/input.txt",
+        "git --no-pager status --short",
+    ):
+        effect = classify_tool_effect(
+            {
+                "tool_name": "terminal",
+                "action_name": "run_code",
+                "params": {"code": code},
+            }
+        )
+        assert effect.effect == "unknown"
+
+    callback_free = classify_tool_effect(
+        {
+            "tool_name": "terminal",
+            "action_name": "run_code",
+            "params": {"code": "rg --no-config needle /app/input.txt"},
+        }
+    )
+    assert callback_free.effect == "read_only"
+
+
 def test_shell_classifier_accepts_provably_read_only_inline_python() -> None:
     for code in (
         "python -c 'print(1)'",
@@ -469,6 +493,8 @@ def test_explicit_file_epoch_revalidates_cache_across_unknown_generation(
         timed_out=False,
         effect_source="trusted_command_contract",
         read_path_epochs=[_file_epoch(source)],
+        representation="terminal.run-code.structured.full/v1",
+        source_checkpoint_revision=0,
     )
     runtime.record(
         read_action,
@@ -527,6 +553,8 @@ def test_cross_generation_epoch_mismatch_reexecutes_read(
         timed_out=False,
         effect_source="trusted_command_contract",
         read_path_epochs=[_file_epoch(source)],
+        representation="terminal.run-code.structured.full/v1",
+        source_checkpoint_revision=0,
     )
     runtime.record(
         action,
@@ -695,6 +723,8 @@ def test_provider_authoritative_container_epoch_is_not_replayed_on_host() -> Non
         timed_out=False,
         effect_source="trusted_docker_command_contract",
         read_path_epochs=[remote_epoch],
+        representation="docker.run-code.text.full/v1",
+        source_checkpoint_revision=0,
     )
 
     observed = runtime.record(
@@ -712,6 +742,169 @@ def test_provider_authoritative_container_epoch_is_not_replayed_on_host() -> Non
     assert observed.metadata["sandbox_observation"]["workspace_generation"] == 0
     assert runtime.lookup(action, context=context) is None
     assert runtime.current_generation(context) == 0
+
+
+def test_provider_cache_hit_is_replay_not_fresh_execution_evidence() -> None:
+    runtime = SandboxToolObservationRuntime()
+    context = _context()
+    code = "cat /workspace/input.txt"
+    action = {
+        "tool_name": "docker",
+        "action_name": "run_code",
+        "params": {"code": code},
+    }
+    remote_epoch = {
+        "path": "/workspace/input.txt",
+        "resolved_path": "/workspace/input.txt",
+        "link_inode": 1,
+        "link_mtime_ns": 2,
+        "mode": 0o100644,
+        "size": 6,
+        "mtime_ns": 3,
+        "ctime_ns": 4,
+        "inode": 5,
+        "authority": "docker:sha256:" + "a" * 64,
+        "fingerprint": "sha256:" + "b" * 64,
+    }
+    observation_id = "sha256:" + "c" * 64
+    content_sha256 = "sha256:" + "d" * 64
+    receipt = build_terminal_execution_receipt(
+        code=code,
+        plan=plan_terminal_execution(code),
+        executed=False,
+        cache_hit=True,
+        exit_code=0,
+        timed_out=False,
+        effect_source="trusted_docker_command_contract",
+        read_path_epochs=[remote_epoch],
+        observation_id=observation_id,
+        content_sha256=content_sha256,
+        representation="docker.run-code.text.full/v1",
+        source_checkpoint_revision=0,
+    )
+
+    observed = runtime.record(
+        action,
+        ActionResult(
+            success=True,
+            content='{"type":"unchanged"}',
+            parameter=action["params"],
+            metadata={TERMINAL_EXECUTION_RECEIPT_KEY: receipt},
+        ),
+        context=context,
+    )
+    sandbox_receipt = observed.metadata["sandbox_observation"]
+
+    assert sandbox_receipt["cache_hit"] is True
+    assert sandbox_receipt["executed"] is False
+    assert sandbox_receipt["cache_state"] == "provider_replay"
+    assert sandbox_receipt["observation_id"] == observation_id
+    assert sandbox_receipt["content_sha256"] == content_sha256
+    assert "action_semantic_receipt" not in sandbox_receipt
+
+
+def test_malformed_provider_replay_claim_still_fails_execution_evidence_closed() -> (
+    None
+):
+    runtime = SandboxToolObservationRuntime()
+    context = _context()
+    code = "cat /workspace/input.txt"
+    action = {
+        "tool_name": "docker",
+        "action_name": "run_code",
+        "params": {"code": code},
+    }
+    receipt = build_terminal_execution_receipt(
+        code=code,
+        plan=plan_terminal_execution(code),
+        executed=False,
+        cache_hit=True,
+        exit_code=0,
+        timed_out=False,
+        effect_source="trusted_docker_command_contract",
+        read_path_epochs=[
+            {
+                "path": "/workspace/input.txt",
+                "resolved_path": "/workspace/input.txt",
+                "link_inode": 1,
+                "link_mtime_ns": 2,
+                "mode": 0o100644,
+                "size": 6,
+                "mtime_ns": 3,
+                "ctime_ns": 4,
+                "inode": 5,
+                "authority": "docker:sha256:" + "a" * 64,
+                "fingerprint": "sha256:" + "b" * 64,
+            }
+        ],
+        observation_id="sha256:" + "c" * 64,
+        content_sha256="sha256:" + "d" * 64,
+        representation="docker.run-code.text.full/v1",
+        source_checkpoint_revision=0,
+    )
+    receipt["observation_id"] = "forged"
+
+    observed = runtime.record(
+        action,
+        ActionResult(
+            success=True,
+            content='{"type":"unchanged"}',
+            parameter=action["params"],
+            metadata={TERMINAL_EXECUTION_RECEIPT_KEY: receipt},
+        ),
+        context=context,
+    )
+    sandbox_receipt = observed.metadata["sandbox_observation"]
+
+    assert sandbox_receipt["cache_hit"] is True
+    assert sandbox_receipt["executed"] is False
+    assert sandbox_receipt["cache_state"] == "provider_replay_untrusted"
+    assert "action_semantic_receipt" not in sandbox_receipt
+
+
+def test_cache_requires_complete_scope_but_zero_task_epoch_is_valid() -> None:
+    runtime = SandboxToolObservationRuntime()
+    code = "printf stable"
+    action = {
+        "tool_name": "terminal",
+        "action_name": "run_code",
+        "params": {"code": code},
+    }
+    receipt = build_terminal_execution_receipt(
+        code=code,
+        plan=plan_terminal_execution(code),
+        executed=True,
+        exit_code=0,
+        timed_out=False,
+        effect_source="trusted_command_contract",
+    )
+    zero_epoch = SimpleNamespace(task_id="task", task_epoch=0, session_id="session")
+    missing_session = SimpleNamespace(task_id="task", task_epoch=0, session_id="")
+
+    runtime.record(
+        action,
+        ActionResult(
+            success=True,
+            content="stable",
+            parameter=action["params"],
+            metadata={TERMINAL_EXECUTION_RECEIPT_KEY: receipt},
+        ),
+        context=zero_epoch,
+    )
+    assert runtime.lookup(action, context=zero_epoch) is not None
+
+    other_runtime = SandboxToolObservationRuntime()
+    other_runtime.record(
+        action,
+        ActionResult(
+            success=True,
+            content="stable",
+            parameter=action["params"],
+            metadata={TERMINAL_EXECUTION_RECEIPT_KEY: receipt},
+        ),
+        context=missing_session,
+    )
+    assert other_runtime.lookup(action, context=missing_session) is None
 
 
 def test_terminal_receipt_language_must_match_requested_execution_mode() -> None:
@@ -1013,6 +1206,7 @@ def test_cache_rehydrates_content_after_context_checkpoint_then_renews_reference
     assert retained is not None
     retained_receipt = retained.metadata["sandbox_observation"]
     assert retained_receipt["cache_state"] == "retained_reference"
+    assert retained_receipt["executed"] is False
     assert retained_receipt["content_rehydrated"] is False
     assert '"type": "unchanged"' in retained.content
 
@@ -1071,6 +1265,8 @@ def test_oversized_file_result_retains_only_compact_epoch_bound_facts(
         timed_out=False,
         effect_source="trusted_command_contract",
         read_path_epochs=[_file_epoch(source)],
+        representation="terminal.run-code.structured.full/v1",
+        source_checkpoint_revision=0,
     )
 
     observed = runtime.record(
@@ -1106,7 +1302,7 @@ def test_oversized_file_result_retains_only_compact_epoch_bound_facts(
     assert runtime.lookup(action, context=context) is None
 
 
-def test_filesystem_fact_can_satisfy_overlapping_terminal_read_without_payload(
+def test_retained_fact_requires_same_model_representation_and_checkpoint(
     tmp_path: Path,
 ) -> None:
     runtime = SandboxToolObservationRuntime(max_replay_content_bytes=32)
@@ -1117,7 +1313,7 @@ def test_filesystem_fact_can_satisfy_overlapping_terminal_read_without_payload(
     filesystem_action = {
         "tool_name": "filesystem",
         "action_name": "read_file",
-        "params": {"path": str(source), "output": "text"},
+        "params": {"path": str(source), "output": "text", "head": 3},
     }
     content_sha256 = "sha256:" + hashlib.sha256(source.read_bytes()).hexdigest()
     filesystem_result = ActionResult(
@@ -1130,15 +1326,26 @@ def test_filesystem_fact_can_satisfy_overlapping_terminal_read_without_payload(
                 "authority": "host",
                 "path": str(source),
                 "epoch": {**epoch, "authority": "host"},
-                "coverage": {"kind": "full"},
+                "coverage": {"kind": "line_range", "start": 1, "end": 3},
                 "coverage_complete": True,
                 "content_sha256": content_sha256,
                 "observation_id": "sha256:" + "a" * 64,
                 "cache_hit": False,
+                "executed": True,
+                "representation": "filesystem.read-file.text.head/v1",
+                "source_checkpoint_revision": 0,
             }
         },
     )
-    runtime.record(filesystem_action, filesystem_result, context=context)
+    observed_filesystem = runtime.record(
+        filesystem_action, filesystem_result, context=context
+    )
+    assert observed_filesystem.metadata["sandbox_observation"]["observation_id"] == (
+        "sha256:" + "a" * 64
+    )
+    assert observed_filesystem.metadata["sandbox_observation"]["content_sha256"] == (
+        content_sha256
+    )
 
     refresh_action = {
         **filesystem_action,
@@ -1146,12 +1353,29 @@ def test_filesystem_fact_can_satisfy_overlapping_terminal_read_without_payload(
     }
     assert runtime.lookup(refresh_action, context=context) is None
 
+    filesystem_head_action = {
+        "tool_name": "filesystem",
+        "action_name": "read_file",
+        "params": {"path": str(source), "output": "text", "head": 2},
+    }
+    retained = runtime.lookup(filesystem_head_action, context=context)
+
     terminal_action = {
         "tool_name": "terminal",
         "action_name": "run_code",
         "params": {"code": f"head -n 2 {source}"},
     }
-    retained = runtime.lookup(terminal_action, context=context)
+    assert runtime.lookup(terminal_action, context=context) is None
+    base64_action = {
+        "tool_name": "filesystem",
+        "action_name": "read_file",
+        "params": {
+            "path": str(source),
+            "output": "base64",
+            "head": 2,
+        },
+    }
+    assert runtime.lookup(base64_action, context=context) is None
 
     transformed_action = {
         "tool_name": "terminal",
@@ -1167,6 +1391,9 @@ def test_filesystem_fact_can_satisfy_overlapping_terminal_read_without_payload(
     assert retained.metadata["sandbox_observation"]["cache_validation"] == (
         "host_epoch_overlap"
     )
+
+    context.context_lifecycle_state = SimpleNamespace(checkpoint_revision=1)
+    assert runtime.lookup(filesystem_head_action, context=context) is None
 
 
 def test_uncopyable_result_is_not_retained_for_exact_replay() -> None:

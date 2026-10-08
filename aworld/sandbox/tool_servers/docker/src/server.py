@@ -42,9 +42,7 @@ from aworld.sandbox.terminal_receipt import (
 _READ_OBSERVATION_RECEIPT_KEY = "read_observation_receipt"
 _READ_OBSERVATION_SCHEMA = "aworld.read-observation/v1"
 _READ_FACT_CAPACITY = 256
-_READ_FACTS: "OrderedDict[tuple[tuple[str, str, str], str], dict[str, Any]]" = (
-    OrderedDict()
-)
+_READ_FACTS: "OrderedDict[tuple[tuple[str, str, str, str, str], str], dict[str, Any]]" = OrderedDict()
 from aworld.sandbox.artifact_observation import (
     ArtifactObservationError,
     artifact_mcp_result,
@@ -527,14 +525,28 @@ async def _container_path_states(
     return states if len(states) == len(paths) else None
 
 
-def _framework_scope(env_content: Any) -> tuple[str, str, str]:
+def _framework_scope(env_content: Any) -> tuple[str, str, str, str, str]:
     if not isinstance(env_content, Mapping):
-        return ("", "", "")
+        return ("", "", "", "", "")
+    epoch = env_content.get("task_epoch")
+    checkpoint_revision = env_content.get("checkpoint_revision")
     return (
-        str(env_content.get("task_id") or ""),
-        str(env_content.get("task_epoch") or ""),
-        str(env_content.get("session_id") or ""),
+        str(env_content.get("task_id") or "").strip(),
+        "" if epoch is None or isinstance(epoch, bool) else str(epoch),
+        str(env_content.get("session_id") or "").strip(),
+        (
+            str(checkpoint_revision)
+            if isinstance(checkpoint_revision, int)
+            and not isinstance(checkpoint_revision, bool)
+            and checkpoint_revision >= 0
+            else ""
+        ),
+        str(env_content.get("sandbox_id") or "").strip(),
     )
+
+
+def _framework_scope_is_complete(scope: tuple[str, str, str, str, str]) -> bool:
+    return all(bool(value) for value in scope)
 
 
 def _container_epoch_authority() -> str:
@@ -690,18 +702,28 @@ def _fact_operation_key(*, kind: str, value: Any) -> str:
 
 def _lookup_read_fact(
     *,
-    scope: tuple[str, str, str],
+    scope: tuple[str, str, str, str, str],
     operation_key: str,
     paths: list[str],
     ranges: tuple[TerminalReadRange, ...],
     epochs: list[dict[str, Any]],
     allow_overlap: bool,
+    representation: str,
 ) -> dict[str, Any] | None:
-    if len(paths) != len(ranges) or len(paths) != len(epochs) or not paths:
+    if (
+        not _framework_scope_is_complete(scope)
+        or len(paths) != len(ranges)
+        or len(paths) != len(epochs)
+        or not paths
+    ):
         return None
     exact_key = (scope, operation_key)
     exact = _READ_FACTS.get(exact_key)
-    if exact is not None and exact.get("epochs") == epochs:
+    if (
+        exact is not None
+        and exact.get("epochs") == epochs
+        and exact.get("representation") == representation
+    ):
         _READ_FACTS.move_to_end(exact_key)
         return exact
     if not allow_overlap or len(paths) != 1:
@@ -711,6 +733,7 @@ def _lookup_read_fact(
         if (
             key[0] == scope
             and candidate.get("coverage_complete") is True
+            and candidate.get("representation") == representation
             and candidate.get("paths") == paths
             and candidate.get("epochs") == epochs
             and len(candidate.get("ranges") or ()) == 1
@@ -723,15 +746,21 @@ def _lookup_read_fact(
 
 def _store_read_fact(
     *,
-    scope: tuple[str, str, str],
+    scope: tuple[str, str, str, str, str],
     operation_key: str,
     paths: list[str],
     ranges: tuple[TerminalReadRange, ...],
     epochs: list[dict[str, Any]],
     content_sha256: str,
     coverage_complete: bool,
+    representation: str,
 ) -> dict[str, Any] | None:
-    if len(paths) != len(ranges) or len(paths) != len(epochs) or not paths:
+    if (
+        not _framework_scope_is_complete(scope)
+        or len(paths) != len(ranges)
+        or len(paths) != len(epochs)
+        or not paths
+    ):
         return None
     observation_id = (
         "sha256:"
@@ -756,6 +785,8 @@ def _store_read_fact(
         "ranges": tuple(ranges),
         "epochs": [dict(epoch) for epoch in epochs],
         "coverage_complete": bool(coverage_complete),
+        "representation": representation,
+        "source_checkpoint_revision": int(scope[3]),
     }
     key = (scope, operation_key)
     _READ_FACTS[key] = fact
@@ -819,17 +850,32 @@ async def run_code(
     read_paths: list[str] = []
     if potential_plan.effect == "read_only":
         planned_paths = _plan_read_paths(potential_plan)
-        if planned_paths is None:
+        if potential_plan.callback_kinds:
             execution_plan = replace(
                 potential_plan,
                 effect="unknown",
                 cacheable=False,
+                read_projection_reusable=False,
+            )
+            effect_source = "untrusted_callback_environment"
+        elif planned_paths is None:
+            execution_plan = replace(
+                potential_plan,
+                effect="unknown",
+                cacheable=False,
+                read_projection_reusable=False,
             )
             effect_source = "untrusted_execution_context"
         else:
             read_paths = planned_paths
             effect_source = "trusted_docker_command_contract"
     read_ranges = _plan_read_ranges(execution_plan)
+    projection_kind = (
+        read_ranges[0].kind
+        if execution_plan.read_projection_reusable and len(read_ranges) == 1
+        else "exact"
+    )
+    representation = f"docker.run-code.text.{projection_kind}/v1"
     read_epochs_before = (
         await _container_read_path_epochs(read_paths, timeout=timeout)
         if execution_plan.effect == "read_only" and read_paths
@@ -849,6 +895,7 @@ async def run_code(
         paths=read_paths,
         ranges=read_ranges,
         epochs=read_epochs_before,
+        representation=representation,
         allow_overlap=(
             execution_plan.read_projection_reusable
             and len(read_ranges) == 1
@@ -882,13 +929,18 @@ async def run_code(
                         "terminal_execution_receipt": build_terminal_execution_receipt(
                             code=code,
                             plan=execution_plan,
-                            executed=True,
+                            executed=False,
                             exit_code=0,
                             timed_out=False,
                             potential_effect=potential_plan.effect,
                             effect_source=effect_source,
                             read_path_epochs=confirmed_epochs,
                             requested_language=language,
+                            cache_hit=True,
+                            observation_id=str(cached_fact["observation_id"]),
+                            content_sha256=str(cached_fact["content_sha256"]),
+                            representation=representation,
+                            source_checkpoint_revision=int(scope[3]),
                         ),
                     },
                 }
@@ -946,6 +998,10 @@ async def run_code(
         effect_source=effect_source,
         read_path_epochs=read_path_epochs,
         requested_language=language,
+        representation=representation,
+        source_checkpoint_revision=(
+            int(scope[3]) if _framework_scope_is_complete(scope) else None
+        ),
     )
     stored_fact = None
     if terminal_receipt["cacheable"] and read_paths:
@@ -960,7 +1016,25 @@ async def run_code(
                 stdout_policy["output_truncated"] or stderr_policy["output_truncated"]
             )
             and execution_plan.read_projection_reusable,
+            representation=representation,
         )
+        if stored_fact is not None:
+            terminal_receipt = build_terminal_execution_receipt(
+                code=code,
+                plan=execution_plan,
+                executed=True,
+                exit_code=return_code,
+                timed_out=timed_out,
+                mutation_observed=mutation_observed,
+                potential_effect=potential_plan.effect,
+                effect_source=effect_source,
+                read_path_epochs=read_path_epochs,
+                requested_language=language,
+                observation_id=str(stored_fact["observation_id"]),
+                content_sha256=str(stored_fact["content_sha256"]),
+                representation=representation,
+                source_checkpoint_revision=int(scope[3]),
+            )
     return _text(
         {
             "success": return_code == 0,
@@ -999,6 +1073,8 @@ def _read_observation_receipt(
     observation_id: str | None,
     cache_hit: bool,
     coverage_complete: bool,
+    representation: str,
+    source_checkpoint_revision: int,
 ) -> dict[str, Any]:
     return {
         "schema_version": _READ_OBSERVATION_SCHEMA,
@@ -1010,6 +1086,9 @@ def _read_observation_receipt(
         "content_sha256": content_sha256,
         "observation_id": observation_id,
         "cache_hit": bool(cache_hit),
+        "executed": not cache_hit,
+        "representation": representation,
+        "source_checkpoint_revision": source_checkpoint_revision,
     }
 
 
@@ -1218,6 +1297,20 @@ async def read_file(
                 int(getattr(bridge, "max_output_bytes", 1024 * 1024)),
             ),
         )
+    selector = (
+        "range"
+        if head is not None and tail is not None
+        else "head"
+        if head is not None
+        else "tail"
+        if tail is not None
+        else "bytes"
+        if output == "base64"
+        else "prefix"
+        if requested_coverage.kind == "byte_range"
+        else "full"
+    )
+    representation = f"docker.read-file.{output}.{selector}/v1"
     operation_key = _fact_operation_key(
         kind="read_file",
         value={
@@ -1237,6 +1330,7 @@ async def read_file(
             ranges=(requested_coverage,),
             epochs=epochs_before,
             allow_overlap=True,
+            representation=representation,
         )
     )
     if cached_fact is not None:
@@ -1254,6 +1348,8 @@ async def read_file(
                 observation_id=str(cached_fact["observation_id"]),
                 cache_hit=True,
                 coverage_complete=bool(cached_fact.get("coverage_complete")),
+                representation=representation,
+                source_checkpoint_revision=int(scope[3]),
             )
             return _text(payload, metadata={_READ_OBSERVATION_RECEIPT_KEY: receipt})
 
@@ -1283,6 +1379,7 @@ async def read_file(
             epochs=stable_epochs,
             content_sha256=content_sha256,
             coverage_complete=coverage_complete,
+            representation=representation,
         )
         if stable_epochs
         else None
@@ -1315,6 +1412,10 @@ async def read_file(
         observation_id=fact["observation_id"] if fact is not None else None,
         cache_hit=False,
         coverage_complete=coverage_complete,
+        representation=representation,
+        source_checkpoint_revision=(
+            int(scope[3]) if _framework_scope_is_complete(scope) else 0
+        ),
     )
     return _text(payload, metadata={_READ_OBSERVATION_RECEIPT_KEY: receipt})
 
