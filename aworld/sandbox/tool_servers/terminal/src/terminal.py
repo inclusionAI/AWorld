@@ -1423,6 +1423,24 @@ def _path_within(path: Path, root: Path) -> bool:
         return False
 
 
+def _plan_working_directory(
+    plan: TerminalExecutionPlan,
+    working_directory: Path,
+) -> Path | None:
+    if not plan.command_cwd_safe:
+        return None
+    command_cwd = plan.command_cwd
+    if command_cwd is None:
+        return working_directory.resolve()
+    candidate = Path(command_cwd).expanduser()
+    if not candidate.is_absolute():
+        candidate = working_directory / candidate
+    try:
+        return candidate.resolve()
+    except OSError:
+        return None
+
+
 def _trusted_read_execution_context(
     *,
     command: str,
@@ -1472,7 +1490,9 @@ def _trusted_read_execution_context(
         return False
 
     workspace_root = workspace.resolve()
-    resolved_working_directory = working_directory.resolve()
+    resolved_working_directory = _plan_working_directory(plan, working_directory)
+    if resolved_working_directory is None:
+        return False
     if not _path_within(resolved_working_directory, workspace_root):
         return False
     for raw_path in plan.read_paths:
@@ -1567,10 +1587,13 @@ def _read_path_epochs(
     working_directory: Path,
 ) -> list[dict[str, Any]]:
     epochs: list[dict[str, Any]] = []
+    effective_working_directory = _plan_working_directory(plan, working_directory)
+    if effective_working_directory is None:
+        return []
     for raw_path in plan.read_paths:
         candidate = Path(raw_path).expanduser()
         if not candidate.is_absolute():
-            candidate = working_directory / candidate
+            candidate = effective_working_directory / candidate
         absolute = Path(os.path.abspath(candidate))
         try:
             link_stat = absolute.lstat()
@@ -1655,26 +1678,14 @@ def _snapshot_known_write_paths(
 
     if plan.effect != "mutating" or not plan.write_paths:
         return None
-    if plan.language == "shell":
-        try:
-            if any(
-                _command_words(segment)[0] == "cd"
-                for segment in _shell_command_segments(command)
-            ):
-                # Relative paths following a shell-local cd cannot be resolved
-                # safely without interpreting shell control flow.
-                if any(
-                    not Path(value).expanduser().is_absolute()
-                    for value in plan.write_paths
-                ):
-                    return None
-        except ValueError:
-            return None
+    effective_working_directory = _plan_working_directory(plan, working_directory)
+    if effective_working_directory is None:
+        return None
     snapshot: dict[Path, tuple[Any, ...]] = {}
     for value in plan.write_paths:
         candidate = Path(value).expanduser()
         if not candidate.is_absolute():
-            candidate = working_directory / candidate
+            candidate = effective_working_directory / candidate
         normalized = Path(os.path.abspath(candidate))
         snapshot[normalized] = _path_state(normalized)
     return snapshot or None

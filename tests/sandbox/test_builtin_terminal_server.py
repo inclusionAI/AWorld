@@ -5,9 +5,11 @@ from pathlib import Path
 import shlex
 import sys
 import time
+from types import SimpleNamespace
 
 import pytest
 
+from aworld.core.common import ActionResult
 from aworld.sandbox.tool_servers.terminal.src import terminal as terminal_module
 from aworld.sandbox.tool_servers.terminal.src.terminal import (
     CommandResult,
@@ -26,6 +28,7 @@ from aworld.sandbox.tool_servers.terminal.src.terminal import (
     run_code,
 )
 from aworld.sandbox.terminal_receipt import terminal_command_sha256
+from aworld.sandbox.tool_observation import SandboxToolObservationRuntime
 
 
 def _result(*, stdout: str = "", stderr: str = "") -> CommandResult:
@@ -139,7 +142,7 @@ async def test_run_code_emits_compact_terminal_execution_receipt() -> None:
     assert payload["success"] is True
     assert receipt == {
         "schema_version": "aworld.terminal-execution-receipt/v2",
-        "parser_version": 3,
+        "parser_version": 4,
         "language_contract_version": 1,
         "command_sha256": terminal_command_sha256(command),
         "requested_language": "shell",
@@ -222,6 +225,90 @@ async def test_run_code_keeps_static_python_heredoc_read_authoritative(
     assert receipt["effect_source"] == "trusted_command_contract"
     assert receipt["read_paths"] == ["input.txt"]
     assert receipt["nested_language_evidence"][0]["language"] == "python"
+
+
+@pytest.mark.asyncio
+async def test_leading_cd_cache_tracks_command_scoped_file_epoch(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(terminal_module, "workspace", tmp_path)
+    subdirectory = tmp_path / "sub"
+    subdirectory.mkdir()
+    (tmp_path / "result.txt").write_text("root", encoding="utf-8")
+    nested = subdirectory / "result.txt"
+    nested.write_text("nested-before", encoding="utf-8")
+    command = "cd sub && cat result.txt"
+    action = {
+        "tool_name": "terminal",
+        "action_name": "run_code",
+        "tool_call_id": "call-leading-cd",
+        "params": {"code": command, "cwd": str(tmp_path)},
+    }
+
+    response = await run_code(None, command, timeout=10, cwd=str(tmp_path))
+    payload = json.loads(response.text)
+    receipt = payload["metadata"]["terminal_execution_receipt"]
+
+    assert payload["message"]["stdout"].strip() == "nested-before"
+    assert receipt["effect"] == "read_only"
+    assert receipt["cacheable"] is True
+    assert receipt["read_path_epochs"][0]["path"] == str(nested)
+    assert receipt["read_path_epochs"][0]["path"] != str(tmp_path / "result.txt")
+
+    runtime = SandboxToolObservationRuntime()
+    context = SimpleNamespace(task_id="task", task_epoch=1, session_id="session")
+    runtime.record(
+        action,
+        ActionResult(
+            success=True,
+            tool_call_id="call-leading-cd",
+            content=payload["message"],
+            parameter=action["params"],
+            metadata=payload["metadata"],
+        ),
+        context=context,
+    )
+    assert runtime.lookup(action, context=context) is not None
+
+    nested.write_text("nested-after", encoding="utf-8")
+
+    assert runtime.lookup(action, context=context) is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("command", "env"),
+    [
+        ('cd "$TARGET" && cat result.txt', {"TARGET": "sub"}),
+        ("cat result.txt; cd sub; cat result.txt", None),
+    ],
+)
+async def test_dynamic_or_nonleading_cd_is_not_cacheable(
+    tmp_path: Path,
+    monkeypatch,
+    command: str,
+    env: dict[str, str] | None,
+) -> None:
+    monkeypatch.setattr(terminal_module, "workspace", tmp_path)
+    (tmp_path / "sub").mkdir()
+    (tmp_path / "result.txt").write_text("root", encoding="utf-8")
+    (tmp_path / "sub" / "result.txt").write_text("nested", encoding="utf-8")
+
+    response = await run_code(
+        None,
+        command,
+        timeout=10,
+        cwd=str(tmp_path),
+        env=env,
+    )
+    payload = json.loads(response.text)
+    receipt = payload["metadata"]["terminal_execution_receipt"]
+
+    assert payload["success"] is True
+    assert receipt["effect"] == "unknown"
+    assert receipt["cacheable"] is False
+    assert receipt["read_path_epochs"] == []
 
 
 @pytest.mark.asyncio

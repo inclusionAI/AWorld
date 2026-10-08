@@ -11,6 +11,7 @@ from __future__ import annotations
 import ast
 from dataclasses import dataclass
 import hashlib
+import posixpath
 import re
 from pathlib import Path
 from typing import Any, Iterable, Sequence
@@ -20,7 +21,7 @@ import bashlex
 
 TERMINAL_EXECUTION_RECEIPT_SCHEMA = "aworld.terminal-execution-receipt/v2"
 TERMINAL_EXECUTION_RECEIPT_KEY = "terminal_execution_receipt"
-TERMINAL_EXECUTION_ANALYZER_VERSION = 3
+TERMINAL_EXECUTION_ANALYZER_VERSION = 4
 TERMINAL_LANGUAGE_CONTRACT_VERSION = 1
 TERMINAL_LANGUAGES = frozenset({"shell", "python"})
 TERMINAL_EFFECTS = frozenset({"read_only", "mutating", "unknown"})
@@ -280,6 +281,8 @@ class TerminalExecutionPlan:
     read_set_complete: bool = True
     nested_languages: tuple[str, ...] = ()
     nested_source_sha256: tuple[str, ...] = ()
+    command_cwd: str | None = None
+    command_cwd_safe: bool = True
 
 
 def terminal_command_sha256(code: str) -> str:
@@ -663,6 +666,43 @@ def _parse_shell_nodes(source: str) -> list[Any] | None:
         return None
 
 
+_LEADING_STATIC_CD = re.compile(
+    r"\A\s*cd\s+(?P<path>'[^']*'|\"[^\"]*\"|[^\s;&|]+)\s*(?:&&|;|\n|\Z)"
+)
+_SHELL_CD_COMMAND = re.compile(r"(?:\A|&&|[;|\n])\s*cd(?:\s|\Z)")
+
+
+def shell_command_working_directory(source: str) -> tuple[str | None, bool]:
+    """Return a leading literal Shell cwd and whether every ``cd`` is resolved."""
+
+    if not isinstance(source, str):
+        return None, False
+    current: str | None = None
+    remainder = source
+    while True:
+        match = _LEADING_STATIC_CD.match(remainder)
+        if match is None:
+            break
+        raw_path = match.group("path")
+        if raw_path[:1] in {"'", '"'} and raw_path[-1:] == raw_path[:1]:
+            raw_path = raw_path[1:-1]
+        if not raw_path or any(marker in raw_path for marker in ("$", "`", "\\")):
+            return current, False
+        normalized = posixpath.normpath(raw_path)
+        current = (
+            normalized
+            if posixpath.isabs(normalized) or current is None
+            else posixpath.normpath(posixpath.join(current, normalized))
+        )
+        if match.end() == len(remainder):
+            remainder = ""
+            break
+        remainder = remainder[match.end() :]
+    if _SHELL_CD_COMMAND.search(remainder):
+        return current, False
+    return current, True
+
+
 _PYTHON_HEREDOC = re.compile(
     r"\A[ \t]*(?P<executable>(?:/[^\s]+/)?(?:python(?:3(?:\.\d+)*)?|py))"
     r"(?:[ \t]+-)?[ \t]+<<(?P<strip>-?)[ \t]*"
@@ -788,6 +828,10 @@ def plan_terminal_execution(
     known_mutation = False
     unknown = background_operator
     read_set_complete = True
+    command_cwd, command_cwd_safe = shell_command_working_directory(code)
+    if not command_cwd_safe:
+        unknown = True
+        read_set_complete = False
     for redirect in redirects:
         redirect_type = str(getattr(redirect, "type", "") or "")
         output = getattr(redirect, "output", None)
@@ -856,6 +900,9 @@ def plan_terminal_execution(
         executable, args = _command_words(words)
         if not executable:
             continue
+        if executable == "cd" and command_cwd is None:
+            unknown = True
+            read_set_complete = False
         if any(getattr(part, "parts", ()) for part in word_nodes[1:]):
             unknown = True
         if executable in _SHELL_MUTATION_COMMANDS:
@@ -914,6 +961,8 @@ def plan_terminal_execution(
         _bounded_paths(writes),
         background_operator,
         read_set_complete,
+        command_cwd=command_cwd,
+        command_cwd_safe=command_cwd_safe,
     )
 
 
@@ -1001,5 +1050,6 @@ __all__ = [
     "build_terminal_execution_receipt",
     "plan_terminal_execution",
     "python_is_provably_read_only",
+    "shell_command_working_directory",
     "terminal_command_sha256",
 ]

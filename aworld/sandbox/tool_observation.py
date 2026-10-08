@@ -29,6 +29,7 @@ from aworld.sandbox.terminal_receipt import (
     TERMINAL_LANGUAGE_CONTRACT_VERSION,
     TERMINAL_LANGUAGES,
     plan_terminal_execution,
+    shell_command_working_directory,
     terminal_command_sha256,
 )
 from aworld.utils.serialized_util import to_serializable
@@ -298,11 +299,6 @@ def _action_target_paths(
     return tuple(dict.fromkeys(values))[:16]
 
 
-_LEADING_CD = re.compile(
-    r"\A\s*cd\s+(?P<path>'[^']*'|\"[^\"]*\"|[^\s;&|]+)\s*(?:&&|;|\n)"
-)
-
-
 def _effective_action_cwd(
     action: Any,
     result: Any | None = None,
@@ -321,23 +317,16 @@ def _effective_action_cwd(
     code = params.get("code", params.get("command"))
     if not isinstance(code, str) or params.get("language", "shell") != "shell":
         return current
-    remainder = code
-    while True:
-        match = _LEADING_CD.match(remainder)
-        if match is None:
-            break
-        raw_path = match.group("path")
-        if raw_path[:1] in {"'", '"'} and raw_path[-1:] == raw_path[:1]:
-            raw_path = raw_path[1:-1]
-        if not raw_path or any(marker in raw_path for marker in ("$", "`")):
-            return current
-        normalized = posixpath.normpath(raw_path.replace("\\", "/"))
+    command_cwd, command_cwd_safe = shell_command_working_directory(code)
+    if not command_cwd_safe:
+        return None
+    if command_cwd is not None:
+        normalized = posixpath.normpath(command_cwd.replace("\\", "/"))
         current = (
             normalized
             if posixpath.isabs(normalized) or current is None
             else posixpath.normpath(posixpath.join(current, normalized))
         )
-        remainder = remainder[match.end() :]
     return current
 
 
