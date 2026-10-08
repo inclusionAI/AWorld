@@ -61,6 +61,7 @@ async def test_message_to_trajectory_item_uses_call_id_to_avoid_snapshot_overwri
     message.context.context_info["llm_calls"] = [
         {
             "call_id": "call-2",
+            "request_id": "request-2",
             "request": {"messages": [{"role": "user", "content": "second"}]},
         }
     ]
@@ -68,4 +69,23 @@ async def test_message_to_trajectory_item_uses_call_id_to_avoid_snapshot_overwri
     item = await strategy.message_to_trajectory_item(message)
 
     assert item.id == f"{message.id}:call-2"
+    assert item.meta.llm_request_id == "request-2"
     assert item.state.messages == [{"role": "user", "content": "second"}]
+
+
+@pytest.mark.asyncio
+async def test_native_trajectory_drops_unbounded_llm_request_id() -> None:
+    agent = _build_agent()
+    strategy = DefaultTrajectoryStrategy()
+    message = _build_message(agent)
+    message.context.context_info["llm_calls"] = [
+        {
+            "call_id": "call-oversized",
+            "request_id": "r" * 257,
+            "request": {"messages": [{"role": "user", "content": "second"}]},
+        }
+    ]
+
+    item = await strategy.message_to_trajectory_item(message)
+
+    assert item.meta.llm_request_id is None

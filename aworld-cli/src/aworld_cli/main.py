@@ -1815,6 +1815,14 @@ def _live_provider_call_records(context: object) -> list[dict]:
                 1 if record.get("finished_at") is not None else 0,
             )
 
+        def mutation_version(record: dict) -> int:
+            value = record.get("_aworld_recorded_at_epoch_ns")
+            return (
+                value
+                if isinstance(value, int) and not isinstance(value, bool) and value >= 0
+                else -1
+            )
+
         for record in [*scoped_calls, *durable_calls]:
             record_scope_key = scope_key(record.get("_aworld_scope"))
             request_id = record.get("request_id")
@@ -1825,8 +1833,13 @@ def _live_provider_call_records(context: object) -> list[dict]:
             if position is None:
                 positions[identity] = len(reconciled)
                 reconciled.append(record)
-            elif quality(record) > quality(reconciled[position]):
-                reconciled[position] = record
+            else:
+                existing = reconciled[position]
+                if quality(record) > quality(existing) or (
+                    quality(record) == quality(existing)
+                    and mutation_version(record) > mutation_version(existing)
+                ):
+                    reconciled[position] = record
         def event_time(record: dict) -> float:
             started_at = record.get("started_at")
             if isinstance(started_at, (int, float)) and not isinstance(started_at, bool):
@@ -1909,13 +1922,19 @@ def _live_trajectory_from_llm_calls(
                 response_kind = "reasoning_only"
         if content is None and not tool_calls and response_kind is None:
             continue
+        request_id = record.get("request_id")
+        request_id = (
+            request_id
+            if isinstance(request_id, str) and 0 < len(request_id) <= 256
+            else None
+        )
         meta = {
             "step": len(trajectory) + 1,
             "task_id": record_scope.get("task_id") or record.get("task_id"),
             "session_id": record_scope.get("session_id"),
             "agent_id": record.get("agent_id"),
             "execute_time": record.get("finished_at") or record.get("started_at"),
-            "llm_request_id": record.get("request_id"),
+            "llm_request_id": request_id,
             "assistant_response_kind": response_kind,
             "task_epoch": record_scope.get("task_epoch"),
             "run_boundary_id": record_scope.get("run_boundary_id"),
@@ -1982,7 +2001,7 @@ def _merge_native_and_live_trajectory(
             return set()
         keys: set[tuple[object, ...]] = set()
         request_id = meta.get("llm_request_id")
-        if isinstance(request_id, str) and request_id:
+        if isinstance(request_id, str) and 0 < len(request_id) <= 256:
             keys.add(("request", item_scope, request_id))
         call_ids = tuple(
             call["id"]

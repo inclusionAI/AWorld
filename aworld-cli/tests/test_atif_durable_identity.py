@@ -166,6 +166,45 @@ def test_live_and_durable_llm_calls_merge_by_exact_run_scope(
     assert "old-call" not in json.dumps(recovered)
 
 
+def test_equal_quality_live_record_yields_to_newer_durable_mutation(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    journal = tmp_path / "llm-calls.journal.jsonl"
+    monkeypatch.setenv("AWORLD_LLM_CALL_JOURNAL_PATH", str(journal))
+    context = _context(
+        task_id="task",
+        session_id="session",
+        task_epoch=1,
+        trace_id="run",
+    )
+    stale = _provider_call(
+        request_id="request", task_id="task", tool_call_id="stale-call"
+    )
+    fresh = _provider_call(
+        request_id="request", task_id="task", tool_call_id="fresh-call"
+    )
+    context.append_llm_call(stale)
+    context.replace_llm_call(0, fresh)
+    live_stale = {**stale, **{
+        "session_id": "session",
+        "task_epoch": 1,
+        "run_boundary_id": "run",
+    }}
+    detached = SimpleNamespace(
+        task_id="task",
+        session_id="session",
+        task_epoch=1,
+        trace_id="run",
+        get_reconciled_llm_calls=lambda: [live_stale],
+    )
+
+    recovered = _live_provider_call_records(detached)
+
+    assert recovered[0]["response"]["message"]["tool_calls"][0]["id"] == (
+        "fresh-call"
+    )
+
+
 def test_live_trajectory_never_relabels_explicit_record_scope() -> None:
     record = _provider_call(
         request_id="request-old",
@@ -232,6 +271,31 @@ def test_nonempty_native_trajectory_is_augmented_with_newer_live_tool_call() -> 
     assert [
         item["action"]["tool_calls"][0]["id"] for item in merged
     ] == ["call-1", "call-2"]
+
+
+def test_reasoning_only_native_request_id_anchors_new_live_tool_suffix() -> None:
+    captured = {
+        "meta": {
+            "task_id": "task",
+            "session_id": "session",
+            "task_epoch": 1,
+            "run_boundary_id": "run",
+            "llm_request_id": "request-1",
+            "step": 1,
+        },
+        "action": {"content": "reasoning retained", "tool_calls": []},
+    }
+    matching_live = json.loads(json.dumps(captured))
+    new_tool = _native_call(call_id="call-2", step=2)
+    new_tool["meta"]["llm_request_id"] = "request-2"
+
+    merged = _merge_native_and_live_trajectory(
+        [captured], [matching_live, new_tool]
+    )
+
+    assert len(merged) == 2
+    assert merged[0]["action"]["content"] == "reasoning retained"
+    assert merged[1]["action"]["tool_calls"][0]["id"] == "call-2"
 
 
 def test_partial_summary_augments_stale_nonempty_task_response() -> None:
@@ -381,6 +445,43 @@ def test_reused_call_id_without_scope_is_not_matched_ambiguously(
     assert trajectory["extra"]["aworld"]["tool_action_journal"][
         "ambiguous_result_count"
     ] >= 1
+
+
+def test_singleton_durable_tool_result_requires_full_exact_native_scope(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    journal = tmp_path / "tool-actions.journal.jsonl"
+    monkeypatch.setenv("AWORLD_TOOL_ACTION_JOURNAL_PATH", str(journal))
+    append_tool_action_event(
+        context=SimpleNamespace(
+            task_id="task",
+            session_id="session",
+            task_epoch=1,
+            trace_id="run",
+        ),
+        event_type="tool_observation_recorded",
+        actions=[{"tool_call_id": "call"}],
+        results=[{"tool_call_id": "call", "success": True, "content": "SECRET"}],
+        status="completed",
+        path=journal,
+    )
+    incomplete_scope = _native_call(
+        call_id="call",
+        step=1,
+        session_id=None,
+        task_epoch=None,
+        run_boundary_id=None,
+    )
+
+    trajectory = build_atif_trajectory(
+        {"trajectory": [incomplete_scope]},
+        prompt="Run",
+        agent_name="Aworld",
+        agent_version="dev",
+    )
+
+    assert "observation" not in trajectory["steps"][1]
+    assert "SECRET" not in json.dumps(trajectory)
 
 
 def test_terminal_receipt_requires_sandbox_validated_nested_receipt(

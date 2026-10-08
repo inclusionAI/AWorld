@@ -533,7 +533,12 @@ def test_atif_recovers_bounded_typed_tool_results_from_durable_journal(
 ):
     journal = tmp_path / "tool-actions.journal.jsonl"
     monkeypatch.setenv("AWORLD_TOOL_ACTION_JOURNAL_PATH", str(journal))
-    context = Context(task_id="task-journal")
+    context = SimpleNamespace(
+        task_id="task-journal",
+        session_id="session-journal",
+        task_epoch="epoch-journal",
+        trace_id="run-journal",
+    )
     actions = [
         {
             "tool_call_id": "call-inline",
@@ -700,7 +705,13 @@ def test_atif_recovers_bounded_typed_tool_results_from_durable_journal(
             ),
             "trajectory": [
                 {
-                    "meta": {"task_id": "task-journal", "step": 1},
+                    "meta": {
+                        "task_id": "task-journal",
+                        "session_id": "session-journal",
+                        "task_epoch": "epoch-journal",
+                        "run_boundary_id": "run-journal",
+                        "step": 1,
+                    },
                     # Deliberately no state.input.action_result: this is the
                     # partial/deadline shape that previously lost every result.
                     "action": {"content": "", "tool_calls": tool_calls},
@@ -822,6 +833,7 @@ def test_atif_scopes_reused_call_id_to_session_and_task_epoch(
                 task_id="reused-task",
                 session_id=session_id,
                 task_epoch=task_epoch,
+                trace_id="run-reused",
             ),
             event_type="tool_observation_recorded",
             actions=[action],
@@ -843,6 +855,7 @@ def test_atif_scopes_reused_call_id_to_session_and_task_epoch(
                         "task_id": "reused-task",
                         "session_id": "current-session",
                         "task_epoch": 2,
+                        "run_boundary_id": "run-reused",
                         "step": 1,
                     },
                     "action": {

@@ -420,6 +420,17 @@ class DefaultTrajectoryStrategy(TrajectoryStrategy):
         self.task_agent_map[task_agent_id] += 1
 
         step = message.context.get_agent_step(agent_id=agent_id, task_id=task_id, agent_info=message.context.agent_info)
+        llm_request_id = None
+        llm_calls = message.context.context_info.get("llm_calls")
+        if isinstance(llm_calls, list):
+            selected_call = self._select_llm_call_for_message(message, llm_calls)
+            request_id = (
+                selected_call.get("request_id")
+                if isinstance(selected_call, dict)
+                else None
+            )
+            if isinstance(request_id, str) and 0 < len(request_id) <= 256:
+                llm_request_id = request_id
         meta = ExpMeta(
             session_id=session_id,
             task_id=task_id,
@@ -430,6 +441,7 @@ class DefaultTrajectoryStrategy(TrajectoryStrategy):
             pre_agent=pre_agent,
             task_epoch=getattr(message.context, "task_epoch", None),
             run_boundary_id=getattr(message.context, "trace_id", None),
+            llm_request_id=llm_request_id,
         )
         # State (S)
         state = await self.build_trajectory_state(message, state_manager=state_manager,

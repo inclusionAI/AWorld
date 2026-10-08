@@ -244,8 +244,8 @@ def _tool_call_counts(
 @dataclass
 class _ToolResultLedger:
     native: dict[tuple[str, str], list[dict[str, Any]]]
+    native_by_call_id: dict[str, list[dict[str, Any]]]
     durable: dict[tuple[tuple[Any, ...], str], list[dict[str, Any]]]
-    durable_by_call_id: dict[str, list[dict[str, Any]]]
     scoped_call_counts: dict[tuple[str, str], int]
     global_call_counts: dict[str, int]
 
@@ -257,7 +257,7 @@ class _ToolResultLedger:
         native_occurrence: int,
         durable_occurrence: int,
     ) -> dict[str, Any] | None:
-        from aworld_cli.durable_scope import normalize_scope, scope_key
+        from aworld_cli.durable_scope import scope_key
 
         native_key = (_native_scope_token(meta), call_id)
         native_results = self.native.get(native_key, [])
@@ -266,24 +266,14 @@ class _ToolResultLedger:
             and native_occurrence < len(native_results)
         ):
             return native_results[native_occurrence]
+        native_legacy = self.native_by_call_id.get(call_id, [])
+        if self.global_call_counts.get(call_id) == 1 and len(native_legacy) == 1:
+            return native_legacy[0]
         exact_scope = scope_key(meta)
         if exact_scope is not None:
             durable_results = self.durable.get((exact_scope, call_id), [])
             if durable_occurrence < len(durable_results):
                 return durable_results[durable_occurrence]
-        native_scope = normalize_scope(meta)
-        if "task_id" not in native_scope:
-            return None
-        legacy_results = [
-            result
-            for result in self.durable_by_call_id.get(call_id, [])
-            if all(
-                normalize_scope(result.get("_aworld_scope")).get(key) == value
-                for key, value in native_scope.items()
-            )
-        ]
-        if self.global_call_counts.get(call_id) == 1 and len(legacy_results) == 1:
-            return legacy_results[0]
         return None
 
 
@@ -455,7 +445,6 @@ def _durable_tool_result_series(
     native_items: list[dict[str, Any]],
 ) -> tuple[
     dict[tuple[tuple[Any, ...], str], list[dict[str, Any]]],
-    dict[str, list[dict[str, Any]]],
     dict[str, Any] | None,
 ]:
     """Recover journal results by full scope, batch occurrence and action index."""
@@ -480,9 +469,9 @@ def _durable_tool_result_series(
     except Exception:
         path = None
     if path is None:
-        return {}, {}, None
+        return {}, None
     if not known_call_ids:
-        return {}, {}, {
+        return {}, {
             "schema_version": "aworld.tool-action-journal.v1",
             "status": "unavailable",
             "reason_code": "tool_call_scope_unavailable",
@@ -490,7 +479,7 @@ def _durable_tool_result_series(
         }
     try:
         if path.stat().st_size > _MAX_DURABLE_TOOL_JOURNAL_BYTES:
-            return {}, {}, {
+            return {}, {
                 "schema_version": "aworld.tool-action-journal.v1",
                 "status": "unavailable",
                 "reason_code": "journal_size_limit_exceeded",
@@ -500,7 +489,7 @@ def _durable_tool_result_series(
     except FileNotFoundError:
         recovery = read_tool_action_journal(path)
     except Exception:
-        return {}, {}, {
+        return {}, {
             "schema_version": "aworld.tool-action-journal.v1",
             "status": "unavailable",
             "reason_code": "journal_recovery_failed",
@@ -508,10 +497,11 @@ def _durable_tool_result_series(
         }
 
     selected: dict[
-        tuple[str, str, int, str],
-        tuple[int, int, tuple[Any, ...] | None, dict[str, Any]],
+        tuple[tuple[Any, ...], str, int, str],
+        tuple[int, int, dict[str, Any]],
     ] = {}
     selected_event_count = 0
+    rejected_incomplete_scope_count = 0
     for event in recovery.events:
         actions = event.get("actions")
         if not isinstance(actions, list):
@@ -546,12 +536,9 @@ def _durable_tool_result_series(
         results = results if isinstance(results, list) else []
         event_scope = normalize_scope(event.get("context"))
         event_scope_key = scope_key(event_scope)
-        event_scope_token = json.dumps(
-            event_scope,
-            ensure_ascii=False,
-            sort_keys=True,
-            separators=(",", ":"),
-        )
+        if event_scope_key is None:
+            rejected_incomplete_scope_count += 1
+            continue
         batch_id = str(event.get("batch_id") or "")
         if not batch_id:
             continue
@@ -587,7 +574,6 @@ def _durable_tool_result_series(
                     else f"tool_action_journal:{event_type}"
                 ),
             )
-            projected["_aworld_scope"] = event_scope
             if event_type == "sandbox_call_failed":
                 failure_type = _safe_error_code(metadata.get("error_type"))
                 if failure_type is not None:
@@ -611,11 +597,10 @@ def _durable_tool_result_series(
                     for key, value in projected["extra"]["rollback"].items()
                     if value is not None
                 }
-            occurrence_key = (event_scope_token, batch_id, index, call_id)
+            occurrence_key = (event_scope_key, batch_id, index, call_id)
             candidate = (
                 priority,
                 int(event.get("recorded_at_epoch_ns") or 0),
-                event_scope_key,
                 projected,
             )
             previous = selected.get(occurrence_key)
@@ -626,18 +611,13 @@ def _durable_tool_result_series(
         tuple[tuple[Any, ...], str],
         list[tuple[int, str, int, dict[str, Any]]],
     ] = {}
-    legacy: dict[str, list[tuple[int, str, int, dict[str, Any]]]] = {}
-    for (_scope_token, batch_id, index, call_id), (
+    for (event_scope_key, batch_id, index, call_id), (
         _,
         recorded_at,
-        event_scope_key,
         result,
     ) in selected.items():
         entry = (recorded_at, batch_id, index, result)
-        if event_scope_key is None:
-            legacy.setdefault(call_id, []).append(entry)
-        else:
-            grouped.setdefault((event_scope_key, call_id), []).append(entry)
+        grouped.setdefault((event_scope_key, call_id), []).append(entry)
     durable = {
         key: [entry[3] for entry in sorted(entries, key=lambda item: item[:3])]
         for key, entries in grouped.items()
@@ -645,10 +625,6 @@ def _durable_tool_result_series(
     durable_by_call_id: dict[str, list[dict[str, Any]]] = {}
     for (_, call_id), results_for_scope in durable.items():
         durable_by_call_id.setdefault(call_id, []).extend(results_for_scope)
-    for call_id, entries in legacy.items():
-        durable_by_call_id.setdefault(call_id, []).extend(
-            entry[3] for entry in sorted(entries, key=lambda item: item[:3])
-        )
     ambiguous_result_count = sum(
         max(0, len(results) - 1) for results in durable_by_call_id.values()
     )
@@ -659,9 +635,10 @@ def _durable_tool_result_series(
             "recovered_result_count": len(selected),
             "ambiguous_result_count": ambiguous_result_count,
             "ambiguous_call_id_count": ambiguous_result_count,
+            "rejected_incomplete_scope_count": rejected_incomplete_scope_count,
         }
     )
-    return durable, durable_by_call_id, evidence
+    return durable, evidence
 
 
 def _native_agent_step(
@@ -946,14 +923,17 @@ def build_atif_trajectory(
         }
     ]
     native_tool_results = _native_tool_result_series(native_items)
-    durable_tool_results, durable_by_call_id, tool_journal_evidence = (
-        _durable_tool_result_series(native_items)
+    native_by_call_id: dict[str, list[dict[str, Any]]] = {}
+    for (_, call_id), results_for_scope in native_tool_results.items():
+        native_by_call_id.setdefault(call_id, []).extend(results_for_scope)
+    durable_tool_results, tool_journal_evidence = _durable_tool_result_series(
+        native_items
     )
     scoped_call_counts, global_call_counts = _tool_call_counts(native_items)
     tool_results = _ToolResultLedger(
         native=native_tool_results,
+        native_by_call_id=native_by_call_id,
         durable=durable_tool_results,
-        durable_by_call_id=durable_by_call_id,
         scoped_call_counts=scoped_call_counts,
         global_call_counts=global_call_counts,
     )

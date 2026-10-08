@@ -17,6 +17,7 @@ class ExpMeta(BaseModel):
     pre_agent: Optional[str] = None
     task_epoch: Optional[Union[str, int]] = None
     run_boundary_id: Optional[str] = None
+    llm_request_id: Optional[str] = None
 
     def to_dict(self):
         return {
@@ -29,6 +30,7 @@ class ExpMeta(BaseModel):
             "pre_agent": self.pre_agent,
             "task_epoch": self.task_epoch,
             "run_boundary_id": self.run_boundary_id,
+            "llm_request_id": self.llm_request_id,
         }
 
 class TrajectoryState(BaseModel):
